@@ -333,7 +333,11 @@ acceptance:
 id: calculator.region.mode-toolbar
 app: calculator
 status: specified
+region: mode-switcher-toolbar
 role: mode-switcher
+responsibility: >
+  Own mode selection between arithmetic and scientific/graphing surfaces without
+  evaluating expressions or hiding the user's current calculation context.
 layout_zone: actions
 object: CalculationMode
 contains:
@@ -349,7 +353,11 @@ layout_laws:
 id: calculator.region.arithmetic-panel
 app: calculator
 status: specified
+region: primary-calculation-surface
 role: primary-work-surface
+responsibility: >
+  Own the ordinary arithmetic workflow by keeping expression input, local
+  actions, and deterministic result evidence visually connected.
 layout_zone: primary
 object: ArithmeticExpression
 contains:
@@ -367,7 +375,11 @@ layout_laws:
 id: calculator.region.expression-display
 app: calculator
 status: specified
+region: expression-input-display
 role: input-display
+responsibility: >
+  Show the current arithmetic expression as authoritative calculator input,
+  separate from graph output, Mathics prompts, and model prose.
 layout_zone: primary
 object: ArithmeticExpression
 contains:
@@ -383,7 +395,11 @@ layout_laws:
 id: calculator.region.keypad
 app: calculator
 status: specified
+region: deterministic-input-grid
 role: action-grid
+responsibility: >
+  Provide local digit, operator, edit, and equals actions that mutate only the
+  current arithmetic expression and deterministic result state.
 layout_zone: actions
 object: ArithmeticExpression
 contains:
@@ -401,7 +417,11 @@ layout_laws:
 id: calculator.region.result-status
 app: calculator
 status: specified
+region: result-evidence-status
 role: evidence-status
+responsibility: >
+  Show success, error, graph, and symbolic evaluation status near the calculator
+  surface that produced the evidence.
 layout_zone: evidence
 object: CalculationResult
 contains:
@@ -418,7 +438,11 @@ layout_laws:
 id: calculator.region.graphing-panel
 app: calculator
 status: specified
+region: graphing-workspace
 role: primary-visual-output
+responsibility: >
+  Own graph expression entry, visible range controls, plotting actions, and
+  graph-specific status for deterministic visualization.
 layout_zone: primary
 object: GraphSurface
 contains:
@@ -437,7 +461,11 @@ layout_laws:
 id: calculator.region.graph-canvas
 app: calculator
 status: specified
+region: primary-visualization-canvas
 role: canvas-output
+responsibility: >
+  Render deterministic graph output for the current expression or comparison
+  scenario without becoming an editable source of truth.
 layout_zone: primary
 object: GraphSurface
 contains:
@@ -452,7 +480,11 @@ layout_laws:
 id: calculator.region.scientific-keypad
 app: calculator
 status: specified
+region: scientific-function-input-grid
 role: function-action-grid
+responsibility: >
+  Provide graph and scientific function tokens as local expression-building
+  controls rather than hidden evaluation or model actions.
 layout_zone: actions
 object: GraphExpression
 contains:
@@ -469,7 +501,11 @@ layout_laws:
 id: calculator.region.mathics-panel
 app: calculator
 status: specified
+region: symbolic-evaluation-inspector
 role: symbolic-inspector
+responsibility: >
+  Expose explicit symbolic-evaluation prompts, generated expressions, backend
+  status, and results without replacing the local arithmetic answer.
 layout_zone: inspector
 object: SymbolicExpression
 contains:
@@ -488,7 +524,11 @@ layout_laws:
 id: calculator.region.qa-panel
 app: calculator
 status: specified
+region: result-explanation-inspector
 role: result-explainer
+responsibility: >
+  Let the user ask explanatory questions about current calculator evidence while
+  keeping deterministic math output authoritative.
 layout_zone: inspector
 object: ResultQuestion
 contains:
@@ -505,7 +545,11 @@ layout_laws:
 id: calculator.region.chat-panel
 app: calculator
 status: specified
+region: advanced-helper-companion
 role: helper-notebook
+responsibility: >
+  Host optional calculator conversation support as an advanced companion that
+  may explain or suggest but must not silently mutate results.
 layout_zone: advanced
 object: CalculatorConversation
 contains:
@@ -527,10 +571,10 @@ intent: switchMode
 object: CalculationMode
 current_adapter_status: not-registered
 target_adapter_status: executable
-risk: low
-preconditions:
+risk: read-only
+requires:
   - requested mode is supported
-effects:
+produces:
   - active mode changes
   - visible compute surface updates
 evidence:
@@ -547,10 +591,10 @@ intent: enterToken
 object: ArithmeticExpression
 current_adapter_status: not-registered
 target_adapter_status: executable
-risk: low
-preconditions:
+risk: read-only
+requires:
   - token belongs to the arithmetic keypad grammar
-effects:
+produces:
   - arithmetic expression display updates
 evidence:
   - token
@@ -566,10 +610,10 @@ intent: clearExpression
 object: ArithmeticExpression
 current_adapter_status: not-registered
 target_adapter_status: executable
-risk: low
-preconditions:
+risk: read-only
+requires:
   - arithmetic panel is mounted
-effects:
+produces:
   - arithmetic expression resets to empty or zero state
   - arithmetic result returns to a ready state
 evidence:
@@ -585,11 +629,11 @@ intent: evaluateExpression
 object: ArithmeticExpression
 current_adapter_status: not-registered
 target_adapter_status: executable
-risk: low
-preconditions:
+risk: read-only
+requires:
   - arithmetic expression is present
   - expression passes calculator grammar validation
-effects:
+produces:
   - result status updates with numeric value or validation error
 evidence:
   - raw expression
@@ -606,11 +650,11 @@ intent: drawGraph
 object: GraphExpression
 current_adapter_status: not-registered
 target_adapter_status: executable
-risk: low
-preconditions:
+risk: read-only
+requires:
   - graph expression is present
   - axis ranges parse to finite bounds
-effects:
+produces:
   - graph canvas redraws
   - graph status updates
 evidence:
@@ -628,10 +672,10 @@ intent: resetGraph
 object: GraphSurface
 current_adapter_status: not-registered
 target_adapter_status: executable
-risk: low
-preconditions:
+risk: read-only
+requires:
   - graphing panel is mounted
-effects:
+produces:
   - graph expression and ranges return to default graphing state
   - graph canvas redraws or clears according to reset law
 evidence:
@@ -646,12 +690,13 @@ status: specified
 intent: askModelForExpression
 object: ModelSuggestion
 current_adapter_status: not-registered
-target_adapter_status: preflight-or-executable-with-provider-boundary
-risk: model-provider
-preconditions:
+target_adapter_status: executable
+adapter_boundary: provider-boundary
+risk: read-only
+requires:
   - user supplied a word problem
   - model provider is available
-effects:
+produces:
   - suggested arithmetic expression is returned
   - arithmetic expression may be populated visibly
 evidence:
@@ -668,12 +713,13 @@ status: specified
 intent: askModelForGraphExpression
 object: ModelSuggestion
 current_adapter_status: not-registered
-target_adapter_status: preflight-or-executable-with-provider-boundary
-risk: model-provider
-preconditions:
+target_adapter_status: executable
+adapter_boundary: provider-boundary
+risk: read-only
+requires:
   - user supplied a graph description
   - model provider is available
-effects:
+produces:
   - suggested graph expression is returned
   - graph expression may be populated visibly
 evidence:
@@ -690,12 +736,13 @@ status: specified
 intent: evaluateMathics
 object: SymbolicExpression
 current_adapter_status: not-registered
-target_adapter_status: executable-with-backend-boundary
-risk: bounded-backend-evaluation
-preconditions:
+target_adapter_status: executable
+adapter_boundary: backend-boundary
+risk: local-state
+requires:
   - Mathics expression is non-empty
   - backend evaluator is available or can return diagnostics
-effects:
+produces:
   - Mathics output or error appears in the Mathics output region
 evidence:
   - expression
@@ -711,12 +758,13 @@ status: specified
 intent: askResultQuestion
 object: ResultQuestion
 current_adapter_status: not-registered
-target_adapter_status: preflight-or-executable-with-provider-boundary
-risk: model-provider
-preconditions:
+target_adapter_status: executable
+adapter_boundary: provider-boundary
+risk: read-only
+requires:
   - user supplied a non-empty question
   - calculator context snapshot is available
-effects:
+produces:
   - answer appears in the Q&A answer region
 evidence:
   - question

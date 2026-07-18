@@ -23,6 +23,7 @@
       const topGateStatus = root.querySelector("#code-studio-top-gate-status");
       const topPersistenceStatus = root.querySelector("#code-studio-top-persistence-status");
       const topRuntimeVersion = root.querySelector("#code-studio-top-runtime-version");
+      const mcelToolsToggle = root.querySelector("#code-editor-mcel-tools-toggle");
       const runtimeState = root.querySelector("#code-studio-runtime-state");
       const validateButton = root.querySelector("#code-studio-validate");
       const serializeButton = root.querySelector("#code-studio-serialize");
@@ -32,6 +33,27 @@
       const commitButton = root.querySelector("#code-studio-commit-runtime");
       const panes = [...root.querySelectorAll("[data-code-studio-pane]")];
       const tabButtons = [...root.querySelectorAll("[data-code-studio-tab]")];
+
+      function setCodeEditorMode(mode) {
+        const nextMode = mode === "mcel" ? "mcel" : "authoring";
+        root.dataset.codeEditorMode = nextMode;
+        if (mcelToolsToggle) {
+          const active = nextMode === "mcel";
+          mcelToolsToggle.setAttribute("aria-pressed", active ? "true" : "false");
+          mcelToolsToggle.textContent = active ? "Hide MCEL tools" : "MCEL tools";
+          mcelToolsToggle.title = active
+            ? "Return to the focused editor surface"
+            : "Show MCEL annotation, layout, proof, and diagnostic tools";
+        }
+      }
+
+      mcelToolsToggle?.addEventListener("click", () => {
+        const nextMode = root.dataset.codeEditorMode === "mcel" ? "authoring" : "mcel";
+        setCodeEditorMode(nextMode);
+        syncCodeEditorModeSurface(nextMode);
+      });
+
+      setCodeEditorMode(root.dataset.codeEditorMode === "mcel" ? "mcel" : "authoring");
       const SCM_EVIDENCE_FILTERS = [
         "all",
         "violations",
@@ -198,6 +220,8 @@
         lastCodeStudioCommitBoundary: null,
         codeStudioCommitBoundaryReceipts: [],
         codeStudioCommitBoundarySequence: 0,
+        runtimeDraftPath: "",
+        runtimeDraftText: "",
       };
 
       let scmInstance = null;
@@ -2471,7 +2495,6 @@
       }
 
       function collectDirtyStateSummary(fields = workspaceFields()) {
-        const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
         const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "";
         const bottomDock = root.querySelector("#code-studio-bottom-panel");
         return {
@@ -2482,8 +2505,8 @@
           selectedFileId: selectedScmFileId(fields),
           sourceLength: sourceEditor.value.length,
           runtimeHtmlLength: runtimePreview.innerHTML.length,
-          runtimeDraftMounted: Boolean(draft),
-          runtimeDraftLength: draft?.value?.length || 0,
+          runtimeDraftMounted: Boolean(studioState.runtimeDraftPath),
+          runtimeDraftLength: String(studioState.runtimeDraftText || "").length,
           activePane,
           bottomDockExpanded: bottomDock?.dataset.expanded === "true"
         };
@@ -2701,7 +2724,6 @@
       function buildScmRegressionSourceSnapshot(label = "snapshot") {
         const source = sourceEditor.value || "";
         const fields = workspaceFields();
-        const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
         const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
         const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "";
         return jsonSafeClone({
@@ -2714,8 +2736,8 @@
           sourceLength: source.length,
           sourceHash: hashRegressionString(source),
           sourceContainsRuntimeChrome: source.includes('data-mc-generated="runtime"') || source.includes('data-mc-serialize="omit"'),
-          runtimeDraftMounted: Boolean(draft),
-          runtimeDraftLength: draft?.value?.length || 0,
+          runtimeDraftMounted: Boolean(studioState.runtimeDraftPath),
+          runtimeDraftLength: String(studioState.runtimeDraftText || "").length,
           monacoHostMounted: Boolean(host),
           monacoOutcome: host?.dataset?.monacoOutcome || runtimePreview.querySelector(".code-studio-runtime-editor")?.dataset?.monacoOutcome || "",
           dirty: studioState.dirty,
@@ -2760,7 +2782,7 @@
       function recordEditorDraftProvenance(eventType = "changed", context = {}) {
         const fields = workspaceFields();
         const sourceSnapshot = selectedEditorDraftSourceSnapshot(fields);
-        const text = String(context.text ?? runtimePreview.querySelector("#code-studio-runtime-draft")?.value ?? "");
+        const text = String(context.text ?? studioState.runtimeDraftText ?? "");
         const effect = editorDraftProvenanceEffectName(eventType);
         const sequence = (studioState.editorDraftProvenance.sequence || 0) + 1;
         const baseSourceHash = context.baseSourceHash || sourceSnapshot.sourceHash;
@@ -2820,20 +2842,21 @@
         return receipt;
       }
 
-      function ensureEditorDraftProvenanceCreated(file, draft, context = {}) {
-        if (!file || !draft) return null;
+      function ensureEditorDraftProvenanceCreated(file, draftText, context = {}) {
+        if (!file) return null;
+        const text = String(draftText ?? studioState.runtimeDraftText ?? file.value ?? "");
         const sourceHash = hashRegressionString(file.value || "");
         const draftKey = `${file.path || studioState.selectedPath || "unknown"}@${sourceHash}`;
         if (studioState.editorDraftProvenance.currentDraftKey === draftKey && studioState.lastEditorDraftProvenanceReceipt?.eventType !== "discarded") {
           return studioState.lastEditorDraftProvenanceReceipt;
         }
         return recordEditorDraftProvenance("created", {
-          origin: context.origin || "runtime-render",
-          text: draft.value,
+          origin: context.origin || "monaco-authoring-render",
+          text,
           baseSourceHash: sourceHash,
           draftKey,
           declaredWrites: ["runtime.editorDraft", "runtime.editorDraftProvenance", "runtime.evidenceStrip"],
-          nextAction: "edit runtime draft"
+          nextAction: "edit Monaco authoring draft"
         });
       }
 
@@ -3741,7 +3764,7 @@
           {
             id: "code-editor.monaco.mount.pass",
             family: "code-editor",
-            label: "Monaco mount pass stays runtime-only and points to commitDraft as the source gate",
+            label: "Monaco mount pass stays authoring-only and points to Apply to source as the source gate",
             receipt: vector({
               selectedEffect: "editor.monaco.mount",
               selectedEffectCategory: "editor-runtime",
@@ -3749,8 +3772,8 @@
               externalOutcome: {status: "pass", reason: "model-mounted", provider: "monaco-editor"},
               declaredReads: ["source.workspace.files", "state.selectedPath"],
               declaredWrites: ["runtime.editor.monacoInstance", "runtime.editor.monacoModel", "runtime.evidenceStrip"],
-              runtimeConsequences: ["runtime.monaco mounted", "source unchanged"],
-              nextAction: "edit runtime draft"
+              runtimeConsequences: ["monaco authoring editor mounted", "source unchanged"],
+              nextAction: "edit Monaco draft"
             }),
             expected: {
               selectedEffect: "editor.monaco.mount",
@@ -3768,16 +3791,16 @@
           {
             id: "code-editor.monaco.mount.blocked",
             family: "code-editor",
-            label: "Monaco mount blocked falls back to textarea without source mutation",
+            label: "Monaco mount blocked without source mutation",
             receipt: vector({
               selectedEffect: "editor.monaco.mount",
               selectedEffectCategory: "editor-runtime",
               actionOutcome: "blocked",
               externalOutcome: {status: "blocked", reason: "mobile-browser-unsupported", provider: "monaco-editor"},
               declaredReads: ["source.workspace.files", "state.selectedPath"],
-              declaredWrites: ["runtime.editor.fallback", "runtime.evidenceStrip"],
-              runtimeConsequences: ["fallback textarea active", "source unchanged"],
-              nextAction: "use fallback editor"
+              declaredWrites: ["runtime.editor.monacoMountStatus", "runtime.evidenceStrip"],
+              runtimeConsequences: ["monaco unavailable", "source unchanged"],
+              nextAction: "inspect Monaco loader"
             }),
             expected: {
               selectedEffect: "editor.monaco.mount",
@@ -3788,7 +3811,7 @@
               externalStatus: "blocked",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
-              nextAction: "use fallback editor"
+              nextAction: "inspect Monaco loader"
             }
           },
           {
@@ -3801,8 +3824,8 @@
               actionOutcome: "exception",
               externalOutcome: {status: "exception", reason: "loader-exception", provider: "monaco-editor", message: "loader failed"},
               declaredReads: ["source.workspace.files", "state.selectedPath"],
-              declaredWrites: ["runtime.editor.fallback", "runtime.evidenceStrip"],
-              runtimeConsequences: ["fallback textarea active", "source unchanged"],
+              declaredWrites: ["runtime.editor.monacoMountStatus", "runtime.evidenceStrip"],
+              runtimeConsequences: ["monaco unavailable", "source unchanged"],
               nextAction: "inspect exception"
             }),
             expected: {
@@ -3856,7 +3879,7 @@
               declaredReads: ["source.workspace.files", "state.activeFileId"],
               declaredWrites: ["runtime.editorDraft", "runtime.editorDraftProvenance", "runtime.evidenceStrip"],
               runtimeConsequences: ["runtime.editorDraft provenance created", "source unchanged"],
-              nextAction: "edit runtime draft",
+              nextAction: "edit Monaco draft",
               draftProvenance: {
                 status: "created",
                 activeDraftId: "editor-draft:src/app.js@fnv1a-fixture",
@@ -4484,36 +4507,33 @@
           };
         });
 
-        add("runtime.mount-source-safe", "Mount runtime and verify Monaco/fallback chrome stays generated", () => {
+        add("runtime.mount-source-safe", "Mount direct Monaco authoring editor without fallback/runtime scaffold", () => {
           renderRuntime();
-          const editor = runtimePreview.querySelector(".code-studio-runtime-editor");
+          const editor = runtimePreview.querySelector(".code-studio-monaco-authoring-surface");
           const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
-          const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
+          const fallback = runtimePreview.querySelector("#code-studio-runtime-draft, .code-studio-runtime-fallback");
           return {
-            ok: Boolean(editor && host && draft)
-              && host.getAttribute("data-mc-generated") === "runtime"
-              && host.getAttribute("data-mc-serialize") === "omit"
-              && draft.getAttribute("data-code-studio-monaco-fallback") === "textarea",
-            editorGenerated: editor?.getAttribute("data-mc-generated") || "",
-            hostSerialize: host?.getAttribute("data-mc-serialize") || "",
-            fallback: draft?.getAttribute("data-code-studio-monaco-fallback") || ""
+            ok: Boolean(editor && host) && !fallback
+              && host.getAttribute("data-code-editor-golden-path") === "monaco-authoring",
+            selectedPath: editor?.getAttribute("data-code-editor-selected-path") || "",
+            goldenPath: host?.getAttribute("data-code-editor-golden-path") || "",
+            fallbackPresent: Boolean(fallback)
           };
         });
 
-        add("monaco.runtime-boundary", "Assert Monaco effects are runtime-only and commitDraft remains the source gate", () => {
+        add("monaco.runtime-boundary", "Assert Monaco effects are authoring-only until Apply to source", () => {
           const manifest = window.McelCodeStudioScm?.manifest || window.McelCodeStudioScm?.surface || null;
           const declaredEffects = MONACO_RUNTIME_EFFECTS.map((effectName) => ({
             effectName,
             known: Boolean((manifest?.effects || {})[effectName] || (manifest?.effectSurface || {})[effectName])
           }));
-          const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
           const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
           return {
-            ok: declaredEffects.length === 5 && Boolean(draft && host),
+            ok: declaredEffects.length === 5 && Boolean(host),
             declaredEffects,
             lastMonacoReceipt: studioState.lastMonacoRuntimeReceipt,
             recentMonacoReceipts: studioState.monacoRuntimeReceipts.slice(-5),
-            sourceMutationGate: "commitRuntimeDraft"
+            sourceMutationGate: "applyMonacoDraft"
           };
         });
 
@@ -4543,16 +4563,16 @@
           const fields = workspaceFields();
           const file = selectedFile(fields);
           renderRuntime();
-          const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
           const baseline = collectEditorDraftProvenanceSummary();
+          const probeText = `${studioState.runtimeDraftText || file?.value || ""}\n// draft provenance probe`;
           const changed = recordEditorDraftProvenance("changed", {
             origin: "regression-harness",
-            text: `${draft?.value || file?.value || ""}\n// draft provenance probe`,
+            text: probeText,
             nextAction: "discard probe draft"
           });
           const discarded = recordEditorDraftProvenance("discarded", {
             origin: "regression-harness",
-            text: `${draft?.value || file?.value || ""}\n// draft provenance probe`,
+            text: probeText,
             nextAction: "restore clean source draft"
           });
           const summary = collectEditorDraftProvenanceSummary();
@@ -6516,6 +6536,34 @@
         tabButtons.forEach((button) => button.classList.toggle("active", button.dataset.codeStudioTab === name));
       }
 
+      function renameRuntimeTabForAuthoring() {
+        const runtimeTab = tabButtons.find((button) => button.dataset.codeStudioTab === "runtime");
+        if (!runtimeTab) return;
+        const fields = workspaceFields();
+        const file = selectedFile(fields);
+        runtimeTab.textContent = file?.path || studioState.selectedPath || "editor";
+      }
+
+      function showFocusedAuthoringSurface() {
+        renderRuntime();
+        showPane("runtime");
+        renameRuntimeTabForAuthoring();
+        if (topRouteStatus) {
+          topRouteStatus.textContent = studioState.selectedPath || "active file";
+        }
+        setStatus("Authoring surface ready. MCEL source and diagnostics are available from MCEL tools.");
+      }
+
+      function syncCodeEditorModeSurface(mode = root.dataset.codeEditorMode || "authoring") {
+        const nextMode = mode === "mcel" ? "mcel" : "authoring";
+        if (nextMode === "authoring") {
+          showFocusedAuthoringSurface();
+          return;
+        }
+        showPane("source");
+        setStatus("MCEL tools mode shows source, contract, layout, proof, and diagnostic surfaces.");
+      }
+
       function generatedAttrs(kind, key) {
         return `data-mc-generated="runtime" data-mc-serialize="omit" data-mc-runtime-kind="${escapeHtml(kind)}" data-mc-runtime-key="${escapeHtml(key)}"`;
       }
@@ -6584,41 +6632,38 @@
         return outcome;
       }
 
-      function updateRuntimeDraftFromEditor(draft, text, context = {}) {
-        if (!draft) return;
-        draft.value = String(text ?? "");
+      function updateRuntimeDraftFromEditor(_draft, text, context = {}) {
+        const draftText = String(text ?? "");
+        studioState.runtimeDraftText = draftText;
+        studioState.runtimeDraftPath = context.path || studioState.selectedPath || studioState.runtimeDraftPath || "";
         studioState.dirty = true;
         studioState.damaged = false;
-        runScmTransition("editDraft", {text: draft.value});
+        runScmTransition("editDraft", {text: draftText});
         recordEditorDraftProvenance("changed", {
-          origin: context.origin === "monaco" ? "monaco" : "fallback",
-          text: draft.value,
-          nextAction: "commit draft"
+          origin: "monaco",
+          text: draftText,
+          nextAction: "apply Monaco draft to source"
         });
-        if (context.origin === "monaco") {
-          recordMonacoRuntimeReceipt({
-            effect: "editor.monaco.change",
-            actionOutcome: "pass",
-            externalOutcome: "model-updated",
-            path: context.path || studioState.selectedPath || "",
-            language: context.language || "",
-            nextAction: "commit draft"
-          });
-        }
+        recordMonacoRuntimeReceipt({
+          effect: "editor.monaco.change",
+          actionOutcome: "pass",
+          externalOutcome: "model-updated",
+          path: context.path || studioState.selectedPath || "",
+          language: context.language || "",
+          nextAction: "apply draft to source"
+        });
         setRuntimeLabel();
-        setStatus(context.origin === "monaco"
-          ? "Monaco draft changed through SCM editDraft and draft provenance. Source is still unchanged until Commit editor draft."
-          : "Runtime draft changed through SCM editDraft and draft provenance. Source is still unchanged until Commit editor draft.");
+        setStatus("Monaco draft changed. Source is unchanged until Apply to source.");
       }
 
-      function mountRuntimeMonaco(file, draft) {
+      function mountRuntimeMonaco(file) {
         const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
-        const editor = runtimePreview.querySelector(".code-studio-runtime-editor");
-        if (!host || !draft || !file) return;
+        const editor = runtimePreview.querySelector(".code-studio-monaco-authoring-surface");
+        if (!host || !file) return;
         const adapter = resolveMonacoAdapter();
         if (!adapter || typeof adapter.mount !== "function") {
           host.dataset.monacoOutcome = "blocked";
-          host.textContent = "Monaco adapter is unavailable. Fallback textarea remains active.";
+          host.textContent = "Monaco adapter is unavailable. The golden-path editor requires Monaco.";
           recordMonacoRuntimeReceipt({
             effect: "editor.monaco.mount",
             actionOutcome: "blocked",
@@ -6627,16 +6672,23 @@
             language: file.language,
             nextAction: "load Monaco adapter"
           });
+          setStatus("Monaco adapter is unavailable; editor mount is blocked.");
           return;
         }
+
+        const draftText = studioState.runtimeDraftPath === file.path && studioState.runtimeDraftText
+          ? studioState.runtimeDraftText
+          : String(file.value || "");
+        studioState.runtimeDraftPath = file.path;
+        studioState.runtimeDraftText = draftText;
 
         adapter.mount({
           host,
           path: file.path,
           language: file.language,
-          value: draft.value,
+          value: draftText,
           allowCdn: true,
-          onChange: (text) => updateRuntimeDraftFromEditor(draft, text, {
+          onChange: (text) => updateRuntimeDraftFromEditor(null, text, {
             origin: "monaco",
             path: file.path,
             language: file.language
@@ -6661,11 +6713,16 @@
             editor.dataset.monacoMounted = normalized.actionOutcome === "pass" ? "true" : "false";
           }
           if (normalized.actionOutcome === "pass") {
-            setStatus("Monaco mounted as a runtime-only draft editor. Commit editor draft remains the source mutation gate.");
+            requestAnimationFrame(() => {
+              try {
+                if (typeof adapter.layout === "function") adapter.layout();
+              } catch {}
+            });
+            setStatus("Monaco mounted as the direct selected-file editor. Apply to source remains the mutation gate.");
           } else if (normalized.actionOutcome === "blocked") {
-            setStatus("Monaco was blocked; the fallback runtime textarea remains active and source-safe.");
+            setStatus("Monaco was blocked; the selected-file editor requires Monaco.");
           } else {
-            setStatus("Monaco raised a runtime exception; the fallback runtime textarea remains active.");
+            setStatus("Monaco raised a runtime exception; inspect the adapter receipt.");
           }
           renderScmEvidencePanel();
           renderFlagshipInspector();
@@ -6680,12 +6737,12 @@
             nextAction: "inspect exception"
           });
           host.dataset.monacoOutcome = "exception";
-          host.textContent = "Monaco raised an exception. Fallback textarea remains active.";
+          host.textContent = "Monaco raised an exception. Inspect the adapter receipt.";
           if (editor) {
             editor.dataset.monacoOutcome = normalized.actionOutcome;
             editor.dataset.monacoMounted = "false";
           }
-          setStatus("Monaco raised a runtime exception; the fallback runtime textarea remains active.");
+          setStatus("Monaco raised a runtime exception; inspect the adapter receipt.");
           renderScmEvidencePanel();
           renderFlagshipInspector();
         });
@@ -6702,103 +6759,64 @@
           ...(String(sourceEditor.value || "").includes('data-mc-generated="runtime"') ? ["runtime-chrome-in-source"] : [])
         ];
         const mountBoundary = buildMcelCodeStudioCommitBoundary({
-          action: "codeStudio.mountRuntimeDraft",
+          action: "codeStudio.mountMonacoAuthoringEditor",
           draftText: file?.value || "",
-          reason: "mount-runtime-draft",
-          phase: "runtime-mount-preflight",
-          intendedWrites: ["runtime.preview", "runtime.editorDraftProvenance", "runtime.monacoAdapter"],
+          reason: "mount-direct-monaco-editor",
+          phase: "authoring-editor-mount",
+          intendedWrites: ["runtime.monacoAdapter", "state.editorDraft"],
           beforeSourceHash: hashRegressionString(sourceEditor.value || ""),
           blockers: mountBlockers
         });
         recordMcelCodeStudioCommitBoundary(mountBoundary);
+
         if (mountBoundary.canCommit !== true) {
           runtimePreview.innerHTML = `
-            <section class="code-studio-runtime-window" ${generatedAttrs("runtime-envelope", "blocked-18n-boundary")}>
-              <header class="code-studio-runtime-header" ${generatedAttrs("runtime-header", "blocked-18n-boundary")}>
-                <strong>Runtime mount blocked by MCEL 18N boundary</strong>
+            <section class="code-studio-monaco-authoring-surface" data-monaco-mounted="false" data-monaco-outcome="blocked">
+              <header class="code-studio-monaco-authoring-toolbar">
+                <strong>Editor mount blocked</strong>
                 <span>${escapeHtml(mountBoundary.mcelCommitPreflight?.blockers?.join(", ") || "source is not current/proven")}</span>
               </header>
-              <article class="code-studio-runtime-editor" ${generatedAttrs("runtime-editor", "blocked-18n-boundary")}>
-                <p>Rebuild the runtime draft from current source before mounting generated chrome.</p>
-              </article>
+              <div class="code-studio-monaco-authoring-error">Fix the source workspace before Monaco can mount.</div>
             </section>
           `;
           studioState.mounted = false;
           setRuntimeLabel();
           renderMcelCodeStudioCommitBoundaryInProofDock(mountBoundary);
-          setStatus(`18N runtime mount blocked: ${mountBoundary.mcelCommitPreflight?.blockers?.join(", ") || "not proven"}.`);
+          setStatus(`Monaco editor mount blocked: ${mountBoundary.mcelCommitPreflight?.blockers?.join(", ") || "not proven"}.`);
           return;
         }
-        const fileButtons = fields.files.map((entry) => `
-          <button type="button" data-code-studio-runtime-file="${escapeHtml(entry.path)}" ${entry.path === (file?.path || "") ? 'aria-current="true"' : ""}>
-            ${escapeHtml(entry.path)}
-          </button>
-        `).join("");
+
+        const nextDraftText = studioState.runtimeDraftPath === file.path && studioState.dirty
+          ? studioState.runtimeDraftText
+          : String(file.value || "");
+        studioState.runtimeDraftPath = file.path;
+        studioState.runtimeDraftText = nextDraftText;
 
         runtimePreview.innerHTML = `
-          <section class="code-studio-runtime-window" ${generatedAttrs("runtime-envelope", "code-studio")}>
-            <header class="code-studio-runtime-header" ${generatedAttrs("runtime-header", "workbench-header")}>
-              <strong>${escapeHtml(fields.title || "Untitled MCEL workspace")}</strong>
-              <span>${escapeHtml(fields.summary || "Runtime generated from author source.")}</span>
+          <section class="code-studio-monaco-authoring-surface" data-monaco-mounted="false" data-monaco-outcome="not-started" data-code-editor-selected-path="${escapeHtml(file.path)}">
+            <header class="code-studio-monaco-authoring-toolbar">
+              <div class="code-studio-monaco-authoring-title">
+                <strong>${escapeHtml(file.path)}</strong>
+                <span>${escapeHtml(file.language || "plaintext")}</span>
+              </div>
+              <button type="button" data-code-studio-apply-draft="true">Apply to source</button>
             </header>
-            <div class="code-studio-runtime-layout" ${generatedAttrs("runtime-layout", "workbench-layout")}>
-              <aside class="code-studio-runtime-files" ${generatedAttrs("runtime-file-list", "open-files")}>
-                <strong>Generated file explorer</strong>
-                ${fileButtons || "<p>No files found in source.</p>"}
-              </aside>
-              <article class="code-studio-runtime-editor" data-monaco-mounted="false" data-monaco-outcome="not-started" ${generatedAttrs("runtime-editor", file?.path || "empty")}>
-                <div
-                  id="code-studio-runtime-monaco"
-                  class="code-studio-monaco-host"
-                  data-mc-generated="runtime"
-                  data-mc-serialize="omit"
-                  data-mc-runtime-kind="runtime-monaco-editor"
-                  data-mc-runtime-key="${escapeHtml(file?.path || "empty")}"
-                  data-code-studio-monaco-runtime="host"
-                >Monaco editor runtime will mount here when the adapter is available.</div>
-                <label class="code-studio-runtime-fallback">
-                  <span>${escapeHtml(file?.path || "No source file")} · fallback runtime draft</span>
-                  <textarea id="code-studio-runtime-draft" spellcheck="false" data-code-studio-monaco-fallback="textarea">${escapeHtml(file?.value || "")}</textarea>
-                </label>
-                <div class="code-studio-runtime-badges" ${generatedAttrs("runtime-badges", "proof-badges")}>
-                  <span>Monaco runtime adapter</span>
-                  <span>runtime-only dirty state</span>
-                  <span>serialize=omit</span>
-                  <span>commitDraft is source gate</span>
-                  <span>fallback textarea preserved</span>
-                </div>
-              </article>
-            </div>
+            <div
+              id="code-studio-runtime-monaco"
+              class="code-studio-monaco-host"
+              data-code-studio-monaco-runtime="host"
+              data-code-editor-golden-path="monaco-authoring"
+            >Loading Monaco editor…</div>
           </section>
         `;
-        const generatedLayoutContract = window.MainComputerCodeEditorLayout
-          ?.applyGeneratedLayoutContract?.(runtimePreview);
-        runtimePreview.dataset.mcelGeneratedLayoutContract =
-          generatedLayoutContract?.complete ? generatedLayoutContract.version : "incomplete";
 
-        runtimePreview.querySelectorAll("[data-code-studio-runtime-file]").forEach((button) => {
-          button.addEventListener("click", () => {
-            const nextPath = button.dataset.codeStudioRuntimeFile || "";
-            if (!canNavigateScmRoute(nextPath)) return;
-            studioState.selectedPath = nextPath;
-            const fields = workspaceFields();
-            runScmTransition("openFile", {fileId: selectedScmFileId(fields)});
-            enterScmRouteAndRunLoaders({forceEnter: true});
-            renderRuntime();
-          });
-        });
-        const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
-        if (draft) {
-          ensureEditorDraftProvenanceCreated(file, draft, {origin: "runtime-render"});
-          draft.addEventListener("input", () => updateRuntimeDraftFromEditor(draft, draft.value, {
-            origin: "fallback",
-            path: file?.path || studioState.selectedPath || "",
-            language: file?.language || ""
-          }));
-        }
+        runtimePreview.querySelector("[data-code-studio-apply-draft]")?.addEventListener("click", commitRuntimeDraft);
+
         studioState.mounted = true;
         studioState.damaged = false;
-        mountRuntimeMonaco(file, draft);
+        ensureEditorDraftProvenanceCreated(file, nextDraftText, {origin: "monaco-authoring-render"});
+        mountRuntimeMonaco(file);
+
         const mountedBoundary = jsonSafeClone(mountBoundary);
         mountedBoundary.status = "mounted";
         mountedBoundary.mcelCommitReceipt = mcelCodeStudioCommitReceipt({
@@ -6809,8 +6827,8 @@
           preflight: mountBoundary.mcelCommitPreflight,
           mutationExecuted: true,
           beforeSourceHash: mountBoundary.mcelCommitProvenance?.sourceHash || "",
-          afterSourceHash: hashRegressionString(runtimePreview.innerHTML || ""),
-          reason: "mount-runtime-draft-runtime-only-mutation"
+          afterSourceHash: hashRegressionString(nextDraftText || ""),
+          reason: "mount-direct-monaco-authoring-editor"
         });
         recordMcelCodeStudioCommitBoundary(mountedBoundary);
         setRuntimeLabel();
@@ -6983,32 +7001,31 @@
       }
 
       function commitRuntimeDraft() {
-        const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
-        if (!draft) {
-          setStatus("No runtime draft is mounted.");
-          return;
-        }
         const adapter = resolveMonacoAdapter();
         const monacoValue = adapter && typeof adapter.getValue === "function" ? adapter.getValue() : null;
-        if (typeof monacoValue === "string") draft.value = monacoValue;
+        const draftText = typeof monacoValue === "string"
+          ? monacoValue
+          : String(studioState.runtimeDraftText ?? selectedFile()?.value ?? "");
+        studioState.runtimeDraftText = draftText;
+        studioState.runtimeDraftPath = studioState.selectedPath || studioState.runtimeDraftPath || "";
         const beforeSourceHash = hashRegressionString(sourceEditor.value || "");
         const {doc, workspace} = parseSource();
         const file = selectedFile();
         if (!workspace || !file) {
-          setStatus("Cannot commit: source workspace or selected file is missing.");
+          setStatus("Cannot apply: source workspace or selected file is missing.");
           return;
         }
 
-        const editGate = runScmTransition("editDraft", {text: draft.value});
+        const editGate = runScmTransition("editDraft", {text: draftText});
         if (!editGate.ok) {
-          setStatus(`SCM editDraft transition blocked commit: ${editGate.code || editGate.message || "contract violation"}.`);
+          setStatus(`SCM editDraft transition blocked apply: ${editGate.code || editGate.message || "contract violation"}.`);
           return;
         }
         const commitGate = runScmTransition("commitDraft");
         if (!commitGate.ok) {
           const blockedBoundary = buildMcelCodeStudioCommitBoundary({
-            action: "codeStudio.commitRuntimeDraft",
-            draftText: draft.value,
+            action: "codeStudio.applyMonacoDraft",
+            draftText,
             reason: "commitDraft-transition-blocked",
             gates: {editGate, commitGate},
             phase: "source-mutation-preflight",
@@ -7016,14 +7033,14 @@
             beforeSourceHash
           });
           recordMcelCodeStudioCommitBoundary(blockedBoundary);
-          setStatus(`SCM commitDraft transition blocked commit: ${commitGate.code || commitGate.message || "contract violation"}.`);
+          setStatus(`SCM commitDraft transition blocked apply: ${commitGate.code || commitGate.message || "contract violation"}.`);
           return;
         }
 
         const commitBoundary = buildMcelCodeStudioCommitBoundary({
-          action: "codeStudio.commitRuntimeDraft",
-          draftText: draft.value,
-          reason: "commit-runtime-draft",
+          action: "codeStudio.applyMonacoDraft",
+          draftText,
+          reason: "apply-monaco-draft",
           gates: {editGate, commitGate},
           phase: "source-mutation-preflight",
           intendedWrites: ["source.workspace.files", "state.dirty", "runtime.editorDraftProvenance"],
@@ -7032,7 +7049,7 @@
         recordMcelCodeStudioCommitBoundary(commitBoundary);
         if (commitBoundary.canCommit !== true) {
           renderMcelCodeStudioCommitBoundaryInProofDock(commitBoundary);
-          setStatus(`18N commit boundary blocked runtime draft commit: ${commitBoundary.mcelCommitPreflight?.blockers?.join(", ") || "not proven"}.`);
+          setStatus(`Apply to source blocked by MCEL boundary: ${commitBoundary.mcelCommitPreflight?.blockers?.join(", ") || "not proven"}.`);
           return;
         }
 
@@ -7040,8 +7057,8 @@
           .find((node) => node.getAttribute("data-mc-file-path") === file.path);
         if (!target) {
           const missingTargetBoundary = buildMcelCodeStudioCommitBoundary({
-            action: "codeStudio.commitRuntimeDraft",
-            draftText: draft.value,
+            action: "codeStudio.applyMonacoDraft",
+            draftText,
             reason: "selected-target-missing",
             gates: {editGate, commitGate},
             phase: "source-mutation-preflight",
@@ -7050,10 +7067,10 @@
             blockers: ["selected-target-missing"]
           });
           recordMcelCodeStudioCommitBoundary(missingTargetBoundary);
-          setStatus("Cannot commit: selected file path is no longer in source.");
+          setStatus("Cannot apply: selected file path is no longer in source.");
           return;
         }
-        target.textContent = draft.value;
+        target.textContent = draftText;
         sourceEditor.value = workspace.outerHTML.trim();
         const afterSourceHash = hashRegressionString(sourceEditor.value || "");
         const committedBoundary = jsonSafeClone(commitBoundary);
@@ -7067,19 +7084,21 @@
           mutationExecuted: true,
           beforeSourceHash,
           afterSourceHash,
-          reason: "commit-runtime-draft-source-mutation"
+          reason: "apply-monaco-draft-source-mutation"
         });
         recordMcelCodeStudioCommitBoundary(committedBoundary);
         recordEditorDraftProvenance("committed", {
-          origin: "commitDraft",
-          text: draft.value,
+          origin: "applyToSource",
+          text: draftText,
           sourceChanged: true,
           beforeSourceHash,
           afterSourceHash,
           commitBoundaryReceipt: committedBoundary.mcelCommitReceipt,
-          nextAction: "render committed source"
+          nextAction: "render committed Monaco editor"
         });
         studioState.dirty = false;
+        studioState.runtimeDraftPath = file.path;
+        studioState.runtimeDraftText = draftText;
         syncLineGutter();
         syncScmInstance();
         studioState.lastSaveFileEffectGate = runScmGate("effect:saveFile", (mcel, instance) => mcel.runEffect(instance, "saveFile", {
@@ -7087,13 +7106,13 @@
           selectedPath: studioState.selectedPath
         }));
         studioState.lastRouteLoaderPersistenceGate = enterScmRouteAndRunLoaders({forceEnter: true});
-        persistLiveWorkspaceFromSource("commitDraft", {
+        persistLiveWorkspaceFromSource("applyMonacoDraft", {
           saveGate: studioState.lastSaveFileEffectGate,
           loaderGate: studioState.lastRouteLoaderPersistenceGate
         });
         renderRuntime();
         renderMcelCodeStudioCommitBoundaryInProofDock(studioState.lastCodeStudioCommitBoundary);
-        setStatus("Runtime draft committed through MCEL 18N boundary, persisted through SCM saveFile, and route/effect loaders refreshed.");
+        setStatus("Monaco draft applied to source and persisted through SCM saveFile.");
       }
 
       tabButtons.forEach((button) => {
@@ -7281,7 +7300,7 @@
       validateSource();
       renderRuntime();
       serializeCleanSource();
-      showPane("source");
+      syncCodeEditorModeSurface();
       setRuntimeLabel();
       renderFlagshipInspector(studioState.lastReport);
     })();

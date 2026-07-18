@@ -22,10 +22,12 @@ import base64
 import importlib.util
 import json
 import hashlib
+import io
 import re
 import secrets
 import time
 import textwrap
+import zipfile
 import zlib
 from datetime import datetime, timezone
 import sys
@@ -85,6 +87,11 @@ DEFAULT_PUBLIC_DOMAIN_SUFFIX = "greatlibrary.io"
 DEFAULT_TRAEFIK_PROPAGATOR_IMAGE = "docker:27-cli"
 DEFAULT_TRAEFIK_PROPAGATE_WAIT_S = 30.0
 TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
+HUB_ADMIN_SYNC_CALLBACK_MARKER = "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:"
+CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
+FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER = "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:"
+DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 120.0
+DEFAULT_CONTRACT_DEPLOY_WAIT_S = 300.0
 DEFAULT_TESTNET_SUPER_GUARD_BASE = 41500
 DEFAULT_MAINNET_SUPER_GUARD_BASE = 41600
 DEFAULT_TESTNET_FDB_BASE = 44550
@@ -104,6 +111,36 @@ ALLFATHER_CONTRACT_SOURCE_FILES = {
 }
 
 
+ALLFATHER_CONTRACT_CONFIG_FILES = {
+    "testnet": REPO_ROOT / "main_computer" / "config" / "testnet_contracts.json",
+    "mainnet": REPO_ROOT / "main_computer" / "config" / "mainnet_contracts.json",
+}
+
+
+ALLFATHER_FULL_HUB_RUNTIME_FILES = (
+    "__init__.py",
+    "config.py",
+    "container_runtime.py",
+    "contract_config.py",
+    "credit_units.py",
+    "dev_chain_bridge.py",
+    "energy.py",
+    "hub.py",
+    "hub_admin_site.py",
+    "hub_bridge_backend.py",
+    "hub_credit_bridge_completion.py",
+    "hub_credit_indexer.py",
+    "hub_credit_ledger.py",
+    "hub_credit_models.py",
+    "hub_plex_models.py",
+    "hub_plex_service.py",
+    "hub_security.py",
+    "models.py",
+    "multisession_key_signing.py",
+    "ring_admission.py",
+)
+
+
 def allfather_contract_sources_b64() -> dict[str, str]:
     """Return contract sources embedded into the self-contained super-node image."""
 
@@ -111,6 +148,39 @@ def allfather_contract_sources_b64() -> dict[str, str]:
     for contract_path, source_path in ALLFATHER_CONTRACT_SOURCE_FILES.items():
         payload[contract_path] = base64.b64encode(source_path.read_text(encoding="utf-8").encode("utf-8")).decode("ascii")
     return payload
+
+
+def allfather_full_hub_runtime_archive_b64() -> str:
+    """Return compressed zip payload for the full Main Computer hub runtime.
+
+    The inline Coolify super-node image cannot assume the operator's checkout is
+    mounted on the Docker host.  Hub propagation therefore embeds the hub runtime
+    source needed by ``main_computer.hub`` into the rebuilt super-node image.
+    """
+
+    package_root = REPO_ROOT / "main_computer"
+    buffer = io.BytesIO()
+    written: set[str] = set()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for rel_name in ALLFATHER_FULL_HUB_RUNTIME_FILES:
+            source = package_root / rel_name
+            if not source.exists() or not source.is_file():
+                raise AllfatherControlError(f"Full hub runtime source file is missing: {source}")
+            arcname = f"main_computer/{rel_name.replace(chr(92), '/')}"
+            info = zipfile.ZipInfo(arcname)
+            info.date_time = (2020, 1, 1, 0, 0, 0)
+            archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+            written.add(arcname)
+        config_dir = package_root / "config"
+        for source in sorted(config_dir.glob("*.json")):
+            arcname = f"main_computer/config/{source.name}"
+            if arcname in written:
+                continue
+            info = zipfile.ZipInfo(arcname)
+            info.date_time = (2020, 1, 1, 0, 0, 0)
+            archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+            written.add(arcname)
+    return base64.b64encode(zlib.compress(buffer.getvalue())).decode("ascii")
 
 
 def allfather_contract_artifact_builder_script() -> str:
@@ -372,10 +442,17 @@ def docker_container_name_token(value: str) -> str:
 
 
 def super_container_name_from_manifest(manifest: Mapping[str, Any]) -> str:
-    service_name = docker_container_name_token(str(manifest.get("cell_id") or "allfather-super"))
-    deployment_id = docker_container_name_token(str(manifest.get("deployment_id") or "deployment"))
-    # Docker allows long names, but keep this readable and below common UI limits.
-    return f"{service_name}-{deployment_id}"[:120].rstrip("-.")
+    """Return the stable Docker name that public Hub routes target.
+
+    Hub propagation writes Traefik backends such as ``http://mainneta-super1:8785``.
+    The service container name therefore must remain stable across rebuilds.  The
+    deployment id is carried in labels/environment/build files for cache busting
+    and diagnostics, not in the Docker container name; otherwise Coolify can start
+    a healthy rebuilt container while Traefik continues to hit the old bootstrap
+    container.
+    """
+
+    return docker_container_name_token(str(manifest.get("cell_id") or "allfather-super"))[:120].rstrip("-.")
 
 
 def new_super_deployment_id() -> str:
@@ -484,13 +561,179 @@ def utc_now_iso() -> str:
 
 
 def generated_private_key() -> str:
-    # Ethereum private keys are 32-byte secp256k1 scalars.  We do not invent an
-    # address here because that requires chain-specific crypto dependencies; the
-    # runtime deployer can derive the address from the key when needed.
+    # Ethereum private keys are 32-byte secp256k1 scalars.  Addresses are derived
+    # by hub-propagate when a key is assigned to live Hub admin state.
     while True:
         key = "0x" + secrets.token_hex(32)
         if int(key[2:], 16) != 0:
             return key
+
+
+# secp256k1 / Keccak helpers kept local so hub-propagate can materialize
+# Hub admin addresses before any runtime or contract-sync step.  Do not use
+# hashlib.sha3_256 here: Ethereum uses Keccak-256 padding, not FIPS SHA3.
+_SECP256K1_P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+_SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_SECP256K1_G = (
+    55066263022277343669578718895168534326250603453777594175500187360389116729240,
+    32670510020758816978083085130507043184471273380659243275938904335757337482424,
+)
+_KECCAK_ROUNDS = (
+    0x0000000000000001,
+    0x0000000000008082,
+    0x800000000000808A,
+    0x8000000080008000,
+    0x000000000000808B,
+    0x0000000080000001,
+    0x8000000080008081,
+    0x8000000000008009,
+    0x000000000000008A,
+    0x0000000000000088,
+    0x0000000080008009,
+    0x000000008000000A,
+    0x000000008000808B,
+    0x800000000000008B,
+    0x8000000000008089,
+    0x8000000000008003,
+    0x8000000000008002,
+    0x8000000000000080,
+    0x000000000000800A,
+    0x800000008000000A,
+    0x8000000080008081,
+    0x8000000000008080,
+    0x0000000080000001,
+    0x8000000080008008,
+)
+_KECCAK_ROTATION = (
+    (0, 36, 3, 41, 18),
+    (1, 44, 10, 45, 2),
+    (62, 6, 43, 15, 61),
+    (28, 55, 25, 21, 56),
+    (27, 20, 39, 8, 14),
+)
+
+
+def _rotl64(value: int, shift: int) -> int:
+    shift %= 64
+    return ((value << shift) | (value >> (64 - shift))) & 0xFFFFFFFFFFFFFFFF
+
+
+def _keccak_f1600(state: list[int]) -> None:
+    for rc in _KECCAK_ROUNDS:
+        c = [state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20] for x in range(5)]
+        d = [c[(x - 1) % 5] ^ _rotl64(c[(x + 1) % 5], 1) for x in range(5)]
+        for x in range(5):
+            for y in range(5):
+                state[x + 5 * y] ^= d[x]
+        b = [0] * 25
+        for x in range(5):
+            for y in range(5):
+                b[y + 5 * ((2 * x + 3 * y) % 5)] = _rotl64(state[x + 5 * y], _KECCAK_ROTATION[x][y])
+        for x in range(5):
+            for y in range(5):
+                state[x + 5 * y] = b[x + 5 * y] ^ ((~b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y])
+        state[0] ^= rc
+
+
+def keccak256(data: bytes) -> bytes:
+    rate = 136
+    state = [0] * 25
+    offset = 0
+    while offset + rate <= len(data):
+        block = data[offset : offset + rate]
+        for index in range(rate // 8):
+            state[index] ^= int.from_bytes(block[index * 8 : (index + 1) * 8], "little")
+        _keccak_f1600(state)
+        offset += rate
+    block = bytearray(rate)
+    remainder = data[offset:]
+    block[: len(remainder)] = remainder
+    block[len(remainder)] ^= 0x01
+    block[-1] ^= 0x80
+    for index in range(rate // 8):
+        state[index] ^= int.from_bytes(block[index * 8 : (index + 1) * 8], "little")
+    _keccak_f1600(state)
+    out = bytearray()
+    while len(out) < 32:
+        for index in range(rate // 8):
+            out.extend(state[index].to_bytes(8, "little"))
+            if len(out) >= 32:
+                break
+        if len(out) < 32:
+            _keccak_f1600(state)
+    return bytes(out[:32])
+
+
+def _secp256k1_inverse(value: int) -> int:
+    return pow(value % _SECP256K1_P, _SECP256K1_P - 2, _SECP256K1_P)
+
+
+def _secp256k1_add(
+    point_a: tuple[int, int] | None,
+    point_b: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    if point_a is None:
+        return point_b
+    if point_b is None:
+        return point_a
+    x1, y1 = point_a
+    x2, y2 = point_b
+    if x1 == x2 and (y1 + y2) % _SECP256K1_P == 0:
+        return None
+    if point_a == point_b:
+        slope = (3 * x1 * x1) * _secp256k1_inverse(2 * y1)
+    else:
+        slope = (y2 - y1) * _secp256k1_inverse(x2 - x1)
+    slope %= _SECP256K1_P
+    x3 = (slope * slope - x1 - x2) % _SECP256K1_P
+    y3 = (slope * (x1 - x3) - y1) % _SECP256K1_P
+    return x3, y3
+
+
+def _secp256k1_multiply(scalar: int) -> tuple[int, int]:
+    if not (1 <= scalar < _SECP256K1_N):
+        raise AllfatherControlError("Ethereum private key is outside the valid secp256k1 range")
+    result: tuple[int, int] | None = None
+    addend: tuple[int, int] | None = _SECP256K1_G
+    while scalar:
+        if scalar & 1:
+            result = _secp256k1_add(result, addend)
+        addend = _secp256k1_add(addend, addend)
+        scalar >>= 1
+    if result is None:
+        raise AllfatherControlError("Ethereum private key derived the point at infinity")
+    return result
+
+
+def normalize_ethereum_private_key(private_key: Any) -> str:
+    raw = nonempty_private_value(private_key)
+    if raw.startswith(("0x", "0X")):
+        raw = raw[2:]
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", raw):
+        raise AllfatherControlError("Ethereum private key must be 32 bytes hex")
+    value = int(raw, 16)
+    if not (1 <= value < _SECP256K1_N):
+        raise AllfatherControlError("Ethereum private key is outside the valid secp256k1 range")
+    return "0x" + raw.lower()
+
+
+def checksum_ethereum_address(address_hex: str) -> str:
+    raw = str(address_hex or "").strip().lower()
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    if not re.fullmatch(r"[0-9a-f]{40}", raw):
+        raise AllfatherControlError("Ethereum address must be 20 bytes hex")
+    digest = keccak256(raw.encode("ascii")).hex()
+    checked = "".join(ch.upper() if int(digest[index], 16) >= 8 else ch for index, ch in enumerate(raw))
+    return "0x" + checked
+
+
+def ethereum_address_from_private_key(private_key: Any) -> str:
+    normalized = normalize_ethereum_private_key(private_key)
+    scalar = int(normalized[2:], 16)
+    x, y = _secp256k1_multiply(scalar)
+    public_key = x.to_bytes(32, "big") + y.to_bytes(32, "big")
+    return checksum_ethereum_address(keccak256(public_key)[-20:].hex())
 
 
 def generated_cluster_id() -> str:
@@ -786,8 +1029,15 @@ CALLBACK_INTERVAL_S = float(os.environ.get("MC_ALLFATHER_AGENT_CALLBACK_INTERVAL
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 RUNTIME_CLEANUP_CALLBACK_MARKER = "ALLFATHER_RUNTIME_CLEANUP_RESULT_B64:"
 TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
+HUB_ADMIN_SYNC_CALLBACK_MARKER = "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:"
+CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
+FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER = "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:"
+DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 120.0
+CONTRACT_DEPLOY_REQUEST_B64 = os.environ.get("MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64", "")
+FULL_HUB_RUNTIME_DIAG_REQUEST_B64 = os.environ.get("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64", "")
 RUNTIME_CLEANUP_REQUEST_B64 = os.environ.get("MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64", "")
 TRAEFIK_PROPAGATE_REQUEST_B64 = os.environ.get("MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64", "")
+HUB_ADMIN_SYNC_REQUEST_B64 = os.environ.get("MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64", "")
 SUPERNODES_ROOT = Path(os.environ.get("MC_ALLFATHER_SUPERNODES_ROOT", "/host-supernodes"))
 
 LAST_CALLBACK_DIGEST = ""
@@ -815,6 +1065,27 @@ LATEST_TRAEFIK_PROPAGATE = {
     "phase": "not-requested",
     "updated_at": None,
 }
+LATEST_HUB_ADMIN_SYNC = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "status": "not-requested",
+    "phase": "not-requested",
+    "updated_at": None,
+}
+LATEST_CONTRACT_DEPLOY = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "status": "not-requested",
+    "phase": "not-requested",
+    "updated_at": None,
+}
+LATEST_FULL_HUB_RUNTIME_DIAG = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "status": "not-requested",
+    "phase": "not-requested",
+    "updated_at": None,
+}
 
 def decode_json_b64(text, default):
     if not text:
@@ -834,6 +1105,15 @@ if not isinstance(CLEANUP_REQUEST, dict):
 TRAEFIK_PROPAGATE_REQUEST = decode_json_b64(TRAEFIK_PROPAGATE_REQUEST_B64, {})
 if not isinstance(TRAEFIK_PROPAGATE_REQUEST, dict):
     TRAEFIK_PROPAGATE_REQUEST = {}
+HUB_ADMIN_SYNC_REQUEST = decode_json_b64(HUB_ADMIN_SYNC_REQUEST_B64, {})
+if not isinstance(HUB_ADMIN_SYNC_REQUEST, dict):
+    HUB_ADMIN_SYNC_REQUEST = {}
+CONTRACT_DEPLOY_REQUEST = decode_json_b64(CONTRACT_DEPLOY_REQUEST_B64, {})
+if not isinstance(CONTRACT_DEPLOY_REQUEST, dict):
+    CONTRACT_DEPLOY_REQUEST = {}
+FULL_HUB_RUNTIME_DIAG_REQUEST = decode_json_b64(FULL_HUB_RUNTIME_DIAG_REQUEST_B64, {})
+if not isinstance(FULL_HUB_RUNTIME_DIAG_REQUEST, dict):
+    FULL_HUB_RUNTIME_DIAG_REQUEST = {}
 
 def fetch_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -1119,7 +1399,7 @@ def docker_exec_sh(container_name: str, script: str) -> dict:
             body=start_body,
             headers={"Content-Type": "application/json"},
         )
-        result["output_preview"] = raw[:1200].decode("utf-8", "replace") if raw else ""
+        result["output_preview"] = raw[:16000].decode("utf-8", "replace") if raw else ""
         if status >= 400:
             result["error"] = f"docker exec start failed: status={status}"
             return result
@@ -1136,6 +1416,255 @@ def docker_exec_sh(container_name: str, script: str) -> dict:
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
+
+
+def short_text(value, limit=6000):
+    text = str(value or "")
+    return text if len(text) <= limit else text[-limit:]
+
+def docker_container_summary(container_id: str) -> dict:
+    summary = {"container": container_id}
+    try:
+        status, payload = docker_json("GET", f"/containers/{urllib.parse.quote(container_id, safe='')}/json")
+        summary["docker_inspect_status"] = status
+        if status >= 400 or not isinstance(payload, dict):
+            summary["error"] = f"docker inspect failed status={status}"
+            return summary
+        config = payload.get("Config") if isinstance(payload.get("Config"), dict) else {}
+        state = payload.get("State") if isinstance(payload.get("State"), dict) else {}
+        labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
+        env = {}
+        for item in config.get("Env") or []:
+            if not isinstance(item, str) or "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            if key in {
+                "MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED",
+                "MC_ALLFATHER_CELL_ID",
+                "MC_ALLFATHER_NETWORK",
+                "MC_ALLFATHER_SET_ID",
+                "MC_ALLFATHER_HUB_PORT",
+                "MC_ALLFATHER_GUARD_PORT",
+                "MC_ALLFATHER_DEPLOYMENT_ID",
+            }:
+                env[key] = value
+        health = state.get("Health") if isinstance(state.get("Health"), dict) else {}
+        summary.update(
+            {
+                "id": str(payload.get("Id") or "")[:12],
+                "name": str(payload.get("Name") or "").lstrip("/"),
+                "image": config.get("Image") or payload.get("Image"),
+                "state_status": state.get("Status"),
+                "state_running": state.get("Running"),
+                "health_status": health.get("Status"),
+                "env": env,
+                "labels": {
+                    key: labels.get(key)
+                    for key in sorted(labels)
+                    if key.startswith("main_computer.") or key.startswith("com.docker.compose.")
+                },
+            }
+        )
+    except Exception as exc:
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+    return summary
+
+def inspect_full_hub_runtime_container(service_name: str, expected_deployment_id: str = "", domain: str = "") -> dict:
+    service_name = str(service_name or "").strip()
+    result = {
+        "ok": False,
+        "service_name": service_name,
+        "expected_deployment_id": expected_deployment_id,
+        "domain": domain,
+        "phase": "inspecting",
+        "status": "inspecting",
+    }
+    if not service_name:
+        result.update({"phase": "failed", "status": "failed", "error": "missing service_name"})
+        return result
+    container_id = find_container_id_for_service(service_name)
+    result["container_id"] = container_id[:12] if container_id else ""
+    if not container_id:
+        result.update({"phase": "failed", "status": "failed", "error": f"container not found for service {service_name}"})
+        return result
+    result["docker"] = docker_container_summary(container_id)
+    script = '''
+python - <<'PY'
+import importlib, importlib.util, json, os, subprocess, sys, urllib.request
+from pathlib import Path
+
+def read_text(path, limit=4000):
+    p = Path(path)
+    try:
+        if not p.exists():
+            return {"exists": False}
+        data = p.read_text(encoding="utf-8", errors="replace")
+        return {"exists": True, "bytes": len(data.encode("utf-8", "replace")), "text": data[-limit:]}
+    except Exception as exc:
+        return {"exists": p.exists(), "error": type(exc).__name__ + ": " + str(exc)}
+
+def path_info(path):
+    p = Path(path)
+    try:
+        info = {"exists": p.exists(), "is_file": p.is_file(), "is_dir": p.is_dir()}
+        if p.exists() and p.is_file():
+            info["bytes"] = p.stat().st_size
+        if p.exists() and p.is_dir():
+            info["children"] = sorted(x.name for x in p.iterdir())[:50]
+        return info
+    except Exception as exc:
+        return {"exists": False, "error": type(exc).__name__ + ": " + str(exc)}
+
+def run(cmd):
+    try:
+        proc = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=8)
+        return {"returncode": proc.returncode, "stdout": proc.stdout[-6000:], "stderr": proc.stderr[-3000:]}
+    except Exception as exc:
+        return {"error": type(exc).__name__ + ": " + str(exc)}
+
+out = {
+    "cwd": os.getcwd(),
+    "python": sys.version,
+    "argv0": sys.argv[0],
+    "sys_path": sys.path[:20],
+    "env": {
+        key: os.environ.get(key)
+        for key in [
+            "MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED",
+            "MC_ALLFATHER_CELL_ID",
+            "MC_ALLFATHER_NETWORK",
+            "MC_ALLFATHER_SET_ID",
+            "MC_ALLFATHER_HUB_PORT",
+            "MC_ALLFATHER_GUARD_PORT",
+            "MC_ALLFATHER_DEPLOYMENT_ID",
+            "PYTHONPATH",
+        ]
+    },
+    "paths": {
+        "/opt/main_computer_src.zip": path_info("/opt/main_computer_src.zip"),
+        "/opt/main_computer": path_info("/opt/main_computer"),
+        "/opt/main_computer/main_computer": path_info("/opt/main_computer/main_computer"),
+        "/opt/main_computer/main_computer/hub.py": path_info("/opt/main_computer/main_computer/hub.py"),
+        "/opt/allfather-build": path_info("/opt/allfather-build"),
+        "/app": path_info("/app"),
+        "/data/main-computer": path_info("/data/main-computer"),
+    },
+    "files": {
+        "/opt/allfather-build/deployment-id": read_text("/opt/allfather-build/deployment-id"),
+        "/opt/allfather-build/runtime-request": read_text("/opt/allfather-build/runtime-request"),
+        "/tmp/allfather-full-hub-startup.log": read_text("/tmp/allfather-full-hub-startup.log"),
+    },
+    "imports": {},
+    "processes": run("ps -eo pid,ppid,comm,args | grep -E 'python|uvicorn|gunicorn|main_computer|hub|8785' | grep -v grep || true"),
+    "listeners": run("(ss -ltnp || netstat -ltnp || true) 2>/dev/null | grep ':8785' || true"),
+    "local_health": {},
+}
+for name in ["main_computer", "main_computer.hub"]:
+    try:
+        spec = importlib.util.find_spec(name)
+        out["imports"][name] = {"ok": bool(spec), "origin": getattr(spec, "origin", None) if spec else None}
+        if spec and name == "main_computer.hub":
+            mod = importlib.import_module(name)
+            out["imports"][name]["module_file"] = getattr(mod, "__file__", None)
+            out["imports"][name]["has_app"] = hasattr(mod, "app")
+    except Exception as exc:
+        out["imports"][name] = {"ok": False, "error": type(exc).__name__ + ": " + str(exc)}
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8785/api/hub/v1/health", timeout=5) as response:
+        body = response.read().decode("utf-8", "replace")
+        out["local_health"] = {"ok": True, "status": response.status, "body": body[:6000]}
+        try:
+            out["local_health"]["json"] = json.loads(body)
+        except Exception:
+            pass
+except Exception as exc:
+    out["local_health"] = {"ok": False, "error": type(exc).__name__ + ": " + str(exc)}
+print(json.dumps(out, sort_keys=True))
+PY
+'''
+    exec_result = docker_exec_sh(container_id, script)
+    result["docker_exec"] = {key: exec_result.get(key) for key in ("ok", "container", "exit_code", "error")}
+    raw = str(exec_result.get("output_preview") or "")
+    result["output_tail"] = short_text(raw)
+    parsed = None
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(raw[start : end + 1])
+        except Exception as exc:
+            result["parse_error"] = f"{type(exc).__name__}: {exc}"
+    if isinstance(parsed, dict):
+        result["runtime"] = parsed
+        local_health = parsed.get("local_health") if isinstance(parsed.get("local_health"), dict) else {}
+        health_json = local_health.get("json") if isinstance(local_health.get("json"), dict) else {}
+        result["local_health_ok"] = bool(health_json.get("ok") or local_health.get("ok"))
+        result["local_bootstrap_hub"] = bool(health_json.get("bootstrap_hub"))
+        result["local_full_main_computer_hub"] = bool(health_json.get("full_main_computer_hub"))
+        result["runtime_requested_env"] = (parsed.get("env") or {}).get("MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED")
+        dep_file = ((parsed.get("files") or {}).get("/opt/allfather-build/deployment-id") or {}).get("text")
+        result["deployment_id_file"] = str(dep_file or "").strip()
+    result["ok"] = bool(exec_result.get("ok")) and isinstance(parsed, dict)
+    result["phase"] = "ready" if result["ok"] else "failed"
+    result["status"] = result["phase"]
+    if not result["ok"] and not result.get("error"):
+        result["error"] = str(exec_result.get("error") or result.get("parse_error") or "container runtime diagnostics failed")
+    return result
+
+def run_full_hub_runtime_diag_once() -> dict:
+    if not FULL_HUB_RUNTIME_DIAG_REQUEST:
+        return {
+            "ok": True,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": time.time(),
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+    nodes = FULL_HUB_RUNTIME_DIAG_REQUEST.get("nodes") if isinstance(FULL_HUB_RUNTIME_DIAG_REQUEST.get("nodes"), list) else []
+    service_name = str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("service_name") or "allfather-full-hub-runtime-diagnostics").strip()
+    result = {
+        "ok": False,
+        "service": service_name,
+        "host_agent_service": "main-computer-allfather-host-agent",
+        "status": "inspecting",
+        "phase": "inspecting",
+        "network_key": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("network_key") or ""),
+        "coolify_server": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("coolify_server") or COOLIFY_SERVER or ""),
+        "request_id": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("request_id") or ""),
+        "node_count": len(nodes),
+        "nodes": [],
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+    if not nodes:
+        result.update({"ok": False, "status": "failed", "phase": "failed", "error": "full hub runtime diagnostics request has no nodes"})
+        return result
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        result["nodes"].append(
+            inspect_full_hub_runtime_container(
+                str(node.get("service_name") or ""),
+                expected_deployment_id=str(node.get("expected_deployment_id") or ""),
+                domain=str(node.get("domain") or ""),
+            )
+        )
+    failed = [item for item in result["nodes"] if not item.get("ok")]
+    result.update(
+        {
+            "ok": not bool(failed) and bool(result["nodes"]),
+            "status": "ready" if not failed else "failed",
+            "phase": "ready" if not failed else "failed",
+            "error": "; ".join(str(item.get("error") or item.get("service_name")) for item in failed)[:1200],
+            "updated_at": time.time(),
+        }
+    )
+    return result
 
 def run_traefik_propagate_once() -> dict:
     if not TRAEFIK_PROPAGATE_REQUEST:
@@ -1200,7 +1729,7 @@ def run_traefik_propagate_once() -> dict:
     target_quoted = "'" + target_path.replace("'", "'\\''") + "'"
     config_quoted = "'" + dynamic_config_b64.replace("'", "'\\''") + "'"
     globs_quoted = "'" + globs_b64.replace("'", "'\\''") + "'"
-    script = f\'\'\'
+    script = f'''
 set -eu
 mkdir -p /traefik/dynamic /traefik/disabled-dynamic
 stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
@@ -1240,7 +1769,7 @@ for url in {quoted_health_urls}; do
     wget -q -O- --timeout=5 "$url" | grep -q \'"ok"[[:space:]]*:[[:space:]]*true\'
 done
 test -s "$target"
-\'\'\'
+'''
     exec_result = docker_exec_sh("coolify-proxy", script)
     result["docker_exec"] = exec_result
     if exec_result.get("ok"):
@@ -1265,6 +1794,564 @@ test -s "$target"
         )
     return result
 
+
+def find_container_id_for_service(service_name: str) -> str:
+    service_name = str(service_name or "").strip()
+    if not service_name:
+        return ""
+    try:
+        status, payload = docker_json("GET", "/containers/json?all=1")
+    except Exception:
+        return ""
+    if status >= 400 or not isinstance(payload, list):
+        return ""
+    best = ""
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("Id") or "")
+        names = [str(name or "").lstrip("/") for name in item.get("Names") or []]
+        if not cid:
+            continue
+        for name in names:
+            if name == service_name or name.startswith(service_name + "-"):
+                return cid
+            if service_name in name and not best:
+                best = cid
+    return best
+
+def parse_marker_from_text(text: str, marker: str) -> dict:
+    for line in reversed(str(text or "").splitlines()):
+        if marker not in line:
+            continue
+        encoded = line.split(marker, 1)[1].strip()
+        try:
+            payload = json.loads(base64.b64decode(encoded).decode("utf-8"))
+        except Exception as exc:
+            return {"ok": False, "error": f"invalid marker payload: {type(exc).__name__}: {exc}"}
+        return payload if isinstance(payload, dict) else {"ok": False, "error": "marker payload was not a JSON object"}
+    return {"ok": False, "error": "hub admin sync exec marker not found"}
+
+def run_hub_admin_sync_once() -> dict:
+    if not HUB_ADMIN_SYNC_REQUEST:
+        return {
+            "ok": True,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": time.time(),
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    network_key = str(HUB_ADMIN_SYNC_REQUEST.get("network_key") or "").strip()
+    coolify_server = str(HUB_ADMIN_SYNC_REQUEST.get("coolify_server") or COOLIFY_SERVER or "").strip()
+    service_name = str(HUB_ADMIN_SYNC_REQUEST.get("service_name") or "allfather-hub-admin-sync").strip()
+    request_id = str(HUB_ADMIN_SYNC_REQUEST.get("request_id") or "").strip()
+    executor_service_name = str(HUB_ADMIN_SYNC_REQUEST.get("executor_service_name") or "").strip()
+    contract_address = str(HUB_ADMIN_SYNC_REQUEST.get("contract_address") or "").strip()
+    admins = HUB_ADMIN_SYNC_REQUEST.get("admins") if isinstance(HUB_ADMIN_SYNC_REQUEST.get("admins"), list) else []
+
+    result = {
+        "ok": False,
+        "service": service_name,
+        "host_agent_service": "main-computer-allfather-host-agent",
+        "status": "syncing",
+        "phase": "syncing",
+        "network_key": network_key,
+        "coolify_server": coolify_server,
+        "request_id": request_id,
+        "executor_service_name": executor_service_name,
+        "contract_address": contract_address,
+        "admin_count": len(admins),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+
+    if not (network_key and coolify_server and executor_service_name and contract_address):
+        result.update({"status": "failed", "phase": "failed", "error": "hub admin sync request missing network_key/coolify_server/executor_service_name/contract_address"})
+        return result
+    if not str(HUB_ADMIN_SYNC_REQUEST.get("owner_private_key") or "").strip():
+        result.update({"status": "failed", "phase": "failed", "error": "hub admin sync request missing owner_private_key"})
+        return result
+    if not admins:
+        result.update({"status": "failed", "phase": "failed", "error": "hub admin sync request has no admins"})
+        return result
+
+    container_id = find_container_id_for_service(executor_service_name)
+    if not container_id:
+        result.update({"status": "failed", "phase": "failed", "error": f"executor super-node container not found for {executor_service_name}"})
+        return result
+
+    request_b64 = base64.b64encode(json.dumps(HUB_ADMIN_SYNC_REQUEST, sort_keys=True).encode("utf-8")).decode("ascii")
+    request_quoted = "'" + request_b64.replace("'", "'\\''") + "'"
+    marker = HUB_ADMIN_SYNC_CALLBACK_MARKER
+    marker_json = json.dumps(marker)
+    exec_script = f'''
+import base64, json, sys, time
+MARKER = {marker_json}
+request = json.loads(base64.b64decode({request_quoted}).decode("utf-8"))
+result = {{
+    "ok": False,
+    "phase": "syncing",
+    "status": "syncing",
+    "network_key": request.get("network_key"),
+    "coolify_server": request.get("coolify_server"),
+    "request_id": request.get("request_id"),
+    "contract_address": request.get("contract_address"),
+    "admins": [],
+    "transactions": [],
+    "updated_at": time.time(),
+}}
+try:
+    from eth_account import Account
+    from web3 import Web3
+except Exception as exc:
+    result.update({{"ok": False, "phase": "failed", "status": "failed", "error": "super-node image is missing web3/eth_account: " + type(exc).__name__ + ": " + str(exc)}})
+else:
+    try:
+        owner_key = str(request.get("owner_private_key") or "").strip()
+        if owner_key and not owner_key.startswith("0x"):
+            owner_key = "0x" + owner_key
+        rpc_url = str(request.get("rpc_url") or "http://127.0.0.1:8545")
+        contract_address = Web3.to_checksum_address(str(request.get("contract_address") or ""))
+        w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={{"timeout": 10}}))
+        try:
+            from web3.middleware import geth_poa_middleware
+            w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        except Exception:
+            try:
+                from web3.middleware import ExtraDataToPOAMiddleware
+                w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            except Exception:
+                pass
+        if not w3.is_connected():
+            raise RuntimeError("validator RPC is not connected: " + rpc_url)
+        owner = Account.from_key(owner_key)
+        abi = [
+            {{"inputs":[],"name":"owner","outputs":[{{"type":"address"}}],"stateMutability":"view","type":"function"}},
+            {{"inputs":[],"name":"bridgeController","outputs":[{{"type":"address"}}],"stateMutability":"view","type":"function"}},
+            {{"inputs":[{{"name":"controller","type":"address"}}],"name":"isBridgeController","outputs":[{{"type":"bool"}}],"stateMutability":"view","type":"function"}},
+            {{"inputs":[{{"name":"","type":"address"}}],"name":"bridgeControllers","outputs":[{{"type":"bool"}}],"stateMutability":"view","type":"function"}},
+            {{"inputs":[{{"name":"controller","type":"address"}},{{"name":"allowed","type":"bool"}}],"name":"setBridgeControllerAllowed","outputs":[],"stateMutability":"nonpayable","type":"function"}},
+            {{"inputs":[{{"name":"newBridgeController","type":"address"}}],"name":"setBridgeController","outputs":[],"stateMutability":"nonpayable","type":"function"}},
+        ]
+        contract = w3.eth.contract(address=contract_address, abi=abi)
+        try:
+            contract_owner = contract.functions.owner().call()
+            result["contract_owner"] = contract_owner
+            if str(contract_owner).lower() != str(owner.address).lower():
+                raise RuntimeError("owner_private_key address does not match contract owner")
+        except Exception as exc:
+            raise RuntimeError("could not verify contract owner: " + type(exc).__name__ + ": " + str(exc))
+        admin_records = []
+        for item in request.get("admins") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("private_key") or "").strip()
+            address = str(item.get("address") or "").strip()
+            if key and not key.startswith("0x"):
+                key = "0x" + key
+            if key and not address:
+                address = Account.from_key(key).address
+            if address:
+                address = Web3.to_checksum_address(address)
+            admin_records.append({{"cell_id": item.get("cell_id") or item.get("service_name") or "", "address": address}})
+        result["admins"] = admin_records
+        if not admin_records:
+            raise RuntimeError("no hub admin addresses could be derived")
+        def is_allowed(addr):
+            try:
+                return bool(contract.functions.isBridgeController(addr).call())
+            except Exception:
+                try:
+                    return bool(contract.functions.bridgeControllers(addr).call())
+                except Exception as exc:
+                    raise RuntimeError("contract does not expose multi-controller bridge admin API; redeploy HubCreditBridgeEscrow with setBridgeControllerAllowed(address,bool)") from exc
+        nonce = w3.eth.get_transaction_count(owner.address)
+        chain_id = int(w3.eth.chain_id)
+        gas_price = legacy_gas_price(w3)
+        result["gas_price"] = gas_price
+        changed = 0
+        for record in admin_records:
+            addr = record["address"]
+            if is_allowed(addr):
+                record["already_allowed"] = True
+                continue
+            tx = contract.functions.setBridgeControllerAllowed(addr, True).build_transaction({{"from": owner.address, "nonce": nonce, "chainId": chain_id, "gasPrice": gas_price}})
+            try:
+                tx["gas"] = int(w3.eth.estimate_gas(tx) * 1.25) + 50000
+            except Exception:
+                tx["gas"] = 160000
+            tx["gasPrice"] = gas_price
+            tx.pop("maxFeePerGas", None)
+            tx.pop("maxPriorityFeePerGas", None)
+            signed = owner.sign_transaction(tx)
+            raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
+            tx_hash = w3.to_hex(w3.eth.send_raw_transaction(raw))
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=int(request.get("receipt_timeout_s") or 120))
+            receipt_status = int(getattr(receipt, "status", receipt.get("status", 0) if isinstance(receipt, dict) else 0))
+            ok_receipt = receipt_status == 1
+            record["tx_hash"] = tx_hash
+            record["receipt_status"] = receipt_status
+            result["transactions"].append({{"address": addr, "tx_hash": tx_hash, "ok": ok_receipt}})
+            if not ok_receipt:
+                raise RuntimeError("setBridgeControllerAllowed transaction failed for " + addr + ": " + tx_hash)
+            nonce += 1
+            changed += 1
+        result.update({{"ok": True, "phase": "ready", "status": "ready", "changed_count": changed, "updated_at": time.time()}})
+    except Exception as exc:
+        result.update({{"ok": False, "phase": "failed", "status": "failed", "error": type(exc).__name__ + ": " + str(exc), "updated_at": time.time()}})
+encoded = base64.b64encode(json.dumps(result, sort_keys=True).encode("utf-8")).decode("ascii")
+print(MARKER + encoded, flush=True)
+print(json.dumps(result, sort_keys=True), flush=True)
+sys.exit(0 if result.get("ok") else 1)
+'''
+    exec_result = docker_exec_sh(container_id, "python -u - <<'PY'\n" + exec_script + "\nPY")
+    parsed = parse_marker_from_text(str(exec_result.get("output_preview") or ""), HUB_ADMIN_SYNC_CALLBACK_MARKER)
+    result["docker_exec"] = {key: exec_result.get(key) for key in ("ok", "container", "exit_code", "error")}
+    if parsed.get("ok"):
+        safe_admins = []
+        for item in parsed.get("admins") or []:
+            if isinstance(item, dict):
+                safe_admins.append({key: item.get(key) for key in ("cell_id", "address", "already_allowed", "tx_hash", "receipt_status") if key in item})
+        result.update(
+            {
+                "ok": True,
+                "status": "ready",
+                "phase": "ready",
+                "admins": safe_admins,
+                "transactions": parsed.get("transactions") or [],
+                "changed_count": parsed.get("changed_count", 0),
+                "contract_owner": parsed.get("contract_owner"),
+                "updated_at": time.time(),
+            }
+        )
+    else:
+        result.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "phase": "failed",
+                "error": str(parsed.get("error") or exec_result.get("error") or "hub admin sync failed"),
+                "admins": parsed.get("admins") or [],
+                "updated_at": time.time(),
+            }
+        )
+    return result
+
+
+def run_contract_deploy_once() -> dict:
+    if not CONTRACT_DEPLOY_REQUEST:
+        return {
+            "ok": True,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": time.time(),
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    network_key = str(CONTRACT_DEPLOY_REQUEST.get("network_key") or "").strip()
+    coolify_server = str(CONTRACT_DEPLOY_REQUEST.get("coolify_server") or COOLIFY_SERVER or "").strip()
+    service_name = str(CONTRACT_DEPLOY_REQUEST.get("service_name") or "allfather-contract-deploy").strip()
+    request_id = str(CONTRACT_DEPLOY_REQUEST.get("request_id") or "").strip()
+    executor_service_name = str(CONTRACT_DEPLOY_REQUEST.get("executor_service_name") or "").strip()
+    targets = CONTRACT_DEPLOY_REQUEST.get("targets") if isinstance(CONTRACT_DEPLOY_REQUEST.get("targets"), list) else []
+
+    result = {
+        "ok": False,
+        "service": service_name,
+        "host_agent_service": "main-computer-allfather-host-agent",
+        "status": "deploying",
+        "phase": "deploying",
+        "network_key": network_key,
+        "coolify_server": coolify_server,
+        "request_id": request_id,
+        "executor_service_name": executor_service_name,
+        "targets": targets,
+        "contracts": {},
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+
+    if not (network_key and coolify_server and executor_service_name):
+        result.update({"status": "failed", "phase": "failed", "error": "contract deploy request missing network_key/coolify_server/executor_service_name"})
+        return result
+    if not targets:
+        result.update({"status": "failed", "phase": "failed", "error": "contract deploy request has no targets"})
+        return result
+    if not str(CONTRACT_DEPLOY_REQUEST.get("owner_private_key") or "").strip():
+        result.update({"status": "failed", "phase": "failed", "error": "contract deploy request missing owner_private_key"})
+        return result
+
+    container_id = find_container_id_for_service(executor_service_name)
+    if not container_id:
+        result.update({"status": "failed", "phase": "failed", "error": f"executor super-node container not found for {executor_service_name}"})
+        return result
+
+    request_b64 = base64.b64encode(json.dumps(CONTRACT_DEPLOY_REQUEST, sort_keys=True).encode("utf-8")).decode("ascii")
+    request_quoted = "'" + request_b64.replace("'", "'\\''") + "'"
+    marker = CONTRACT_DEPLOY_CALLBACK_MARKER
+    marker_json = json.dumps(marker)
+    exec_script = f'''
+import base64, json, subprocess, sys, time
+from pathlib import Path
+MARKER = {marker_json}
+request = json.loads(base64.b64decode({request_quoted}).decode("utf-8"))
+
+def compact_error(exc, limit=3000):
+    message = type(exc).__name__ + ": " + str(exc)
+    if len(message) > limit:
+        message = message[:limit] + "...<truncated>"
+    return message
+
+def legacy_gas_price(w3):
+    try:
+        value = int(w3.eth.gas_price or 0)
+    except Exception:
+        value = 0
+    try:
+        configured = int(request.get("gas_price") or request.get("min_gas_price_wei") or 1)
+    except Exception:
+        configured = 1
+    return max(value, configured, 1)
+
+def install_poa_middleware(w3):
+    attempts = []
+    for module_name, attr_name in (
+        ("web3.middleware", "ExtraDataToPOAMiddleware"),
+        ("web3.middleware", "geth_poa_middleware"),
+        ("web3.middleware.proof_of_authority", "ExtraDataToPOAMiddleware"),
+    ):
+        try:
+            module = __import__(module_name, fromlist=[attr_name])
+            middleware = getattr(module, attr_name)
+            w3.middleware_onion.inject(middleware, layer=0)
+            return {{"installed": True, "middleware": attr_name}}
+        except Exception as exc:
+            attempts.append(attr_name + ": " + type(exc).__name__ + ": " + str(exc))
+    return {{"installed": False, "attempts": attempts}}
+
+def bytecode_contains_opcode(bytecode, opcode):
+    text = str(bytecode or "").strip()
+    if text.startswith("0x"):
+        text = text[2:]
+    if len(text) % 2:
+        return False
+    try:
+        data = bytes.fromhex(text)
+    except ValueError:
+        return False
+    i = 0
+    while i < len(data):
+        value = data[i]
+        if value == opcode:
+            return True
+        if 0x60 <= value <= 0x7f:
+            i += 1 + (value - 0x5f)
+        else:
+            i += 1
+    return False
+
+def compile_contract_sources_from_request():
+    sources_b64 = request.get("contract_sources_b64")
+    if not isinstance(sources_b64, dict) or not sources_b64:
+        return None
+    sources = {{}}
+    for name, encoded in sources_b64.items():
+        if not str(encoded or "").strip():
+            continue
+        sources[str(name)] = {{"content": base64.b64decode(str(encoded)).decode("utf-8")}}
+    if not sources:
+        return None
+    standard_input = {{
+        "language": "Solidity",
+        "sources": sources,
+        "settings": {{
+            "evmVersion": str(request.get("evm_version") or "paris"),
+            "optimizer": {{"enabled": True, "runs": 200}},
+            "outputSelection": {{"*": {{"*": ["abi", "evm.bytecode.object"]}}}},
+        }},
+    }}
+    proc = subprocess.run(
+        ["solc", "--standard-json"],
+        input=json.dumps(standard_input),
+        text=True,
+        capture_output=True,
+        timeout=int(request.get("solc_timeout_s") or 180),
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "solc --standard-json failed").strip()
+        raise RuntimeError("solc failed: " + detail[:3000])
+    compiled_payload = json.loads(proc.stdout or "{{}}")
+    errors = [
+        item for item in compiled_payload.get("errors", [])
+        if isinstance(item, dict) and item.get("severity") == "error"
+    ]
+    if errors:
+        detail = "; ".join(str(item.get("formattedMessage") or item.get("message") or item) for item in errors)
+        raise RuntimeError("solc reported errors: " + detail[:3000])
+    return compiled_payload
+
+result = {{
+    "ok": False,
+    "phase": "deploying",
+    "status": "deploying",
+    "network_key": request.get("network_key"),
+    "coolify_server": request.get("coolify_server"),
+    "request_id": request.get("request_id"),
+    "executor_service_name": request.get("executor_service_name"),
+    "targets": request.get("targets") or [],
+    "contracts": {{}},
+    "updated_at": time.time(),
+}}
+try:
+    from eth_account import Account
+    from web3 import Web3
+except Exception as exc:
+    result.update({{"ok": False, "phase": "failed", "status": "failed", "error": "super-node image is missing web3/eth_account: " + type(exc).__name__ + ": " + str(exc)}})
+else:
+    try:
+        owner_key = str(request.get("owner_private_key") or "").strip()
+        if owner_key and not owner_key.startswith("0x"):
+            owner_key = "0x" + owner_key
+        rpc_url = str(request.get("rpc_url") or "http://127.0.0.1:8545")
+        w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={{"timeout": int(request.get("rpc_timeout_s") or 20)}}))
+        result["poa_middleware"] = install_poa_middleware(w3)
+        if not w3.is_connected():
+            raise RuntimeError("validator RPC is not connected: " + rpc_url)
+        owner = Account.from_key(owner_key)
+        result["deployer_address"] = owner.address
+        result["chain_id"] = int(w3.eth.chain_id)
+        compiled = compile_contract_sources_from_request()
+        if compiled is not None:
+            result["artifact_source"] = "request-contract-sources-solc"
+        else:
+            artifact_path = Path(str(request.get("artifact_path") or "/opt/allfather-contracts/contracts-artifacts.json"))
+            if not artifact_path.exists():
+                raise RuntimeError("compiled contract artifact file not found: " + str(artifact_path))
+            compiled = json.loads(artifact_path.read_text(encoding="utf-8"))
+            result["artifact_source"] = str(artifact_path)
+        nonce_state = {{"value": w3.eth.get_transaction_count(owner.address)}}
+        gas_price = legacy_gas_price(w3)
+        result["gas_price"] = gas_price
+        receipt_timeout_s = int(request.get("receipt_timeout_s") or 300)
+
+        def send_deploy(contract_key, source_name, contract_name, constructor_args):
+            nonce = int(nonce_state["value"])
+            contract_data = ((compiled.get("contracts") or {{}}).get(source_name) or {{}}).get(contract_name) or {{}}
+            abi = contract_data.get("abi")
+            bytecode_object = (((contract_data.get("evm") or {{}}).get("bytecode") or {{}}).get("object") or "")
+            if not isinstance(abi, list) or not str(bytecode_object).strip():
+                raise RuntimeError("compiled artifact missing abi/bytecode for " + source_name + ":" + contract_name)
+            bytecode = str(bytecode_object)
+            if not bytecode.startswith("0x"):
+                bytecode = "0x" + bytecode
+            contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+            tx = contract.constructor(*constructor_args).build_transaction({{"from": owner.address, "nonce": nonce, "chainId": int(w3.eth.chain_id), "gasPrice": gas_price}})
+            try:
+                tx["gas"] = int(w3.eth.estimate_gas(tx) * 1.25) + 50000
+            except Exception:
+                tx["gas"] = int(request.get("gas_limit") or 3000000)
+            tx["gasPrice"] = gas_price
+            tx.pop("maxFeePerGas", None)
+            tx.pop("maxPriorityFeePerGas", None)
+            signed = owner.sign_transaction(tx)
+            raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
+            tx_hash = w3.to_hex(w3.eth.send_raw_transaction(raw))
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=receipt_timeout_s)
+            receipt_status = int(getattr(receipt, "status", receipt.get("status", 0) if isinstance(receipt, dict) else 0))
+            address = getattr(receipt, "contractAddress", None) or (receipt.get("contractAddress") if isinstance(receipt, dict) else None)
+            if receipt_status != 1:
+                raise RuntimeError(contract_key + " deployment failed: " + tx_hash)
+            if not address:
+                raise RuntimeError(contract_key + " deployment receipt did not include contract address")
+            code = w3.eth.get_code(address)
+            if not code:
+                raise RuntimeError(contract_key + " deployment address has no bytecode: " + str(address))
+            nonce_state["value"] = nonce + 1
+            return {{"address": Web3.to_checksum_address(address), "transaction_hash": tx_hash, "receipt_status": receipt_status}}
+
+        targets = [str(item) for item in (request.get("targets") or [])]
+        for target in targets:
+            if target == "hub_credit_bridge_escrow":
+                controller = str(request.get("hub_credit_bridge_escrow_controller") or request.get("hub_admin_address") or "").strip()
+                if not controller:
+                    raise RuntimeError("hub_credit_bridge_escrow deployment missing hub_admin_address/controller constructor arg")
+                controller = Web3.to_checksum_address(controller)
+                deployed = send_deploy("hub_credit_bridge_escrow", "src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow", [controller])
+                abi = ((compiled.get("contracts") or {{}}).get("src/HubCreditBridgeEscrow.sol") or {{}}).get("HubCreditBridgeEscrow", {{}}).get("abi") or []
+                contract = w3.eth.contract(address=deployed["address"], abi=abi)
+                deployed["owner"] = contract.functions.owner().call()
+                deployed["bridge_controller"] = contract.functions.bridgeController().call()
+                deployed["controller_authorized"] = bool(contract.functions.isBridgeController(controller).call())
+                deployed["constructor_args"] = {{"bridgeController": controller}}
+                result["contracts"]["hub_credit_bridge_escrow"] = deployed
+            else:
+                raise RuntimeError("unsupported contract deployment target: " + target)
+        result.update({{"ok": True, "phase": "ready", "status": "ready", "updated_at": time.time()}})
+    except Exception as exc:
+        result.update({{"ok": False, "phase": "failed", "status": "failed", "error": compact_error(exc), "error_type": type(exc).__name__, "updated_at": time.time()}})
+encoded = base64.b64encode(json.dumps(result, sort_keys=True).encode("utf-8")).decode("ascii")
+print(MARKER + encoded, flush=True)
+print(json.dumps(result, sort_keys=True), flush=True)
+sys.exit(0 if result.get("ok") else 1)
+'''
+    exec_result = docker_exec_sh(container_id, "python -u - <<'PY'\n" + exec_script + "\nPY")
+    parsed = parse_marker_from_text(str(exec_result.get("output_preview") or ""), CONTRACT_DEPLOY_CALLBACK_MARKER)
+    result["docker_exec"] = {key: exec_result.get(key) for key in ("ok", "container", "exit_code", "error")}
+    if parsed.get("ok"):
+        result.update(
+            {
+                "ok": True,
+                "status": "ready",
+                "phase": "ready",
+                "contracts": parsed.get("contracts") or {},
+                "chain_id": parsed.get("chain_id"),
+                "deployer_address": parsed.get("deployer_address"),
+                "updated_at": time.time(),
+            }
+        )
+    else:
+        result.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "phase": "failed",
+                "error": str(parsed.get("error") or exec_result.get("error") or "contract deployment failed"),
+                "contracts": parsed.get("contracts") or {},
+                "updated_at": time.time(),
+            }
+        )
+    return result
+
+def contract_deploy_thread() -> None:
+    global LATEST_CONTRACT_DEPLOY
+    LATEST_CONTRACT_DEPLOY = run_contract_deploy_once()
+    print("ALLFATHER_CONTRACT_DEPLOY_RESULT " + json.dumps(LATEST_CONTRACT_DEPLOY, sort_keys=True), flush=True)
+    publish_to_coolify_metadata()
+
+def full_hub_runtime_diag_thread() -> None:
+    global LATEST_FULL_HUB_RUNTIME_DIAG
+    LATEST_FULL_HUB_RUNTIME_DIAG = run_full_hub_runtime_diag_once()
+    print("ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT " + json.dumps(LATEST_FULL_HUB_RUNTIME_DIAG, sort_keys=True), flush=True)
+    publish_to_coolify_metadata()
+
+def hub_admin_sync_thread() -> None:
+    global LATEST_HUB_ADMIN_SYNC
+    LATEST_HUB_ADMIN_SYNC = run_hub_admin_sync_once()
+    print("ALLFATHER_HUB_ADMIN_SYNC_RESULT " + json.dumps(LATEST_HUB_ADMIN_SYNC, sort_keys=True), flush=True)
+    publish_to_coolify_metadata()
+
 def traefik_propagate_thread() -> None:
     global LATEST_TRAEFIK_PROPAGATE
     LATEST_TRAEFIK_PROPAGATE = run_traefik_propagate_once()
@@ -1282,6 +2369,9 @@ def publish_to_coolify_metadata() -> None:
     probe_encoded = encode_marker_payload(compact_probe_result(LATEST_PROBE)) if LATEST_PROBE.get("updated_at") is not None else ""
     cleanup_encoded = encode_marker_payload(LATEST_CLEANUP) if LATEST_CLEANUP.get("updated_at") is not None else ""
     traefik_encoded = encode_marker_payload(LATEST_TRAEFIK_PROPAGATE) if LATEST_TRAEFIK_PROPAGATE.get("updated_at") is not None else ""
+    hub_admin_sync_encoded = encode_marker_payload(LATEST_HUB_ADMIN_SYNC) if LATEST_HUB_ADMIN_SYNC.get("updated_at") is not None else ""
+    contract_deploy_encoded = encode_marker_payload(LATEST_CONTRACT_DEPLOY) if LATEST_CONTRACT_DEPLOY.get("updated_at") is not None else ""
+    full_hub_runtime_diag_encoded = encode_marker_payload(LATEST_FULL_HUB_RUNTIME_DIAG) if LATEST_FULL_HUB_RUNTIME_DIAG.get("updated_at") is not None else ""
     description = "Main Computer all-father host agent. This is the single per-host control container.\n\n"
     if probe_encoded:
         description += PROBE_CALLBACK_MARKER + probe_encoded + "\n"
@@ -1289,6 +2379,12 @@ def publish_to_coolify_metadata() -> None:
         description += RUNTIME_CLEANUP_CALLBACK_MARKER + cleanup_encoded + "\n"
     if traefik_encoded:
         description += TRAEFIK_PROPAGATE_CALLBACK_MARKER + traefik_encoded + "\n"
+    if hub_admin_sync_encoded:
+        description += HUB_ADMIN_SYNC_CALLBACK_MARKER + hub_admin_sync_encoded + "\n"
+    if contract_deploy_encoded:
+        description += CONTRACT_DEPLOY_CALLBACK_MARKER + contract_deploy_encoded + "\n"
+    if full_hub_runtime_diag_encoded:
+        description += FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER + full_hub_runtime_diag_encoded + "\n"
     digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
     if digest == LAST_CALLBACK_DIGEST and (now - LAST_CALLBACK_AT) < max(5.0, CALLBACK_INTERVAL_S):
         return
@@ -1372,13 +2468,20 @@ def payload_for_path(path: str) -> tuple[int, dict]:
             "probe_target_count": len(TARGETS),
             "runtime_cleanup": LATEST_CLEANUP,
             "traefik_propagate": LATEST_TRAEFIK_PROPAGATE,
+            "hub_admin_sync": LATEST_HUB_ADMIN_SYNC,
+            "contract_deploy": LATEST_CONTRACT_DEPLOY,
+            "full_hub_runtime_diag": LATEST_FULL_HUB_RUNTIME_DIAG,
         }
     if path in {"/processes", "/result", "/probe/result"}:
         return 200, {**base, "processes": MANIFEST.get("processes") or [], "probe": LATEST_PROBE}
     if path in {"/runtime-cleanup/status", "/runtime-cleanup/result"}:
         return 200, {**base, "runtime_cleanup": LATEST_CLEANUP}
-    if path in {"/traefik-propagate/status", "/traefik-propagate/result"}:
-        return 200, {**base, "traefik_propagate": LATEST_TRAEFIK_PROPAGATE}
+    if path in {"/traefik-propagate/status", "/traefik-propagate/result", "/hub-propagate/status", "/hub-propagate/result"}:
+        return 200, {**base, "traefik_propagate": LATEST_TRAEFIK_PROPAGATE, "hub_admin_sync": LATEST_HUB_ADMIN_SYNC}
+    if path in {"/contract-deploy/status", "/contract-deploy/result", "/deploy-contracts/status", "/deploy-contracts/result"}:
+        return 200, {**base, "contract_deploy": LATEST_CONTRACT_DEPLOY}
+    if path in {"/full-hub-runtime-diagnostics/status", "/full-hub-runtime-diagnostics/result"}:
+        return 200, {**base, "full_hub_runtime_diag": LATEST_FULL_HUB_RUNTIME_DIAG}
     return 404, {**base, "ok": False, "error": "not-found", "path": path}
 
 class Handler(BaseHTTPRequestHandler):
@@ -1413,6 +2516,19 @@ class Handler(BaseHTTPRequestHandler):
             traefik_propagate_thread()
             self._send(200, dict(LATEST_TRAEFIK_PROPAGATE))
             return
+        if path == "/hub-admin-sync":
+            hub_admin_sync_thread()
+            self._send(200, dict(LATEST_HUB_ADMIN_SYNC))
+            return
+        if path == "/hub-propagate":
+            traefik_propagate_thread()
+            hub_admin_sync_thread()
+            self._send(200, {"ok": bool(LATEST_TRAEFIK_PROPAGATE.get("ok")) and bool(LATEST_HUB_ADMIN_SYNC.get("ok")), "traefik_propagate": LATEST_TRAEFIK_PROPAGATE, "hub_admin_sync": LATEST_HUB_ADMIN_SYNC})
+            return
+        if path == "/full-hub-runtime-diagnostics":
+            full_hub_runtime_diag_thread()
+            self._send(200, dict(LATEST_FULL_HUB_RUNTIME_DIAG))
+            return
         self._send(404, {"ok": False, "error": "not-found", "path": path})
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -1426,6 +2542,12 @@ if CLEANUP_REQUEST:
     threading.Thread(target=cleanup_thread, daemon=True).start()
 if TRAEFIK_PROPAGATE_REQUEST:
     threading.Thread(target=traefik_propagate_thread, daemon=True).start()
+if HUB_ADMIN_SYNC_REQUEST:
+    threading.Thread(target=hub_admin_sync_thread, daemon=True).start()
+if CONTRACT_DEPLOY_REQUEST:
+    threading.Thread(target=contract_deploy_thread, daemon=True).start()
+if FULL_HUB_RUNTIME_DIAG_REQUEST:
+    threading.Thread(target=full_hub_runtime_diag_thread, daemon=True).start()
 
 print(f"all-father host agent listening on 0.0.0.0:{PORT}", flush=True)
 ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
@@ -1448,6 +2570,9 @@ def render_head_compose(
     callback_service_uuid: str = "",
     runtime_cleanup_request: Mapping[str, Any] | None = None,
     traefik_propagate_request: Mapping[str, Any] | None = None,
+    hub_admin_sync_request: Mapping[str, Any] | None = None,
+    contract_deploy_request: Mapping[str, Any] | None = None,
+    full_hub_runtime_diag_request: Mapping[str, Any] | None = None,
 ) -> str:
     # The control head must be bootstrappable through Coolify raw compose with no
     # repository build context and no private image registry.  It therefore uses
@@ -1468,6 +2593,15 @@ def render_head_compose(
     ).decode("ascii")
     traefik_propagate_request_b64_value = base64.b64encode(
         json.dumps(dict(traefik_propagate_request or {}), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    hub_admin_sync_request_b64_value = base64.b64encode(
+        json.dumps(dict(hub_admin_sync_request or {}), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    contract_deploy_request_b64_value = base64.b64encode(
+        json.dumps(dict(contract_deploy_request or {}), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    full_hub_runtime_diag_request_b64_value = base64.b64encode(
+        json.dumps(dict(full_hub_runtime_diag_request or {}), sort_keys=True).encode("utf-8")
     ).decode("ascii")
     lines = [
         f"name: {head.service_name}",
@@ -1509,6 +2643,9 @@ def render_head_compose(
             f"      MC_ALLFATHER_AGENT_CALLBACK_INTERVAL_S: {yaml_quote(DEFAULT_PROBE_INTERVAL_S)}",
             f"      MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64: {yaml_quote(runtime_cleanup_request_b64_value)}",
             f"      MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64: {yaml_quote(traefik_propagate_request_b64_value)}",
+            f"      MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64: {yaml_quote(hub_admin_sync_request_b64_value)}",
+            f"      MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64: {yaml_quote(contract_deploy_request_b64_value)}",
+            f"      MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64: {yaml_quote(full_hub_runtime_diag_request_b64_value)}",
             f"      MC_ALLFATHER_SUPERNODES_ROOT: {yaml_quote('/host-supernodes')}",
             "    ports:",
             f"      - {yaml_quote(port_spec)}",
@@ -2150,6 +3287,315 @@ def fetch_probe_logs(
     return {"ok": False, "source": "coolify-api", "error": "no known Coolify logs endpoint returned probe logs", "body": None}
 
 
+
+def _decode_maybe_base64_text(value: str) -> str:
+    text = str(value or "")
+    clean = re.sub(r"\s+", "", text)
+    if len(clean) < 16:
+        return text
+    try:
+        decoded = base64.b64decode(clean, validate=True)
+        if decoded and b"\x00" not in decoded[:1024]:
+            return decoded.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return text
+
+
+def _compose_strings_from_service_detail_body(value: Any) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: str) -> None:
+        if not text:
+            return
+        if text in seen:
+            return
+        seen.add(text)
+        found.append(text)
+
+    def walk(item: Any, key_hint: str = "") -> None:
+        if isinstance(item, Mapping):
+            for key, nested in item.items():
+                walk(nested, str(key or ""))
+        elif isinstance(item, list):
+            for nested in item:
+                walk(nested, key_hint)
+        elif isinstance(item, str):
+            key = key_hint.lower()
+            if "compose" in key or "docker_compose" in key or key in {"raw", "dockerfile_inline"}:
+                add(_decode_maybe_base64_text(item))
+
+    walk(value)
+    return found
+
+
+def service_detail_compose_diagnostics(
+    detail: Mapping[str, Any],
+    *,
+    expected_deployment_id: str = "",
+) -> dict[str, Any]:
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"observed": False, "reason": "service detail body was not a mapping"}
+    candidates = _compose_strings_from_service_detail_body(body)
+    summaries: list[dict[str, Any]] = []
+    for text in candidates[:5]:
+        text = str(text or "")
+        if not text:
+            continue
+        summaries.append(
+            {
+                "bytes": len(text.encode("utf-8", errors="replace")),
+                "sha256": hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest(),
+                "contains_main_computer_src_zip": "/opt/main-computer-src.zip" in text,
+                "contains_hub_full_capability": "hub-full" in text,
+                "contains_runtime_request": ("full_hub_runtime_requested" in text or "MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED" in text),
+                "contains_deployment_id": bool(expected_deployment_id and expected_deployment_id in text),
+            }
+        )
+    return {
+        "observed": bool(summaries),
+        "candidate_count": len(candidates),
+        "expected_deployment_id": expected_deployment_id,
+        "candidates": summaries,
+        "any_contains_deployment_id": any(bool(item.get("contains_deployment_id")) for item in summaries),
+        "any_contains_full_runtime": any(
+            bool(item.get("contains_main_computer_src_zip")) or bool(item.get("contains_hub_full_capability"))
+            for item in summaries
+        ),
+    }
+
+
+def _looks_like_deployment_mapping(value: Mapping[str, Any]) -> bool:
+    keys = {str(key or "").lower() for key in value.keys()}
+    return bool(
+        keys.intersection(
+            {
+                "deployment_uuid",
+                "deployment_id",
+                "application_uuid",
+                "application_name",
+                "commit",
+                "commit_sha",
+                "status",
+                "server_status",
+                "created_at",
+                "updated_at",
+                "finished_at",
+                "message",
+                "error",
+            }
+        )
+    )
+
+
+def _find_deployment_items(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, list):
+        mappings = [item for item in value if isinstance(item, Mapping)]
+        if mappings and any(_looks_like_deployment_mapping(item) for item in mappings):
+            return mappings
+        for item in mappings:
+            nested = _find_deployment_items(item)
+            if nested:
+                return nested
+    elif isinstance(value, Mapping):
+        for key in ("deployments", "deployment_queues", "deploymentQueues", "data", "items"):
+            nested_value = value.get(key)
+            nested = _find_deployment_items(nested_value)
+            if nested:
+                return nested
+        for nested_value in value.values():
+            nested = _find_deployment_items(nested_value)
+            if nested:
+                return nested
+    return []
+
+
+def compact_deployment_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    compact = _small_mapping(
+        item,
+        [
+            "uuid",
+            "id",
+            "deployment_uuid",
+            "deployment_id",
+            "application_uuid",
+            "application_name",
+            "status",
+            "server_status",
+            "commit",
+            "commit_sha",
+            "created_at",
+            "updated_at",
+            "finished_at",
+            "message",
+            "error",
+        ],
+    )
+    for key in ("application", "server"):
+        nested = item.get(key)
+        if isinstance(nested, Mapping):
+            compact[key] = _small_mapping(nested, ["uuid", "name", "status", "fqdn"])
+    return compact
+
+
+def fetch_coolify_deployment_status(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    application_uuid: str = "",
+) -> dict[str, Any]:
+    paths: list[tuple[str, str]] = []
+    if application_uuid:
+        quoted_app = urllib.parse.quote(application_uuid)
+        paths.extend(
+            [
+                ("get-full-hub-application-deployments", f"/api/v1/applications/{quoted_app}/deployments?per_page=5"),
+                ("get-full-hub-application-deployments", f"/api/v1/applications/{quoted_app}/deployments"),
+                ("get-full-hub-application-deployment-queue", f"/api/v1/applications/{quoted_app}/deployment-queue"),
+                ("get-full-hub-application-deployment-queue", f"/api/v1/applications/{quoted_app}/deployment_queue"),
+            ]
+        )
+    if service_uuid:
+        quoted_service = urllib.parse.quote(service_uuid)
+        paths.extend(
+            [
+                ("get-full-hub-service-deployments", f"/api/v1/services/{quoted_service}/deployments?per_page=5"),
+                ("get-full-hub-service-deployments", f"/api/v1/services/{quoted_service}/deployments"),
+                ("get-full-hub-service-deployment-queue", f"/api/v1/services/{quoted_service}/deployment-queue"),
+                ("get-full-hub-service-deployment-queue", f"/api/v1/services/{quoted_service}/deployment_queue"),
+            ]
+        )
+    if not paths:
+        return {"ok": False, "source": "missing-service-or-application-uuid", "deployments": []}
+    last_error = ""
+    for operation, path in paths:
+        response = client.request("GET", path)
+        tried.append({"operation": operation, "path": path, "response": hub_service_tool().response_to_dict(response)})
+        if response.ok:
+            body = response_body_mapping(response)
+            items = _find_deployment_items(body)
+            return {
+                "ok": True,
+                "source": path,
+                "count": len(items),
+                "deployments": [compact_deployment_item(item) for item in items[:5]],
+            }
+        last_error = f"HTTP {response.status}"
+        if response.status not in {400, 404, 405, 422}:
+            return {"ok": False, "source": path, "error": last_error, "deployments": []}
+    return {"ok": False, "source": "coolify-api", "error": last_error or "no known Coolify deployment endpoint returned data", "deployments": []}
+
+
+def _tail_text(value: Any, *, max_lines: int = 12, max_chars: int = 1800) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, sort_keys=True)
+        except Exception:
+            value = str(value)
+    lines = [line for line in str(value).splitlines() if line.strip()]
+    tail = "\n".join(lines[-max_lines:]) if lines else str(value)[-max_chars:]
+    if len(tail) > max_chars:
+        tail = tail[-max_chars:]
+    return tail
+
+
+def coolify_full_hub_runtime_snapshot(
+    client: Any,
+    *,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    application_uuid: str = "",
+    expected_deployment_id: str = "",
+) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "service_uuid": service_uuid,
+        "application_uuid": application_uuid,
+    }
+    detail = fetch_service_detail(client, service_uuid, tried)
+    snapshot["service_detail"] = _small_mapping(detail, ["ok", "source", "error"])
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if isinstance(body, Mapping):
+        snapshot["service"] = _small_mapping(
+            body,
+            [
+                "uuid",
+                "name",
+                "human_name",
+                "status",
+                "server_status",
+                "fqdn",
+                "required_fqdn",
+            ],
+        )
+    applications = application_records_from_service_detail(detail)
+    if applications:
+        snapshot["applications"] = applications[:5]
+        if not application_uuid:
+            application_uuid = applications[0].get("uuid", "")
+            snapshot["application_uuid"] = application_uuid
+    snapshot["compose"] = service_detail_compose_diagnostics(detail, expected_deployment_id=expected_deployment_id)
+    snapshot["deployments"] = fetch_coolify_deployment_status(
+        client,
+        service_uuid,
+        tried,
+        application_uuid=application_uuid,
+    )
+    logs = fetch_probe_logs(client, service_uuid, tried, application_uuid=application_uuid)
+    snapshot["logs"] = _small_mapping(logs, ["ok", "source", "error"])
+    tail = _tail_text(logs.get("body"), max_lines=10, max_chars=1600)
+    if tail:
+        snapshot["logs"]["tail"] = tail
+    return snapshot
+
+
+def coolify_full_hub_runtime_snapshot_summary(snapshot: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    detail = snapshot.get("service_detail") if isinstance(snapshot.get("service_detail"), Mapping) else {}
+    if detail:
+        parts.append(f"detail_ok={bool(detail.get('ok'))}")
+    service = snapshot.get("service") if isinstance(snapshot.get("service"), Mapping) else {}
+    if service:
+        status = service.get("status") or service.get("server_status") or ""
+        if status:
+            parts.append(f"service_status={status}")
+    app_uuid = str(snapshot.get("application_uuid") or "").strip()
+    if app_uuid:
+        parts.append(f"app_uuid={app_uuid}")
+    compose = snapshot.get("compose") if isinstance(snapshot.get("compose"), Mapping) else {}
+    if compose:
+        parts.append(f"compose_seen={bool(compose.get('observed'))}")
+        parts.append(f"compose_full={bool(compose.get('any_contains_full_runtime'))}")
+        expected_deployment_id = str(compose.get("expected_deployment_id") or "")
+        if expected_deployment_id:
+            parts.append(f"compose_deployment_id={bool(compose.get('any_contains_deployment_id'))}")
+    deployments = snapshot.get("deployments") if isinstance(snapshot.get("deployments"), Mapping) else {}
+    if deployments:
+        parts.append(f"deployments_ok={bool(deployments.get('ok'))}")
+        deployments_list = deployments.get("deployments") if isinstance(deployments.get("deployments"), list) else []
+        if deployments_list:
+            latest = deployments_list[0]
+            if isinstance(latest, Mapping):
+                latest_status = latest.get("status") or latest.get("server_status") or latest.get("message") or latest.get("error")
+                if latest_status:
+                    parts.append(f"latest_deployment={latest_status}")
+        elif deployments.get("error"):
+            parts.append(f"deployments_error={str(deployments.get('error'))[:120]}")
+    logs = snapshot.get("logs") if isinstance(snapshot.get("logs"), Mapping) else {}
+    if logs:
+        parts.append(f"logs_ok={bool(logs.get('ok'))}")
+        if logs.get("error"):
+            parts.append(f"logs_error={str(logs.get('error'))[:120]}")
+        tail = str(logs.get("tail") or "").splitlines()
+        if tail:
+            parts.append(f"log_last={tail[-1][:180]}")
+    return " ".join(parts) if parts else "no Coolify snapshot details"
+
+
 def _strings_from_nested(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield value
@@ -2257,16 +3703,35 @@ def wait_for_head_traefik_propagate_ready(
     wait_s: float,
     poll_s: float = 2.0,
     expected_request_id: str = "",
+    args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
     deadline = time.time() + max(0.0, float(wait_s or 0.0))
     last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
     first = True
+    attempts = 0
+    last_log_signature = ""
+    last_log_at = 0.0
+    log_interval = operator_log_interval_s(args) if args is not None else 15.0
     while first or time.time() < deadline:
         first = False
+        attempts += 1
         detail = fetch_service_detail(client, head_service_uuid, tried)
         last_result = traefik_propagate_result_from_service_metadata(detail)
         result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
         phase = str(result.get("phase") or result.get("status") or "")
+        request_id = str(result.get("request_id") or "")
+        signature = (
+            f"attempt={attempts} observed={bool(last_result.get('ok'))} phase={phase or 'not-observed'} "
+            f"request_id={request_id or '<missing>'}"
+        )
+        if last_result.get("error"):
+            signature += f" error={str(last_result.get('error'))[:180]}"
+        now = time.time()
+        if args is not None and (signature != last_log_signature or (now - last_log_at) >= log_interval):
+            remaining = max(0.0, deadline - now)
+            operator_log(args, f"hub-propagate: waiting Traefik marker: {signature}; remaining={remaining:.0f}s")
+            last_log_signature = signature
+            last_log_at = now
         if last_result.get("ok") and phase in {"ready", "failed"}:
             observed_request_id = str(result.get("request_id") or "")
             if expected_request_id and observed_request_id != expected_request_id:
@@ -2275,10 +3740,177 @@ def wait_for_head_traefik_propagate_ready(
                     "error": f"stale Traefik propagation marker observed for request_id={observed_request_id or '<missing>'}; waiting for request_id={expected_request_id}",
                 }
             else:
+                if args is not None:
+                    operator_log(args, f"hub-propagate: Traefik marker {phase} after {attempts} poll(s)")
                 return {
                     "observed": True,
                     "ready": bool(result.get("ok")) and phase == "ready",
                     "reason": str(result.get("error") or ("Traefik propagation completed" if phase == "ready" else "Traefik propagation failed")),
+                    "result": dict(result),
+                    "source": last_result.get("source"),
+                    "attempts": attempts,
+                    "last_status": last_log_signature or signature,
+                }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+    result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+    if args is not None:
+        operator_log(args, f"hub-propagate: timed out waiting for Traefik marker; last={last_log_signature or 'not-observed'}")
+    return {
+        "observed": bool(last_result.get("ok")),
+        "ready": False,
+        "reason": str(result.get("error") or last_result.get("error") or "Traefik propagation metadata callback was not observed"),
+        "result": dict(result),
+        "source": last_result.get("source"),
+        "attempts": attempts,
+        "last_status": last_log_signature,
+    }
+
+
+
+def hub_admin_sync_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the Hub admin contract-sync callback from allfather head metadata."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if HUB_ADMIN_SYNC_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64 entry found"}
+    encoded = description.split(HUB_ADMIN_SYNC_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+def wait_for_head_hub_admin_sync_ready(
+    client: Any,
+    head_service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+    poll_s: float = 2.0,
+    expected_request_id: str = "",
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
+    first = True
+    attempts = 0
+    last_log_signature = ""
+    last_log_at = 0.0
+    log_interval = operator_log_interval_s(args) if args is not None else 15.0
+    while first or time.time() < deadline:
+        first = False
+        attempts += 1
+        detail = fetch_service_detail(client, head_service_uuid, tried)
+        last_result = hub_admin_sync_result_from_service_metadata(detail)
+        result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        phase = str(result.get("phase") or result.get("status") or "")
+        request_id = str(result.get("request_id") or "")
+        signature = (
+            f"attempt={attempts} observed={bool(last_result.get('ok'))} phase={phase or 'not-observed'} "
+            f"request_id={request_id or '<missing>'}"
+        )
+        if last_result.get("error"):
+            signature += f" error={str(last_result.get('error'))[:180]}"
+        now = time.time()
+        if args is not None and (signature != last_log_signature or (now - last_log_at) >= log_interval):
+            remaining = max(0.0, deadline - now)
+            operator_log(args, f"hub-propagate: waiting Hub admin sync marker: {signature}; remaining={remaining:.0f}s")
+            last_log_signature = signature
+            last_log_at = now
+        if last_result.get("ok") and phase in {"ready", "failed"}:
+            observed_request_id = str(result.get("request_id") or "")
+            if expected_request_id and observed_request_id != expected_request_id:
+                last_result = {
+                    **last_result,
+                    "error": f"stale Hub admin sync marker observed for request_id={observed_request_id or '<missing>'}; waiting for request_id={expected_request_id}",
+                }
+            else:
+                if args is not None:
+                    operator_log(args, f"hub-propagate: Hub admin sync marker {phase} after {attempts} poll(s)")
+                return {
+                    "observed": True,
+                    "ready": bool(result.get("ok")) and phase == "ready",
+                    "reason": str(result.get("error") or ("Hub admin contract sync completed" if phase == "ready" else "Hub admin contract sync failed")),
+                    "result": dict(result),
+                    "source": last_result.get("source"),
+                    "attempts": attempts,
+                    "last_status": last_log_signature or signature,
+                }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+    result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+    if args is not None:
+        operator_log(args, f"hub-propagate: timed out waiting for Hub admin sync marker; last={last_log_signature or 'not-observed'}")
+    return {
+        "observed": bool(last_result.get("ok")),
+        "ready": False,
+        "reason": str(result.get("error") or last_result.get("error") or "Hub admin sync metadata callback was not observed"),
+        "result": dict(result),
+        "source": last_result.get("source"),
+        "attempts": attempts,
+        "last_status": last_log_signature,
+    }
+
+
+
+def contract_deploy_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the contract deployment callback from allfather head metadata."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if CONTRACT_DEPLOY_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_CONTRACT_DEPLOY_RESULT_B64 entry found"}
+    encoded = description.split(CONTRACT_DEPLOY_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+def wait_for_head_contract_deploy_ready(
+    client: Any,
+    head_service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+    poll_s: float = 2.0,
+    expected_request_id: str = "",
+) -> dict[str, Any]:
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
+    first = True
+    while first or time.time() < deadline:
+        first = False
+        detail = fetch_service_detail(client, head_service_uuid, tried)
+        last_result = contract_deploy_result_from_service_metadata(detail)
+        result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        phase = str(result.get("phase") or result.get("status") or "")
+        if last_result.get("ok") and phase in {"ready", "failed"}:
+            observed_request_id = str(result.get("request_id") or "")
+            if expected_request_id and observed_request_id != expected_request_id:
+                last_result = {
+                    **last_result,
+                    "error": f"stale contract deployment marker observed for request_id={observed_request_id or '<missing>'}; waiting for request_id={expected_request_id}",
+                }
+            else:
+                return {
+                    "observed": True,
+                    "ready": bool(result.get("ok")) and phase == "ready",
+                    "reason": str(result.get("error") or ("contract deployment completed" if phase == "ready" else "contract deployment failed")),
                     "result": dict(result),
                     "source": last_result.get("source"),
                 }
@@ -2289,11 +3921,10 @@ def wait_for_head_traefik_propagate_ready(
     return {
         "observed": bool(last_result.get("ok")),
         "ready": False,
-        "reason": str(result.get("error") or last_result.get("error") or "Traefik propagation metadata callback was not observed"),
+        "reason": str(result.get("error") or last_result.get("error") or "contract deployment metadata callback was not observed"),
         "result": dict(result),
         "source": last_result.get("source"),
     }
-
 
 def wait_for_head_runtime_cleanup_ready(
     client: Any,
@@ -2430,6 +4061,9 @@ def service_payload(
     callback_service_uuid: str = "",
     runtime_cleanup_request: Mapping[str, Any] | None = None,
     traefik_propagate_request: Mapping[str, Any] | None = None,
+    hub_admin_sync_request: Mapping[str, Any] | None = None,
+    contract_deploy_request: Mapping[str, Any] | None = None,
+    full_hub_runtime_diag_request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     compose = render_head_compose(
         plan,
@@ -2442,6 +4076,9 @@ def service_payload(
         callback_service_uuid=callback_service_uuid,
         runtime_cleanup_request=runtime_cleanup_request,
         traefik_propagate_request=traefik_propagate_request,
+        hub_admin_sync_request=hub_admin_sync_request,
+        contract_deploy_request=contract_deploy_request,
+        full_hub_runtime_diag_request=full_hub_runtime_diag_request,
     )
     payload = {
         "server_uuid": (context or {}).get("server_uuid") or "",
@@ -2515,6 +4152,9 @@ def sync_head_service(
     probe_targets: Sequence[Mapping[str, Any]] | None = None,
     runtime_cleanup_request: Mapping[str, Any] | None = None,
     traefik_propagate_request: Mapping[str, Any] | None = None,
+    hub_admin_sync_request: Mapping[str, Any] | None = None,
+    contract_deploy_request: Mapping[str, Any] | None = None,
+    full_hub_runtime_diag_request: Mapping[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     explicit_uuid = explicit_service_uuid_for_host(head, args)
     service_uuid = explicit_uuid
@@ -2537,6 +4177,9 @@ def sync_head_service(
             callback_service_uuid=service_uuid,
             runtime_cleanup_request=runtime_cleanup_request,
             traefik_propagate_request=traefik_propagate_request,
+            hub_admin_sync_request=hub_admin_sync_request,
+            contract_deploy_request=contract_deploy_request,
+            full_hub_runtime_diag_request=full_hub_runtime_diag_request,
         )
         fdb_tool().update_service(client, service_uuid, head.service_name, compose, tried)
         return service_uuid, "updated", existing
@@ -2552,6 +4195,9 @@ def sync_head_service(
         callback_service_uuid="",
         runtime_cleanup_request=runtime_cleanup_request,
         traefik_propagate_request=traefik_propagate_request,
+        hub_admin_sync_request=hub_admin_sync_request,
+        contract_deploy_request=contract_deploy_request,
+        full_hub_runtime_diag_request=full_hub_runtime_diag_request,
     )
     service_uuid = fdb_tool().create_service(client, payload, tried)
     # Patch the new head once its UUID is known so the single host-agent can
@@ -2567,6 +4213,8 @@ def sync_head_service(
         callback_service_uuid=service_uuid,
         runtime_cleanup_request=runtime_cleanup_request,
         traefik_propagate_request=traefik_propagate_request,
+        hub_admin_sync_request=hub_admin_sync_request,
+        contract_deploy_request=contract_deploy_request,
     )
     fdb_tool().update_service(client, service_uuid, head.service_name, compose, tried)
     return service_uuid, "created", existing
@@ -3808,6 +5456,437 @@ def materialize_private_state_for_add_node(
         "fdb_cluster_description": str(fdb.get("cluster_description") or ""),
         "fdb_cluster_id_present": bool(nonempty_private_value(fdb.get("cluster_id"))),
         "note": "Private keys and FDB cluster identity are seed material, not topology.",
+    }
+
+
+
+def wallet_record_fingerprint(record: Mapping[str, Any]) -> str:
+    payload = {
+        "address": str(record.get("address") or "").strip().lower(),
+        "private_key_present": bool(nonempty_private_value(record.get("private_key"))),
+        "wallet_path": str(record.get("wallet_path") or "").strip(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def private_key_path_for_node_hub_admin(network_key: str, cell_id: str) -> str:
+    return f"networks.{clean_node_network_key(network_key)}.node_seed_material.{cell_id}.wallets.hub_admin.private_key"
+
+
+def huddle_active_hub_admin_records(state: Mapping[str, Any], network_key: str) -> dict[str, Any]:
+    active = _wallet_mapping_from_state_path(state, "networks", clean_node_network_key(network_key), "huddle", "hub_admins", "active")
+    return active if isinstance(active, dict) else {}
+
+
+def materialize_private_state_for_hub_propagate(
+    state: Mapping[str, Any],
+    path: Path,
+    network_key: str,
+    nodes: Sequence[Mapping[str, Any]],
+    *,
+    dry_run: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Ensure every live Hub has a node-scoped hub_admin seed and huddle record.
+
+    ``huddle`` is a private-state registry, not topology authority.  It remembers
+    which admin key belongs to each live hub and preserves legacy/retired admin
+    addresses so a future hub can intentionally reuse or recover one.
+    """
+
+    network_key = clean_node_network_key(network_key)
+    mutable_state = json.loads(json.dumps(dict(state)))
+    network = ensure_network_private_state(mutable_state, network_key)
+    wallets = ensure_mapping_child(network, "wallets")
+    node_seed_material = ensure_mapping_child(network, "node_seed_material")
+    huddle = ensure_mapping_child(network, "huddle")
+    huddle.setdefault("schema", "main_computer.allfather.huddle.v1")
+    huddle.setdefault("managed_by", "tools/allfather_control.py hub-propagate")
+    hub_admins = ensure_mapping_child(huddle, "hub_admins")
+    active = ensure_mapping_child(hub_admins, "active")
+    retired_value = hub_admins.get("retired")
+    if not isinstance(retired_value, list):
+        retired_value = []
+        hub_admins["retired"] = retired_value
+
+    before = json.dumps(mutable_state, sort_keys=True, default=str)
+    generated: list[dict[str, Any]] = []
+    live_cell_ids: set[str] = set()
+    admin_records: list[dict[str, Any]] = []
+    now = utc_now_iso()
+
+    for node in sorted(nodes, key=network_super_node_sort_key):
+        cell_id = str(node.get("service_name") or "").strip()
+        if not cell_id:
+            continue
+        live_cell_ids.add(cell_id)
+        node_seed = ensure_mapping_child(node_seed_material, cell_id)
+        node_wallets = ensure_mapping_child(node_seed, "wallets")
+        materialize_wallet_key(
+            node_wallets,
+            "hub_admin",
+            reason=f"{network_key} {cell_id} hub-propagate huddle admin",
+            generated=generated,
+        )
+        hub_admin = ensure_mapping_child(node_wallets, "hub_admin")
+        private_key = nonempty_private_value(hub_admin.get("private_key"))
+        key_path = private_key_path_for_node_hub_admin(network_key, cell_id)
+        if not private_key:
+            raise AllfatherControlError(f"Hub admin private key was not materialized for {key_path}")
+
+        derived_address = ethereum_address_from_private_key(private_key)
+        existing_active = active.get(cell_id) if isinstance(active.get(cell_id), Mapping) else {}
+        previous_address = str(hub_admin.get("address") or existing_active.get("address") or "").strip()
+        if previous_address:
+            try:
+                previous_address = checksum_ethereum_address(previous_address)
+            except Exception:
+                previous_address = ""
+        if previous_address and previous_address.lower() != derived_address.lower():
+            generated.append(
+                {
+                    "kind": "hub_admin_address_corrected",
+                    "cell_id": cell_id,
+                    "from": previous_address,
+                    "to": derived_address,
+                    "reason": "private key is authoritative for node-scoped hub_admin address",
+                }
+            )
+        if hub_admin.get("address") != derived_address:
+            hub_admin["address"] = derived_address
+        metadata = ensure_mapping_child(hub_admin, "metadata")
+        if metadata.get("address_derivation") != "tools/allfather_control.py:ethereum_address_from_private_key":
+            metadata["address_derivation"] = "tools/allfather_control.py:ethereum_address_from_private_key"
+        record = {
+            "cell_id": cell_id,
+            "service_name": cell_id,
+            "coolify_server": str(node.get("coolify_server") or ""),
+            "host_slot": str(node.get("host_slot") or ""),
+            "ordinal": int(node.get("ordinal") or 0),
+            "address": derived_address,
+            "private_key_path": key_path,
+            "status": "active",
+            "source": "live-coolify-super-node-inventory",
+        }
+        if not existing_active:
+            record["created_at"] = now
+        else:
+            if existing_active.get("created_at"):
+                record["created_at"] = existing_active.get("created_at")
+        record["last_seen_at"] = now
+        active[cell_id] = record
+        admin_records.append(
+            {
+                **{key: value for key, value in record.items() if key not in {"private_key_path"}},
+                "private_key_path": key_path,
+                "private_key": private_key,
+                "private_key_present": bool(private_key),
+            }
+        )
+
+    # Preserve legacy network-scoped hub_admin material as a huddle retired entry.
+    legacy_hub_admin = wallets.get("hub_admin") if isinstance(wallets.get("hub_admin"), Mapping) else {}
+    if legacy_hub_admin:
+        legacy_address = str(legacy_hub_admin.get("address") or "").strip()
+        legacy_key_present = bool(nonempty_private_value(legacy_hub_admin.get("private_key")))
+        legacy_fingerprint = wallet_record_fingerprint(legacy_hub_admin)
+        already_recorded = any(
+            isinstance(item, Mapping) and str(item.get("fingerprint") or "") == legacy_fingerprint
+            for item in retired_value
+        )
+        active_addresses = {str(item.get("address") or "").strip().lower() for item in active.values() if isinstance(item, Mapping)}
+        if not already_recorded and (legacy_address or legacy_key_present) and legacy_address.lower() not in active_addresses:
+            retired_value.append(
+                {
+                    "kind": "legacy-network-hub-admin",
+                    "address": legacy_address or None,
+                    "private_key_path": f"networks.{network_key}.wallets.hub_admin.private_key",
+                    "private_key_present": legacy_key_present,
+                    "fingerprint": legacy_fingerprint,
+                    "retired_at": now,
+                    "reason": "preserved before hub-propagate node-scoped huddle admins became authoritative",
+                }
+            )
+
+    # Retire active records no longer present in the live inventory, without copying private keys.
+    for cell_id in sorted(list(active.keys())):
+        if cell_id in live_cell_ids:
+            continue
+        old = active.pop(cell_id)
+        if isinstance(old, Mapping):
+            retired_value.append(
+                {
+                    "kind": "retired-node-hub-admin",
+                    "cell_id": cell_id,
+                    "service_name": old.get("service_name") or cell_id,
+                    "address": old.get("address"),
+                    "private_key_path": old.get("private_key_path"),
+                    "retired_at": now,
+                    "reason": "not present in live topology during hub-propagate",
+                }
+            )
+
+    after = json.dumps(mutable_state, sort_keys=True, default=str)
+    changed = before != after
+    if changed and not dry_run:
+        write_yaml_mapping(path, mutable_state)
+
+    return mutable_state, admin_records, {
+        "path": display_path(path),
+        "written": bool(changed and not dry_run),
+        "dry_run": bool(dry_run),
+        "generated": generated,
+        "wallets_generated": [item["wallet"] for item in generated if item.get("kind") == "wallet_private_key"],
+        "active_hub_admin_count": len(admin_records),
+        "active_hub_admin_address_count": len([item for item in admin_records if item.get("address")]),
+        "retired_hub_admin_count": len(retired_value),
+        "huddle_path": f"networks.{network_key}.huddle.hub_admins",
+        "active_hub_admins": [
+            {key: value for key, value in item.items() if key in {"cell_id", "service_name", "coolify_server", "host_slot", "ordinal", "address", "status"}}
+            for item in admin_records
+        ],
+        "note": "Huddle admin records are private seed/control material, not topology authority.",
+    }
+
+
+def apply_hub_admin_sync_result_to_private_state(
+    state: Mapping[str, Any],
+    path: Path,
+    network_key: str,
+    sync_result: Mapping[str, Any],
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    network_key = clean_node_network_key(network_key)
+    if not bool(sync_result.get("ok")):
+        return {"path": display_path(path), "written": False, "reason": "hub admin contract sync was not successful"}
+    admins = sync_result.get("admins")
+    if not isinstance(admins, list):
+        return {"path": display_path(path), "written": False, "reason": "hub admin contract sync returned no admins list"}
+    mutable_state = json.loads(json.dumps(dict(state)))
+    network = ensure_network_private_state(mutable_state, network_key)
+    huddle_active = ensure_mapping_child(ensure_mapping_child(ensure_mapping_child(network, "huddle"), "hub_admins"), "active")
+    node_seed_material = ensure_mapping_child(network, "node_seed_material")
+    changed = False
+    for item in admins:
+        if not isinstance(item, Mapping):
+            continue
+        cell_id = str(item.get("cell_id") or "").strip()
+        address = str(item.get("address") or "").strip()
+        if not (cell_id and address):
+            continue
+        node_seed = ensure_mapping_child(node_seed_material, cell_id)
+        node_wallets = ensure_mapping_child(node_seed, "wallets")
+        hub_admin = ensure_mapping_child(node_wallets, "hub_admin")
+        if hub_admin.get("address") != address:
+            hub_admin["address"] = address
+            changed = True
+        active_record = ensure_mapping_child(huddle_active, cell_id)
+        if active_record.get("address") != address:
+            active_record["address"] = address
+            changed = True
+        if active_record.get("contract_authorized") is not True:
+            active_record["contract_authorized"] = True
+            changed = True
+        if item.get("tx_hash") and active_record.get("contract_tx_hash") != item.get("tx_hash"):
+            active_record["contract_tx_hash"] = item.get("tx_hash")
+            changed = True
+    if changed and not dry_run:
+        write_yaml_mapping(path, mutable_state)
+    return {
+        "path": display_path(path),
+        "written": bool(changed and not dry_run),
+        "dry_run": bool(dry_run),
+        "address_updates": len([item for item in admins if isinstance(item, Mapping) and item.get("address")]),
+        "huddle_path": f"networks.{network_key}.huddle.hub_admins.active",
+    }
+
+
+def hub_credit_bridge_escrow_address_for_network(network_key: str) -> str:
+    network_key = clean_node_network_key(network_key)
+    path = ALLFATHER_CONTRACT_CONFIG_FILES.get(network_key)
+    if not path or not path.exists():
+        return ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if isinstance(payload, Mapping):
+        return str(payload.get("hub_credit_bridge_escrow") or payload.get("HubCreditBridgeEscrow") or "").strip()
+    return ""
+
+
+def hub_admin_sync_service_name(network_key: str, head: HeadNode) -> str:
+    return safe_id(f"allfather-hub-admin-sync-{clean_node_network_key(network_key)}-{head.coolify_server}", field="hub_admin_sync_service_name")
+
+
+def hub_admin_sync_request_payload(
+    network_key: str,
+    head: HeadNode,
+    executor_node: Mapping[str, Any],
+    admin_records: Sequence[Mapping[str, Any]],
+    *,
+    contract_address: str,
+    owner_private_key: str,
+) -> dict[str, Any]:
+    network = clean_node_network_key(network_key)
+    safe_admins = []
+    for item in admin_records:
+        address = str(item.get("address") or "").strip()
+        if not address:
+            private_key = nonempty_private_value(item.get("private_key"))
+            if private_key:
+                address = ethereum_address_from_private_key(private_key)
+        if not address:
+            continue
+        address = checksum_ethereum_address(address)
+        safe_admins.append(
+            {
+                "cell_id": str(item.get("cell_id") or item.get("service_name") or ""),
+                "service_name": str(item.get("service_name") or item.get("cell_id") or ""),
+                "address": address,
+            }
+        )
+    payload_for_hash = {
+        "network_key": network,
+        "coolify_server": head.coolify_server,
+        "executor_service_name": str(executor_node.get("service_name") or ""),
+        "contract_address": contract_address,
+        "admins": [
+            {"cell_id": item.get("cell_id"), "address": item.get("address")}
+            for item in safe_admins
+        ],
+    }
+    request_id = hashlib.sha256(json.dumps(payload_for_hash, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]
+    return {
+        "network_key": network,
+        "coolify_server": head.coolify_server,
+        "service_name": hub_admin_sync_service_name(network, head),
+        "request_id": request_id,
+        "executor_service_name": str(executor_node.get("service_name") or ""),
+        "contract_address": contract_address,
+        "owner_private_key": owner_private_key,
+        "rpc_url": "http://127.0.0.1:8545",
+        "receipt_timeout_s": 120,
+        "admins": safe_admins,
+    }
+
+
+
+def contract_deploy_service_name(network_key: str, head: HeadNode) -> str:
+    return safe_id(f"allfather-contract-deploy-{clean_node_network_key(network_key)}-{head.coolify_server}", field="contract_deploy_service_name")
+
+
+def choose_hub_credit_bridge_escrow_controller(admin_records: Sequence[Mapping[str, Any]], executor_node: Mapping[str, Any]) -> dict[str, Any]:
+    executor_service = str(executor_node.get("service_name") or "").strip()
+    candidates = [item for item in admin_records if isinstance(item, Mapping) and str(item.get("address") or "").strip()]
+    if not candidates:
+        raise AllfatherControlError("No materialized Hub admin address is available for HubCreditBridgeEscrow constructor.")
+    for item in candidates:
+        if str(item.get("cell_id") or item.get("service_name") or "").strip() == executor_service:
+            return dict(item)
+    return dict(sorted(candidates, key=lambda item: (str(item.get("coolify_server") or ""), int(item.get("ordinal") or 0), str(item.get("cell_id") or item.get("service_name") or "")))[0])
+
+
+def contract_deploy_request_payload(
+    network_key: str,
+    head: HeadNode,
+    executor_node: Mapping[str, Any],
+    admin_records: Sequence[Mapping[str, Any]],
+    *,
+    owner_private_key: str,
+    deploy_escrow: bool,
+    receipt_timeout_s: int = 300,
+) -> dict[str, Any]:
+    network = clean_node_network_key(network_key)
+    targets: list[str] = []
+    payload_for_hash: dict[str, Any] = {
+        "network_key": network,
+        "coolify_server": head.coolify_server,
+        "executor_service_name": str(executor_node.get("service_name") or ""),
+        "deploy_escrow": bool(deploy_escrow),
+    }
+    controller_record: dict[str, Any] = {}
+    if deploy_escrow:
+        controller_record = choose_hub_credit_bridge_escrow_controller(admin_records, executor_node)
+        controller_address = checksum_ethereum_address(str(controller_record.get("address") or ""))
+        targets.append("hub_credit_bridge_escrow")
+        payload_for_hash["hub_credit_bridge_escrow_controller"] = controller_address
+    else:
+        controller_address = ""
+
+    request_id = secrets.token_hex(12)
+    request = {
+        "network_key": network,
+        "coolify_server": head.coolify_server,
+        "service_name": contract_deploy_service_name(network, head),
+        "request_id": request_id,
+        "executor_service_name": str(executor_node.get("service_name") or ""),
+        "owner_private_key": owner_private_key,
+        "rpc_url": "http://127.0.0.1:8545",
+        "receipt_timeout_s": int(receipt_timeout_s),
+        "targets": targets,
+        "request_fingerprint": hashlib.sha256(json.dumps(payload_for_hash, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+    }
+    if controller_address:
+        request["hub_credit_bridge_escrow_controller"] = controller_address
+        request["hub_admin_address"] = controller_address
+        request["hub_admin_cell_id"] = str(controller_record.get("cell_id") or controller_record.get("service_name") or "")
+        request["contract_sources_b64"] = {
+            "src/HubCreditBridgeEscrow.sol": allfather_contract_sources_b64().get("src/HubCreditBridgeEscrow.sol", "")
+        }
+        request["contract_source_sha256"] = hashlib.sha256(
+            base64.b64decode(str(request["contract_sources_b64"].get("src/HubCreditBridgeEscrow.sol") or ""))
+        ).hexdigest()
+    return request
+
+
+def update_contract_config_for_network(
+    network_key: str,
+    contracts: Mapping[str, Any],
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    network = clean_node_network_key(network_key)
+    path = ALLFATHER_CONTRACT_CONFIG_FILES.get(network)
+    if not path:
+        raise AllfatherControlError(f"No contract config file is registered for network {network!r}.")
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                existing = payload
+        except Exception as exc:
+            raise AllfatherControlError(f"Could not read contract config {display_path(path)}: {type(exc).__name__}: {exc}") from exc
+
+    updates: dict[str, str] = {}
+    for key in ("hub_credit_bridge_escrow", "alpha-beta-lockout", "xlag-bridge-reserve"):
+        value = contracts.get(key) if isinstance(contracts, Mapping) else None
+        if isinstance(value, Mapping):
+            address = str(value.get("address") or "").strip()
+        else:
+            address = str(value or "").strip()
+        if not address:
+            continue
+        updates[key] = checksum_ethereum_address(address)
+
+    if not updates:
+        return {"path": display_path(path), "written": False, "dry_run": bool(dry_run), "reason": "no contract addresses returned to write"}
+
+    before = dict(existing)
+    existing.update(updates)
+    changed = before != existing
+    if changed and not dry_run:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "path": display_path(path),
+        "written": bool(changed and not dry_run),
+        "dry_run": bool(dry_run),
+        "changed": bool(changed),
+        "updates": updates,
+        "previous": {key: before.get(key) for key in updates},
+        "current": {key: existing.get(key) for key in updates},
     }
 
 
@@ -7022,6 +9101,36 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
     )
     return running and block_production_ok
 
+def full_hub_runtime_available() -> bool:
+    return Path("/opt/main-computer-src/main_computer/hub.py").exists()
+
+def allfather_chain_id() -> int:
+    return 20260001 if network_key == "mainnet" else 20260002
+
+def write_full_hub_launcher_script() -> Path:
+    ensure_dirs()
+    script = state_root / "hub" / "allfather-full-hub.py"
+    script.write_text(
+        "\n".join([
+            "from __future__ import annotations",
+            "import os",
+            "import sys",
+            "from pathlib import Path",
+            "src = '/opt/main-computer-src'",
+            "if src not in sys.path:",
+            "    sys.path.insert(0, src)",
+            "from main_computer.config import MainComputerConfig",
+            "from main_computer.hub import serve_hub",
+            "host = os.environ.get('MAIN_COMPUTER_HUB_HOST', '0.0.0.0')",
+            "port = int(os.environ.get('MAIN_COMPUTER_HUB_PORT', '8785'))",
+            "Path(os.environ.get('MAIN_COMPUTER_HUB_ROOT', '/tmp/main-computer-hub')).mkdir(parents=True, exist_ok=True)",
+            "config = MainComputerConfig.from_env()",
+            "serve_hub(config, host=host, port=port, verbose=True)",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    return script
+
 def write_bootstrap_hub_script() -> Path:
     ensure_dirs()
     script = state_root / "hub" / "allfather-bootstrap-hub.py"
@@ -7033,19 +9142,57 @@ def ensure_hub(validator_ready: bool) -> bool:
     if not validator_ready:
         state("hub", name=components.get("hub"), desired=True, running=False, status="pending-validator-rpc", port=hub_port, public_cutover_deferred=bool(bootstrap.get("hub_public_cutover_deferred", True)))
         return False
-    script = write_bootstrap_hub_script()
+    full_hub = full_hub_runtime_available()
+    previous_hub_state = component_state.get("hub") if isinstance(component_state.get("hub"), dict) else {}
+    if full_hub and child_running("hub") and not bool(previous_hub_state.get("full_main_computer_hub")):
+        super_log("hub_runtime_upgrade_detected stopping bootstrap hub child so full runtime can start")
+        stop_child("hub")
+    script = write_full_hub_launcher_script() if full_hub else write_bootstrap_hub_script()
+    chain_id = allfather_chain_id()
+    hub_env = {
+        "MC_ALLFATHER_HUB_PORT": str(hub_port),
+        "MC_ALLFATHER_NETWORK": network_key,
+        "MC_ALLFATHER_CELL_ID": cell_id,
+    }
+    if full_hub:
+        hub_env.update(
+            {
+                "PYTHONPATH": "/opt/main-computer-src",
+                "MAIN_COMPUTER_WORKSPACE": str(state_root / "workspace"),
+                "MAIN_COMPUTER_HUB_HOST": "0.0.0.0",
+                "MAIN_COMPUTER_HUB_PORT": str(hub_port),
+                "MAIN_COMPUTER_HUB_ROOT": str(state_root / "hub" / "runtime"),
+                "MAIN_COMPUTER_HUB_NETWORK": network_key,
+                "MAIN_COMPUTER_HUB_NETWORK_KIND": "allfather-qbft",
+                "MAIN_COMPUTER_HUB_NETWORK_DISPLAY_NAME": f"Main Computer {network_key}",
+                "MAIN_COMPUTER_CHAIN_RPC_URL": f"http://127.0.0.1:{ports.get('rpc_container') or 8545}",
+                "MAIN_COMPUTER_CHAIN_ID": str(chain_id),
+                "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL": f"http://127.0.0.1:{ports.get('rpc_container') or 8545}",
+                "MAIN_COMPUTER_ENERGY_CHAIN_ID": str(chain_id),
+                "MAIN_COMPUTER_HUB_BRIDGE_BACKEND": "credit-bridge-contract",
+                "MAIN_COMPUTER_HUB_CONTRACTS_PATH": f"/opt/main-computer-src/main_computer/config/{network_key}_contracts.json",
+                "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER": "1",
+                "MAIN_COMPUTER_HUB_CLIENT_NODE_ID": f"{cell_id}-client",
+                "MAIN_COMPUTER_HUB_WORKER_NODE_ID": f"{cell_id}-worker",
+            }
+        )
     start_child(
         "hub",
         ["python", "-u", str(script)],
-        env_extra={
-            "MC_ALLFATHER_HUB_PORT": str(hub_port),
-            "MC_ALLFATHER_NETWORK": network_key,
-            "MC_ALLFATHER_CELL_ID": cell_id,
-        },
+        env_extra=hub_env,
     )
     running = child_running("hub")
     health_ok = http_json_ok(f"http://127.0.0.1:{hub_port}/api/hub/v1/health", timeout=0.7)
-    status = "running-bootstrap-listener" if running and health_ok else "starting" if running else "stopped"
+    if running and health_ok and full_hub:
+        status = "running-full-main-computer-hub"
+    elif running and health_ok:
+        status = "running-bootstrap-listener"
+    elif running and full_hub:
+        status = "starting-full-main-computer-hub"
+    elif running:
+        status = "starting"
+    else:
+        status = "stopped"
     state(
         "hub",
         name=components.get("hub"),
@@ -7054,10 +9201,12 @@ def ensure_hub(validator_ready: bool) -> bool:
         status=status,
         port=hub_port,
         health_ok=health_ok,
-        bootstrap_hub=True,
-        full_main_computer_hub=False,
+        bootstrap_hub=not full_hub,
+        full_main_computer_hub=bool(full_hub),
+        full_hub_runtime_available=bool(full_hub),
         public_cutover_deferred=bool(bootstrap.get("hub_public_cutover_deferred", True)),
         last_exit_code=child_exit("hub"),
+        log_tail="" if health_ok else tail_log("hub"),
     )
     return running and health_ok
 
@@ -7617,7 +9766,7 @@ ENV PATH="/opt/allfather-super-venv/bin:$PATH"
 """.strip()
 
 
-def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None) -> str:
+def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None, *, build_id: str = "") -> str:
     """Return a self-contained per-node Dockerfile.
 
     Sprawl-free host-agent mode deliberately avoids the old
@@ -7643,16 +9792,34 @@ def super_node_dockerfile_inline(base_image: str, guard_script: str | None = Non
     ).decode("ascii")
     guard_script_b64 = base64.b64encode(zlib.compress((guard_script or super_server_command_script()).encode("utf-8"))).decode("ascii")
     wrapper_script_b64 = base64.b64encode(zlib.compress(super_node_entrypoint_wrapper_script().encode("utf-8"))).decode("ascii")
+    full_hub_runtime_b64 = allfather_full_hub_runtime_archive_b64()
+    full_hub_runtime_sha256 = hashlib.sha256(full_hub_runtime_b64.encode("ascii")).hexdigest()
+    guard_script_sha256 = hashlib.sha256(guard_script_b64.encode("ascii")).hexdigest()
+    build_cache_bust = str(build_id or "").strip() or hashlib.sha256(
+        (full_hub_runtime_sha256 + ":" + guard_script_sha256).encode("utf-8")
+    ).hexdigest()[:24]
     payload_install = dockerfile_payload_install_run(
         {
             "/opt/allfather-contracts/contract-sources-b64.json": contract_sources_b64,
             "/opt/allfather-contracts/build-contract-artifacts.py": contract_builder_b64,
+            "/opt/main-computer-src.zip": full_hub_runtime_b64,
             "/usr/local/bin/allfather-super-guard.py": guard_script_b64,
             "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
         }
     )
     return f"""
 FROM {source}
+
+LABEL main_computer.allfather.full_hub_runtime="true" \
+      main_computer.allfather.build_id={json.dumps(build_cache_bust)} \
+      main_computer.allfather.full_hub_runtime_sha256={json.dumps(full_hub_runtime_sha256)} \
+      main_computer.allfather.guard_script_sha256={json.dumps(guard_script_sha256)}
+
+RUN set -eux; \
+    mkdir -p /opt/allfather-build; \
+    printf '%s\n' {shell_single_quote(build_cache_bust)} > /opt/allfather-build/deployment-id; \
+    printf '%s\n' {shell_single_quote(full_hub_runtime_sha256)} > /opt/allfather-build/full-hub-runtime-sha256; \
+    printf '%s\n' {shell_single_quote(guard_script_sha256)} > /opt/allfather-build/guard-script-sha256
 
 USER root
 
@@ -7722,13 +9889,19 @@ RUN set -eux; \
     python3 /opt/allfather-contracts/build-contract-artifacts.py \
         /opt/allfather-contracts/contract-sources-b64.json \
         /opt/allfather-contracts/contracts-artifacts.json; \
-    test -s /opt/allfather-contracts/contracts-artifacts.json
+    test -s /opt/allfather-contracts/contracts-artifacts.json; \
+    rm -rf /opt/main-computer-src; \
+    mkdir -p /opt/main-computer-src; \
+    python3 -c 'import zipfile; zipfile.ZipFile("/opt/main-computer-src.zip").extractall("/opt/main-computer-src")'; \
+    test -s /opt/main-computer-src/main_computer/hub.py; \
+    test -s /opt/main-computer-src/main_computer/config/mainnet_contracts.json
 
 ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super \
-    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets,sprawl-free-host-agent-build \
+    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-full,hub-bootstrap-fallback,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets,sprawl-free-host-agent-build \
     MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint \
     MC_ALLFATHER_IMAGE_SOURCE={source} \
-    MC_ALLFATHER_SHARED_BASE_BUILDER=disabled
+    MC_ALLFATHER_SHARED_BASE_BUILDER=disabled \
+    PYTHONPATH=/opt/main-computer-src
 
 EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
 
@@ -8882,7 +11055,7 @@ def render_super_node_compose(
         if private_bind_host:
             return f"{private_bind_host}:{host_port}:{container_port}/{clean_protocol}"
         return f"{host_port}:{container_port}/{clean_protocol}"
-    dockerfile_inline = escape_compose_interpolation(super_node_dockerfile_inline(image, guard_script=command_script))
+    dockerfile_inline = escape_compose_interpolation(super_node_dockerfile_inline(image, guard_script=command_script, build_id=str(manifest.get("deployment_id") or "")))
     lines = [
         f"name: {service_name}",
         "",
@@ -8898,6 +11071,8 @@ def render_super_node_compose(
     lines.extend(yaml_block_scalar(dockerfile_inline, 8))
     lines.extend([
         f"    container_name: {yaml_quote(super_container_name_from_manifest(manifest))}",
+        "    # Keep container_name stable because hub-propagate routes Traefik to this",
+        "    # Docker name. Deployment ids remain in labels/env/build metadata.",
         "    restart: unless-stopped",
         "    # Coolify's Compose validator accepts a null service entrypoint.",
         "    # The built image overrides the inherited Besu entrypoint and starts",
@@ -8914,6 +11089,7 @@ def render_super_node_compose(
             f"      MC_ALLFATHER_NETWORK: {yaml_quote(str(manifest.get('network_key') or ''))}",
             f"      MC_ALLFATHER_CELL_ID: {yaml_quote(service_name)}",
             f"      MC_ALLFATHER_DEPLOYMENT_ID: {yaml_quote(str(manifest.get('deployment_id') or ''))}",
+            f"      MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED: {yaml_quote('1' if (manifest.get('bootstrap') or {}).get('full_hub_runtime_requested') else '0')}",
             f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(str(ports.get('guard_container') or DEFAULT_SUPER_GUARD_CONTAINER_PORT))}",
             f"      MC_ALLFATHER_SUPER_MANIFEST_B64: {yaml_quote(manifest_b64_value)}",
             f"      MC_ALLFATHER_FDB_PLAN_B64: {yaml_quote(fdb_plan_b64_value)}",
@@ -9378,7 +11554,7 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
 
     hub = _component_snapshot(functions, "hub")
     if not (
-        str(hub.get("status") or "") in {"running", "running-bootstrap-listener"}
+        str(hub.get("status") or "") in {"running", "running-bootstrap-listener", "running-full-main-computer-hub"}
         and bool(hub.get("running"))
         and bool(hub.get("health_ok"))
     ):
@@ -9905,7 +12081,11 @@ def prune_allfather_helper_services(
 
 
 def public_domain_suffix(args: argparse.Namespace | None = None) -> str:
-    suffix = str(getattr(args, "traefik_domain_suffix", DEFAULT_PUBLIC_DOMAIN_SUFFIX) if args is not None else DEFAULT_PUBLIC_DOMAIN_SUFFIX).strip().strip(".")
+    if args is None:
+        raw_suffix = DEFAULT_PUBLIC_DOMAIN_SUFFIX
+    else:
+        raw_suffix = getattr(args, "hub_domain_suffix", None) or getattr(args, "traefik_domain_suffix", DEFAULT_PUBLIC_DOMAIN_SUFFIX)
+    suffix = str(raw_suffix).strip().strip(".")
     if not suffix:
         raise AllfatherControlError("Public Traefik domain suffix must not be empty.")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", suffix) or ".." in suffix:
@@ -10423,20 +12603,797 @@ def collect_network_super_inventory_for_traefik(
     }
 
 
-def propagate_traefik_for_network(
+
+
+def hub_public_health_domain_for_node(
+    network_key: str,
+    node: Mapping[str, Any],
+    *,
+    domain_suffix: str,
+) -> str:
+    components = node.get("components") if isinstance(node.get("components"), Mapping) else {}
+    hub_name = str(components.get("hub") or "").strip()
+    if not hub_name:
+        hub_name = str(node.get("service_name") or "").replace("-super", "-hub")
+    return f"{hub_name}.{domain_suffix}"
+
+
+def probe_public_hub_health(domain: str, *, timeout_s: float = 6.0) -> dict[str, Any]:
+    clean_domain = str(domain or "").strip().strip("/")
+    if not clean_domain:
+        return {"ok": False, "observed": False, "error": "missing domain"}
+    url = f"https://{clean_domain}/api/hub/v1/health"
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "allfather-hub-propagate/1.0"})
+        with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as response:
+            raw = response.read()
+            status_code = int(getattr(response, "status", 200) or 200)
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            return {"ok": False, "observed": True, "url": url, "status_code": status_code, "error": "health response was not a JSON object"}
+        full_hub = bool(payload.get("full_main_computer_hub")) or (
+            str(payload.get("service") or "") == "main-computer-hub" and payload.get("bootstrap_hub") is not True
+        )
+        return {
+            "ok": bool(payload.get("ok", status_code < 400)),
+            "observed": True,
+            "url": url,
+            "status_code": status_code,
+            "service": payload.get("service"),
+            "network_key": payload.get("network_key"),
+            "cell_id": payload.get("cell_id"),
+            "bootstrap_hub": bool(payload.get("bootstrap_hub")),
+            "full_main_computer_hub": bool(full_hub),
+            "payload": payload,
+        }
+    except Exception as exc:
+        return {"ok": False, "observed": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+
+
+
+
+def coolify_snapshot_has_running_full_runtime_compose(snapshot: Mapping[str, Any]) -> bool:
+    """Return true when Coolify says the updated full-runtime compose is active and healthy/running."""
+
+    service = snapshot.get("service") if isinstance(snapshot.get("service"), Mapping) else {}
+    status = str(service.get("status") or service.get("server_status") or "").lower()
+    compose = snapshot.get("compose") if isinstance(snapshot.get("compose"), Mapping) else {}
+    return (
+        ("running" in status or "healthy" in status)
+        and bool(compose.get("any_contains_full_runtime"))
+        and bool(compose.get("any_contains_deployment_id"))
+    )
+
+
+def full_hub_stale_bootstrap_fail_s(args: argparse.Namespace | None) -> float:
+    if args is None:
+        return 120.0
+    try:
+        return max(0.0, float(getattr(args, "full_hub_runtime_stale_bootstrap_fail_s", 120.0) or 0.0))
+    except Exception:
+        return 120.0
+
+
+def full_hub_runtime_diag_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read full-hub container runtime diagnostics from the allfather head metadata."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64 entry found"}
+    encoded = description.split(FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+def wait_for_head_full_hub_runtime_diag_ready(
+    client: Any,
+    head_service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+    poll_s: float = 2.0,
+    expected_request_id: str = "",
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
+    first = True
+    attempts = 0
+    last_log_signature = ""
+    last_log_at = 0.0
+    log_interval = operator_log_interval_s(args) if args is not None else 15.0
+    while first or time.time() < deadline:
+        first = False
+        attempts += 1
+        detail = fetch_service_detail(client, head_service_uuid, tried)
+        last_result = full_hub_runtime_diag_result_from_service_metadata(detail)
+        result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        phase = str(result.get("phase") or result.get("status") or "")
+        request_id = str(result.get("request_id") or "")
+        node_count = len(result.get("nodes") or []) if isinstance(result.get("nodes"), list) else 0
+        signature = (
+            f"attempt={attempts} observed={bool(last_result.get('ok'))} phase={phase or 'not-observed'} "
+            f"request_id={request_id or '<missing>'} nodes={node_count}"
+        )
+        if last_result.get("error"):
+            signature += f" error={str(last_result.get('error'))[:180]}"
+        now = time.time()
+        if args is not None and (signature != last_log_signature or (now - last_log_at) >= log_interval):
+            remaining = max(0.0, deadline - now)
+            operator_log(args, f"full-hub-sync: waiting container runtime diagnostics marker: {signature}; remaining={remaining:.0f}s")
+            last_log_signature = signature
+            last_log_at = now
+        if last_result.get("ok") and phase in {"ready", "failed"}:
+            observed_request_id = str(result.get("request_id") or "")
+            if expected_request_id and observed_request_id != expected_request_id:
+                last_result = {
+                    **last_result,
+                    "error": f"stale full-hub runtime diagnostics marker observed for request_id={observed_request_id or '<missing>'}; waiting for request_id={expected_request_id}",
+                }
+            else:
+                if args is not None:
+                    operator_log(args, f"full-hub-sync: container runtime diagnostics marker {phase} after {attempts} poll(s)")
+                return {
+                    "observed": True,
+                    "ready": bool(result.get("ok")) and phase == "ready",
+                    "reason": str(result.get("error") or ("full-hub runtime diagnostics completed" if phase == "ready" else "full-hub runtime diagnostics failed")),
+                    "result": dict(result),
+                    "source": last_result.get("source"),
+                    "attempts": attempts,
+                    "last_status": last_log_signature or signature,
+                }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+    result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+    if args is not None:
+        operator_log(args, f"full-hub-sync: timed out waiting for container runtime diagnostics marker; last={last_log_signature or 'not-observed'}")
+    return {
+        "observed": bool(last_result.get("ok")),
+        "ready": False,
+        "reason": str(result.get("error") or last_result.get("error") or "full-hub runtime diagnostics metadata callback was not observed"),
+        "result": dict(result),
+        "source": last_result.get("source"),
+        "attempts": attempts,
+        "last_status": last_log_signature,
+    }
+
+
+def expected_deployment_id_from_node_result(node_result: Mapping[str, Any]) -> str:
+    diagnostics = node_result.get("diagnostics") if isinstance(node_result.get("diagnostics"), Mapping) else {}
+    for step in diagnostics.get("steps") or []:
+        if isinstance(step, Mapping) and step.get("step") == "manifest-build-done":
+            return str(step.get("deployment_id") or "")
+    wait = node_result.get("wait") if isinstance(node_result.get("wait"), Mapping) else {}
+    for snapshot in wait.get("coolify_snapshots") or []:
+        if isinstance(snapshot, Mapping):
+            compose = snapshot.get("compose") if isinstance(snapshot.get("compose"), Mapping) else {}
+            expected = str(compose.get("expected_deployment_id") or "")
+            if expected:
+                return expected
+    return ""
+
+
+def full_hub_runtime_diag_request_payload(
+    network_key: str,
+    head: HeadNode,
+    sync_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    nodes: list[dict[str, Any]] = []
+    for node in sync_result.get("nodes") or []:
+        if not isinstance(node, Mapping) or node.get("ok") is not False:
+            continue
+        service_name = str(node.get("service_name") or "").strip()
+        if not service_name:
+            continue
+        nodes.append(
+            {
+                "service_name": service_name,
+                "domain": str(node.get("domain") or ""),
+                "expected_deployment_id": expected_deployment_id_from_node_result(node),
+                "reason": str(node.get("reason") or ""),
+            }
+        )
+    return {
+        "request_id": secrets.token_hex(12),
+        "service_name": safe_id(f"allfather-full-hub-runtime-diagnostics-{network_key}-{head.coolify_server}", field="service_name"),
+        "network_key": clean_node_network_key(network_key),
+        "coolify_server": head.coolify_server,
+        "nodes": nodes,
+    }
+
+
+def run_full_hub_runtime_container_diagnostics(
+    plan: HeadPlan,
+    network_key: str,
+    head: HeadNode,
+    *,
+    sync_result: Mapping[str, Any],
+    client: Any,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+    inventory_nodes: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    request = full_hub_runtime_diag_request_payload(network_key, head, sync_result)
+    if not request.get("nodes"):
+        return {"enabled": True, "ok": None, "reason": "no failed full-hub runtime nodes requested diagnostics", "request": request}
+    result: dict[str, Any] = {
+        "enabled": True,
+        "ok": False,
+        "reason": "not observed",
+        "request": request,
+        "service_action": "",
+        "service_uuid": "",
+        "deployed": False,
+    }
+    try:
+        operator_log(args, f"full-hub-sync: host={head.coolify_server} collecting container runtime diagnostics for {len(request.get('nodes') or [])} node(s)")
+        service_uuid, action, _existing = sync_head_service(
+            client,
+            plan,
+            head,
+            args,
+            context,
+            tried,
+            probe_targets=probe_target_records_for_plan(plan, super_inventory=inventory_nodes),
+            full_hub_runtime_diag_request=request,
+        )
+        result["service_uuid"] = service_uuid
+        result["service_action"] = f"head-agent-{action}"
+        if not getattr(args, "no_deploy", False):
+            operator_log(args, f"full-hub-sync: host={head.coolify_server} triggering head-agent diagnostics deploy")
+            hub_service_tool().trigger_deploy_service(client, service_uuid=service_uuid, force=True, tried=tried)
+            result["deployed"] = True
+        wait_s = min(180.0, max(30.0, float(getattr(args, "hub_propagate_wait_s", 180.0) or 180.0)))
+        wait = wait_for_head_full_hub_runtime_diag_ready(
+            client,
+            service_uuid,
+            tried,
+            wait_s=wait_s,
+            poll_s=2.0,
+            expected_request_id=str(request.get("request_id") or ""),
+            args=args,
+        )
+        result["observed"] = bool(wait.get("observed"))
+        result["ready"] = bool(wait.get("ready"))
+        result["wait"] = wait
+        result["result"] = wait.get("result") if isinstance(wait.get("result"), Mapping) else {}
+        result["ok"] = bool(wait.get("observed"))
+        result["reason"] = str(wait.get("reason") or "")
+    except Exception as exc:
+        result.update({"ok": False, "error": f"{type(exc).__name__}: {exc}", "reason": f"{type(exc).__name__}: {exc}"})
+    return result
+
+
+def wait_for_public_full_hub(
+    node: Mapping[str, Any],
+    domain: str,
+    *,
+    wait_s: float,
+    poll_s: float = 5.0,
+    args: argparse.Namespace | None = None,
+    client: Any | None = None,
+    tried: list[dict[str, Any]] | None = None,
+    service_uuid: str = "",
+    application_uuid: str = "",
+    expected_deployment_id: str = "",
+) -> dict[str, Any]:
+    service_name = str(node.get("service_name") or "").strip()
+    started = time.monotonic()
+    deadline = started + max(0.0, float(wait_s or 0.0))
+    attempts = 0
+    last_probe: dict[str, Any] = {}
+    last_log_signature = ""
+    last_log_at = 0.0
+    log_interval = operator_log_interval_s(args) if args is not None else 15.0
+    try:
+        coolify_status_interval = max(
+            log_interval,
+            float(getattr(args, "full_hub_runtime_status_interval_s", 30.0) if args is not None else 30.0),
+        )
+    except Exception:
+        coolify_status_interval = max(log_interval, 30.0)
+    coolify_snapshots: list[dict[str, Any]] = []
+    last_coolify_status_at = 0.0
+    running_full_compose_bootstrap_since: float | None = None
+    running_full_compose_bootstrap_snapshot: dict[str, Any] | None = None
+    while True:
+        attempts += 1
+        last_probe = probe_public_hub_health(domain, timeout_s=min(8.0, max(1.0, float(poll_s))))
+        signature = (
+            f"attempt={attempts} observed={bool(last_probe.get('observed'))} "
+            f"ok={bool(last_probe.get('ok'))} bootstrap={bool(last_probe.get('bootstrap_hub'))} "
+            f"full={bool(last_probe.get('full_main_computer_hub'))} "
+            f"service={last_probe.get('service') or '<unknown>'} "
+            f"cell={last_probe.get('cell_id') or '<unknown>'}"
+        )
+        if last_probe.get("error"):
+            signature += f" error={str(last_probe.get('error'))[:180]}"
+        now = time.monotonic()
+        if args is not None and (signature != last_log_signature or (now - last_log_at) >= log_interval):
+            remaining = max(0.0, deadline - now)
+            operator_log(
+                args,
+                f"full-hub-sync: waiting {service_name or '<unknown>'} at {domain}: {signature}; remaining={remaining:.0f}s",
+            )
+            last_log_signature = signature
+            last_log_at = now
+        if (
+            client is not None
+            and tried is not None
+            and service_uuid
+            and args is not None
+            and (now - last_coolify_status_at) >= coolify_status_interval
+        ):
+            try:
+                snapshot = coolify_full_hub_runtime_snapshot(
+                    client,
+                    service_uuid=service_uuid,
+                    tried=tried,
+                    application_uuid=application_uuid,
+                    expected_deployment_id=expected_deployment_id,
+                )
+                coolify_snapshots.append(snapshot)
+                if len(coolify_snapshots) > 10:
+                    coolify_snapshots = coolify_snapshots[-10:]
+                operator_log(
+                    args,
+                    f"full-hub-sync: Coolify deploy status {service_name or '<unknown>'}: "
+                    f"{coolify_full_hub_runtime_snapshot_summary(snapshot)}",
+                )
+                if (
+                    coolify_snapshot_has_running_full_runtime_compose(snapshot)
+                    and bool(last_probe.get("ok"))
+                    and bool(last_probe.get("bootstrap_hub"))
+                    and not bool(last_probe.get("full_main_computer_hub"))
+                ):
+                    if running_full_compose_bootstrap_since is None:
+                        running_full_compose_bootstrap_since = now
+                        running_full_compose_bootstrap_snapshot = snapshot
+                        operator_log(
+                            args,
+                            f"full-hub-sync: stale-bootstrap-candidate {service_name or '<unknown>'}: "
+                            "Coolify service is running/healthy with full-runtime compose, but public hub still reports bootstrap",
+                        )
+                else:
+                    running_full_compose_bootstrap_since = None
+                    running_full_compose_bootstrap_snapshot = None
+            except Exception as exc:
+                operator_log(
+                    args,
+                    f"full-hub-sync: Coolify deploy status {service_name or '<unknown>'}: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+            last_coolify_status_at = now
+        if (
+            bool(last_probe.get("ok"))
+            and bool(last_probe.get("full_main_computer_hub"))
+            and (not service_name or str(last_probe.get("cell_id") or "") == service_name)
+        ):
+            if args is not None:
+                operator_log(args, f"full-hub-sync: ready {service_name or '<unknown>'} at {domain} after {attempts} probe(s)")
+            return {
+                "ready": True,
+                "observed": bool(last_probe.get("observed")),
+                "reason": "full Main Computer hub health observed",
+                "attempts": attempts,
+                "domain": domain,
+                "last_probe": last_probe,
+                "coolify_snapshots": coolify_snapshots,
+                "elapsed_s": round(time.monotonic() - started, 3),
+            }
+        stale_fail_s = full_hub_stale_bootstrap_fail_s(args)
+        if (
+            stale_fail_s > 0
+            and running_full_compose_bootstrap_since is not None
+            and (time.monotonic() - running_full_compose_bootstrap_since) >= stale_fail_s
+        ):
+            reason = (
+                "Coolify service is running/healthy with full-runtime compose, but the public hub endpoint "
+                "is still serving the bootstrap hub; likely stale image/container cache or failed container replacement"
+            )
+            if args is not None:
+                operator_log(
+                    args,
+                    f"full-hub-sync: stale bootstrap after full-runtime deploy {service_name or '<unknown>'}: {reason}",
+                )
+            return {
+                "ready": False,
+                "observed": bool(last_probe.get("observed")),
+                "reason": reason,
+                "attempts": attempts,
+                "domain": domain,
+                "last_probe": last_probe,
+                "last_status": last_log_signature or signature,
+                "coolify_snapshots": coolify_snapshots,
+                "stale_bootstrap_after_running_full_compose_s": round(time.monotonic() - running_full_compose_bootstrap_since, 3),
+                "stale_bootstrap_snapshot": running_full_compose_bootstrap_snapshot,
+                "elapsed_s": round(time.monotonic() - started, 3),
+            }
+        if time.monotonic() >= deadline:
+            if args is not None:
+                operator_log(
+                    args,
+                    f"full-hub-sync: timed out {service_name or '<unknown>'} at {domain}; last={last_log_signature or signature}",
+                )
+            return {
+                "ready": False,
+                "observed": bool(last_probe.get("observed")),
+                "reason": "full Main Computer hub health was not observed before timeout",
+                "attempts": attempts,
+                "domain": domain,
+                "last_probe": last_probe,
+                "last_status": last_log_signature or signature,
+                "coolify_snapshots": coolify_snapshots,
+                "elapsed_s": round(time.monotonic() - started, 3),
+            }
+        time.sleep(min(max(0.5, float(poll_s)), max(0.0, deadline - time.monotonic())))
+
+
+def wallets_for_existing_super_node(
+    private_state: Mapping[str, Any],
+    network_key: str,
+    cell_id: str,
+) -> dict[str, Any]:
+    wallets = network_wallets_from_private_state(private_state, network_key)
+    node_hub_admin = _wallet_mapping_from_state_path(
+        private_state,
+        "networks",
+        clean_node_network_key(network_key),
+        "node_seed_material",
+        str(cell_id or ""),
+        "wallets",
+        "hub_admin",
+    )
+    if node_hub_admin:
+        wallets = dict(wallets)
+        wallets["hub_admin"] = node_hub_admin
+    return wallets
+
+
+def manifest_for_existing_super_node_runtime_sync(
+    network_key: str,
+    head: HeadNode,
+    node: Mapping[str, Any],
+    *,
+    all_nodes: Sequence[Mapping[str, Any]],
+    private_state: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    ordinal = int(node.get("ordinal") or 0)
+    cell_id = str(node.get("service_name") or super_service_name(network_key, head, ordinal))
+    wallets = wallets_for_existing_super_node(private_state, network_key, cell_id)
+    node_sort_key = network_super_node_sort_key(node)
+    earlier_nodes = [
+        dict(item)
+        for item in sorted(all_nodes, key=network_super_node_sort_key)
+        if network_super_node_sort_key(item) < node_sort_key
+    ]
+    manifest = super_manifest(
+        network_key,
+        head,
+        ordinal,
+        wallets=wallets,
+        private_state=private_state,
+        existing_nodes=earlier_nodes,
+        no_contracts=True,
+        publish_routes=False,
+    )
+    manifest["deployment_id"] = new_super_deployment_id()
+    manifest.setdefault("bootstrap", {})["hub_public_cutover_deferred"] = False
+    manifest.setdefault("bootstrap", {})["full_hub_runtime_requested"] = True
+    return manifest, wallets
+
+
+def sync_full_hub_runtime_for_host(
+    plan: HeadPlan,
+    network_key: str,
+    head: HeadNode,
+    *,
+    local_nodes: Sequence[Mapping[str, Any]],
+    all_nodes: Sequence[Mapping[str, Any]],
+    private_state: Mapping[str, Any],
+    domain_suffix: str,
+    client: Any,
+    args: argparse.Namespace,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    enabled = not bool(getattr(args, "no_full_hub_runtime_sync", False))
+    result: dict[str, Any] = {
+        "enabled": enabled,
+        "ok": True if enabled else None,
+        "reason": "not requested" if not enabled else "all local hubs already full or synced",
+        "nodes": [],
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+    if not enabled:
+        return result
+    if not local_nodes:
+        result.update({"ok": True, "reason": "no local super-nodes on this host"})
+        return result
+
+    wait_s = float(getattr(args, "full_hub_runtime_wait_s", None) or getattr(args, "hub_propagate_wait_s", DEFAULT_TRAEFIK_PROPAGATE_WAIT_S) or 0.0)
+    operator_log(
+        args,
+        f"full-hub-sync: host={head.coolify_server} local_nodes={len(local_nodes)} wait_s={wait_s:.0f}; checking public hub health before rebuild",
+    )
+    super_context: dict[str, Any] | None = None
+    for node in sorted(local_nodes, key=network_super_node_sort_key):
+        node_started = time.monotonic()
+        service_name = str(node.get("service_name") or "").strip()
+        domain = hub_public_health_domain_for_node(network_key, node, domain_suffix=domain_suffix)
+        steps: list[dict[str, Any]] = []
+
+        def record_step(step: str, **fields: Any) -> None:
+            clean_fields = {
+                str(key): value
+                for key, value in fields.items()
+                if value not in (None, "")
+                and "private" not in str(key).lower()
+                and "secret" not in str(key).lower()
+                and "token" not in str(key).lower()
+            }
+            event = {
+                "step": step,
+                "elapsed_s": round(time.monotonic() - node_started, 3),
+                **clean_fields,
+            }
+            steps.append(event)
+            detail = " ".join(f"{key}={value}" for key, value in clean_fields.items())
+            suffix = f" {detail}" if detail else ""
+            operator_log(args, f"full-hub-sync: {service_name or '<unknown>'}: {step}{suffix}")
+
+        record_step("health-before-start", domain=domain)
+        before = probe_public_hub_health(domain)
+        record_step(
+            "health-before-result",
+            observed=bool(before.get("observed")),
+            ok=bool(before.get("ok")),
+            bootstrap=bool(before.get("bootstrap_hub")),
+            full=bool(before.get("full_main_computer_hub")),
+            cell=before.get("cell_id"),
+            service=before.get("service"),
+            error=before.get("error"),
+        )
+        already_full = (
+            bool(before.get("ok"))
+            and bool(before.get("full_main_computer_hub"))
+            and (not service_name or str(before.get("cell_id") or "") == service_name)
+        )
+        node_result: dict[str, Any] = {
+            "service_name": service_name,
+            "domain": domain,
+            "health_before": {key: value for key, value in before.items() if key != "payload"},
+            "already_full": already_full,
+            "diagnostics": {"steps": steps},
+        }
+        if already_full:
+            record_step("already-full")
+            node_result.update({"ok": True, "service_action": "skipped", "deployed": False, "reason": "full Main Computer hub already observed"})
+            node_result["elapsed_s"] = round(time.monotonic() - node_started, 3)
+            result["nodes"].append(node_result)
+            continue
+        try:
+            record_step("manifest-build-start")
+            manifest, wallets = manifest_for_existing_super_node_runtime_sync(
+                network_key,
+                head,
+                node,
+                all_nodes=all_nodes,
+                private_state=private_state,
+            )
+            record_step(
+                "manifest-build-done",
+                deployment_id=manifest.get("deployment_id"),
+                full_runtime_requested=bool((manifest.get("bootstrap") or {}).get("full_hub_runtime_requested")),
+            )
+            if getattr(args, "dry_run", False):
+                record_step("dry-run-planned")
+                node_result.update(
+                    {
+                        "ok": None,
+                        "dry_run": True,
+                        "service_action": "planned",
+                        "deployed": False,
+                        "reason": "dry-run; would rebuild super-node with full Main Computer hub runtime",
+                    }
+                )
+                node_result["elapsed_s"] = round(time.monotonic() - node_started, 3)
+                result["nodes"].append(node_result)
+                continue
+            if super_context is None:
+                record_step("coolify-context-resolve-start", host=head.coolify_server)
+                super_context = resolve_super_context(client, args, head, tried)
+                record_step(
+                    "coolify-context-resolve-done",
+                    server_uuid=bool((super_context or {}).get("server_uuid")),
+                    project_uuid=bool((super_context or {}).get("project_uuid")),
+                    environment_uuid=bool((super_context or {}).get("environment_uuid")),
+                )
+            record_step("service-sync-start", image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE))
+            service_uuid, action, _existing = sync_super_node_service(
+                client,
+                manifest,
+                args,
+                super_context,
+                tried,
+                hub_admin_private_key=wallet_private_key(wallets, "hub_admin"),
+                deployer_private_key=wallet_private_key(wallets, "deployer"),
+            )
+            record_step("service-sync-done", service_uuid=service_uuid, action=action)
+            node_result.update({"service_uuid": service_uuid, "service_action": action})
+            record_step("service-detail-after-sync-start", service_uuid=service_uuid)
+            service_snapshot = coolify_full_hub_runtime_snapshot(
+                client,
+                service_uuid=service_uuid,
+                tried=tried,
+                expected_deployment_id=str(manifest.get("deployment_id") or ""),
+            )
+            node_result["coolify_service_after_sync"] = service_snapshot
+            record_step(
+                "service-detail-after-sync-done",
+                summary=coolify_full_hub_runtime_snapshot_summary(service_snapshot),
+            )
+            if getattr(args, "no_deploy", False):
+                record_step("deploy-skipped-no-deploy")
+                node_result.update({"ok": None, "deployed": False, "reason": "deployment disabled by --no-deploy"})
+            else:
+                record_step("deploy-trigger-start", service_uuid=service_uuid)
+                hub_service_tool().trigger_deploy_service(client, service_uuid=service_uuid, force=True, tried=tried)
+                record_step("deploy-trigger-done", service_uuid=service_uuid)
+                node_result["deployed"] = True
+                record_step("wait-full-health-start", wait_s=wait_s, poll_s=5.0)
+                node_result["wait"] = wait_for_public_full_hub(
+                    node,
+                    domain,
+                    wait_s=wait_s,
+                    poll_s=5.0,
+                    args=args,
+                    client=client,
+                    tried=tried,
+                    service_uuid=service_uuid,
+                    application_uuid=str(service_snapshot.get("application_uuid") or ""),
+                    expected_deployment_id=str(manifest.get("deployment_id") or ""),
+                )
+                record_step(
+                    "wait-full-health-done",
+                    ready=bool(node_result["wait"].get("ready")),
+                    attempts=node_result["wait"].get("attempts"),
+                    reason=node_result["wait"].get("reason"),
+                )
+                node_result["ok"] = bool(node_result["wait"].get("ready"))
+                node_result["reason"] = str(node_result["wait"].get("reason") or "")
+        except Exception as exc:
+            record_step("failed", error=f"{type(exc).__name__}: {exc}")
+            node_result.update({"ok": False, "error": f"{type(exc).__name__}: {exc}", "reason": f"{type(exc).__name__}: {exc}"})
+        node_result["elapsed_s"] = round(time.monotonic() - node_started, 3)
+        result["nodes"].append(node_result)
+
+    failed = [item for item in result["nodes"] if item.get("ok") is False]
+    pending = [item for item in result["nodes"] if item.get("ok") is None]
+    if failed:
+        result["ok"] = False
+        result["reason"] = "; ".join(str(item.get("reason") or item.get("error") or item.get("service_name")) for item in failed)
+    elif pending:
+        result["ok"] = None
+        result["reason"] = "full hub runtime sync was planned but not deployed"
+    else:
+        result["ok"] = True
+        changed = [item for item in result["nodes"] if not item.get("already_full")]
+        result["reason"] = "full Main Computer hub runtime synced" if changed else "all local hubs already full"
+    return result
+
+def propagate_hub_for_network(
     plan: HeadPlan,
     args: argparse.Namespace,
     *,
     network_key: str,
     selected_hosts: Sequence[str] | None = None,
+    legacy_command: str = "",
 ) -> dict[str, Any]:
     network = clean_node_network_key(network_key)
     domain_suffix = public_domain_suffix(args)
     selected_heads = heads_selected_for_traefik(plan, selected_hosts)
     tried_by_host: dict[str, list[dict[str, Any]]] = {}
     inventory = collect_network_super_inventory_for_traefik(plan, network, args, tried_by_host)
+    all_nodes = list(inventory.get("nodes") or [])
     propagations: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = list(inventory.get("errors") or [])
+
+    private_state_path = repo_relative_path(args.private_state)
+    private_state = load_yaml_mapping(private_state_path)
+    private_state, hub_admin_records, huddle_updates = materialize_private_state_for_hub_propagate(
+        private_state,
+        private_state_path,
+        network,
+        all_nodes,
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    missing_huddle_admin_addresses = [
+        str(item.get("cell_id") or item.get("service_name") or "")
+        for item in hub_admin_records
+        if not str(item.get("address") or "").strip()
+    ]
+    if missing_huddle_admin_addresses:
+        huddle_updates["missing_hub_admin_addresses"] = missing_huddle_admin_addresses
+        errors.append(
+            {
+                "host": "huddle",
+                "error": "hub-propagate could not derive Hub admin addresses for: "
+                + ", ".join(missing_huddle_admin_addresses),
+            }
+        )
+
+    admin_contract_sync_enabled = not bool(getattr(args, "no_contract_admin_sync", False))
+    contract_address = str(getattr(args, "hub_admin_contract_address", "") or "").strip() or hub_credit_bridge_escrow_address_for_network(network)
+    network_wallets = network_wallets_from_private_state(private_state, network)
+    owner_private_key = wallet_private_key(network_wallets, "deployer")
+    admin_sync_head: HeadNode | None = None
+    admin_sync_executor: Mapping[str, Any] | None = None
+    admin_sync_request: dict[str, Any] | None = None
+    admin_sync_result: dict[str, Any] = {
+        "enabled": bool(admin_contract_sync_enabled),
+        "ok": None,
+        "reason": "not requested" if not admin_contract_sync_enabled else "not started",
+        "contract_address": contract_address,
+        "admin_count": len(hub_admin_records),
+    }
+
+    if admin_contract_sync_enabled:
+        for head in selected_heads:
+            local_nodes = list((inventory.get("local_nodes_by_host") or {}).get(head.coolify_server, []))
+            if local_nodes:
+                admin_sync_head = head
+                admin_sync_executor = sorted(local_nodes, key=network_super_node_sort_key)[0]
+                break
+        if missing_huddle_admin_addresses:
+            admin_sync_result = {
+                "enabled": True,
+                "ok": False,
+                "reason": "Hub admin address derivation failed; refusing contract sync with incomplete huddle records",
+                "missing_hub_admin_addresses": missing_huddle_admin_addresses,
+            }
+        elif getattr(args, "dry_run", False):
+            admin_sync_result = {
+                "enabled": True,
+                "ok": None,
+                "dry_run": True,
+                "reason": "dry-run; would sync Hub admin addresses to HubCreditBridgeEscrow",
+                "contract_address": contract_address,
+                "executor_service_name": str((admin_sync_executor or {}).get("service_name") or ""),
+                "admin_count": len(hub_admin_records),
+            }
+        elif not contract_address:
+            admin_sync_result = {"enabled": True, "ok": False, "reason": "hub_credit_bridge_escrow contract address not found; pass --hub-admin-contract-address or update main_computer/config/<network>_contracts.json"}
+            errors.append({"host": "contract", "error": admin_sync_result["reason"]})
+        elif not owner_private_key:
+            admin_sync_result = {"enabled": True, "ok": False, "reason": "network deployer private key is missing; cannot authorize Hub admins on contract"}
+            errors.append({"host": "contract", "error": admin_sync_result["reason"]})
+        elif not admin_sync_head or not admin_sync_executor:
+            admin_sync_result = {"enabled": True, "ok": False, "reason": "no selected host has a local super-node that can execute contract admin sync"}
+            errors.append({"host": "contract", "error": admin_sync_result["reason"]})
+        else:
+            admin_sync_request = hub_admin_sync_request_payload(
+                network,
+                admin_sync_head,
+                admin_sync_executor,
+                hub_admin_records,
+                contract_address=contract_address,
+                owner_private_key=owner_private_key,
+            )
+            if not admin_sync_request.get("admins"):
+                admin_sync_result = {"enabled": True, "ok": False, "reason": "no Hub admin addresses are available for contract sync"}
+                errors.append({"host": "contract", "error": admin_sync_result["reason"]})
 
     for head in selected_heads:
         tried = tried_by_host.setdefault(head.coolify_server, [])
@@ -10444,6 +13401,7 @@ def propagate_traefik_for_network(
         dynamic_config = render_allfather_hub_traefik_dynamic_config(network, head, local_nodes, domain_suffix=domain_suffix)
         route_records = local_hub_route_records(network, head, local_nodes, domain_suffix=domain_suffix)
         request_payload = traefik_propagate_request_payload(network, head, local_nodes, domain_suffix=domain_suffix)
+        head_admin_sync_request = admin_sync_request if (admin_sync_head and head.coolify_server == admin_sync_head.coolify_server) else None
         entry: dict[str, Any] = {
             "host": head.coolify_server,
             "host_slot": head.slot,
@@ -10459,10 +13417,27 @@ def propagate_traefik_for_network(
             "direct_vpn_used": False,
             "propagation_transport": "allfather-head-host-agent",
         }
+        if head_admin_sync_request:
+            entry["hub_admin_contract_sync"] = {
+                "enabled": True,
+                "service_name": str(head_admin_sync_request.get("service_name") or ""),
+                "request_id": str(head_admin_sync_request.get("request_id") or ""),
+                "executor_service_name": str(head_admin_sync_request.get("executor_service_name") or ""),
+                "contract_address": str(head_admin_sync_request.get("contract_address") or ""),
+                "admin_count": len(head_admin_sync_request.get("admins") or []),
+            }
         if getattr(args, "include_compose", False):
             entry["head_traefik_request"] = {
                 key: value for key, value in request_payload.items() if key != "dynamic_config_b64"
             }
+            if head_admin_sync_request:
+                entry["head_hub_admin_sync_request"] = {
+                    key: ("<redacted>" if key == "owner_private_key" else [
+                        {admin_key: ("<redacted>" if admin_key == "private_key" else admin_value) for admin_key, admin_value in admin.items()}
+                        for admin in value
+                    ] if key == "admins" and isinstance(value, list) else value)
+                    for key, value in head_admin_sync_request.items()
+                }
             entry["dynamic_config"] = dynamic_config
         if not local_nodes:
             entry.update(
@@ -10482,20 +13457,52 @@ def propagate_traefik_for_network(
             propagations.append(entry)
             continue
         try:
+            operator_log(args, f"hub-propagate: host={head.coolify_server} local_nodes={len(local_nodes)} resolving Coolify client")
             client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
             entry["token_source"] = token_source
+            operator_log(args, f"hub-propagate: host={head.coolify_server} checking Coolify API version")
             version = request_coolify_version(
                 client,
                 tried,
                 args=args,
                 host=head.coolify_server,
-                operation="coolify-version-traefik-propagate-sync",
+                operation="coolify-version-hub-propagate-sync",
             )
             if not version.ok:
                 raise AllfatherControlError(
                     f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
                 )
+            operator_log(args, f"hub-propagate: host={head.coolify_server} resolving head service context")
             context = resolve_context(client, args, head, tried)
+            operator_log(args, f"hub-propagate: host={head.coolify_server} starting full hub runtime sync")
+            full_hub_runtime_sync = sync_full_hub_runtime_for_host(
+                plan,
+                network,
+                head,
+                local_nodes=local_nodes,
+                all_nodes=all_nodes,
+                private_state=private_state,
+                domain_suffix=domain_suffix,
+                client=client,
+                args=args,
+                tried=tried,
+            )
+            entry["full_hub_runtime_sync"] = full_hub_runtime_sync
+            if full_hub_runtime_sync.get("ok") is False:
+                entry["ok"] = False
+                errors.append({"host": head.coolify_server, "error": str(full_hub_runtime_sync.get("reason") or "full hub runtime sync failed")})
+                entry["full_hub_runtime_container_diagnostics"] = run_full_hub_runtime_container_diagnostics(
+                    plan,
+                    network,
+                    head,
+                    sync_result=full_hub_runtime_sync,
+                    client=client,
+                    args=args,
+                    context=context,
+                    tried=tried,
+                    inventory_nodes=inventory.get("nodes") or [],
+                )
+            operator_log(args, f"hub-propagate: host={head.coolify_server} updating head host-agent service")
             service_uuid, action, _existing = sync_head_service(
                 client,
                 plan,
@@ -10505,10 +13512,13 @@ def propagate_traefik_for_network(
                 tried,
                 probe_targets=probe_target_records_for_plan(plan, super_inventory=inventory.get("nodes") or []),
                 traefik_propagate_request=request_payload,
+                hub_admin_sync_request=head_admin_sync_request,
             )
             entry["service_uuid"] = service_uuid
             entry["service_action"] = f"head-agent-{action}"
+            operator_log(args, f"hub-propagate: host={head.coolify_server} head host-agent {action} uuid={service_uuid or '<unknown>'}")
             if not getattr(args, "no_deploy", False):
+                operator_log(args, f"hub-propagate: host={head.coolify_server} triggering head host-agent deploy")
                 hub_service_tool().trigger_deploy_service(
                     client,
                     service_uuid=service_uuid,
@@ -10516,13 +13526,16 @@ def propagate_traefik_for_network(
                     tried=tried,
                 )
                 entry["deployed"] = True
+                wait_s = float(getattr(args, "hub_propagate_wait_s", getattr(args, "traefik_propagate_wait_s", DEFAULT_TRAEFIK_PROPAGATE_WAIT_S)) or 0.0)
+                operator_log(args, f"hub-propagate: host={head.coolify_server} waiting for Traefik propagation request_id={request_payload.get('request_id') or '<unknown>'} wait_s={wait_s:.0f}")
                 wait_result = wait_for_head_traefik_propagate_ready(
                     client,
                     service_uuid,
                     tried,
-                    wait_s=float(getattr(args, "traefik_propagate_wait_s", DEFAULT_TRAEFIK_PROPAGATE_WAIT_S) or 0.0),
+                    wait_s=wait_s,
                     poll_s=2.0,
                     expected_request_id=str(request_payload.get("request_id") or ""),
+                    args=args,
                 )
                 payload = wait_result.get("result") if isinstance(wait_result.get("result"), Mapping) else {}
                 entry["propagator_result"] = {
@@ -10532,13 +13545,63 @@ def propagate_traefik_for_network(
                     "reason": wait_result.get("reason"),
                     "result": dict(payload),
                 }
-                entry["ok"] = bool(wait_result.get("ready"))
+                entry["ok"] = bool(wait_result.get("ready")) and entry.get("ok") is not False
+                if head_admin_sync_request:
+                    operator_log(args, f"hub-propagate: host={head.coolify_server} waiting for Hub admin contract sync request_id={head_admin_sync_request.get('request_id') or '<unknown>'}")
+                    admin_wait = wait_for_head_hub_admin_sync_ready(
+                        client,
+                        service_uuid,
+                        tried,
+                        wait_s=float(getattr(args, "hub_admin_contract_sync_wait_s", DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S) or wait_s),
+                        poll_s=2.0,
+                        expected_request_id=str(head_admin_sync_request.get("request_id") or ""),
+                        args=args,
+                    )
+                    admin_payload = admin_wait.get("result") if isinstance(admin_wait.get("result"), Mapping) else {}
+                    entry["hub_admin_contract_sync"] = {
+                        **entry.get("hub_admin_contract_sync", {}),
+                        "ok": bool(admin_wait.get("ready")),
+                        "observed": bool(admin_wait.get("observed")),
+                        "source": admin_wait.get("source"),
+                        "reason": admin_wait.get("reason"),
+                        "result": dict(admin_payload),
+                    }
+                    admin_sync_result = {
+                        "enabled": True,
+                        "ok": bool(admin_wait.get("ready")),
+                        "observed": bool(admin_wait.get("observed")),
+                        "source": admin_wait.get("source"),
+                        "reason": admin_wait.get("reason"),
+                        "result": dict(admin_payload),
+                    }
+                    if not bool(admin_wait.get("ready")):
+                        entry["ok"] = False
+                    else:
+                        address_updates = apply_hub_admin_sync_result_to_private_state(
+                            private_state,
+                            private_state_path,
+                            network,
+                            admin_payload,
+                            dry_run=False,
+                        )
+                        entry["hub_admin_contract_sync"]["private_state_updates"] = address_updates
+                        admin_sync_result["private_state_updates"] = address_updates
             else:
                 entry["deployed"] = False
                 entry["ok"] = True
                 entry["propagator_result"] = {"ok": None, "reason": "deployment disabled by --no-deploy"}
+                if head_admin_sync_request:
+                    entry["hub_admin_contract_sync"] = {**entry.get("hub_admin_contract_sync", {}), "ok": None, "reason": "deployment disabled by --no-deploy"}
             if not entry["ok"]:
-                errors.append({"host": head.coolify_server, "error": str((entry.get("propagator_result") or {}).get("reason") or "Traefik propagation did not report ready")})
+                propagation_result = entry.get("propagator_result") if isinstance(entry.get("propagator_result"), Mapping) else {}
+                contract_result = entry.get("hub_admin_contract_sync") if isinstance(entry.get("hub_admin_contract_sync"), Mapping) else {}
+                if propagation_result and propagation_result.get("ok") is False:
+                    failure_reason = str(propagation_result.get("reason") or "Hub route propagation did not report ready")
+                elif contract_result and contract_result.get("ok") is False:
+                    failure_reason = str(contract_result.get("reason") or "Hub admin contract sync did not report ready")
+                else:
+                    failure_reason = "Hub propagation did not report ready"
+                errors.append({"host": head.coolify_server, "error": failure_reason})
         except Exception as exc:
             entry["ok"] = False
             entry["error"] = f"{type(exc).__name__}: {exc}"
@@ -10547,10 +13610,15 @@ def propagate_traefik_for_network(
             entry["coolify_api"] = traefik_propagate_attempt_summary(tried)
             propagations.append(entry)
 
+    if admin_contract_sync_enabled and admin_sync_request and not getattr(args, "dry_run", False):
+        if admin_sync_result.get("ok") is False:
+            errors.append({"host": "contract", "error": str(admin_sync_result.get("reason") or "Hub admin contract sync failed")})
+
     ok = not errors and all(bool(item.get("ok")) for item in propagations)
     return {
         "ok": ok,
-        "operation": "traefik-propagate",
+        "operation": "hub-propagate",
+        "legacy_command": legacy_command,
         "network": network,
         "route_authority": "live-coolify-super-node-inventory",
         "domain_suffix": domain_suffix,
@@ -10561,6 +13629,15 @@ def propagate_traefik_for_network(
             "super_nodes": inventory.get("nodes") or [],
             "errors": inventory.get("errors"),
         },
+        "huddle": {
+            "private_state_updates": huddle_updates,
+            "admin_count": len(hub_admin_records),
+            "admin_records": [
+                {key: value for key, value in item.items() if key != "private_key"}
+                for item in hub_admin_records
+            ],
+        },
+        "hub_admin_contract_sync": admin_sync_result,
         "propagations": propagations,
         "errors": errors,
         "public_guard_routes": False,
@@ -10569,16 +13646,231 @@ def propagate_traefik_for_network(
     }
 
 
-def traefik_propagate(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
+def propagate_traefik_for_network(
+    plan: HeadPlan,
+    args: argparse.Namespace,
+    *,
+    network_key: str,
+    selected_hosts: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    return propagate_hub_for_network(plan, args, network_key=network_key, selected_hosts=selected_hosts, legacy_command="traefik-propagate")
+
+
+
+def deploy_contracts(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network = clean_node_network_key(args.network)
     if network == "mainnet" and not getattr(args, "allow_mainnet", False):
-        raise AllfatherControlError("Refusing to publish or rewrite mainnet Traefik routes without --allow-mainnet.")
-    return propagate_traefik_for_network(
+        raise AllfatherControlError("Refusing to deploy mainnet contracts without --allow-mainnet.")
+    if not bool(getattr(args, "deploy_escrow", False)):
+        raise AllfatherControlError("deploy-contracts currently requires --deploy-escrow to select HubCreditBridgeEscrow.")
+
+    selected_heads = heads_selected_for_traefik(plan, getattr(args, "host", []) or None)
+    tried_by_host: dict[str, list[dict[str, Any]]] = {}
+    inventory = collect_network_super_inventory_for_traefik(plan, network, args, tried_by_host)
+    all_nodes = list(inventory.get("nodes") or [])
+    errors: list[dict[str, Any]] = list(inventory.get("errors") or [])
+
+    private_state_path = repo_relative_path(args.private_state)
+    private_state = load_yaml_mapping(private_state_path)
+    private_state, hub_admin_records, huddle_updates = materialize_private_state_for_hub_propagate(
+        private_state,
+        private_state_path,
+        network,
+        all_nodes,
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+    network_wallets = network_wallets_from_private_state(private_state, network)
+    owner_private_key = wallet_private_key(network_wallets, "deployer")
+    deploy_head: HeadNode | None = None
+    deploy_executor: Mapping[str, Any] | None = None
+    for head in selected_heads:
+        local_nodes = list((inventory.get("local_nodes_by_host") or {}).get(head.coolify_server, []))
+        if local_nodes:
+            deploy_head = head
+            deploy_executor = sorted(local_nodes, key=network_super_node_sort_key)[0]
+            break
+
+    result: dict[str, Any] = {
+        "ok": False,
+        "operation": "deploy-contracts",
+        "network": network,
+        "deploy_escrow": bool(getattr(args, "deploy_escrow", False)),
+        "selected_hosts": [head.coolify_server for head in selected_heads],
+        "inventory": {
+            "checked_hosts": inventory.get("checked_hosts"),
+            "super_node_count": len(all_nodes),
+            "super_nodes": all_nodes,
+            "errors": inventory.get("errors"),
+        },
+        "huddle": {
+            "private_state_updates": huddle_updates,
+            "admin_count": len(hub_admin_records),
+            "admin_records": [
+                {key: value for key, value in item.items() if key != "private_key"}
+                for item in hub_admin_records
+            ],
+        },
+        "deployment": {
+            "enabled": True,
+            "ok": None,
+            "reason": "not started",
+        },
+        "contract_config": {},
+        "errors": errors,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+    if not all_nodes:
+        reason = f"no live {network} super-nodes found; cannot execute contract deployment"
+        result["deployment"] = {"enabled": True, "ok": False, "reason": reason}
+        result["errors"].append({"host": "contract", "error": reason})
+        return result
+    if not owner_private_key:
+        reason = "network deployer private key is missing; cannot deploy contracts"
+        result["deployment"] = {"enabled": True, "ok": False, "reason": reason}
+        result["errors"].append({"host": "contract", "error": reason})
+        return result
+    if not deploy_head or not deploy_executor:
+        reason = "no selected host has a local super-node that can execute contract deployment"
+        result["deployment"] = {"enabled": True, "ok": False, "reason": reason}
+        result["errors"].append({"host": "contract", "error": reason})
+        return result
+
+    try:
+        request_payload = contract_deploy_request_payload(
+            network,
+            deploy_head,
+            deploy_executor,
+            hub_admin_records,
+            owner_private_key=owner_private_key,
+            deploy_escrow=bool(getattr(args, "deploy_escrow", False)),
+            receipt_timeout_s=int(getattr(args, "contract_deploy_receipt_timeout_s", 300) or 300),
+        )
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        result["deployment"] = {"enabled": True, "ok": False, "reason": reason}
+        result["errors"].append({"host": "contract", "error": reason})
+        return result
+
+    safe_request = {
+        key: ("<redacted>" if key in {"owner_private_key", "contract_sources_b64"} else value)
+        for key, value in request_payload.items()
+    }
+    result["deployment"] = {
+        "enabled": True,
+        "ok": None,
+        "reason": "planned",
+        "host": deploy_head.coolify_server,
+        "executor_service_name": str(deploy_executor.get("service_name") or ""),
+        "request_id": str(request_payload.get("request_id") or ""),
+        "targets": list(request_payload.get("targets") or []),
+        "request": safe_request if getattr(args, "include_compose", False) else {
+            key: safe_request.get(key)
+            for key in ("network_key", "coolify_server", "service_name", "request_id", "executor_service_name", "targets", "hub_credit_bridge_escrow_controller", "hub_admin_cell_id")
+            if key in safe_request
+        },
+    }
+
+    if getattr(args, "dry_run", False):
+        result["ok"] = not result["errors"]
+        result["deployment"]["dry_run"] = True
+        result["deployment"]["reason"] = "dry-run; would deploy selected contracts through allfather head agent"
+        return result
+
+    tried = tried_by_host.setdefault(deploy_head.coolify_server, [])
+    try:
+        client, token_source = fdb_tool().client_for_server(deploy_head.coolify_server, args)
+        result["deployment"]["token_source"] = token_source
+        version = request_coolify_version(
+            client,
+            tried,
+            args=args,
+            host=deploy_head.coolify_server,
+            operation="coolify-version-deploy-contracts",
+        )
+        if not version.ok:
+            raise AllfatherControlError(
+                f"Coolify API version check failed for {deploy_head.coolify_server!r} with HTTP {version.status}: {version.body}"
+            )
+        context = resolve_context(client, args, deploy_head, tried)
+        service_uuid, action, _existing = sync_head_service(
+            client,
+            plan,
+            deploy_head,
+            args,
+            context,
+            tried,
+            probe_targets=probe_target_records_for_plan(plan, super_inventory=inventory.get("nodes") or []),
+            contract_deploy_request=request_payload,
+        )
+        result["deployment"]["service_uuid"] = service_uuid
+        result["deployment"]["service_action"] = f"head-agent-{action}"
+        if not getattr(args, "no_deploy", False):
+            hub_service_tool().trigger_deploy_service(
+                client,
+                service_uuid=service_uuid,
+                force=True,
+                tried=tried,
+            )
+            result["deployment"]["deployed"] = True
+            wait = wait_for_head_contract_deploy_ready(
+                client,
+                service_uuid,
+                tried,
+                wait_s=float(getattr(args, "contract_deploy_wait_s", DEFAULT_CONTRACT_DEPLOY_WAIT_S) or 0.0),
+                poll_s=2.0,
+                expected_request_id=str(request_payload.get("request_id") or ""),
+            )
+            payload = wait.get("result") if isinstance(wait.get("result"), Mapping) else {}
+            result["deployment"].update(
+                {
+                    "ok": bool(wait.get("ready")),
+                    "observed": bool(wait.get("observed")),
+                    "source": wait.get("source"),
+                    "reason": wait.get("reason"),
+                    "result": dict(payload),
+                }
+            )
+            if bool(wait.get("ready")):
+                config_update = update_contract_config_for_network(
+                    network,
+                    dict(payload.get("contracts") or {}),
+                    dry_run=False,
+                )
+                result["contract_config"] = config_update
+            else:
+                result["errors"].append({"host": "contract", "error": str(wait.get("reason") or "contract deployment failed")})
+        else:
+            result["deployment"].update({"deployed": False, "ok": None, "reason": "deployment disabled by --no-deploy"})
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        result["deployment"].update({"ok": False, "reason": reason, "error": reason})
+        result["errors"].append({"host": deploy_head.coolify_server, "error": reason})
+    finally:
+        result["deployment"]["coolify_api"] = traefik_propagate_attempt_summary(tried)
+
+    result["ok"] = not result["errors"] and bool(result.get("deployment", {}).get("ok"))
+    return result
+
+
+def hub_propagate(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
+    network = clean_node_network_key(args.network)
+    if network == "mainnet" and not getattr(args, "allow_mainnet", False):
+        raise AllfatherControlError("Refusing to publish, rewrite, or authorize mainnet Hub routes/admins without --allow-mainnet.")
+    return propagate_hub_for_network(
         plan,
         args,
         network_key=network,
         selected_hosts=getattr(args, "host", []) or None,
+        legacy_command="traefik-propagate" if getattr(args, "command", "") == "traefik-propagate" else "",
     )
+
+
+def traefik_propagate(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
+    return hub_propagate(plan, args)
 
 
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
@@ -10653,7 +13945,7 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "direct_vpn_used": False,
     }
     traefik_propagation: dict[str, Any] = {
-        "enabled": bool(getattr(args, "traefik_propagate", False)),
+        "enabled": bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False)),
         "ok": None,
         "reason": "not requested",
     }
@@ -10723,18 +14015,18 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                 host_super_nodes_remaining=False,
             )
 
-    if bool(getattr(args, "traefik_propagate", False)):
+    if bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False)):
         if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
             raise AllfatherControlError("Refusing to rewrite mainnet Traefik routes without --allow-mainnet.")
         if getattr(args, "dry_run", False):
             traefik_propagation = {
                 "enabled": True,
                 "ok": None,
-                "reason": "dry-run; run traefik-propagate after the live topology changes",
+                "reason": "dry-run; run hub-propagate after the live topology changes",
             }
         else:
-            traefik_propagation = propagate_traefik_for_network(plan, args, network_key=network_key)
-    remove_ready = (not bool(getattr(args, "traefik_propagate", False))) or getattr(args, "dry_run", False) or bool(traefik_propagation.get("ok"))
+            traefik_propagation = propagate_hub_for_network(plan, args, network_key=network_key)
+    remove_ready = (not bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False))) or getattr(args, "dry_run", False) or bool(traefik_propagation.get("ok"))
 
     result = {
         "ok": bool(remove_ready),
@@ -10752,6 +14044,7 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "private_state_updates": private_state_updates,
         "runtime_cleanup": runtime_cleanup,
         "helper_cleanup": helper_cleanup,
+        "hub_propagation": traefik_propagation,
         "traefik_propagation": traefik_propagation,
         "service_deleted": deleted,
         "delete_confirmed_absent": delete_confirmed_absent,
@@ -10817,7 +14110,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "direct_vpn_used": False,
     }
     traefik_propagation: dict[str, Any] = {
-        "enabled": bool(getattr(args, "traefik_propagate", False) or getattr(args, "publish_routes", False)),
+        "enabled": bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False) or getattr(args, "publish_routes", False)),
         "ok": None,
         "reason": "not requested",
     }
@@ -11128,16 +14421,16 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         }
 
     add_node_ready = not bool(deploy_wait.get("enabled")) or bool(deploy_wait.get("ready"))
-    traefik_requested = bool(getattr(args, "traefik_propagate", False) or getattr(args, "publish_routes", False))
+    traefik_requested = bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False) or getattr(args, "publish_routes", False))
     if add_node_ready and traefik_requested:
         if getattr(args, "dry_run", False):
             traefik_propagation = {
                 "enabled": True,
                 "ok": None,
-                "reason": "dry-run; run traefik-propagate after the live topology exists",
+                "reason": "dry-run; run hub-propagate after the live topology exists",
             }
         else:
-            traefik_propagation = propagate_traefik_for_network(plan, args, network_key=network_key)
+            traefik_propagation = propagate_hub_for_network(plan, args, network_key=network_key)
     route_ready = (not traefik_requested) or getattr(args, "dry_run", False) or bool(traefik_propagation.get("ok"))
     operation_ready = bool(add_node_ready and route_ready)
     result = {
@@ -11177,6 +14470,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "hub_public_cutover_deferred": True,
         "public_guard_routes": False,
         "public_routes_enabled": bool(getattr(args, "publish_routes", False)),
+        "hub_propagation": traefik_propagation,
         "traefik_propagation": traefik_propagation,
         "ssh_used": False,
         "direct_vpn_used": False,
@@ -11273,10 +14567,21 @@ def add_common_head_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--image", default=DEFAULT_IMAGE)
 
 
+def add_hub_propagate_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--hub-domain-suffix", "--traefik-domain-suffix", dest="hub_domain_suffix", default=DEFAULT_PUBLIC_DOMAIN_SUFFIX, help="Public DNS suffix for generated Hub routes.")
+    parser.add_argument("--hub-propagate-wait-s", "--traefik-propagate-wait-s", dest="hub_propagate_wait_s", type=float, default=DEFAULT_TRAEFIK_PROPAGATE_WAIT_S, help="Seconds to wait for the Hub route propagation result.")
+    parser.add_argument("--hub-admin-contract-sync-wait-s", type=float, default=DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S, help="Seconds to wait for Hub admin authorization transactions.")
+    parser.add_argument("--hub-admin-contract-address", default="", help="Override HubCreditBridgeEscrow address. Default reads main_computer/config/<network>_contracts.json.")
+    parser.add_argument("--no-contract-admin-sync", action="store_true", help="Only reconcile public Hub routes and private-state huddle records; do not authorize Hub admins on HubCreditBridgeEscrow.")
+    parser.add_argument("--no-full-hub-runtime-sync", action="store_true", help="Do not rebuild/redeploy existing super-nodes whose public Hub endpoint is still bootstrap-only.")
+    parser.add_argument("--full-hub-runtime-wait-s", type=float, default=None, help="Seconds to wait for each rebuilt super-node to report full Main Computer hub health. Default uses --hub-propagate-wait-s.")
+    parser.add_argument("--full-hub-runtime-status-interval-s", type=float, default=30.0, help="Seconds between Coolify build/deployment/log diagnostics while waiting for full hub health.")
+    parser.add_argument("--full-hub-runtime-stale-bootstrap-fail-s", type=float, default=120.0, help="Fail early once Coolify is running/healthy with a full-runtime compose but public hub health still reports bootstrap-only for this many seconds. Use 0 to wait until timeout.")
+    parser.add_argument("--traefik-propagator-image", default=DEFAULT_TRAEFIK_PROPAGATOR_IMAGE, help=argparse.SUPPRESS)
+
+
 def add_traefik_propagate_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--traefik-domain-suffix", default=DEFAULT_PUBLIC_DOMAIN_SUFFIX, help="Public DNS suffix for generated Hub routes.")
-    parser.add_argument("--traefik-propagator-image", default=DEFAULT_TRAEFIK_PROPAGATOR_IMAGE, help="Image used for the Docker-socket Traefik propagation helper.")
-    parser.add_argument("--traefik-propagate-wait-s", type=float, default=DEFAULT_TRAEFIK_PROPAGATE_WAIT_S, help="Seconds to wait for the propagation helper to report success.")
+    add_hub_propagate_options(parser)
 
 
 
@@ -11321,17 +14626,43 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
 
-    traefik_parser = subparsers.add_parser("traefik-propagate", help="Reconcile public Hub Traefik routes from live all-father super-node topology.")
+    hub_parser = subparsers.add_parser("hub-propagate", help="Reconcile public Hub routes, huddle admin seeds, and HubCreditBridgeEscrow admin authorization from live topology.")
+    add_remote_args(hub_parser)
+    add_common_head_args(hub_parser)
+    add_hub_propagate_options(hub_parser)
+    hub_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network whose public Hub routes/admins should be reconciled.")
+    hub_parser.add_argument("--host", action="append", default=[], help="Restrict propagation to one Coolify host/slot. Repeat for multiple hosts. Default: all planned hosts.")
+    hub_parser.add_argument("--allow-mainnet", action="store_true", help="Required before rewriting mainnet Hub routes or authorizing mainnet Hub admins.")
+    hub_parser.add_argument("--dry-run", action="store_true", help="Discover topology and render route/admin plans without writing private state or deploying the head agent.")
+    hub_parser.add_argument("--include-compose", action="store_true", help="Include generated request details and Traefik dynamic YAML in the JSON output. Private keys are redacted.")
+    hub_parser.add_argument("--no-deploy", action="store_true", help="Create/update the head agent but do not trigger deploy.")
+    hub_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after head-agent sync.")
+
+    traefik_parser = subparsers.add_parser("traefik-propagate", help="Deprecated alias for hub-propagate.")
     add_remote_args(traefik_parser)
     add_common_head_args(traefik_parser)
-    add_traefik_propagate_options(traefik_parser)
-    traefik_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network whose public Hub routes should be reconciled.")
+    add_hub_propagate_options(traefik_parser)
+    traefik_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network whose public Hub routes/admins should be reconciled.")
     traefik_parser.add_argument("--host", action="append", default=[], help="Restrict propagation to one Coolify host/slot. Repeat for multiple hosts. Default: all planned hosts.")
-    traefik_parser.add_argument("--allow-mainnet", action="store_true", help="Required before rewriting mainnet Traefik routes.")
-    traefik_parser.add_argument("--dry-run", action="store_true", help="Discover topology and render route plans without syncing/deploying the propagator service.")
-    traefik_parser.add_argument("--include-compose", action="store_true", help="Include generated propagator compose and Traefik dynamic YAML in the JSON output.")
-    traefik_parser.add_argument("--no-deploy", action="store_true", help="Create/update the propagator service but do not trigger deploy.")
-    traefik_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after propagator service sync.")
+    traefik_parser.add_argument("--allow-mainnet", action="store_true", help="Required before rewriting mainnet Hub routes or authorizing mainnet Hub admins.")
+    traefik_parser.add_argument("--dry-run", action="store_true", help="Discover topology and render route/admin plans without writing private state or deploying the head agent.")
+    traefik_parser.add_argument("--include-compose", action="store_true", help="Include generated request details and Traefik dynamic YAML in the JSON output. Private keys are redacted.")
+    traefik_parser.add_argument("--no-deploy", action="store_true", help="Create/update the head agent but do not trigger deploy.")
+    traefik_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after head-agent sync.")
+
+    deploy_contracts_parser = subparsers.add_parser("deploy-contracts", help="Deploy selected all-father contracts through a live super-node and write local contract config.")
+    add_remote_args(deploy_contracts_parser)
+    add_common_head_args(deploy_contracts_parser)
+    deploy_contracts_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network whose contract should be deployed: testnet or mainnet.")
+    deploy_contracts_parser.add_argument("--host", action="append", default=[], help="Restrict deployment executor selection to one Coolify host/slot. Repeat for multiple hosts. Default: first host with a live super-node.")
+    deploy_contracts_parser.add_argument("--allow-mainnet", action="store_true", help="Required before deploying mainnet contracts.")
+    deploy_contracts_parser.add_argument("--deploy-escrow", action="store_true", help="Deploy HubCreditBridgeEscrow and populate main_computer/config/<network>_contracts.json with the returned address.")
+    deploy_contracts_parser.add_argument("--dry-run", action="store_true", help="Plan the deployment without writing private state, updating Coolify, or writing local contract config.")
+    deploy_contracts_parser.add_argument("--include-compose", action="store_true", help="Include generated request details in JSON. Private keys are redacted.")
+    deploy_contracts_parser.add_argument("--no-deploy", action="store_true", help="Create/update the head agent but do not trigger deployment.")
+    deploy_contracts_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after head-agent sync.")
+    deploy_contracts_parser.add_argument("--contract-deploy-wait-s", type=float, default=DEFAULT_CONTRACT_DEPLOY_WAIT_S, help="Seconds to wait for the head agent to report contract deployment result.")
+    deploy_contracts_parser.add_argument("--contract-deploy-receipt-timeout-s", type=int, default=300, help="Seconds the remote executor waits for each contract deployment receipt.")
 
     add_node_parser = subparsers.add_parser("add-node", help="Add one all-father super-node to mainnet or testnet on one Coolify host.")
     add_remote_args(add_node_parser)
@@ -11343,9 +14674,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
     add_node_parser.add_argument("--no-contracts", action="store_true", help="Do not request first-node contract bootstrap.")
     add_node_parser.add_argument("--publish-routes", action="store_true", help="Publish Hub/RPC Traefik routes immediately and reconcile public Hub Traefik routes after readiness. Default defers public cutover.")
-    add_node_parser.add_argument("--traefik-propagate", action="store_true", help="After the node is ready, reconcile public Hub Traefik routes from live topology.")
+    add_node_parser.add_argument("--hub-propagate", action="store_true", help="After the node is ready, reconcile public Hub routes, huddle admins, and contract admin authorization from live topology.")
+    add_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)
     add_node_parser.add_argument("--include-compose", action="store_true", help="Include rendered compose with private keys redacted.")
-    add_traefik_propagate_options(add_node_parser)
+    add_hub_propagate_options(add_node_parser)
     add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Managed all-father super-node dependency base image used by the generated per-node image.")
     add_node_parser.add_argument("--super-base-source-image", default=DEFAULT_SUPER_BASE_SOURCE_IMAGE, help="Besu/QBFT source image used by the managed Coolify super-base-builder service.")
     add_node_parser.add_argument("--super-base-builder-image", default=DEFAULT_SUPER_BASE_BUILDER_IMAGE, help=argparse.SUPPRESS)
@@ -11372,10 +14704,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("--delete-poll-s", type=float, default=DEFAULT_REMOVE_DELETE_POLL_S, help=argparse.SUPPRESS)
     remove_node_parser.add_argument("--keep-seed-material", action="store_true", help="Do not clean generated first-node keys/FDB identity when the network becomes empty.")
     remove_node_parser.add_argument("--keep-runtime-state", action="store_true", help="Do not deploy the remote last-node runtime cleanup service that moves stale super-node state directories.")
-    remove_node_parser.add_argument("--traefik-propagate", action="store_true", help="After removal, reconcile public Hub Traefik routes from live topology.")
-    add_traefik_propagate_options(remove_node_parser)
+    remove_node_parser.add_argument("--hub-propagate", action="store_true", help="After removal, reconcile public Hub routes, huddle admins, and contract admin authorization from live topology.")
+    remove_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)
+    add_hub_propagate_options(remove_node_parser)
 
-    for subparser in (plan_parser, write_parser, boot_parser, discover_parser, traefik_parser, add_node_parser, remove_node_parser):
+    for subparser in (plan_parser, write_parser, boot_parser, discover_parser, hub_parser, traefik_parser, deploy_contracts_parser, add_node_parser, remove_node_parser):
         subparser.add_argument("--json", action="store_true", help="Print detailed compact JSON. Default discover output is an operator summary.")
         subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output.")
         subparser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs on stderr.")
@@ -11431,8 +14764,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print_json(compact_discover_for_operator(payload))
             return 0
-        if args.command == "traefik-propagate":
-            payload = traefik_propagate(plan, args)
+        if args.command in {"hub-propagate", "traefik-propagate"}:
+            payload = hub_propagate(plan, args)
+            print_json(payload)
+            return 0 if bool(payload.get("ok", True)) else 1
+        if args.command == "deploy-contracts":
+            payload = deploy_contracts(plan, args)
             print_json(payload)
             return 0 if bool(payload.get("ok", True)) else 1
         if args.command == "add-node":

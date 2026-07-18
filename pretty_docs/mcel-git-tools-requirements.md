@@ -56,6 +56,149 @@ verification:
   - tests/test_mcel_documentation.py
 ```
 
+## Roadmap use cases
+
+These use cases define Git Tools as a governed repository workflow app. The existing local-Gitea push slice is the reference implementation; the remaining daily Git workflows should reach the same inspect, evidence, preflight, confirm, execute, receipt, and recover standard.
+
+### Use case 1: push current branch to local Gitea
+
+A user has committed local work and wants to push the current branch to the configured local Gitea remote without using raw Git commands.
+
+```mcel-use-case
+id: git-tools.use-case.push-current-branch-local-gitea
+app: git-tools
+status: partially-implemented
+type: roadmap-use-case
+primary_object: GovernedPushPlan
+user_goal: >
+  Inspect repository, branch, and remote evidence, confirm the intended local
+  Gitea target, push the current branch explicitly, and receive success or
+  recovery evidence.
+current_support:
+  - scope-limited semantic adapter for governed publishing
+  - pushCurrentBranch executable intent
+  - preparePush preflight path
+  - confirmation and recovery receipts
+  - local-Gitea project publishing documentation
+planned_support:
+  - complete remote inspection intent coverage
+  - complete patch inventory and working-tree read intent coverage before push
+acceptance:
+  - Repository root, current branch, and remote target are visible before push.
+  - Push requires explicit confirmation.
+  - Commit and push remain separate actions.
+  - A successful push produces a receipt tied to the branch and remote.
+  - A failed push produces recovery guidance without pretending the remote is updated.
+layout_implications:
+  - branch and remote identity stay near the push action
+  - push evidence is separate from local commit evidence
+  - raw Git plumbing remains advanced evidence, not the default path
+```
+
+### Use case 2: add a file or directory to `.gitignore`
+
+A user sees generated or unwanted files in the working tree and wants to add the right ignore rule without confusing ignored, untracked, and already-tracked files.
+
+```mcel-use-case
+id: git-tools.use-case.add-ignore-rule
+app: git-tools
+status: planned
+type: roadmap-use-case
+primary_object: GitIgnoreRulePlan
+user_goal: >
+  Select an untracked file or directory, preview the proposed .gitignore rule,
+  understand whether the target is already tracked, apply the ignore change, and
+  refresh repository evidence.
+current_support:
+  - Git ignore/filter workbench files
+  - repository status and file-basket surfaces
+  - git-tools-gitignore-workbench.js source boundary
+planned_support:
+  - semantic addIgnoreRule intent
+  - tracked-vs-untracked preflight
+  - .gitignore write receipt and recovery guidance
+acceptance:
+  - The selected file or directory is visible before creating the rule.
+  - The proposed .gitignore entry is previewed before write.
+  - Already-tracked files warn that ignore alone will not untrack them.
+  - The .gitignore file is changed only after explicit confirmation.
+  - Repository status refreshes after the rule is written.
+layout_implications:
+  - ignore actions live near file-triage evidence
+  - tracked/untracked/ignored states must be visually distinct
+  - destructive untracking is not hidden inside the ignore workflow
+```
+
+### Use case 3: switch branches safely
+
+A user wants to switch to another branch while preserving or resolving local work instead of silently overwriting files.
+
+```mcel-use-case
+id: git-tools.use-case.switch-branch-safely
+app: git-tools
+status: planned
+type: roadmap-use-case
+primary_object: BranchSwitchPlan
+user_goal: >
+  Inspect the current branch, available branch targets, and dirty working-tree
+  state, then switch branches only when local work is safe or explicitly handled.
+current_support:
+  - repository identity and branch evidence surfaces
+  - status APIs and semantic state classification
+planned_support:
+  - inspectBranches intent
+  - branch switch preflight for dirty/conflicting changes
+  - branch-switch receipt and recovery guidance
+acceptance:
+  - Current branch and target branch are visible before switching.
+  - Dirty working-tree state blocks unsafe switching by default.
+  - The user must choose a safe path such as commit, stash, discard, or cancel.
+  - Switching branches refreshes repository and working-tree state.
+  - Local work is never silently discarded.
+layout_implications:
+  - branch navigation is a repository state transition, not a raw command box
+  - dirty state must stay visible near branch-switch controls
+  - discard paths require a danger boundary
+```
+
+### Use case 4: select files, stage, and commit
+
+A user wants to create a local commit from a deliberate subset of changed files while leaving unrelated work untouched.
+
+```mcel-use-case
+id: git-tools.use-case.select-files-stage-commit
+app: git-tools
+status: planned
+type: roadmap-use-case
+primary_object: CommitPlan
+user_goal: >
+  Inspect changed files, preview diffs, select the files that belong together,
+  stage only those files, write a commit message, create the commit, and keep
+  unselected changes untouched.
+current_support:
+  - file basket and contract view sources
+  - status APIs
+  - patch inventory helpers
+  - secrets/filter workbench surfaces
+planned_support:
+  - inspectWorkingTree executable intent
+  - selectFilesForCommit intent
+  - stageSelectedFiles intent
+  - commitSelectedFiles intent
+  - commit receipt and recovery guidance
+acceptance:
+  - Changed, deleted, and untracked files are grouped by status.
+  - The user can preview diffs before selecting files.
+  - Stage/commit includes only selected files.
+  - Secrets, generated junk, and oversized artifacts are flagged before commit.
+  - Commit message is required before creating local history.
+  - Unselected changes remain in the working tree after commit.
+layout_implications:
+  - file selection, diff evidence, and commit controls stay connected
+  - commit evidence is local-repository evidence, not remote publish evidence
+  - push remains a separate governed action after commit
+```
+
 ## Product law
 
 Git Tools is not a terminal with buttons. It is a repository evidence and governed-publishing workbench.
@@ -280,7 +423,12 @@ The Git Tools app should normally be inspected through these regions.
 ```mcel-region
 id: git-tools.region.identity
 app: git-tools
+status: specified
 region: identity
+role: repository-identity-header
+responsibility: >
+  Identify the selected project, repository root, branch, remote target, backend
+  freshness, and semantic runtime scope.
 purpose: Active project, repository root, branch identity, backend state age, current runtime scope, and selected remote target.
 expected_elements:
   - selected project name
@@ -297,7 +445,12 @@ must_not_contain:
 ```mcel-region
 id: git-tools.region.navigation
 app: git-tools
+status: specified
 region: navigation
+role: repository-navigation
+responsibility: >
+  Let the user choose projects, workflow tabs, file baskets, patch inventory
+  views, and support areas without mutating Git state.
 purpose: Project list, active project cards, repository selection, patch inventory navigation, and workflow tabs.
 expected_elements:
   - project cards
@@ -313,7 +466,12 @@ must_not_contain:
 ```mcel-region
 id: git-tools.region.primary
 app: git-tools
+status: specified
 region: primary
+role: repository-workbench
+responsibility: >
+  Own the selected repository workflow, changed-file triage, project publishing
+  strip, status summary, and commit/publish content.
 purpose: Selected repository workbench, project publishing strip, changed-file triage, status summary, and current workflow content.
 expected_elements:
   - selected project card
@@ -329,7 +487,12 @@ must_not_contain:
 ```mcel-region
 id: git-tools.region.inspector
 app: git-tools
+status: specified
 region: inspector
+role: preflight-inspector
+responsibility: >
+  Show remote configuration, selected-file evidence, ignore-rule previews,
+  policy gates, and action-specific confirmation details.
 purpose: Preflight details, remote configuration, selected-file evidence, policy gates, and action-specific explanations.
 expected_elements:
   - preflight checklist
@@ -345,7 +508,12 @@ must_not_contain:
 ```mcel-region
 id: git-tools.region.evidence
 app: git-tools
+status: specified
 region: evidence
+role: evidence-and-recovery-panel
+responsibility: >
+  Show status API output, semantic adapter evidence, intent coverage, receipts,
+  backend errors, and recovery plans.
 purpose: Status API output, semantic panel evidence, patch inventory, receipts, backend errors, and recovery plans.
 expected_elements:
   - semantic adapter status
@@ -361,7 +529,12 @@ must_not_contain:
 ```mcel-region
 id: git-tools.region.actions
 app: git-tools
+status: specified
 region: actions
+role: governed-action-panel
+responsibility: >
+  Group Git actions by risk and route mutations through inspect, preflight,
+  confirmation, execution, receipt, and recovery.
 purpose: Governed repository actions grouped by risk: refresh, inspect, prepare, commit, publish, repair, and advanced support.
 expected_elements:
   - refresh status
@@ -378,7 +551,12 @@ must_not_contain:
 ```mcel-region
 id: git-tools.region.status
 app: git-tools
+status: specified
 region: status
+role: repository-status-strip
+responsibility: >
+  Keep clean, dirty, stale, blocked, running, failed, and completed
+  repository/action status visible after refresh and mutation.
 purpose: Persistent state line for clean/dirty/stale/blocked/running/failed/completed repository and adapter status.
 expected_elements:
   - repository clean or dirty state
@@ -394,7 +572,12 @@ must_not_contain:
 ```mcel-region
 id: git-tools.region.advanced
 app: git-tools
+status: specified
 region: advanced
+role: advanced-git-boundary
+responsibility: >
+  Isolate server lifecycle, local Gitea administration, mirror setup, remote
+  repair, raw payloads, and support diagnostics.
 purpose: Server lifecycle, local Gitea administration, mirror setup, remote repair, raw evidence, and support diagnostics.
 expected_elements:
   - server lifecycle controls
@@ -417,7 +600,7 @@ app: git-tools
 intent: refreshStatus
 status: implemented
 current_adapter_status: executable
-risk: safe-read
+risk: read-only
 default_execution: executable
 requires:
   - repository or project context when available
@@ -434,7 +617,7 @@ app: git-tools
 intent: inspectWorkingTree
 status: planned
 current_adapter_status: declared-only
-risk: safe-read
+risk: read-only
 default_execution: executable
 requires:
   - repository root
@@ -451,7 +634,7 @@ app: git-tools
 intent: inspectRemotes
 status: planned
 current_adapter_status: declared-only
-risk: safe-read
+risk: read-only
 default_execution: executable
 requires:
   - repository root
@@ -469,7 +652,7 @@ app: git-tools
 intent: inspectPatchInventory
 status: planned
 current_adapter_status: declared-only
-risk: safe-read
+risk: read-only
 default_execution: executable
 requires:
   - repository root
@@ -486,7 +669,7 @@ app: git-tools
 intent: preparePush
 status: partially-implemented
 current_adapter_status: preflight-only
-risk: publish-preflight
+risk: read-only
 default_execution: preflight-only
 requires:
   - fresh repository state
@@ -506,7 +689,7 @@ app: git-tools
 intent: pushCurrentBranch
 status: partially-implemented
 current_adapter_status: executable
-risk: publish-mutation
+risk: remote-mutation
 default_execution: governed-executable
 requires:
   - successful preflight
@@ -527,7 +710,7 @@ app: git-tools
 intent: runManualCommand
 status: prohibited
 current_adapter_status: prohibited
-risk: arbitrary-command-execution
+risk: execution
 default_execution: prohibited
 requires:
   - explicit future command-execution adapter
@@ -542,7 +725,7 @@ app: git-tools
 intent: commitSelectedFiles
 status: planned
 current_adapter_status: not-registered
-risk: repository-mutation
+risk: local-repository-mutation
 default_execution: preflight-required
 requires:
   - explicit file selection
@@ -561,7 +744,7 @@ app: git-tools
 intent: prepareLocalGiteaTarget
 status: planned
 current_adapter_status: not-registered
-risk: remote-configuration
+risk: remote-mutation
 default_execution: preflight-required
 requires:
   - repository root
@@ -580,7 +763,7 @@ app: git-tools
 intent: previewIgnoreRule
 status: planned
 current_adapter_status: not-registered
-risk: source-metadata-mutation
+risk: local-file-mutation
 default_execution: preflight-required
 requires:
   - selected file or pattern

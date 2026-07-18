@@ -8,10 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MCEL_DOC = ROOT / "pretty_docs" / "mcel-system-guide.md"
 AUTHORING_DOC = ROOT / "pretty_docs" / "mcel-application-authoring.md"
+REQUIREMENTS_LANGUAGE_DOC = ROOT / "pretty_docs" / "mcel-requirements-language.md"
 CODE_STUDIO_DOC = ROOT / "pretty_docs" / "mcel-code-studio-example.md"
 CODE_EDITOR_REQUIREMENTS_DOC = ROOT / "pretty_docs" / "mcel-code-editor-requirements.md"
 GIT_TOOLS_REQUIREMENTS_DOC = ROOT / "pretty_docs" / "mcel-git-tools-requirements.md"
 CALCULATOR_REQUIREMENTS_DOC = ROOT / "pretty_docs" / "mcel-calculator-requirements.md"
+FILE_EXPLORER_REQUIREMENTS_DOC = ROOT / "pretty_docs" / "mcel-file-explorer-requirements.md"
+WEBSITE_BUILDER_REQUIREMENTS_DOC = ROOT / "pretty_docs" / "mcel-website-builder-requirements.md"
 PRETTY_DOCS_INDEX = ROOT / "pretty_docs" / "index.json"
 README = ROOT / "README.md"
 
@@ -121,8 +124,11 @@ def test_readme_points_to_application_authoring_docs() -> None:
     readme = README.read_text(encoding="utf-8")
     assert "pretty_docs/mcel-application-authoring.md" in readme
     assert "pretty_docs/mcel-code-studio-example.md" in readme
+    assert "pretty_docs/mcel-requirements-language.md" in readme
     assert "pretty_docs/mcel-git-tools-requirements.md" in readme
     assert "pretty_docs/mcel-calculator-requirements.md" in readme
+    assert "pretty_docs/mcel-file-explorer-requirements.md" in readme
+    assert "pretty_docs/mcel-website-builder-requirements.md" in readme
 
 
 
@@ -134,6 +140,146 @@ def _mcel_doc_blocks(text: str) -> list[tuple[str, str]]:
 def _mcel_doc_field(block: str, field: str) -> str | None:
     match = re.search(rf"^{re.escape(field)}:\s*(.+)$", block, re.MULTILINE)
     return match.group(1).strip() if match else None
+
+
+
+def test_mcel_requirements_language_is_registered_and_defines_expanded_grammar() -> None:
+    index = json.loads(PRETTY_DOCS_INDEX.read_text(encoding="utf-8"))
+    documents = index.get("documents", [])
+    entry = next(
+        (item for item in documents if item.get("path") == "mcel-requirements-language.md"),
+        None,
+    )
+    assert entry is not None
+    assert entry["title"] == "MCEL Requirements Language"
+    assert entry["kind"] == "markdown"
+
+    text = REQUIREMENTS_LANGUAGE_DOC.read_text(encoding="utf-8")
+    required_phrases = [
+        "documentation-first grammar",
+        "BCP 14 requirement levels",
+        "Gherkin-style acceptance thinking",
+        "Schema-style validation",
+        "Operation-style intent definitions",
+        "Responsibility-based architecture",
+        "mcel-app",
+        "mcel-use-case",
+        "mcel-object",
+        "mcel-region",
+        "mcel-requirement",
+        "mcel-intent",
+        "mcel-acceptance",
+        "mcel-finding",
+        "mcel-evidence",
+        "mcel-receipt",
+        "mcel-boundary",
+        "mcel-risk",
+        "mcel-adapter",
+        "mcel-layout-pattern",
+        "mcel-source-binding",
+        "mcel-test-binding",
+        "mcel-runtime-check",
+        "Runtime-observable contract checks",
+        "overview",
+        "objects",
+        "workflows",
+        "layout",
+        "actions",
+        "capabilities",
+        "evidence",
+        "source",
+        "tests",
+        "annotations",
+        "findings",
+        "repair",
+        "identity",
+        "navigation",
+        "primary",
+        "inspector",
+        "status",
+        "advanced",
+        "save is not publish",
+        "preview is not commit",
+        "commit is not push",
+        "explain is not calculate",
+        "browse is not modify",
+        "inspect is not execute",
+        "Parser requirements",
+        "Truth-gate rule",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+    blocks = _mcel_doc_blocks(text)
+    grammar_blocks = [block for block_type, block in blocks if block_type == "mcel-grammar"]
+    assert len(grammar_blocks) >= 17
+
+    ids: list[str] = []
+    for block in grammar_blocks:
+        block_id = _mcel_doc_field(block, "id")
+        status = _mcel_doc_field(block, "status")
+        block_name = _mcel_doc_field(block, "block")
+        purpose = _mcel_doc_field(block, "purpose")
+        assert block_id, "mcel-grammar block is missing id"
+        assert status == "specified"
+        assert block_name and block_name.startswith("mcel-")
+        assert purpose
+        assert "required_fields:" in block
+        ids.append(block_id)
+
+    assert len(ids) == len(set(ids))
+
+
+def test_mcel_requirements_language_covers_existing_requirement_docs() -> None:
+    grammar_text = REQUIREMENTS_LANGUAGE_DOC.read_text(encoding="utf-8")
+    requirement_docs = [
+        CODE_EDITOR_REQUIREMENTS_DOC,
+        GIT_TOOLS_REQUIREMENTS_DOC,
+        CALCULATOR_REQUIREMENTS_DOC,
+        FILE_EXPLORER_REQUIREMENTS_DOC,
+        WEBSITE_BUILDER_REQUIREMENTS_DOC,
+    ]
+
+    all_ids: list[str] = []
+    block_types: set[str] = set()
+    statuses: set[str] = set()
+    for doc in requirement_docs:
+        text = doc.read_text(encoding="utf-8")
+        blocks = _mcel_doc_blocks(text)
+        assert blocks, f"{doc.name} should contain mcel-* blocks"
+        for block_type, block in blocks:
+            block_types.add(block_type)
+            block_id = _mcel_doc_field(block, "id")
+            assert block_id, f"{doc.name} {block_type} block is missing id"
+            all_ids.append(block_id)
+            status = _mcel_doc_field(block, "status")
+            if status:
+                statuses.add(status)
+            if block_type != "mcel-app":
+                assert _mcel_doc_field(block, "app"), f"{block_id} should be app-scoped"
+            if block_type == "mcel-intent":
+                assert _mcel_doc_field(block, "risk"), f"{block_id} should declare risk"
+
+    assert len(all_ids) == len(set(all_ids))
+
+    for block_type in block_types:
+        assert block_type in grammar_text, f"{block_type} should be covered by the grammar"
+
+    for status in statuses:
+        assert f"`{status}`" in grammar_text, f"{status} should be an allowed status"
+
+    required_risk_words = [
+        "read-only",
+        "local-state",
+        "local-file-mutation",
+        "local-repository-mutation",
+        "remote-mutation",
+        "execution",
+        "security-sensitive",
+        "prohibited",
+    ]
+    for risk in required_risk_words:
+        assert f"`{risk}`" in grammar_text
 
 
 def test_code_editor_requirements_are_registered_and_machine_readable() -> None:
@@ -160,6 +306,11 @@ def test_code_editor_requirements_are_registered_and_machine_readable() -> None:
         "code-editor.intent.run-code",
         "prohibited-until-execution-adapter",
         "MCEL truth gate does not report fullApplicationSemanticReady",
+        "Runtime-observable diagnosis contract",
+        "code-editor.runtime-check.authoring-primary-monaco",
+        "code-editor.contract.authoring.monaco-golden-path",
+        "code-editor.binding.authoring-monaco-surface",
+        "code-editor.test.authoring-monaco-diagnosis",
     ]
     for phrase in required_phrases:
         assert phrase in text
@@ -277,3 +428,110 @@ def test_calculator_requirements_are_registered_and_machine_readable() -> None:
         ids.append(block_id)
 
     assert len(ids) == len(set(ids))
+
+
+def test_file_explorer_requirements_are_registered_and_machine_readable() -> None:
+    index = json.loads(PRETTY_DOCS_INDEX.read_text(encoding="utf-8"))
+    documents = index.get("documents", [])
+    entry = next(
+        (item for item in documents if item.get("path") == "mcel-file-explorer-requirements.md"),
+        None,
+    )
+    assert entry is not None
+    assert entry["title"] == "MCEL File Explorer Requirements"
+    assert entry["kind"] == "markdown"
+
+    text = FILE_EXPLORER_REQUIREMENTS_DOC.read_text(encoding="utf-8")
+    required_phrases = [
+        "documentation-first requirements contract",
+        "current: domain-ready read-only File Explorer planner + domain pack",
+        "planned: full File Explorer semantic runtime",
+        "navigation + list + preview",
+        "Roadmap use case: inspect a project file safely",
+        "file-explorer.use-case.inspect-project-file-safely",
+        "Roadmap use case: browse a mounted Windows drive",
+        "file-explorer.use-case.browse-mounted-windows-drive",
+        "File Explorer may list, search, classify, and preview files inside an approved root",
+        "file-explorer.read-only.core-law",
+        "file-explorer.root-boundary.enforced",
+        "file-explorer.preview.bounded",
+        "file-explorer.search.bounded",
+        "file-explorer.classification.visible",
+        "file-explorer.handoff.explicit",
+        "file-explorer.layout.directory-list",
+        "file-explorer.intent.inspect-roots",
+        "file-explorer.intent.preview-entry",
+        "file-explorer.intent.delete-file",
+        "current_adapter_status: not-registered",
+        "target_adapter_status: executable",
+        "MCEL truth gate reports File Explorer fullApplicationSemanticReady",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+    blocks = _mcel_doc_blocks(text)
+    assert len(blocks) >= 32
+
+    ids: list[str] = []
+    for block_type, block in blocks:
+        block_id = _mcel_doc_field(block, "id")
+        app = _mcel_doc_field(block, "app")
+        assert block_id, f"{block_type} block is missing id"
+        if block_type != "mcel-app":
+            assert app == "file-explorer", f"{block_id} should be scoped to file-explorer"
+        ids.append(block_id)
+
+    assert len(ids) == len(set(ids))
+
+
+def test_website_builder_requirements_are_registered_and_machine_readable() -> None:
+    index = json.loads(PRETTY_DOCS_INDEX.read_text(encoding="utf-8"))
+    documents = index.get("documents", [])
+    entry = next(
+        (item for item in documents if item.get("path") == "mcel-website-builder-requirements.md"),
+        None,
+    )
+    assert entry is not None
+    assert entry["title"] == "MCEL Website Builder Requirements"
+    assert entry["kind"] == "markdown"
+
+    text = WEBSITE_BUILDER_REQUIREMENTS_DOC.read_text(encoding="utf-8")
+    required_phrases = [
+        "documentation-first requirements contract",
+        "current: working Website Builder + saved website project manifests + local/dev/remote publish lanes",
+        "planned: full Website Builder semantic runtime",
+        "Website Builder owns site editing, runtime setup, preview, and publish planning",
+        "Git Tools owns repository add/commit/push evidence",
+        "website-builder.use-case.edit-preview-saved-site",
+        "website-builder.use-case.configure-blog-runtime",
+        "website-builder.use-case.publish-selected-lane",
+        "website-builder.use-case.git-tools-handoff",
+        "website-builder.source.project-folder-canonical",
+        "website-builder.save.no-publish",
+        "website-builder.git.delegated-to-git-tools",
+        "website-builder.region.preview-surface",
+        "website-builder.region.publish-actions",
+        "website-builder.intent.save-site",
+        "website-builder.intent.preview-draft",
+        "website-builder.intent.publish-local-server",
+        "website-builder.intent.prepare-git-handoff",
+        "current_adapter_status: not-registered",
+        "target_adapter_status: executable",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+    blocks = _mcel_doc_blocks(text)
+    assert len(blocks) >= 40
+
+    ids: list[str] = []
+    for block_type, block in blocks:
+        block_id = _mcel_doc_field(block, "id")
+        app = _mcel_doc_field(block, "app")
+        assert block_id, f"{block_type} block is missing id"
+        if block_type != "mcel-app":
+            assert app == "website-builder", f"{block_id} should be scoped to website-builder"
+        ids.append(block_id)
+
+    assert len(ids) == len(set(ids))
+

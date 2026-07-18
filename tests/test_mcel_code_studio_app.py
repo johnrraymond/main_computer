@@ -16,6 +16,8 @@ STYLE_PATH = ROOT / "main_computer" / "web" / "applications" / "styles" / "code-
 SCRIPT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-mcel-studio.js"
 LAYOUT_CONTRACT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-layout-contract.js"
 MONACO_ADAPTER_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-monaco-adapter.js"
+SELF_DIAGNOSIS_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-self-diagnosis.js"
+REQUIREMENTS_REGISTRY_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-requirements-registry.js"
 PRETTY_DOC = ROOT / "pretty_docs" / "mcel-code-studio-example.md"
 
 
@@ -46,7 +48,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'id="code-studio-bottom-panel" data-expanded="false"',
             'id="code-studio-toggle-assistant"',
             "Author-owned source",
-            "Generated runtime",
+            "Selected file editor",
             "Serialized clean source",
             "MCEL contract report",
         ]
@@ -56,6 +58,54 @@ class McelCodeStudioAppTests(unittest.TestCase):
 
         self.assertNotIn("<main class=\"code-studio-editor-group\"", app)
         self.assertNotIn("<header class=\"code-studio-titlebar\"", app)
+
+    def test_code_editor_defaults_to_focused_authoring_mode(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        html_expected = [
+            'aria-label="Code Editor"',
+            'data-code-editor-mode="authoring"',
+            'id="code-editor-mcel-tools-toggle"',
+            'data-code-editor-mcel-only="true" data-code-studio-tab="contract"',
+            'data-code-editor-mcel-only="true" data-code-studio-file="mcel.contract.json"',
+            "Edit the author-owned source. Advanced MCEL proof tools stay hidden until requested.",
+            "<span>source-safe editor</span>",
+        ]
+        for expected in html_expected:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, app)
+
+        style_expected = [
+            "Code Editor default authoring mode cleanup",
+            '#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-mcel-only="true"]',
+            '#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="scm-ai-inspector"]',
+            '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-bottom-panel',
+            'grid-template-columns:\n    var(--mcel-code-editor-authoring-explorer-inline)\n    minmax(0, 1fr) !important;',
+            '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-shell,',
+            'grid-template-columns: minmax(0, 1fr) !important;',
+            '#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="runtime"].active',
+            '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-surface',
+        ]
+        for expected in style_expected:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, style)
+
+        script_expected = [
+            'const mcelToolsToggle = root.querySelector("#code-editor-mcel-tools-toggle");',
+            'function setCodeEditorMode(mode)',
+            'root.dataset.codeEditorMode = nextMode;',
+            'Show MCEL annotation, layout, proof, and diagnostic tools',
+            'function showFocusedAuthoringSurface()',
+            'showPane("runtime");',
+            'function syncCodeEditorModeSurface',
+            'syncCodeEditorModeSurface();',
+        ]
+        for expected in script_expected:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, script)
+
 
     def test_layout_is_locked_to_a_workbench_viewport(self) -> None:
         style = STYLE_PATH.read_text(encoding="utf-8")
@@ -149,7 +199,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
 
         self.assertEqual(positions, sorted(positions))
 
-    def test_code_studio_mounts_monaco_as_runtime_only_editor_adapter(self) -> None:
+    def test_code_studio_mounts_monaco_as_direct_authoring_editor_adapter(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")
         applications_html = APPLICATIONS_HTML.read_text(encoding="utf-8")
         style = STYLE_PATH.read_text(encoding="utf-8")
@@ -157,16 +207,18 @@ class McelCodeStudioAppTests(unittest.TestCase):
         adapter = MONACO_ADAPTER_PATH.read_text(encoding="utf-8")
 
         expected_markup = [
-            "Monaco mounts as runtime-only editor chrome",
+            "Monaco mounts as the selected-file editor",
             'id="code-studio-runtime-monaco"',
-            'data-code-studio-monaco-runtime="host"',
-            'data-code-studio-monaco-fallback="textarea"',
-            "fallback runtime draft",
-            "commitDraft is source gate",
+            'data-code-editor-golden-path="monaco-authoring"',
+            "code-studio-monaco-authoring-surface",
+            "Apply to source",
         ]
         for text in expected_markup:
             with self.subTest(markup=text):
                 self.assertIn(text, app + script)
+
+        self.assertNotIn('data-code-studio-monaco-fallback="textarea"', script)
+        self.assertNotIn("fallback runtime draft", script)
 
         expected_application_order = [
             "applications/scripts/code-editor-scm-manifest.js",
@@ -177,10 +229,11 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
         expected_style = [
+            "Code Editor Monaco golden path simplification",
             ".code-studio-monaco-host",
-            '.code-studio-monaco-host[data-monaco-outcome="pass"]',
-            '.code-studio-runtime-editor[data-monaco-mounted="true"] .code-studio-runtime-fallback',
-            ".code-studio-runtime-fallback",
+            ".code-studio-monaco-authoring-surface",
+            "#code-studio-runtime-monaco",
+            'body:has(#code-editor-app[data-code-editor-mode="authoring"]) .machine-activity-toggle',
         ]
         for text in expected_style:
             with self.subTest(style=text):
@@ -197,7 +250,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "editor.monaco.layoutObserved",
             "editor.monaco.dispose",
             "adapter.getValue",
-            "Monaco mounted as a runtime-only draft editor. Commit editor draft remains the source mutation gate.",
+            "Monaco mounted as the direct selected-file editor. Apply to source remains the mutation gate.",
+            "data-code-studio-apply-draft",
         ]
         for text in expected_script:
             with self.subTest(script=text):
@@ -217,15 +271,16 @@ class McelCodeStudioAppTests(unittest.TestCase):
         for text in expected_adapter:
             with self.subTest(adapter=text):
                 self.assertIn(text, adapter)
+        self.assertNotIn("Fallback textarea", adapter)
 
         commit_start = script.index("function commitRuntimeDraft")
         monaco_value = script.index("adapter.getValue", commit_start)
         edit_gate = script.index('runScmTransition("editDraft"', monaco_value)
         commit_gate = script.index('runScmTransition("commitDraft"', edit_gate)
+        source_write = script.index("target.textContent", commit_start)
         self.assertLess(monaco_value, edit_gate)
         self.assertLess(edit_gate, commit_gate)
-
-
+        self.assertLess(commit_gate, source_write)
     def test_code_studio_script_exposes_contract_workflow(self) -> None:
         script = SCRIPT_PATH.read_text(encoding="utf-8")
         expected = [
@@ -283,7 +338,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "LIVE_WORKSPACE_PERSISTENCE_KEY",
             "mcel-code-studio-live-workspace-persistence-record",
             "mcel-code-studio-live-workspace-persistence-summary",
-            "Live workspace persisted through SCM saveFile effect and route loaders.",
+            "Live workspace persisted through SCM saveFile effect, route loaders, and MCEL 18N commit boundary.",
             "replayScmEvidenceEntry",
             "code-studio-scm-evidence-entry",
             "code-studio-open-scm-evidence-detail",
@@ -323,10 +378,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, script)
 
-        runtime_switch = script.index('button.dataset.codeStudioRuntimeFile || ""')
-        runtime_leave = script.rfind("canNavigateScmRoute", 0, runtime_switch + 250)
-        runtime_select = script.index("studioState.selectedPath = nextPath;", runtime_switch)
-        self.assertLess(runtime_leave, runtime_select)
+        self.assertNotIn("codeStudioRuntimeFile", script)
 
         explorer_switch = script.index("button.dataset.codeStudioFile || studioState.selectedPath")
         explorer_leave = script.rfind("canNavigateScmRoute", 0, explorer_switch + 250)
@@ -871,7 +923,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "persistence: packet.persistence",
             "persistenceStatus=",
             "live workspace persistence boundaries",
-            'persistLiveWorkspaceFromSource("commitDraft"',
+            'persistLiveWorkspaceFromSource("applyMonacoDraft"',
             "hydratePersistedLiveWorkspace();",
             "code-studio-save-live-workspace",
             "code-studio-restore-live-workspace",
@@ -884,7 +936,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
         commit_start = script.index("function commitRuntimeDraft")
         save_effect = script.index('runScmGate("effect:saveFile"', commit_start)
         route_loader = script.index("enterScmRouteAndRunLoaders({forceEnter: true})", save_effect)
-        persist = script.index('persistLiveWorkspaceFromSource("commitDraft"', route_loader)
+        persist = script.index('persistLiveWorkspaceFromSource("applyMonacoDraft"', route_loader)
         self.assertLess(save_effect, route_loader)
         self.assertLess(route_loader, persist)
 
@@ -1620,7 +1672,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
 
         self.assertEqual(style.count("{"), style.count("}"))
 
-    def test_code_editor_runtime_generated_layout_is_contract_contained(self) -> None:
+    def test_code_editor_authoring_golden_path_bypasses_generated_layout_contract(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")
         style = STYLE_PATH.read_text(encoding="utf-8")
         studio = SCRIPT_PATH.read_text(encoding="utf-8")
@@ -1640,9 +1692,6 @@ class McelCodeStudioAppTests(unittest.TestCase):
         expected_contract = [
             'const GENERATED_LAYOUT_CONTRACT = deepFreeze({',
             '"mcel-owned-track-containment.v1"',
-            '"owned-remaining-track-descendants-contain-their-paint"',
-            '"data-mcel-layout-node": "runtime-draft"',
-            '"data-mcel-layout-containment": "paint-contained"',
             "function applyGeneratedLayoutContract",
             "applyGeneratedLayoutContract,",
         ]
@@ -1650,24 +1699,282 @@ class McelCodeStudioAppTests(unittest.TestCase):
             with self.subTest(contract=text):
                 self.assertIn(text, contract)
 
-        self.assertIn("applyGeneratedLayoutContract?.(runtimePreview)", studio)
-        self.assertIn("runtimePreview.dataset.mcelGeneratedLayoutContract", studio)
+        self.assertNotIn("applyGeneratedLayoutContract?.(runtimePreview)", studio)
+        self.assertNotIn("runtimePreview.dataset.mcelGeneratedLayoutContract", studio)
+        self.assertIn("code-studio-monaco-authoring-surface", studio)
+        self.assertIn('data-code-editor-golden-path="monaco-authoring"', studio)
 
         expected_style = [
-            "MCEL Code Editor owned remaining-track containment V1",
-            '[data-mcel-layout-node="runtime-window"]',
-            "grid-template-rows: auto minmax(0, 1fr);",
-            '[data-mcel-layout-node="runtime-draft"]',
-            "min-block-size: 0 !important;",
-            "max-block-size: 100%;",
-            "resize: none !important;",
-            '[data-mcel-layout-capacity="compact"]',
+            "Code Editor Monaco golden path simplification",
+            '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-surface',
+            '#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-monaco',
+            '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-window',
+            '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-layout',
         ]
         for text in expected_style:
             with self.subTest(style=text):
                 self.assertIn(text, style)
 
         self.assertEqual(style.count("{"), style.count("}"))
+
+    def test_mcel_self_diagnosis_contract_loads_for_code_editor(self) -> None:
+        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        script = SELF_DIAGNOSIS_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("applications/scripts/mcel-self-diagnosis.js", applications)
+        self.assertIn("code-editor.contract.authoring.monaco-golden-path", script)
+        self.assertIn("global.MCEL", script)
+        self.assertIn("diagnose(appId", script)
+        self.assertIn("evaluateCodeEditorAuthoringSnapshot", script)
+        self.assertIn("resolveDiagnosisContract", script)
+        self.assertIn("getRuntimeDiagnosisContract", script)
+
+        expected_contract_terms = [
+            "mcel-region",
+            "mcel-requirement",
+            "mcel-acceptance",
+            "mcel-boundary",
+            "Monaco selected-file editor",
+            "Generated runtime file rail",
+            "Fallback textarea",
+            "MCEL proof/evidence dock",
+        ]
+        for text in expected_contract_terms:
+            with self.subTest(text=text):
+                self.assertIn(text, script)
+
+    def test_mcel_self_diagnosis_registers_without_mutating_frozen_mcel_core(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+global.window = {{
+  MCEL: Object.freeze({{
+    compile() {{ return "existing-compile-ok"; }}
+  }})
+}};
+require({script_literal});
+console.log(JSON.stringify({{
+  directApi: typeof window.McelSelfDiagnosis.diagnose,
+  facadeDiagnose: typeof window.MCEL.diagnose,
+  facadeCompile: window.MCEL.compile(),
+  fallbackApi: typeof window.MCELDiagnosis.diagnose
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["directApi"], "function")
+        self.assertEqual(payload["facadeDiagnose"], "function")
+        self.assertEqual(payload["facadeCompile"], "existing-compile-ok")
+        self.assertEqual(payload["fallbackApi"], "function")
+
+    def test_mcel_self_diagnosis_queries_include_root_element_itself(self) -> None:
+        script = SELF_DIAGNOSIS_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("function matchesSelector", script)
+        self.assertIn("if (matchesSelector(base, selector)) return base;", script)
+        self.assertIn("matches.unshift(base);", script)
+
+    def test_mcel_requirements_registry_exposes_runtime_diagnostic_contracts(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(REQUIREMENTS_REGISTRY_PATH))
+        probe = f"""
+global.window = {{}};
+require({script_literal});
+const registry = window.McelRequirementsRegistry;
+const contract = registry.getRuntimeDiagnosisContract("code-editor", "authoring");
+console.log(JSON.stringify({{
+  hasGetter: typeof registry.getRuntimeDiagnosisContract,
+  contractId: contract.contractId,
+  source: contract.source,
+  hostSelector: contract.primarySurface.hostSelector,
+  forbiddenSelectors: contract.forbiddenRegions.map((entry) => entry.selector),
+  lifecycleAssertions: contract.lifecycleAssertions
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["hasGetter"], "function")
+        self.assertEqual(payload["contractId"], "code-editor.contract.authoring.monaco-golden-path")
+        self.assertEqual(payload["source"], "mcel-runtime-check")
+        self.assertEqual(payload["hostSelector"], "#code-studio-runtime-monaco")
+        self.assertIn("#mc-widget-editor-root", payload["forbiddenSelectors"])
+        self.assertIn("file-click-keeps-one-primary-editor", payload["lifecycleAssertions"])
+
+    def test_mcel_self_diagnosis_prefers_registry_runtime_contract_when_available(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        registry_literal = json.dumps(str(REQUIREMENTS_REGISTRY_PATH))
+        diagnosis_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+global.window = {{}};
+require({registry_literal});
+require({diagnosis_literal});
+const api = window.McelSelfDiagnosis;
+const contract = api.resolveDiagnosisContract("code-editor", {{mode: "authoring"}});
+console.log(JSON.stringify({{
+  contractId: contract.contractId,
+  source: contract.source,
+  hostSelector: contract.primarySurface.hostSelector,
+  forbiddenCount: contract.forbiddenRegions.length,
+  lifecycleAssertions: contract.lifecycleAssertions
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["contractId"], "code-editor.contract.authoring.monaco-golden-path")
+        self.assertEqual(payload["source"], "mcel-runtime-check")
+        self.assertEqual(payload["hostSelector"], "#code-studio-runtime-monaco")
+        self.assertGreaterEqual(payload["forbiddenCount"], 9)
+        self.assertIn("resize-keeps-primary-editor-usable", payload["lifecycleAssertions"])
+
+
+    def test_mcel_self_diagnosis_flags_code_editor_collapsed_monaco_contract(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+global.window = {{}};
+require({script_literal});
+const api = window.McelSelfDiagnosis;
+const report = api.evaluateCodeEditorAuthoringSnapshot({{
+  appId: "code-editor",
+  mode: "authoring",
+  route: "/applications/code-editor",
+  timestamp: "test",
+  viewport: {{width: 1565, height: 1403}},
+  requiredRegions: {{
+    "code-editor.region.root": {{exists: true, visible: true, selector: "#code-editor-app", width: 1565, height: 1403}},
+    "#code-editor-app": {{exists: true, visible: true, selector: "#code-editor-app", width: 1565, height: 1403}},
+    "code-editor.region.explorer": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 280, height: 1299}},
+    ".code-studio-sidebar": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 280, height: 1299}},
+    "code-editor.region.editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}},
+    ".code-studio-editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}}
+  }},
+  surfaces: {{
+    monacoHost: {{exists: true, visible: false, selector: "#code-studio-runtime-monaco", width: 1216, height: 0, display: "block", gridRow: "editor", gridColumn: "editor"}},
+    monacoEditor: {{exists: true, visible: false, selector: ".monaco-editor", width: 1216, height: 0, display: "block"}},
+    sourceTextarea: {{exists: true, visible: false, selector: "#code-studio-source-editor", width: 0, height: 0}},
+    runtimeDraft: {{exists: true, visible: true, selector: "#code-studio-runtime-draft", width: 1216, height: 120, display: "block"}},
+    fallbackTextarea: {{exists: false, visible: false, selector: ".code-studio-runtime-fallback", width: 0, height: 0}}
+  }},
+  forbiddenRegions: [
+    {{
+      id: "code-editor.forbidden.fallback-textarea",
+      selector: "#code-studio-runtime-draft",
+      label: "Fallback textarea",
+      box: {{exists: true, visible: true, selector: "#code-studio-runtime-draft", width: 1216, height: 120}}
+    }}
+  ],
+  ownerChain: [
+    {{exists: true, selector: "#code-studio-runtime-monaco", width: 1216, height: 0, gridRow: "editor"}},
+    {{exists: true, selector: ".code-studio-runtime-editor", width: 1216, height: 48, gridTemplateRows: "47.7969px 0px"}},
+    {{exists: true, selector: "#code-studio-runtime-preview", width: 1239, height: 1299, gridTemplateRows: "47.7969px 1251.2px"}}
+  ]
+}});
+console.log(JSON.stringify({{
+  verdict: report.verdict,
+  codes: report.findings.map((finding) => finding.code).sort(),
+  contractId: report.contractId,
+  primarySurface: report.summary.primarySurface
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["contractId"], "code-editor.contract.authoring.monaco-golden-path")
+        self.assertEqual(payload["verdict"], "fail")
+        self.assertFalse(payload["primarySurface"]["usable"])
+        self.assertIn("primary-editor-host-unusable", payload["codes"])
+        self.assertIn("primary-editor-unusable", payload["codes"])
+        self.assertIn("competing-editor-surface-visible", payload["codes"])
+        self.assertIn("forbidden-region-visible", payload["codes"])
+        self.assertIn("collapsed-layout-owner", payload["codes"])
+
+    def test_mcel_self_diagnosis_accepts_healthy_code_editor_monaco_contract(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+global.window = {{}};
+require({script_literal});
+const api = window.McelSelfDiagnosis;
+const report = api.evaluateCodeEditorAuthoringSnapshot({{
+  appId: "code-editor",
+  mode: "authoring",
+  route: "/applications/code-editor",
+  timestamp: "test",
+  viewport: {{width: 1565, height: 1403}},
+  requiredRegions: {{
+    "code-editor.region.root": {{exists: true, visible: true, selector: "#code-editor-app", width: 1565, height: 1403}},
+    "#code-editor-app": {{exists: true, visible: true, selector: "#code-editor-app", width: 1565, height: 1403}},
+    "code-editor.region.explorer": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 280, height: 1299}},
+    ".code-studio-sidebar": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 280, height: 1299}},
+    "code-editor.region.editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}},
+    ".code-studio-editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}}
+  }},
+  surfaces: {{
+    monacoHost: {{exists: true, visible: true, selector: "#code-studio-runtime-monaco", width: 1216, height: 1200, display: "block"}},
+    monacoEditor: {{exists: true, visible: true, selector: ".monaco-editor", width: 1216, height: 1200, display: "block"}},
+    sourceTextarea: {{exists: true, visible: false, selector: "#code-studio-source-editor", width: 0, height: 0}},
+    runtimeDraft: {{exists: false, visible: false, selector: "#code-studio-runtime-draft", width: 0, height: 0}},
+    fallbackTextarea: {{exists: false, visible: false, selector: ".code-studio-runtime-fallback", width: 0, height: 0}}
+  }},
+  forbiddenRegions: [],
+  ownerChain: [
+    {{exists: true, selector: "#code-studio-runtime-monaco", width: 1216, height: 1200}},
+    {{exists: true, selector: ".code-studio-monaco-authoring-surface", width: 1216, height: 1200}},
+    {{exists: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}}
+  ]
+}});
+console.log(JSON.stringify({{
+  verdict: report.verdict,
+  codes: report.findings.map((finding) => finding.code),
+  primarySurface: report.summary.primarySurface
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["verdict"], "pass")
+        self.assertEqual(payload["codes"], [])
+        self.assertTrue(payload["primarySurface"]["usable"])
+        self.assertTrue(payload["primarySurface"]["exactlyOneAuthoritativeSurface"])
+
 
     def test_code_editor_generated_layout_contract_applies_without_raw_geometry(self) -> None:
         node = shutil.which("node")

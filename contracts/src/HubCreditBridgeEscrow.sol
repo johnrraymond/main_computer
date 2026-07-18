@@ -58,11 +58,13 @@ contract HubCreditBridgeEscrow {
         string memo
     );
     event BridgeControllerUpdated(address indexed oldController, address indexed newController);
+    event BridgeControllerAllowed(address indexed controller, bool allowed);
     event Paused(bool paused);
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
 
     address public owner;
     address public bridgeController;
+    mapping(address => bool) public bridgeControllers;
     bool public paused;
 
     mapping(address => AccountEscrow) private _accounts;
@@ -79,7 +81,7 @@ contract HubCreditBridgeEscrow {
     }
 
     modifier onlyBridge() {
-        require(msg.sender == bridgeController, "only bridge");
+        require(isBridgeController(msg.sender), "only bridge");
         _;
     }
 
@@ -99,8 +101,10 @@ contract HubCreditBridgeEscrow {
         require(bridgeController_ != address(0), "zero bridge");
         owner = msg.sender;
         bridgeController = bridgeController_;
+        bridgeControllers[bridgeController_] = true;
         emit OwnershipTransferred(address(0), msg.sender);
         emit BridgeControllerUpdated(address(0), bridgeController_);
+        emit BridgeControllerAllowed(bridgeController_, true);
     }
 
     function getAccount(address account) external view returns (AccountEscrow memory) {
@@ -121,6 +125,10 @@ contract HubCreditBridgeEscrow {
 
     function completedDepositUnits(address account) external view returns (uint256) {
         return _completedDepositUnits[account];
+    }
+
+    function isBridgeController(address controller) public view returns (bool) {
+        return controller != address(0) && (controller == bridgeController || bridgeControllers[controller]);
     }
 
     function withdrawableUnits(address account) public view returns (uint256) {
@@ -301,7 +309,29 @@ contract HubCreditBridgeEscrow {
         require(newBridgeController != address(0), "zero bridge");
         address oldBridgeController = bridgeController;
         bridgeController = newBridgeController;
+        bridgeControllers[newBridgeController] = true;
         emit BridgeControllerUpdated(oldBridgeController, newBridgeController);
+        emit BridgeControllerAllowed(newBridgeController, true);
+    }
+
+    function setBridgeControllerAllowed(address controller, bool allowed) external onlyOwner {
+        require(controller != address(0), "zero bridge");
+        require(controller != bridgeController || allowed, "primary bridge");
+        bridgeControllers[controller] = allowed;
+        emit BridgeControllerAllowed(controller, allowed);
+    }
+
+    function addBridgeController(address controller) external onlyOwner {
+        require(controller != address(0), "zero bridge");
+        bridgeControllers[controller] = true;
+        emit BridgeControllerAllowed(controller, true);
+    }
+
+    function removeBridgeController(address controller) external onlyOwner {
+        require(controller != address(0), "zero bridge");
+        require(controller != bridgeController, "primary bridge");
+        bridgeControllers[controller] = false;
+        emit BridgeControllerAllowed(controller, false);
     }
 
     function setPaused(bool nextPaused) external onlyOwner {

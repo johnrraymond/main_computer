@@ -1,5 +1,20 @@
 # TODO
 
+- Extend the Phase D MCEL requirements registry beyond adoption mode:
+  - current parser/report: `tools/mcel_requirements_registry.py`.
+  - current test coverage: `tests/test_mcel_requirements_registry.py`.
+  - region normalization v1 is complete: all parsed `mcel-region` blocks now declare `region`, `role`, and `responsibility`.
+  - intent normalization v1 is complete: all parsed `mcel-intent` blocks now declare canonical `risk`, `requires`, and `produces` fields.
+  - use-case normalization v1 is complete: Code Editor and Git Tools now have roadmap `mcel-use-case` blocks, and Website Builder use cases no longer use mixed `current-plus-planned` status.
+  - registry strict-schema readiness is now clean: `python tools/mcel_requirements_registry.py` reports `warnings: 0` and `strict_schema_ready: True`.
+  - registry report v1 is available: `python tools/mcel_requirements_registry.py --report`.
+  - MCEL Lab payload v1 is available: `python tools/mcel_requirements_registry.py --lab-json`.
+  - browser comparison seed is loaded by `main_computer/web/applications/scripts/mcel-requirements-registry.js`.
+  - next target: compare the requirements payload to app blueprints, semantic adapters, source bindings, and missing-test reports inside MCEL Lab.
+  - keep app docs documentation-first; do not treat prose or planned requirements as implementation proof.
+- Use `pretty_docs/mcel-website-builder-requirements.md` as a parsed MCEL requirements source:
+  - compare saved-site editing, preview, runtime setup, publish planning, lane separation, and Git Tools handoff requirements against the live app and future semantic adapter.
+  - create MCEL Lab findings for missing adapter readiness, publish/commit/push boundary evidence, and preview/publish acceptance gaps.
 - Turn `pretty_docs/mcel-code-editor-requirements.md` into a parsed MCEL requirements source:
   - validate `mcel-*` blocks in CI.
   - compare Code Editor requirements against the live app blueprint and future domain adapter.
@@ -12,6 +27,10 @@
   - validate Calculator `mcel-*` blocks in CI.
   - compare deterministic compute, graphing, Mathics, Q&A, and layout requirements against the live app and future semantic adapter.
   - create MCEL Lab findings for missing adapter readiness, parser/evaluation boundaries, graph canvas ownership, and helper-panel layout semantics.
+- Turn `pretty_docs/mcel-file-explorer-requirements.md` into a parsed MCEL requirements source:
+  - validate File Explorer `mcel-*` blocks in CI.
+  - compare read-only roots, listing, bounded search, bounded preview, classification, mounted-path, and handoff requirements against the live app and future semantic adapter.
+  - create MCEL Lab findings for missing adapter readiness, root-boundary evidence, preview/readability limits, and navigation-list-preview layout semantics.
 - Expand diagnostics so every level displays the report in the viewport and records a consistent JSON artifact.
 - Add a full functional diagnostic path for the configured local Ollama model, with a clear skip/fail reason when the model is unavailable.
 - Bring `main_copmputer_production` test coverage up to parity with `main_computer_test`.

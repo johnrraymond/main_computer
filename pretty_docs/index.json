@@ -25,64 +25,82 @@
       "order": 37
     },
     {
+      "path": "mcel-requirements-language.md",
+      "title": "MCEL Requirements Language",
+      "kind": "markdown",
+      "order": 38
+    },
+    {
       "path": "mcel-contract-guarantees.md",
       "title": "MCEL Contract Guarantees",
       "kind": "markdown",
-      "order": 38
+      "order": 39
     },
     {
       "path": "mcel-code-studio-example.md",
       "title": "MCEL Code Studio Example",
       "kind": "markdown",
-      "order": 39
+      "order": 40
     },
     {
       "path": "mcel-code-editor-requirements.md",
       "title": "MCEL Code Editor Requirements",
       "kind": "markdown",
-      "order": 40
+      "order": 41
     },
     {
       "path": "mcel-git-tools-requirements.md",
       "title": "MCEL Git Tools Requirements",
       "kind": "markdown",
-      "order": 41
+      "order": 42
     },
     {
       "path": "mcel-calculator-requirements.md",
       "title": "MCEL Calculator Requirements",
       "kind": "markdown",
-      "order": 42
+      "order": 43
+    },
+    {
+      "path": "mcel-file-explorer-requirements.md",
+      "title": "MCEL File Explorer Requirements",
+      "kind": "markdown",
+      "order": 44
+    },
+    {
+      "path": "mcel-website-builder-requirements.md",
+      "title": "MCEL Website Builder Requirements",
+      "kind": "markdown",
+      "order": 45
     },
     {
       "path": "mcel-lab-blueprint-studio.md",
       "title": "MCEL Lab Blueprint Studio",
       "kind": "markdown",
-      "order": 43
+      "order": 46
     },
     {
       "path": "mcel-debug-observability.md",
       "title": "MCEL Debug Observability",
       "kind": "markdown",
-      "order": 44
+      "order": 47
     },
     {
       "path": "website-builder-remote-coolify-publishing.md",
       "title": "Website Builder Remote Coolify Publishing",
       "kind": "markdown",
-      "order": 45
+      "order": 48
     },
     {
       "path": "git-tools-project-level-publishing.md",
       "title": "Git Tools Project-Level Publishing and File Triage Requirements",
       "kind": "markdown",
-      "order": 46
+      "order": 49
     },
     {
       "path": "crypto-network-coolify-testnet-runbook.md",
       "title": "Crypto Network Coolify Testnet Runbook",
       "kind": "markdown",
-      "order": 49
+      "order": 50
     }
   ]
 }

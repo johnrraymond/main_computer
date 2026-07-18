@@ -4151,3 +4151,482 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
 #code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] button + div {
   margin-block-start: 1px;
 }
+
+
+/* Code Editor default authoring mode cleanup.
+   MCEL proof/debug surfaces remain in the DOM for tests and annotation mode, but the
+   default user view is the editor: explorer, source editor, and status only. */
+#code-editor-app[data-code-editor-mode="authoring"] {
+  --mcel-code-editor-authoring-explorer-inline: clamp(220px, 20vw, 280px);
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-shell {
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "statusbar" !important;
+  grid-template-rows:
+    var(--mcel-code-editor-title-block, 36px)
+    minmax(0, 1fr)
+    var(--mcel-code-editor-status-block, 22px) !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-command-icon,
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-top-gate-status,
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-top-persistence-status,
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-top-runtime-version,
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-mcel-only="true"] {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] #code-editor-mcel-tools-toggle {
+  display: inline-flex !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-title-actions {
+  justify-content: end !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-body[data-code-studio-workbench-region="main-grid"],
+#code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  grid-template-columns:
+    var(--mcel-code-editor-authoring-explorer-inline)
+    minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="mode-rail"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="scm-ai-inspector"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="proof-dock"],
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-activitybar,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-inspector,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-bottom-panel,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-proof-dock,
+#code-editor-app[data-code-editor-mode="authoring"] .code-editor-layout-center-tabs,
+#code-editor-app[data-code-editor-mode="authoring"] .code-editor-layout-splitter {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: block !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: auto !important;
+  border-right: 1px solid var(--mcel-code-editor-border, #2b2b2b) !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="editor-workbench"] {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-shell,
+#code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-shell {
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "statusbar" !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows:
+    var(--mcel-code-editor-title-block, 36px)
+    minmax(0, 1fr)
+    var(--mcel-code-editor-status-block, 22px) !important;
+  gap: 0 !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-titlebar,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-body[data-code-studio-workbench-region="main-grid"],
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-statusbar {
+  grid-column: 1 !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-titlebar {
+  grid-area: titlebar !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  grid-area: workbench !important;
+  height: 100% !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-statusbar {
+  grid-area: statusbar !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-tabs,
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="runtime"] > .code-studio-pane-toolbar {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="editor-workbench"] {
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: auto !important;
+  height: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="runtime"].active {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-preview {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-window,
+#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-window"] {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: 100% !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-header,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-files,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-badges {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-layout,
+#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-layout"],
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-editor,
+#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-editor"] {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-host,
+#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-monaco"],
+#code-editor-app[data-code-editor-mode="authoring"] .monaco-editor,
+#code-editor-app[data-code-editor-mode="authoring"] .overflow-guard {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: 100% !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-editor[data-monaco-mounted="false"] .code-studio-monaco-host {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-fallback,
+#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-fallback"] {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-fallback > span {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-draft,
+#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-draft"] {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: 100% !important;
+  padding: 14px 16px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  resize: none !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="mcel"] #code-editor-mcel-tools-toggle {
+  border-color: var(--mcel-code-editor-accent, #3aa3ff);
+  background: #173957;
+  color: #ffffff;
+}
+
+@media (max-width: 760px) {
+  #code-editor-app[data-code-editor-mode="authoring"] .code-studio-body[data-code-studio-workbench-region="main-grid"],
+  #code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  #code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="workspace-sidebar"] {
+    display: none !important;
+  }
+
+  #code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="editor-workbench"] {
+    grid-column: 1 !important;
+  }
+}
+
+
+/* Code Editor Monaco golden path simplification.
+   Default authoring is one explorer plus one Monaco selected-file surface.
+   MCEL proof/runtime scaffolding is not allowed to own the golden-path layout. */
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-activitybar,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-inspector,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-bottom-panel,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-proof-dock,
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-mcel-only="true"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="scm-ai-inspector"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="source"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="serialized"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="contract"] {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-shell,
+#code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-shell {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: var(--mcel-code-editor-title-block, 36px) minmax(0, 1fr) var(--mcel-code-editor-status-block, 22px) !important;
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "statusbar" !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-body,
+#code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-body {
+  grid-area: workbench !important;
+  display: grid !important;
+  grid-template-columns: var(--mcel-code-editor-authoring-explorer-inline, 280px) minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  grid-template-areas: "sidebar editor" !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-sidebar,
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  grid-area: sidebar !important;
+  display: grid !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-editor-group,
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="editor-workbench"] {
+  grid-area: editor !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="runtime"].active {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="runtime"] > .code-studio-pane-toolbar,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-tabs,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-window,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-layout,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-files,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-header,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-fallback,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-runtime-badges,
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-draft {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-preview {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-surface {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-toolbar {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2d2d30;
+  background: #1f1f1f;
+  color: #d4d4d4;
+  overflow: hidden;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-title strong,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-title span {
+  color: #8f8f8f;
+  font-size: 12px;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-toolbar button {
+  flex: 0 0 auto;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-error {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  color: #f1c40f;
+  background: #111111;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-surface > .code-studio-monaco-host,
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-monaco {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-monaco .monaco-editor,
+#code-editor-app[data-code-editor-mode="authoring"] #code-studio-runtime-monaco .overflow-guard {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+@supports selector(body:has(#code-editor-app)) {
+  body:has(#code-editor-app[data-code-editor-mode="authoring"]) .machine-activity-toggle,
+  body:has(#code-editor-app[data-code-editor-mode="authoring"]) .machine-activity-dock {
+    display: none !important;
+  }
+}

@@ -7,6 +7,20 @@ publishing. It is intentionally written as an operator runbook so the deployment
 shape, Main Computer configuration, and missing product work stay visible as the
 remote host is brought online.
 
+## Product requirements contract
+
+The MCEL product/specification contract for Website Builder and saved websites is:
+
+```text
+pretty_docs/mcel-website-builder-requirements.md
+```
+
+Use that document for the documentation-first app requirements: saved website
+project folders, builder state, preview lanes, blog/runtime setup, local/dev/remote
+publish separation, Coolify target evidence, and Git Tools handoff boundaries.
+This runbook remains the operator path for remote Coolify publishing.
+
+
 ## Goal
 
 Make Website Builder publish a saved site to a remote host through a Coolify

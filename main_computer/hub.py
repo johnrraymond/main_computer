@@ -3404,6 +3404,10 @@ class HubServerHandler(_JsonHandler):
                     "service": "main-computer-hub",
                     "api_version": "v1",
                     "security_profile": HUB_SECURITY_PROFILE,
+                    "network_key": getattr(self.server.config, "hub_network", ""),
+                    "cell_id": os.environ.get("MC_ALLFATHER_CELL_ID", ""),
+                    "bootstrap_hub": False,
+                    "full_main_computer_hub": True,
                 }
             )
             return

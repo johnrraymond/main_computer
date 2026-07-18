@@ -44,6 +44,80 @@ verification:
   - tests/test_mcel_documentation.py
 ```
 
+## Roadmap use cases
+
+These use cases define the product workflow for the Code Editor requirements. They keep source editing, AI assistance, file writes, and execution boundaries visible before any implementation work is treated as complete.
+
+### Use case 1: review and apply an AI-assisted source change
+
+A user opens a project file, asks Aider or another helper to prepare a source change, reviews the proposed diff, applies only the approved file write, and keeps dirty/save/test evidence visible throughout the workflow.
+
+```mcel-use-case
+id: code-editor.use-case.review-apply-ai-source-change
+app: code-editor
+status: planned
+type: roadmap-use-case
+primary_object: SourceChangeProposal
+user_goal: >
+  Prepare an AI-assisted source change, inspect the proposed diff and affected
+  files, apply only approved edits, and preserve author control over every
+  source mutation.
+current_support:
+  - Aider controls and context/output panels
+  - local workspace persistence
+  - source/runtime/serialization boundary documentation
+  - SCM evidence panels
+planned_support:
+  - Code Editor semantic adapter for proposal, review, apply, receipt, and recovery
+  - structured diff ownership evidence
+  - explicit post-apply test/check recommendations
+acceptance:
+  - The proposed change identifies every affected source file before apply.
+  - Runtime/editor chrome is not treated as author-owned source.
+  - Applying the proposal requires explicit approval.
+  - Unapproved files remain untouched.
+  - Dirty state and save/apply receipts stay visible after mutation.
+  - Suggested tests or checks are linked to the changed files.
+layout_implications:
+  - source buffer remains the primary work surface
+  - AI proposal and explanation are review surfaces, not authoritative source
+  - apply controls require evidence and confirmation near the diff
+  - execution controls remain separate from file-write controls
+```
+
+### Use case 2: edit and save an author-owned source file
+
+A user selects a project file, edits it in the Code Editor, sees dirty state, saves the file explicitly, and verifies that only the selected author-owned source file changed.
+
+```mcel-use-case
+id: code-editor.use-case.edit-save-source-file
+app: code-editor
+status: planned
+type: roadmap-use-case
+primary_object: SourceFileDraft
+user_goal: >
+  Select an author-owned project file, edit it safely, save it explicitly, and
+  preserve visible evidence about the path, dirty state, and saved result.
+current_support:
+  - file map and source selectors
+  - Monaco editor adapter
+  - local workspace persistence
+  - dirty/source boundary requirements
+planned_support:
+  - semantic save intent with path evidence, write receipt, and stale-state recovery
+  - source ownership validation before write
+acceptance:
+  - The selected file path is visible before editing and saving.
+  - Dirty state appears after local draft changes.
+  - Save is explicit and writes only the selected author-owned source file.
+  - Generated editor chrome and runtime state are not serialized as source.
+  - A failed save leaves the draft and recovery guidance visible.
+layout_implications:
+  - file navigation, source buffer, dirty status, and save evidence remain connected
+  - generated/runtime panels are visually secondary to source ownership
+  - command execution is not implied by saving a file
+```
+
 ## Product law
 
 The Code Editor is not a generic text box with a large toolbar. It is a source-safe workbench.
@@ -194,7 +268,12 @@ The Code Editor should normally be inspected through these regions.
 ```mcel-region
 id: code-editor.region.identity
 app: code-editor
+status: specified
 region: identity
+role: identity-header
+responsibility: >
+  Identify the active workspace, route, active file, dirty state, runtime
+  version, gate status, and persistence state.
 purpose: Active workspace, route, active file, dirty state, runtime version, gate status, and persistence state.
 expected_elements:
   - workspace root identity
@@ -210,7 +289,12 @@ must_not_contain:
 ```mcel-region
 id: code-editor.region.navigation
 app: code-editor
+status: specified
 region: navigation
+role: project-navigation
+responsibility: >
+  Let the user choose files, project context, open editors, and selected-file
+  sets without applying patches or executing commands.
 purpose: File map, project tree, open editors, selected files, and repository context.
 expected_elements:
   - file search
@@ -226,7 +310,12 @@ must_not_contain:
 ```mcel-region
 id: code-editor.region.primary
 app: code-editor
+status: specified
 region: primary
+role: primary-authoring-surface
+responsibility: >
+  Own active source editing, draft review, concrete diffs, and explicit runtime
+  preview while preventing unreviewed writes.
 purpose: Active source file, draft editing, diff/preview when reviewing a concrete change, and runtime preview when explicitly selected.
 expected_elements:
   - source editor
@@ -243,7 +332,12 @@ must_not_contain:
 ```mcel-region
 id: code-editor.region.inspector
 app: code-editor
+status: specified
 region: inspector
+role: context-inspector
+responsibility: >
+  Show Aider context, selected-file evidence, SCM manifests, documentation
+  references, and action-specific preflight information.
 purpose: Aider context, selected-file evidence, SCM manifest, documentation viewport, and action-specific preflight information.
 expected_elements:
   - Aider instruction
@@ -259,7 +353,12 @@ must_not_contain:
 ```mcel-region
 id: code-editor.region.evidence
 app: code-editor
+status: specified
 region: evidence
+role: evidence-and-receipts-panel
+responsibility: >
+  Show Aider output, SCM evidence, contract reports, regression results,
+  receipts, and recovery guidance for reviewed actions.
 purpose: Aider output, SCM evidence packets, contract reports, regression harness output, receipts, and recovery guidance.
 expected_elements:
   - Aider output
@@ -275,7 +374,12 @@ must_not_contain:
 ```mcel-region
 id: code-editor.region.advanced
 app: code-editor
+status: specified
 region: advanced
+role: advanced-runtime-boundary
+responsibility: >
+  Contain runtime preview internals, Monaco repair, VRAM experiments,
+  serialization details, and helper generation away from ordinary editing.
 purpose: Runtime preview internals, Monaco mount/repair, VRAM/documentation experiments, serialization internals, and repair helpers.
 expected_elements:
   - runtime mount
@@ -291,7 +395,12 @@ must_not_contain:
 ```mcel-region
 id: code-editor.region.status
 app: code-editor
+status: specified
 region: status
+role: persistent-status-strip
+responsibility: >
+  Keep draft, save, policy, gate, activity, failure, and receipt state visible
+  without becoming a hidden source of truth.
 purpose: Persistent action state that tells the user whether drafts, persistence, gates, policies, and actions are clean, dirty, blocked, running, failed, or complete.
 expected_elements:
   - dirty state
@@ -313,7 +422,7 @@ id: code-editor.intent.inspect-workspace
 app: code-editor
 intent: inspectWorkspace
 status: specified
-risk: safe-read
+risk: read-only
 default_execution: executable
 requires:
   - workspace identity
@@ -330,7 +439,7 @@ id: code-editor.intent.open-file
 app: code-editor
 intent: openFile
 status: specified
-risk: safe-read
+risk: read-only
 default_execution: executable
 requires:
   - file path
@@ -347,7 +456,7 @@ id: code-editor.intent.edit-draft
 app: code-editor
 intent: editDraft
 status: specified
-risk: local-draft
+risk: local-state
 default_execution: executable
 requires:
   - active file
@@ -363,7 +472,7 @@ id: code-editor.intent.save-file
 app: code-editor
 intent: saveFile
 status: planned
-risk: local-write
+risk: local-file-mutation
 default_execution: preflight-required
 requires:
   - active file
@@ -382,7 +491,7 @@ id: code-editor.intent.preview-aider-plan
 app: code-editor
 intent: previewAiderPlan
 status: specified
-risk: safe-or-planned-read
+risk: read-only
 default_execution: preflight-required
 requires:
   - repository path
@@ -401,7 +510,7 @@ id: code-editor.intent.apply-reviewed-patch
 app: code-editor
 intent: applyReviewedPatch
 status: planned
-risk: local-write
+risk: local-file-mutation
 default_execution: confirmation-required
 requires:
   - reviewed patch or replacement-file artifact
@@ -420,7 +529,7 @@ id: code-editor.intent.run-code
 app: code-editor
 intent: runCode
 status: planned
-risk: command-execution
+risk: execution
 default_execution: prohibited-until-execution-adapter
 requires:
   - command-execution adapter
@@ -491,6 +600,164 @@ requires:
   - file writes, patch application, command execution, and remote Git mutation are never hidden side effects.
   - MCEL Lab can produce structured findings from Code Editor annotations.
   - Browser-level workflow covers open file, edit draft, save, Aider preview, blocked apply, and recovery state.
+```
+
+## Runtime-observable diagnosis contract
+
+The Code Editor contract must be diagnoseable while the app is running. The first
+runtime checks make the authoring golden path observable: the default mode exposes
+exactly one Monaco selected-file editor, the expected app regions are visible, and
+MCEL proof/runtime scaffolding stays out of the normal editing path.
+
+```mcel-runtime-check
+id: code-editor.runtime-check.authoring-primary-monaco
+app: code-editor
+status: specified
+mode: authoring
+contract: code-editor.contract.authoring.monaco-golden-path
+check: primary-surface
+severity: critical
+primary_surface_id: code-editor.surface.monaco-selected-file-editor
+host_selector: "#code-studio-runtime-monaco"
+editor_selector: ".monaco-editor"
+min_width: 800
+min_height: 600
+observes:
+  - "#code-studio-runtime-monaco"
+  - ".monaco-editor"
+expects:
+  - Monaco host is visible and at least 800px wide by 600px tall.
+  - Monaco editor instance is visible and at least 800px wide by 600px tall.
+  - No fallback or source-model editor surface competes with Monaco in authoring mode.
+failure_message: Authoring mode must expose one usable Monaco selected-file editor.
+next_probe: layout.ownerProbe
+source_binding: code-editor.binding.authoring-monaco-surface
+test_binding: code-editor.test.authoring-monaco-diagnosis
+```
+
+```mcel-runtime-check
+id: code-editor.runtime-check.authoring-required-regions
+app: code-editor
+status: specified
+mode: authoring
+contract: code-editor.contract.authoring.monaco-golden-path
+check: required-regions-visible
+severity: critical
+observes:
+  - "#code-editor-app"
+  - ".code-studio-sidebar"
+  - ".code-studio-editor-group"
+expects:
+  - Code Editor root is present and visible.
+  - Explorer region is present and visible.
+  - Editor group is present and visible.
+required_regions:
+  - code-editor.region.root | #code-editor-app | Code Editor app root
+  - code-editor.region.explorer | .code-studio-sidebar | Explorer
+  - code-editor.region.editor-group | .code-studio-editor-group | Editor group
+failure_message: Authoring mode must preserve the app root, explorer, and editor group.
+next_probe: layout.baseline
+source_binding: code-editor.binding.authoring-monaco-surface
+test_binding: code-editor.test.authoring-monaco-diagnosis
+```
+
+```mcel-runtime-check
+id: code-editor.runtime-check.authoring-forbidden-surfaces
+app: code-editor
+status: specified
+mode: authoring
+contract: code-editor.contract.authoring.monaco-golden-path
+check: forbidden-surfaces-hidden
+severity: critical
+observes:
+  - "[data-code-studio-pane=\"source\"]"
+  - "[data-code-studio-pane=\"serialized\"]"
+  - "[data-code-studio-pane=\"contract\"]"
+  - ".code-studio-runtime-window"
+  - ".code-studio-runtime-layout"
+  - ".code-studio-runtime-files"
+  - "#code-studio-runtime-draft"
+  - ".code-studio-runtime-fallback"
+  - ".code-studio-proof-dock"
+  - "#code-studio-bottom-panel"
+  - "#mc-widget-editor-root"
+expects:
+  - Source model pane is hidden.
+  - Serialized and contract panes are hidden.
+  - Generated runtime window/layout/file rail are absent from the default path.
+  - Fallback textarea is not visible in the Monaco golden path.
+  - Proof and widget overlays are not visible in authoring mode.
+forbids:
+  - code-editor.forbidden.source-pane | [data-code-studio-pane="source"] | MCEL source model pane
+  - code-editor.forbidden.serialized-pane | [data-code-studio-pane="serialized"] | Serialized output pane
+  - code-editor.forbidden.contract-pane | [data-code-studio-pane="contract"] | Contract report pane
+  - code-editor.forbidden.runtime-scaffold.window | .code-studio-runtime-window | Generated runtime window scaffold
+  - code-editor.forbidden.runtime-scaffold.layout | .code-studio-runtime-layout | Generated runtime layout scaffold
+  - code-editor.forbidden.runtime-file-rail | .code-studio-runtime-files | Generated runtime file rail
+  - code-editor.forbidden.fallback-textarea | #code-studio-runtime-draft, .code-studio-runtime-fallback | Fallback textarea
+  - code-editor.forbidden.proof-dock | .code-studio-proof-dock, #code-studio-bottom-panel | MCEL proof/evidence dock
+  - code-editor.forbidden.widget-overlay | #mc-widget-editor-root | Widget editor overlay
+failure_message: MCEL diagnostic/runtime scaffolding must not leak into Code Editor authoring mode.
+next_probe: overlay.detector
+source_binding: code-editor.binding.authoring-monaco-surface
+test_binding: code-editor.test.authoring-monaco-diagnosis
+```
+
+```mcel-runtime-check
+id: code-editor.runtime-check.authoring-lifecycle
+app: code-editor
+status: specified
+mode: authoring
+contract: code-editor.contract.authoring.monaco-golden-path
+check: lifecycle-contract-preserved
+severity: critical
+observes:
+  - startup
+  - file-click
+  - resize
+expects:
+  - Startup authoring mode has exactly one primary Monaco editor.
+  - Clicking another file keeps exactly one primary Monaco editor.
+  - Resize keeps the Monaco host and editor useful.
+lifecycle_assertions:
+  - startup-authoring-mode-has-one-primary-editor
+  - file-click-keeps-one-primary-editor
+  - resize-keeps-primary-editor-usable
+  - mcel-diagnostics-hidden-in-authoring
+failure_message: File selection and reload must preserve the Code Editor authoring contract.
+next_probe: startup.timeline
+source_binding: code-editor.binding.authoring-monaco-surface
+test_binding: code-editor.test.authoring-monaco-diagnosis
+```
+
+```mcel-source-binding
+id: code-editor.binding.authoring-monaco-surface
+app: code-editor
+status: specified
+target: code-editor.contract.authoring.monaco-golden-path
+source_candidates:
+  - main_computer/web/applications/apps/code-editor.html
+  - main_computer/web/applications/scripts/code-editor-mcel-studio.js
+  - main_computer/web/applications/scripts/code-editor-monaco-adapter.js
+  - main_computer/web/applications/styles/code-editor.css
+binding_confidence: high
+verification:
+  - Runtime diagnosis must report the Monaco selected-file editor as usable.
+  - File selection must update the Monaco model without remounting MCEL proof scaffolding.
+```
+
+```mcel-test-binding
+id: code-editor.test.authoring-monaco-diagnosis
+app: code-editor
+status: specified
+target: code-editor.contract.authoring.monaco-golden-path
+test_candidates:
+  - tests/test_mcel_code_studio_app.py
+missing_tests:
+  - Browser lifecycle smoke test for startup, file click, and resize diagnosis.
+verification:
+  - Unit tests cover registry-derived diagnostic contracts.
+  - Browser diagnosis report remains the runtime source of truth.
 ```
 
 ## First useful findings for MCEL Lab

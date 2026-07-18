@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import re
 import subprocess
 import sys
+import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -611,6 +614,54 @@ def test_super_node_dockerfile_is_self_contained_without_local_base_builder() ->
     assert "MC_ALLFATHER_SHARED_BASE_BUILDER=disabled" in dockerfile
 
 
+
+
+def test_super_node_dockerfile_bundles_full_hub_runtime() -> None:
+    dockerfile = control.super_node_dockerfile_inline("main-computer/allfather-super-base:local")
+
+    assert "/opt/main-computer-src.zip" in dockerfile
+    assert "/opt/main-computer-src/main_computer/hub.py" in dockerfile
+    assert "PYTHONPATH=/opt/main-computer-src" in dockerfile
+    assert "hub-full" in dockerfile
+
+
+def test_super_node_dockerfile_cache_busts_full_hub_runtime_deployments() -> None:
+    dockerfile = control.super_node_dockerfile_inline(
+        "main-computer/allfather-super-base:local",
+        build_id="deploy-cache-bust-123",
+    )
+
+    assert "main_computer.allfather.build_id=\"deploy-cache-bust-123\"" in dockerfile
+    assert "/opt/allfather-build/deployment-id" in dockerfile
+    assert "main_computer.allfather.full_hub_runtime_sha256" in dockerfile
+
+
+def test_full_hub_runtime_archive_contains_hub_and_contract_config() -> None:
+    raw_zip = zlib.decompress(base64.b64decode(control.allfather_full_hub_runtime_archive_b64()))
+    with zipfile.ZipFile(io.BytesIO(raw_zip)) as archive:
+        names = set(archive.namelist())
+
+    assert "main_computer/hub.py" in names
+    assert "main_computer/config/mainnet_contracts.json" in names
+    assert "main_computer/hub_bridge_backend.py" in names
+
+
+def test_super_server_prefers_full_hub_runtime_when_available() -> None:
+    script = control.super_server_command_script()
+
+    assert "def full_hub_runtime_available() -> bool:" in script
+    assert "write_full_hub_launcher_script" in script
+    assert "running-full-main-computer-hub" in script
+    assert "MAIN_COMPUTER_HUB_CONTRACTS_PATH" in script
+    assert "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER" in script
+
+
+def test_full_hub_health_endpoint_reports_non_bootstrap_runtime() -> None:
+    source = Path(control.REPO_ROOT / "main_computer" / "hub.py").read_text(encoding="utf-8")
+
+    assert '"service": "main-computer-hub"' in source
+    assert '"bootstrap_hub": False' in source
+    assert '"full_main_computer_hub": True' in source
 
 
 def test_probe_compose_can_publish_result_back_to_coolify_metadata(tmp_path: Path) -> None:
@@ -3024,7 +3075,7 @@ def test_synced_service_predeploy_requires_single_matching_uuid(monkeypatch: pyt
         )
 
 
-def test_super_compose_uses_unique_container_name_from_deployment_id(tmp_path: Path) -> None:
+def test_super_compose_uses_stable_container_name_and_keeps_deployment_id_metadata(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(
         [
@@ -3044,8 +3095,46 @@ def test_super_compose_uses_unique_container_name_from_deployment_id(tmp_path: P
     payload = control.add_node(plan, args)
 
     assert payload["manifest"]["deployment_id"] == "dry-run"
-    assert 'container_name: "testneta-super1-dry-run"' in payload["compose"]
+    assert 'container_name: "testneta-super1"' in payload["compose"]
+    assert 'container_name: "testneta-super1-dry-run"' not in payload["compose"]
     assert "MC_ALLFATHER_DEPLOYMENT_ID:" in payload["compose"]
+
+
+def test_super_container_name_matches_public_hub_route_backend() -> None:
+    manifest = {
+        "cell_id": "mainneta-super1",
+        "deployment_id": "1784334999-4baa04c2",
+        "network_key": "mainnet",
+        "components": {"hub": "mainneta-hub1"},
+        "ports": {"hub_container": 8785},
+    }
+
+    assert control.super_container_name_from_manifest(manifest) == "mainneta-super1"
+    route = control.local_hub_route_records(
+        "mainnet",
+        control.HeadNode(
+            head_id="head-a",
+            service_name="allfather-head-coolify-a",
+            coolify_server="coolify-a",
+            slot="A",
+            guard_container_port=41414,
+            guard_host_port=41414,
+            guard_publish_host="10.0.0.1",
+            guard_url="http://10.0.0.1:41414",
+            state_root="/data/allfather/head-a",
+            peers=(),
+        ),
+        [
+            {
+                "service_name": "mainneta-super1",
+                "ordinal": 1,
+                "components": {"hub": "mainneta-hub1"},
+            }
+        ],
+        domain_suffix="greatlibrary.io",
+    )[0]
+
+    assert route["backend_url"] == "http://mainneta-super1:8785"
 
 def test_super_contract_fee_cap_and_gas_limit_are_bounded_at_runtime() -> None:
     super_script = control.super_server_command_script()
@@ -3060,3 +3149,478 @@ def test_super_contract_fee_cap_and_gas_limit_are_bounded_at_runtime() -> None:
     assert "deployer_balance" in super_script
     assert "upfront_cost" in super_script
 
+
+
+def test_ethereum_address_derivation_is_local_and_deterministic() -> None:
+    assert control.keccak256(b"").hex() == "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    assert (
+        control.ethereum_address_from_private_key("0x" + "0" * 63 + "1")
+        == "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+    )
+
+
+def test_hub_propagate_parser_replaces_traefik_name(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    args = control.parse_args(
+        [
+            "hub-propagate",
+            "mainnet",
+            "--allow-mainnet",
+            "--dry-run",
+            "--no-contract-admin-sync",
+            "--private-state",
+            str(path),
+        ]
+    )
+
+    assert args.command == "hub-propagate"
+    assert args.network == "mainnet"
+    assert args.no_contract_admin_sync is True
+
+
+def test_hub_propagate_syncs_full_hub_runtime_by_default(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    args = control.parse_args(
+        [
+            "hub-propagate",
+            "mainnet",
+            "--allow-mainnet",
+            "--dry-run",
+            "--private-state",
+            str(path),
+        ]
+    )
+
+    assert args.no_full_hub_runtime_sync is False
+    assert args.full_hub_runtime_wait_s is None
+
+def test_hub_propagate_full_runtime_sync_emits_operator_diagnostics() -> None:
+    source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+
+    assert "full-hub-sync: host=" in source
+    assert "health-before-start" in source
+    assert "service-sync-start" in source
+    assert "service-detail-after-sync-start" in source
+    assert "deploy-trigger-start" in source
+    assert "wait-full-health-start" in source
+    assert "full-hub-sync: Coolify deploy status" in source
+    assert "coolify_service_after_sync" in source
+    assert "stale-bootstrap-candidate" in source
+    assert "stale image/container cache" in source
+    assert '"diagnostics": {"steps": steps}' in source
+
+
+def test_hub_propagate_full_runtime_status_interval_arg(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    args = control.parse_args(
+        [
+            "hub-propagate",
+            "mainnet",
+            "--allow-mainnet",
+            "--dry-run",
+            "--private-state",
+            str(path),
+            "--full-hub-runtime-status-interval-s",
+            "7",
+        ]
+    )
+
+    assert args.full_hub_runtime_status_interval_s == 7
+
+
+def test_hub_propagate_full_runtime_stale_bootstrap_fail_arg(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    args = control.parse_args(
+        [
+            "hub-propagate",
+            "mainnet",
+            "--allow-mainnet",
+            "--dry-run",
+            "--private-state",
+            str(path),
+            "--full-hub-runtime-stale-bootstrap-fail-s",
+            "9",
+        ]
+    )
+
+    assert args.full_hub_runtime_stale_bootstrap_fail_s == 9
+
+
+def test_coolify_snapshot_detects_running_full_runtime_compose() -> None:
+    snapshot = {
+        "service": {"status": "running:healthy"},
+        "compose": {
+            "any_contains_full_runtime": True,
+            "any_contains_deployment_id": True,
+        },
+    }
+
+    assert control.coolify_snapshot_has_running_full_runtime_compose(snapshot) is True
+
+
+def test_coolify_service_detail_compose_diagnostics_detects_full_runtime() -> None:
+    deployment_id = "deploy-abc"
+    compose = f"""
+services:
+  mainneta-super1:
+    build:
+      dockerfile_inline: |
+        COPY something /opt/main-computer-src.zip
+        ENV MC_ALLFATHER_IMAGE_CAPABILITIES=hub-full
+    environment:
+      MC_ALLFATHER_DEPLOYMENT_ID: {deployment_id}
+      MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED: "1"
+      MC_ALLFATHER_SUPER_MANIFEST_B64: full_hub_runtime_requested
+"""
+    encoded = base64.b64encode(compose.encode("utf-8")).decode("ascii")
+    detail = {"ok": True, "body": {"docker_compose_raw": encoded}}
+
+    diagnostics = control.service_detail_compose_diagnostics(detail, expected_deployment_id=deployment_id)
+
+    assert diagnostics["observed"] is True
+    assert diagnostics["any_contains_full_runtime"] is True
+    assert diagnostics["any_contains_deployment_id"] is True
+
+
+def test_hub_propagate_marker_waits_emit_poll_diagnostics() -> None:
+    source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+
+    assert "waiting Traefik marker" in source
+    assert "waiting Hub admin sync marker" in source
+    assert "last_status" in source
+    assert "attempts" in source
+    assert "args=args" in source
+
+
+def test_hub_propagate_materializes_huddle_admin_records(tmp_path: Path) -> None:
+    path = tmp_path / "all_father.private.yaml"
+    path.write_text(
+        """
+kind: main_computer.all_father.private_state.v1
+coolify:
+  hosts:
+    a:
+      name: coolify-a
+      url: https://coolify-a.example.invalid
+      api_token: token-a
+      vpn_ip: 10.116.0.3
+networks:
+  mainnet:
+    wallets:
+      hub_admin:
+        address: "0x1111111111111111111111111111111111111111"
+        private_key: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    state = control.load_yaml_mapping(path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    nodes = [
+        control.super_inventory_entry("mainnet", plan.heads[0], 1, source="test"),
+        control.super_inventory_entry("mainnet", plan.heads[0], 2, source="test"),
+    ]
+
+    next_state, admins, updates = control.materialize_private_state_for_hub_propagate(
+        state,
+        path,
+        "mainnet",
+        nodes,
+        dry_run=False,
+    )
+
+    assert updates["written"] is True
+    assert updates["active_hub_admin_count"] == 2
+    assert {item["cell_id"] for item in admins} == {"mainneta-super1", "mainneta-super2"}
+    assert all(item["private_key_present"] for item in admins)
+    assert all(re.fullmatch(r"0x[0-9A-Fa-f]{40}", str(item["address"])) for item in admins)
+    assert updates["active_hub_admin_address_count"] == 2
+    huddle = next_state["networks"]["mainnet"]["huddle"]["hub_admins"]
+    assert set(huddle["active"]) == {"mainneta-super1", "mainneta-super2"}
+    assert all(re.fullmatch(r"0x[0-9A-Fa-f]{40}", str(item["address"])) for item in huddle["active"].values())
+    assert huddle["active"]["mainneta-super1"]["address"] == next_state["networks"]["mainnet"]["node_seed_material"]["mainneta-super1"]["wallets"]["hub_admin"]["address"]
+    assert huddle["active"]["mainneta-super1"]["private_key_path"].endswith(".mainneta-super1.wallets.hub_admin.private_key")
+    assert huddle["retired"][0]["kind"] == "legacy-network-hub-admin"
+    assert huddle["retired"][0]["address"] == "0x1111111111111111111111111111111111111111"
+
+
+def test_head_agent_hub_admin_sync_request_is_redacted_in_compose(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    request = {
+        "network_key": "mainnet",
+        "coolify_server": "coolify-a",
+        "service_name": "allfather-hub-admin-sync-mainnet-coolify-a",
+        "request_id": "abc123",
+        "executor_service_name": "mainneta-super1",
+        "contract_address": "0x2222222222222222222222222222222222222222",
+        "owner_private_key": "0x" + "a" * 64,
+        "admins": [
+            {
+                "cell_id": "mainneta-super1",
+                "address": "",
+                "private_key": "0x" + "b" * 64,
+            }
+        ],
+    }
+
+    compose = control.render_head_compose(
+        plan,
+        head,
+        probe_targets=[],
+        callback_api_url="https://coolify-a.example.invalid",
+        callback_token="token-a",
+        callback_service_uuid="head-uuid",
+        hub_admin_sync_request=request,
+    )
+
+    assert "MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64" in compose
+    assert "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:" in compose
+    assert "/hub-propagate/status" in compose
+    assert "0x" + "a" * 64 not in compose
+    assert "0x" + "b" * 64 not in compose
+
+
+def test_head_agent_reads_hub_admin_sync_request_env() -> None:
+    script = control.head_server_command_script()
+
+    assert 'HUB_ADMIN_SYNC_REQUEST_B64 = os.environ.get("MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64", "")' in script
+    assert script.index("HUB_ADMIN_SYNC_REQUEST_B64 = os.environ.get") < script.index("HUB_ADMIN_SYNC_REQUEST = decode_json_b64")
+
+
+def test_hub_admin_sync_request_sends_addresses_not_hub_private_keys(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    admin_key = "0x" + "b" * 64
+
+    request = control.hub_admin_sync_request_payload(
+        "mainnet",
+        head,
+        {"service_name": "mainneta-super1"},
+        [
+            {
+                "cell_id": "mainneta-super1",
+                "service_name": "mainneta-super1",
+                "private_key": admin_key,
+            }
+        ],
+        contract_address="0x2222222222222222222222222222222222222222",
+        owner_private_key="0x" + "a" * 64,
+    )
+
+    assert request["admins"][0]["address"] == control.ethereum_address_from_private_key(admin_key)
+    assert "private_key" not in request["admins"][0]
+    assert admin_key not in json.dumps(request, sort_keys=True)
+
+
+def test_deploy_contracts_parser_requires_explicit_escrow_target(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    args = control.parse_args(
+        [
+            "deploy-contracts",
+            "mainnet",
+            "--allow-mainnet",
+            "--deploy-escrow",
+            "--dry-run",
+            "--private-state",
+            str(path),
+        ]
+    )
+
+    assert args.command == "deploy-contracts"
+    assert args.network == "mainnet"
+    assert args.deploy_escrow is True
+    assert args.dry_run is True
+
+
+def test_contract_deploy_request_sends_controller_address_not_hub_private_key(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    admin_key = "0x" + "b" * 64
+    admin_address = control.ethereum_address_from_private_key(admin_key)
+
+    request = control.contract_deploy_request_payload(
+        "mainnet",
+        head,
+        {"service_name": "mainneta-super1"},
+        [
+            {
+                "cell_id": "mainneta-super1",
+                "service_name": "mainneta-super1",
+                "address": admin_address,
+                "private_key": admin_key,
+            }
+        ],
+        owner_private_key="0x" + "a" * 64,
+        deploy_escrow=True,
+    )
+
+    assert request["targets"] == ["hub_credit_bridge_escrow"]
+    assert request["hub_credit_bridge_escrow_controller"] == admin_address
+    assert request["hub_admin_address"] == admin_address
+    assert request["executor_service_name"] == "mainneta-super1"
+    assert "contract_sources_b64" in request
+    source = base64.b64decode(request["contract_sources_b64"]["src/HubCreditBridgeEscrow.sol"]).decode("utf-8")
+    assert "setBridgeControllerAllowed" in source
+    assert "isBridgeController" in source
+    assert request["contract_source_sha256"]
+    assert "private_key" not in json.dumps({k: v for k, v in request.items() if k != "owner_private_key"}, sort_keys=True)
+    assert admin_key not in json.dumps(request, sort_keys=True)
+
+
+def test_update_contract_config_for_network_writes_returned_escrow_address(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "mainnet_contracts.json"
+    config.write_text(
+        json.dumps(
+            {
+                "alpha-beta-lockout": "0x1111111111111111111111111111111111111111",
+                "hub_credit_bridge_escrow": "0x2222222222222222222222222222222222222222",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(control.ALLFATHER_CONTRACT_CONFIG_FILES, "mainnet", config)
+
+    update = control.update_contract_config_for_network(
+        "mainnet",
+        {"hub_credit_bridge_escrow": {"address": "0x3333333333333333333333333333333333333333"}},
+        dry_run=False,
+    )
+
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    assert update["written"] is True
+    assert payload["alpha-beta-lockout"] == "0x1111111111111111111111111111111111111111"
+    assert payload["hub_credit_bridge_escrow"] == "0x3333333333333333333333333333333333333333"
+
+
+def test_head_agent_contract_deploy_executor_script_does_not_use_invalid_nonlocal_nonce() -> None:
+    script = control.head_server_command_script()
+
+    assert "nonlocal nonce" not in script
+    assert 'nonce_state = {{"value": w3.eth.get_transaction_count(owner.address)}}' in script
+    assert 'nonce_state["value"] = nonce + 1' in script
+
+
+def test_head_agent_contract_transactions_force_legacy_gas_price() -> None:
+    script = control.head_server_command_script()
+
+    assert "def legacy_gas_price(w3):" in script
+    assert 'gas_price = legacy_gas_price(w3)' in script
+    assert 'setBridgeControllerAllowed(addr, True).build_transaction({{"from": owner.address, "nonce": nonce, "chainId": chain_id, "gasPrice": gas_price}})' in script
+    assert 'contract.constructor(*constructor_args).build_transaction({{"from": owner.address, "nonce": nonce, "chainId": int(w3.eth.chain_id), "gasPrice": gas_price}})' in script
+    assert 'tx.pop("maxFeePerGas", None)' in script
+    assert 'tx.pop("maxPriorityFeePerGas", None)' in script
+
+
+def test_head_agent_contract_deploy_request_env_and_status_route(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    compose = control.render_head_compose(
+        plan,
+        head,
+        contract_deploy_request={
+            "network_key": "mainnet",
+            "request_id": "deploy123",
+            "targets": ["hub_credit_bridge_escrow"],
+            "owner_private_key": "0x" + "a" * 64,
+        },
+    )
+    script = control.head_server_command_script()
+
+    assert "MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64" in compose
+    assert "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:" in script
+    assert "CONTRACT_DEPLOY_REQUEST = decode_json_b64(CONTRACT_DEPLOY_REQUEST_B64, {})" in script
+    assert "/deploy-contracts/status" in script
+    assert "compile_contract_sources_from_request" in script
+    assert "ExtraDataToPOAMiddleware" in script
+    assert "request-contract-sources-solc" in script
+    assert "0x" + "a" * 64 not in compose
+    compile(script, "<head-agent-script>", "exec")
+
+
+def test_head_agent_full_hub_runtime_diagnostics_marker_and_env_present() -> None:
+    script = control.head_server_command_script()
+    assert "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:" in script
+    assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64" in script
+    assert "inspect_full_hub_runtime_container" in script
+    assert "/opt/main_computer_src.zip" in script
+    assert "main_computer.hub" in script
+
+
+def test_full_hub_runtime_diag_request_selects_failed_nodes() -> None:
+    head = control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/heads/coolify-a",
+        peers=(),
+    )
+    request = control.full_hub_runtime_diag_request_payload(
+        "mainnet",
+        head,
+        {
+            "nodes": [
+                {
+                    "ok": False,
+                    "service_name": "mainneta-super1",
+                    "domain": "mainneta-hub1.greatlibrary.io",
+                    "diagnostics": {"steps": [{"step": "manifest-build-done", "deployment_id": "dep-123"}]},
+                },
+                {"ok": True, "service_name": "mainneta-super2"},
+            ]
+        },
+    )
+    assert request["network_key"] == "mainnet"
+    assert request["coolify_server"] == "coolify-a"
+    assert request["nodes"] == [
+        {
+            "service_name": "mainneta-super1",
+            "domain": "mainneta-hub1.greatlibrary.io",
+            "expected_deployment_id": "dep-123",
+            "reason": "",
+        }
+    ]
+
+
+def test_sync_head_service_accepts_full_hub_runtime_diag_request_in_compose() -> None:
+    head = control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/heads/coolify-a",
+        peers=(),
+    )
+    plan = control.HeadPlan(
+        kind="main_computer.all_father.head_plan.v1",
+        private_state_path="runtime/state/all_father.private.yaml",
+        heads=(head,),
+        desired_counts={"allfather_heads": 1},
+        guardrails={},
+    )
+    compose = control.render_head_compose(
+        plan,
+        head,
+        full_hub_runtime_diag_request={
+            "request_id": "req-1",
+            "nodes": [{"service_name": "mainneta-super1"}],
+        },
+    )
+    assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64" in compose
+    encoded = re.search(r"MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64: \"([^\"]+)\"", compose)
+    assert encoded
+    payload = json.loads(base64.b64decode(encoded.group(1)).decode("utf-8"))
+    assert payload["request_id"] == "req-1"
+    assert payload["nodes"][0]["service_name"] == "mainneta-super1"

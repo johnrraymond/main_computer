@@ -771,8 +771,64 @@
         };
       }
 
+
+      function applyAuthoringLayoutBypass(root, resolved) {
+        const style = root.style;
+        setDataset(root, "mcelLayoutLive", "authoring-bypass");
+        setDataset(root, "mcelLayoutVersion", resolved.contractVersion);
+        setDataset(root, "mcelLayoutContractState", resolved.complete ? "complete" : "incomplete");
+        setDataset(root, "mcelLayoutCapacity", "authoring");
+        setDataset(root, "mcelExplorerPlacement", "left");
+        setDataset(root, "mcelInspectorPlacement", "hidden");
+        setDataset(root, "mcelProofPlacement", "hidden");
+        setDataset(root, "mcelCenterTab", "editor");
+        setDataset(root, "mcelLayoutRemediated", resolved.remediated ? "true" : "false");
+
+        style.setProperty("--mcel-code-editor-activity-inline", "0px");
+        style.setProperty("--mcel-code-editor-explorer-inline", "280px");
+        style.setProperty("--mcel-code-editor-inspector-inline", "0px");
+        style.setProperty("--mcel-code-editor-inspector-bottom-block", "0px");
+        style.setProperty("--mcel-code-editor-proof-block", "0px");
+        style.setProperty("--mcel-code-editor-status-block", `${resolved.dimensions.statusBlock || 22}px`);
+        style.setProperty("--mcel-code-editor-title-block", `${resolved.dimensions.titleBlock || 36}px`);
+
+        const centerTabs = root.querySelector("#code-editor-layout-center-tabs");
+        if (centerTabs) centerTabs.hidden = true;
+
+        const proof = elementForUnit(root, "code-editor.proof");
+        if (proof) {
+          proof.dataset.mcelResolvedPlacement = "hidden";
+          if (proof.dataset.expanded !== "false") proof.dataset.expanded = "false";
+        }
+
+        const status = root.querySelector("#code-editor-gridstack-status");
+        if (status) {
+          status.textContent = "authoring/editor";
+          status.title = "Focused authoring mode bypasses MCEL dock geometry.";
+        }
+
+        if (typeof root.dispatchEvent === "function" && typeof globalObject.CustomEvent === "function") {
+          root.dispatchEvent(new globalObject.CustomEvent("mcel:code-editor-layout-resolved", {
+            detail: {
+              ...clone(resolved),
+              capacity: "authoring",
+              actual: {
+                explorer: "left",
+                inspector: "hidden",
+                proof: "hidden",
+                centerTab: "editor",
+              },
+            },
+          }));
+        }
+        return resolved;
+      }
+
       function applyResolvedLayout(root, resolved) {
         if (!root) return resolved;
+        if (root.dataset?.codeEditorMode === "authoring") {
+          return applyAuthoringLayoutBypass(root, resolved);
+        }
         const style = root.style;
         setDataset(root, "mcelLayoutLive", "true");
         setDataset(root, "mcelLayoutVersion", resolved.contractVersion);

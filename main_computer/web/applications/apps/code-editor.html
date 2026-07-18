@@ -1,4 +1,4 @@
-<div class="code-editor-app mc-app" id="code-editor-app" style="display: none;" aria-label="MCEL Code Studio" data-mc-widget-id="code-editor.root" data-mc-widget-kind="container" data-mc-widget-class="box" data-mc-widget-label="Code Editor" data-mc-component-id="code-editor.root" data-mc-component-kind="app" data-mc-component-label="Code Editor" data-mc-component-owner="applications.workspace" data-mc-feature-id="code-editor" data-mc-source="main_computer/web/applications/apps/code-editor.html; main_computer/web/applications/styles/code-editor.css; main_computer/web/applications/scripts/code-editor-layout-contract.js">
+<div class="code-editor-app mc-app" id="code-editor-app" style="display: none;" aria-label="Code Editor" data-code-editor-mode="authoring" data-mc-widget-id="code-editor.root" data-mc-widget-kind="container" data-mc-widget-class="box" data-mc-widget-label="Code Editor" data-mc-component-id="code-editor.root" data-mc-component-kind="app" data-mc-component-label="Code Editor" data-mc-component-owner="applications.workspace" data-mc-feature-id="code-editor" data-mc-source="main_computer/web/applications/apps/code-editor.html; main_computer/web/applications/styles/code-editor.css; main_computer/web/applications/scripts/code-editor-layout-contract.js">
   <div class="code-studio-shell mc-shell" data-mc-component-id="code-editor.studio.shell" data-mc-component-kind="workspace" data-mc-component-label="MCEL Code Studio Shell" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-use-case="source-safe-code-editor" data-mc-layout-root="code-editor.workbench" data-mc-layout-user-id="code-editor.workbench" data-mc-layout="dock-workbench" data-mc-layout-zones="top left-fixed left center right bottom tab stage trigger bottom-fixed" data-mc-layout-policy="editor-centered-workbench" data-mc-layout-strength="required" data-mc-layout-contract="mcel-code-editor-layout.v1">
     <div class="code-studio-titlebar" data-mc-component-id="code-editor.studio.titlebar" data-mc-component-kind="toolbar" data-mc-component-label="Code Studio Title Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.titlebar" data-mc-layout-prefer="top" data-mc-layout-allowed="top" data-mc-layout-strength="required" data-mc-controls="code-editor.studio.editor-group code-editor.studio.inspector code-editor.studio.bottom-panel">
       <div class="code-studio-window-controls" aria-hidden="true">
@@ -6,19 +6,20 @@
       </div>
       <div class="code-studio-command-center" role="search" aria-label="Command center">
         <span class="code-studio-command-icon">⌘</span>
-        <span class="code-studio-command-label">MCEL Code Studio</span>
+        <span class="code-studio-command-label">Code Editor</span>
         <span class="code-studio-command-meta" id="code-studio-top-route-status">workspace.file/src/app.js</span>
         <span class="code-studio-command-pill" id="code-studio-top-gate-status" data-ok="pending">gates pending</span>
         <span class="code-studio-command-pill" id="code-studio-top-persistence-status" data-ok="pending">persistence pending</span>
         <span class="code-studio-command-pill" id="code-studio-top-runtime-version">mcel-runtime.v0.1.15</span>
       </div>
       <div class="code-studio-title-actions" aria-label="Editor actions">
-        <button type="button" id="code-studio-validate" data-mc-component-id="code-editor.studio.validate" data-mc-component-kind="action" data-mc-component-label="Validate Code Studio Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Validate</button>
-        <button type="button" id="code-studio-serialize" data-mc-component-id="code-editor.studio.serialize" data-mc-component-kind="action" data-mc-component-label="Serialize Clean Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Serialize</button>
-        <button type="button" id="code-editor-gridstack-toggle" aria-expanded="false" aria-controls="code-editor-layout-menu" data-mc-component-id="code-editor.studio.gridstack-toggle" data-mc-component-kind="action" data-mc-component-label="Open Semantic Layout Controls" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Layout</button>
-        <button type="button" id="code-editor-gridstack-reset" data-mc-component-id="code-editor.studio.gridstack-reset" data-mc-component-kind="action" data-mc-component-label="Reset Code Editor GridStack" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Reset layout</button>
-        <span class="code-editor-gridstack-status" id="code-editor-gridstack-status" data-mc-component-id="code-editor.studio.gridstack-status" data-mc-component-kind="status" data-mc-component-label="MCEL Layout Status" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Authored layout</span>
-        <div class="code-editor-layout-menu" id="code-editor-layout-menu" hidden role="dialog" aria-label="Code editor layout controls">
+        <button type="button" id="code-studio-validate" data-code-editor-mcel-only="true" data-mc-component-id="code-editor.studio.validate" data-mc-component-kind="action" data-mc-component-label="Validate Code Studio Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Validate</button>
+        <button type="button" id="code-studio-serialize" data-code-editor-mcel-only="true" data-mc-component-id="code-editor.studio.serialize" data-mc-component-kind="action" data-mc-component-label="Serialize Clean Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Serialize</button>
+        <button type="button" id="code-editor-gridstack-toggle" data-code-editor-mcel-only="true" aria-expanded="false" aria-controls="code-editor-layout-menu" data-mc-component-id="code-editor.studio.gridstack-toggle" data-mc-component-kind="action" data-mc-component-label="Open Semantic Layout Controls" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Layout</button>
+        <button type="button" id="code-editor-gridstack-reset" data-code-editor-mcel-only="true" data-mc-component-id="code-editor.studio.gridstack-reset" data-mc-component-kind="action" data-mc-component-label="Reset Code Editor GridStack" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Reset layout</button>
+        <button type="button" id="code-editor-mcel-tools-toggle" aria-pressed="false" aria-controls="code-studio-bottom-panel code-editor-layout-menu" data-mc-component-id="code-editor.studio.mcel-tools-toggle" data-mc-component-kind="action" data-mc-component-label="Toggle MCEL Tools" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">MCEL tools</button>
+        <span class="code-editor-gridstack-status" data-code-editor-mcel-only="true" id="code-editor-gridstack-status" data-mc-component-id="code-editor.studio.gridstack-status" data-mc-component-kind="status" data-mc-component-label="MCEL Layout Status" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Authored layout</span>
+        <div class="code-editor-layout-menu" data-code-editor-mcel-only="true" id="code-editor-layout-menu" hidden role="dialog" aria-label="Code editor layout controls">
           <div class="code-editor-layout-menu-heading">
             <strong>Workbench layout</strong>
             <button type="button" id="code-editor-layout-menu-close" aria-label="Close layout controls">×</button>
@@ -61,7 +62,7 @@
           <strong>Open Editors</strong>
           <button type="button" class="code-studio-file active" data-code-studio-file="src/app.js" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">src/app.js</button>
           <button type="button" class="code-studio-file" data-code-studio-file="tests/app.test.js" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">tests/app.test.js</button>
-          <button type="button" class="code-studio-file" data-code-studio-file="mcel.contract.json" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">mcel.contract.json</button>
+          <button type="button" class="code-studio-file" data-code-editor-mcel-only="true" data-code-studio-file="mcel.contract.json" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">mcel.contract.json</button>
         </div>
         <div class="code-studio-tree" aria-label="Project tree" data-mc-component-id="code-editor.explorer.workspace-tree" data-mc-component-kind="tree" data-mc-component-label="Project Tree" data-mc-component-owner="code-editor.studio.sidebar" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-widget-kind="tree" data-mc-item-display-preset="compact" data-mc-density="compact" data-mc-layout-fill="remaining" data-mc-layout-overflow="scroll">
           <strong>MCEL-WORKSPACE</strong>
@@ -69,8 +70,8 @@
           <button type="button" data-code-studio-file="src/app.js" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">app.js</button>
           <div data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ tests</div>
           <button type="button" data-code-studio-file="tests/app.test.js" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">app.test.js</button>
-          <div data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ .mcel</div>
-          <button type="button" data-code-studio-file="mcel.contract.json" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">contract.json</button>
+          <div data-code-editor-mcel-only="true" data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ .mcel</div>
+          <button type="button" data-code-editor-mcel-only="true" data-code-studio-file="mcel.contract.json" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">contract.json</button>
         </div>
       </aside>
 
@@ -82,15 +83,15 @@
       <section class="code-studio-editor-group" aria-label="Code editor workbench" data-code-studio-workbench-region="editor-workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.editor" data-mc-layout-prefer="center" data-mc-layout-allowed="center split-center" data-mc-layout-strength="required" data-mc-layout-policy="editor-center" data-mc-layout-min-inline="520" data-mc-layout-min-block="320" data-mc-layout-max-share="1" data-mc-layout-user-mutable="" data-mc-layout-fill="owned-center-slot" data-mc-layout-overflow="contain" data-mc-authority="primary-work" data-mc-persistence="always-visible">
         <div class="code-studio-tabs" role="tablist" aria-label="Editor tabs">
           <button type="button" class="active" data-code-studio-tab="source">source.html</button>
-          <button type="button" data-code-studio-tab="runtime">runtime preview</button>
-          <button type="button" data-code-studio-tab="serialized">serialized.html</button>
-          <button type="button" data-code-studio-tab="contract">contract report</button>
+          <button type="button" data-code-editor-mcel-only="true" data-code-studio-tab="runtime">runtime preview</button>
+          <button type="button" data-code-editor-mcel-only="true" data-code-studio-tab="serialized">serialized.html</button>
+          <button type="button" data-code-editor-mcel-only="true" data-code-studio-tab="contract">contract report</button>
         </div>
 
         <section class="code-studio-editor-pane active" data-code-studio-pane="source" aria-label="Author-owned source editor" data-mc-component-id="code-editor.studio.source-pane" data-mc-component-kind="editor" data-mc-component-label="Author Source Editor" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">
           <div class="code-studio-pane-toolbar">
             <strong>Author-owned source</strong>
-            <span>Write only the durable source. MCEL generates the workbench around it.</span>
+            <span>Edit the author-owned source. Advanced MCEL proof tools stay hidden until requested.</span>
             <button type="button" id="code-studio-save-live-workspace">Save live workspace</button>
             <button type="button" id="code-studio-restore-live-workspace">Restore saved workspace</button>
             <button type="button" id="code-studio-clear-live-workspace">Clear saved workspace</button>
@@ -143,20 +144,20 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
           </div>
         </section>
 
-        <section class="code-studio-editor-pane" data-code-studio-pane="runtime" aria-label="Generated runtime preview" data-mc-component-id="code-editor.studio.runtime-pane" data-mc-component-kind="preview" data-mc-component-label="Runtime Preview" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout="stack" data-mc-layout-tracks="content remaining" data-mc-layout-fill="parent" data-mc-layout-overflow="contain">
+        <section class="code-studio-editor-pane" data-code-studio-pane="runtime" aria-label="Selected-file Monaco editor" data-mc-component-id="code-editor.studio.runtime-pane" data-mc-component-kind="preview" data-mc-component-label="Selected File Editor" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout="stack" data-mc-layout-tracks="content remaining" data-mc-layout-fill="parent" data-mc-layout-overflow="contain">
           <div class="code-studio-pane-toolbar">
-            <strong>Generated runtime</strong>
-            <span>Monaco mounts as runtime-only editor chrome; fallback textarea and commitDraft gate stay source-safe.</span>
-            <button type="button" id="code-studio-mount-runtime">Mount runtime</button>
-            <button type="button" id="code-studio-damage-runtime">Break runtime</button>
-            <button type="button" id="code-studio-repair-runtime">Repair from source</button>
-            <button type="button" id="code-studio-commit-runtime">Commit editor draft</button>
+            <strong>Selected file editor</strong>
+            <span>Monaco mounts as the selected-file editor; Apply to source is the mutation gate.</span>
+            <button type="button" id="code-studio-mount-runtime">Mount editor</button>
+            <button type="button" id="code-studio-damage-runtime">Break editor</button>
+            <button type="button" id="code-studio-repair-runtime">Repair editor</button>
+            <button type="button" id="code-studio-commit-runtime">Apply to source</button>
             <button type="button" id="code-studio-show-18n-boundary" data-code-studio-proof-action="show-code-studio-18n-boundary">Show 18N boundary</button>
             <output id="code-studio-18n-commit-boundary-status" class="code-studio-live-workspace-persistence" data-mcel-18n-code-studio-boundary="runtime-commit" data-status="waiting" aria-live="polite">
               18N Code Studio boundary is waiting for runtime draft preflight.
             </output>
           </div>
-          <div class="code-studio-runtime-preview" id="code-studio-runtime-preview" data-mc-component-id="code-editor.studio.runtime-preview" data-mc-component-kind="output" data-mc-component-label="Generated Runtime Preview" data-mc-component-owner="code-editor.studio.runtime-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-fill="remaining" data-mc-layout-overflow="contain" data-mc-layout-containment="owned-remaining-track"></div>
+          <div class="code-studio-runtime-preview" id="code-studio-runtime-preview" data-mc-component-id="code-editor.studio.runtime-preview" data-mc-component-kind="output" data-mc-component-label="Generated Selected File Editor" data-mc-component-owner="code-editor.studio.runtime-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-fill="remaining" data-mc-layout-overflow="contain" data-mc-layout-containment="owned-remaining-track"></div>
         </section>
 
         <section class="code-studio-editor-pane" data-code-studio-pane="serialized" aria-label="Serialized clean source" data-mc-component-id="code-editor.studio.serialized-pane" data-mc-component-kind="output" data-mc-component-label="Serialized Clean Source" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">
@@ -493,7 +494,7 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
 
     <footer class="code-studio-statusbar" data-mc-component-id="code-editor.studio.statusbar" data-mc-component-kind="status" data-mc-component-label="Code Studio Status Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.status" data-mc-layout-prefer="bottom-fixed" data-mc-layout-allowed="bottom-fixed" data-mc-layout-strength="required" data-mc-layout-min-block="22" data-mc-layout-max-share="0.06" data-mc-confirms="editor.state layout.state" data-mc-persistence="always-visible">
       <span>main</span>
-      <span>MCEL source-safe-code-editor</span>
+      <span>source-safe editor</span>
       <span id="code-studio-runtime-state">runtime: clean</span>
       <span>UTF-8</span>
       <span>JavaScript</span>

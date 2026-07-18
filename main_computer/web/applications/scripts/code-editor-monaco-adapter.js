@@ -244,7 +244,7 @@
         ok: false,
         actionOutcome: "blocked",
         externalOutcome: "missing-host",
-        nextAction: "render fallback textarea"
+        nextAction: "inspect Monaco host"
       }));
     }
 
@@ -259,12 +259,12 @@
         externalOutcome: loaded.externalOutcome,
         source: loaded.source,
         message: loaded.message || "",
-        nextAction: loaded.ok ? "mount editor model" : "use fallback textarea"
+        nextAction: loaded.ok ? "mount editor model" : "inspect Monaco loader"
       });
 
       if (!loaded.ok) {
         host.dataset.monacoOutcome = loaded.actionOutcome || "blocked";
-        host.textContent = `Monaco unavailable (${loaded.externalOutcome || "blocked"}). Fallback textarea remains active.`;
+        host.textContent = `Monaco unavailable (${loaded.externalOutcome || "blocked"}). The selected-file editor requires Monaco.`;
         return emitReceipt(onReceipt, {
           effect: "editor.monaco.mount",
           ok: false,
@@ -272,7 +272,7 @@
           externalOutcome: loaded.externalOutcome || "loader-blocked",
           source: loaded.source || "none",
           message: loaded.message || "",
-          nextAction: "use fallback textarea"
+          nextAction: "inspect Monaco loader"
         });
       }
 
@@ -337,7 +337,7 @@
         });
       } catch (error) {
         host.dataset.monacoOutcome = "exception";
-        host.textContent = "Monaco raised an exception. Fallback textarea remains active.";
+        host.textContent = "Monaco raised an exception. Inspect the adapter receipt.";
         return emitReceipt(onReceipt, {
           effect: "editor.monaco.mount",
           ok: false,
