@@ -1375,6 +1375,18 @@ def test_super_guard_status_helper_accepts_component_name_field(
     assert component_state["foundationdb"]["status"] == "missing-fdbserver"
 
 
+def test_super_node_dockerfile_inline_escapes_metadata_printf_newlines() -> None:
+    dockerfile = control.super_node_dockerfile_inline(
+        control.DEFAULT_SUPER_IMAGE,
+        guard_script="print('guard')\n",
+        build_id="deploy-escape-test",
+    )
+
+    assert "printf '%s\\n' 'deploy-escape-test' > /opt/allfather-build/deployment-id" in dockerfile
+    assert "printf '%s\n' 'deploy-escape-test' > /opt/allfather-build/deployment-id" not in dockerfile
+    assert "printf '%s\\n' " in dockerfile
+    assert "printf '%s\n' " not in dockerfile
+
 def test_super_compose_is_build_only_and_escapes_inline_dockerfile(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(

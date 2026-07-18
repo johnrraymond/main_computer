@@ -197,10 +197,10 @@
         "mcel-finding": 3,
         "mcel-intent": 7,
         "mcel-region": 7,
-        "mcel-requirement": 7,
-        "mcel-runtime-check": 4,
-        "mcel-source-binding": 1,
-        "mcel-test-binding": 1,
+        "mcel-requirement": 8,
+        "mcel-runtime-check": 5,
+        "mcel-source-binding": 2,
+        "mcel-test-binding": 2,
         "mcel-use-case": 2
       },
       "contract_complete": true,
@@ -224,15 +224,15 @@
         {
           "id": "code-editor.region.primary",
           "region": "primary",
-          "responsibility": "Own active source editing, draft review, concrete diffs, and explicit runtime preview while preventing unreviewed writes.",
+          "responsibility": "Own the central selected-file editor, draft review, concrete diffs, and explicit preview modes while preventing secondary tools from becoming the source of truth.",
           "role": "primary-authoring-surface",
           "status": "specified"
         },
         {
           "id": "code-editor.region.inspector",
-          "region": "inspector",
-          "responsibility": "Show Aider context, selected-file evidence, SCM manifests, documentation references, and action-specific preflight information.",
-          "role": "context-inspector",
+          "region": "right-assistant-diagnostics-pane",
+          "responsibility": "Own the optional right pane for Aider context, MCEL tools, diagnosis history, contract findings, selected-file evidence, SCM manifests, source ownership, test ownership, documentation references, and action-specific preflight information without becoming the primary editor.",
+          "role": "secondary-assistant-diagnostics-surface",
           "status": "specified"
         },
         {
@@ -253,11 +253,11 @@
       },
       "mutation_intent_count": 4,
       "open_finding_count": 3,
-      "planned_or_open_count": 33,
+      "planned_or_open_count": 37,
       "primary_user_goal": "Inspect, edit, preview, and safely change project source with AI assistance while preserving explicit write, patch, execution, and remote-mutation boundaries.",
       "prohibited_intent_count": 0,
       "region_count": 7,
-      "runtime_check_count": 4,
+      "runtime_check_count": 5,
       "runtime_checks": [
         {
           "check": "primary-surface",
@@ -273,6 +273,14 @@
           "id": "code-editor.runtime-check.authoring-required-regions",
           "mode": "authoring",
           "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "secondary-surface-policy",
+          "contract": "code-editor.contract.authoring.monaco-golden-path",
+          "id": "code-editor.runtime-check.authoring-right-pane-policy",
+          "mode": "authoring",
+          "severity": "warning",
           "status": "specified"
         },
         {
@@ -301,7 +309,7 @@
       "status_counts": {
         "open": 3,
         "planned": 7,
-        "specified": 23
+        "specified": 27
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Code Editor / MCEL Code Studio",
@@ -849,10 +857,10 @@
         "mcel-finding": 3,
         "mcel-intent": 7,
         "mcel-region": 7,
-        "mcel-requirement": 7,
-        "mcel-runtime-check": 4,
-        "mcel-source-binding": 1,
-        "mcel-test-binding": 1,
+        "mcel-requirement": 8,
+        "mcel-runtime-check": 5,
+        "mcel-source-binding": 2,
+        "mcel-test-binding": 2,
         "mcel-use-case": 2
       },
       "contract_complete": true,
@@ -876,15 +884,15 @@
         {
           "id": "code-editor.region.primary",
           "region": "primary",
-          "responsibility": "Own active source editing, draft review, concrete diffs, and explicit runtime preview while preventing unreviewed writes.",
+          "responsibility": "Own the central selected-file editor, draft review, concrete diffs, and explicit preview modes while preventing secondary tools from becoming the source of truth.",
           "role": "primary-authoring-surface",
           "status": "specified"
         },
         {
           "id": "code-editor.region.inspector",
-          "region": "inspector",
-          "responsibility": "Show Aider context, selected-file evidence, SCM manifests, documentation references, and action-specific preflight information.",
-          "role": "context-inspector",
+          "region": "right-assistant-diagnostics-pane",
+          "responsibility": "Own the optional right pane for Aider context, MCEL tools, diagnosis history, contract findings, selected-file evidence, SCM manifests, source ownership, test ownership, documentation references, and action-specific preflight information without becoming the primary editor.",
+          "role": "secondary-assistant-diagnostics-surface",
           "status": "specified"
         },
         {
@@ -905,11 +913,11 @@
       },
       "mutation_intent_count": 4,
       "open_finding_count": 3,
-      "planned_or_open_count": 33,
+      "planned_or_open_count": 37,
       "primary_user_goal": "Inspect, edit, preview, and safely change project source with AI assistance while preserving explicit write, patch, execution, and remote-mutation boundaries.",
       "prohibited_intent_count": 0,
       "region_count": 7,
-      "runtime_check_count": 4,
+      "runtime_check_count": 5,
       "runtime_checks": [
         {
           "check": "primary-surface",
@@ -925,6 +933,14 @@
           "id": "code-editor.runtime-check.authoring-required-regions",
           "mode": "authoring",
           "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "secondary-surface-policy",
+          "contract": "code-editor.contract.authoring.monaco-golden-path",
+          "id": "code-editor.runtime-check.authoring-right-pane-policy",
+          "mode": "authoring",
+          "severity": "warning",
           "status": "specified"
         },
         {
@@ -953,7 +969,7 @@
       "status_counts": {
         "open": 3,
         "planned": 7,
-        "specified": 23
+        "specified": 27
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Code Editor / MCEL Code Studio",
@@ -1381,23 +1397,29 @@
       "app": "calculator",
       "mode_contracts": {
         "default": {
+          "allowedRegions": [],
           "appId": "calculator",
+          "checkCategories": [],
           "checks": [
             {
+              "allowed_regions": [],
               "app": "calculator",
               "check": "overlay-policy",
+              "check_category": "",
               "contract": "calculator.contract.default.app-health",
               "editor_selector": "",
               "expects": [
                 "MCEL/widget/proof overlays are not visible while the calculator is in default mode."
               ],
               "failure_message": "Calculator default mode should not be covered by diagnostic overlays.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [
                 "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
                 "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
                 "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
               ],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "calculator.runtime-check.default-overlay-policy",
               "lifecycle_assertions": [],
@@ -1411,6 +1433,9 @@
                 ".floating-tab",
                 ".side-tab"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [],
               "severity": "warning",
@@ -1424,8 +1449,10 @@
               "test_binding": "calculator.test.route-checks"
             },
             {
+              "allowed_regions": [],
               "app": "calculator",
               "check": "primary-surface",
+              "check_category": "",
               "contract": "calculator.contract.default.app-health",
               "editor_selector": ".calculator-workspace",
               "expects": [
@@ -1433,8 +1460,10 @@
                 "The primary calculator surface is not collapsed by surrounding app chrome."
               ],
               "failure_message": "Calculator default mode must expose a usable workspace.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": ".calculator-workspace",
               "id": "calculator.runtime-check.default-primary-workspace",
               "lifecycle_assertions": [],
@@ -1445,6 +1474,9 @@
               "observes": [
                 ".calculator-workspace"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "calculator.surface.workspace",
               "required_regions": [],
               "severity": "critical",
@@ -1458,8 +1490,10 @@
               "test_binding": "calculator.test.route-checks"
             },
             {
+              "allowed_regions": [],
               "app": "calculator",
               "check": "required-regions-visible",
+              "check_category": "",
               "contract": "calculator.contract.default.app-health",
               "editor_selector": "",
               "expects": [
@@ -1468,8 +1502,10 @@
                 "Calculator workspace and display remain visible."
               ],
               "failure_message": "Calculator default mode must preserve root, controls, workspace, and display.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "calculator.runtime-check.default-required-regions",
               "lifecycle_assertions": [],
@@ -1484,6 +1520,9 @@
                 ".calculator-workspace",
                 "#calculator-display"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [
                 {
@@ -1527,9 +1566,13 @@
           "derivedFromBlockTypes": [
             "mcel-runtime-check"
           ],
+          "focusModes": [],
           "forbiddenRegions": [],
+          "geometryPolicies": [],
           "lifecycleAssertions": [],
           "mode": "default",
+          "optionalRegions": [],
+          "overlayPolicy": [],
           "primarySurface": {
             "editorSelector": ".calculator-workspace",
             "hostSelector": ".calculator-workspace",
@@ -1573,11 +1616,32 @@
       "app": "code-editor",
       "mode_contracts": {
         "authoring": {
+          "allowedRegions": [
+            {
+              "id": "code-editor.allowed.mcel-tools-toggle",
+              "label": "MCEL tools toggle",
+              "selector": "#code-editor-mcel-tools-toggle"
+            },
+            {
+              "id": "code-editor.allowed.diagnostics-counter",
+              "label": "Diagnostics counter",
+              "selector": "#code-editor-diagnostics-counter"
+            }
+          ],
           "appId": "code-editor",
+          "checkCategories": [
+            "overlays",
+            "lifecycle",
+            "surface",
+            "layout",
+            "surfaces"
+          ],
           "checks": [
             {
+              "allowed_regions": [],
               "app": "code-editor",
               "check": "forbidden-surfaces-hidden",
+              "check_category": "overlays",
               "contract": "code-editor.contract.authoring.monaco-golden-path",
               "editor_selector": "",
               "expects": [
@@ -1588,6 +1652,7 @@
                 "Proof and widget overlays are not visible in authoring mode."
               ],
               "failure_message": "MCEL diagnostic/runtime scaffolding must not leak into Code Editor authoring mode.",
+              "focus": "forbidden-surfaces",
               "forbidden_regions": [],
               "forbids": [
                 "code-editor.forbidden.source-pane | [data-code-studio-pane=\"source\"] | MCEL source model pane",
@@ -1600,6 +1665,7 @@
                 "code-editor.forbidden.proof-dock | .code-studio-proof-dock, #code-studio-bottom-panel | MCEL proof/evidence dock",
                 "code-editor.forbidden.widget-overlay | #mc-widget-editor-root | Widget editor overlay"
               ],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "code-editor.runtime-check.authoring-forbidden-surfaces",
               "lifecycle_assertions": [],
@@ -1620,21 +1686,26 @@
                 "#code-studio-bottom-panel",
                 "#mc-widget-editor-root"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 704,
+                "end_line": 794,
                 "file": "pretty_docs/mcel-code-editor-requirements.md",
-                "start_line": 664
+                "start_line": 752
               },
               "source_binding": "code-editor.binding.authoring-monaco-surface",
               "status": "specified",
               "test_binding": "code-editor.test.authoring-monaco-diagnosis"
             },
             {
+              "allowed_regions": [],
               "app": "code-editor",
               "check": "lifecycle-contract-preserved",
+              "check_category": "lifecycle",
               "contract": "code-editor.contract.authoring.monaco-golden-path",
               "editor_selector": "",
               "expects": [
@@ -1643,8 +1714,10 @@
                 "Resize keeps the Monaco host and editor useful."
               ],
               "failure_message": "File selection and reload must preserve the Code Editor authoring contract.",
+              "focus": "startup-file-click-resize",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "code-editor.runtime-check.authoring-lifecycle",
               "lifecycle_assertions": [
@@ -1662,21 +1735,26 @@
                 "file-click",
                 "resize"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 731,
+                "end_line": 823,
                 "file": "pretty_docs/mcel-code-editor-requirements.md",
-                "start_line": 706
+                "start_line": 796
               },
               "source_binding": "code-editor.binding.authoring-monaco-surface",
               "status": "specified",
               "test_binding": "code-editor.test.authoring-monaco-diagnosis"
             },
             {
+              "allowed_regions": [],
               "app": "code-editor",
               "check": "primary-surface",
+              "check_category": "surface",
               "contract": "code-editor.contract.authoring.monaco-golden-path",
               "editor_selector": ".monaco-editor",
               "expects": [
@@ -1685,8 +1763,10 @@
                 "No fallback or source-model editor surface competes with Monaco in authoring mode."
               ],
               "failure_message": "Authoring mode must expose one usable Monaco selected-file editor.",
+              "focus": "primary-editor",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "#code-studio-runtime-monaco",
               "id": "code-editor.runtime-check.authoring-primary-monaco",
               "lifecycle_assertions": [],
@@ -1698,31 +1778,39 @@
                 "#code-studio-runtime-monaco",
                 ".monaco-editor"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "code-editor.surface.monaco-selected-file-editor",
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 636,
+                "end_line": 680,
                 "file": "pretty_docs/mcel-code-editor-requirements.md",
-                "start_line": 612
+                "start_line": 654
               },
               "source_binding": "code-editor.binding.authoring-monaco-surface",
               "status": "specified",
               "test_binding": "code-editor.test.authoring-monaco-diagnosis"
             },
             {
+              "allowed_regions": [],
               "app": "code-editor",
               "check": "required-regions-visible",
+              "check_category": "layout",
               "contract": "code-editor.contract.authoring.monaco-golden-path",
               "editor_selector": "",
               "expects": [
                 "Code Editor root is present and visible.",
                 "Explorer region is present and visible.",
-                "Editor group is present and visible."
+                "Editor group is present and visible.",
+                "Status bar is present and visible."
               ],
-              "failure_message": "Authoring mode must preserve the app root, explorer, and editor group.",
+              "failure_message": "Authoring mode must preserve the app root, explorer, editor group, and status bar.",
+              "focus": "required-regions",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "code-editor.runtime-check.authoring-required-regions",
               "lifecycle_assertions": [],
@@ -1733,8 +1821,12 @@
               "observes": [
                 "#code-editor-app",
                 ".code-studio-sidebar",
-                ".code-studio-editor-group"
+                ".code-studio-editor-group",
+                ".code-studio-statusbar"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [
                 {
@@ -1751,22 +1843,104 @@
                   "id": "code-editor.region.editor-group",
                   "label": "Editor group",
                   "selector": ".code-studio-editor-group"
+                },
+                {
+                  "id": "code-editor.region.statusbar",
+                  "label": "Status bar",
+                  "selector": ".code-studio-statusbar"
                 }
               ],
               "severity": "critical",
               "source": {
-                "end_line": 662,
+                "end_line": 711,
                 "file": "pretty_docs/mcel-code-editor-requirements.md",
-                "start_line": 638
+                "start_line": 682
               },
               "source_binding": "code-editor.binding.authoring-monaco-surface",
               "status": "specified",
               "test_binding": "code-editor.test.authoring-monaco-diagnosis"
+            },
+            {
+              "allowed_regions": [
+                {
+                  "id": "code-editor.allowed.mcel-tools-toggle",
+                  "label": "MCEL tools toggle",
+                  "selector": "#code-editor-mcel-tools-toggle"
+                },
+                {
+                  "id": "code-editor.allowed.diagnostics-counter",
+                  "label": "Diagnostics counter",
+                  "selector": "#code-editor-diagnostics-counter"
+                }
+              ],
+              "app": "code-editor",
+              "check": "secondary-surface-policy",
+              "check_category": "surfaces",
+              "contract": "code-editor.contract.authoring.monaco-golden-path",
+              "editor_selector": "",
+              "expects": [
+                "The right assistant/diagnostics pane is allowed in authoring mode as a secondary surface.",
+                "The right pane may be visible, collapsed, tabbed, or trigger-only without becoming the primary editor.",
+                "MCEL tools, diagnosis history, contract findings, source ownership, and test ownership belong in the right pane or an explicit mode.",
+                "The right pane must not cover the Monaco editor or reduce it below its minimum geometry."
+              ],
+              "failure_message": "The right pane is an allowed secondary authoring surface, not a competing editor or leaked overlay.",
+              "focus": "right-assistant-diagnostics-pane",
+              "forbidden_regions": [],
+              "forbids": [],
+              "geometry_policies": [
+                "right-pane-visible-min-width-240",
+                "right-pane-max-width-ratio-0.40",
+                "right-pane-must-collapse-before-primary-breaks"
+              ],
+              "host_selector": "",
+              "id": "code-editor.runtime-check.authoring-right-pane-policy",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "authoring",
+              "next_probe": "rightPane.containment",
+              "observes": [
+                ".code-studio-inspector",
+                "[data-code-studio-workbench-region=\\\"scm-ai-inspector\\\"]",
+                "#code-editor-mcel-tools-toggle",
+                "#code-editor-diagnostics-counter"
+              ],
+              "optional_regions": [
+                {
+                  "id": "code-editor.region.right-assistant",
+                  "label": "Right assistant and diagnostics pane",
+                  "selector": ".code-studio-inspector"
+                }
+              ],
+              "overlay_policy": [
+                "diagnostics-contained-in-right-pane-are-allowed",
+                "diagnostics-covering-primary-editor-are-forbidden"
+              ],
+              "ownership_hints": [],
+              "primary_surface_id": "",
+              "required_regions": [],
+              "severity": "warning",
+              "source": {
+                "end_line": 750,
+                "file": "pretty_docs/mcel-code-editor-requirements.md",
+                "start_line": 714
+              },
+              "source_binding": "code-editor.binding.authoring-cockpit-layout",
+              "status": "specified",
+              "test_binding": "code-editor.test.authoring-cockpit-diagnosis"
             }
           ],
           "contractId": "code-editor.contract.authoring.monaco-golden-path",
           "derivedFromBlockTypes": [
             "mcel-runtime-check"
+          ],
+          "focusModes": [
+            "forbidden-surfaces",
+            "startup-file-click-resize",
+            "primary-editor",
+            "required-regions",
+            "right-assistant-diagnostics-pane"
           ],
           "forbiddenRegions": [
             {
@@ -1815,6 +1989,11 @@
               "selector": "#mc-widget-editor-root"
             }
           ],
+          "geometryPolicies": [
+            "right-pane-visible-min-width-240",
+            "right-pane-max-width-ratio-0.40",
+            "right-pane-must-collapse-before-primary-breaks"
+          ],
           "lifecycleAssertions": [
             "startup-authoring-mode-has-one-primary-editor",
             "file-click-keeps-one-primary-editor",
@@ -1822,6 +2001,17 @@
             "mcel-diagnostics-hidden-in-authoring"
           ],
           "mode": "authoring",
+          "optionalRegions": [
+            {
+              "id": "code-editor.region.right-assistant",
+              "label": "Right assistant and diagnostics pane",
+              "selector": ".code-studio-inspector"
+            }
+          ],
+          "overlayPolicy": [
+            "diagnostics-contained-in-right-pane-are-allowed",
+            "diagnostics-covering-primary-editor-are-forbidden"
+          ],
           "primarySurface": {
             "editorSelector": ".monaco-editor",
             "hostSelector": "#code-studio-runtime-monaco",
@@ -1845,6 +2035,11 @@
               "id": "code-editor.region.editor-group",
               "label": "Editor group",
               "selector": ".code-studio-editor-group"
+            },
+            {
+              "id": "code-editor.region.statusbar",
+              "label": "Status bar",
+              "selector": ".code-studio-statusbar"
             }
           ],
           "source": "mcel-runtime-check"
@@ -1855,23 +2050,29 @@
       "app": "file-explorer",
       "mode_contracts": {
         "default": {
+          "allowedRegions": [],
           "appId": "file-explorer",
+          "checkCategories": [],
           "checks": [
             {
+              "allowed_regions": [],
               "app": "file-explorer",
               "check": "overlay-policy",
+              "check_category": "",
               "contract": "file-explorer.contract.default.app-health",
               "editor_selector": "",
               "expects": [
                 "MCEL/widget/proof overlays are not visible while browsing files."
               ],
               "failure_message": "File Explorer should not be covered by diagnostic overlays in default mode.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [
                 "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
                 "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
                 "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
               ],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "file-explorer.runtime-check.default-overlay-policy",
               "lifecycle_assertions": [],
@@ -1885,6 +2086,9 @@
                 ".floating-tab",
                 ".side-tab"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [],
               "severity": "warning",
@@ -1898,8 +2102,10 @@
               "test_binding": "file-explorer.test.viewport-file-explorer"
             },
             {
+              "allowed_regions": [],
               "app": "file-explorer",
               "check": "primary-surface",
+              "check_category": "",
               "contract": "file-explorer.contract.default.app-health",
               "editor_selector": ".file-explorer-main",
               "expects": [
@@ -1907,8 +2113,10 @@
                 "The list/preview work area is not collapsed."
               ],
               "failure_message": "File Explorer default mode must expose a usable browsing surface.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": ".file-explorer-main",
               "id": "file-explorer.runtime-check.default-primary-surface",
               "lifecycle_assertions": [],
@@ -1919,6 +2127,9 @@
               "observes": [
                 ".file-explorer-main"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "file-explorer.surface.main",
               "required_regions": [],
               "severity": "critical",
@@ -1932,16 +2143,20 @@
               "test_binding": "file-explorer.test.viewport-file-explorer"
             },
             {
+              "allowed_regions": [],
               "app": "file-explorer",
               "check": "required-regions-visible",
+              "check_category": "",
               "contract": "file-explorer.contract.default.app-health",
               "editor_selector": "",
               "expects": [
                 "Root, roots panel, toolbar, main surface, and file list are visible."
               ],
               "failure_message": "File Explorer default mode must preserve roots, toolbar, and list.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "file-explorer.runtime-check.default-required-regions",
               "lifecycle_assertions": [],
@@ -1956,6 +2171,9 @@
                 ".file-explorer-toolbar",
                 "#file-explorer-list"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [
                 {
@@ -1999,9 +2217,13 @@
           "derivedFromBlockTypes": [
             "mcel-runtime-check"
           ],
+          "focusModes": [],
           "forbiddenRegions": [],
+          "geometryPolicies": [],
           "lifecycleAssertions": [],
           "mode": "default",
+          "optionalRegions": [],
+          "overlayPolicy": [],
           "primarySurface": {
             "editorSelector": ".file-explorer-main",
             "hostSelector": ".file-explorer-main",
@@ -2045,23 +2267,29 @@
       "app": "git-tools",
       "mode_contracts": {
         "default": {
+          "allowedRegions": [],
           "appId": "git-tools",
+          "checkCategories": [],
           "checks": [
             {
+              "allowed_regions": [],
               "app": "git-tools",
               "check": "overlay-policy",
+              "check_category": "",
               "contract": "git-tools.contract.default.app-health",
               "editor_selector": "",
               "expects": [
                 "MCEL/widget/proof overlays are not visible while running the default Git Tools workflow."
               ],
               "failure_message": "Git Tools default mode should not be covered by diagnostic overlays.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [
                 "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
                 "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
                 "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
               ],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "git-tools.runtime-check.default-overlay-policy",
               "lifecycle_assertions": [],
@@ -2075,6 +2303,9 @@
                 ".floating-tab",
                 ".side-tab"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [],
               "severity": "warning",
@@ -2088,8 +2319,10 @@
               "test_binding": "git-tools.test.semantic-adapter"
             },
             {
+              "allowed_regions": [],
               "app": "git-tools",
               "check": "primary-surface",
+              "check_category": "",
               "contract": "git-tools.contract.default.app-health",
               "editor_selector": "#git-project-workflow-surface",
               "expects": [
@@ -2097,8 +2330,10 @@
                 "The workflow surface is not collapsed by rails or proof panels."
               ],
               "failure_message": "Git Tools default mode must expose a usable workflow surface.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "#git-project-workflow-surface",
               "id": "git-tools.runtime-check.default-primary-workflow",
               "lifecycle_assertions": [],
@@ -2109,6 +2344,9 @@
               "observes": [
                 "#git-project-workflow-surface"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "git-tools.surface.workflow",
               "required_regions": [],
               "severity": "critical",
@@ -2122,16 +2360,20 @@
               "test_binding": "git-tools.test.semantic-adapter"
             },
             {
+              "allowed_regions": [],
               "app": "git-tools",
               "check": "required-regions-visible",
+              "check_category": "",
               "contract": "git-tools.contract.default.app-health",
               "editor_selector": "",
               "expects": [
                 "Root, shell, project selector, and workflow surface remain visible."
               ],
               "failure_message": "Git Tools default mode must preserve project selection and workflow.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "git-tools.runtime-check.default-required-regions",
               "lifecycle_assertions": [],
@@ -2145,6 +2387,9 @@
                 "#git-project-selector-panel",
                 "#git-project-workflow-surface"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [
                 {
@@ -2183,9 +2428,13 @@
           "derivedFromBlockTypes": [
             "mcel-runtime-check"
           ],
+          "focusModes": [],
           "forbiddenRegions": [],
+          "geometryPolicies": [],
           "lifecycleAssertions": [],
           "mode": "default",
+          "optionalRegions": [],
+          "overlayPolicy": [],
           "primarySurface": {
             "editorSelector": "#git-project-workflow-surface",
             "hostSelector": "#git-project-workflow-surface",
@@ -2224,23 +2473,29 @@
       "app": "website-builder",
       "mode_contracts": {
         "default": {
+          "allowedRegions": [],
           "appId": "website-builder",
+          "checkCategories": [],
           "checks": [
             {
+              "allowed_regions": [],
               "app": "website-builder",
               "check": "overlay-policy",
+              "check_category": "",
               "contract": "website-builder.contract.default.app-health",
               "editor_selector": "",
               "expects": [
                 "MCEL/widget/proof overlays are not visible while using the default builder surface."
               ],
               "failure_message": "Website Builder default mode should not be covered by diagnostic overlays.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [
                 "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
                 "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
                 "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
               ],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "website-builder.runtime-check.default-overlay-policy",
               "lifecycle_assertions": [],
@@ -2254,6 +2509,9 @@
                 ".floating-tab",
                 ".side-tab"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [],
               "severity": "warning",
@@ -2267,8 +2525,10 @@
               "test_binding": "website-builder.test.documentation-contract"
             },
             {
+              "allowed_regions": [],
               "app": "website-builder",
               "check": "primary-surface",
+              "check_category": "",
               "contract": "website-builder.contract.default.app-health",
               "editor_selector": ".website-builder-preview",
               "expects": [
@@ -2276,8 +2536,10 @@
                 "The selected site surface is not collapsed by inspector or publishing panels."
               ],
               "failure_message": "Website Builder default mode must expose a usable preview/design surface.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": ".website-builder-preview",
               "id": "website-builder.runtime-check.default-primary-preview",
               "lifecycle_assertions": [],
@@ -2288,6 +2550,9 @@
               "observes": [
                 ".website-builder-preview"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "website-builder.surface.preview",
               "required_regions": [],
               "severity": "critical",
@@ -2301,16 +2566,20 @@
               "test_binding": "website-builder.test.documentation-contract"
             },
             {
+              "allowed_regions": [],
               "app": "website-builder",
               "check": "required-regions-visible",
+              "check_category": "",
               "contract": "website-builder.contract.default.app-health",
               "editor_selector": "",
               "expects": [
                 "Root, shell, summary, preview, and inspector remain visible."
               ],
               "failure_message": "Website Builder default mode must preserve summary, preview, and inspector.",
+              "focus": "",
               "forbidden_regions": [],
               "forbids": [],
+              "geometry_policies": [],
               "host_selector": "",
               "id": "website-builder.runtime-check.default-required-regions",
               "lifecycle_assertions": [],
@@ -2325,6 +2594,9 @@
                 ".website-builder-preview",
                 ".website-builder-inspector"
               ],
+              "optional_regions": [],
+              "overlay_policy": [],
+              "ownership_hints": [],
               "primary_surface_id": "",
               "required_regions": [
                 {
@@ -2368,9 +2640,13 @@
           "derivedFromBlockTypes": [
             "mcel-runtime-check"
           ],
+          "focusModes": [],
           "forbiddenRegions": [],
+          "geometryPolicies": [],
           "lifecycleAssertions": [],
           "mode": "default",
+          "optionalRegions": [],
+          "overlayPolicy": [],
           "primarySurface": {
             "editorSelector": ".website-builder-preview",
             "hostSelector": ".website-builder-preview",
@@ -2423,7 +2699,7 @@
     ],
     "app_counts": {
       "calculator": 41,
-      "code-editor": 33,
+      "code-editor": 37,
       "file-explorer": 38,
       "git-tools": 45,
       "website-builder": 48
@@ -2434,19 +2710,20 @@
       "mcel-finding": 17,
       "mcel-grammar": 17,
       "mcel-intent": 50,
+      "mcel-layout-pattern": 1,
       "mcel-region": 43,
-      "mcel-requirement": 47,
-      "mcel-runtime-check": 16,
-      "mcel-source-binding": 1,
-      "mcel-test-binding": 1,
+      "mcel-requirement": 48,
+      "mcel-runtime-check": 17,
+      "mcel-source-binding": 2,
+      "mcel-test-binding": 2,
       "mcel-use-case": 13
     },
     "error_count": 0,
     "pretty_docs_root": "pretty_docs",
     "registry_version": "mcel-requirements-registry-v1",
-    "repo_root": "/mnt/data/work_phase2_diag_norm/main_computer_test",
+    "repo_root": "/mnt/data/work_mcel_code_editor_docs/main_computer_test",
     "strict_schema_ready": true,
-    "total_blocks": 227,
+    "total_blocks": 232,
     "valid": true,
     "warning_count": 0
   },

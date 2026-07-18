@@ -138,15 +138,27 @@ def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
     assert "#code-editor-app" in required_selectors
     assert ".code-studio-sidebar" in required_selectors
     assert ".code-studio-editor-group" in required_selectors
+    assert ".code-studio-statusbar" in required_selectors
+
+    optional_selectors = {entry["selector"] for entry in code_editor["optionalRegions"]}
+    assert ".code-studio-inspector" in optional_selectors
+
+    allowed_selectors = {entry["selector"] for entry in code_editor["allowedRegions"]}
+    assert "#code-editor-mcel-tools-toggle" in allowed_selectors
+    assert "#code-editor-diagnostics-counter" in allowed_selectors
 
     forbidden_selectors = {entry["selector"] for entry in code_editor["forbiddenRegions"]}
     assert "#code-studio-runtime-draft, .code-studio-runtime-fallback" in forbidden_selectors
     assert "#mc-widget-editor-root" in forbidden_selectors
 
     assert "file-click-keeps-one-primary-editor" in code_editor["lifecycleAssertions"]
+    assert "right-pane-must-collapse-before-primary-breaks" in code_editor["geometryPolicies"]
+    assert "diagnostics-covering-primary-editor-are-forbidden" in code_editor["overlayPolicy"]
+    assert {"surface", "layout", "overlays", "lifecycle", "surfaces"} <= set(code_editor["checkCategories"])
     assert {check["check"] for check in code_editor["checks"]} >= {
         "primary-surface",
         "required-regions-visible",
+        "secondary-surface-policy",
         "forbidden-surfaces-hidden",
         "lifecycle-contract-preserved",
     }
@@ -344,6 +356,7 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
     vm.runInNewContext(fs.readFileSync({json.dumps(str(script_path))}, "utf8"), sandbox, {{filename: "mcel-requirements-registry.js"}});
     const api = sandbox.McelRequirementsRegistry;
     const gitContract = api.getAppContract("git-tools");
+    const codeEditorDiagnosis = api.getRuntimeDiagnosisContract("code-editor", "authoring");
     const missingComparison = api.compareAppToRuntime("calculator", {{}});
     const gitComparison = api.compareAppToRuntime("git-tools", {{
       registryAdapterPresent: true,
@@ -369,6 +382,8 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
       appCount: api.listAppContracts().length,
       totalBlocks: api.getSummary().total_blocks,
       gitUseCaseCount: gitContract.use_cases.length,
+      codeEditorOptionalSelectors: codeEditorDiagnosis.optionalRegions.map((entry) => entry.selector),
+      codeEditorAllowedSelectors: codeEditorDiagnosis.allowedRegions.map((entry) => entry.selector),
       missingStatus: missingComparison.comparisonStatus,
       missingGaps: missingComparison.gaps,
       gitStatus: gitComparison.comparisonStatus,
@@ -389,6 +404,8 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
     assert data["appCount"] == 5
     assert data["totalBlocks"] >= 208
     assert data["gitUseCaseCount"] >= 4
+    assert ".code-studio-inspector" in data["codeEditorOptionalSelectors"]
+    assert "#code-editor-mcel-tools-toggle" in data["codeEditorAllowedSelectors"]
     assert data["missingStatus"] == "requirements-runtime-gap"
     assert "No live domain adapter snapshot is available." in data["missingGaps"]
     assert data["gitStatus"] == "requirements-runtime-aligned-or-unverified"

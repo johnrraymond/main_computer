@@ -737,6 +737,8 @@ def _runtime_check_to_dict(block: RegistryBlock) -> dict[str, Any]:
         "mode": _field_string(block, "mode"),
         "contract": _field_string(block, "contract"),
         "check": _field_string(block, "check"),
+        "check_category": _field_string(block, "check_category"),
+        "focus": _field_string(block, "focus"),
         "severity": _field_string(block, "severity", "warning"),
         "observes": _list_values(block.fields.get("observes")),
         "expects": _list_values(block.fields.get("expects")),
@@ -747,8 +749,13 @@ def _runtime_check_to_dict(block: RegistryBlock) -> dict[str, Any]:
         "min_width": _field_string(block, "min_width"),
         "min_height": _field_string(block, "min_height"),
         "required_regions": [_parse_contract_entry(item) for item in _list_values(block.fields.get("required_regions"))],
+        "optional_regions": [_parse_contract_entry(item) for item in _list_values(block.fields.get("optional_regions"))],
+        "allowed_regions": [_parse_contract_entry(item) for item in _list_values(block.fields.get("allowed_regions"))],
         "forbidden_regions": [_parse_contract_entry(item) for item in _list_values(block.fields.get("forbidden_regions"))],
         "lifecycle_assertions": _list_values(block.fields.get("lifecycle_assertions")),
+        "geometry_policies": _list_values(block.fields.get("geometry_policies")),
+        "overlay_policy": _list_values(block.fields.get("overlay_policy")),
+        "ownership_hints": _list_values(block.fields.get("ownership_hints")),
         "failure_message": _field_string(block, "failure_message"),
         "next_probe": _field_string(block, "next_probe"),
         "source_binding": _field_string(block, "source_binding"),
@@ -786,15 +793,29 @@ def build_runtime_diagnostic_contracts(registry: RequirementsRegistry) -> dict[s
         checks = [_runtime_check_to_dict(block) for block in sorted(blocks, key=lambda item: item.block_id)]
         primary = next((check for check in checks if check["check"] == "primary-surface"), None)
         required_regions: list[dict[str, str]] = []
+        optional_regions: list[dict[str, str]] = []
+        allowed_regions: list[dict[str, str]] = []
         forbidden_regions: list[dict[str, str]] = []
         lifecycle_assertions: list[str] = []
+        geometry_policies: list[str] = []
+        overlay_policy: list[str] = []
+        check_categories: list[str] = []
+        focus_modes: list[str] = []
 
         for check in checks:
             required_regions.extend(check["required_regions"])
+            optional_regions.extend(check["optional_regions"])
+            allowed_regions.extend(check["allowed_regions"])
             forbidden_regions.extend(check["forbidden_regions"])
             if check["check"] == "forbidden-surfaces-hidden" and not check["forbidden_regions"]:
                 forbidden_regions.extend(_parse_contract_entry(item) for item in check["forbids"])
             lifecycle_assertions.extend(check["lifecycle_assertions"])
+            geometry_policies.extend(check["geometry_policies"])
+            overlay_policy.extend(check["overlay_policy"])
+            if check["check_category"]:
+                check_categories.append(check["check_category"])
+            if check["focus"]:
+                focus_modes.append(check["focus"])
 
         # Preserve order while de-duplicating compact region entries.
         def unique_entries(entries: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -837,8 +858,14 @@ def build_runtime_diagnostic_contracts(registry: RequirementsRegistry) -> dict[s
             "derivedFromBlockTypes": ["mcel-runtime-check"],
             "primarySurface": primary_surface,
             "requiredRegions": unique_entries(required_regions),
+            "optionalRegions": unique_entries(optional_regions),
+            "allowedRegions": unique_entries(allowed_regions),
             "forbiddenRegions": unique_entries(forbidden_regions),
             "lifecycleAssertions": unique_strings(lifecycle_assertions),
+            "geometryPolicies": unique_strings(geometry_policies),
+            "overlayPolicy": unique_strings(overlay_policy),
+            "checkCategories": unique_strings(check_categories),
+            "focusModes": unique_strings(focus_modes),
             "checks": checks,
         }
         apps.setdefault(app, {"app": app, "mode_contracts": {}})

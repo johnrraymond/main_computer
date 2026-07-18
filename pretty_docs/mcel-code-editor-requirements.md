@@ -204,16 +204,40 @@ type: layout-law
 aspect: layout
 object: SourceWorkspace
 requirement: >
-  The source editor must be the primary work surface. File navigation,
-  Aider context, output, proof docks, documentation viewport, runtime preview,
-  and advanced repair tools must support the source surface without competing
-  with it as the dominant object.
+  The selected author-owned source file must remain the primary work surface.
+  File navigation, Aider context, MCEL tools, diagnostics, proof evidence,
+  documentation viewport, runtime preview, and advanced repair tools must support
+  the selected-file editor without replacing it, overlaying it, or competing with
+  it as the dominant object.
 acceptance:
-  - The active source editor owns the center/primary region.
+  - The active selected-file editor owns the center/primary region.
   - File map and open editors remain navigation, not primary content.
-  - Aider controls are inspector/action support, not the app's dominant object.
-  - Evidence and history can be expanded without hiding dirty state.
-  - Advanced/runtime/proof controls are collapsed or secondary by default.
+  - Aider, MCEL tools, and diagnostics are secondary support surfaces.
+  - Evidence and history can be expanded without hiding dirty state or the editor.
+  - Advanced/runtime/proof controls are collapsed, right-pane contained, or mode-gated by default.
+```
+
+```mcel-requirement
+id: code-editor.layout.authoring-cockpit
+app: code-editor
+status: specified
+type: layout-law
+aspect: layout
+object: SourceWorkspace
+requirement: >
+  Code Editor authoring mode must present a stable authoring cockpit: a left
+  explorer, a central selected-file editor, an optional right assistant and
+  diagnostics pane, and a persistent status bar. The right pane may show MCEL
+  tools, diagnosis history, contract findings, Aider context, source ownership,
+  and test ownership hints, but it remains secondary and must never obscure,
+  replace, or compete with the central editor.
+acceptance:
+  - Explorer, primary editor, right pane, and status bar have owned region identities.
+  - Exactly one authoritative selected-file editor is visible and usable in authoring mode.
+  - The right assistant/diagnostics pane may be visible, collapsed, or tabbed without failing authoring mode.
+  - The right pane does not reduce the primary editor below its minimum usable geometry.
+  - Diagnostics and proof output visible inside the right pane are allowed; the same surfaces leaking into the editor region are failures.
+  - Runtime preview, source HTML, fallback textarea, generated runtime rails, and proof docks remain hidden unless an explicit mode allows them.
 ```
 
 ```mcel-requirement
@@ -263,7 +287,12 @@ acceptance:
 
 ## Workbench anatomy
 
-The Code Editor should normally be inspected through these regions.
+The Code Editor should normally be inspected as an owned-region authoring cockpit.
+The left explorer, central selected-file editor, optional right assistant/diagnostics
+pane, and persistent status bar must each have an explicit responsibility. Runtime
+checks should treat the central editor as the only primary surface and the right pane
+as an allowed secondary surface.
+
 
 ```mcel-region
 id: code-editor.region.identity
@@ -314,40 +343,52 @@ status: specified
 region: primary
 role: primary-authoring-surface
 responsibility: >
-  Own active source editing, draft review, concrete diffs, and explicit runtime
-  preview while preventing unreviewed writes.
-purpose: Active source file, draft editing, diff/preview when reviewing a concrete change, and runtime preview when explicitly selected.
+  Own the central selected-file editor, draft review, concrete diffs, and explicit
+  preview modes while preventing secondary tools from becoming the source of truth.
+purpose: Central selected-file editor, author-owned draft, selected path evidence, diff review when requested, and runtime preview only when explicitly selected.
 expected_elements:
-  - source editor
+  - selected-file Monaco editor
+  - selected file path
+  - language and dirty-state evidence
   - line gutter
   - active file draft
-  - diff preview
-  - runtime preview tab
+  - diff preview when reviewing a concrete change
 must_not_contain:
   - default raw Aider transcript dump
+  - MCEL proof or diagnostics overlay not assigned to the right pane
   - unreviewed patch application
   - remote sync controls
+  - fallback textarea while Monaco is active
 ```
 
 ```mcel-region
 id: code-editor.region.inspector
 app: code-editor
 status: specified
-region: inspector
-role: context-inspector
+region: right-assistant-diagnostics-pane
+role: secondary-assistant-diagnostics-surface
 responsibility: >
-  Show Aider context, selected-file evidence, SCM manifests, documentation
-  references, and action-specific preflight information.
-purpose: Aider context, selected-file evidence, SCM manifest, documentation viewport, and action-specific preflight information.
+  Own the optional right pane for Aider context, MCEL tools, diagnosis history,
+  contract findings, selected-file evidence, SCM manifests, source ownership,
+  test ownership, documentation references, and action-specific preflight
+  information without becoming the primary editor.
+purpose: Optional right assistant and diagnostics pane for support surfaces that should not leak into the central editor.
 expected_elements:
   - Aider instruction
   - selected file list
+  - MCEL tools
+  - diagnosis history
+  - contract findings
+  - source ownership hints
+  - test ownership hints
   - SCM manifest
   - documentation viewport
   - policy explanations
 must_not_contain:
+  - selected-file source edits that bypass the primary editor
   - unscoped write controls
   - hidden command execution
+  - proof or diagnostic surfaces that cover the central editor
 ```
 
 ```mcel-region
@@ -604,10 +645,11 @@ requires:
 
 ## Runtime-observable diagnosis contract
 
-The Code Editor contract must be diagnoseable while the app is running. The first
-runtime checks make the authoring golden path observable: the default mode exposes
-exactly one Monaco selected-file editor, the expected app regions are visible, and
-MCEL proof/runtime scaffolding stays out of the normal editing path.
+The Code Editor contract must be diagnoseable while the app is running. The authoring
+golden path is now the cockpit contract: default authoring mode exposes exactly one
+usable Monaco selected-file editor in the center, preserves the left explorer and
+status bar, allows a secondary right assistant/diagnostics pane, and keeps runtime,
+source-model, fallback, proof, and generated rail surfaces out of the primary editor.
 
 ```mcel-runtime-check
 id: code-editor.runtime-check.authoring-primary-monaco
@@ -616,6 +658,8 @@ status: specified
 mode: authoring
 contract: code-editor.contract.authoring.monaco-golden-path
 check: primary-surface
+check_category: surface
+focus: primary-editor
 severity: critical
 primary_surface_id: code-editor.surface.monaco-selected-file-editor
 host_selector: "#code-studio-runtime-monaco"
@@ -642,23 +686,67 @@ status: specified
 mode: authoring
 contract: code-editor.contract.authoring.monaco-golden-path
 check: required-regions-visible
+check_category: layout
+focus: required-regions
 severity: critical
 observes:
   - "#code-editor-app"
   - ".code-studio-sidebar"
   - ".code-studio-editor-group"
+  - ".code-studio-statusbar"
 expects:
   - Code Editor root is present and visible.
   - Explorer region is present and visible.
   - Editor group is present and visible.
+  - Status bar is present and visible.
 required_regions:
   - code-editor.region.root | #code-editor-app | Code Editor app root
   - code-editor.region.explorer | .code-studio-sidebar | Explorer
   - code-editor.region.editor-group | .code-studio-editor-group | Editor group
-failure_message: Authoring mode must preserve the app root, explorer, and editor group.
+  - code-editor.region.statusbar | .code-studio-statusbar | Status bar
+failure_message: Authoring mode must preserve the app root, explorer, editor group, and status bar.
 next_probe: layout.baseline
 source_binding: code-editor.binding.authoring-monaco-surface
 test_binding: code-editor.test.authoring-monaco-diagnosis
+```
+
+
+```mcel-runtime-check
+id: code-editor.runtime-check.authoring-right-pane-policy
+app: code-editor
+status: specified
+mode: authoring
+contract: code-editor.contract.authoring.monaco-golden-path
+check: secondary-surface-policy
+check_category: surfaces
+focus: right-assistant-diagnostics-pane
+severity: warning
+observes:
+  - ".code-studio-inspector"
+  - "[data-code-studio-workbench-region=\"scm-ai-inspector\"]"
+  - "#code-editor-mcel-tools-toggle"
+  - "#code-editor-diagnostics-counter"
+expects:
+  - The right assistant/diagnostics pane is allowed in authoring mode as a secondary surface.
+  - The right pane may be visible, collapsed, tabbed, or trigger-only without becoming the primary editor.
+  - MCEL tools, diagnosis history, contract findings, source ownership, and test ownership belong in the right pane or an explicit mode.
+  - The right pane must not cover the Monaco editor or reduce it below its minimum geometry.
+optional_regions:
+  - code-editor.region.right-assistant | .code-studio-inspector | Right assistant and diagnostics pane
+allowed_regions:
+  - code-editor.allowed.mcel-tools-toggle | #code-editor-mcel-tools-toggle | MCEL tools toggle
+  - code-editor.allowed.diagnostics-counter | #code-editor-diagnostics-counter | Diagnostics counter
+geometry_policies:
+  - right-pane-visible-min-width-240
+  - right-pane-max-width-ratio-0.40
+  - right-pane-must-collapse-before-primary-breaks
+overlay_policy:
+  - diagnostics-contained-in-right-pane-are-allowed
+  - diagnostics-covering-primary-editor-are-forbidden
+failure_message: The right pane is an allowed secondary authoring surface, not a competing editor or leaked overlay.
+next_probe: rightPane.containment
+source_binding: code-editor.binding.authoring-cockpit-layout
+test_binding: code-editor.test.authoring-cockpit-diagnosis
 ```
 
 ```mcel-runtime-check
@@ -668,6 +756,8 @@ status: specified
 mode: authoring
 contract: code-editor.contract.authoring.monaco-golden-path
 check: forbidden-surfaces-hidden
+check_category: overlays
+focus: forbidden-surfaces
 severity: critical
 observes:
   - "[data-code-studio-pane=\"source\"]"
@@ -710,6 +800,8 @@ status: specified
 mode: authoring
 contract: code-editor.contract.authoring.monaco-golden-path
 check: lifecycle-contract-preserved
+check_category: lifecycle
+focus: startup-file-click-resize
 severity: critical
 observes:
   - startup
@@ -746,6 +838,25 @@ verification:
   - File selection must update the Monaco model without remounting MCEL proof scaffolding.
 ```
 
+
+```mcel-source-binding
+id: code-editor.binding.authoring-cockpit-layout
+app: code-editor
+status: specified
+target: code-editor.layout.authoring-cockpit
+source_candidates:
+  - main_computer/web/applications/apps/code-editor.html
+  - main_computer/web/applications/styles/code-editor.css
+  - main_computer/web/applications/scripts/code-editor-layout-contract.js
+  - main_computer/web/applications/scripts/mcel-self-diagnosis.js
+  - main_computer/web/applications/scripts/mcel-diagnostics-counter-widget.js
+binding_confidence: high
+verification:
+  - Runtime diagnosis must preserve explorer, primary editor, optional right pane, and status bar identities.
+  - Right-pane diagnostics must be classified as secondary support, not competing primary editor surfaces.
+  - Right-pane expansion must not reduce the Monaco selected-file editor below usable geometry.
+```
+
 ```mcel-test-binding
 id: code-editor.test.authoring-monaco-diagnosis
 app: code-editor
@@ -758,6 +869,23 @@ missing_tests:
 verification:
   - Unit tests cover registry-derived diagnostic contracts.
   - Browser diagnosis report remains the runtime source of truth.
+```
+
+
+```mcel-test-binding
+id: code-editor.test.authoring-cockpit-diagnosis
+app: code-editor
+status: specified
+target: code-editor.layout.authoring-cockpit
+test_candidates:
+  - tests/test_mcel_requirements_registry.py
+  - tests/test_mcel_code_studio_app.py
+missing_tests:
+  - Browser containment smoke test for expanded, collapsed, and tabbed right-pane states.
+  - Browser lifecycle smoke test proving resize collapses the right pane before the primary editor breaks.
+verification:
+  - Registry tests confirm the right pane compiles as an optional secondary region.
+  - Browser diagnosis should report right-pane leaks separately from primary-surface failures.
 ```
 
 ## First useful findings for MCEL Lab

@@ -10402,9 +10402,9 @@ LABEL main_computer.allfather.full_hub_runtime="true" \
 
 RUN set -eux; \
     mkdir -p /opt/allfather-build; \
-    printf '%s\n' {shell_single_quote(build_cache_bust)} > /opt/allfather-build/deployment-id; \
-    printf '%s\n' {shell_single_quote(full_hub_runtime_sha256)} > /opt/allfather-build/full-hub-runtime-sha256; \
-    printf '%s\n' {shell_single_quote(guard_script_sha256)} > /opt/allfather-build/guard-script-sha256
+    printf '%s\\n' {shell_single_quote(build_cache_bust)} > /opt/allfather-build/deployment-id; \
+    printf '%s\\n' {shell_single_quote(full_hub_runtime_sha256)} > /opt/allfather-build/full-hub-runtime-sha256; \
+    printf '%s\\n' {shell_single_quote(guard_script_sha256)} > /opt/allfather-build/guard-script-sha256
 
 USER root
 

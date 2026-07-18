@@ -820,12 +820,32 @@ into browser-side diagnosis contracts.
 Runtime checks can also define shared health-contract policies:
 
 ```text
-primary-surface            one named work surface must be visible and useful
-required-regions-visible   named UI regions must exist and be visible
-forbidden-surfaces-hidden  named diagnostic/proof/fallback surfaces must not be visible
-overlay-policy             outside-app diagnostic overlays should be classified and reported
-lifecycle-contract-preserved startup, route, file-click, and resize should preserve the same contract
+primary-surface              one named work surface must be visible and useful
+required-regions-visible     named UI regions must exist and be visible
+forbidden-surfaces-hidden    named diagnostic/proof/fallback surfaces must not be visible
+secondary-surface-policy     optional support regions may be visible without becoming primary
+surface-exactly-one-visible  only one authoritative work/editor surface may be visible
+geometry-minimum             a surface or region must preserve useful width and height
+overlay-policy               overlays are allowed only where the mode contract assigns them
+lifecycle-contract-preserved startup, route, file-click, mode-switch, and resize preserve the same contract
+source-test-ownership        findings include likely source and test owners when known
 ```
+
+A runtime check may also declare normalized diagnostic fields:
+
+```text
+check_category     stable bucket such as surface, layout, overlays, lifecycle, ownership, or geometry
+focus              the narrower probe focus such as primary-editor, right-pane, panes, or resize
+optional_regions   compact id | selector | label entries for secondary regions that may be visible
+allowed_regions    compact id | selector | label entries for explicit controls, counters, rails, or panes
+geometry_policies  named geometry laws the runtime should evaluate when it has measurements
+overlay_policy     named overlay laws that separate contained diagnostics from leaked overlays
+```
+
+Optional regions are not failures merely because they are hidden, collapsed, tabbed, or
+trigger-only. They become findings only when the app-specific policy says their visible
+state covers the primary surface, breaks the minimum geometry, or creates a competing
+authority.
 
 Overlay policy is deliberately softer than an app's primary surface law. A visible widget
 editor, proof surface, or floating diagnostic tab should be reported with selector and
@@ -924,6 +944,42 @@ advanced boundary
 ```
 
 Core law: suggestion, preview, and review do not equal write/apply.
+
+### Authoring cockpit with right assistant pane
+
+Seen in the Code Editor target layout and useful for other source/design tools that
+need a large primary authoring surface plus a secondary assistant or diagnostics pane.
+
+```text
+left navigation/explorer
+central primary authoring surface
+optional right assistant/diagnostics pane
+bottom status strip
+mode-gated preview/proof/debug surfaces
+```
+
+Core law: the right pane is an allowed secondary surface, not a second primary editor.
+It may contain diagnostics, assistant output, contract findings, ownership hints, and
+MCEL tools, but it must collapse before the primary surface becomes unusable.
+
+```mcel-layout-pattern
+id: layout-pattern.authoring-cockpit-with-right-assistant
+status: specified
+pattern: authoring-cockpit-with-right-assistant
+regions:
+  - navigation/explorer
+  - primary authoring surface
+  - optional right assistant or diagnostics pane
+  - persistent status strip
+  - mode-gated preview/proof/debug boundary
+responsibility_law: >
+  Every visible surface in authoring mode must have an owned region, role, and
+  runtime-check policy. The central primary surface remains authoritative; the
+  right pane supports diagnosis, assistance, and ownership evidence without
+  replacing or covering the primary work surface.
+applies_to:
+  - code-editor
+```
 
 ### Governed mutation / repository workflow
 
