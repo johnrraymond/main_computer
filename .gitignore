@@ -1,7 +1,11 @@
 # Local secrets
 local.secrets
 
+# Settings files.
+worker_settings.json
 
+# Reports
+reports/
 
 # Aider / local AI session artifacts
 .aider*
