@@ -55,6 +55,9 @@ DEFAULT_GUARD_CONTAINER_PORT = 41414
 DEFAULT_GUARD_HOST_BASE = 41400
 DEFAULT_PROBE_CONTAINER_PORT = 41415
 DEFAULT_PROBE_INTERVAL_S = 15.0
+DEFAULT_COOLIFY_TIMEOUT_S = 120.0
+DEFAULT_COOLIFY_RETRIES = 5
+DEFAULT_COOLIFY_RETRY_SLEEP_S = 5.0
 DEFAULT_REMOVE_DELETE_WAIT_S = 45.0
 DEFAULT_REMOVE_DELETE_POLL_S = 2.0
 DEFAULT_ADD_NODE_READY_WAIT_S = 1800.0
@@ -85,12 +88,16 @@ DEFAULT_SUPER_FDB_CONTAINER_PORT = 4550
 DEFAULT_SUPER_P2P_CONTAINER_PORT = 30303
 DEFAULT_PUBLIC_DOMAIN_SUFFIX = "greatlibrary.io"
 DEFAULT_TRAEFIK_PROPAGATOR_IMAGE = "docker:27-cli"
-DEFAULT_TRAEFIK_PROPAGATE_WAIT_S = 30.0
+DEFAULT_TRAEFIK_PROPAGATE_WAIT_S = 300.0
+DEFAULT_FULL_HUB_RUNTIME_STATUS_INTERVAL_S = 20.0
+DEFAULT_FULL_HUB_RUNTIME_STALE_BOOTSTRAP_FAIL_S = 60.0
+DEFAULT_FULL_HUB_RUNTIME_DIAG_WAIT_S = 120.0
+DEFAULT_FULL_HUB_RUNTIME_DIAG_PENDING_FAIL_S = 45.0
 TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
 HUB_ADMIN_SYNC_CALLBACK_MARKER = "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:"
 CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
 FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER = "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:"
-DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 120.0
+DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 300.0
 DEFAULT_CONTRACT_DEPLOY_WAIT_S = 300.0
 DEFAULT_TESTNET_SUPER_GUARD_BASE = 41500
 DEFAULT_MAINNET_SUPER_GUARD_BASE = 41600
@@ -1189,14 +1196,18 @@ import base64
 import glob
 import hashlib
 import http.client
+import io
 import json
 import os
 import shutil
 import socket
+import tarfile
 import threading
 import time
 import urllib.parse
 import urllib.request
+import zipfile
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -1280,8 +1291,8 @@ LATEST_CONTRACT_DEPLOY = {
 LATEST_FULL_HUB_RUNTIME_DIAG = {
     "ok": False,
     "service": "main-computer-allfather-host-agent",
-    "status": "not-requested",
-    "phase": "not-requested",
+    "status": "initializing",
+    "phase": "initializing",
     "updated_at": None,
 }
 
@@ -1312,6 +1323,64 @@ if not isinstance(CONTRACT_DEPLOY_REQUEST, dict):
 FULL_HUB_RUNTIME_DIAG_REQUEST = decode_json_b64(FULL_HUB_RUNTIME_DIAG_REQUEST_B64, {})
 if not isinstance(FULL_HUB_RUNTIME_DIAG_REQUEST, dict):
     FULL_HUB_RUNTIME_DIAG_REQUEST = {}
+
+def initial_full_hub_runtime_diag_state():
+    if not FULL_HUB_RUNTIME_DIAG_REQUEST:
+        return {
+            "ok": False,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": None,
+        }
+    nodes = FULL_HUB_RUNTIME_DIAG_REQUEST.get("nodes") if isinstance(FULL_HUB_RUNTIME_DIAG_REQUEST.get("nodes"), list) else []
+    return {
+        "ok": False,
+        "service": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("service_name") or "allfather-full-hub-runtime-diagnostics"),
+        "status": "pending",
+        "phase": "pending",
+        "network_key": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("network_key") or ""),
+        "coolify_server": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("coolify_server") or COOLIFY_SERVER or ""),
+        "request_id": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("request_id") or ""),
+        "node_count": len(nodes),
+        "nodes": [],
+        "reason": "full-hub runtime diagnostics request accepted by head-agent",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+
+LATEST_FULL_HUB_RUNTIME_DIAG = initial_full_hub_runtime_diag_state()
+
+def full_hub_runtime_diag_started_result() -> dict:
+    base = initial_full_hub_runtime_diag_state()
+    if base.get("phase") == "not-requested":
+        return base
+    base.update(
+        {
+            "ok": False,
+            "status": "running",
+            "phase": "running",
+            "reason": "full-hub runtime diagnostics worker started",
+            "updated_at": time.time(),
+        }
+    )
+    return base
+
+def full_hub_runtime_diag_failed_result(exc) -> dict:
+    base = initial_full_hub_runtime_diag_state()
+    base.update(
+        {
+            "ok": False,
+            "status": "failed",
+            "phase": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "reason": f"full-hub runtime diagnostics worker crashed: {type(exc).__name__}: {exc}",
+            "updated_at": time.time(),
+        }
+    )
+    return base
 
 def fetch_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -1560,7 +1629,7 @@ def run_runtime_cleanup_once() -> dict:
     return result
 
 
-def docker_exec_sh(container_name: str, script: str) -> dict:
+def docker_exec_sh(container_name: str, script: str, env: dict | None = None) -> dict:
     result = {
         "ok": False,
         "container": container_name,
@@ -1569,13 +1638,14 @@ def docker_exec_sh(container_name: str, script: str) -> dict:
         "error": "",
     }
     try:
-        create_body = json.dumps(
-            {
-                "AttachStdout": True,
-                "AttachStderr": True,
-                "Cmd": ["sh", "-lc", script],
-            }
-        ).encode("utf-8")
+        create_payload = {
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Cmd": ["sh", "-lc", script],
+        }
+        if isinstance(env, dict) and env:
+            create_payload["Env"] = [f"{key}={value}" for key, value in env.items()]
+        create_body = json.dumps(create_payload).encode("utf-8")
         status, raw = docker_api(
             "POST",
             f"/containers/{urllib.parse.quote(container_name, safe='')}/exec",
@@ -1666,6 +1736,117 @@ def docker_container_summary(container_id: str) -> dict:
     except Exception as exc:
         summary["error"] = f"{type(exc).__name__}: {exc}"
     return summary
+
+
+def install_full_hub_runtime_archive(container_id: str, runtime_archive_b64: str, expected_deployment_id: str = "") -> dict:
+    # Repair path for Coolify deployments where the saved compose contains the
+    # inline full-runtime Dockerfile, but the running container is still the
+    # bootstrap image.  The host agent copies the same runtime payload directly
+    # into /opt and then wakes the existing guard supervisor so it can replace
+    # the bootstrap hub child with the full Main Computer hub.
+    result = {
+        "ok": False,
+        "container": str(container_id or "")[:12],
+        "expected_deployment_id": str(expected_deployment_id or ""),
+        "installed": False,
+        "woken": False,
+        "error": "",
+    }
+    if not container_id:
+        result["error"] = "missing container id"
+        return result
+    try:
+        runtime_zip = zlib.decompress(base64.b64decode(str(runtime_archive_b64 or "")))
+    except Exception as exc:
+        result["error"] = f"decode runtime archive failed: {type(exc).__name__}: {exc}"
+        return result
+    try:
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+            def add_bytes(name: str, data: bytes, mode: int = 0o644) -> None:
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                info.mode = mode
+                info.mtime = 0
+                tar.addfile(info, io.BytesIO(data))
+
+            add_bytes("main-computer-src.zip", runtime_zip)
+            with zipfile.ZipFile(io.BytesIO(runtime_zip)) as archive:
+                for item in archive.infolist():
+                    if item.is_dir():
+                        continue
+                    clean = item.filename.replace("\\", "/").lstrip("/")
+                    if not clean or clean.startswith("../") or "/../" in clean:
+                        continue
+                    add_bytes("main-computer-src/" + clean, archive.read(item), 0o755 if clean.endswith(".py") else 0o644)
+
+            deployment_id = str(expected_deployment_id or "").strip()
+            add_bytes("allfather-build/runtime-request", b"full-hub-runtime\n")
+            add_bytes("allfather-build/full-hub-runtime-repaired", b"true\n")
+            if deployment_id:
+                add_bytes("allfather-build/deployment-id", (deployment_id + "\n").encode("utf-8"))
+
+        tar_payload = tar_buffer.getvalue()
+        status, raw = docker_api(
+            "PUT",
+            f"/containers/{urllib.parse.quote(container_id, safe='')}/archive?path=/opt",
+            body=tar_payload,
+            headers={"Content-Type": "application/x-tar"},
+        )
+        result["docker_archive_status"] = status
+        result["archive_bytes"] = len(tar_payload)
+        if status >= 400:
+            result["error"] = f"docker archive copy failed: status={status} body={raw[:500].decode('utf-8', 'replace')}"
+            return result
+        result["installed"] = True
+
+        wake_script = r'''
+python - <<'PY'
+import json, os, urllib.request
+
+ports = []
+for value in (
+    os.environ.get("MC_ALLFATHER_GUARD_PORT"),
+    os.environ.get("PORT"),
+    "41414",
+    "41415",
+):
+    try:
+        port = int(str(value or "").strip())
+    except Exception:
+        continue
+    if port not in ports:
+        ports.append(port)
+
+out = {"attempts": [], "ok": False}
+for port in ports:
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/wake",
+            data=b"{}",
+            method="POST",
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            body = response.read().decode("utf-8", "replace")
+        out["attempts"].append({"port": port, "status": int(response.status), "body": body[-2000:]})
+        if 200 <= int(response.status) < 300:
+            out["ok"] = True
+            break
+    except Exception as exc:
+        out["attempts"].append({"port": port, "error": type(exc).__name__ + ": " + str(exc)})
+print(json.dumps(out, sort_keys=True))
+PY
+'''
+        wake = docker_exec_sh(container_id, wake_script)
+        result["wake"] = {key: wake.get(key) for key in ("ok", "exit_code", "error", "output_preview")}
+        result["woken"] = bool(wake.get("ok"))
+        result["ok"] = bool(result["installed"])
+        return result
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
 
 def inspect_full_hub_runtime_container(service_name: str, expected_deployment_id: str = "", domain: str = "") -> dict:
     service_name = str(service_name or "").strip()
@@ -1859,16 +2040,52 @@ def run_full_hub_runtime_diag_once() -> dict:
     if not nodes:
         result.update({"ok": False, "status": "failed", "phase": "failed", "error": "full hub runtime diagnostics request has no nodes"})
         return result
+    runtime_archive_b64 = str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("runtime_archive_b64") or "")
+    repair_missing_runtime = bool(FULL_HUB_RUNTIME_DIAG_REQUEST.get("repair_missing_runtime"))
+    repaired_count = 0
+    recovered_count = 0
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        result["nodes"].append(
-            inspect_full_hub_runtime_container(
-                str(node.get("service_name") or ""),
-                expected_deployment_id=str(node.get("expected_deployment_id") or ""),
-                domain=str(node.get("domain") or ""),
-            )
+        service_name = str(node.get("service_name") or "")
+        expected_deployment_id = str(node.get("expected_deployment_id") or "")
+        domain = str(node.get("domain") or "")
+        inspected = inspect_full_hub_runtime_container(
+            service_name,
+            expected_deployment_id=expected_deployment_id,
+            domain=domain,
         )
+        needs_runtime = not bool(inspected.get("source_zip_exists")) or not bool(inspected.get("hub_py_exists"))
+        if repair_missing_runtime and runtime_archive_b64 and inspected.get("container_id") and needs_runtime:
+            repair = install_full_hub_runtime_archive(
+                str(inspected.get("container_id") or ""),
+                runtime_archive_b64,
+                expected_deployment_id=expected_deployment_id,
+            )
+            inspected["runtime_repair"] = repair
+            if repair.get("installed"):
+                repaired_count += 1
+                deadline = time.time() + 45.0
+                after = {}
+                while True:
+                    time.sleep(3.0)
+                    after = inspect_full_hub_runtime_container(
+                        service_name,
+                        expected_deployment_id=expected_deployment_id,
+                        domain=domain,
+                    )
+                    if after.get("local_full_main_computer_hub") or time.time() >= deadline:
+                        break
+                inspected["after_repair"] = after
+                if after.get("local_full_main_computer_hub"):
+                    recovered_count += 1
+                    inspected = {
+                        **after,
+                        "before_repair": inspected,
+                        "runtime_repair": repair,
+                        "recovered_by_runtime_repair": True,
+                    }
+        result["nodes"].append(inspected)
     failed = [item for item in result["nodes"] if not item.get("ok")]
     result.update(
         {
@@ -1876,6 +2093,9 @@ def run_full_hub_runtime_diag_once() -> dict:
             "status": "ready" if not failed else "failed",
             "phase": "ready" if not failed else "failed",
             "error": "; ".join(str(item.get("error") or item.get("service_name")) for item in failed)[:1200],
+            "runtime_repair_requested": bool(repair_missing_runtime),
+            "runtime_repaired_count": repaired_count,
+            "runtime_recovered_count": recovered_count,
             "updated_at": time.time(),
         }
     )
@@ -2557,7 +2777,13 @@ def contract_deploy_thread() -> None:
 
 def full_hub_runtime_diag_thread() -> None:
     global LATEST_FULL_HUB_RUNTIME_DIAG
-    LATEST_FULL_HUB_RUNTIME_DIAG = run_full_hub_runtime_diag_once()
+    try:
+        LATEST_FULL_HUB_RUNTIME_DIAG = full_hub_runtime_diag_started_result()
+        print("ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT " + json.dumps(LATEST_FULL_HUB_RUNTIME_DIAG, sort_keys=True), flush=True)
+        publish_to_coolify_metadata()
+        LATEST_FULL_HUB_RUNTIME_DIAG = run_full_hub_runtime_diag_once()
+    except BaseException as exc:
+        LATEST_FULL_HUB_RUNTIME_DIAG = full_hub_runtime_diag_failed_result(exc)
     print("ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT " + json.dumps(LATEST_FULL_HUB_RUNTIME_DIAG, sort_keys=True), flush=True)
     publish_to_coolify_metadata()
 
@@ -2762,6 +2988,7 @@ if HUB_ADMIN_SYNC_REQUEST:
 if CONTRACT_DEPLOY_REQUEST:
     threading.Thread(target=contract_deploy_thread, daemon=True).start()
 if FULL_HUB_RUNTIME_DIAG_REQUEST:
+    publish_to_coolify_metadata()
     threading.Thread(target=full_hub_runtime_diag_thread, daemon=True).start()
 
 print(f"all-father host agent listening on 0.0.0.0:{PORT}", flush=True)
@@ -3926,6 +4153,8 @@ def wait_for_head_traefik_propagate_ready(
     attempts = 0
     last_log_signature = ""
     last_log_at = 0.0
+    stale_marker_request_ids: list[str] = []
+    stale_marker_seen_at: float | None = None
     log_interval = operator_log_interval_s(args) if args is not None else 15.0
     while first or time.time() < deadline:
         first = False
@@ -4430,6 +4659,7 @@ def sync_head_service(
         traefik_propagate_request=traefik_propagate_request,
         hub_admin_sync_request=hub_admin_sync_request,
         contract_deploy_request=contract_deploy_request,
+        full_hub_runtime_diag_request=full_hub_runtime_diag_request,
     )
     fdb_tool().update_service(client, service_uuid, head.service_name, compose, tried)
     return service_uuid, "created", existing
@@ -12882,11 +13112,11 @@ def coolify_snapshot_has_running_full_runtime_compose(snapshot: Mapping[str, Any
 
 def full_hub_stale_bootstrap_fail_s(args: argparse.Namespace | None) -> float:
     if args is None:
-        return 120.0
+        return DEFAULT_FULL_HUB_RUNTIME_STALE_BOOTSTRAP_FAIL_S
     try:
-        return max(0.0, float(getattr(args, "full_hub_runtime_stale_bootstrap_fail_s", 120.0) or 0.0))
+        return max(0.0, float(getattr(args, "full_hub_runtime_stale_bootstrap_fail_s", DEFAULT_FULL_HUB_RUNTIME_STALE_BOOTSTRAP_FAIL_S) or 0.0))
     except Exception:
-        return 120.0
+        return DEFAULT_FULL_HUB_RUNTIME_STALE_BOOTSTRAP_FAIL_S
 
 
 def full_hub_runtime_diag_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
@@ -12908,6 +13138,122 @@ def full_hub_runtime_diag_result_from_service_metadata(detail: Mapping[str, Any]
     return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
 
 
+def full_hub_runtime_diag_pending_result(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a fresh pending marker for one full-hub runtime diagnostic request."""
+
+    nodes = request.get("nodes") if isinstance(request.get("nodes"), list) else []
+    return {
+        "ok": False,
+        "service": str(request.get("service_name") or "allfather-full-hub-runtime-diagnostics"),
+        "status": "pending",
+        "phase": "pending",
+        "network_key": str(request.get("network_key") or ""),
+        "coolify_server": str(request.get("coolify_server") or ""),
+        "request_id": str(request.get("request_id") or ""),
+        "node_count": len(nodes),
+        "nodes": [],
+        "reason": "full-hub runtime diagnostics request queued; waiting for head-agent result",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+
+
+def remove_callback_marker_lines(description: str, marker: str) -> str:
+    """Remove prior one-line Coolify metadata callbacks for ``marker``."""
+
+    kept: list[str] = []
+    for line in str(description or "").splitlines():
+        if line.strip().startswith(marker):
+            continue
+        kept.append(line)
+    return "\n".join(kept).rstrip()
+
+
+def patch_head_service_description(
+    client: Any,
+    service_uuid: str,
+    description: str,
+    tried: list[dict[str, Any]],
+    *,
+    operation: str,
+) -> dict[str, Any]:
+    """Patch the head service description through the Coolify API."""
+
+    if not service_uuid:
+        return {"ok": False, "error": "missing service_uuid"}
+    payload = {"description": str(description or "")}
+    paths = [
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/update",
+    ]
+    last: dict[str, Any] = {}
+    for path in paths:
+        response = client.request("PATCH", path, payload)
+        last = hub_service_tool().response_to_dict(response)
+        tried.append({"operation": operation, "path": path, "response": last})
+        if response.ok:
+            return {"ok": True, "source": path, "response": last}
+        if response.status == 404:
+            continue
+    return {"ok": False, "source": "coolify-api", "response": last, "error": "service description patch failed"}
+
+
+def prime_head_full_hub_runtime_diag_marker(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    request: Mapping[str, Any],
+    *,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    """Replace any stale full-hub diagnostic marker with the current request id.
+
+    The head-agent publishes diagnostic results back into its Coolify service
+    description.  When a prior run leaves a ready/failed marker behind, the
+    controller can otherwise poll that stale marker until timeout or summarize
+    the wrong container facts.  Prime the description with a current pending
+    marker before redeploying the head-agent, so every observed marker is tied to
+    the current request id.
+    """
+
+    request_id = str(request.get("request_id") or "").strip()
+    if not request_id:
+        return {"ok": False, "reason": "missing request_id"}
+    pending = full_hub_runtime_diag_pending_result(request)
+    encoded = base64.b64encode(json.dumps(pending, sort_keys=True).encode("utf-8")).decode("ascii")
+    detail = fetch_service_detail(client, service_uuid, tried)
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    current_description = str(body.get("description") or "") if isinstance(body, Mapping) else ""
+    base_description = remove_callback_marker_lines(current_description, FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER)
+    if not base_description:
+        base_description = "Main Computer all-father host agent. This is the single per-host control container."
+    description = base_description.rstrip() + "\n" + FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER + encoded + "\n"
+    patch = patch_head_service_description(
+        client,
+        service_uuid,
+        description,
+        tried,
+        operation="prime-full-hub-runtime-diag-marker",
+    )
+    result = {
+        "ok": bool(patch.get("ok")),
+        "request_id": request_id,
+        "phase": "pending",
+        "node_count": len(request.get("nodes") or []) if isinstance(request.get("nodes"), list) else 0,
+        "fetch": {key: detail.get(key) for key in ("ok", "source", "error")},
+        "patch": patch,
+    }
+    if args is not None:
+        operator_log(
+            args,
+            "full-hub-sync: primed container runtime diagnostics marker "
+            f"request_id={request_id} ok={bool(patch.get('ok'))}",
+        )
+    return result
+
+
 def wait_for_head_full_hub_runtime_diag_ready(
     client: Any,
     head_service_uuid: str,
@@ -12916,6 +13262,7 @@ def wait_for_head_full_hub_runtime_diag_ready(
     wait_s: float,
     poll_s: float = 2.0,
     expected_request_id: str = "",
+    pending_fail_s: float = 0.0,
     args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
     deadline = time.time() + max(0.0, float(wait_s or 0.0))
@@ -12925,6 +13272,11 @@ def wait_for_head_full_hub_runtime_diag_ready(
     last_log_signature = ""
     last_log_at = 0.0
     log_interval = operator_log_interval_s(args) if args is not None else 15.0
+    stale_marker_request_ids: list[str] = []
+    stale_marker_seen_at: float | None = None
+    current_pending_seen_at: float | None = None
+    pending_fail_s = max(0.0, float(pending_fail_s or 0.0))
+
     while first or time.time() < deadline:
         first = False
         attempts += 1
@@ -12946,41 +13298,85 @@ def wait_for_head_full_hub_runtime_diag_ready(
             operator_log(args, f"full-hub-sync: waiting container runtime diagnostics marker: {signature}; remaining={remaining:.0f}s")
             last_log_signature = signature
             last_log_at = now
-        if last_result.get("ok") and phase in {"ready", "failed"}:
+
+        if last_result.get("ok"):
             observed_request_id = str(result.get("request_id") or "")
             if expected_request_id and observed_request_id != expected_request_id:
-                last_result = {
-                    **last_result,
-                    "error": f"stale full-hub runtime diagnostics marker observed for request_id={observed_request_id or '<missing>'}; waiting for request_id={expected_request_id}",
-                }
-            else:
+                if phase in {"ready", "failed", "pending", "running", "starting"}:
+                    if observed_request_id not in stale_marker_request_ids:
+                        stale_marker_request_ids.append(observed_request_id or "<missing>")
+                    if stale_marker_seen_at is None:
+                        stale_marker_seen_at = now
+                    last_result = {
+                        **last_result,
+                        "stale": True,
+                        "expected_request_id": expected_request_id,
+                        "observed_request_id": observed_request_id,
+                        "stale_marker_request_ids": list(stale_marker_request_ids),
+                        "error": f"stale full-hub runtime diagnostics marker observed for request_id={observed_request_id or '<missing>'}; waiting for request_id={expected_request_id}",
+                    }
+            elif phase in {"pending", "starting"}:
+                if current_pending_seen_at is None:
+                    current_pending_seen_at = now
+                pending_elapsed = now - current_pending_seen_at
+                if pending_fail_s > 0 and pending_elapsed >= pending_fail_s:
+                    reason = (
+                        "fresh full-hub runtime diagnostics marker stayed pending "
+                        f"for {pending_elapsed:.1f}s; head-agent did not publish a running, ready, or failed result"
+                    )
+                    if args is not None:
+                        operator_log(args, f"full-hub-sync: container runtime diagnostics pending timeout: {reason}")
+                    return {
+                        "observed": True,
+                        "ready": False,
+                        "reason": reason,
+                        "result": dict(result),
+                        "source": last_result.get("source"),
+                        "attempts": attempts,
+                        "last_status": last_log_signature or signature,
+                        "expected_request_id": expected_request_id,
+                        "pending_elapsed_s": round(pending_elapsed, 3),
+                    }
+            elif phase == "running":
+                current_pending_seen_at = None
+            elif phase in {"ready", "failed"}:
                 if args is not None:
                     operator_log(args, f"full-hub-sync: container runtime diagnostics marker {phase} after {attempts} poll(s)")
                 return {
                     "observed": True,
                     "ready": bool(result.get("ok")) and phase == "ready",
-                    "reason": str(result.get("error") or ("full-hub runtime diagnostics completed" if phase == "ready" else "full-hub runtime diagnostics failed")),
+                    "reason": str(result.get("error") or result.get("reason") or ("full-hub runtime diagnostics completed" if phase == "ready" else "full-hub runtime diagnostics failed")),
                     "result": dict(result),
                     "source": last_result.get("source"),
                     "attempts": attempts,
                     "last_status": last_log_signature or signature,
                 }
+
         if time.time() >= deadline:
             break
         time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+
     result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
     if args is not None:
         operator_log(args, f"full-hub-sync: timed out waiting for container runtime diagnostics marker; last={last_log_signature or 'not-observed'}")
+    reason = str(result.get("error") or result.get("reason") or last_result.get("error") or "full-hub runtime diagnostics metadata callback was not observed")
+    if stale_marker_request_ids:
+        reason = (
+            f"stale full-hub runtime diagnostics marker(s) {', '.join(stale_marker_request_ids)} "
+            f"remained while waiting for request_id={expected_request_id}"
+        )
     return {
         "observed": bool(last_result.get("ok")),
         "ready": False,
-        "reason": str(result.get("error") or last_result.get("error") or "full-hub runtime diagnostics metadata callback was not observed"),
+        "reason": reason,
         "result": dict(result),
         "source": last_result.get("source"),
         "attempts": attempts,
         "last_status": last_log_signature,
+        "expected_request_id": expected_request_id,
+        "stale_marker_request_ids": list(stale_marker_request_ids),
+        "stale_marker_elapsed_s": round(time.time() - stale_marker_seen_at, 3) if stale_marker_seen_at is not None else None,
     }
-
 
 def compact_full_hub_runtime_diag_node_summary(node: Mapping[str, Any]) -> str:
     """Return a one-line operator summary for a container-side full-hub diagnostic."""
@@ -13069,7 +13465,32 @@ def full_hub_runtime_diag_request_payload(
         "network_key": clean_node_network_key(network_key),
         "coolify_server": head.coolify_server,
         "nodes": nodes,
+        "repair_missing_runtime": True,
+        "runtime_archive_b64": allfather_full_hub_runtime_archive_b64() if nodes else "",
     }
+
+
+
+def redact_full_hub_runtime_diag_request_for_output(request: Mapping[str, Any]) -> dict[str, Any]:
+    redacted = dict(request or {})
+    archive = str(redacted.get("runtime_archive_b64") or "")
+    if archive:
+        redacted["runtime_archive_b64"] = f"<redacted:{len(archive)} chars>"
+    return redacted
+
+
+def full_hub_runtime_diag_recovered(diag: Mapping[str, Any]) -> bool:
+    result = diag.get("result") if isinstance(diag.get("result"), Mapping) else {}
+    nodes = result.get("nodes") if isinstance(result.get("nodes"), list) else []
+    if not nodes:
+        return False
+    recovered = 0
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        if bool(node.get("local_full_main_computer_hub")) or bool(node.get("recovered_by_runtime_repair")):
+            recovered += 1
+    return recovered == len(nodes)
 
 
 def run_full_hub_runtime_container_diagnostics(
@@ -13085,16 +13506,18 @@ def run_full_hub_runtime_container_diagnostics(
     inventory_nodes: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     request = full_hub_runtime_diag_request_payload(network_key, head, sync_result)
+    request_for_output = redact_full_hub_runtime_diag_request_for_output(request)
     if not request.get("nodes"):
-        return {"enabled": True, "ok": None, "reason": "no failed full-hub runtime nodes requested diagnostics", "request": request}
+        return {"enabled": True, "ok": None, "reason": "no failed full-hub runtime nodes requested diagnostics", "request": request_for_output}
     result: dict[str, Any] = {
         "enabled": True,
         "ok": False,
         "reason": "not observed",
-        "request": request,
+        "request": request_for_output,
         "service_action": "",
         "service_uuid": "",
         "deployed": False,
+        "marker_prime": {},
     }
     try:
         operator_log(args, f"full-hub-sync: host={head.coolify_server} collecting container runtime diagnostics for {len(request.get('nodes') or [])} node(s)")
@@ -13110,11 +13533,19 @@ def run_full_hub_runtime_container_diagnostics(
         )
         result["service_uuid"] = service_uuid
         result["service_action"] = f"head-agent-{action}"
+        result["marker_prime"] = prime_head_full_hub_runtime_diag_marker(
+            client,
+            service_uuid,
+            tried,
+            request,
+            args=args,
+        )
         if not getattr(args, "no_deploy", False):
             operator_log(args, f"full-hub-sync: host={head.coolify_server} triggering head-agent diagnostics deploy")
             hub_service_tool().trigger_deploy_service(client, service_uuid=service_uuid, force=True, tried=tried)
             result["deployed"] = True
-        wait_s = min(180.0, max(30.0, float(getattr(args, "hub_propagate_wait_s", 180.0) or 180.0)))
+        wait_s = max(10.0, float(getattr(args, "full_hub_runtime_diag_wait_s", DEFAULT_FULL_HUB_RUNTIME_DIAG_WAIT_S) or DEFAULT_FULL_HUB_RUNTIME_DIAG_WAIT_S))
+        pending_fail_s = max(0.0, float(getattr(args, "full_hub_runtime_diag_pending_fail_s", DEFAULT_FULL_HUB_RUNTIME_DIAG_PENDING_FAIL_S) or 0.0))
         wait = wait_for_head_full_hub_runtime_diag_ready(
             client,
             service_uuid,
@@ -13122,6 +13553,7 @@ def run_full_hub_runtime_container_diagnostics(
             wait_s=wait_s,
             poll_s=2.0,
             expected_request_id=str(request.get("request_id") or ""),
+            pending_fail_s=pending_fail_s,
             args=args,
         )
         result["observed"] = bool(wait.get("observed"))
@@ -13751,10 +14183,8 @@ def propagate_hub_for_network(
             )
             entry["full_hub_runtime_sync"] = full_hub_runtime_sync
             if full_hub_runtime_sync.get("ok") is False:
-                entry["ok"] = False
                 runtime_failure_reason = str(full_hub_runtime_sync.get("reason") or "full hub runtime sync failed")
-                errors.append({"host": head.coolify_server, "error": runtime_failure_reason})
-                entry["full_hub_runtime_container_diagnostics"] = run_full_hub_runtime_container_diagnostics(
+                runtime_diag = run_full_hub_runtime_container_diagnostics(
                     plan,
                     network,
                     head,
@@ -13765,20 +14195,33 @@ def propagate_hub_for_network(
                     tried=tried,
                     inventory_nodes=inventory.get("nodes") or [],
                 )
-                entry["propagator_result"] = {
-                    "ok": None,
-                    "observed": False,
-                    "reason": "skipped because full hub runtime sync failed; see full_hub_runtime_container_diagnostics",
-                }
-                if head_admin_sync_request:
-                    entry["hub_admin_contract_sync"] = {
-                        **entry.get("hub_admin_contract_sync", {}),
+                entry["full_hub_runtime_container_diagnostics"] = runtime_diag
+                if full_hub_runtime_diag_recovered(runtime_diag):
+                    operator_log(args, f"hub-propagate: host={head.coolify_server} full hub runtime recovered by container repair; continuing Traefik/admin handoff")
+                    full_hub_runtime_sync = {
+                        **full_hub_runtime_sync,
+                        "ok": True,
+                        "recovered_by_container_runtime_repair": True,
+                        "recovery_source": "full_hub_runtime_container_diagnostics",
+                    }
+                    entry["full_hub_runtime_sync"] = full_hub_runtime_sync
+                else:
+                    entry["ok"] = False
+                    errors.append({"host": head.coolify_server, "error": runtime_failure_reason})
+                    entry["propagator_result"] = {
                         "ok": None,
                         "observed": False,
                         "reason": "skipped because full hub runtime sync failed; see full_hub_runtime_container_diagnostics",
                     }
-                operator_log(args, f"hub-propagate: host={head.coolify_server} skipping Traefik/admin handoff because full hub runtime sync failed")
-                continue
+                    if head_admin_sync_request:
+                        entry["hub_admin_contract_sync"] = {
+                            **entry.get("hub_admin_contract_sync", {}),
+                            "ok": None,
+                            "observed": False,
+                            "reason": "skipped because full hub runtime sync failed; see full_hub_runtime_container_diagnostics",
+                        }
+                    operator_log(args, f"hub-propagate: host={head.coolify_server} skipping Traefik/admin handoff because full hub runtime sync failed")
+                    continue
             operator_log(args, f"hub-propagate: host={head.coolify_server} updating head host-agent service")
             service_uuid, action, _existing = sync_head_service(
                 client,
@@ -14831,9 +15274,9 @@ def add_remote_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--set-coolify-destination-uuid", action="append", default=[], help="Per-host destination UUID. Format: <host>:<uuid>")
     parser.add_argument("--coolify-service-uuid", default="")
     parser.add_argument("--set-coolify-service-uuid", action="append", default=[], help="Per-host existing service UUID. Format: <host>:<uuid>")
-    parser.add_argument("--coolify-timeout-s", type=float, default=60.0)
-    parser.add_argument("--coolify-retries", type=int, default=3)
-    parser.add_argument("--coolify-retry-sleep-s", type=float, default=2.0)
+    parser.add_argument("--coolify-timeout-s", type=float, default=DEFAULT_COOLIFY_TIMEOUT_S)
+    parser.add_argument("--coolify-retries", type=int, default=DEFAULT_COOLIFY_RETRIES)
+    parser.add_argument("--coolify-retry-sleep-s", type=float, default=DEFAULT_COOLIFY_RETRY_SLEEP_S)
 
 
 def add_common_head_args(parser: argparse.ArgumentParser) -> None:
@@ -14851,9 +15294,11 @@ def add_hub_propagate_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hub-admin-contract-address", default="", help="Override HubCreditBridgeEscrow address. Default reads main_computer/config/<network>_contracts.json.")
     parser.add_argument("--no-contract-admin-sync", action="store_true", help="Only reconcile public Hub routes and private-state huddle records; do not authorize Hub admins on HubCreditBridgeEscrow.")
     parser.add_argument("--no-full-hub-runtime-sync", action="store_true", help="Do not rebuild/redeploy existing super-nodes whose public Hub endpoint is still bootstrap-only.")
-    parser.add_argument("--full-hub-runtime-wait-s", type=float, default=None, help="Seconds to wait for each rebuilt super-node to report full Main Computer hub health. Default uses --hub-propagate-wait-s.")
-    parser.add_argument("--full-hub-runtime-status-interval-s", type=float, default=30.0, help="Seconds between Coolify build/deployment/log diagnostics while waiting for full hub health.")
-    parser.add_argument("--full-hub-runtime-stale-bootstrap-fail-s", type=float, default=120.0, help="Fail early once Coolify is running/healthy with a full-runtime compose but public hub health still reports bootstrap-only for this many seconds. Use 0 to wait until timeout.")
+    parser.add_argument("--full-hub-runtime-wait-s", type=float, default=DEFAULT_TRAEFIK_PROPAGATE_WAIT_S, help="Seconds to wait for each rebuilt super-node to report full Main Computer hub health.")
+    parser.add_argument("--full-hub-runtime-status-interval-s", type=float, default=DEFAULT_FULL_HUB_RUNTIME_STATUS_INTERVAL_S, help="Seconds between Coolify build/deployment/log diagnostics while waiting for full hub health.")
+    parser.add_argument("--full-hub-runtime-stale-bootstrap-fail-s", type=float, default=DEFAULT_FULL_HUB_RUNTIME_STALE_BOOTSTRAP_FAIL_S, help="Fail early once Coolify is running/healthy with a full-runtime compose but public hub health still reports bootstrap-only for this many seconds. Use 0 to wait until timeout.")
+    parser.add_argument("--full-hub-runtime-diag-wait-s", type=float, default=DEFAULT_FULL_HUB_RUNTIME_DIAG_WAIT_S, help="Seconds to wait for the head-agent container-side full-hub diagnostics/repair marker.")
+    parser.add_argument("--full-hub-runtime-diag-pending-fail-s", type=float, default=DEFAULT_FULL_HUB_RUNTIME_DIAG_PENDING_FAIL_S, help="Fail if a fresh full-hub diagnostics marker stays pending this many seconds without a running/ready/failed update. Use 0 to wait until timeout.")
     parser.add_argument("--traefik-propagator-image", default=DEFAULT_TRAEFIK_PROPAGATOR_IMAGE, help=argparse.SUPPRESS)
 
 

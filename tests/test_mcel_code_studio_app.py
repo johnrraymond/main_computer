@@ -17,7 +17,8 @@ SCRIPT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "cod
 LAYOUT_CONTRACT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-layout-contract.js"
 MONACO_ADAPTER_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-monaco-adapter.js"
 SELF_DIAGNOSIS_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-self-diagnosis.js"
-REQUIREMENTS_REGISTRY_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-requirements-registry.js"
+DIAGNOSTICS_COUNTER_SCRIPT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-diagnostics-counter-widget.js"
+DIAGNOSTICS_COUNTER_STYLE_PATH = ROOT / "main_computer" / "web" / "applications" / "styles" / "mcel-diagnostics-counter-widget.css"
 PRETTY_DOC = ROOT / "pretty_docs" / "mcel-code-studio-example.md"
 
 
@@ -1726,8 +1727,6 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertIn("global.MCEL", script)
         self.assertIn("diagnose(appId", script)
         self.assertIn("evaluateCodeEditorAuthoringSnapshot", script)
-        self.assertIn("resolveDiagnosisContract", script)
-        self.assertIn("getRuntimeDiagnosisContract", script)
 
         expected_contract_terms = [
             "mcel-region",
@@ -1782,24 +1781,111 @@ console.log(JSON.stringify({{
         self.assertIn("if (matchesSelector(base, selector)) return base;", script)
         self.assertIn("matches.unshift(base);", script)
 
-    def test_mcel_requirements_registry_exposes_runtime_diagnostic_contracts(self) -> None:
+    def test_code_editor_has_passive_mcel_diagnostics_counter_element(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        style = DIAGNOSTICS_COUNTER_STYLE_PATH.read_text(encoding="utf-8")
+        script = DIAGNOSTICS_COUNTER_SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('id="code-editor-diagnostics-counter"', app)
+        self.assertIn('data-mcel-diagnostics-counter="code-editor"', app)
+        self.assertIn("mcel-diagnostics-counter__error", app)
+        self.assertIn("mcel-diagnostics-counter__warning", app)
+        self.assertIn("mcel-diagnostics-counter__ok", app)
+
+        self.assertIn("applications/styles/mcel-diagnostics-counter-widget.css", applications)
+        self.assertIn("applications/scripts/mcel-diagnostics-counter-widget.js", applications)
+
+        self.assertIn("[", app)
+        self.assertIn("]", app)
+        self.assertIn("REFRESH_INTERVAL_MS = 30000", script)
+        self.assertIn("MCELDiagnosticsCounterWidget", script)
+        self.assertIn("navigator", script)
+        self.assertIn("clipboard", script)
+        self.assertIn("compactPayload", script)
+        self.assertIn("mcel-diagnostics-counter-copy-v3", script)
+        self.assertIn("mcel-diagnostics-counter-history-v2", script)
+        self.assertIn("Click to copy current and historical issues", script)
+
+        self.assertIn(".mcel-diagnostics-counter__error", style)
+        self.assertIn(".mcel-diagnostics-counter__warning", style)
+        self.assertIn(".mcel-diagnostics-counter__ok", style)
+        self.assertNotIn("z-index: 10000", style)
+
+    def test_mcel_diagnostics_counter_widget_counts_contract_findings(self) -> None:
         node = shutil.which("node")
         if not node:
             self.skipTest("node is not available")
 
-        script_literal = json.dumps(str(REQUIREMENTS_REGISTRY_PATH))
+        script_literal = json.dumps(str(DIAGNOSTICS_COUNTER_SCRIPT_PATH))
         probe = f"""
 global.window = {{}};
 require({script_literal});
-const registry = window.McelRequirementsRegistry;
-const contract = registry.getRuntimeDiagnosisContract("code-editor", "authoring");
+const widget = window.MCELDiagnosticsCounterWidget;
+const report = {{
+  verdict: "pass",
+  mode: "authoring",
+  contract: {{
+    mode: "authoring",
+    primarySurface: {{minWidth: 800, minHeight: 600}}
+  }},
+  summary: {{
+    primarySurface: {{
+      usable: true,
+      exactlyOneAuthoritativeSurface: true
+    }}
+  }},
+  findings: [
+    {{severity: "critical", code: "example-critical", finding: "bad"}},
+    {{severity: "warning", code: "example-warning", finding: "warn"}}
+  ],
+  measurements: {{
+    requiredRegions: {{
+      "code-editor.region.root": {{exists: true, visible: true}},
+      "#code-editor-app": {{exists: true, visible: true}},
+      "code-editor.region.explorer": {{exists: true, visible: true}}
+    }},
+    surfaces: {{
+      monacoHost: {{exists: true, visible: true, width: 1200, height: 900}},
+      monacoEditor: {{exists: true, visible: true, width: 1200, height: 900}}
+    }},
+    forbiddenRegions: [
+      {{id: "proof", selector: ".proof", box: {{exists: false, visible: false}}}}
+    ]
+  }}
+}};
+const counts = widget._private.summarizeReport(report);
+const history = widget._private.createIssueHistory("first");
+widget._private.updateIssueHistory(history, report, "first");
+const clearReport = {{
+  ...report,
+  timestamp: "second",
+  findings: []
+}};
+widget._private.updateIssueHistory(history, clearReport, "second");
+const clearCounts = widget._private.summarizeReport(clearReport);
+const payload = widget._private.compactPayload(clearReport, clearCounts, history);
 console.log(JSON.stringify({{
-  hasGetter: typeof registry.getRuntimeDiagnosisContract,
-  contractId: contract.contractId,
-  source: contract.source,
-  hostSelector: contract.primarySurface.hostSelector,
-  forbiddenSelectors: contract.forbiddenRegions.map((entry) => entry.selector),
-  lifecycleAssertions: contract.lifecycleAssertions
+  counts,
+  clearCounts,
+  payloadCounts: payload.counts,
+  schema: payload.schema,
+  issueCodes: payload.issues.map((issue) => issue.code),
+  currentIssueCodes: payload.current.issues.map((issue) => issue.code),
+  historyCounts: payload.history.counts,
+  historyIssues: payload.history.issues.map((issue) => ({{
+    code: issue.code,
+    currentlyActive: issue.currentlyActive,
+    firstSeen: issue.firstSeen,
+    lastSeen: issue.lastSeen,
+    clearedAt: issue.clearedAt,
+    seenCount: issue.seenCount
+  }})),
+  formatted: [
+    widget._private.formatCount(0),
+    widget._private.formatCount(7),
+    widget._private.formatCount(123)
+  ]
 }}));
 """
         completed = subprocess.run(
@@ -1809,32 +1895,83 @@ console.log(JSON.stringify({{
             text=True,
         )
         payload = json.loads(completed.stdout)
-        self.assertEqual(payload["hasGetter"], "function")
-        self.assertEqual(payload["contractId"], "code-editor.contract.authoring.monaco-golden-path")
-        self.assertEqual(payload["source"], "mcel-runtime-check")
-        self.assertEqual(payload["hostSelector"], "#code-studio-runtime-monaco")
-        self.assertIn("#mc-widget-editor-root", payload["forbiddenSelectors"])
-        self.assertIn("file-click-keeps-one-primary-editor", payload["lifecycleAssertions"])
+        self.assertEqual(payload["counts"]["errors"], 1)
+        self.assertEqual(payload["counts"]["warnings"], 1)
+        self.assertGreaterEqual(payload["counts"]["ok"], 8)
+        self.assertEqual(payload["clearCounts"]["errors"], 0)
+        self.assertEqual(payload["clearCounts"]["warnings"], 0)
+        self.assertEqual(payload["payloadCounts"]["errors"], 0)
+        self.assertEqual(payload["payloadCounts"]["warnings"], 0)
+        self.assertEqual(payload["schema"], "mcel-diagnostics-counter-copy-v3")
+        self.assertEqual(payload["issueCodes"], [])
+        self.assertEqual(payload["currentIssueCodes"], [])
+        self.assertEqual(payload["historyCounts"], {
+            "errorsSeen": 1,
+            "warningsSeen": 1,
+            "activeErrors": 0,
+            "activeWarnings": 0,
+            "resolvedErrors": 1,
+            "resolvedWarnings": 1,
+        })
+        self.assertEqual(
+            [
+                (
+                    issue["code"],
+                    issue["currentlyActive"],
+                    issue["firstSeen"],
+                    issue["lastSeen"],
+                    issue["clearedAt"],
+                    issue["seenCount"],
+                )
+                for issue in payload["historyIssues"]
+            ],
+            [
+                ("example-critical", False, "first", "first", "second", 1),
+                ("example-warning", False, "first", "first", "second", 1),
+            ],
+        )
+        self.assertEqual(payload["formatted"], ["00", "07", "99"])
 
-    def test_mcel_self_diagnosis_prefers_registry_runtime_contract_when_available(self) -> None:
+    def test_mcel_diagnostics_counter_counts_startup_errors_as_warnings(self) -> None:
         node = shutil.which("node")
         if not node:
             self.skipTest("node is not available")
 
-        registry_literal = json.dumps(str(REQUIREMENTS_REGISTRY_PATH))
-        diagnosis_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        script_literal = json.dumps(str(DIAGNOSTICS_COUNTER_SCRIPT_PATH))
         probe = f"""
 global.window = {{}};
-require({registry_literal});
-require({diagnosis_literal});
-const api = window.McelSelfDiagnosis;
-const contract = api.resolveDiagnosisContract("code-editor", {{mode: "authoring"}});
+require({script_literal});
+const widget = window.MCELDiagnosticsCounterWidget;
+const history = widget._private.createIssueHistory("2026-07-18T20:39:20.000Z");
+const startupReport = {{
+  verdict: "fail",
+  timestamp: "2026-07-18T20:39:21.000Z",
+  findings: [
+    {{
+      severity: "critical",
+      code: "primary-editor-missing",
+      finding: "Code Editor authoring contract requires a Monaco editor instance, but none was found.",
+      recommendedNextProbe: "editor.surfaceAudit"
+    }}
+  ],
+  measurements: {{}}
+}};
+const startupCounts = widget._private.summarizeReport(startupReport, history);
+widget._private.updateIssueHistory(history, startupReport, "2026-07-18T20:39:21.000Z");
+const clearReport = {{
+  ...startupReport,
+  verdict: "pass",
+  timestamp: "2026-07-18T20:39:22.000Z",
+  findings: []
+}};
+widget._private.updateIssueHistory(history, clearReport, "2026-07-18T20:39:22.000Z");
+const clearCounts = widget._private.summarizeReport(clearReport, history);
+const payload = widget._private.compactPayload(clearReport, clearCounts, history);
 console.log(JSON.stringify({{
-  contractId: contract.contractId,
-  source: contract.source,
-  hostSelector: contract.primarySurface.hostSelector,
-  forbiddenCount: contract.forbiddenRegions.length,
-  lifecycleAssertions: contract.lifecycleAssertions
+  startupCounts,
+  clearCounts,
+  historyCounts: payload.history.counts,
+  historyIssue: payload.history.issues[0]
 }}));
 """
         completed = subprocess.run(
@@ -1844,12 +1981,25 @@ console.log(JSON.stringify({{
             text=True,
         )
         payload = json.loads(completed.stdout)
-        self.assertEqual(payload["contractId"], "code-editor.contract.authoring.monaco-golden-path")
-        self.assertEqual(payload["source"], "mcel-runtime-check")
-        self.assertEqual(payload["hostSelector"], "#code-studio-runtime-monaco")
-        self.assertGreaterEqual(payload["forbiddenCount"], 9)
-        self.assertIn("resize-keeps-primary-editor-usable", payload["lifecycleAssertions"])
-
+        self.assertEqual(payload["startupCounts"]["errors"], 0)
+        self.assertEqual(payload["startupCounts"]["warnings"], 1)
+        self.assertEqual(payload["clearCounts"]["errors"], 0)
+        self.assertEqual(payload["clearCounts"]["warnings"], 0)
+        self.assertEqual(payload["historyCounts"], {
+            "errorsSeen": 0,
+            "warningsSeen": 1,
+            "activeErrors": 0,
+            "activeWarnings": 0,
+            "resolvedErrors": 0,
+            "resolvedWarnings": 1,
+        })
+        self.assertEqual(payload["historyIssue"]["code"], "primary-editor-missing")
+        self.assertEqual(payload["historyIssue"]["normalizedSeverity"], "warning")
+        self.assertEqual(payload["historyIssue"]["originalNormalizedSeverity"], "error")
+        self.assertTrue(payload["historyIssue"]["countedAsStartupWarning"])
+        self.assertEqual(payload["historyIssue"]["lifecyclePhase"], "startup")
+        self.assertFalse(payload["historyIssue"]["currentlyActive"])
+        self.assertEqual(payload["historyIssue"]["clearedAt"], "2026-07-18T20:39:22.000Z")
 
     def test_mcel_self_diagnosis_flags_code_editor_collapsed_monaco_contract(self) -> None:
         node = shutil.which("node")

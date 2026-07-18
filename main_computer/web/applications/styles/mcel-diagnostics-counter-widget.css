@@ -1,0 +1,75 @@
+/* MCEL diagnostics counter widget.
+   Passive authoring-health indicator: visible text is only [errors/warnings/ok]. */
+.mcel-diagnostics-counter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  flex: 0 0 auto;
+  min-width: 74px;
+  height: 24px;
+  margin-inline-start: 8px;
+  padding: 0 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #cbd5e1;
+  font-family: Consolas, "SFMono-Regular", "Lucida Console", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mcel-diagnostics-counter:hover {
+  border-color: rgba(203, 213, 225, 0.65);
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.mcel-diagnostics-counter:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.75);
+  outline-offset: 2px;
+}
+
+.mcel-diagnostics-counter__bracket,
+.mcel-diagnostics-counter__slash {
+  color: rgba(203, 213, 225, 0.78);
+}
+
+.mcel-diagnostics-counter__error {
+  color: #f87171;
+}
+
+.mcel-diagnostics-counter__warning {
+  color: #facc15;
+}
+
+.mcel-diagnostics-counter__ok {
+  color: #4ade80;
+}
+
+.mcel-diagnostics-counter[data-state="error"] {
+  border-color: rgba(248, 113, 113, 0.65);
+}
+
+.mcel-diagnostics-counter[data-state="warning"] {
+  border-color: rgba(250, 204, 21, 0.58);
+}
+
+.mcel-diagnostics-counter[data-state="ok"] {
+  border-color: rgba(74, 222, 128, 0.48);
+}
+
+.mcel-diagnostics-counter[data-copy-state="copied"] {
+  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.28);
+}
+
+.mcel-diagnostics-counter[data-copy-state="copy-failed"] {
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.28);
+}
+
+#code-editor-app .code-studio-title-actions .mcel-diagnostics-counter {
+  order: -1;
+}

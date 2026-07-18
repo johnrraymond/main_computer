@@ -3709,3 +3709,175 @@ def test_sync_head_service_accepts_full_hub_runtime_diag_request_in_compose() ->
     payload = json.loads(base64.b64decode(encoded.group(1)).decode("utf-8"))
     assert payload["request_id"] == "req-1"
     assert payload["nodes"][0]["service_name"] == "mainneta-super1"
+
+
+def test_full_hub_runtime_diag_request_includes_repair_archive_payload() -> None:
+    head = control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/heads/coolify-a",
+        peers=(),
+    )
+
+    request = control.full_hub_runtime_diag_request_payload(
+        "mainnet",
+        head,
+        {
+            "nodes": [
+                {
+                    "ok": False,
+                    "service_name": "mainneta-super1",
+                    "domain": "mainneta-hub1.greatlibrary.io",
+                    "diagnostics": {"steps": [{"step": "manifest-build-done", "deployment_id": "dep-123"}]},
+                }
+            ]
+        },
+    )
+
+    assert request["repair_missing_runtime"] is True
+    assert request["runtime_archive_b64"]
+    raw_zip = zlib.decompress(base64.b64decode(request["runtime_archive_b64"]))
+    with zipfile.ZipFile(io.BytesIO(raw_zip)) as archive:
+        assert "main_computer/hub.py" in archive.namelist()
+    redacted = control.redact_full_hub_runtime_diag_request_for_output(request)
+    assert redacted["runtime_archive_b64"].startswith("<redacted:")
+    assert request["runtime_archive_b64"] not in json.dumps(redacted, sort_keys=True)
+
+
+def test_head_agent_full_hub_runtime_diag_can_repair_missing_runtime() -> None:
+    script = control.head_server_command_script()
+
+    assert "def install_full_hub_runtime_archive" in script
+    assert "/containers/{urllib.parse.quote(container_id, safe='')}/archive?path=/opt" in script
+    assert "repair_missing_runtime" in script
+    assert "runtime_repair" in script
+    assert "/wake" in script
+
+
+def test_hub_propagate_continues_after_full_runtime_container_repair() -> None:
+    source = Path(control.__file__).read_text(encoding="utf-8")
+
+    assert "full_hub_runtime_diag_recovered(runtime_diag)" in source
+    assert "full hub runtime recovered by container repair" in source
+    assert "recovered_by_container_runtime_repair" in source
+
+def test_full_hub_runtime_diag_pending_marker_uses_current_request_id() -> None:
+    pending = control.full_hub_runtime_diag_pending_result(
+        {
+            "service_name": "allfather-full-hub-runtime-diagnostics-mainnet-coolify-a",
+            "network_key": "mainnet",
+            "coolify_server": "coolify-a",
+            "request_id": "fresh-req",
+            "nodes": [{"service_name": "mainneta-super1"}, {"service_name": "mainneta-super2"}],
+        }
+    )
+
+    assert pending["phase"] == "pending"
+    assert pending["status"] == "pending"
+    assert pending["request_id"] == "fresh-req"
+    assert pending["node_count"] == 2
+    assert pending["nodes"] == []
+
+
+def test_remove_callback_marker_lines_removes_only_full_hub_marker() -> None:
+    description = "\n".join(
+        [
+            "Main Computer all-father host agent.",
+            "ALLFATHER_PROBE_RESULT_B64:abc",
+            "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:old",
+            "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:def",
+        ]
+    )
+
+    cleaned = control.remove_callback_marker_lines(description, control.FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER)
+
+    assert "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64" not in cleaned
+    assert "ALLFATHER_PROBE_RESULT_B64:abc" in cleaned
+    assert "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:def" in cleaned
+
+
+def test_head_agent_full_hub_runtime_diag_publishes_pending_marker_on_startup() -> None:
+    script = control.head_server_command_script()
+
+    assert "def initial_full_hub_runtime_diag_state" in script
+    assert "full-hub runtime diagnostics request accepted by head-agent" in script
+    assert "publish_to_coolify_metadata()" in script
+    assert "threading.Thread(target=full_hub_runtime_diag_thread" in script
+
+
+def test_controller_primes_full_hub_runtime_diag_marker_before_deploy() -> None:
+    source = Path(control.__file__).read_text(encoding="utf-8")
+
+    assert "prime_head_full_hub_runtime_diag_marker" in source
+    assert "full-hub-sync: primed container runtime diagnostics marker" in source
+    assert "stale_marker_request_ids" in source
+    assert "marker_prime" in source
+
+
+def test_head_agent_full_hub_runtime_diag_initial_state_is_defined_before_use() -> None:
+    script = control.head_server_command_script()
+
+    definition_at = script.index("def initial_full_hub_runtime_diag_state")
+    assignment_at = script.index("LATEST_FULL_HUB_RUNTIME_DIAG = initial_full_hub_runtime_diag_state()")
+    assert definition_at < assignment_at
+    compile(script, "<head-agent-script>", "exec")
+
+
+def test_head_agent_full_hub_runtime_diag_thread_publishes_running_and_failure_markers() -> None:
+    script = control.head_server_command_script()
+
+    assert "full_hub_runtime_diag_started_result" in script
+    assert "full-hub runtime diagnostics worker started" in script
+    assert "full_hub_runtime_diag_failed_result" in script
+    assert "except BaseException as exc" in script
+
+
+def test_hub_propagate_operator_defaults_match_current_mainnet_runbook() -> None:
+    args = control.parse_args(["hub-propagate", "mainnet", "--allow-mainnet"])
+
+    assert args.coolify_timeout_s == 120.0
+    assert args.coolify_retries == 5
+    assert args.coolify_retry_sleep_s == 5.0
+    assert args.hub_propagate_wait_s == 300.0
+    assert args.full_hub_runtime_wait_s == 300.0
+    assert args.full_hub_runtime_status_interval_s == 20.0
+    assert args.full_hub_runtime_stale_bootstrap_fail_s == 60.0
+    assert args.hub_admin_contract_sync_wait_s == 300.0
+    assert args.full_hub_runtime_diag_wait_s == 120.0
+    assert args.full_hub_runtime_diag_pending_fail_s == 45.0
+
+
+def test_wait_for_full_hub_runtime_diag_fails_fresh_pending_marker_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "ok": False,
+        "phase": "pending",
+        "status": "pending",
+        "request_id": "fresh-request",
+        "nodes": [],
+        "updated_at": 123.0,
+    }
+    encoded = base64.b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode("ascii")
+    detail = {"ok": True, "body": {"description": control.FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER + encoded}}
+
+    monkeypatch.setattr(control, "fetch_service_detail", lambda client, service_uuid, tried: detail)
+
+    observed = control.wait_for_head_full_hub_runtime_diag_ready(
+        object(),
+        "head-service-uuid",
+        [],
+        wait_s=1.0,
+        poll_s=0.001,
+        expected_request_id="fresh-request",
+        pending_fail_s=0.001,
+    )
+
+    assert observed["observed"] is True
+    assert observed["ready"] is False
+    assert "stayed pending" in observed["reason"]
+    assert observed["expected_request_id"] == "fresh-request"
