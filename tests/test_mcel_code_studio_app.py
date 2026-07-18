@@ -1727,6 +1727,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertIn("global.MCEL", script)
         self.assertIn("diagnose(appId", script)
         self.assertIn("evaluateCodeEditorAuthoringSnapshot", script)
+        self.assertIn("evaluateRuntimeContractSnapshot", script)
+        self.assertIn("buildReportBuckets", script)
+        self.assertIn("calculator.contract.default.app-health", script)
+        self.assertIn("website-builder.contract.default.app-health", script)
 
         expected_contract_terms = [
             "mcel-region",
@@ -1803,9 +1807,13 @@ console.log(JSON.stringify({{
         self.assertIn("navigator", script)
         self.assertIn("clipboard", script)
         self.assertIn("compactPayload", script)
-        self.assertIn("mcel-diagnostics-counter-copy-v3", script)
-        self.assertIn("mcel-diagnostics-counter-history-v2", script)
+        self.assertIn("mcel-diagnostics-counter-copy-v4", script)
+        self.assertIn("mcel-diagnostics-counter-history-v3", script)
         self.assertIn("Click to copy current and historical issues", script)
+        self.assertIn("mountAll", script)
+        for app_id in ["calculator", "file-explorer", "git-tools", "website-builder"]:
+            with self.subTest(app_id=app_id):
+                self.assertIn(app_id, script)
 
         self.assertIn(".mcel-diagnostics-counter__error", style)
         self.assertIn(".mcel-diagnostics-counter__warning", style)
@@ -1870,6 +1878,7 @@ console.log(JSON.stringify({{
   clearCounts,
   payloadCounts: payload.counts,
   schema: payload.schema,
+  bucketKeys: Object.keys(payload.buckets).sort(),
   issueCodes: payload.issues.map((issue) => issue.code),
   currentIssueCodes: payload.current.issues.map((issue) => issue.code),
   historyCounts: payload.history.counts,
@@ -1902,7 +1911,9 @@ console.log(JSON.stringify({{
         self.assertEqual(payload["clearCounts"]["warnings"], 0)
         self.assertEqual(payload["payloadCounts"]["errors"], 0)
         self.assertEqual(payload["payloadCounts"]["warnings"], 0)
-        self.assertEqual(payload["schema"], "mcel-diagnostics-counter-copy-v3")
+        self.assertEqual(payload["schema"], "mcel-diagnostics-counter-copy-v4")
+        self.assertIn("activeOverlayIssues", payload["bucketKeys"])
+        self.assertIn("resolvedStartupWarnings", payload["bucketKeys"])
         self.assertEqual(payload["issueCodes"], [])
         self.assertEqual(payload["currentIssueCodes"], [])
         self.assertEqual(payload["historyCounts"], {

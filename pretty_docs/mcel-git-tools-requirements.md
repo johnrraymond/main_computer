@@ -957,3 +957,81 @@ acceptance:
   - Commit never pushes unless the user separately chooses a push action.
   - Local and remote publication can be audited independently.
 ```
+
+
+## Runtime diagnosis contract
+
+```mcel-runtime-check
+id: git-tools.runtime-check.default-primary-workflow
+app: git-tools
+status: specified
+mode: default
+contract: git-tools.contract.default.app-health
+check: primary-surface
+severity: critical
+primary_surface_id: git-tools.surface.workflow
+host_selector: "#git-project-workflow-surface"
+editor_selector: "#git-project-workflow-surface"
+min_width: 420
+min_height: 320
+observes:
+  - "#git-project-workflow-surface"
+expects:
+  - Git Tools project workflow surface is visible and usable.
+  - The workflow surface is not collapsed by rails or proof panels.
+failure_message: Git Tools default mode must expose a usable workflow surface.
+next_probe: layout.ownerProbe
+source_binding: git-tools.binding.project-workflow
+test_binding: git-tools.test.semantic-adapter
+```
+
+```mcel-runtime-check
+id: git-tools.runtime-check.default-required-regions
+app: git-tools
+status: specified
+mode: default
+contract: git-tools.contract.default.app-health
+check: required-regions-visible
+severity: critical
+observes:
+  - "#git-tools-app"
+  - ".git-tools-shell"
+  - "#git-project-selector-panel"
+  - "#git-project-workflow-surface"
+required_regions:
+  - git-tools.region.root | #git-tools-app | Git Tools app root
+  - git-tools.region.shell | .git-tools-shell | Git Tools shell
+  - git-tools.region.project-selector | #git-project-selector-panel | Project selector
+  - git-tools.region.workflow | #git-project-workflow-surface | Project workflow surface
+expects:
+  - Root, shell, project selector, and workflow surface remain visible.
+failure_message: Git Tools default mode must preserve project selection and workflow.
+next_probe: layout.baseline
+source_binding: git-tools.binding.project-workflow
+test_binding: git-tools.test.semantic-adapter
+```
+
+```mcel-runtime-check
+id: git-tools.runtime-check.default-overlay-policy
+app: git-tools
+status: specified
+mode: default
+contract: git-tools.contract.default.app-health
+check: overlay-policy
+severity: warning
+observes:
+  - "#mc-widget-editor-root"
+  - "[data-mcel-proof-surface]"
+  - ".floating-tab"
+  - ".side-tab"
+expects:
+  - MCEL/widget/proof overlays are not visible while running the default Git Tools workflow.
+forbids:
+  - shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay
+  - shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface
+  - shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab
+failure_message: Git Tools default mode should not be covered by diagnostic overlays.
+next_probe: overlay.detector
+source_binding: git-tools.binding.project-workflow
+test_binding: git-tools.test.semantic-adapter
+```

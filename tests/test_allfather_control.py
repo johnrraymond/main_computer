@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import base64
 import io
 import json
@@ -3711,6 +3712,51 @@ def test_sync_head_service_accepts_full_hub_runtime_diag_request_in_compose() ->
     assert payload["nodes"][0]["service_name"] == "mainneta-super1"
 
 
+def test_full_hub_runtime_diag_large_request_is_chunked_for_head_agent_env() -> None:
+    head = control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/heads/coolify-a",
+        peers=(),
+    )
+    plan = control.HeadPlan(
+        kind="main_computer.all_father.head_plan.v1",
+        private_state_path="runtime/state/all_father.private.yaml",
+        heads=(head,),
+        desired_counts={"allfather_heads": 1},
+        guardrails={},
+    )
+    request = {
+        "request_id": "req-large",
+        "nodes": [{"service_name": "mainneta-super1"}],
+        "repair_missing_runtime": True,
+        "runtime_archive_b64": "x" * (control.DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE + 1234),
+    }
+
+    compose = control.render_head_compose(plan, head, full_hub_runtime_diag_request=request)
+
+    assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64_CHUNKS" in compose
+    chunks = re.findall(r"MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64_\d{3}: \"([^\"]*)\"", compose)
+    assert len(chunks) >= 2
+    assert max(len(chunk) for chunk in chunks) <= control.DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE
+    assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64_SHA256" in compose
+    assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64_TOTAL_LENGTH" in compose
+
+
+def test_head_agent_can_reconstruct_chunked_full_hub_runtime_diag_env() -> None:
+    script = control.head_server_command_script()
+
+    assert 'read_b64_env("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64")' in script
+    assert 'name + "_CHUNKS"' in script
+    assert 'chunked payload sha256 mismatch' in script
+
+
 def test_full_hub_runtime_diag_request_includes_repair_archive_payload() -> None:
     head = control.HeadNode(
         head_id="allfather-head-coolify-a",
@@ -3881,3 +3927,189 @@ def test_wait_for_full_hub_runtime_diag_fails_fresh_pending_marker_fast(monkeypa
     assert observed["ready"] is False
     assert "stayed pending" in observed["reason"]
     assert observed["expected_request_id"] == "fresh-request"
+
+def test_compact_hub_propagate_default_output_removes_raw_coolify_spam() -> None:
+    payload = {
+        "ok": False,
+        "operation": "hub-propagate",
+        "network": "mainnet",
+        "route_authority": "live-coolify-super-node-inventory",
+        "domain_suffix": "greatlibrary.io",
+        "selected_hosts": ["coolify-a"],
+        "inventory": {
+            "checked_hosts": ["coolify-a"],
+            "super_node_count": 1,
+            "super_nodes": [
+                {
+                    "service_name": "mainneta-super1",
+                    "coolify_server": "coolify-a",
+                    "host_slot": "A",
+                    "ordinal": 1,
+                    "status": "running:healthy",
+                    "very_large_raw_field": "drop-me",
+                }
+            ],
+            "errors": [],
+        },
+        "huddle": {"admin_count": 1, "private_state_updates": {"written": True}},
+        "hub_admin_contract_sync": {"enabled": True, "ok": None, "reason": "skipped"},
+        "propagations": [
+            {
+                "host": "coolify-a",
+                "host_slot": "A",
+                "ok": False,
+                "local_super_node_count": 1,
+                "coolify_api": {
+                    "attempt_count": 55,
+                    "failed_count": 2,
+                    "tried": [{"body": "huge"}],
+                },
+                "full_hub_runtime_sync": {
+                    "enabled": True,
+                    "ok": False,
+                    "reason": "still bootstrap",
+                    "nodes": [
+                        {
+                            "service_name": "mainneta-super1",
+                            "domain": "mainneta-hub1.greatlibrary.io",
+                            "ok": False,
+                            "reason": "still bootstrap",
+                            "health_before": {"ok": True, "payload": {"huge": "drop"}},
+                            "coolify_service_after_sync": {
+                                "compose": {
+                                    "candidate_count": 3,
+                                    "any_contains_full_runtime": True,
+                                    "candidates": [{"huge": "drop-me"}],
+                                },
+                                "service": {"status": "running:healthy"},
+                            },
+                            "wait": {
+                                "ready": False,
+                                "attempts": 3,
+                                "last_probe": {"ok": True, "payload": {"huge": "drop"}},
+                                "coolify_snapshots": [
+                                    {
+                                        "compose": {
+                                            "candidate_count": 3,
+                                            "any_contains_full_runtime": True,
+                                            "candidates": [{"huge": "drop-me"}],
+                                        },
+                                        "service": {"status": "running:healthy"},
+                                    }
+                                ],
+                            },
+                            "diagnostics": {"steps": [{"step": "wait-full-health-done", "reason": "still bootstrap"}]},
+                        }
+                    ],
+                },
+                "full_hub_runtime_container_diagnostics": {
+                    "enabled": True,
+                    "ok": False,
+                    "ready": False,
+                    "reason": "not recovered",
+                    "request": {"request_id": "req-1", "runtime_archive_b64": "drop-me"},
+                    "wait": {"observed": True, "ready": False, "expected_request_id": "req-1"},
+                    "result": {
+                        "phase": "ready",
+                        "request_id": "req-1",
+                        "nodes": [
+                            {
+                                "service_name": "mainneta-super1",
+                                "ok": False,
+                                "container_id": "abc123",
+                                "runtime": {
+                                    "paths": {
+                                        "/opt/main-computer-src.zip": {"exists": False},
+                                        "/opt/main-computer-src/main_computer/hub.py": {"exists": False},
+                                    },
+                                    "imports": {
+                                        "main_computer.hub": {
+                                            "ok": False,
+                                            "has_serve_hub": False,
+                                            "error": "ModuleNotFoundError",
+                                        }
+                                    },
+                                    "local_health": {"json": {"bootstrap_hub": True, "full_main_computer_hub": False}},
+                                },
+                                "docker": {
+                                    "state_status": "running",
+                                    "health_status": "healthy",
+                                    "env": {"MC_ALLFATHER_DEPLOYMENT_ID": "dep-1"},
+                                },
+                            }
+                        ],
+                    },
+                },
+            }
+        ],
+        "errors": [{"host": "coolify-a", "error": "still bootstrap"}],
+    }
+
+    compact = control.compact_hub_propagate_for_operator(payload)
+    raw = json.dumps(compact, sort_keys=True)
+
+    assert compact["summary"]["super_nodes"] == 1
+    assert compact["summary"]["failed_hosts"] == 1
+    assert compact["propagations"][0]["full_hub_runtime_sync"]["node_count"] == 1
+    assert compact["propagations"][0]["full_hub_runtime_sync"]["nodes"][0]["coolify"]["compose_full"] is True
+    assert compact["propagations"][0]["full_hub_runtime_container_diagnostics"]["nodes"][0]["source_zip_exists"] is False
+    assert compact["propagations"][0]["full_hub_runtime_container_diagnostics"]["nodes"][0]["hub_import_ok"] is False
+    assert "runtime_archive_b64" not in raw
+    assert "candidates" not in raw
+    assert "coolify_snapshots" not in raw
+    assert "payload" not in raw
+    assert "tried" not in raw
+
+
+def test_hub_propagate_main_prints_operator_summary_by_default(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = {
+        "ok": True,
+        "operation": "hub-propagate",
+        "network": "mainnet",
+        "inventory": {"super_node_count": 0, "super_nodes": []},
+        "huddle": {"admin_count": 0},
+        "propagations": [],
+        "errors": [],
+    }
+
+    monkeypatch.setattr(control, "parse_args", lambda argv=None: argparse.Namespace(command="hub-propagate", json=False, verbose=False, dry_run=False))
+    monkeypatch.setattr(control, "build_plan_from_args", lambda args: object())
+    monkeypatch.setattr(control, "hub_propagate", lambda plan, args: payload)
+
+    assert control.main(["hub-propagate", "mainnet", "--allow-mainnet"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["summary"]["hosts"] == 0
+    assert printed["full_json"].startswith("rerun with --json")
+
+
+def test_hub_propagate_operator_log_is_quiet_by_default(capsys: pytest.CaptureFixture[str]) -> None:
+    args = argparse.Namespace(command="hub-propagate", quiet=False, progress=False, verbose=False)
+    control.operator_log(args, "full-hub-sync: waiting mainneta-super1 at mainneta-hub1.greatlibrary.io: attempt=1 observed=True ok=True bootstrap=True full=False")
+    assert capsys.readouterr().err == ""
+
+    control.operator_log(args, "full-hub-sync: container runtime diagnostics pending timeout: marker stayed pending")
+    assert "pending timeout" in capsys.readouterr().err
+
+
+def test_hub_propagate_operator_log_progress_restores_trace(capsys: pytest.CaptureFixture[str]) -> None:
+    args = argparse.Namespace(command="hub-propagate", quiet=False, progress=True, verbose=False)
+    control.operator_log(args, "full-hub-sync: waiting mainneta-super1 at mainneta-hub1.greatlibrary.io: attempt=1")
+    assert "attempt=1" in capsys.readouterr().err
+
+
+def test_hub_propagate_main_preserves_full_json_with_json_flag(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = {
+        "ok": True,
+        "operation": "hub-propagate",
+        "network": "mainnet",
+        "raw_marker": "kept-with-json",
+    }
+
+    monkeypatch.setattr(control, "parse_args", lambda argv=None: argparse.Namespace(command="hub-propagate", json=True, verbose=False, dry_run=False))
+    monkeypatch.setattr(control, "build_plan_from_args", lambda args: object())
+    monkeypatch.setattr(control, "hub_propagate", lambda plan, args: payload)
+
+    assert control.main(["hub-propagate", "mainnet", "--allow-mainnet", "--json"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["raw_marker"] == "kept-with-json"
+

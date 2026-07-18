@@ -873,3 +873,83 @@ required_checks:
   - mcel-requirements-language.md defines reusable region responsibility fields
   - MCEL Lab can infer roots/list/preview/status from the rendered app
 ```
+
+
+## Runtime diagnosis contract
+
+```mcel-runtime-check
+id: file-explorer.runtime-check.default-primary-surface
+app: file-explorer
+status: specified
+mode: default
+contract: file-explorer.contract.default.app-health
+check: primary-surface
+severity: critical
+primary_surface_id: file-explorer.surface.main
+host_selector: ".file-explorer-main"
+editor_selector: ".file-explorer-main"
+min_width: 420
+min_height: 320
+observes:
+  - ".file-explorer-main"
+expects:
+  - File Explorer main browsing surface is visible and usable.
+  - The list/preview work area is not collapsed.
+failure_message: File Explorer default mode must expose a usable browsing surface.
+next_probe: layout.ownerProbe
+source_binding: file-explorer.binding.viewport-file-explorer
+test_binding: file-explorer.test.viewport-file-explorer
+```
+
+```mcel-runtime-check
+id: file-explorer.runtime-check.default-required-regions
+app: file-explorer
+status: specified
+mode: default
+contract: file-explorer.contract.default.app-health
+check: required-regions-visible
+severity: critical
+observes:
+  - "#file-explorer-app"
+  - ".file-explorer-roots-panel"
+  - ".file-explorer-main"
+  - ".file-explorer-toolbar"
+  - "#file-explorer-list"
+required_regions:
+  - file-explorer.region.root | #file-explorer-app | File Explorer app root
+  - file-explorer.region.roots | .file-explorer-roots-panel | Roots panel
+  - file-explorer.region.main | .file-explorer-main | Main browsing surface
+  - file-explorer.region.toolbar | .file-explorer-toolbar | Path/search toolbar
+  - file-explorer.region.list | #file-explorer-list | File list
+expects:
+  - Root, roots panel, toolbar, main surface, and file list are visible.
+failure_message: File Explorer default mode must preserve roots, toolbar, and list.
+next_probe: layout.baseline
+source_binding: file-explorer.binding.viewport-file-explorer
+test_binding: file-explorer.test.viewport-file-explorer
+```
+
+```mcel-runtime-check
+id: file-explorer.runtime-check.default-overlay-policy
+app: file-explorer
+status: specified
+mode: default
+contract: file-explorer.contract.default.app-health
+check: overlay-policy
+severity: warning
+observes:
+  - "#mc-widget-editor-root"
+  - "[data-mcel-proof-surface]"
+  - ".floating-tab"
+  - ".side-tab"
+expects:
+  - MCEL/widget/proof overlays are not visible while browsing files.
+forbids:
+  - shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay
+  - shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface
+  - shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab
+failure_message: File Explorer should not be covered by diagnostic overlays in default mode.
+next_probe: overlay.detector
+source_binding: file-explorer.binding.viewport-file-explorer
+test_binding: file-explorer.test.viewport-file-explorer
+```

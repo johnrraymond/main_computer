@@ -84,6 +84,7 @@
         "mcel-intent": 10,
         "mcel-region": 11,
         "mcel-requirement": 10,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 1
       },
       "contract_complete": true,
@@ -134,12 +135,37 @@
       },
       "mutation_intent_count": 1,
       "open_finding_count": 3,
-      "planned_or_open_count": 38,
+      "planned_or_open_count": 41,
       "primary_user_goal": "Enter arithmetic expressions, inspect results, draw graphs, run explicit symbolic evaluations, and ask contextual questions without hidden filesystem, remote-sync, or command-execution side effects.",
       "prohibited_intent_count": 0,
       "region_count": 11,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "calculator.contract.default.app-health",
+          "id": "calculator.runtime-check.default-primary-workspace",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "calculator.contract.default.app-health",
+          "id": "calculator.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "calculator.contract.default.app-health",
+          "id": "calculator.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 96,
         "file": "pretty_docs/mcel-calculator-requirements.md",
@@ -150,7 +176,7 @@
         "draft": 1,
         "open": 3,
         "planned": 2,
-        "specified": 32
+        "specified": 35
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Calculator",
@@ -308,6 +334,7 @@
         "mcel-intent": 11,
         "mcel-region": 7,
         "mcel-requirement": 9,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 2
       },
       "contract_complete": true,
@@ -361,12 +388,37 @@
       },
       "mutation_intent_count": 3,
       "open_finding_count": 3,
-      "planned_or_open_count": 32,
+      "planned_or_open_count": 35,
       "primary_user_goal": "Browse trusted roots, inspect directory contents, search within a bounded scope, preview readable files, classify entries, and hand off chosen files to the right Main Computer app without hidden filesystem, Git, remote, or command side effects.",
       "prohibited_intent_count": 3,
       "region_count": 7,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "file-explorer.contract.default.app-health",
+          "id": "file-explorer.runtime-check.default-primary-surface",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "file-explorer.contract.default.app-health",
+          "id": "file-explorer.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "file-explorer.contract.default.app-health",
+          "id": "file-explorer.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 138,
         "file": "pretty_docs/mcel-file-explorer-requirements.md",
@@ -378,7 +430,7 @@
         "open": 3,
         "planned": 3,
         "prohibited": 3,
-        "specified": 24
+        "specified": 27
       },
       "target_runtime_status": "full-read-only-semantic-runtime",
       "title": "File Explorer",
@@ -411,6 +463,7 @@
         "mcel-intent": 10,
         "mcel-region": 8,
         "mcel-requirement": 11,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 4
       },
       "contract_complete": true,
@@ -464,12 +517,37 @@
       },
       "mutation_intent_count": 5,
       "open_finding_count": 4,
-      "planned_or_open_count": 35,
+      "planned_or_open_count": 38,
       "primary_user_goal": "Inspect repository state, triage files, create safe commits, and publish selected project work through governed Git/Gitea actions without exposing raw Git plumbing as the default user path.",
       "prohibited_intent_count": 1,
       "region_count": 8,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "git-tools.contract.default.app-health",
+          "id": "git-tools.runtime-check.default-primary-workflow",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "git-tools.contract.default.app-health",
+          "id": "git-tools.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "git-tools.contract.default.app-health",
+          "id": "git-tools.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 57,
         "file": "pretty_docs/mcel-git-tools-requirements.md",
@@ -482,7 +560,7 @@
         "partially-implemented": 5,
         "planned": 12,
         "prohibited": 1,
-        "specified": 19
+        "specified": 22
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Git Tools",
@@ -522,6 +600,7 @@
         "mcel-intent": 12,
         "mcel-region": 10,
         "mcel-requirement": 10,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 4
       },
       "contract_complete": true,
@@ -574,12 +653,37 @@
       },
       "mutation_intent_count": 8,
       "open_finding_count": 4,
-      "planned_or_open_count": 42,
+      "planned_or_open_count": 45,
       "primary_user_goal": "Edit saved websites, configure optional site runtime layers, preview and publish to explicit lanes, and hand repository changes to Git Tools without confusing author-owned source, generated runtime evidence, deployment targets, or remote sync.",
       "prohibited_intent_count": 0,
       "region_count": 10,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "website-builder.contract.default.app-health",
+          "id": "website-builder.runtime-check.default-primary-preview",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "website-builder.contract.default.app-health",
+          "id": "website-builder.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "website-builder.contract.default.app-health",
+          "id": "website-builder.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 196,
         "file": "pretty_docs/mcel-website-builder-requirements.md",
@@ -590,7 +694,7 @@
         "open": 4,
         "partially-implemented": 3,
         "planned": 6,
-        "specified": 32
+        "specified": 35
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Website Builder and Websites",
@@ -632,6 +736,7 @@
         "mcel-intent": 10,
         "mcel-region": 11,
         "mcel-requirement": 10,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 1
       },
       "contract_complete": true,
@@ -682,12 +787,37 @@
       },
       "mutation_intent_count": 1,
       "open_finding_count": 3,
-      "planned_or_open_count": 38,
+      "planned_or_open_count": 41,
       "primary_user_goal": "Enter arithmetic expressions, inspect results, draw graphs, run explicit symbolic evaluations, and ask contextual questions without hidden filesystem, remote-sync, or command-execution side effects.",
       "prohibited_intent_count": 0,
       "region_count": 11,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "calculator.contract.default.app-health",
+          "id": "calculator.runtime-check.default-primary-workspace",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "calculator.contract.default.app-health",
+          "id": "calculator.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "calculator.contract.default.app-health",
+          "id": "calculator.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 96,
         "file": "pretty_docs/mcel-calculator-requirements.md",
@@ -698,7 +828,7 @@
         "draft": 1,
         "open": 3,
         "planned": 2,
-        "specified": 32
+        "specified": 35
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Calculator",
@@ -856,6 +986,7 @@
         "mcel-intent": 11,
         "mcel-region": 7,
         "mcel-requirement": 9,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 2
       },
       "contract_complete": true,
@@ -909,12 +1040,37 @@
       },
       "mutation_intent_count": 3,
       "open_finding_count": 3,
-      "planned_or_open_count": 32,
+      "planned_or_open_count": 35,
       "primary_user_goal": "Browse trusted roots, inspect directory contents, search within a bounded scope, preview readable files, classify entries, and hand off chosen files to the right Main Computer app without hidden filesystem, Git, remote, or command side effects.",
       "prohibited_intent_count": 3,
       "region_count": 7,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "file-explorer.contract.default.app-health",
+          "id": "file-explorer.runtime-check.default-primary-surface",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "file-explorer.contract.default.app-health",
+          "id": "file-explorer.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "file-explorer.contract.default.app-health",
+          "id": "file-explorer.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 138,
         "file": "pretty_docs/mcel-file-explorer-requirements.md",
@@ -926,7 +1082,7 @@
         "open": 3,
         "planned": 3,
         "prohibited": 3,
-        "specified": 24
+        "specified": 27
       },
       "target_runtime_status": "full-read-only-semantic-runtime",
       "title": "File Explorer",
@@ -959,6 +1115,7 @@
         "mcel-intent": 10,
         "mcel-region": 8,
         "mcel-requirement": 11,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 4
       },
       "contract_complete": true,
@@ -1012,12 +1169,37 @@
       },
       "mutation_intent_count": 5,
       "open_finding_count": 4,
-      "planned_or_open_count": 35,
+      "planned_or_open_count": 38,
       "primary_user_goal": "Inspect repository state, triage files, create safe commits, and publish selected project work through governed Git/Gitea actions without exposing raw Git plumbing as the default user path.",
       "prohibited_intent_count": 1,
       "region_count": 8,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "git-tools.contract.default.app-health",
+          "id": "git-tools.runtime-check.default-primary-workflow",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "git-tools.contract.default.app-health",
+          "id": "git-tools.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "git-tools.contract.default.app-health",
+          "id": "git-tools.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 57,
         "file": "pretty_docs/mcel-git-tools-requirements.md",
@@ -1030,7 +1212,7 @@
         "partially-implemented": 5,
         "planned": 12,
         "prohibited": 1,
-        "specified": 19
+        "specified": 22
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Git Tools",
@@ -1070,6 +1252,7 @@
         "mcel-intent": 12,
         "mcel-region": 10,
         "mcel-requirement": 10,
+        "mcel-runtime-check": 3,
         "mcel-use-case": 4
       },
       "contract_complete": true,
@@ -1122,12 +1305,37 @@
       },
       "mutation_intent_count": 8,
       "open_finding_count": 4,
-      "planned_or_open_count": 42,
+      "planned_or_open_count": 45,
       "primary_user_goal": "Edit saved websites, configure optional site runtime layers, preview and publish to explicit lanes, and hand repository changes to Git Tools without confusing author-owned source, generated runtime evidence, deployment targets, or remote sync.",
       "prohibited_intent_count": 0,
       "region_count": 10,
-      "runtime_check_count": 0,
-      "runtime_checks": [],
+      "runtime_check_count": 3,
+      "runtime_checks": [
+        {
+          "check": "primary-surface",
+          "contract": "website-builder.contract.default.app-health",
+          "id": "website-builder.runtime-check.default-primary-preview",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "required-regions-visible",
+          "contract": "website-builder.contract.default.app-health",
+          "id": "website-builder.runtime-check.default-required-regions",
+          "mode": "default",
+          "severity": "critical",
+          "status": "specified"
+        },
+        {
+          "check": "overlay-policy",
+          "contract": "website-builder.contract.default.app-health",
+          "id": "website-builder.runtime-check.default-overlay-policy",
+          "mode": "default",
+          "severity": "warning",
+          "status": "specified"
+        }
+      ],
       "source": {
         "end_line": 196,
         "file": "pretty_docs/mcel-website-builder-requirements.md",
@@ -1138,7 +1346,7 @@
         "open": 4,
         "partially-implemented": 3,
         "planned": 6,
-        "specified": 32
+        "specified": 35
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Website Builder and Websites",
@@ -1169,6 +1377,198 @@
   "payload_version": "mcel-requirements-lab-payload-v1",
   "registry_version": "mcel-requirements-registry-v1",
   "runtime_diagnostic_contracts": {
+    "calculator": {
+      "app": "calculator",
+      "mode_contracts": {
+        "default": {
+          "appId": "calculator",
+          "checks": [
+            {
+              "app": "calculator",
+              "check": "overlay-policy",
+              "contract": "calculator.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "MCEL/widget/proof overlays are not visible while the calculator is in default mode."
+              ],
+              "failure_message": "Calculator default mode should not be covered by diagnostic overlays.",
+              "forbidden_regions": [],
+              "forbids": [
+                "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
+                "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
+                "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
+              ],
+              "host_selector": "",
+              "id": "calculator.runtime-check.default-overlay-policy",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "overlay.detector",
+              "observes": [
+                "#mc-widget-editor-root",
+                "[data-mcel-proof-surface]",
+                ".floating-tab",
+                ".side-tab"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [],
+              "severity": "warning",
+              "source": {
+                "end_line": 967,
+                "file": "pretty_docs/mcel-calculator-requirements.md",
+                "start_line": 944
+              },
+              "source_binding": "calculator.binding.route-and-ui",
+              "status": "specified",
+              "test_binding": "calculator.test.route-checks"
+            },
+            {
+              "app": "calculator",
+              "check": "primary-surface",
+              "contract": "calculator.contract.default.app-health",
+              "editor_selector": ".calculator-workspace",
+              "expects": [
+                "Calculator workspace is visible and large enough for the active mode.",
+                "The primary calculator surface is not collapsed by surrounding app chrome."
+              ],
+              "failure_message": "Calculator default mode must expose a usable workspace.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": ".calculator-workspace",
+              "id": "calculator.runtime-check.default-primary-workspace",
+              "lifecycle_assertions": [],
+              "min_height": "320",
+              "min_width": "420",
+              "mode": "default",
+              "next_probe": "layout.ownerProbe",
+              "observes": [
+                ".calculator-workspace"
+              ],
+              "primary_surface_id": "calculator.surface.workspace",
+              "required_regions": [],
+              "severity": "critical",
+              "source": {
+                "end_line": 912,
+                "file": "pretty_docs/mcel-calculator-requirements.md",
+                "start_line": 890
+              },
+              "source_binding": "calculator.binding.route-and-ui",
+              "status": "specified",
+              "test_binding": "calculator.test.route-checks"
+            },
+            {
+              "app": "calculator",
+              "check": "required-regions-visible",
+              "contract": "calculator.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "Calculator app root is visible.",
+                "Mode switch remains visible.",
+                "Calculator workspace and display remain visible."
+              ],
+              "failure_message": "Calculator default mode must preserve root, controls, workspace, and display.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": "",
+              "id": "calculator.runtime-check.default-required-regions",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "layout.baseline",
+              "observes": [
+                "#calculator-app",
+                ".calculator-shell",
+                ".calculator-mode-switch",
+                ".calculator-workspace",
+                "#calculator-display"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [
+                {
+                  "id": "calculator.region.root",
+                  "label": "Calculator app root",
+                  "selector": "#calculator-app"
+                },
+                {
+                  "id": "calculator.region.shell",
+                  "label": "Calculator shell",
+                  "selector": ".calculator-shell"
+                },
+                {
+                  "id": "calculator.region.mode-switch",
+                  "label": "Calculator mode switch",
+                  "selector": ".calculator-mode-switch"
+                },
+                {
+                  "id": "calculator.region.workspace",
+                  "label": "Calculator workspace",
+                  "selector": ".calculator-workspace"
+                },
+                {
+                  "id": "calculator.region.display",
+                  "label": "Calculator display",
+                  "selector": "#calculator-display"
+                }
+              ],
+              "severity": "critical",
+              "source": {
+                "end_line": 942,
+                "file": "pretty_docs/mcel-calculator-requirements.md",
+                "start_line": 914
+              },
+              "source_binding": "calculator.binding.route-and-ui",
+              "status": "specified",
+              "test_binding": "calculator.test.route-checks"
+            }
+          ],
+          "contractId": "calculator.contract.default.app-health",
+          "derivedFromBlockTypes": [
+            "mcel-runtime-check"
+          ],
+          "forbiddenRegions": [],
+          "lifecycleAssertions": [],
+          "mode": "default",
+          "primarySurface": {
+            "editorSelector": ".calculator-workspace",
+            "hostSelector": ".calculator-workspace",
+            "id": "calculator.surface.workspace",
+            "label": "Calculator default mode must expose a usable workspace.",
+            "minHeight": 320,
+            "minWidth": 420
+          },
+          "requiredRegions": [
+            {
+              "id": "calculator.region.root",
+              "label": "Calculator app root",
+              "selector": "#calculator-app"
+            },
+            {
+              "id": "calculator.region.shell",
+              "label": "Calculator shell",
+              "selector": ".calculator-shell"
+            },
+            {
+              "id": "calculator.region.mode-switch",
+              "label": "Calculator mode switch",
+              "selector": ".calculator-mode-switch"
+            },
+            {
+              "id": "calculator.region.workspace",
+              "label": "Calculator workspace",
+              "selector": ".calculator-workspace"
+            },
+            {
+              "id": "calculator.region.display",
+              "label": "Calculator display",
+              "selector": "#calculator-display"
+            }
+          ],
+          "source": "mcel-runtime-check"
+        }
+      }
+    },
     "code-editor": {
       "app": "code-editor",
       "mode_contracts": {
@@ -1450,6 +1850,565 @@
           "source": "mcel-runtime-check"
         }
       }
+    },
+    "file-explorer": {
+      "app": "file-explorer",
+      "mode_contracts": {
+        "default": {
+          "appId": "file-explorer",
+          "checks": [
+            {
+              "app": "file-explorer",
+              "check": "overlay-policy",
+              "contract": "file-explorer.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "MCEL/widget/proof overlays are not visible while browsing files."
+              ],
+              "failure_message": "File Explorer should not be covered by diagnostic overlays in default mode.",
+              "forbidden_regions": [],
+              "forbids": [
+                "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
+                "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
+                "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
+              ],
+              "host_selector": "",
+              "id": "file-explorer.runtime-check.default-overlay-policy",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "overlay.detector",
+              "observes": [
+                "#mc-widget-editor-root",
+                "[data-mcel-proof-surface]",
+                ".floating-tab",
+                ".side-tab"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [],
+              "severity": "warning",
+              "source": {
+                "end_line": 955,
+                "file": "pretty_docs/mcel-file-explorer-requirements.md",
+                "start_line": 932
+              },
+              "source_binding": "file-explorer.binding.viewport-file-explorer",
+              "status": "specified",
+              "test_binding": "file-explorer.test.viewport-file-explorer"
+            },
+            {
+              "app": "file-explorer",
+              "check": "primary-surface",
+              "contract": "file-explorer.contract.default.app-health",
+              "editor_selector": ".file-explorer-main",
+              "expects": [
+                "File Explorer main browsing surface is visible and usable.",
+                "The list/preview work area is not collapsed."
+              ],
+              "failure_message": "File Explorer default mode must expose a usable browsing surface.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": ".file-explorer-main",
+              "id": "file-explorer.runtime-check.default-primary-surface",
+              "lifecycle_assertions": [],
+              "min_height": "320",
+              "min_width": "420",
+              "mode": "default",
+              "next_probe": "layout.ownerProbe",
+              "observes": [
+                ".file-explorer-main"
+              ],
+              "primary_surface_id": "file-explorer.surface.main",
+              "required_regions": [],
+              "severity": "critical",
+              "source": {
+                "end_line": 902,
+                "file": "pretty_docs/mcel-file-explorer-requirements.md",
+                "start_line": 880
+              },
+              "source_binding": "file-explorer.binding.viewport-file-explorer",
+              "status": "specified",
+              "test_binding": "file-explorer.test.viewport-file-explorer"
+            },
+            {
+              "app": "file-explorer",
+              "check": "required-regions-visible",
+              "contract": "file-explorer.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "Root, roots panel, toolbar, main surface, and file list are visible."
+              ],
+              "failure_message": "File Explorer default mode must preserve roots, toolbar, and list.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": "",
+              "id": "file-explorer.runtime-check.default-required-regions",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "layout.baseline",
+              "observes": [
+                "#file-explorer-app",
+                ".file-explorer-roots-panel",
+                ".file-explorer-main",
+                ".file-explorer-toolbar",
+                "#file-explorer-list"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [
+                {
+                  "id": "file-explorer.region.root",
+                  "label": "File Explorer app root",
+                  "selector": "#file-explorer-app"
+                },
+                {
+                  "id": "file-explorer.region.roots",
+                  "label": "Roots panel",
+                  "selector": ".file-explorer-roots-panel"
+                },
+                {
+                  "id": "file-explorer.region.main",
+                  "label": "Main browsing surface",
+                  "selector": ".file-explorer-main"
+                },
+                {
+                  "id": "file-explorer.region.toolbar",
+                  "label": "Path/search toolbar",
+                  "selector": ".file-explorer-toolbar"
+                },
+                {
+                  "id": "file-explorer.region.list",
+                  "label": "File list",
+                  "selector": "#file-explorer-list"
+                }
+              ],
+              "severity": "critical",
+              "source": {
+                "end_line": 930,
+                "file": "pretty_docs/mcel-file-explorer-requirements.md",
+                "start_line": 904
+              },
+              "source_binding": "file-explorer.binding.viewport-file-explorer",
+              "status": "specified",
+              "test_binding": "file-explorer.test.viewport-file-explorer"
+            }
+          ],
+          "contractId": "file-explorer.contract.default.app-health",
+          "derivedFromBlockTypes": [
+            "mcel-runtime-check"
+          ],
+          "forbiddenRegions": [],
+          "lifecycleAssertions": [],
+          "mode": "default",
+          "primarySurface": {
+            "editorSelector": ".file-explorer-main",
+            "hostSelector": ".file-explorer-main",
+            "id": "file-explorer.surface.main",
+            "label": "File Explorer default mode must expose a usable browsing surface.",
+            "minHeight": 320,
+            "minWidth": 420
+          },
+          "requiredRegions": [
+            {
+              "id": "file-explorer.region.root",
+              "label": "File Explorer app root",
+              "selector": "#file-explorer-app"
+            },
+            {
+              "id": "file-explorer.region.roots",
+              "label": "Roots panel",
+              "selector": ".file-explorer-roots-panel"
+            },
+            {
+              "id": "file-explorer.region.main",
+              "label": "Main browsing surface",
+              "selector": ".file-explorer-main"
+            },
+            {
+              "id": "file-explorer.region.toolbar",
+              "label": "Path/search toolbar",
+              "selector": ".file-explorer-toolbar"
+            },
+            {
+              "id": "file-explorer.region.list",
+              "label": "File list",
+              "selector": "#file-explorer-list"
+            }
+          ],
+          "source": "mcel-runtime-check"
+        }
+      }
+    },
+    "git-tools": {
+      "app": "git-tools",
+      "mode_contracts": {
+        "default": {
+          "appId": "git-tools",
+          "checks": [
+            {
+              "app": "git-tools",
+              "check": "overlay-policy",
+              "contract": "git-tools.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "MCEL/widget/proof overlays are not visible while running the default Git Tools workflow."
+              ],
+              "failure_message": "Git Tools default mode should not be covered by diagnostic overlays.",
+              "forbidden_regions": [],
+              "forbids": [
+                "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
+                "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
+                "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
+              ],
+              "host_selector": "",
+              "id": "git-tools.runtime-check.default-overlay-policy",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "overlay.detector",
+              "observes": [
+                "#mc-widget-editor-root",
+                "[data-mcel-proof-surface]",
+                ".floating-tab",
+                ".side-tab"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [],
+              "severity": "warning",
+              "source": {
+                "end_line": 1037,
+                "file": "pretty_docs/mcel-git-tools-requirements.md",
+                "start_line": 1014
+              },
+              "source_binding": "git-tools.binding.project-workflow",
+              "status": "specified",
+              "test_binding": "git-tools.test.semantic-adapter"
+            },
+            {
+              "app": "git-tools",
+              "check": "primary-surface",
+              "contract": "git-tools.contract.default.app-health",
+              "editor_selector": "#git-project-workflow-surface",
+              "expects": [
+                "Git Tools project workflow surface is visible and usable.",
+                "The workflow surface is not collapsed by rails or proof panels."
+              ],
+              "failure_message": "Git Tools default mode must expose a usable workflow surface.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": "#git-project-workflow-surface",
+              "id": "git-tools.runtime-check.default-primary-workflow",
+              "lifecycle_assertions": [],
+              "min_height": "320",
+              "min_width": "420",
+              "mode": "default",
+              "next_probe": "layout.ownerProbe",
+              "observes": [
+                "#git-project-workflow-surface"
+              ],
+              "primary_surface_id": "git-tools.surface.workflow",
+              "required_regions": [],
+              "severity": "critical",
+              "source": {
+                "end_line": 986,
+                "file": "pretty_docs/mcel-git-tools-requirements.md",
+                "start_line": 964
+              },
+              "source_binding": "git-tools.binding.project-workflow",
+              "status": "specified",
+              "test_binding": "git-tools.test.semantic-adapter"
+            },
+            {
+              "app": "git-tools",
+              "check": "required-regions-visible",
+              "contract": "git-tools.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "Root, shell, project selector, and workflow surface remain visible."
+              ],
+              "failure_message": "Git Tools default mode must preserve project selection and workflow.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": "",
+              "id": "git-tools.runtime-check.default-required-regions",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "layout.baseline",
+              "observes": [
+                "#git-tools-app",
+                ".git-tools-shell",
+                "#git-project-selector-panel",
+                "#git-project-workflow-surface"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [
+                {
+                  "id": "git-tools.region.root",
+                  "label": "Git Tools app root",
+                  "selector": "#git-tools-app"
+                },
+                {
+                  "id": "git-tools.region.shell",
+                  "label": "Git Tools shell",
+                  "selector": ".git-tools-shell"
+                },
+                {
+                  "id": "git-tools.region.project-selector",
+                  "label": "Project selector",
+                  "selector": "#git-project-selector-panel"
+                },
+                {
+                  "id": "git-tools.region.workflow",
+                  "label": "Project workflow surface",
+                  "selector": "#git-project-workflow-surface"
+                }
+              ],
+              "severity": "critical",
+              "source": {
+                "end_line": 1012,
+                "file": "pretty_docs/mcel-git-tools-requirements.md",
+                "start_line": 988
+              },
+              "source_binding": "git-tools.binding.project-workflow",
+              "status": "specified",
+              "test_binding": "git-tools.test.semantic-adapter"
+            }
+          ],
+          "contractId": "git-tools.contract.default.app-health",
+          "derivedFromBlockTypes": [
+            "mcel-runtime-check"
+          ],
+          "forbiddenRegions": [],
+          "lifecycleAssertions": [],
+          "mode": "default",
+          "primarySurface": {
+            "editorSelector": "#git-project-workflow-surface",
+            "hostSelector": "#git-project-workflow-surface",
+            "id": "git-tools.surface.workflow",
+            "label": "Git Tools default mode must expose a usable workflow surface.",
+            "minHeight": 320,
+            "minWidth": 420
+          },
+          "requiredRegions": [
+            {
+              "id": "git-tools.region.root",
+              "label": "Git Tools app root",
+              "selector": "#git-tools-app"
+            },
+            {
+              "id": "git-tools.region.shell",
+              "label": "Git Tools shell",
+              "selector": ".git-tools-shell"
+            },
+            {
+              "id": "git-tools.region.project-selector",
+              "label": "Project selector",
+              "selector": "#git-project-selector-panel"
+            },
+            {
+              "id": "git-tools.region.workflow",
+              "label": "Project workflow surface",
+              "selector": "#git-project-workflow-surface"
+            }
+          ],
+          "source": "mcel-runtime-check"
+        }
+      }
+    },
+    "website-builder": {
+      "app": "website-builder",
+      "mode_contracts": {
+        "default": {
+          "appId": "website-builder",
+          "checks": [
+            {
+              "app": "website-builder",
+              "check": "overlay-policy",
+              "contract": "website-builder.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "MCEL/widget/proof overlays are not visible while using the default builder surface."
+              ],
+              "failure_message": "Website Builder default mode should not be covered by diagnostic overlays.",
+              "forbidden_regions": [],
+              "forbids": [
+                "shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay",
+                "shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface",
+                "shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab"
+              ],
+              "host_selector": "",
+              "id": "website-builder.runtime-check.default-overlay-policy",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "overlay.detector",
+              "observes": [
+                "#mc-widget-editor-root",
+                "[data-mcel-proof-surface]",
+                ".floating-tab",
+                ".side-tab"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [],
+              "severity": "warning",
+              "source": {
+                "end_line": 1114,
+                "file": "pretty_docs/mcel-website-builder-requirements.md",
+                "start_line": 1091
+              },
+              "source_binding": "website-builder.binding.builder-runtime",
+              "status": "specified",
+              "test_binding": "website-builder.test.documentation-contract"
+            },
+            {
+              "app": "website-builder",
+              "check": "primary-surface",
+              "contract": "website-builder.contract.default.app-health",
+              "editor_selector": ".website-builder-preview",
+              "expects": [
+                "Website Builder preview/design surface is visible and usable.",
+                "The selected site surface is not collapsed by inspector or publishing panels."
+              ],
+              "failure_message": "Website Builder default mode must expose a usable preview/design surface.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": ".website-builder-preview",
+              "id": "website-builder.runtime-check.default-primary-preview",
+              "lifecycle_assertions": [],
+              "min_height": "320",
+              "min_width": "420",
+              "mode": "default",
+              "next_probe": "layout.ownerProbe",
+              "observes": [
+                ".website-builder-preview"
+              ],
+              "primary_surface_id": "website-builder.surface.preview",
+              "required_regions": [],
+              "severity": "critical",
+              "source": {
+                "end_line": 1061,
+                "file": "pretty_docs/mcel-website-builder-requirements.md",
+                "start_line": 1039
+              },
+              "source_binding": "website-builder.binding.builder-runtime",
+              "status": "specified",
+              "test_binding": "website-builder.test.documentation-contract"
+            },
+            {
+              "app": "website-builder",
+              "check": "required-regions-visible",
+              "contract": "website-builder.contract.default.app-health",
+              "editor_selector": "",
+              "expects": [
+                "Root, shell, summary, preview, and inspector remain visible."
+              ],
+              "failure_message": "Website Builder default mode must preserve summary, preview, and inspector.",
+              "forbidden_regions": [],
+              "forbids": [],
+              "host_selector": "",
+              "id": "website-builder.runtime-check.default-required-regions",
+              "lifecycle_assertions": [],
+              "min_height": "",
+              "min_width": "",
+              "mode": "default",
+              "next_probe": "layout.baseline",
+              "observes": [
+                "#website-builder-app",
+                ".website-builder-main",
+                ".website-builder-summary",
+                ".website-builder-preview",
+                ".website-builder-inspector"
+              ],
+              "primary_surface_id": "",
+              "required_regions": [
+                {
+                  "id": "website-builder.region.root",
+                  "label": "Website Builder app root",
+                  "selector": "#website-builder-app"
+                },
+                {
+                  "id": "website-builder.region.main",
+                  "label": "Website Builder shell",
+                  "selector": ".website-builder-main"
+                },
+                {
+                  "id": "website-builder.region.summary",
+                  "label": "Website summary",
+                  "selector": ".website-builder-summary"
+                },
+                {
+                  "id": "website-builder.region.preview",
+                  "label": "Preview/design surface",
+                  "selector": ".website-builder-preview"
+                },
+                {
+                  "id": "website-builder.region.inspector",
+                  "label": "Inspector",
+                  "selector": ".website-builder-inspector"
+                }
+              ],
+              "severity": "critical",
+              "source": {
+                "end_line": 1089,
+                "file": "pretty_docs/mcel-website-builder-requirements.md",
+                "start_line": 1063
+              },
+              "source_binding": "website-builder.binding.builder-runtime",
+              "status": "specified",
+              "test_binding": "website-builder.test.documentation-contract"
+            }
+          ],
+          "contractId": "website-builder.contract.default.app-health",
+          "derivedFromBlockTypes": [
+            "mcel-runtime-check"
+          ],
+          "forbiddenRegions": [],
+          "lifecycleAssertions": [],
+          "mode": "default",
+          "primarySurface": {
+            "editorSelector": ".website-builder-preview",
+            "hostSelector": ".website-builder-preview",
+            "id": "website-builder.surface.preview",
+            "label": "Website Builder default mode must expose a usable preview/design surface.",
+            "minHeight": 320,
+            "minWidth": 420
+          },
+          "requiredRegions": [
+            {
+              "id": "website-builder.region.root",
+              "label": "Website Builder app root",
+              "selector": "#website-builder-app"
+            },
+            {
+              "id": "website-builder.region.main",
+              "label": "Website Builder shell",
+              "selector": ".website-builder-main"
+            },
+            {
+              "id": "website-builder.region.summary",
+              "label": "Website summary",
+              "selector": ".website-builder-summary"
+            },
+            {
+              "id": "website-builder.region.preview",
+              "label": "Preview/design surface",
+              "selector": ".website-builder-preview"
+            },
+            {
+              "id": "website-builder.region.inspector",
+              "label": "Inspector",
+              "selector": ".website-builder-inspector"
+            }
+          ],
+          "source": "mcel-runtime-check"
+        }
+      }
     }
   },
   "source": "pretty_docs/*.md",
@@ -1463,11 +2422,11 @@
       "website-builder"
     ],
     "app_counts": {
-      "calculator": 38,
+      "calculator": 41,
       "code-editor": 33,
-      "file-explorer": 35,
-      "git-tools": 42,
-      "website-builder": 45
+      "file-explorer": 38,
+      "git-tools": 45,
+      "website-builder": 48
     },
     "block_type_counts": {
       "mcel-acceptance": 17,
@@ -1477,7 +2436,7 @@
       "mcel-intent": 50,
       "mcel-region": 43,
       "mcel-requirement": 47,
-      "mcel-runtime-check": 4,
+      "mcel-runtime-check": 16,
       "mcel-source-binding": 1,
       "mcel-test-binding": 1,
       "mcel-use-case": 13
@@ -1485,9 +2444,9 @@
     "error_count": 0,
     "pretty_docs_root": "pretty_docs",
     "registry_version": "mcel-requirements-registry-v1",
-    "repo_root": "/mnt/data/work_contract_runtime_checks_norm/main_computer_test",
+    "repo_root": "/mnt/data/work_phase2_diag_norm/main_computer_test",
     "strict_schema_ready": true,
-    "total_blocks": 215,
+    "total_blocks": 227,
     "valid": true,
     "warning_count": 0
   },

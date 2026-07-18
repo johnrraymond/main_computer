@@ -20,6 +20,17 @@ vm.runInThisContext(fs.readFileSync({json.dumps(str(workflow))}, "utf8"), {{file
 const actions = [
   {{id: "save_current_state", label: "Save Current State", order: 1}},
   {{
+    id: "update_gitignore_before_initial_commit",
+    label: "Clean up .gitignore before first commit",
+    paths: ["dist/app.bundle.js"],
+    affected_paths: ["dist/app.bundle.js"],
+    ignore_rules: ["dist/"],
+    safe_paths: ["dist/app.bundle.js"],
+    gitignore_file: {{exists: true, content_read: true, lines: []}},
+    weight: 18,
+    showRunner: true
+  }},
+  {{
     id: "ignore_generated_files",
     label: "Ignore generated files",
     paths: ["build/cache.tmp", "logs/debug.log"],
@@ -27,6 +38,16 @@ const actions = [
     ignore_rules: ["build/", "logs/"],
     safe_paths: ["build/cache.tmp"],
     weight: 12,
+    showRunner: true
+  }},
+  {{
+    id: "ignore_debug_output",
+    label: "Ignore debug output",
+    paths: ["debug/output.log"],
+    affected_paths: ["debug/output.log"],
+    ignore_rules: ["debug/"],
+    safe_paths: ["debug/output.log"],
+    weight: 11,
     showRunner: true
   }},
   {{
@@ -108,7 +129,7 @@ def test_git_tools_project_workflow_owns_action_queue_and_classification_policy(
 
     assert report["hiddenIncluded"] is False
     assert report["displayActionIds"] == [
-        "ignore_generated_files",
+        "update_gitignore_before_initial_commit",
         "secrets_filter",
         "prepare_commit_snapshot",
     ]
@@ -119,8 +140,9 @@ def test_git_tools_project_workflow_owns_action_queue_and_classification_policy(
     ]
 
     merged = report["mergedGitignore"]
-    assert merged["paths"] == [".env.local", "build/cache.tmp", "logs/debug.log"]
-    assert merged["ignore_rules"] == ["build/", "logs/", ".env.local"]
+    assert merged["id"] == "update_gitignore_before_initial_commit"
+    assert merged["paths"] == [".env.local", "build/cache.tmp", "debug/output.log", "dist/app.bundle.js", "logs/debug.log"]
+    assert merged["ignore_rules"] == ["dist/", "build/", "logs/", "debug/", ".env.local"]
     assert merged["questionable_ignore_rules"] == ["*.local"]
     assert merged["gitignore_review_summary"]["shared_path_count"] == 1
     assert merged["showRunner"] is True

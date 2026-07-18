@@ -43,7 +43,7 @@ def test_registry_parses_current_mcel_docs_without_hard_errors() -> None:
     assert summary["block_type_counts"]["mcel-requirement"] >= 45
     assert summary["block_type_counts"]["mcel-intent"] >= 50
     assert summary["block_type_counts"]["mcel-region"] >= 40
-    assert summary["block_type_counts"]["mcel-runtime-check"] >= 4
+    assert summary["block_type_counts"]["mcel-runtime-check"] >= 16
 
 
 def test_registry_preserves_source_locations_and_expected_use_cases() -> None:
@@ -120,6 +120,11 @@ def test_registry_loads_grammar_and_is_strict_schema_ready() -> None:
 def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
     registry = build_registry(ROOT)
     contracts = build_runtime_diagnostic_contracts(registry)
+    for app_id in EXPECTED_APP_CONTRACTS:
+        assert app_id in contracts
+        mode_contracts = contracts[app_id]["mode_contracts"]
+        assert mode_contracts
+
     code_editor = contracts["code-editor"]["mode_contracts"]["authoring"]
 
     assert code_editor["contractId"] == "code-editor.contract.authoring.monaco-golden-path"
@@ -146,9 +151,23 @@ def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
         "lifecycle-contract-preserved",
     }
 
+    calculator = contracts["calculator"]["mode_contracts"]["default"]
+    assert calculator["contractId"] == "calculator.contract.default.app-health"
+    assert calculator["primarySurface"]["hostSelector"] == ".calculator-workspace"
+
+    file_explorer = contracts["file-explorer"]["mode_contracts"]["default"]
+    assert file_explorer["primarySurface"]["hostSelector"] == ".file-explorer-main"
+
+    git_tools = contracts["git-tools"]["mode_contracts"]["default"]
+    assert git_tools["primarySurface"]["hostSelector"] == "#git-project-workflow-surface"
+
+    website_builder = contracts["website-builder"]["mode_contracts"]["default"]
+    assert website_builder["primarySurface"]["hostSelector"] == ".website-builder-preview"
+
     payload = build_lab_payload(registry)
     payload_contract = payload["runtime_diagnostic_contracts"]["code-editor"]["mode_contracts"]["authoring"]
     assert payload_contract["contractId"] == code_editor["contractId"]
+    assert "calculator" in payload["runtime_diagnostic_contracts"]
 
 
 def test_intent_blocks_use_canonical_risk_and_io_fields() -> None:

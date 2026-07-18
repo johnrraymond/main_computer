@@ -1,148 +1,227 @@
 (() => {
   "use strict";
 
-  const VERSION = "mcel-self-diagnosis-v1";
-  const REPORT_SCHEMA = "mcel-self-diagnosis-report-v1";
+  const VERSION = "mcel-self-diagnosis-v2";
+  const REPORT_SCHEMA = "mcel-self-diagnosis-report-v2";
 
-  const CODE_EDITOR_AUTHORING_CONTRACT = deepFreeze({
-    contractId: "code-editor.contract.authoring.monaco-golden-path",
-    appId: "code-editor",
-    mode: "authoring",
-    intent: "Expose one usable Monaco selected-file editor and keep MCEL diagnostic surfaces out of the default editing path.",
-    derivedFromBlockTypes: [
-      "mcel-region",
-      "mcel-requirement",
-      "mcel-acceptance",
-      "mcel-boundary",
-      "mcel-source-binding",
-      "mcel-test-binding",
-      "mcel-runtime-check"
-    ],
-    primarySurface: {
-      id: "code-editor.surface.monaco-selected-file-editor",
-      label: "Monaco selected-file editor",
-      hostSelector: "#code-studio-runtime-monaco",
-      editorSelector: ".monaco-editor",
-      minWidth: 800,
-      minHeight: 600
-    },
-    requiredRegions: [
-      {
-        id: "code-editor.region.root",
-        selector: "#code-editor-app",
-        label: "Code Editor app root"
-      },
-      {
-        id: "code-editor.region.explorer",
-        selector: ".code-studio-sidebar",
-        label: "Explorer"
-      },
-      {
-        id: "code-editor.region.editor-group",
-        selector: ".code-studio-editor-group",
-        label: "Editor group"
-      }
-    ],
-    forbiddenRegions: [
-      {
-        id: "code-editor.forbidden.source-pane",
-        selector: '[data-code-studio-pane="source"]',
-        label: "MCEL source model pane"
-      },
-      {
-        id: "code-editor.forbidden.serialized-pane",
-        selector: '[data-code-studio-pane="serialized"]',
-        label: "Serialized output pane"
-      },
-      {
-        id: "code-editor.forbidden.contract-pane",
-        selector: '[data-code-studio-pane="contract"]',
-        label: "Contract report pane"
-      },
-      {
-        id: "code-editor.forbidden.runtime-scaffold.window",
-        selector: ".code-studio-runtime-window",
-        label: "Generated runtime window scaffold"
-      },
-      {
-        id: "code-editor.forbidden.runtime-scaffold.layout",
-        selector: ".code-studio-runtime-layout",
-        label: "Generated runtime layout scaffold"
-      },
-      {
-        id: "code-editor.forbidden.runtime-file-rail",
-        selector: ".code-studio-runtime-files",
-        label: "Generated runtime file rail"
-      },
-      {
-        id: "code-editor.forbidden.fallback-textarea",
-        selector: "#code-studio-runtime-draft, .code-studio-runtime-fallback",
-        label: "Fallback textarea"
-      },
-      {
-        id: "code-editor.forbidden.proof-dock",
-        selector: ".code-studio-proof-dock, #code-studio-bottom-panel",
-        label: "MCEL proof/evidence dock"
-      },
-      {
-        id: "code-editor.forbidden.widget-overlay",
-        selector: "#mc-widget-editor-root",
-        label: "Widget editor overlay"
-      }
-    ],
-    lifecycleAssertions: [
-      "startup-authoring-mode-has-one-primary-editor",
-      "file-click-keeps-one-primary-editor",
-      "mcel-diagnostics-hidden-in-authoring"
-    ]
+  const APP_MODE_DEFAULTS = Object.freeze({
+    "code-editor": "authoring",
+    calculator: "default",
+    "file-explorer": "default",
+    "git-tools": "default",
+    "website-builder": "default"
   });
 
+  const COMMON_OVERLAY_SELECTORS = Object.freeze([
+    "#mc-widget-editor-root",
+    ".code-studio-proof-dock",
+    "#code-studio-bottom-panel",
+    ".floating-tab",
+    ".side-tab",
+    ".vertical-tab",
+    "[data-mcel-proof-surface]",
+    "[data-code-studio-panel=\"assistant\"]"
+  ]);
+
+  const FALLBACK_CONTRACTS = deepFreeze({
+    "code-editor": {
+      contractId: "code-editor.contract.authoring.monaco-golden-path",
+      appId: "code-editor",
+      mode: "authoring",
+      intent: "Expose one usable Monaco selected-file editor and keep MCEL diagnostic surfaces out of the default editing path.",
+      derivedFromBlockTypes: [
+        "mcel-region",
+        "mcel-requirement",
+        "mcel-acceptance",
+        "mcel-boundary",
+        "mcel-source-binding",
+        "mcel-test-binding",
+        "mcel-runtime-check"
+      ],
+      primarySurface: {
+        id: "code-editor.surface.monaco-selected-file-editor",
+        label: "Monaco selected-file editor",
+        hostSelector: "#code-studio-runtime-monaco",
+        editorSelector: ".monaco-editor",
+        minWidth: 800,
+        minHeight: 600
+      },
+      requiredRegions: [
+        {id: "code-editor.region.root", selector: "#code-editor-app", label: "Code Editor app root"},
+        {id: "code-editor.region.explorer", selector: ".code-studio-sidebar", label: "Explorer"},
+        {id: "code-editor.region.editor-group", selector: ".code-studio-editor-group", label: "Editor group"}
+      ],
+      forbiddenRegions: [
+        {id: "code-editor.forbidden.source-pane", selector: "[data-code-studio-pane=\"source\"]", label: "MCEL source model pane"},
+        {id: "code-editor.forbidden.serialized-pane", selector: "[data-code-studio-pane=\"serialized\"]", label: "Serialized output pane"},
+        {id: "code-editor.forbidden.contract-pane", selector: "[data-code-studio-pane=\"contract\"]", label: "Contract report pane"},
+        {id: "code-editor.forbidden.runtime-scaffold.window", selector: ".code-studio-runtime-window", label: "Generated runtime window scaffold"},
+        {id: "code-editor.forbidden.runtime-scaffold.layout", selector: ".code-studio-runtime-layout", label: "Generated runtime layout scaffold"},
+        {id: "code-editor.forbidden.runtime-file-rail", selector: ".code-studio-runtime-files", label: "Generated runtime file rail"},
+        {id: "code-editor.forbidden.fallback-textarea", selector: "#code-studio-runtime-draft, .code-studio-runtime-fallback", label: "Fallback textarea"},
+        {id: "code-editor.forbidden.proof-dock", selector: ".code-studio-proof-dock, #code-studio-bottom-panel", label: "MCEL proof/evidence dock"},
+        {id: "code-editor.forbidden.widget-overlay", selector: "#mc-widget-editor-root", label: "Widget editor overlay"}
+      ],
+      lifecycleAssertions: [
+        "startup-authoring-mode-has-one-primary-editor",
+        "file-click-keeps-one-primary-editor",
+        "mcel-diagnostics-hidden-in-authoring"
+      ]
+    },
+    calculator: {
+      contractId: "calculator.contract.default.app-health",
+      appId: "calculator",
+      mode: "default",
+      intent: "Expose a usable calculator workspace and keep diagnostic overlays out of the default path.",
+      derivedFromBlockTypes: ["mcel-runtime-check"],
+      primarySurface: {
+        id: "calculator.surface.workspace",
+        label: "Calculator workspace",
+        hostSelector: ".calculator-workspace",
+        editorSelector: ".calculator-workspace",
+        minWidth: 420,
+        minHeight: 320
+      },
+      requiredRegions: [
+        {id: "calculator.region.root", selector: "#calculator-app", label: "Calculator app root"},
+        {id: "calculator.region.shell", selector: ".calculator-shell", label: "Calculator shell"},
+        {id: "calculator.region.workspace", selector: ".calculator-workspace", label: "Calculator workspace"},
+        {id: "calculator.region.display", selector: "#calculator-display", label: "Calculator display"}
+      ],
+      forbiddenRegions: [],
+      lifecycleAssertions: []
+    },
+    "file-explorer": {
+      contractId: "file-explorer.contract.default.app-health",
+      appId: "file-explorer",
+      mode: "default",
+      intent: "Expose a usable file browsing surface.",
+      derivedFromBlockTypes: ["mcel-runtime-check"],
+      primarySurface: {
+        id: "file-explorer.surface.main",
+        label: "File Explorer main browsing surface",
+        hostSelector: ".file-explorer-main",
+        editorSelector: ".file-explorer-main",
+        minWidth: 420,
+        minHeight: 320
+      },
+      requiredRegions: [
+        {id: "file-explorer.region.root", selector: "#file-explorer-app", label: "File Explorer app root"},
+        {id: "file-explorer.region.roots", selector: ".file-explorer-roots-panel", label: "Roots panel"},
+        {id: "file-explorer.region.main", selector: ".file-explorer-main", label: "Main browsing surface"},
+        {id: "file-explorer.region.list", selector: "#file-explorer-list", label: "File list"}
+      ],
+      forbiddenRegions: [],
+      lifecycleAssertions: []
+    },
+    "git-tools": {
+      contractId: "git-tools.contract.default.app-health",
+      appId: "git-tools",
+      mode: "default",
+      intent: "Expose a usable Git workflow surface.",
+      derivedFromBlockTypes: ["mcel-runtime-check"],
+      primarySurface: {
+        id: "git-tools.surface.workflow",
+        label: "Git Tools workflow surface",
+        hostSelector: "#git-project-workflow-surface",
+        editorSelector: "#git-project-workflow-surface",
+        minWidth: 420,
+        minHeight: 320
+      },
+      requiredRegions: [
+        {id: "git-tools.region.root", selector: "#git-tools-app", label: "Git Tools app root"},
+        {id: "git-tools.region.project-selector", selector: "#git-project-selector-panel", label: "Project selector"},
+        {id: "git-tools.region.workflow", selector: "#git-project-workflow-surface", label: "Project workflow surface"}
+      ],
+      forbiddenRegions: [],
+      lifecycleAssertions: []
+    },
+    "website-builder": {
+      contractId: "website-builder.contract.default.app-health",
+      appId: "website-builder",
+      mode: "default",
+      intent: "Expose a usable Website Builder preview/design surface.",
+      derivedFromBlockTypes: ["mcel-runtime-check"],
+      primarySurface: {
+        id: "website-builder.surface.preview",
+        label: "Website Builder preview surface",
+        hostSelector: ".website-builder-preview",
+        editorSelector: ".website-builder-preview",
+        minWidth: 420,
+        minHeight: 320
+      },
+      requiredRegions: [
+        {id: "website-builder.region.root", selector: "#website-builder-app", label: "Website Builder app root"},
+        {id: "website-builder.region.main", selector: ".website-builder-main", label: "Website Builder shell"},
+        {id: "website-builder.region.summary", selector: ".website-builder-summary", label: "Website summary"},
+        {id: "website-builder.region.preview", selector: ".website-builder-preview", label: "Preview/design surface"},
+        {id: "website-builder.region.inspector", selector: ".website-builder-inspector", label: "Inspector"}
+      ],
+      forbiddenRegions: [],
+      lifecycleAssertions: []
+    }
+  });
+
+  const CODE_EDITOR_AUTHORING_CONTRACT = FALLBACK_CONTRACTS["code-editor"];
 
   function normalizeList(value) {
     return Array.isArray(value) ? value.filter(Boolean) : [];
   }
 
-  function normalizePrimarySurface(surface) {
-    const fallback = CODE_EDITOR_AUTHORING_CONTRACT.primarySurface;
+  function fallbackContractFor(appId = "code-editor") {
+    return FALLBACK_CONTRACTS[appId] || null;
+  }
+
+  function normalizePrimarySurface(surface, fallback) {
     const input = surface && typeof surface === "object" ? surface : {};
+    const safeFallback = fallback?.primarySurface || CODE_EDITOR_AUTHORING_CONTRACT.primarySurface;
+    const hostSelector = String(input.hostSelector || input.host_selector || safeFallback.hostSelector || "");
+    const editorSelector = String(input.editorSelector || input.editor_selector || safeFallback.editorSelector || hostSelector || "");
     return {
-      id: String(input.id || fallback.id || ""),
-      label: String(input.label || fallback.label || ""),
-      hostSelector: String(input.hostSelector || input.host_selector || fallback.hostSelector || ""),
-      editorSelector: String(input.editorSelector || input.editor_selector || fallback.editorSelector || ""),
-      minWidth: Number(input.minWidth || input.min_width || fallback.minWidth || 800),
-      minHeight: Number(input.minHeight || input.min_height || fallback.minHeight || 600)
+      id: String(input.id || safeFallback.id || ""),
+      label: String(input.label || safeFallback.label || input.failure_message || ""),
+      hostSelector,
+      editorSelector,
+      minWidth: Number(input.minWidth || input.min_width || safeFallback.minWidth || 1),
+      minHeight: Number(input.minHeight || input.min_height || safeFallback.minHeight || 1)
     };
   }
 
   function normalizeRegionEntries(entries, fallbackEntries) {
-    const source = Array.isArray(entries) && entries.length ? entries : fallbackEntries;
+    const source = Array.isArray(entries) && entries.length ? entries : fallbackEntries || [];
     return normalizeList(source).map((entry) => ({
       id: String(entry?.id || entry?.selector || ""),
       selector: String(entry?.selector || entry?.id || ""),
       label: String(entry?.label || entry?.id || entry?.selector || "")
-    }));
+    })).filter((entry) => entry.selector);
   }
 
-  function normalizeDiagnosisContract(contract) {
-    const input = contract && typeof contract === "object" ? contract : CODE_EDITOR_AUTHORING_CONTRACT;
+  function normalizeDiagnosisContract(contract, fallback = CODE_EDITOR_AUTHORING_CONTRACT) {
+    const input = contract && typeof contract === "object" ? contract : fallback;
+    const safeFallback = fallback || CODE_EDITOR_AUTHORING_CONTRACT;
+    const appId = String(input.appId || input.app || input.app_id || safeFallback.appId || "code-editor");
+    const mode = String(input.mode || safeFallback.mode || APP_MODE_DEFAULTS[appId] || "default");
     return {
-      contractId: String(input.contractId || input.contract_id || CODE_EDITOR_AUTHORING_CONTRACT.contractId),
-      appId: String(input.appId || input.app || input.app_id || CODE_EDITOR_AUTHORING_CONTRACT.appId),
-      mode: String(input.mode || CODE_EDITOR_AUTHORING_CONTRACT.mode),
-      intent: String(input.intent || CODE_EDITOR_AUTHORING_CONTRACT.intent || ""),
+      contractId: String(input.contractId || input.contract_id || safeFallback.contractId || `${appId}.contract.${mode}`),
+      appId,
+      mode,
+      intent: String(input.intent || safeFallback.intent || ""),
       source: String(input.source || "static-fallback"),
-      derivedFromBlockTypes: normalizeList(input.derivedFromBlockTypes || input.derived_from_block_types || CODE_EDITOR_AUTHORING_CONTRACT.derivedFromBlockTypes),
-      primarySurface: normalizePrimarySurface(input.primarySurface || input.primary_surface),
-      requiredRegions: normalizeRegionEntries(input.requiredRegions || input.required_regions, CODE_EDITOR_AUTHORING_CONTRACT.requiredRegions),
-      forbiddenRegions: normalizeRegionEntries(input.forbiddenRegions || input.forbidden_regions, CODE_EDITOR_AUTHORING_CONTRACT.forbiddenRegions),
-      lifecycleAssertions: normalizeList(input.lifecycleAssertions || input.lifecycle_assertions || CODE_EDITOR_AUTHORING_CONTRACT.lifecycleAssertions),
+      derivedFromBlockTypes: normalizeList(input.derivedFromBlockTypes || input.derived_from_block_types || safeFallback.derivedFromBlockTypes),
+      primarySurface: normalizePrimarySurface(input.primarySurface || input.primary_surface, safeFallback),
+      requiredRegions: normalizeRegionEntries(input.requiredRegions || input.required_regions, safeFallback.requiredRegions),
+      forbiddenRegions: normalizeRegionEntries(input.forbiddenRegions || input.forbidden_regions, safeFallback.forbiddenRegions),
+      lifecycleAssertions: normalizeList(input.lifecycleAssertions || input.lifecycle_assertions || safeFallback.lifecycleAssertions),
       checks: normalizeList(input.checks)
     };
   }
 
+  function getRegistry() {
+    return globalThis.McelRequirementsRegistry || globalThis.window?.McelRequirementsRegistry || null;
+  }
+
   function getRegistryDiagnosisContract(appId, mode) {
-    const registry = globalThis.McelRequirementsRegistry || globalThis.window?.McelRequirementsRegistry;
+    const registry = getRegistry();
     if (!registry) return null;
     try {
       if (typeof registry.getRuntimeDiagnosisContract === "function") {
@@ -159,10 +238,12 @@
   }
 
   function resolveDiagnosisContract(appId = "code-editor", options = {}) {
-    if (options.contract) return normalizeDiagnosisContract(options.contract);
-    const mode = String(options.mode || CODE_EDITOR_AUTHORING_CONTRACT.mode);
-    const registryContract = getRegistryDiagnosisContract(appId, mode);
-    return normalizeDiagnosisContract(registryContract || CODE_EDITOR_AUTHORING_CONTRACT);
+    const fallback = fallbackContractFor(appId);
+    const requestedMode = String(options.mode || fallback?.mode || APP_MODE_DEFAULTS[appId] || "default");
+    if (options.contract) return normalizeDiagnosisContract(options.contract, fallback || CODE_EDITOR_AUTHORING_CONTRACT);
+    const registryContract = getRegistryDiagnosisContract(appId, requestedMode);
+    if (registryContract) return normalizeDiagnosisContract(registryContract, fallback || registryContract);
+    return fallback ? normalizeDiagnosisContract(fallback, fallback) : null;
   }
 
   function deepFreeze(value) {
@@ -248,15 +329,34 @@
     }
   }
 
+  function getComputedStyleSafe(el) {
+    try {
+      if (typeof getComputedStyle === "function") return getComputedStyle(el);
+    } catch {}
+    return {};
+  }
+
+  function textPreview(el) {
+    try {
+      return String(el.innerText || el.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 180);
+    } catch {
+      return "";
+    }
+  }
+
+  function valuePreview(el) {
+    try {
+      if ("value" in el) return String(el.value || "").slice(0, 180);
+    } catch {}
+    return "";
+  }
+
   function computeBox(el) {
     if (!isElement(el)) {
-      return {
-        exists: false,
-        selector: "",
-        visible: false,
-        width: 0,
-        height: 0
-      };
+      return {exists: false, selector: "", visible: false, width: 0, height: 0};
     }
 
     const rect = typeof el.getBoundingClientRect === "function"
@@ -307,38 +407,12 @@
       maxHeight: style.maxHeight || "",
       overflow: `${style.overflow || ""}/${style.overflowX || ""}/${style.overflowY || ""}`,
       zIndex: style.zIndex || "",
+      pointerEvents: style.pointerEvents || "",
       inlineStyle: el.getAttribute?.("style") || "",
       childCount: el.children?.length || 0,
       textPreview: textPreview(el),
       valuePreview: valuePreview(el)
     };
-  }
-
-  function getComputedStyleSafe(el) {
-    try {
-      if (typeof getComputedStyle === "function") {
-        return getComputedStyle(el);
-      }
-    } catch {}
-    return {};
-  }
-
-  function textPreview(el) {
-    try {
-      return String(el.innerText || el.textContent || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 180);
-    } catch {
-      return "";
-    }
-  }
-
-  function valuePreview(el) {
-    try {
-      if ("value" in el) return String(el.value || "").slice(0, 180);
-    } catch {}
-    return "";
   }
 
   function severityCounts(findings) {
@@ -352,40 +426,42 @@
   }
 
   function addFinding(findings, severity, code, finding, evidence = {}, recommendedNextProbe = "") {
-    findings.push({
-      severity,
-      code,
-      finding,
-      evidence,
-      recommendedNextProbe
-    });
+    findings.push({severity, code, finding, evidence, recommendedNextProbe});
   }
 
-  function normalizedMode(snapshot) {
-    return String(snapshot?.mode || snapshot?.root?.mode || "unknown").trim() || "unknown";
+  function normalizedMode(snapshot, contract) {
+    const mode = String(snapshot?.mode || "").trim();
+    if (mode && mode !== "unknown") return mode;
+    return String(contract?.mode || "default");
   }
 
   function visibleAndUseful(box, minWidth, minHeight) {
     return Boolean(box?.exists && box.visible && box.width >= minWidth && box.height >= minHeight);
   }
 
-  function anyVisible(boxes) {
-    return boxes.some((box) => Boolean(box?.exists && box.visible));
+  function compactBox(box) {
+    if (!box) return {};
+    return {
+      exists: Boolean(box.exists),
+      visible: Boolean(box.visible),
+      selector: box.selector || "",
+      width: Number(box.width || 0),
+      height: Number(box.height || 0),
+      display: box.display || "",
+      gridRow: box.gridRow || "",
+      gridColumn: box.gridColumn || ""
+    };
   }
 
-  function firstVisible(boxes) {
-    return boxes.find((box) => Boolean(box?.exists && box.visible)) || null;
-  }
-
-  function evaluateCodeEditorAuthoringSnapshot(snapshot, options = {}) {
-    const contract = normalizeDiagnosisContract(options.contract || CODE_EDITOR_AUTHORING_CONTRACT);
-    const minWidth = Number(options.minWidth || contract.primarySurface.minWidth || 800);
-    const minHeight = Number(options.minHeight || contract.primarySurface.minHeight || 600);
+  function evaluateRuntimeContractSnapshot(snapshot, options = {}) {
+    const contract = normalizeDiagnosisContract(options.contract || resolveDiagnosisContract(snapshot?.appId || "code-editor", options));
+    const minWidth = Number(options.minWidth || contract.primarySurface.minWidth || 1);
+    const minHeight = Number(options.minHeight || contract.primarySurface.minHeight || 1);
     const findings = [];
-    const mode = normalizedMode(snapshot);
+    const mode = normalizedMode(snapshot, contract);
     const surfaces = snapshot.surfaces || {};
-    const host = surfaces.monacoHost || {};
-    const monaco = surfaces.monacoEditor || {};
+    const host = surfaces.primaryHost || surfaces.monacoHost || {};
+    const primaryEditor = surfaces.primaryEditor || surfaces.monacoEditor || host || {};
     const source = surfaces.sourceTextarea || {};
     const runtimeDraft = surfaces.runtimeDraft || {};
     const fallback = surfaces.fallbackTextarea || {};
@@ -398,7 +474,7 @@
         findings,
         "warning",
         "mode-mismatch",
-        `Expected ${contract.mode} mode while evaluating Code Editor authoring contract.`,
+        `Expected ${contract.mode} mode while evaluating ${contract.appId} diagnosis contract.`,
         {expected: contract.mode, actual: mode},
         "mode.contractAudit"
       );
@@ -407,23 +483,9 @@
     for (const region of contract.requiredRegions) {
       const observed = requiredRegions[region.id] || requiredRegions[region.selector] || {};
       if (!observed.exists) {
-        addFinding(
-          findings,
-          "critical",
-          "required-region-missing",
-          `${region.label} is missing.`,
-          {region},
-          "layout.baseline"
-        );
+        addFinding(findings, "critical", "required-region-missing", `${region.label} is missing.`, {region}, "layout.baseline");
       } else if (!observed.visible) {
-        addFinding(
-          findings,
-          "critical",
-          "required-region-hidden",
-          `${region.label} exists but is not visible.`,
-          {region, observed},
-          "layout.ownerProbe"
-        );
+        addFinding(findings, "critical", "required-region-hidden", `${region.label} exists but is not visible.`, {region, observed}, "layout.ownerProbe");
       }
     }
 
@@ -431,21 +493,21 @@
       addFinding(
         findings,
         "critical",
-        "primary-editor-host-missing",
-        "Code Editor authoring contract requires a Monaco host, but no host was found.",
+        "primary-surface-host-missing",
+        `${contract.primarySurface.label || "Primary surface"} host was not found.`,
         {selector: contract.primarySurface.hostSelector},
-        "editor.surfaceAudit"
+        "surface.visibilityAudit"
       );
     }
 
-    if (!monaco.exists) {
+    if (!primaryEditor.exists) {
       addFinding(
         findings,
         "critical",
-        "primary-editor-missing",
-        "Code Editor authoring contract requires a Monaco editor instance, but none was found.",
-        {selector: contract.primarySurface.editorSelector, host},
-        "editor.surfaceAudit"
+        contract.appId === "code-editor" ? "primary-editor-missing" : "primary-surface-missing",
+        `${contract.primarySurface.label || "Primary surface"} was not found.`,
+        {selector: contract.primarySurface.editorSelector || contract.primarySurface.hostSelector, host},
+        "surface.visibilityAudit"
       );
     }
 
@@ -453,35 +515,27 @@
       addFinding(
         findings,
         "critical",
-        "primary-editor-host-unusable",
-        "Monaco host exists but is not a usable editor surface.",
-        {
-          selector: contract.primarySurface.hostSelector,
-          minWidth,
-          minHeight,
-          observed: host
-        },
+        contract.appId === "code-editor" ? "primary-editor-host-unusable" : "primary-surface-host-unusable",
+        `${contract.primarySurface.label || "Primary surface"} host exists but is not usable.`,
+        {selector: contract.primarySurface.hostSelector, minWidth, minHeight, observed: host},
         "layout.ownerProbe"
       );
     }
 
-    if (monaco.exists && !visibleAndUseful(monaco, minWidth, minHeight)) {
+    if (primaryEditor.exists && !visibleAndUseful(primaryEditor, minWidth, minHeight)) {
       addFinding(
         findings,
         "critical",
-        "primary-editor-unusable",
-        "Monaco editor exists but is not a usable editor surface.",
-        {
-          selector: contract.primarySurface.editorSelector,
-          minWidth,
-          minHeight,
-          observed: monaco
-        },
+        contract.appId === "code-editor" ? "primary-editor-unusable" : "primary-surface-unusable",
+        `${contract.primarySurface.label || "Primary surface"} exists but is not usable.`,
+        {selector: contract.primarySurface.editorSelector || contract.primarySurface.hostSelector, minWidth, minHeight, observed: primaryEditor},
         "layout.ownerProbe"
       );
     }
 
-    const competing = [source, runtimeDraft, fallback].filter((box) => Boolean(box?.exists && box.visible));
+    const competing = contract.appId === "code-editor"
+      ? [source, runtimeDraft, fallback].filter((box) => Boolean(box?.exists && box.visible))
+      : [];
     if (competing.length) {
       addFinding(
         findings,
@@ -497,9 +551,9 @@
     for (const entry of visibleForbidden) {
       addFinding(
         findings,
-        "critical",
+        entry.severity || "critical",
         "forbidden-region-visible",
-        `${entry.label || entry.selector} is visible even though the authoring contract forbids it.`,
+        `${entry.label || entry.selector} is visible even though the contract forbids it.`,
         entry,
         "overlay.detector"
       );
@@ -511,13 +565,13 @@
         findings,
         "critical",
         "collapsed-layout-owner",
-        "The primary editor is collapsed by an ancestor or assigned parent track.",
+        "The primary surface is collapsed by an ancestor or assigned parent track.",
         collapsedOwner,
         "layout.ownerProbe"
       );
     }
 
-    const primarySurfaceUsable = visibleAndUseful(host, minWidth, minHeight) && visibleAndUseful(monaco, minWidth, minHeight);
+    const primarySurfaceUsable = visibleAndUseful(host, minWidth, minHeight) && visibleAndUseful(primaryEditor, minWidth, minHeight);
     const exactlyOnePrimary = primarySurfaceUsable && !competing.length;
     const counts = severityCounts(findings);
     const verdict = counts.critical > 0 ? "fail" : "pass";
@@ -540,7 +594,7 @@
           usable: primarySurfaceUsable,
           exactlyOneAuthoritativeSurface: exactlyOnePrimary,
           host: compactBox(host),
-          editor: compactBox(monaco)
+          editor: compactBox(primaryEditor)
         }
       },
       findings,
@@ -562,18 +616,15 @@
     };
   }
 
-  function compactBox(box) {
-    if (!box) return {};
-    return {
-      exists: Boolean(box.exists),
-      visible: Boolean(box.visible),
-      selector: box.selector || "",
-      width: Number(box.width || 0),
-      height: Number(box.height || 0),
-      display: box.display || "",
-      gridRow: box.gridRow || "",
-      gridColumn: box.gridColumn || ""
-    };
+  function evaluateCodeEditorAuthoringSnapshot(snapshot, options = {}) {
+    const contract = normalizeDiagnosisContract(
+      options.contract || resolveDiagnosisContract("code-editor", {mode: "authoring"}),
+      CODE_EDITOR_AUTHORING_CONTRACT
+    );
+    return evaluateRuntimeContractSnapshot(
+      {...snapshot, appId: "code-editor"},
+      {...options, contract}
+    );
   }
 
   function findCollapsedOwner(chain) {
@@ -607,31 +658,50 @@
     return null;
   }
 
-  function buildCodeEditorSnapshot(options = {}) {
-    const doc = getDocument();
-    const appId = "code-editor";
-    const root = query("#code-editor-app", doc);
-    const contract = resolveDiagnosisContract(appId, options);
-    const rootMode = root?.dataset?.codeEditorMode ||
-      root?.getAttribute?.("data-code-editor-mode") ||
-      "unknown";
+  function defaultRootSelector(appId) {
+    return `#${appId}-app`;
+  }
 
+  function inferRootSelector(contract, appId) {
+    const rootRegion = (contract.requiredRegions || []).find((region) =>
+      String(region.id || "").includes(".region.root") || String(region.label || "").toLowerCase().includes("root")
+    );
+    return rootRegion?.selector || defaultRootSelector(appId);
+  }
+
+  function buildDiagnosisSnapshot(appId = "code-editor", options = {}) {
+    const doc = getDocument();
+    const contract = resolveDiagnosisContract(appId, options);
+    if (!contract) return null;
+    const rootSelector = inferRootSelector(contract, appId);
+    const root = query(rootSelector, doc);
+    const rootMode = options.mode ||
+      root?.dataset?.codeEditorMode ||
+      root?.dataset?.mcelMode ||
+      root?.getAttribute?.("data-code-editor-mode") ||
+      root?.getAttribute?.("data-mcel-mode") ||
+      contract.mode ||
+      "default";
+
+    const scope = root || doc;
     const requiredRegions = {};
     for (const region of contract.requiredRegions) {
-      requiredRegions[region.id] = computeBox(query(region.selector, root || doc));
+      requiredRegions[region.id] = computeBox(query(region.selector, scope));
       requiredRegions[region.selector] = requiredRegions[region.id];
     }
 
-    const host = query(contract.primarySurface.hostSelector, root || doc);
-    const monaco = query(contract.primarySurface.editorSelector, root || doc);
-    const sourceTextarea = query("#code-studio-source-editor", root || doc);
-    const runtimeDraft = query("#code-studio-runtime-draft", root || doc);
-    const fallbackTextarea = query(".code-studio-runtime-fallback", root || doc);
-    const activePane = query("[data-code-studio-pane].active", root || doc);
+    const host = query(contract.primarySurface.hostSelector || rootSelector, scope);
+    const primaryEditor = query(contract.primarySurface.editorSelector || contract.primarySurface.hostSelector || rootSelector, scope) || host;
+    const sourceTextarea = appId === "code-editor" ? query("#code-studio-source-editor", scope) : null;
+    const runtimeDraft = appId === "code-editor" ? query("#code-studio-runtime-draft", scope) : null;
+    const fallbackTextarea = appId === "code-editor" ? query(".code-studio-runtime-fallback", scope) : null;
+    const activePane = query("[data-code-studio-pane].active", scope);
 
     const forbiddenRegions = [];
     for (const forbidden of contract.forbiddenRegions) {
-      const matches = queryAll(forbidden.selector, root || doc);
+      const selector = forbidden.selector || "";
+      const forbiddenScope = selector.includes("#mc-widget-editor-root") ? doc : scope;
+      const matches = queryAll(selector, forbiddenScope);
       if (!matches.length) {
         forbiddenRegions.push({
           id: forbidden.id,
@@ -646,15 +716,16 @@
             selector: forbidden.selector,
             label: forbidden.label,
             matchIndex: index,
-            box: computeBox(el)
+            box: computeBox(el),
+            severity: forbidden.severity || "critical"
           });
         });
       }
     }
 
     const ownerTarget = options.ownerTargetSelector
-      ? query(options.ownerTargetSelector, root || doc)
-      : host || monaco || activePane || root;
+      ? query(options.ownerTargetSelector, scope)
+      : primaryEditor || host || activePane || root;
     const ownerChain = collectOwnerChain(ownerTarget, root);
 
     return {
@@ -670,8 +741,10 @@
       root: computeBox(root),
       requiredRegions,
       surfaces: {
+        primaryHost: computeBox(host),
+        primaryEditor: computeBox(primaryEditor),
         monacoHost: computeBox(host),
-        monacoEditor: computeBox(monaco),
+        monacoEditor: computeBox(primaryEditor),
         sourceTextarea: computeBox(sourceTextarea),
         runtimeDraft: computeBox(runtimeDraft),
         fallbackTextarea: computeBox(fallbackTextarea),
@@ -679,9 +752,14 @@
       },
       forbiddenRegions,
       ownerChain,
-      overlays: detectOverlays(root || doc),
-      panes: collectPaneState(root || doc)
+      overlays: detectOverlays(root || doc, {appId, mode: rootMode}),
+      panes: collectPaneState(root || doc),
+      contract
     };
+  }
+
+  function buildCodeEditorSnapshot(options = {}) {
+    return buildDiagnosisSnapshot("code-editor", {...options, mode: options.mode || "authoring"});
   }
 
   function numberOrZero(value) {
@@ -708,22 +786,31 @@
     }));
   }
 
-  function detectOverlays(root) {
+  function classifyOverlay(selector, box, context = {}) {
+    const isWidgetEditor = selector === "#mc-widget-editor-root";
+    const isProof = selector.includes("proof") || selector.includes("bottom-panel");
+    const isFloating = selector.includes("floating") || selector.includes("side-tab") || selector.includes("vertical-tab");
+    const classification = isWidgetEditor
+      ? "widget-editor-overlay"
+      : isProof
+        ? "proof-diagnostic-surface"
+        : isFloating
+          ? "floating-diagnostic-tab"
+          : "diagnostic-overlay";
+    return {
+      classification,
+      policy: context.mode === "mcel-tools" || context.mode === "diagnostic" ? "allowed-diagnostic-overlay" : "forbidden-in-default-mode",
+      severity: "warning",
+      blocksPrimarySurface: Boolean(box?.visible && box.width > 200 && box.height > 200 && box.position === "fixed")
+    };
+  }
+
+  function detectOverlays(root, context = {}) {
     const doc = getDocument();
     if (!doc) return [];
-    const selectors = [
-      "#mc-widget-editor-root",
-      ".code-studio-proof-dock",
-      "#code-studio-bottom-panel",
-      ".floating-tab",
-      ".side-tab",
-      ".vertical-tab",
-      "[data-mcel-proof-surface]",
-      "[data-code-studio-panel=\"assistant\"]"
-    ];
     const seen = new Set();
     const overlays = [];
-    selectors.forEach((selector) => {
+    COMMON_OVERLAY_SELECTORS.forEach((selector) => {
       queryAll(selector, doc).forEach((el) => {
         if (seen.has(el)) return;
         seen.add(el);
@@ -732,7 +819,8 @@
           overlays.push({
             selector,
             box,
-            insideRoot: root && root.contains ? root.contains(el) : false
+            insideRoot: root && root.contains ? root.contains(el) : false,
+            ...classifyOverlay(selector, box, context)
           });
         }
       });
@@ -740,35 +828,72 @@
     return overlays;
   }
 
+  function buildReportBuckets(report) {
+    const findings = Array.isArray(report?.findings) ? report.findings : [];
+    const buckets = {
+      activeRuntimeIssues: [],
+      activeOverlayIssues: [],
+      activeLayoutIssues: [],
+      activeSurfaceIssues: [],
+      activeContractIssues: []
+    };
+
+    for (const finding of findings) {
+      const code = String(finding?.code || "");
+      const compact = {
+        severity: finding?.severity || "",
+        code,
+        finding: finding?.finding || "",
+        recommendedNextProbe: finding?.recommendedNextProbe || ""
+      };
+      if (code.includes("overlay") || code.includes("forbidden-region")) buckets.activeOverlayIssues.push(compact);
+      else if (code.includes("layout") || code.includes("collapsed")) buckets.activeLayoutIssues.push(compact);
+      else if (code.includes("surface") || code.includes("editor") || code.includes("competing")) buckets.activeSurfaceIssues.push(compact);
+      else buckets.activeContractIssues.push(compact);
+
+      if (finding?.severity === "critical" || finding?.severity === "warning") {
+        buckets.activeRuntimeIssues.push(compact);
+      }
+    }
+
+    return buckets;
+  }
+
+  function applyOverlayFindings(report, snapshot) {
+    const visibleOverlays = (snapshot.overlays || []).filter((entry) => entry.box?.visible);
+    if (!visibleOverlays.length) return report;
+    const findings = report.findings || [];
+    addFinding(
+      findings,
+      "warning",
+      "visible-overlay-detected",
+      "Overlay or diagnostic surfaces are visible while diagnosing the app.",
+      {visibleOverlays},
+      "overlay.detector"
+    );
+    report.findings = findings;
+    report.summary = {
+      ...report.summary,
+      ...severityCounts(findings)
+    };
+    report.verdict = findings.some((finding) => finding.severity === "critical") ? "fail" : report.verdict;
+    return report;
+  }
+
   function diagnose(appId = "code-editor", options = {}) {
-    if (appId !== "code-editor") {
+    const contract = resolveDiagnosisContract(appId, options);
+    if (!contract) {
       return unsupportedAppReport(appId);
     }
 
-    const contract = resolveDiagnosisContract(appId, options);
-    const snapshot = buildCodeEditorSnapshot({...options, contract});
-    const report = evaluateCodeEditorAuthoringSnapshot(snapshot, {...options, contract});
+    const snapshot = buildDiagnosisSnapshot(appId, {...options, contract});
+    if (!snapshot) return unsupportedAppReport(appId);
+    let report = evaluateRuntimeContractSnapshot(snapshot, {...options, contract});
     report.focus = options.focus || "contract";
     report.measurements.overlays = snapshot.overlays;
     report.measurements.panes = snapshot.panes;
-
-    const visibleOverlays = snapshot.overlays.filter((entry) => entry.box?.visible);
-    if (visibleOverlays.length) {
-      const findings = report.findings || [];
-      addFinding(
-        findings,
-        "warning",
-        "visible-overlay-detected",
-        "Overlay or diagnostic surfaces are visible while diagnosing the app.",
-        {visibleOverlays},
-        "overlay.detector"
-      );
-      report.summary = {
-        ...report.summary,
-        ...severityCounts(findings)
-      };
-      report.verdict = findings.some((finding) => finding.severity === "critical") ? "fail" : report.verdict;
-    }
+    report = applyOverlayFindings(report, snapshot);
+    report.buckets = buildReportBuckets(report);
 
     lastReport = report;
     logReport(report, options);
@@ -792,6 +917,20 @@
           recommendedNextProbe: ""
         }
       ],
+      buckets: {
+        activeRuntimeIssues: [
+          {
+            severity: "warning",
+            code: "unsupported-app",
+            finding: `No MCEL self-diagnosis contract is registered for ${appId}.`,
+            recommendedNextProbe: ""
+          }
+        ],
+        activeOverlayIssues: [],
+        activeLayoutIssues: [],
+        activeSurfaceIssues: [],
+        activeContractIssues: []
+      },
       measurements: {},
       summary: {critical: 0, warning: 1, info: 0}
     };
@@ -821,8 +960,26 @@
   }
 
   function listContracts() {
-    const registryContract = getRegistryDiagnosisContract("code-editor", "authoring");
-    return [normalizeDiagnosisContract(registryContract || CODE_EDITOR_AUTHORING_CONTRACT)];
+    const registry = getRegistry();
+    if (registry && typeof registry.listRuntimeDiagnosisContracts === "function") {
+      try {
+        const contracts = registry.listRuntimeDiagnosisContracts();
+        if (Array.isArray(contracts) && contracts.length) {
+          return contracts.map((contract) => normalizeDiagnosisContract(contract, fallbackContractFor(contract.appId || contract.app)));
+        }
+        if (contracts && typeof contracts === "object") {
+          const flattened = [];
+          for (const [appId, appContracts] of Object.entries(contracts)) {
+            const modeContracts = appContracts?.mode_contracts || {};
+            for (const contract of Object.values(modeContracts)) {
+              flattened.push(normalizeDiagnosisContract(contract, fallbackContractFor(appId)));
+            }
+          }
+          if (flattened.length) return flattened;
+        }
+      } catch {}
+    }
+    return Object.keys(FALLBACK_CONTRACTS).map((appId) => normalizeDiagnosisContract(FALLBACK_CONTRACTS[appId], FALLBACK_CONTRACTS[appId]));
   }
 
   function registerOnGlobal(global) {
@@ -830,17 +987,22 @@
       VERSION,
       REPORT_SCHEMA,
       CODE_EDITOR_AUTHORING_CONTRACT,
+      FALLBACK_CONTRACTS,
       diagnose,
       exportLastDiagnosis,
       listContracts,
+      buildDiagnosisSnapshot,
       buildCodeEditorSnapshot,
+      evaluateRuntimeContractSnapshot,
       evaluateCodeEditorAuthoringSnapshot,
       resolveDiagnosisContract,
       _private: deepFreeze({
         computeBox,
         collectOwnerChain,
         findCollapsedOwner,
-        visibleAndUseful
+        visibleAndUseful,
+        buildReportBuckets,
+        detectOverlays
       })
     });
 

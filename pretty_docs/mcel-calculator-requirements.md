@@ -883,3 +883,85 @@ required_checks:
   - Graph canvas is not treated like a normal form field
   - Chat/helper panel is not treated as the calculator source of truth
 ```
+
+
+## Runtime diagnosis contract
+
+```mcel-runtime-check
+id: calculator.runtime-check.default-primary-workspace
+app: calculator
+status: specified
+mode: default
+contract: calculator.contract.default.app-health
+check: primary-surface
+severity: critical
+primary_surface_id: calculator.surface.workspace
+host_selector: ".calculator-workspace"
+editor_selector: ".calculator-workspace"
+min_width: 420
+min_height: 320
+observes:
+  - ".calculator-workspace"
+expects:
+  - Calculator workspace is visible and large enough for the active mode.
+  - The primary calculator surface is not collapsed by surrounding app chrome.
+failure_message: Calculator default mode must expose a usable workspace.
+next_probe: layout.ownerProbe
+source_binding: calculator.binding.route-and-ui
+test_binding: calculator.test.route-checks
+```
+
+```mcel-runtime-check
+id: calculator.runtime-check.default-required-regions
+app: calculator
+status: specified
+mode: default
+contract: calculator.contract.default.app-health
+check: required-regions-visible
+severity: critical
+observes:
+  - "#calculator-app"
+  - ".calculator-shell"
+  - ".calculator-mode-switch"
+  - ".calculator-workspace"
+  - "#calculator-display"
+required_regions:
+  - calculator.region.root | #calculator-app | Calculator app root
+  - calculator.region.shell | .calculator-shell | Calculator shell
+  - calculator.region.mode-switch | .calculator-mode-switch | Calculator mode switch
+  - calculator.region.workspace | .calculator-workspace | Calculator workspace
+  - calculator.region.display | #calculator-display | Calculator display
+expects:
+  - Calculator app root is visible.
+  - Mode switch remains visible.
+  - Calculator workspace and display remain visible.
+failure_message: Calculator default mode must preserve root, controls, workspace, and display.
+next_probe: layout.baseline
+source_binding: calculator.binding.route-and-ui
+test_binding: calculator.test.route-checks
+```
+
+```mcel-runtime-check
+id: calculator.runtime-check.default-overlay-policy
+app: calculator
+status: specified
+mode: default
+contract: calculator.contract.default.app-health
+check: overlay-policy
+severity: warning
+observes:
+  - "#mc-widget-editor-root"
+  - "[data-mcel-proof-surface]"
+  - ".floating-tab"
+  - ".side-tab"
+expects:
+  - MCEL/widget/proof overlays are not visible while the calculator is in default mode.
+forbids:
+  - shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay
+  - shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface
+  - shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab
+failure_message: Calculator default mode should not be covered by diagnostic overlays.
+next_probe: overlay.detector
+source_binding: calculator.binding.route-and-ui
+test_binding: calculator.test.route-checks
+```

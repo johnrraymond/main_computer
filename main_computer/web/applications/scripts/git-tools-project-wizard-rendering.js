@@ -155,7 +155,8 @@ function renderGitProjectWizard(wizard, data = {}) {
       cardPanel ? `data-git-project-card-shell="${escapeHtml(actionKey)}"` : "",
       gitProjectMcComponentAttrs(stepComponentId, "panel", stepLabel, "git-tools.projects.wizard.queue"),
     ].filter(Boolean).join(" ");
-    const cardClass = `git-project-wizard-step git-project-mini-action-card tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${gitProjectStepIsArchiveCard(step) ? " has-archive-workbench" : ""}${cardPanel ? " has-card-open-control" : ""}`;
+    const isGitignoreCard = typeof gitProjectStepIsGitignoreCard === "function" && gitProjectStepIsGitignoreCard(step);
+    const cardClass = `git-project-wizard-step git-project-mini-action-card tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${isGitignoreCard ? " has-gitignore-workbench" : ""}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${gitProjectStepIsArchiveCard(step) ? " has-archive-workbench" : ""}${cardPanel ? " has-card-open-control" : ""}`;
     const displayNumber = Number.isFinite(displayIndex) ? displayIndex + 1 : Number(step.order ?? 0) + 1;
     return `<div class="${cardClass}" ${cardAttrs}>
       <div class="git-project-wizard-step-title" ${gitProjectMcComponentAttrs(`${stepComponentId}.title`, "status", `${stepLabel} Title`, stepComponentId)}>

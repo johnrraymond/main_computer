@@ -1032,3 +1032,83 @@ desired_behavior: >
 `pretty_docs/website-builder-remote-coolify-publishing.md` remains the operator runbook for remote Coolify publishing. This requirements document is the product/specification contract that tells MCEL what Website Builder and saved websites are supposed to mean.
 
 `pretty_docs/mcel-git-tools-requirements.md` remains the Git Tools contract. Website Builder should not duplicate the governed local-Gitea push workflow; it should hand website-scoped repository changes to Git Tools when commit or push evidence is needed.
+
+
+## Runtime diagnosis contract
+
+```mcel-runtime-check
+id: website-builder.runtime-check.default-primary-preview
+app: website-builder
+status: specified
+mode: default
+contract: website-builder.contract.default.app-health
+check: primary-surface
+severity: critical
+primary_surface_id: website-builder.surface.preview
+host_selector: ".website-builder-preview"
+editor_selector: ".website-builder-preview"
+min_width: 420
+min_height: 320
+observes:
+  - ".website-builder-preview"
+expects:
+  - Website Builder preview/design surface is visible and usable.
+  - The selected site surface is not collapsed by inspector or publishing panels.
+failure_message: Website Builder default mode must expose a usable preview/design surface.
+next_probe: layout.ownerProbe
+source_binding: website-builder.binding.builder-runtime
+test_binding: website-builder.test.documentation-contract
+```
+
+```mcel-runtime-check
+id: website-builder.runtime-check.default-required-regions
+app: website-builder
+status: specified
+mode: default
+contract: website-builder.contract.default.app-health
+check: required-regions-visible
+severity: critical
+observes:
+  - "#website-builder-app"
+  - ".website-builder-main"
+  - ".website-builder-summary"
+  - ".website-builder-preview"
+  - ".website-builder-inspector"
+required_regions:
+  - website-builder.region.root | #website-builder-app | Website Builder app root
+  - website-builder.region.main | .website-builder-main | Website Builder shell
+  - website-builder.region.summary | .website-builder-summary | Website summary
+  - website-builder.region.preview | .website-builder-preview | Preview/design surface
+  - website-builder.region.inspector | .website-builder-inspector | Inspector
+expects:
+  - Root, shell, summary, preview, and inspector remain visible.
+failure_message: Website Builder default mode must preserve summary, preview, and inspector.
+next_probe: layout.baseline
+source_binding: website-builder.binding.builder-runtime
+test_binding: website-builder.test.documentation-contract
+```
+
+```mcel-runtime-check
+id: website-builder.runtime-check.default-overlay-policy
+app: website-builder
+status: specified
+mode: default
+contract: website-builder.contract.default.app-health
+check: overlay-policy
+severity: warning
+observes:
+  - "#mc-widget-editor-root"
+  - "[data-mcel-proof-surface]"
+  - ".floating-tab"
+  - ".side-tab"
+expects:
+  - MCEL/widget/proof overlays are not visible while using the default builder surface.
+forbids:
+  - shared.overlay.widget-editor | #mc-widget-editor-root | Widget editor overlay
+  - shared.overlay.proof-surface | [data-mcel-proof-surface] | MCEL proof surface
+  - shared.overlay.floating-tab | .floating-tab, .side-tab | Floating diagnostic tab
+failure_message: Website Builder default mode should not be covered by diagnostic overlays.
+next_probe: overlay.detector
+source_binding: website-builder.binding.builder-runtime
+test_binding: website-builder.test.documentation-contract
+```

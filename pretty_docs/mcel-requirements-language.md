@@ -817,6 +817,21 @@ A runtime check may use compact `id | selector | label` list entries for fields 
 `required_regions` and `forbidden_regions`. Registry tooling normalizes those entries
 into browser-side diagnosis contracts.
 
+Runtime checks can also define shared health-contract policies:
+
+```text
+primary-surface            one named work surface must be visible and useful
+required-regions-visible   named UI regions must exist and be visible
+forbidden-surfaces-hidden  named diagnostic/proof/fallback surfaces must not be visible
+overlay-policy             outside-app diagnostic overlays should be classified and reported
+lifecycle-contract-preserved startup, route, file-click, and resize should preserve the same contract
+```
+
+Overlay policy is deliberately softer than an app's primary surface law. A visible widget
+editor, proof surface, or floating diagnostic tab should be reported with selector and
+box evidence, but it should not automatically turn a healthy primary surface into a
+failed app unless the app-specific contract marks that overlay as a hard boundary.
+
 ## Codebase-derived aspects
 
 Requirement blocks should use MCEL aspects that match the app blueprint layer when

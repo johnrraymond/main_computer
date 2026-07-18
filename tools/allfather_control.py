@@ -93,6 +93,7 @@ DEFAULT_FULL_HUB_RUNTIME_STATUS_INTERVAL_S = 20.0
 DEFAULT_FULL_HUB_RUNTIME_STALE_BOOTSTRAP_FAIL_S = 60.0
 DEFAULT_FULL_HUB_RUNTIME_DIAG_WAIT_S = 120.0
 DEFAULT_FULL_HUB_RUNTIME_DIAG_PENDING_FAIL_S = 45.0
+DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE = 60000
 TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
 HUB_ADMIN_SYNC_CALLBACK_MARKER = "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:"
 CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
@@ -1243,7 +1244,47 @@ CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
 FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER = "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:"
 DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 120.0
 CONTRACT_DEPLOY_REQUEST_B64 = os.environ.get("MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64", "")
-FULL_HUB_RUNTIME_DIAG_REQUEST_B64 = os.environ.get("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64", "")
+ENV_B64_ERRORS = {}
+
+def read_b64_env(name: str) -> str:
+    # Read a possibly chunked base64 payload from environment variables.
+    direct = os.environ.get(name, "")
+    chunk_count_text = os.environ.get(name + "_CHUNKS", "").strip()
+    if not chunk_count_text:
+        return direct
+    try:
+        chunk_count = int(chunk_count_text)
+    except Exception as exc:
+        ENV_B64_ERRORS[name] = "invalid chunk count " + repr(chunk_count_text) + ": " + type(exc).__name__ + ": " + str(exc)
+        return direct
+    chunks = []
+    missing = []
+    for index in range(max(0, chunk_count)):
+        key = name + "_" + format(index, "03d")
+        value = os.environ.get(key)
+        if value is None:
+            missing.append(key)
+        else:
+            chunks.append(value)
+    if missing:
+        ENV_B64_ERRORS[name] = "missing chunk env var(s): " + ", ".join(missing[:8])
+        return direct
+    value = "".join(chunks)
+    expected_length = os.environ.get(name + "_TOTAL_LENGTH", "").strip()
+    if expected_length:
+        try:
+            if len(value) != int(expected_length):
+                ENV_B64_ERRORS[name] = "chunked payload length mismatch: expected " + expected_length + ", got " + str(len(value))
+        except Exception:
+            ENV_B64_ERRORS[name] = "invalid chunked payload length marker: " + repr(expected_length)
+    expected_sha = os.environ.get(name + "_SHA256", "").strip().lower()
+    if expected_sha:
+        actual_sha = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        if actual_sha != expected_sha:
+            ENV_B64_ERRORS[name] = "chunked payload sha256 mismatch: expected " + expected_sha + ", got " + actual_sha
+    return value
+
+FULL_HUB_RUNTIME_DIAG_REQUEST_B64 = read_b64_env("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64")
 RUNTIME_CLEANUP_REQUEST_B64 = os.environ.get("MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64", "")
 TRAEFIK_PROPAGATE_REQUEST_B64 = os.environ.get("MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64", "")
 HUB_ADMIN_SYNC_REQUEST_B64 = os.environ.get("MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64", "")
@@ -1323,6 +1364,13 @@ if not isinstance(CONTRACT_DEPLOY_REQUEST, dict):
 FULL_HUB_RUNTIME_DIAG_REQUEST = decode_json_b64(FULL_HUB_RUNTIME_DIAG_REQUEST_B64, {})
 if not isinstance(FULL_HUB_RUNTIME_DIAG_REQUEST, dict):
     FULL_HUB_RUNTIME_DIAG_REQUEST = {}
+FULL_HUB_RUNTIME_DIAG_ENV_ERROR = ENV_B64_ERRORS.get("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64", "")
+if FULL_HUB_RUNTIME_DIAG_ENV_ERROR:
+    FULL_HUB_RUNTIME_DIAG_REQUEST = {
+        **(FULL_HUB_RUNTIME_DIAG_REQUEST if isinstance(FULL_HUB_RUNTIME_DIAG_REQUEST, dict) else {}),
+        "ok": False,
+        "env_error": FULL_HUB_RUNTIME_DIAG_ENV_ERROR,
+    }
 
 def initial_full_hub_runtime_diag_state():
     if not FULL_HUB_RUNTIME_DIAG_REQUEST:
@@ -1344,7 +1392,8 @@ def initial_full_hub_runtime_diag_state():
         "request_id": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("request_id") or ""),
         "node_count": len(nodes),
         "nodes": [],
-        "reason": "full-hub runtime diagnostics request accepted by head-agent",
+        "reason": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("env_error") or "full-hub runtime diagnostics request accepted by head-agent"),
+        "env_error": str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("env_error") or ""),
         "public_guard_routes": False,
         "ssh_used": False,
         "direct_vpn_used": False,
@@ -2038,7 +2087,8 @@ def run_full_hub_runtime_diag_once() -> dict:
         "updated_at": time.time(),
     }
     if not nodes:
-        result.update({"ok": False, "status": "failed", "phase": "failed", "error": "full hub runtime diagnostics request has no nodes"})
+        err = str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("env_error") or "full hub runtime diagnostics request has no nodes")
+        result.update({"ok": False, "status": "failed", "phase": "failed", "error": err, "reason": err})
         return result
     runtime_archive_b64 = str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("runtime_archive_b64") or "")
     repair_missing_runtime = bool(FULL_HUB_RUNTIME_DIAG_REQUEST.get("repair_missing_runtime"))
@@ -3000,6 +3050,31 @@ def yaml_quote(value: Any) -> str:
     return json.dumps(str(value))
 
 
+def yaml_env_b64_chunk_lines(name: str, value: str, *, indent: str = "      ", chunk_size: int = DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE) -> list[str]:
+    """Render a base64 environment payload without creating over-large env entries.
+
+    Docker/Linux hosts commonly reject a single environment entry around the
+    low-hundreds-of-KB range.  The full-hub runtime diagnostic request includes
+    an embedded runtime archive, so it must be split into deterministic chunks
+    before it is handed to the Coolify-managed head-agent container.
+    """
+
+    text = str(value or "")
+    size = max(1024, int(chunk_size or DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE))
+    if len(text) <= size:
+        return [f"{indent}{name}: {yaml_quote(text)}"]
+    chunks = [text[index : index + size] for index in range(0, len(text), size)]
+    lines = [
+        f"{indent}{name}: {yaml_quote('')}",
+        f"{indent}{name}_CHUNKS: {yaml_quote(len(chunks))}",
+        f"{indent}{name}_TOTAL_LENGTH: {yaml_quote(len(text))}",
+        f"{indent}{name}_SHA256: {yaml_quote(hashlib.sha256(text.encode('utf-8')).hexdigest())}",
+    ]
+    for index, chunk in enumerate(chunks):
+        lines.append(f"{indent}{name}_{index:03d}: {yaml_quote(chunk)}")
+    return lines
+
+
 def render_head_compose(
     plan: HeadPlan,
     head: HeadNode,
@@ -3087,8 +3162,6 @@ def render_head_compose(
             f"      MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64: {yaml_quote(traefik_propagate_request_b64_value)}",
             f"      MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64: {yaml_quote(hub_admin_sync_request_b64_value)}",
             f"      MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64: {yaml_quote(contract_deploy_request_b64_value)}",
-            f"      MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64: {yaml_quote(full_hub_runtime_diag_request_b64_value)}",
-            f"      MC_ALLFATHER_SUPERNODES_ROOT: {yaml_quote('/host-supernodes')}",
             "    ports:",
             f"      - {yaml_quote(port_spec)}",
             "    volumes:",
@@ -3105,6 +3178,14 @@ def render_head_compose(
             "      retries: 6",
             "",
         ]
+    )
+    ports_index = lines.index("    ports:")
+    lines[ports_index:ports_index] = (
+        yaml_env_b64_chunk_lines(
+            "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64",
+            full_hub_runtime_diag_request_b64_value,
+        )
+        + [f"      MC_ALLFATHER_SUPERNODES_ROOT: {yaml_quote('/host-supernodes')}"]
     )
     return "\n".join(lines)
 
@@ -11139,11 +11220,37 @@ def probe_result_target_by_service(probe_result: Mapping[str, Any], service_name
 
 
 def operator_log(args: argparse.Namespace, message: str) -> None:
-    """Emit concise operator progress to stderr without corrupting JSON stdout."""
+    """Emit operator progress to stderr without corrupting JSON stdout.
+
+    Default hub-propagate output is intentionally quiet: it prints phase changes and
+    actionable failures, not every health probe or Coolify status poll. Use
+    --progress or --verbose to restore the full live trace.
+    """
 
     if bool(getattr(args, "quiet", False)):
         return
     command = str(getattr(args, "command", "") or "allfather").strip()
+    if command in {"hub-propagate", "traefik-propagate"} and not (bool(getattr(args, "progress", False)) or bool(getattr(args, "verbose", False))):
+        msg = str(message or "")
+        important_fragments = (
+            "starting full hub runtime sync",
+            "stale bootstrap after full-runtime deploy",
+            "collecting container runtime diagnostics",
+            "primed container runtime diagnostics marker",
+            "triggering head-agent diagnostics deploy",
+            "container runtime diagnostics pending timeout",
+            "container runtime diagnostics marker ready",
+            "container runtime diagnostics marker failed",
+            "container diag:",
+            "skipping Traefik/admin handoff",
+            "waiting for Traefik propagation",
+            "Traefik propagation completed",
+            "hub admin contract sync",
+            "completed",
+            "failed",
+        )
+        if not any(fragment in msg for fragment in important_fragments):
+            return
     prefix = f"[allfather {command}]"
     print(f"{prefix} {message}", file=sys.stderr, flush=True)
 
@@ -15431,8 +15538,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_hub_propagate_options(remove_node_parser)
 
     for subparser in (plan_parser, write_parser, boot_parser, discover_parser, hub_parser, traefik_parser, deploy_contracts_parser, add_node_parser, remove_node_parser):
-        subparser.add_argument("--json", action="store_true", help="Print detailed compact JSON. Default discover output is an operator summary.")
-        subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output.")
+        subparser.add_argument("--json", action="store_true", help="Print full detailed JSON. Default discover/hub-propagate output is an operator summary.")
+        subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output, and print the full live progress trace.")
+        subparser.add_argument("--progress", action="store_true", help="Print the full live progress trace on stderr while keeping compact JSON output.")
         subparser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs on stderr.")
         subparser.add_argument("--operator-log-interval-s", type=float, default=15.0, help=argparse.SUPPRESS)
 
@@ -15450,6 +15558,308 @@ def build_plan_from_args(args: argparse.Namespace) -> HeadPlan:
         state_root_prefix=args.state_root_prefix,
         image=args.image,
     )
+
+
+
+def _operator_short_reason(reason: Any, *, limit: int = 220) -> str:
+    """Collapse long/repeated operator reasons for compact default JSON."""
+
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    deduped: list[str] = []
+    for part in parts:
+        if part not in deduped:
+            deduped.append(part)
+    text = "; ".join(deduped) if deduped else text
+    if len(text) > limit:
+        text = text[: max(0, limit - 3)].rstrip() + "..."
+    return text
+
+
+def _compact_public_hub_probe_for_operator(probe: Any) -> dict[str, Any]:
+    """Keep only the health booleans/operators need in default JSON."""
+
+    if not isinstance(probe, Mapping):
+        return {}
+    return {
+        key: probe.get(key)
+        for key in (
+            "observed",
+            "ok",
+            "bootstrap_hub",
+            "full_main_computer_hub",
+            "cell_id",
+            "service",
+            "error",
+        )
+        if key in probe and probe.get(key) not in (None, "")
+    }
+
+
+def _compact_full_hub_wait_for_operator(wait: Any) -> dict[str, Any]:
+    """Summarize a full-hub wait without repeated probe/snapshot spam."""
+
+    if not isinstance(wait, Mapping):
+        return {}
+    compact: dict[str, Any] = {
+        key: wait.get(key)
+        for key in (
+            "ready",
+            "observed",
+            "attempts",
+            "stale_bootstrap_after_running_full_compose_s",
+            "elapsed_s",
+        )
+        if key in wait and wait.get(key) not in (None, "")
+    }
+    if wait.get("reason"):
+        compact["reason"] = _operator_short_reason(wait.get("reason"))
+    if isinstance(wait.get("last_probe"), Mapping):
+        compact["last_probe"] = _compact_public_hub_probe_for_operator(wait.get("last_probe"))
+    snapshots = wait.get("coolify_snapshots") if isinstance(wait.get("coolify_snapshots"), list) else []
+    if snapshots:
+        last_snapshot = snapshots[-1] if isinstance(snapshots[-1], Mapping) else {}
+        service = last_snapshot.get("service") if isinstance(last_snapshot.get("service"), Mapping) else {}
+        compose = last_snapshot.get("compose") if isinstance(last_snapshot.get("compose"), Mapping) else {}
+        compact["coolify"] = {
+            "status": service.get("status"),
+            "compose_full": compose.get("any_contains_full_runtime"),
+            "compose_deployment_id": compose.get("any_contains_deployment_id"),
+        }
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def _compact_full_hub_runtime_node_for_operator(node: Any) -> dict[str, Any]:
+    """Trim one full-runtime sync node down to one readable record."""
+
+    if not isinstance(node, Mapping):
+        return {}
+    compact: dict[str, Any] = {
+        key: node.get(key)
+        for key in (
+            "service_name",
+            "domain",
+            "ok",
+            "already_full",
+            "service_action",
+            "elapsed_s",
+        )
+        if key in node and node.get(key) not in (None, "")
+    }
+    if node.get("reason") or node.get("error"):
+        compact["reason"] = _operator_short_reason(node.get("reason") or node.get("error"))
+    health_before = _compact_public_hub_probe_for_operator(node.get("health_before"))
+    if health_before:
+        compact["before"] = {
+            key: health_before.get(key)
+            for key in ("bootstrap_hub", "full_main_computer_hub", "service", "cell_id")
+            if health_before.get(key) not in (None, "")
+        }
+    if isinstance(node.get("wait"), Mapping):
+        wait = _compact_full_hub_wait_for_operator(node.get("wait"))
+        if wait:
+            compact["wait"] = wait
+    service_snapshot = node.get("coolify_service_after_sync") if isinstance(node.get("coolify_service_after_sync"), Mapping) else {}
+    if service_snapshot:
+        service = service_snapshot.get("service") if isinstance(service_snapshot.get("service"), Mapping) else {}
+        compose = service_snapshot.get("compose") if isinstance(service_snapshot.get("compose"), Mapping) else {}
+        compact["coolify"] = {
+            "status": service.get("status"),
+            "compose_full": compose.get("any_contains_full_runtime"),
+            "compose_deployment_id": compose.get("any_contains_deployment_id"),
+        }
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def _compact_full_hub_runtime_sync_for_operator(sync: Any) -> dict[str, Any]:
+    """Trim full-runtime sync output for default hub-propagate JSON."""
+
+    if not isinstance(sync, Mapping):
+        return {}
+    nodes = [item for item in (sync.get("nodes") or []) if isinstance(item, Mapping)]
+    compact = {
+        "enabled": sync.get("enabled"),
+        "ok": sync.get("ok"),
+        "reason": _operator_short_reason(sync.get("reason")),
+        "node_count": len(nodes),
+        "failed_count": sum(1 for item in nodes if item.get("ok") is False),
+        "nodes": [_compact_full_hub_runtime_node_for_operator(item) for item in nodes],
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def _compact_full_hub_runtime_diag_node_for_operator(node: Any) -> dict[str, Any]:
+    """Trim one container-side full-hub diagnostic node."""
+
+    if not isinstance(node, Mapping):
+        return {}
+    runtime = node.get("runtime") if isinstance(node.get("runtime"), Mapping) else {}
+    paths = runtime.get("paths") if isinstance(runtime.get("paths"), Mapping) else {}
+    imports = runtime.get("imports") if isinstance(runtime.get("imports"), Mapping) else {}
+    hub_import = imports.get("main_computer.hub") if isinstance(imports.get("main_computer.hub"), Mapping) else {}
+    local_health = runtime.get("local_health") if isinstance(runtime.get("local_health"), Mapping) else {}
+    health_json = local_health.get("json") if isinstance(local_health.get("json"), Mapping) else {}
+    docker_info = node.get("docker") if isinstance(node.get("docker"), Mapping) else {}
+    docker_env = docker_info.get("env") if isinstance(docker_info.get("env"), Mapping) else {}
+    repair = node.get("repair") if isinstance(node.get("repair"), Mapping) else {}
+    post_repair = repair.get("post_repair") if isinstance(repair.get("post_repair"), Mapping) else {}
+
+    compact = {
+        "service_name": node.get("service_name"),
+        "ok": node.get("ok"),
+        "status": node.get("status"),
+        "state": docker_info.get("state_status"),
+        "health": docker_info.get("health_status"),
+        "runtime_requested_env": node.get("runtime_requested_env") or docker_env.get("MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED"),
+        "deployment_id_file": node.get("deployment_id_file"),
+        "source_zip_exists": bool((paths.get("/opt/main-computer-src.zip") or paths.get("/opt/main_computer_src.zip") or {}).get("exists")),
+        "source_dir_exists": bool((paths.get("/opt/main-computer-src") or paths.get("/opt/main_computer") or {}).get("exists")),
+        "hub_py_exists": bool((paths.get("/opt/main-computer-src/main_computer/hub.py") or paths.get("/opt/main_computer/main_computer/hub.py") or {}).get("exists")),
+        "hub_import_ok": bool(hub_import.get("ok")),
+        "serve_hub": bool(hub_import.get("has_serve_hub")),
+        "local_bootstrap": health_json.get("bootstrap_hub"),
+        "local_full": health_json.get("full_main_computer_hub"),
+        "repair_attempted": bool(repair),
+        "repair_ok": repair.get("ok") if repair else None,
+        "post_repair_full": post_repair.get("full_main_computer_hub") if post_repair else None,
+        "error": _operator_short_reason(node.get("error") or node.get("hub_import_error") or hub_import.get("error") or repair.get("error")),
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def _compact_full_hub_runtime_diag_for_operator(diag: Any) -> dict[str, Any]:
+    """Trim container diagnostics/repair output and remove embedded runtime archives."""
+
+    if not isinstance(diag, Mapping):
+        return {}
+    result = diag.get("result") if isinstance(diag.get("result"), Mapping) else {}
+    wait = diag.get("wait") if isinstance(diag.get("wait"), Mapping) else {}
+    nodes = result.get("nodes") if isinstance(result.get("nodes"), list) else []
+    request = diag.get("request") if isinstance(diag.get("request"), Mapping) else {}
+    compact = {
+        "enabled": diag.get("enabled"),
+        "ok": diag.get("ok"),
+        "ready": diag.get("ready"),
+        "phase": result.get("phase") or result.get("status") or wait.get("phase"),
+        "request_id": request.get("request_id") or result.get("request_id") or wait.get("expected_request_id"),
+        "reason": _operator_short_reason(diag.get("reason") or wait.get("reason")),
+        "node_count": len([item for item in nodes if isinstance(item, Mapping)]),
+        "nodes": [_compact_full_hub_runtime_diag_node_for_operator(item) for item in nodes if isinstance(item, Mapping)],
+    }
+    wait_compact = {
+        key: wait.get(key)
+        for key in (
+            "observed",
+            "ready",
+            "attempts",
+            "pending_elapsed_s",
+        )
+        if key in wait and wait.get(key) not in (None, "")
+    }
+    if wait.get("reason"):
+        wait_compact["reason"] = _operator_short_reason(wait.get("reason"))
+    if wait_compact:
+        compact["wait"] = wait_compact
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def _compact_marker_result_for_operator(value: Any) -> dict[str, Any]:
+    """Trim a head-agent marker wait/result block."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    result = value.get("result") if isinstance(value.get("result"), Mapping) else {}
+    compact = {
+        key: value.get(key)
+        for key in (
+            "enabled",
+            "ok",
+            "observed",
+            "ready",
+            "service_action",
+            "deployed",
+        )
+        if key in value and value.get(key) not in (None, "")
+    }
+    compact.update(
+        {
+            "phase": result.get("phase") or result.get("status"),
+            "request_id": result.get("request_id"),
+            "private_state_updates": value.get("private_state_updates"),
+            "reason": _operator_short_reason(value.get("reason")),
+        }
+    )
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def compact_hub_propagate_for_operator(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Default hub-propagate output: concise operator summary, no raw API/compose spam."""
+
+    propagations: list[dict[str, Any]] = []
+    for entry in payload.get("propagations") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        compact_entry: dict[str, Any] = {
+            key: entry.get(key)
+            for key in (
+                "host",
+                "host_slot",
+                "ok",
+                "local_super_node_count",
+                "service_action",
+                "propagation_transport",
+            )
+            if key in entry and entry.get(key) not in (None, "")
+        }
+        if entry.get("reason") or entry.get("error"):
+            compact_entry["reason"] = _operator_short_reason(entry.get("reason") or entry.get("error"))
+        if isinstance(entry.get("full_hub_runtime_sync"), Mapping):
+            compact_entry["full_hub_runtime_sync"] = _compact_full_hub_runtime_sync_for_operator(entry.get("full_hub_runtime_sync"))
+        if isinstance(entry.get("full_hub_runtime_container_diagnostics"), Mapping):
+            compact_entry["full_hub_runtime_container_diagnostics"] = _compact_full_hub_runtime_diag_for_operator(entry.get("full_hub_runtime_container_diagnostics"))
+        if isinstance(entry.get("propagator_result"), Mapping):
+            compact_entry["propagator_result"] = _compact_marker_result_for_operator(entry.get("propagator_result"))
+        if isinstance(entry.get("hub_admin_contract_sync"), Mapping):
+            compact_entry["hub_admin_contract_sync"] = _compact_marker_result_for_operator(entry.get("hub_admin_contract_sync"))
+        propagations.append({key: value for key, value in compact_entry.items() if value not in (None, "", {}, [])})
+
+    inventory = payload.get("inventory") if isinstance(payload.get("inventory"), Mapping) else {}
+    super_nodes = inventory.get("super_nodes") if isinstance(inventory.get("super_nodes"), list) else []
+    errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
+    compact_errors: list[dict[str, Any]] = []
+    for error in errors[:8]:
+        if isinstance(error, Mapping):
+            compact_errors.append(
+                {
+                    key: value
+                    for key, value in {
+                        "host": error.get("host"),
+                        "service_name": error.get("service_name"),
+                        "error": _operator_short_reason(error.get("error") or error.get("reason")),
+                    }.items()
+                    if value not in (None, "")
+                }
+            )
+        elif error:
+            compact_errors.append({"error": _operator_short_reason(error)})
+
+    return {
+        "ok": bool(payload.get("ok")),
+        "operation": payload.get("operation"),
+        "network": payload.get("network"),
+        "summary": {
+            "hosts": len(propagations),
+            "failed_hosts": sum(1 for item in propagations if item.get("ok") is False),
+            "super_nodes": len(super_nodes),
+            "ssh_used": bool(payload.get("ssh_used")),
+        },
+        "reason": _operator_short_reason(payload.get("reason")),
+        "errors": compact_errors,
+        "propagations": propagations,
+        "full_json": "rerun with --json or --verbose for raw Coolify/API details",
+    }
 
 
 def print_json(payload: Mapping[str, Any]) -> None:
@@ -15488,7 +15898,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command in {"hub-propagate", "traefik-propagate"}:
             payload = hub_propagate(plan, args)
-            print_json(payload)
+            if getattr(args, "json", False) or getattr(args, "verbose", False) or getattr(args, "dry_run", False):
+                print_json(payload)
+            else:
+                print_json(compact_hub_propagate_for_operator(payload))
             return 0 if bool(payload.get("ok", True)) else 1
         if args.command == "deploy-contracts":
             payload = deploy_contracts(plan, args)

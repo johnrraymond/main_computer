@@ -26,7 +26,9 @@ function gitProjectInlineCardDomId(actionKey = "") {
 function gitProjectCardInlinePanelHtml(step = {}, actionKey = "") {
   if (!gitProjectStepSupportsCardSubscreen(step)) return "";
   const stepId = gitProjectStepId(step);
-  const isGitignore = stepId === "update_gitignore_before_initial_commit" || (step.gitignore_file && (Array.isArray(step.ignore_rules) || Array.isArray(step.questionable_ignore_rules)));
+  const isGitignore = typeof gitProjectStepIsGitignoreCard === "function"
+    ? gitProjectStepIsGitignoreCard(step)
+    : stepId === "update_gitignore_before_initial_commit" || (step.gitignore_file && (Array.isArray(step.ignore_rules) || Array.isArray(step.questionable_ignore_rules)));
   const isSecretsFilter = stepId === "secrets_filter";
   const isCommit = gitProjectStepIsCommitCard(step);
   const isArchive = gitProjectStepIsArchiveCard(step);

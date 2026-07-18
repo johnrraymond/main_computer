@@ -1,15 +1,61 @@
 (() => {
   "use strict";
 
-  const VERSION = "mcel-diagnostics-counter-widget-v3";
+  const VERSION = "mcel-diagnostics-counter-widget-v4";
   const STARTUP_ERROR_WARNING_MS = 5000;
   const REFRESH_INTERVAL_MS = 30000;
   const DEFAULT_APP_ID = "code-editor";
-  const SELECTORS = {
-    root: "#code-editor-app",
-    placeholder: "#code-editor-diagnostics-counter",
-    titlebar: "#code-editor-app .code-studio-title-actions, #code-editor-app .code-studio-titlebar"
-  };
+
+  const APP_WIDGETS = Object.freeze({
+    "code-editor": {
+      root: "#code-editor-app",
+      placeholder: "#code-editor-diagnostics-counter",
+      id: "code-editor-diagnostics-counter",
+      anchors: [
+        "#code-editor-app .code-studio-title-actions",
+        "#code-editor-app .code-studio-titlebar"
+      ]
+    },
+    calculator: {
+      root: "#calculator-app",
+      placeholder: "#calculator-diagnostics-counter",
+      id: "calculator-diagnostics-counter",
+      anchors: [
+        "#calculator-app .calculator-mode-switch",
+        "#calculator-app .calculator-shell"
+      ]
+    },
+    "file-explorer": {
+      root: "#file-explorer-app",
+      placeholder: "#file-explorer-diagnostics-counter",
+      id: "file-explorer-diagnostics-counter",
+      anchors: [
+        "#file-explorer-app .file-explorer-toolbar",
+        "#file-explorer-app .file-explorer-roots-panel > div:first-child",
+        "#file-explorer-app .file-explorer-shell"
+      ]
+    },
+    "git-tools": {
+      root: "#git-tools-app",
+      placeholder: "#git-tools-diagnostics-counter",
+      id: "git-tools-diagnostics-counter",
+      anchors: [
+        "#git-tools-app .git-tools-feedback-resolution",
+        "#git-tools-app .git-tools-feedback-operation",
+        "#git-tools-app"
+      ]
+    },
+    "website-builder": {
+      root: "#website-builder-app",
+      placeholder: "#website-builder-diagnostics-counter",
+      id: "website-builder-diagnostics-counter",
+      anchors: [
+        "#website-builder-app .website-builder-actions",
+        "#website-builder-app .website-builder-summary",
+        "#website-builder-app"
+      ]
+    }
+  });
 
   function getDocument() {
     try {
@@ -25,6 +71,36 @@
 
   function formatCount(value) {
     return String(clampCount(value)).padStart(2, "0");
+  }
+
+  function isVisibleElement(el) {
+    if (!el || typeof el.getBoundingClientRect !== "function") return false;
+    try {
+      const rect = el.getBoundingClientRect();
+      const style = typeof getComputedStyle === "function" ? getComputedStyle(el) : {};
+      return rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || 1) !== 0 &&
+        !el.hidden;
+    } catch {
+      return false;
+    }
+  }
+
+  function appConfig(appId) {
+    return APP_WIDGETS[appId] || APP_WIDGETS[DEFAULT_APP_ID];
+  }
+
+  function appRoot(doc, appId) {
+    const config = appConfig(appId);
+    return doc?.querySelector(config.root) || null;
+  }
+
+  function isAppVisible(doc, appId) {
+    const root = appRoot(doc, appId);
+    return isVisibleElement(root);
   }
 
   function isVisibleBox(box) {
@@ -106,8 +182,8 @@
       if (region?.exists && region.visible) ok += 1;
     }
 
-    const host = measurements.surfaces?.monacoHost || primarySurface.host;
-    const editor = measurements.surfaces?.monacoEditor || primarySurface.editor;
+    const host = measurements.surfaces?.primaryHost || measurements.surfaces?.monacoHost || primarySurface.host;
+    const editor = measurements.surfaces?.primaryEditor || measurements.surfaces?.monacoEditor || primarySurface.editor || host;
 
     if (host?.exists) ok += 1;
     if (isVisibleBox(host)) ok += 1;
@@ -164,7 +240,7 @@
 
   function createIssueHistory(now = new Date().toISOString()) {
     return {
-      schema: "mcel-diagnostics-counter-history-v2",
+      schema: "mcel-diagnostics-counter-history-v3",
       pageStartedAt: now,
       startupErrorWarningMs: STARTUP_ERROR_WARNING_MS,
       lastUpdatedAt: now,
@@ -178,53 +254,44 @@
 
   function updateIssueHistory(history, report, now = new Date().toISOString()) {
     const findings = Array.isArray(report?.findings) ? report.findings : [];
-    const reportTimestamp = report?.timestamp || now;
     const startupWindow = isStartupWindow(history, now);
     const activeKeys = new Set();
 
     for (const finding of findings) {
       if (!shouldRememberIssue(finding)) continue;
-
       const key = issueKey(finding);
-      const issue = compactIssue(finding);
-      const originalNormalizedSeverity = normalizeIssueSeverity(issue.severity);
-      const normalizedSeverity = normalizeIssueSeverity(issue.severity, {startupWindow});
-      const startupDowngraded = originalNormalizedSeverity === "error" && normalizedSeverity === "warning";
       activeKeys.add(key);
-
+      const originalNormalizedSeverity = normalizeIssueSeverity(finding?.severity, {startupWindow: false});
+      const normalizedSeverity = normalizeIssueSeverity(finding?.severity, {startupWindow});
+      const countedAsStartupWarning = originalNormalizedSeverity === "error" && normalizedSeverity === "warning";
       let entry = findHistoryEntry(history, key);
+
       if (!entry) {
         entry = {
           key,
-          severity: issue.severity,
+          ...compactIssue(finding),
           normalizedSeverity,
           originalNormalizedSeverity,
-          countedAsStartupWarning: startupDowngraded,
+          countedAsStartupWarning,
           lifecyclePhase: startupWindow ? "startup" : "runtime",
-          code: issue.code,
-          finding: issue.finding,
-          recommendedNextProbe: issue.recommendedNextProbe,
           firstSeen: now,
           lastSeen: now,
-          firstReportTimestamp: reportTimestamp,
-          lastReportTimestamp: reportTimestamp,
+          firstReportTimestamp: report?.timestamp || now,
+          lastReportTimestamp: report?.timestamp || now,
           seenCount: 0,
-          currentlyActive: false,
+          currentlyActive: true,
           clearedAt: ""
         };
         history.entries.push(entry);
       }
 
-      entry.severity = issue.severity;
+      entry.severity = finding?.severity || entry.severity;
       entry.normalizedSeverity = normalizedSeverity;
       entry.originalNormalizedSeverity = originalNormalizedSeverity;
-      entry.countedAsStartupWarning = Boolean(startupDowngraded || entry.countedAsStartupWarning);
-      entry.lifecyclePhase = entry.lifecyclePhase === "runtime" || !startupWindow ? "runtime" : "startup";
-      entry.code = issue.code;
-      entry.finding = issue.finding;
-      entry.recommendedNextProbe = issue.recommendedNextProbe;
+      entry.countedAsStartupWarning = Boolean(entry.countedAsStartupWarning || countedAsStartupWarning);
+      entry.lifecyclePhase = entry.lifecyclePhase === "runtime" ? "runtime" : startupWindow ? "startup" : "runtime";
       entry.lastSeen = now;
-      entry.lastReportTimestamp = reportTimestamp;
+      entry.lastReportTimestamp = report?.timestamp || now;
       entry.seenCount += 1;
       entry.currentlyActive = true;
       entry.clearedAt = "";
@@ -244,12 +311,16 @@
   function issueHistoryCounts(history) {
     return (history?.entries || []).reduce(
       (counts, entry) => {
-        const bucket = entry.normalizedSeverity === "error" ? "errors" : entry.normalizedSeverity === "warning" ? "warnings" : "";
-        if (!bucket) return counts;
-
-        counts[`${bucket}Seen`] += 1;
-        if (entry.currentlyActive) counts[`active${bucket[0].toUpperCase()}${bucket.slice(1)}`] += 1;
-        else counts[`resolved${bucket[0].toUpperCase()}${bucket.slice(1)}`] += 1;
+        const severity = entry.normalizedSeverity || normalizeIssueSeverity(entry.severity);
+        if (severity === "error") {
+          counts.errorsSeen += 1;
+          if (entry.currentlyActive) counts.activeErrors += 1;
+          else counts.resolvedErrors += 1;
+        } else if (severity === "warning") {
+          counts.warningsSeen += 1;
+          if (entry.currentlyActive) counts.activeWarnings += 1;
+          else counts.resolvedWarnings += 1;
+        }
         return counts;
       },
       {
@@ -266,41 +337,55 @@
   function compactIssueHistory(history) {
     const safeHistory = history || createIssueHistory();
     return {
-      schema: safeHistory.schema || "mcel-diagnostics-counter-history-v2",
+      schema: safeHistory.schema || "mcel-diagnostics-counter-history-v3",
       pageStartedAt: safeHistory.pageStartedAt || "",
       lastUpdatedAt: safeHistory.lastUpdatedAt || "",
       counts: issueHistoryCounts(safeHistory),
-      issues: (safeHistory.entries || [])
-        .map((entry) => ({
-          severity: entry.severity || "",
-          normalizedSeverity: entry.normalizedSeverity || normalizeIssueSeverity(entry.severity),
-          originalNormalizedSeverity: entry.originalNormalizedSeverity || normalizeIssueSeverity(entry.severity),
-          countedAsStartupWarning: Boolean(entry.countedAsStartupWarning),
-          lifecyclePhase: entry.lifecyclePhase || "",
-          code: entry.code || "",
-          finding: entry.finding || "",
-          recommendedNextProbe: entry.recommendedNextProbe || "",
-          firstSeen: entry.firstSeen || "",
-          lastSeen: entry.lastSeen || "",
-          firstReportTimestamp: entry.firstReportTimestamp || "",
-          lastReportTimestamp: entry.lastReportTimestamp || "",
-          seenCount: Number(entry.seenCount || 0),
-          currentlyActive: Boolean(entry.currentlyActive),
-          clearedAt: entry.clearedAt || ""
-        }))
-        .sort((left, right) => String(right.lastSeen).localeCompare(String(left.lastSeen)))
+      issues: (safeHistory.entries || []).map((entry) => ({
+        severity: entry.severity || "",
+        normalizedSeverity: entry.normalizedSeverity || normalizeIssueSeverity(entry.severity),
+        originalNormalizedSeverity: entry.originalNormalizedSeverity || normalizeIssueSeverity(entry.severity, {startupWindow: false}),
+        countedAsStartupWarning: Boolean(entry.countedAsStartupWarning),
+        lifecyclePhase: entry.lifecyclePhase || "",
+        code: entry.code || "",
+        finding: entry.finding || "",
+        recommendedNextProbe: entry.recommendedNextProbe || "",
+        firstSeen: entry.firstSeen || "",
+        lastSeen: entry.lastSeen || "",
+        firstReportTimestamp: entry.firstReportTimestamp || "",
+        lastReportTimestamp: entry.lastReportTimestamp || "",
+        seenCount: Number(entry.seenCount || 0),
+        currentlyActive: Boolean(entry.currentlyActive),
+        clearedAt: entry.clearedAt || ""
+      }))
+    };
+  }
+
+  function compactBuckets(report, history) {
+    const reportBuckets = report?.buckets || {};
+    const historyIssues = compactIssueHistory(history).issues;
+    return {
+      activeRuntimeIssues: reportBuckets.activeRuntimeIssues || [],
+      activeOverlayIssues: reportBuckets.activeOverlayIssues || [],
+      activeLayoutIssues: reportBuckets.activeLayoutIssues || [],
+      activeSurfaceIssues: reportBuckets.activeSurfaceIssues || [],
+      activeContractIssues: reportBuckets.activeContractIssues || [],
+      resolvedStartupWarnings: historyIssues.filter((issue) =>
+        !issue.currentlyActive && issue.lifecyclePhase === "startup" && issue.normalizedSeverity === "warning"
+      ),
+      resolvedRuntimeIssues: historyIssues.filter((issue) =>
+        !issue.currentlyActive && issue.lifecyclePhase !== "startup"
+      )
     };
   }
 
   function compactPayload(report, counts, history) {
-    const currentIssues = Array.isArray(report?.findings) ? report.findings.map(compactIssue) : [];
-    const safeCounts = {
-      errors: clampCount(counts.errors),
-      warnings: clampCount(counts.warnings),
-      ok: clampCount(counts.ok)
-    };
+    const safeCounts = counts || {errors: 0, warnings: 0, ok: 0};
+    const currentIssues = (Array.isArray(report?.findings) ? report.findings : [])
+      .filter((finding) => normalizeIssueSeverity(finding?.severity))
+      .map(compactIssue);
     return {
-      schema: "mcel-diagnostics-counter-copy-v3",
+      schema: "mcel-diagnostics-counter-copy-v4",
       widgetVersion: VERSION,
       appId: report?.appId || DEFAULT_APP_ID,
       contractId: report?.contractId || "",
@@ -313,6 +398,7 @@
         issues: currentIssues
       },
       history: compactIssueHistory(history),
+      buckets: compactBuckets(report, history),
       primarySurface: report?.summary?.primarySurface || null,
       issues: currentIssues
     };
@@ -341,23 +427,32 @@
     ].join("");
   }
 
-  function findMountTarget(doc) {
-    return doc.querySelector(SELECTORS.titlebar);
+  function findMountTarget(doc, appId) {
+    const config = appConfig(appId);
+    for (const selector of config.anchors || []) {
+      const target = doc.querySelector(selector);
+      if (target) return target;
+    }
+    return appRoot(doc, appId);
   }
 
-  function ensureWidget(doc) {
-    let el = doc.querySelector(SELECTORS.placeholder);
+  function ensureWidget(doc, appId = DEFAULT_APP_ID) {
+    const config = appConfig(appId);
+    let el = doc.querySelector(config.placeholder);
     if (el) return el;
+
+    const root = appRoot(doc, appId);
+    if (!root) return null;
 
     el = doc.createElement("button");
     el.type = "button";
-    el.id = "code-editor-diagnostics-counter";
+    el.id = config.id;
     el.className = "mcel-diagnostics-counter";
-    el.setAttribute("data-mcel-diagnostics-counter", "code-editor");
+    el.setAttribute("data-mcel-diagnostics-counter", appId);
     el.setAttribute("aria-label", "MCEL diagnostics counter");
     render(el, {errors: 0, warnings: 0, ok: 0});
 
-    const target = findMountTarget(doc);
+    const target = findMountTarget(doc, appId);
     if (target) target.appendChild(el);
     return el;
   }
@@ -365,17 +460,11 @@
   function diagnose(appId) {
     const global = typeof window !== "undefined" ? window : globalThis;
     const api = global.MCEL;
-    if (api && typeof api.diagnose === "function") {
-      return api.diagnose(appId);
-    }
-    if (global.McelSelfDiagnosis && typeof global.McelSelfDiagnosis.diagnose === "function") {
-      return global.McelSelfDiagnosis.diagnose(appId);
-    }
-    if (global.MCELDiagnosis && typeof global.MCELDiagnosis.diagnose === "function") {
-      return global.MCELDiagnosis.diagnose(appId);
-    }
+    if (api && typeof api.diagnose === "function") return api.diagnose(appId, {silent: true});
+    if (global.McelSelfDiagnosis && typeof global.McelSelfDiagnosis.diagnose === "function") return global.McelSelfDiagnosis.diagnose(appId, {silent: true});
+    if (global.MCELDiagnosis && typeof global.MCELDiagnosis.diagnose === "function") return global.MCELDiagnosis.diagnose(appId, {silent: true});
     return {
-      schema: "mcel-self-diagnosis-report-v1",
+      schema: "mcel-self-diagnosis-report-v2",
       version: VERSION,
       appId,
       contractId: "",
@@ -431,14 +520,27 @@
     }, 1200);
   }
 
+  function inactiveStatus(widget) {
+    const counts = {errors: 0, warnings: 0, ok: 0};
+    render(widget, counts);
+    widget.__mcelDiagnosticsCounts = counts;
+    widget.__mcelDiagnosticsInactive = true;
+    return {report: null, counts, history: widget.__mcelDiagnosticsIssueHistory || createIssueHistory()};
+  }
+
   function update(widget, options = {}) {
-    const appId = options.appId || DEFAULT_APP_ID;
+    const appId = options.appId || widget?.getAttribute?.("data-mcel-diagnostics-counter") || DEFAULT_APP_ID;
+    const doc = getDocument();
+    if (options.skipHidden !== false && doc && !isAppVisible(doc, appId)) {
+      return inactiveStatus(widget);
+    }
+
     let report;
     try {
       report = diagnose(appId);
     } catch (error) {
       report = {
-        schema: "mcel-self-diagnosis-report-v1",
+        schema: "mcel-self-diagnosis-report-v2",
         version: VERSION,
         appId,
         contractId: "",
@@ -465,14 +567,37 @@
     widget.__mcelDiagnosticsReport = report;
     widget.__mcelDiagnosticsCounts = counts;
     widget.__mcelDiagnosticsIssueHistory = history;
+    widget.__mcelDiagnosticsInactive = false;
     return {report, counts, history};
+  }
+
+  function bindWidgetClick(widget, appId, doc) {
+    if (widget.__mcelDiagnosticsClickBound) return;
+    widget.addEventListener("click", async () => {
+      const current = update(widget, {appId, skipHidden: false});
+      const payload = compactPayload(current.report, current.counts, current.history || widget.__mcelDiagnosticsIssueHistory);
+      const text = JSON.stringify(payload, null, 2);
+      let copied = false;
+      try {
+        copied = await copyText(text, doc);
+      } catch {
+        copied = false;
+      }
+      if (!copied) {
+        try {
+          console.log(text);
+        } catch {}
+      }
+      flashCopied(widget, copied);
+    });
+    widget.__mcelDiagnosticsClickBound = true;
   }
 
   function mount(appId = DEFAULT_APP_ID, options = {}) {
     const doc = getDocument();
     if (!doc) return null;
 
-    const widget = ensureWidget(doc);
+    const widget = ensureWidget(doc, appId);
     if (!widget) return null;
 
     const intervalMs = Number(options.intervalMs || REFRESH_INTERVAL_MS);
@@ -486,35 +611,22 @@
       update(widget, {appId});
     }, intervalMs);
 
-    if (!widget.__mcelDiagnosticsClickBound) {
-      widget.addEventListener("click", async () => {
-        const current = update(widget, {appId});
-        const payload = compactPayload(current.report, current.counts, current.history || widget.__mcelDiagnosticsIssueHistory);
-        const text = JSON.stringify(payload, null, 2);
-        let copied = false;
-        try {
-          copied = await copyText(text, doc);
-        } catch {
-          copied = false;
-        }
-        if (!copied) {
-          try {
-            console.log(text);
-          } catch {}
-        }
-        flashCopied(widget, copied);
-      });
-      widget.__mcelDiagnosticsClickBound = true;
-    }
-
+    bindWidgetClick(widget, appId, doc);
     return widget;
+  }
+
+  function mountAll(options = {}) {
+    return Object.keys(APP_WIDGETS)
+      .map((appId) => mount(appId, options))
+      .filter(Boolean);
   }
 
   function getStatus(appId = DEFAULT_APP_ID) {
     const doc = getDocument();
-    const widget = doc?.querySelector(SELECTORS.placeholder) || null;
+    const config = appConfig(appId);
+    const widget = doc?.querySelector(config.placeholder) || null;
     if (!widget) return null;
-    if (!widget.__mcelDiagnosticsReport) update(widget, {appId});
+    if (!widget.__mcelDiagnosticsReport && isAppVisible(doc, appId)) update(widget, {appId});
     return {
       counts: widget.__mcelDiagnosticsCounts || {errors: 0, warnings: 0, ok: 0},
       report: widget.__mcelDiagnosticsReport || null,
@@ -525,17 +637,23 @@
   const api = Object.freeze({
     VERSION,
     REFRESH_INTERVAL_MS,
+    APP_WIDGETS,
     mount,
+    mountAll,
     refresh(appId = DEFAULT_APP_ID) {
       const doc = getDocument();
-      const widget = ensureWidget(doc);
-      return widget ? update(widget, {appId}) : null;
+      const widget = ensureWidget(doc, appId);
+      return widget ? update(widget, {appId, skipHidden: false}) : null;
+    },
+    refreshAll() {
+      return Object.keys(APP_WIDGETS).map((appId) => this.refresh(appId)).filter(Boolean);
     },
     getStatus,
     _private: Object.freeze({
       summarizeReport,
       derivedOkCount,
       compactPayload,
+      compactBuckets,
       formatCount,
       createIssueHistory,
       updateIssueHistory,
@@ -543,7 +661,8 @@
       issueHistoryCounts,
       isStartupWindow,
       normalizeIssueSeverity,
-      STARTUP_ERROR_WARNING_MS
+      STARTUP_ERROR_WARNING_MS,
+      APP_WIDGETS
     })
   });
 
@@ -553,7 +672,7 @@
   } catch {}
 
   function boot() {
-    mount(DEFAULT_APP_ID);
+    mountAll();
   }
 
   const doc = getDocument();

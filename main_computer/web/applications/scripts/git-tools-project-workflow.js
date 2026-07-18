@@ -64,13 +64,23 @@
   ]);
 
   const GITIGNORE_REVIEW_IDS = new Set([
+    "update_gitignore_before_initial_commit",
     "ignore_generated_files",
+    "ignore_selected_paths",
     "ignore_local_environment_files",
+    "ignore_debug_output",
+    "separate_real_work_from_noise",
   ]);
 
   const GITIGNORE_REVIEW_LABELS = new Set([
+    "clean up .gitignore before first commit",
+    ".gitignore review",
+    "gitignore review",
     "ignore generated files",
+    "ignore selected paths",
     "ignore local environment files",
+    "ignore debug output",
+    "separate real work from noise",
   ]);
 
   const SECRETS_FILTER_LABELS = new Set([
@@ -368,9 +378,11 @@
   function mergeGitignoreReviewSteps(steps = []) {
     const candidates = steps.filter(Boolean);
     if (!candidates.length) return null;
-    const generatedStep = candidates.find((step) => stepId(step) === "ignore_generated_files") || null;
+    const firstCommitStep = candidates.find((step) => stepId(step) === "update_gitignore_before_initial_commit") || null;
+    const generatedStep = candidates.find((step) => stepId(step) === "ignore_generated_files" || stepId(step) === "ignore_debug_output") || null;
+    const selectedPathsStep = candidates.find((step) => stepId(step) === "ignore_selected_paths" || stepId(step) === "separate_real_work_from_noise") || null;
     const localEnvStep = candidates.find((step) => stepId(step) === "ignore_local_environment_files") || null;
-    const base = generatedStep || localEnvStep || candidates[0];
+    const base = firstCommitStep || generatedStep || selectedPathsStep || localEnvStep || candidates[0];
     const generatedPaths = generatedStep ? wizardStepPaths(generatedStep) : [];
     const localEnvPaths = localEnvStep ? wizardStepPaths(localEnvStep) : [];
     const uniquePaths = uniqueStrings(
@@ -470,6 +482,7 @@
       contracts: [
         "wizard action visibility is not owned by Task Manager",
         "gitignore review steps are merged by Git Tools workflow semantics",
+        "first-commit and normal .gitignore steps stay visible as a review pane",
         "secrets review steps are normalized before commit cards",
         "step classification uses controller-style policy instead of render-only labels",
       ],

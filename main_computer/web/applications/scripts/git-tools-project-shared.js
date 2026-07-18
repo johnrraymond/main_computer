@@ -663,6 +663,12 @@ function gitProjectStepIsCommitCard(step = {}) {
 function gitProjectStepIsArchiveCard(step = {}) {
   return gitProjectStepId(step) === "archive_files" || Boolean(step.archive_files);
 }
+function gitProjectStepIsGitignoreCard(step = {}) {
+  const id = gitProjectStepId(step);
+  if (typeof gitProjectWizardStepIsGitignoreReviewCandidate === "function" && gitProjectWizardStepIsGitignoreReviewCandidate(step)) return true;
+  return id === "update_gitignore_before_initial_commit" ||
+    Boolean(step.gitignore_file && (Array.isArray(step.ignore_rules) || Array.isArray(step.questionable_ignore_rules)));
+}
 function gitProjectArchiveCardTitle(step = {}) {
   if (!gitProjectStepIsArchiveCard(step)) return "";
   return String(step.archive_files?.title || step.label || "Archive Files...").trim();
@@ -678,6 +684,7 @@ function gitProjectVisibleStepLabel(step = {}) {
 }
 function gitProjectOpenCardButtonLabel(step = {}) {
   if (gitProjectStepId(step) === "secrets_filter") return "Open Security Review";
+  if (gitProjectStepIsGitignoreCard(step)) return "Open .gitignore pane";
   if (gitProjectStepIsCommitCard(step)) return "Open commit pane";
   if (gitProjectStepIsArchiveCard(step)) return "Open archive pane";
   return "Open card";
@@ -695,8 +702,8 @@ function gitProjectClosedCardPurpose(step = {}) {
     return "Capture intentional work in a local commit. Open the card to review files, gates, identity, and the final commit message.";
   }
   const id = gitProjectStepId(step);
-  if (id === "update_gitignore_before_initial_commit") {
-    return "Review suggested ignore rules before taking a snapshot. Open the card to choose which rules to save.";
+  if (gitProjectStepIsGitignoreCard(step)) {
+    return "Review suggested ignore rules before taking a snapshot or cleanup action. Open the card to choose which .gitignore rules to save.";
   }
   if (id === "secrets_filter") {
     return "Check selected files for API keys, usernames, credentials, tokens, private keys, generated artifacts, and risky content before committing.";
@@ -760,7 +767,7 @@ function gitProjectClosedCardSummaryHtml(step = {}, stepComponentId = "", stepLa
 
 function gitProjectStepSupportsCardSubscreen(step = {}) {
   const id = gitProjectStepId(step);
-  if (id === "update_gitignore_before_initial_commit") return true;
+  if (gitProjectStepIsGitignoreCard(step)) return true;
   if (id === "secrets_filter") return true;
   if (gitProjectStepIsArchiveCard(step)) return true;
   if (gitProjectStepIsCommitCard(step)) return true;
@@ -851,6 +858,7 @@ function gitProjectPathChips(paths = [], limit = 32) {
     gitProjectCardSelector,
     gitProjectStepIsCommitCard,
     gitProjectStepIsArchiveCard,
+    gitProjectStepIsGitignoreCard,
     gitProjectArchiveCardTitle,
     gitProjectCommitCardTitle,
     gitProjectVisibleStepLabel,
@@ -934,6 +942,7 @@ function gitProjectPathChips(paths = [], limit = 32) {
     gitProjectCardSelector,
     gitProjectStepIsCommitCard,
     gitProjectStepIsArchiveCard,
+    gitProjectStepIsGitignoreCard,
     gitProjectArchiveCardTitle,
     gitProjectCommitCardTitle,
     gitProjectVisibleStepLabel,

@@ -73,3 +73,23 @@
 #code-editor-app .code-studio-title-actions .mcel-diagnostics-counter {
   order: -1;
 }
+
+.mcel-diagnostics-counter[data-mcel-diagnostics-counter="calculator"],
+.mcel-diagnostics-counter[data-mcel-diagnostics-counter="file-explorer"],
+.mcel-diagnostics-counter[data-mcel-diagnostics-counter="git-tools"],
+.mcel-diagnostics-counter[data-mcel-diagnostics-counter="website-builder"] {
+  margin-inline-start: 8px;
+  margin-inline-end: 4px;
+}
+
+#calculator-app .calculator-mode-switch .mcel-diagnostics-counter,
+#file-explorer-app .file-explorer-toolbar .mcel-diagnostics-counter,
+#git-tools-app .git-tools-feedback-resolution .mcel-diagnostics-counter,
+#website-builder-app .website-builder-actions .mcel-diagnostics-counter {
+  align-self: center;
+}
+
+#git-tools-app .git-tools-feedback-resolution .mcel-diagnostics-counter {
+  margin-inline-start: 6px;
+  font-size: 0.78rem;
+}
