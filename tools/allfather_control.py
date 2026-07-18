@@ -1191,8 +1191,8 @@ def head_manifest(plan: HeadPlan, head: HeadNode) -> dict[str, Any]:
 
 
 
-def head_server_command_script() -> str:
-    return r"""
+def head_server_command_script(*, full_hub_runtime_archive_b64: str = "") -> str:
+    script = r"""
 import base64
 import glob
 import hashlib
@@ -1245,6 +1245,7 @@ FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER = "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_
 DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 120.0
 CONTRACT_DEPLOY_REQUEST_B64 = os.environ.get("MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64", "")
 ENV_B64_ERRORS = {}
+FULL_HUB_RUNTIME_ARCHIVE_B64_BUILTIN = __ALLFATHER_BUILTIN_FULL_HUB_RUNTIME_ARCHIVE_B64__
 
 def read_b64_env(name: str) -> str:
     # Read a possibly chunked base64 payload from environment variables.
@@ -2057,6 +2058,7 @@ PY
     return result
 
 def run_full_hub_runtime_diag_once() -> dict:
+    global LATEST_FULL_HUB_RUNTIME_DIAG
     if not FULL_HUB_RUNTIME_DIAG_REQUEST:
         return {
             "ok": True,
@@ -2091,7 +2093,17 @@ def run_full_hub_runtime_diag_once() -> dict:
         result.update({"ok": False, "status": "failed", "phase": "failed", "error": err, "reason": err})
         return result
     runtime_archive_b64 = str(FULL_HUB_RUNTIME_DIAG_REQUEST.get("runtime_archive_b64") or "")
+    runtime_archive_source = "request-env" if runtime_archive_b64 else ""
+    if runtime_archive_b64 == "<embedded-in-head-agent-script>":
+        runtime_archive_b64 = str(FULL_HUB_RUNTIME_ARCHIVE_B64_BUILTIN or "")
+        runtime_archive_source = "embedded-script" if runtime_archive_b64 else "embedded-script-missing"
+    elif not runtime_archive_b64 and FULL_HUB_RUNTIME_ARCHIVE_B64_BUILTIN:
+        runtime_archive_b64 = str(FULL_HUB_RUNTIME_ARCHIVE_B64_BUILTIN or "")
+        runtime_archive_source = "embedded-script-fallback"
     repair_missing_runtime = bool(FULL_HUB_RUNTIME_DIAG_REQUEST.get("repair_missing_runtime"))
+    result["runtime_archive_present"] = bool(runtime_archive_b64)
+    result["runtime_archive_chars"] = len(runtime_archive_b64)
+    result["runtime_archive_source"] = runtime_archive_source or "missing"
     repaired_count = 0
     recovered_count = 0
     for node in nodes:
@@ -2106,37 +2118,74 @@ def run_full_hub_runtime_diag_once() -> dict:
             domain=domain,
         )
         needs_runtime = not bool(inspected.get("source_zip_exists")) or not bool(inspected.get("hub_py_exists"))
-        if repair_missing_runtime and runtime_archive_b64 and inspected.get("container_id") and needs_runtime:
-            repair = install_full_hub_runtime_archive(
-                str(inspected.get("container_id") or ""),
-                runtime_archive_b64,
-                expected_deployment_id=expected_deployment_id,
-            )
-            inspected["runtime_repair"] = repair
-            if repair.get("installed"):
-                repaired_count += 1
-                deadline = time.time() + 45.0
-                after = {}
-                while True:
-                    time.sleep(3.0)
-                    after = inspect_full_hub_runtime_container(
-                        service_name,
-                        expected_deployment_id=expected_deployment_id,
-                        domain=domain,
-                    )
-                    if after.get("local_full_main_computer_hub") or time.time() >= deadline:
-                        break
-                inspected["after_repair"] = after
-                if after.get("local_full_main_computer_hub"):
-                    recovered_count += 1
-                    inspected = {
-                        **after,
-                        "before_repair": inspected,
-                        "runtime_repair": repair,
-                        "recovered_by_runtime_repair": True,
-                    }
+        inspected["repair_requested"] = bool(repair_missing_runtime)
+        inspected["runtime_archive_present"] = bool(runtime_archive_b64)
+        inspected["runtime_archive_source"] = runtime_archive_source or "missing"
+        if repair_missing_runtime and needs_runtime:
+            if runtime_archive_b64 and inspected.get("container_id"):
+                repair = install_full_hub_runtime_archive(
+                    str(inspected.get("container_id") or ""),
+                    runtime_archive_b64,
+                    expected_deployment_id=expected_deployment_id,
+                )
+                inspected["runtime_repair"] = repair
+                if repair.get("installed"):
+                    repaired_count += 1
+                    deadline = time.time() + 45.0
+                    after = {}
+                    while True:
+                        time.sleep(3.0)
+                        after = inspect_full_hub_runtime_container(
+                            service_name,
+                            expected_deployment_id=expected_deployment_id,
+                            domain=domain,
+                        )
+                        if after.get("local_full_main_computer_hub") or time.time() >= deadline:
+                            break
+                    inspected["after_repair"] = after
+                    if after.get("local_full_main_computer_hub"):
+                        recovered_count += 1
+                        inspected = {
+                            **after,
+                            "before_repair": inspected,
+                            "runtime_repair": repair,
+                            "recovered_by_runtime_repair": True,
+                            "repair_requested": True,
+                            "runtime_archive_present": bool(runtime_archive_b64),
+                            "runtime_archive_source": runtime_archive_source or "missing",
+                        }
+            else:
+                inspected["runtime_repair"] = {
+                    "ok": False,
+                    "installed": False,
+                    "woken": False,
+                    "error": "missing runtime archive payload for repair" if not runtime_archive_b64 else "missing container id for repair",
+                    "archive_present": bool(runtime_archive_b64),
+                }
+        diagnostic_ok = bool(inspected.get("ok"))
+        full_runtime_ok = bool(inspected.get("local_full_main_computer_hub") or inspected.get("recovered_by_runtime_repair"))
+        inspected["diagnostic_ok"] = diagnostic_ok
+        inspected["full_runtime_ok"] = full_runtime_ok
+        if diagnostic_ok and not full_runtime_ok:
+            inspected["ok"] = False
+            inspected["phase"] = "failed"
+            inspected["status"] = "failed"
+            inspected["error"] = str(inspected.get("error") or "full hub runtime is not active in the running container")
         result["nodes"].append(inspected)
-    failed = [item for item in result["nodes"] if not item.get("ok")]
+        result.update(
+            {
+                "status": "running",
+                "phase": "running",
+                "reason": f"full-hub runtime diagnostics processed {len(result['nodes'])}/{len(nodes)} node(s)",
+                "runtime_repair_requested": bool(repair_missing_runtime),
+                "runtime_repaired_count": repaired_count,
+                "runtime_recovered_count": recovered_count,
+                "updated_at": time.time(),
+            }
+        )
+        LATEST_FULL_HUB_RUNTIME_DIAG = dict(result)
+        publish_to_coolify_metadata()
+    failed = [item for item in result["nodes"] if not item.get("full_runtime_ok")]
     result.update(
         {
             "ok": not bool(failed) and bool(result["nodes"]),
@@ -3043,7 +3092,8 @@ if FULL_HUB_RUNTIME_DIAG_REQUEST:
 
 print(f"all-father host agent listening on 0.0.0.0:{PORT}", flush=True)
 ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
-""".strip()
+"""
+    return script.replace("__ALLFATHER_BUILTIN_FULL_HUB_RUNTIME_ARCHIVE_B64__", repr(str(full_hub_runtime_archive_b64 or ""))).strip()
 
 
 def yaml_quote(value: Any) -> str:
@@ -3103,7 +3153,16 @@ def render_head_compose(
         else f"{head.guard_host_port}:{head.guard_container_port}/tcp"
     )
     parent = str(Path(head.state_root).parent).replace("\\", "/")
-    command_script = head_server_command_script()
+    full_hub_runtime_diag_request_for_env = dict(full_hub_runtime_diag_request or {})
+    full_hub_runtime_archive_b64_for_script = ""
+    if full_hub_runtime_diag_request_for_env.get("runtime_archive_b64"):
+        # Keep the huge runtime archive out of environment variables.  Coolify/Docker
+        # can silently drop or truncate very large env payloads, which leaves the
+        # diagnostic worker able to inspect containers but unable to repair them.
+        full_hub_runtime_archive_b64_for_script = str(full_hub_runtime_diag_request_for_env.get("runtime_archive_b64") or "")
+        full_hub_runtime_diag_request_for_env["runtime_archive_b64"] = "<embedded-in-head-agent-script>"
+        full_hub_runtime_diag_request_for_env["runtime_archive_transport"] = "embedded-script"
+    command_script = head_server_command_script(full_hub_runtime_archive_b64=full_hub_runtime_archive_b64_for_script)
     probe_targets_b64_value = base64.b64encode(json.dumps(list(probe_targets or []), sort_keys=True).encode("utf-8")).decode("ascii")
     runtime_cleanup_request_b64_value = base64.b64encode(
         json.dumps(dict(runtime_cleanup_request or {}), sort_keys=True).encode("utf-8")
@@ -3118,7 +3177,7 @@ def render_head_compose(
         json.dumps(dict(contract_deploy_request or {}), sort_keys=True).encode("utf-8")
     ).decode("ascii")
     full_hub_runtime_diag_request_b64_value = base64.b64encode(
-        json.dumps(dict(full_hub_runtime_diag_request or {}), sort_keys=True).encode("utf-8")
+        json.dumps(dict(full_hub_runtime_diag_request_for_env or {}), sort_keys=True).encode("utf-8")
     ).decode("ascii")
     lines = [
         f"name: {head.service_name}",
@@ -15703,12 +15762,18 @@ def _compact_full_hub_runtime_diag_node_for_operator(node: Any) -> dict[str, Any
     health_json = local_health.get("json") if isinstance(local_health.get("json"), Mapping) else {}
     docker_info = node.get("docker") if isinstance(node.get("docker"), Mapping) else {}
     docker_env = docker_info.get("env") if isinstance(docker_info.get("env"), Mapping) else {}
-    repair = node.get("repair") if isinstance(node.get("repair"), Mapping) else {}
-    post_repair = repair.get("post_repair") if isinstance(repair.get("post_repair"), Mapping) else {}
+    repair = node.get("runtime_repair") if isinstance(node.get("runtime_repair"), Mapping) else {}
+    if not repair and isinstance(node.get("repair"), Mapping):
+        repair = node.get("repair")  # Backward compatibility with older raw results.
+    post_repair = node.get("after_repair") if isinstance(node.get("after_repair"), Mapping) else {}
+    if not post_repair and isinstance(repair.get("post_repair"), Mapping):
+        post_repair = repair.get("post_repair")
 
     compact = {
         "service_name": node.get("service_name"),
         "ok": node.get("ok"),
+        "diagnostic_ok": node.get("diagnostic_ok"),
+        "full_runtime_ok": node.get("full_runtime_ok"),
         "status": node.get("status"),
         "state": docker_info.get("state_status"),
         "health": docker_info.get("health_status"),
@@ -15721,9 +15786,14 @@ def _compact_full_hub_runtime_diag_node_for_operator(node: Any) -> dict[str, Any
         "serve_hub": bool(hub_import.get("has_serve_hub")),
         "local_bootstrap": health_json.get("bootstrap_hub"),
         "local_full": health_json.get("full_main_computer_hub"),
+        "repair_requested": node.get("repair_requested"),
+        "runtime_archive_present": node.get("runtime_archive_present"),
+        "runtime_archive_source": node.get("runtime_archive_source"),
         "repair_attempted": bool(repair),
+        "repair_installed": repair.get("installed") if repair else None,
         "repair_ok": repair.get("ok") if repair else None,
-        "post_repair_full": post_repair.get("full_main_computer_hub") if post_repair else None,
+        "repair_woken": repair.get("woken") if repair else None,
+        "post_repair_full": post_repair.get("local_full_main_computer_hub") if post_repair else None,
         "error": _operator_short_reason(node.get("error") or node.get("hub_import_error") or hub_import.get("error") or repair.get("error")),
     }
     return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
@@ -15745,6 +15815,11 @@ def _compact_full_hub_runtime_diag_for_operator(diag: Any) -> dict[str, Any]:
         "phase": result.get("phase") or result.get("status") or wait.get("phase"),
         "request_id": request.get("request_id") or result.get("request_id") or wait.get("expected_request_id"),
         "reason": _operator_short_reason(diag.get("reason") or wait.get("reason")),
+        "runtime_archive_present": result.get("runtime_archive_present"),
+        "runtime_archive_source": result.get("runtime_archive_source"),
+        "runtime_repair_requested": result.get("runtime_repair_requested"),
+        "runtime_repaired_count": result.get("runtime_repaired_count"),
+        "runtime_recovered_count": result.get("runtime_recovered_count"),
         "node_count": len([item for item in nodes if isinstance(item, Mapping)]),
         "nodes": [_compact_full_hub_runtime_diag_node_for_operator(item) for item in nodes if isinstance(item, Mapping)],
     }

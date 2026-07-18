@@ -3736,7 +3736,7 @@ def test_full_hub_runtime_diag_large_request_is_chunked_for_head_agent_env() -> 
         "request_id": "req-large",
         "nodes": [{"service_name": "mainneta-super1"}],
         "repair_missing_runtime": True,
-        "runtime_archive_b64": "x" * (control.DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE + 1234),
+        "diagnostic_note": "x" * (control.DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE + 1234),
     }
 
     compose = control.render_head_compose(plan, head, full_hub_runtime_diag_request=request)
@@ -3747,6 +3747,87 @@ def test_full_hub_runtime_diag_large_request_is_chunked_for_head_agent_env() -> 
     assert max(len(chunk) for chunk in chunks) <= control.DEFAULT_HEAD_AGENT_ENV_CHUNK_SIZE
     assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64_SHA256" in compose
     assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64_TOTAL_LENGTH" in compose
+
+
+def test_full_hub_runtime_repair_archive_is_embedded_in_head_agent_script_not_diag_env() -> None:
+    head = control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/heads/coolify-a",
+        peers=(),
+    )
+    plan = control.HeadPlan(
+        kind="main_computer.all_father.head_plan.v1",
+        private_state_path="runtime/state/all_father.private.yaml",
+        heads=(head,),
+        desired_counts={"allfather_heads": 1},
+        guardrails={},
+    )
+    archive = "runtime-archive-payload"
+    compose = control.render_head_compose(
+        plan,
+        head,
+        full_hub_runtime_diag_request={
+            "request_id": "req-archive",
+            "nodes": [{"service_name": "mainneta-super1"}],
+            "repair_missing_runtime": True,
+            "runtime_archive_b64": archive,
+        },
+    )
+
+    encoded = re.search(r"MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64: \"([^\"]+)\"", compose)
+    assert encoded
+    request_payload = json.loads(base64.b64decode(encoded.group(1)).decode("utf-8"))
+    assert request_payload["runtime_archive_b64"] == "<embedded-in-head-agent-script>"
+    assert request_payload["runtime_archive_transport"] == "embedded-script"
+    assert "FULL_HUB_RUNTIME_ARCHIVE_B64_BUILTIN = 'runtime-archive-payload'" in compose
+
+
+def test_head_agent_uses_embedded_runtime_archive_when_request_has_sentinel() -> None:
+    script = control.head_server_command_script(full_hub_runtime_archive_b64="runtime-archive-payload")
+
+    assert "FULL_HUB_RUNTIME_ARCHIVE_B64_BUILTIN = 'runtime-archive-payload'" in script
+    assert 'runtime_archive_b64 == "<embedded-in-head-agent-script>"' in script
+    assert 'runtime_archive_source = "embedded-script"' in script
+    compile(script, "<head-agent-script>", "exec")
+
+
+def test_full_hub_runtime_diag_summary_uses_runtime_repair_result() -> None:
+    compact = control._compact_full_hub_runtime_diag_node_for_operator(
+        {
+            "service_name": "mainneta-super1",
+            "ok": False,
+            "diagnostic_ok": True,
+            "full_runtime_ok": False,
+            "repair_requested": True,
+            "runtime_archive_present": True,
+            "runtime_archive_source": "embedded-script",
+            "runtime_repair": {"ok": True, "installed": True, "woken": True},
+            "after_repair": {"local_full_main_computer_hub": False},
+            "error": "full hub runtime is not active in the running container",
+        }
+    )
+
+    assert compact["repair_attempted"] is True
+    assert compact["repair_installed"] is True
+    assert compact["repair_woken"] is True
+    assert compact["runtime_archive_present"] is True
+    assert compact["runtime_archive_source"] == "embedded-script"
+
+
+def test_head_agent_full_hub_runtime_diag_marks_bootstrap_only_nodes_failed() -> None:
+    script = control.head_server_command_script()
+
+    assert '"full_runtime_ok"' in script
+    assert "full hub runtime is not active in the running container" in script
+    assert "runtime_repair_requested" in script
+    assert "publish_to_coolify_metadata()" in script
 
 
 def test_head_agent_can_reconstruct_chunked_full_hub_runtime_diag_env() -> None:
