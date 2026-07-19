@@ -4630,3 +4630,140 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
     display: none !important;
   }
 }
+
+
+/* Code Editor authoring cockpit implementation.
+   The default view is now a VS Code-like cockpit: explorer, primary Monaco
+   editor, right assistant/diagnostics pane, and status bar. Diagnostic/proof
+   surfaces are allowed only inside their owned secondary pane or explicit
+   MCEL tools mode; they must not compete with the primary editor. */
+#code-editor-app[data-code-editor-mode="authoring"] {
+  --mcel-code-editor-authoring-explorer-inline: clamp(220px, 18vw, 300px);
+  --mcel-code-editor-authoring-right-inline: clamp(280px, 22vw, 380px);
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-body,
+#code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-body,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-body[data-code-studio-workbench-region="main-grid"],
+#code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  grid-area: workbench !important;
+  display: grid !important;
+  grid-template-columns:
+    var(--mcel-code-editor-authoring-explorer-inline)
+    minmax(560px, 1fr)
+    var(--mcel-code-editor-authoring-right-inline) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  grid-template-areas: "sidebar editor assistant" !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-inspector,
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-region="right-pane"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="scm-ai-inspector"] {
+  grid-area: assistant !important;
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border-left: 1px solid var(--mcel-code-editor-border, #2b2b2b) !important;
+  border-right: 0 !important;
+  background: #252526 !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-shell,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-shell > .aider-workspace {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-heading {
+  min-height: 40px !important;
+  padding: 8px 10px !important;
+  border-bottom: 1px solid var(--mcel-code-editor-border, #2b2b2b) !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-shell {
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 10px !important;
+  background: #1e1e1e !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-scroll {
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-grid,
+#code-editor-app[data-code-editor-mode="authoring"] .aider-grid.code-studio-aider-control-grid {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 10px !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-grid label,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-control-grid .mc-field {
+  min-width: 0 !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-file-map,
+#code-editor-app[data-code-editor-mode="authoring"] .code-studio-aider-advanced {
+  max-height: 220px !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .aider-actions {
+  gap: 8px !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] .aider-output {
+  min-height: 140px !important;
+  max-height: 260px !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-region="primary-editor-group"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="editor-workbench"] {
+  grid-area: editor !important;
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+}
+
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-region="explorer"],
+#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  grid-area: sidebar !important;
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+}
+
+@media (max-width: 1180px) {
+  #code-editor-app[data-code-editor-mode="authoring"] .code-studio-body,
+  #code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-body,
+  #code-editor-app[data-code-editor-mode="authoring"] .code-studio-body[data-code-studio-workbench-region="main-grid"],
+  #code-editor-app[data-code-editor-mode="authoring"][data-mcel-layout-live="true"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+    grid-template-columns:
+      var(--mcel-code-editor-authoring-explorer-inline)
+      minmax(0, 1fr) !important;
+    grid-template-areas: "sidebar editor" !important;
+  }
+
+  #code-editor-app[data-code-editor-mode="authoring"] .code-studio-inspector,
+  #code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-region="right-pane"],
+  #code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="scm-ai-inspector"] {
+    display: none !important;
+  }
+}

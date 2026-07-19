@@ -71,6 +71,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'id="code-editor-mcel-tools-toggle"',
             'data-code-editor-mcel-only="true" data-code-studio-tab="contract"',
             'data-code-editor-mcel-only="true" data-code-studio-file="mcel.contract.json"',
+            'data-code-editor-region="right-pane"',
+            'data-code-editor-secondary-surface="assistant-diagnostics"',
+            "MCEL Assistant",
             "Edit the author-owned source. Advanced MCEL proof tools stay hidden until requested.",
             "<span>source-safe editor</span>",
         ]
@@ -83,10 +86,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
             '#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-mcel-only="true"]',
             '#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-workbench-region="scm-ai-inspector"]',
             '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-bottom-panel',
-            'grid-template-columns:\n    var(--mcel-code-editor-authoring-explorer-inline)\n    minmax(0, 1fr) !important;',
-            '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-shell,',
-            'grid-template-columns: minmax(0, 1fr) !important;',
-            '#code-editor-app[data-code-editor-mode="authoring"] [data-code-studio-pane="runtime"].active',
+            "Code Editor authoring cockpit implementation",
+            'grid-template-columns:\n    var(--mcel-code-editor-authoring-explorer-inline)\n    minmax(560px, 1fr)\n    var(--mcel-code-editor-authoring-right-inline) !important;',
+            'grid-template-areas: "sidebar editor assistant" !important;',
+            '#code-editor-app[data-code-editor-mode="authoring"] [data-code-editor-region="right-pane"]',
             '#code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-authoring-surface',
         ]
         for expected in style_expected:
@@ -100,6 +103,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'Show MCEL annotation, layout, proof, and diagnostic tools',
             'function showFocusedAuthoringSurface()',
             'showPane("runtime");',
+            'Authoring cockpit ready. The primary editor is active and the right assistant pane owns diagnostics/tools.',
             'function syncCodeEditorModeSurface',
             'syncCodeEditorModeSurface();',
         ]
@@ -1738,6 +1742,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "mcel-acceptance",
             "mcel-boundary",
             "Monaco selected-file editor",
+            "Right assistant/diagnostics pane",
+            "optionalRegions",
             "Generated runtime file rail",
             "Fallback textarea",
             "MCEL proof/evidence dock",
@@ -2102,7 +2108,13 @@ const report = api.evaluateCodeEditorAuthoringSnapshot({{
     "code-editor.region.explorer": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 280, height: 1299}},
     ".code-studio-sidebar": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 280, height: 1299}},
     "code-editor.region.editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}},
-    ".code-studio-editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}}
+    ".code-studio-editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 1239, height: 1299}},
+    "code-editor.region.status-bar": {{exists: true, visible: true, selector: ".code-studio-statusbar", width: 1565, height: 22}},
+    ".code-studio-statusbar": {{exists: true, visible: true, selector: ".code-studio-statusbar", width: 1565, height: 22}}
+  }},
+  optionalRegions: {{
+    "code-editor.region.right-pane": {{exists: true, visible: true, selector: ".code-studio-inspector", width: 340, height: 1299, position: "static"}},
+    ".code-studio-inspector": {{exists: true, visible: true, selector: ".code-studio-inspector", width: 340, height: 1299, position: "static"}}
   }},
   surfaces: {{
     monacoHost: {{exists: true, visible: true, selector: "#code-studio-runtime-monaco", width: 1216, height: 1200, display: "block"}},
@@ -2121,7 +2133,8 @@ const report = api.evaluateCodeEditorAuthoringSnapshot({{
 console.log(JSON.stringify({{
   verdict: report.verdict,
   codes: report.findings.map((finding) => finding.code),
-  primarySurface: report.summary.primarySurface
+  primarySurface: report.summary.primarySurface,
+  optionalRegions: report.summary.optionalRegions
 }}));
 """
         completed = subprocess.run(
@@ -2135,6 +2148,7 @@ console.log(JSON.stringify({{
         self.assertEqual(payload["codes"], [])
         self.assertTrue(payload["primarySurface"]["usable"])
         self.assertTrue(payload["primarySurface"]["exactlyOneAuthoritativeSurface"])
+        self.assertEqual(payload["optionalRegions"], {"visible": 1, "total": 1})
 
 
     def test_code_editor_generated_layout_contract_applies_without_raw_geometry(self) -> None:

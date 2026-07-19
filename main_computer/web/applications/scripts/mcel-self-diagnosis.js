@@ -28,7 +28,7 @@
       contractId: "code-editor.contract.authoring.monaco-golden-path",
       appId: "code-editor",
       mode: "authoring",
-      intent: "Expose one usable Monaco selected-file editor and keep MCEL diagnostic surfaces out of the default editing path.",
+      intent: "Expose one usable Monaco selected-file editor with an owned explorer, optional right assistant/diagnostics pane, and status bar.",
       derivedFromBlockTypes: [
         "mcel-region",
         "mcel-requirement",
@@ -49,7 +49,11 @@
       requiredRegions: [
         {id: "code-editor.region.root", selector: "#code-editor-app", label: "Code Editor app root"},
         {id: "code-editor.region.explorer", selector: ".code-studio-sidebar", label: "Explorer"},
-        {id: "code-editor.region.editor-group", selector: ".code-studio-editor-group", label: "Editor group"}
+        {id: "code-editor.region.editor-group", selector: ".code-studio-editor-group", label: "Editor group"},
+        {id: "code-editor.region.status-bar", selector: ".code-studio-statusbar", label: "Status bar"}
+      ],
+      optionalRegions: [
+        {id: "code-editor.region.right-pane", selector: ".code-studio-inspector", label: "Right assistant/diagnostics pane", role: "secondary-assistant"}
       ],
       forbiddenRegions: [
         {id: "code-editor.forbidden.source-pane", selector: "[data-code-studio-pane=\"source\"]", label: "MCEL source model pane"},
@@ -192,7 +196,11 @@
     return normalizeList(source).map((entry) => ({
       id: String(entry?.id || entry?.selector || ""),
       selector: String(entry?.selector || entry?.id || ""),
-      label: String(entry?.label || entry?.id || entry?.selector || "")
+      label: String(entry?.label || entry?.id || entry?.selector || ""),
+      role: String(entry?.role || entry?.surfaceRole || entry?.surface_role || ""),
+      minWidth: Number(entry?.minWidth || entry?.min_width || 0),
+      minHeight: Number(entry?.minHeight || entry?.min_height || 0),
+      maxWidthRatio: Number(entry?.maxWidthRatio || entry?.max_width_ratio || 0)
     })).filter((entry) => entry.selector);
   }
 
@@ -210,6 +218,10 @@
       derivedFromBlockTypes: normalizeList(input.derivedFromBlockTypes || input.derived_from_block_types || safeFallback.derivedFromBlockTypes),
       primarySurface: normalizePrimarySurface(input.primarySurface || input.primary_surface, safeFallback),
       requiredRegions: normalizeRegionEntries(input.requiredRegions || input.required_regions, safeFallback.requiredRegions),
+      optionalRegions: normalizeRegionEntries(
+        input.optionalRegions || input.optional_regions || input.allowedRegions || input.allowed_regions,
+        safeFallback.optionalRegions || safeFallback.allowedRegions
+      ),
       forbiddenRegions: normalizeRegionEntries(input.forbiddenRegions || input.forbidden_regions, safeFallback.forbiddenRegions),
       lifecycleAssertions: normalizeList(input.lifecycleAssertions || input.lifecycle_assertions || safeFallback.lifecycleAssertions),
       checks: normalizeList(input.checks)
@@ -466,6 +478,7 @@
     const runtimeDraft = surfaces.runtimeDraft || {};
     const fallback = surfaces.fallbackTextarea || {};
     const requiredRegions = snapshot.requiredRegions || {};
+    const optionalRegions = snapshot.optionalRegions || {};
     const forbiddenRegions = snapshot.forbiddenRegions || [];
     const ownerChain = Array.isArray(snapshot.ownerChain) ? snapshot.ownerChain : [];
 
@@ -486,6 +499,20 @@
         addFinding(findings, "critical", "required-region-missing", `${region.label} is missing.`, {region}, "layout.baseline");
       } else if (!observed.visible) {
         addFinding(findings, "critical", "required-region-hidden", `${region.label} exists but is not visible.`, {region, observed}, "layout.ownerProbe");
+      }
+    }
+
+    for (const region of contract.optionalRegions || []) {
+      const observed = optionalRegions[region.id] || optionalRegions[region.selector] || {};
+      if (observed.exists && observed.visible && observed.position === "fixed") {
+        addFinding(
+          findings,
+          "warning",
+          "secondary-region-overlay-position",
+          `${region.label || region.selector} is visible as a fixed overlay; secondary Code Editor panes should stay in their owned region.`,
+          {region, observed},
+          "overlay.ownedRegionPolicy"
+        );
       }
     }
 
@@ -571,6 +598,11 @@
       );
     }
 
+    const optionalRegionEntries = (contract.optionalRegions || []).map((region) => ({
+      ...region,
+      box: optionalRegions[region.id] || optionalRegions[region.selector] || {exists: false, selector: region.selector, visible: false}
+    }));
+    const visibleOptionalRegionCount = optionalRegionEntries.filter((entry) => entry.box?.exists && entry.box.visible).length;
     const primarySurfaceUsable = visibleAndUseful(host, minWidth, minHeight) && visibleAndUseful(primaryEditor, minWidth, minHeight);
     const exactlyOnePrimary = primarySurfaceUsable && !competing.length;
     const counts = severityCounts(findings);
@@ -595,12 +627,17 @@
           exactlyOneAuthoritativeSurface: exactlyOnePrimary,
           host: compactBox(host),
           editor: compactBox(primaryEditor)
+        },
+        optionalRegions: {
+          visible: visibleOptionalRegionCount,
+          total: optionalRegionEntries.length
         }
       },
       findings,
       measurements: {
         viewport: snapshot.viewport || {},
         requiredRegions,
+        optionalRegions,
         surfaces,
         forbiddenRegions,
         ownerChain
@@ -611,6 +648,7 @@
         mode: contract.mode,
         derivedFromBlockTypes: contract.derivedFromBlockTypes,
         primarySurface: contract.primarySurface,
+        optionalRegions: contract.optionalRegions || [],
         lifecycleAssertions: contract.lifecycleAssertions
       }
     };
@@ -690,6 +728,12 @@
       requiredRegions[region.selector] = requiredRegions[region.id];
     }
 
+    const optionalRegions = {};
+    for (const region of contract.optionalRegions || []) {
+      optionalRegions[region.id] = computeBox(query(region.selector, scope));
+      optionalRegions[region.selector] = optionalRegions[region.id];
+    }
+
     const host = query(contract.primarySurface.hostSelector || rootSelector, scope);
     const primaryEditor = query(contract.primarySurface.editorSelector || contract.primarySurface.hostSelector || rootSelector, scope) || host;
     const sourceTextarea = appId === "code-editor" ? query("#code-studio-source-editor", scope) : null;
@@ -740,6 +784,7 @@
       },
       root: computeBox(root),
       requiredRegions,
+      optionalRegions,
       surfaces: {
         primaryHost: computeBox(host),
         primaryEditor: computeBox(primaryEditor),

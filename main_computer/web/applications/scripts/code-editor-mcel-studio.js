@@ -253,7 +253,11 @@
         if (rail) rail.dataset.codeStudioWorkbenchRegion = "mode-rail";
         if (sidebar) sidebar.dataset.codeStudioWorkbenchRegion = "workspace-sidebar";
         if (editor) editor.dataset.codeStudioWorkbenchRegion = "editor-workbench";
-        if (inspector) inspector.dataset.codeStudioWorkbenchRegion = "scm-ai-inspector";
+        if (inspector) {
+          inspector.dataset.codeStudioWorkbenchRegion = "scm-ai-inspector";
+          inspector.dataset.codeEditorRegion = "right-pane";
+          inspector.dataset.codeEditorSecondarySurface = "assistant-diagnostics";
+        }
         if (dock) {
           dock.dataset.codeStudioWorkbenchRegion = "proof-dock";
           if (dock.dataset.expanded !== "true") dock.dataset.expanded = "false";
@@ -6551,7 +6555,7 @@
         if (topRouteStatus) {
           topRouteStatus.textContent = studioState.selectedPath || "active file";
         }
-        setStatus("Authoring surface ready. MCEL source and diagnostics are available from MCEL tools.");
+        setStatus("Authoring cockpit ready. The primary editor is active and the right assistant pane owns diagnostics/tools.");
       }
 
       function syncCodeEditorModeSurface(mode = root.dataset.codeEditorMode || "authoring") {
@@ -6771,7 +6775,7 @@
 
         if (mountBoundary.canCommit !== true) {
           runtimePreview.innerHTML = `
-            <section class="code-studio-monaco-authoring-surface" data-monaco-mounted="false" data-monaco-outcome="blocked">
+            <section class="code-studio-monaco-authoring-surface" data-code-editor-region="primary-editor" data-monaco-mounted="false" data-monaco-outcome="blocked">
               <header class="code-studio-monaco-authoring-toolbar">
                 <strong>Editor mount blocked</strong>
                 <span>${escapeHtml(mountBoundary.mcelCommitPreflight?.blockers?.join(", ") || "source is not current/proven")}</span>
@@ -6793,7 +6797,7 @@
         studioState.runtimeDraftText = nextDraftText;
 
         runtimePreview.innerHTML = `
-          <section class="code-studio-monaco-authoring-surface" data-monaco-mounted="false" data-monaco-outcome="not-started" data-code-editor-selected-path="${escapeHtml(file.path)}">
+          <section class="code-studio-monaco-authoring-surface" data-code-editor-region="primary-editor" data-monaco-mounted="false" data-monaco-outcome="not-started" data-code-editor-selected-path="${escapeHtml(file.path)}">
             <header class="code-studio-monaco-authoring-toolbar">
               <div class="code-studio-monaco-authoring-title">
                 <strong>${escapeHtml(file.path)}</strong>
@@ -6806,6 +6810,7 @@
               class="code-studio-monaco-host"
               data-code-studio-monaco-runtime="host"
               data-code-editor-golden-path="monaco-authoring"
+              data-code-editor-region="primary-editor-host"
             >Loading Monaco editor…</div>
           </section>
         `;

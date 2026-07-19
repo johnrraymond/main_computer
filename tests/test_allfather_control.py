@@ -637,6 +637,19 @@ def test_super_node_dockerfile_cache_busts_full_hub_runtime_deployments() -> Non
     assert "main_computer.allfather.full_hub_runtime_sha256" in dockerfile
 
 
+def test_super_node_dockerfile_inline_escapes_metadata_printf_newlines() -> None:
+    dockerfile = control.super_node_dockerfile_inline(
+        control.DEFAULT_SUPER_IMAGE,
+        guard_script="print('guard')\n",
+        build_id="deploy-escape-test",
+    )
+
+    assert "printf '%s\\n' 'deploy-escape-test' > /opt/allfather-build/deployment-id" in dockerfile
+    assert "printf '%s\n' 'deploy-escape-test' > /opt/allfather-build/deployment-id" not in dockerfile
+    assert "printf '%s\\n' " in dockerfile
+    assert "printf '%s\n' " not in dockerfile
+
+
 def test_full_hub_runtime_archive_contains_hub_and_contract_config() -> None:
     raw_zip = zlib.decompress(base64.b64decode(control.allfather_full_hub_runtime_archive_b64()))
     with zipfile.ZipFile(io.BytesIO(raw_zip)) as archive:
@@ -1374,18 +1387,6 @@ def test_super_guard_status_helper_accepts_component_name_field(
     assert component_state["foundationdb"]["name"] == "testneta-fdb1"
     assert component_state["foundationdb"]["status"] == "missing-fdbserver"
 
-
-def test_super_node_dockerfile_inline_escapes_metadata_printf_newlines() -> None:
-    dockerfile = control.super_node_dockerfile_inline(
-        control.DEFAULT_SUPER_IMAGE,
-        guard_script="print('guard')\n",
-        build_id="deploy-escape-test",
-    )
-
-    assert "printf '%s\\n' 'deploy-escape-test' > /opt/allfather-build/deployment-id" in dockerfile
-    assert "printf '%s\n' 'deploy-escape-test' > /opt/allfather-build/deployment-id" not in dockerfile
-    assert "printf '%s\\n' " in dockerfile
-    assert "printf '%s\n' " not in dockerfile
 
 def test_super_compose_is_build_only_and_escapes_inline_dockerfile(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)

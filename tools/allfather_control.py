@@ -98,6 +98,7 @@ TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
 HUB_ADMIN_SYNC_CALLBACK_MARKER = "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:"
 CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
 FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER = "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:"
+FULLHUB_IMAGE_BUILD_CALLBACK_MARKER = "ALLFATHER_FULLHUB_IMAGE_BUILD_RESULT_B64:"
 DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 300.0
 DEFAULT_CONTRACT_DEPLOY_WAIT_S = 300.0
 DEFAULT_TESTNET_SUPER_GUARD_BASE = 41500
@@ -1242,6 +1243,7 @@ TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
 HUB_ADMIN_SYNC_CALLBACK_MARKER = "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:"
 CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
 FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER = "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:"
+FULLHUB_IMAGE_BUILD_CALLBACK_MARKER = "ALLFATHER_FULLHUB_IMAGE_BUILD_RESULT_B64:"
 DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S = 120.0
 CONTRACT_DEPLOY_REQUEST_B64 = os.environ.get("MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64", "")
 ENV_B64_ERRORS = {}
@@ -1286,6 +1288,7 @@ def read_b64_env(name: str) -> str:
     return value
 
 FULL_HUB_RUNTIME_DIAG_REQUEST_B64 = read_b64_env("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64")
+FULLHUB_IMAGE_BUILD_REQUEST_B64 = read_b64_env("MC_ALLFATHER_FULLHUB_IMAGE_BUILD_REQUEST_B64")
 RUNTIME_CLEANUP_REQUEST_B64 = os.environ.get("MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64", "")
 TRAEFIK_PROPAGATE_REQUEST_B64 = os.environ.get("MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64", "")
 HUB_ADMIN_SYNC_REQUEST_B64 = os.environ.get("MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64", "")
@@ -1337,6 +1340,13 @@ LATEST_FULL_HUB_RUNTIME_DIAG = {
     "phase": "initializing",
     "updated_at": None,
 }
+LATEST_FULLHUB_IMAGE_BUILD = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "status": "not-requested",
+    "phase": "not-requested",
+    "updated_at": None,
+}
 
 def decode_json_b64(text, default):
     if not text:
@@ -1365,6 +1375,16 @@ if not isinstance(CONTRACT_DEPLOY_REQUEST, dict):
 FULL_HUB_RUNTIME_DIAG_REQUEST = decode_json_b64(FULL_HUB_RUNTIME_DIAG_REQUEST_B64, {})
 if not isinstance(FULL_HUB_RUNTIME_DIAG_REQUEST, dict):
     FULL_HUB_RUNTIME_DIAG_REQUEST = {}
+FULLHUB_IMAGE_BUILD_REQUEST = decode_json_b64(FULLHUB_IMAGE_BUILD_REQUEST_B64, {})
+if not isinstance(FULLHUB_IMAGE_BUILD_REQUEST, dict):
+    FULLHUB_IMAGE_BUILD_REQUEST = {}
+FULLHUB_IMAGE_BUILD_ENV_ERROR = ENV_B64_ERRORS.get("MC_ALLFATHER_FULLHUB_IMAGE_BUILD_REQUEST_B64", "")
+if FULLHUB_IMAGE_BUILD_ENV_ERROR:
+    FULLHUB_IMAGE_BUILD_REQUEST = {
+        **(FULLHUB_IMAGE_BUILD_REQUEST if isinstance(FULLHUB_IMAGE_BUILD_REQUEST, dict) else {}),
+        "ok": False,
+        "env_error": FULLHUB_IMAGE_BUILD_ENV_ERROR,
+    }
 FULL_HUB_RUNTIME_DIAG_ENV_ERROR = ENV_B64_ERRORS.get("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64", "")
 if FULL_HUB_RUNTIME_DIAG_ENV_ERROR:
     FULL_HUB_RUNTIME_DIAG_REQUEST = {
@@ -1402,6 +1422,65 @@ def initial_full_hub_runtime_diag_state():
     }
 
 LATEST_FULL_HUB_RUNTIME_DIAG = initial_full_hub_runtime_diag_state()
+
+
+def initial_fullhub_image_build_state():
+    if not FULLHUB_IMAGE_BUILD_REQUEST:
+        return {
+            "ok": False,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": None,
+        }
+    return {
+        "ok": False,
+        "service": str(FULLHUB_IMAGE_BUILD_REQUEST.get("service_name") or "allfather-fullhub-image-build"),
+        "status": "pending",
+        "phase": "pending",
+        "network_key": str(FULLHUB_IMAGE_BUILD_REQUEST.get("network") or FULLHUB_IMAGE_BUILD_REQUEST.get("network_key") or ""),
+        "coolify_server": str(FULLHUB_IMAGE_BUILD_REQUEST.get("host") or FULLHUB_IMAGE_BUILD_REQUEST.get("coolify_server") or COOLIFY_SERVER or ""),
+        "request_id": str(FULLHUB_IMAGE_BUILD_REQUEST.get("request_id") or ""),
+        "image": {"tag": str(FULLHUB_IMAGE_BUILD_REQUEST.get("image_tag") or "")},
+        "reason": str(FULLHUB_IMAGE_BUILD_REQUEST.get("env_error") or "full-hub image build request accepted by head-agent"),
+        "env_error": str(FULLHUB_IMAGE_BUILD_REQUEST.get("env_error") or ""),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+
+LATEST_FULLHUB_IMAGE_BUILD = initial_fullhub_image_build_state()
+FULLHUB_IMAGE_BUILD_LOG_TAIL_LINES = 24
+FULLHUB_IMAGE_BUILD_LOG_TAIL_CHARS = 6000
+
+def fullhub_build_log_metadata(
+    safe_lines: list[str],
+    log_path: str,
+    latest_log_path: str,
+    *,
+    errors: list[str] | None = None,
+) -> dict:
+    tail = [str(line or "")[:240] for line in (safe_lines or []) if str(line or "").strip()]
+    tail = tail[-FULLHUB_IMAGE_BUILD_LOG_TAIL_LINES:]
+    while tail and len("\n".join(tail)) > FULLHUB_IMAGE_BUILD_LOG_TAIL_CHARS:
+        tail = tail[1:]
+    tail_text = "\n".join(tail)
+    line_count = len([line for line in (safe_lines or []) if str(line or "").strip()])
+    return {
+        "transport": "coolify-service-description",
+        "status_path": "service.description:" + FULLHUB_IMAGE_BUILD_CALLBACK_MARKER,
+        "log_path": log_path,
+        "latest_log_path": latest_log_path,
+        "line_count": line_count,
+        "tail_start_line": max(1, line_count - len(tail) + 1) if tail else 0,
+        "tail_line_count": len(tail),
+        "tail": tail,
+        "tail_b64": base64.b64encode(tail_text.encode("utf-8")).decode("ascii") if tail_text else "",
+        "tail_sha256": hashlib.sha256(tail_text.encode("utf-8")).hexdigest() if tail_text else "",
+        "errors": [str(item or "")[:500] for item in (errors or [])[-8:]],
+        "updated_at": time.time(),
+    }
 
 def full_hub_runtime_diag_started_result() -> dict:
     base = initial_full_hub_runtime_diag_state()
@@ -1572,6 +1651,493 @@ def docker_json(method: str, path: str) -> tuple[int, object]:
         return status, json.loads(raw.decode("utf-8"))
     except Exception:
         return status, raw.decode("utf-8", "replace")
+
+
+def build_log_safe_lines(raw_text: str, limit: int = 120) -> list[str]:
+    out = []
+    for line in str(raw_text or "").splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        lower = clean.lower()
+        if (
+            "printf '%s" in clean
+            or 'printf "%s' in clean
+            or 'process "/bin/sh -c' in clean
+            or "allfather-payload" in lower
+            or "base64" in lower
+            or "zlib" in lower
+        ):
+            continue
+        out.append(clean[:240])
+    return out[-limit:]
+
+def build_log_error_lines(raw_text: str, limit: int = 40) -> list[str]:
+    errors = []
+    for line in str(raw_text or "").splitlines():
+        try:
+            item = json.loads(line)
+        except Exception:
+            item = None
+        if isinstance(item, dict):
+            if item.get("error"):
+                errors.append(str(item.get("error"))[:500])
+            detail = item.get("errorDetail")
+            if isinstance(detail, dict) and detail.get("message"):
+                errors.append(str(detail.get("message"))[:500])
+    if not errors:
+        for line in build_log_safe_lines(raw_text, limit=200):
+            lower = line.lower()
+            if any(token in lower for token in ("error", "failed", "unknown instruction", "exit code", "traceback", "exception", "no space", "permission denied", "killed", "oom")):
+                errors.append(line[:500])
+    return errors[-limit:]
+
+def safe_log_token(value: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in str(value or "")).strip("-._")
+    return clean[:96] or "unknown"
+
+def fullhub_build_log_paths(request_id: str) -> tuple[str, str]:
+    return (
+        "/tmp/allfather-fullhub-build-" + safe_log_token(request_id) + ".log",
+        "/tmp/allfather-fullhub-build.log",
+    )
+
+class BuildLogWriter:
+    def __init__(self, *paths: str):
+        self.paths = [path for path in paths if path]
+        self.handles = []
+    def __enter__(self):
+        for path in self.paths:
+            try:
+                handle = open(path, "w", encoding="utf-8")
+                handle.write("ALLFATHER_FULLHUB_IMAGE_BUILD_LOG_START " + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
+                handle.flush()
+                self.handles.append(handle)
+            except Exception as exc:
+                print("ALLFATHER_FULLHUB_IMAGE_BUILD_LOG_OPEN_ERROR " + path + " " + repr(exc), flush=True)
+        return self
+    def write(self, line: str) -> None:
+        clean = str(line or "").strip()
+        if not clean:
+            return
+        for handle in self.handles:
+            try:
+                handle.write(clean[:500] + "\n")
+                handle.flush()
+            except Exception:
+                pass
+    def __exit__(self, exc_type, exc, tb):
+        for handle in self.handles:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+def compact_build_stream_line(raw_line: str) -> tuple[str, list[str]]:
+    line = str(raw_line or "").strip()
+    errors = []
+    if not line:
+        return "", errors
+    try:
+        item = json.loads(line)
+    except Exception:
+        safe = build_log_safe_lines(line, limit=1)
+        return (safe[0] if safe else ""), errors
+    if not isinstance(item, dict):
+        return "", errors
+    if item.get("error"):
+        error = str(item.get("error"))
+        safe = build_log_safe_lines(error, limit=1)
+        summary = safe[0] if safe else "docker build failed in a filtered payload/log-spam line"
+        errors.append(summary[:500])
+        return ("ERROR " + summary[:240]), errors
+    detail = item.get("errorDetail")
+    if isinstance(detail, dict) and detail.get("message"):
+        error = str(detail.get("message"))
+        safe = build_log_safe_lines(error, limit=1)
+        summary = safe[0] if safe else "docker build failed in a filtered payload/log-spam line"
+        errors.append(summary[:500])
+        return ("ERROR " + summary[:240]), errors
+    if item.get("stream"):
+        safe = build_log_safe_lines(str(item.get("stream")), limit=1)
+        return (safe[0] if safe else ""), errors
+    status = str(item.get("status") or "").strip()
+    progress = str(item.get("progress") or "").strip()
+    if status:
+        line = status + ((" " + progress) if progress else "")
+        safe = build_log_safe_lines(line, limit=1)
+        return (safe[0] if safe else ""), errors
+    return "", errors
+
+def docker_build_image_stream(
+    image_tag: str,
+    dockerfile_text: str,
+    log_path: str,
+    latest_log_path: str,
+    context_files_b64: dict | None = None,
+) -> tuple[int, str, list[str]]:
+    global LATEST_FULLHUB_IMAGE_BUILD
+    body = dockerfile_tar(dockerfile_text, context_files_b64)
+    conn = UnixHTTPConnection("/var/run/docker.sock")
+    errors = []
+    safe_lines = []
+    buffer = ""
+    last_metadata_publish_at = 0.0
+
+    def publish_build_log_progress(build_status: int | None = None, *, force: bool = False) -> None:
+        global LATEST_FULLHUB_IMAGE_BUILD
+        nonlocal last_metadata_publish_at
+        now = time.time()
+        if not force and (now - last_metadata_publish_at) < max(5.0, min(15.0, CALLBACK_INTERVAL_S)):
+            return
+        current = dict(LATEST_FULLHUB_IMAGE_BUILD) if isinstance(LATEST_FULLHUB_IMAGE_BUILD, dict) else initial_fullhub_image_build_state()
+        image = current.get("image") if isinstance(current.get("image"), dict) else {}
+        image = dict(image)
+        image["tag"] = image_tag
+        image["log_path"] = log_path
+        image["latest_log_path"] = latest_log_path
+        relay = fullhub_build_log_metadata(safe_lines, log_path, latest_log_path, errors=errors)
+        current.update(
+            {
+                "ok": False,
+                "status": "running",
+                "phase": "docker-build",
+                "reason": "full-hub image build running on allfather control surface",
+                "image": image,
+                "log_relay": relay,
+                "build_log_tail": relay.get("tail") or [],
+                "build_log_line_count": relay.get("line_count") or 0,
+                "updated_at": now,
+            }
+        )
+        if build_status is not None:
+            current["build_http_status"] = int(build_status)
+        LATEST_FULLHUB_IMAGE_BUILD = current
+        publish_to_coolify_metadata()
+        last_metadata_publish_at = now
+
+    with BuildLogWriter(log_path, latest_log_path) as logs:
+        logs.write("request image=" + image_tag)
+        try:
+            publish_build_log_progress(force=True)
+            conn.request(
+                "POST",
+                "/build?t=" + urllib.parse.quote(image_tag, safe="") + "&rm=1&forcerm=1&pull=0",
+                body=body,
+                headers={"Content-Type": "application/x-tar"},
+            )
+            response = conn.getresponse()
+            status = int(response.status)
+            logs.write("docker-api-build-http-status=" + str(status))
+            publish_build_log_progress(status, force=True)
+            while True:
+                chunk = response.read(8192)
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", "replace")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    compact, line_errors = compact_build_stream_line(line)
+                    errors.extend(line_errors)
+                    if compact:
+                        safe_lines.append(compact)
+                        logs.write(compact)
+                        publish_build_log_progress(status)
+            if buffer.strip():
+                compact, line_errors = compact_build_stream_line(buffer)
+                errors.extend(line_errors)
+                if compact:
+                    safe_lines.append(compact)
+                    logs.write(compact)
+            logs.write("ALLFATHER_FULLHUB_IMAGE_BUILD_LOG_END status=" + str(status) + " errors=" + str(len(errors)))
+            publish_build_log_progress(status, force=True)
+            return status, "\n".join(safe_lines[-400:]), errors[-40:]
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def dockerfile_tar(dockerfile_text: str, context_files_b64: dict | None = None) -> bytes:
+    data = dockerfile_text.encode("utf-8")
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as tar:
+        info = tarfile.TarInfo("Dockerfile")
+        info.size = len(data)
+        info.mtime = 0
+        info.mode = 0o644
+        tar.addfile(info, io.BytesIO(data))
+        files = context_files_b64 if isinstance(context_files_b64, dict) else {}
+        for raw_name, raw_value in sorted(files.items()):
+            name = str(raw_name or "").replace("\\", "/").lstrip("/")
+            parts = [part for part in name.split("/") if part]
+            if not parts or any(part == ".." for part in parts):
+                raise RuntimeError("unsafe Docker build context path: " + repr(raw_name))
+            payload = (str(raw_value or "") + "\n").encode("ascii")
+            item = tarfile.TarInfo("/".join(parts))
+            item.size = len(payload)
+            item.mtime = 0
+            item.mode = 0o644
+            tar.addfile(item, io.BytesIO(payload))
+    return stream.getvalue()
+
+def inspect_image_by_tag(image_tag: str) -> tuple[dict | None, str]:
+    status, payload = docker_json("GET", f"/images/{urllib.parse.quote(image_tag, safe='')}/json")
+    if status >= 300 or not isinstance(payload, dict):
+        return None, f"docker image inspect failed status={status}: {short_text(payload, 800)}"
+    return payload, ""
+
+def image_env_list(image_json: dict | None) -> list[str]:
+    config = image_json.get("Config") if isinstance(image_json, dict) else {}
+    env = config.get("Env") if isinstance(config, dict) else []
+    return [str(item) for item in (env or [])]
+
+def remove_verify_container(container_id: str) -> None:
+    if container_id:
+        docker_api("DELETE", f"/containers/{urllib.parse.quote(container_id, safe='')}?force=1&v=1")
+
+def run_fullhub_image_verify_container(image_tag: str) -> tuple[bool, str, list[str]]:
+    verify_script = (
+        "set -eu\n"
+        "test -f /opt/main-computer-src/main_computer/hub.py\n"
+        "test -f /opt/allfather-build/full-hub-runtime-sha256\n"
+        "python - <<'PY'\n"
+        "import importlib.util\n"
+        "for name in ('main_computer', 'main_computer.hub'):\n"
+        "    spec = importlib.util.find_spec(name)\n"
+        "    if spec is None:\n"
+        "        raise SystemExit(f'{name} not importable')\n"
+        "    print(name, spec.origin)\n"
+        "PY\n"
+    )
+    name = "allfather-fullhub-image-verify-" + hashlib.sha256((image_tag + str(time.time())).encode("utf-8")).hexdigest()[:16]
+    body = json.dumps(
+        {
+            "Image": image_tag,
+            "Entrypoint": ["sh", "-lc"],
+            "Cmd": [verify_script],
+            "AttachStdout": True,
+            "AttachStderr": True,
+        }
+    ).encode("utf-8")
+    status, raw = docker_api(
+        "POST",
+        f"/containers/create?name={urllib.parse.quote(name, safe='')}",
+        body=body,
+        headers={"Content-Type": "application/json"},
+    )
+    if status >= 300:
+        return False, f"verify container create failed status={status}: {short_text(raw.decode('utf-8', 'replace'), 800)}", []
+    try:
+        cid = json.loads(raw.decode("utf-8")).get("Id", "")
+    except Exception as exc:
+        return False, f"verify container create returned invalid JSON: {type(exc).__name__}: {exc}", []
+    try:
+        status, raw = docker_api("POST", f"/containers/{urllib.parse.quote(cid, safe='')}/start")
+        if status >= 300:
+            return False, f"verify container start failed status={status}: {short_text(raw.decode('utf-8', 'replace'), 800)}", []
+        status, raw = docker_api("POST", f"/containers/{urllib.parse.quote(cid, safe='')}/wait")
+        if status >= 300:
+            return False, f"verify container wait failed status={status}: {short_text(raw.decode('utf-8', 'replace'), 800)}", []
+        try:
+            wait_payload = json.loads(raw.decode("utf-8"))
+            code = int(wait_payload.get("StatusCode", 1))
+        except Exception:
+            code = 1
+        _, logs_raw = docker_api("GET", f"/containers/{urllib.parse.quote(cid, safe='')}/logs?stdout=1&stderr=1")
+        logs = build_log_safe_lines(logs_raw.decode("utf-8", "replace"), limit=40)
+        if code != 0:
+            return False, f"verify container exited {code}", logs
+        return True, "", logs
+    finally:
+        remove_verify_container(cid)
+
+def fullhub_image_build_failed(exc, log_path: str = "", latest_log_path: str = "", safe_lines: list[str] | None = None) -> dict:
+    base = initial_fullhub_image_build_state()
+    base.update(
+        {
+            "ok": False,
+            "status": "failed",
+            "phase": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "reason": f"full-hub image build worker crashed: {type(exc).__name__}: {exc}",
+            "updated_at": time.time(),
+        }
+    )
+    if log_path or latest_log_path or safe_lines:
+        relay = fullhub_build_log_metadata(safe_lines or [], log_path, latest_log_path, errors=[f"{type(exc).__name__}: {exc}"])
+        base["log_relay"] = relay
+        base["build_log_tail"] = relay.get("tail") or []
+        base["build_log_line_count"] = relay.get("line_count") or 0
+    return base
+
+def fullhub_image_build_running_result(log_path: str, latest_log_path: str) -> dict:
+    base = initial_fullhub_image_build_state()
+    if base.get("phase") == "not-requested":
+        return base
+    image = base.get("image") if isinstance(base.get("image"), dict) else {}
+    image = dict(image)
+    image["log_path"] = log_path
+    image["latest_log_path"] = latest_log_path
+    relay = fullhub_build_log_metadata([], log_path, latest_log_path)
+    base.update(
+        {
+            "ok": False,
+            "status": "running",
+            "phase": "docker-build",
+            "reason": "full-hub image build started by allfather control surface",
+            "image": image,
+            "log_relay": relay,
+            "build_log_tail": relay.get("tail") or [],
+            "build_log_line_count": relay.get("line_count") or 0,
+            "updated_at": time.time(),
+        }
+    )
+    return base
+
+def run_fullhub_image_build_once(log_path: str, latest_log_path: str) -> dict:
+    if not FULLHUB_IMAGE_BUILD_REQUEST:
+        return initial_fullhub_image_build_state()
+    request_id = str(FULLHUB_IMAGE_BUILD_REQUEST.get("request_id") or "")
+    image_tag = str(FULLHUB_IMAGE_BUILD_REQUEST.get("image_tag") or "").strip()
+    dockerfile_b64 = str(FULLHUB_IMAGE_BUILD_REQUEST.get("dockerfile_b64") or "")
+    dockerfile_sha256 = str(FULLHUB_IMAGE_BUILD_REQUEST.get("dockerfile_sha256") or "").strip().lower()
+    context_files_b64 = FULLHUB_IMAGE_BUILD_REQUEST.get("build_context_files_b64")
+    if not isinstance(context_files_b64, dict):
+        context_files_b64 = {}
+    if not image_tag:
+        raise RuntimeError("missing image_tag")
+    if not dockerfile_b64:
+        raise RuntimeError("missing dockerfile_b64")
+    dockerfile_text = base64.b64decode(dockerfile_b64.encode("ascii")).decode("utf-8")
+    actual_sha = hashlib.sha256(dockerfile_text.encode("utf-8")).hexdigest()
+    if dockerfile_sha256 and actual_sha != dockerfile_sha256:
+        raise RuntimeError(f"dockerfile sha256 mismatch: got {actual_sha} expected {dockerfile_sha256}")
+    result = fullhub_image_build_running_result(log_path, latest_log_path)
+    image = result.get("image") if isinstance(result.get("image"), dict) else {}
+    image = dict(image)
+    image["dockerfile_sha256"] = actual_sha
+    image["log_path"] = log_path
+    image["latest_log_path"] = latest_log_path
+    result.update({"image": image, "updated_at": time.time()})
+    print("ALLFATHER_FULLHUB_IMAGE_BUILD_START " + json.dumps({
+        "request_id": request_id,
+        "image_tag": image_tag,
+        "log_path": log_path,
+        "latest_log_path": latest_log_path,
+        "docker_transport": "docker-engine-api-socket",
+        "build_context_file_count": len(context_files_b64),
+    }, sort_keys=True), flush=True)
+    status, safe_log_text, errors = docker_build_image_stream(image_tag, dockerfile_text, log_path, latest_log_path, context_files_b64)
+    safe_log_lines = build_log_safe_lines(safe_log_text)
+    relay = fullhub_build_log_metadata(safe_log_lines, log_path, latest_log_path, errors=errors)
+    result.update(
+        {
+            "build_http_status": status,
+            "build_log_tail": relay.get("tail") or [],
+            "build_log_line_count": relay.get("line_count") or 0,
+            "log_relay": relay,
+            "log_path": log_path,
+            "latest_log_path": latest_log_path,
+            "updated_at": time.time(),
+        }
+    )
+    if status >= 300 or errors:
+        result.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "phase": "docker-build-failed",
+                "error": "; ".join(errors[:5]) or f"docker build failed status={status}",
+                "reason": "docker build failed",
+            }
+        )
+        return result
+    image_json, error = inspect_image_by_tag(image_tag)
+    if error:
+        result.update({"ok": False, "status": "failed", "phase": "inspect-failed", "error": error, "reason": "built image inspect failed"})
+        return result
+    env = image_env_list(image_json)
+    has_hub_full = any(item.startswith("MC_ALLFATHER_IMAGE_CAPABILITIES=") and "hub-full" in item for item in env)
+    has_pythonpath = any(item == "PYTHONPATH=/opt/main-computer-src" for item in env)
+    result.update(
+        {
+            "phase": "image-env-verified" if (has_hub_full and has_pythonpath) else "image-env-failed",
+            "image": {
+                "tag": image_tag,
+                "id": str((image_json or {}).get("Id") or ""),
+                "created": str((image_json or {}).get("Created") or ""),
+                "dockerfile_sha256": actual_sha,
+                "hub_full_env": has_hub_full,
+                "pythonpath_env": has_pythonpath,
+                "log_path": log_path,
+                "latest_log_path": latest_log_path,
+            },
+            "log_path": log_path,
+            "latest_log_path": latest_log_path,
+            "updated_at": time.time(),
+        }
+    )
+    if not has_hub_full or not has_pythonpath:
+        result.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "error": f"built image failed env verification: hub_full={has_hub_full} pythonpath={has_pythonpath}",
+                "reason": "built image failed env verification",
+            }
+        )
+        return result
+    verified, verify_error, verify_logs = run_fullhub_image_verify_container(image_tag)
+    result["verify_log_tail"] = verify_logs
+    if not verified:
+        result.update({"ok": False, "status": "failed", "phase": "verify-container-failed", "error": verify_error, "reason": "verify container failed"})
+        return result
+    image_json, _ = inspect_image_by_tag(image_tag)
+    result.update(
+        {
+            "ok": True,
+            "status": "ready",
+            "phase": "verified",
+            "reason": "full-hub image built and verified by allfather control surface",
+            "image": {
+                "tag": image_tag,
+                "id": str((image_json or {}).get("Id") or ""),
+                "created": str((image_json or {}).get("Created") or ""),
+                "dockerfile_sha256": actual_sha,
+                "hub_full_env": True,
+                "pythonpath_env": True,
+                "verified": True,
+                "log_path": log_path,
+                "latest_log_path": latest_log_path,
+            },
+            "log_path": log_path,
+            "latest_log_path": latest_log_path,
+            "completed_at": time.time(),
+            "updated_at": time.time(),
+        }
+    )
+    return result
+
+def fullhub_image_build_thread() -> None:
+    global LATEST_FULLHUB_IMAGE_BUILD
+    log_path = ""
+    latest_log_path = ""
+    try:
+        request_id = ""
+        if isinstance(FULLHUB_IMAGE_BUILD_REQUEST, dict):
+            request_id = str(FULLHUB_IMAGE_BUILD_REQUEST.get("request_id") or "")
+        log_path, latest_log_path = fullhub_build_log_paths(request_id)
+        LATEST_FULLHUB_IMAGE_BUILD = fullhub_image_build_running_result(log_path, latest_log_path)
+        print("ALLFATHER_FULLHUB_IMAGE_BUILD_WORKER " + json.dumps(LATEST_FULLHUB_IMAGE_BUILD, sort_keys=True), flush=True)
+        publish_to_coolify_metadata()
+        LATEST_FULLHUB_IMAGE_BUILD = run_fullhub_image_build_once(log_path, latest_log_path)
+    except Exception as exc:
+        LATEST_FULLHUB_IMAGE_BUILD = fullhub_image_build_failed(exc, log_path, latest_log_path)
+    print("ALLFATHER_FULLHUB_IMAGE_BUILD_RESULT " + json.dumps(LATEST_FULLHUB_IMAGE_BUILD, sort_keys=True), flush=True)
+    publish_to_coolify_metadata()
+
 
 def cleanup_stale_containers(super_prefix: str) -> tuple[int, list[str], list[str]]:
     removed = []
@@ -2912,6 +3478,7 @@ def publish_to_coolify_metadata() -> None:
     hub_admin_sync_encoded = encode_marker_payload(LATEST_HUB_ADMIN_SYNC) if LATEST_HUB_ADMIN_SYNC.get("updated_at") is not None else ""
     contract_deploy_encoded = encode_marker_payload(LATEST_CONTRACT_DEPLOY) if LATEST_CONTRACT_DEPLOY.get("updated_at") is not None else ""
     full_hub_runtime_diag_encoded = encode_marker_payload(LATEST_FULL_HUB_RUNTIME_DIAG) if LATEST_FULL_HUB_RUNTIME_DIAG.get("updated_at") is not None else ""
+    fullhub_image_build_encoded = encode_marker_payload(LATEST_FULLHUB_IMAGE_BUILD) if LATEST_FULLHUB_IMAGE_BUILD.get("updated_at") is not None else ""
     description = "Main Computer all-father host agent. This is the single per-host control container.\n\n"
     if probe_encoded:
         description += PROBE_CALLBACK_MARKER + probe_encoded + "\n"
@@ -2925,6 +3492,8 @@ def publish_to_coolify_metadata() -> None:
         description += CONTRACT_DEPLOY_CALLBACK_MARKER + contract_deploy_encoded + "\n"
     if full_hub_runtime_diag_encoded:
         description += FULL_HUB_RUNTIME_DIAG_CALLBACK_MARKER + full_hub_runtime_diag_encoded + "\n"
+    if fullhub_image_build_encoded:
+        description += FULLHUB_IMAGE_BUILD_CALLBACK_MARKER + fullhub_image_build_encoded + "\n"
     digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
     if digest == LAST_CALLBACK_DIGEST and (now - LAST_CALLBACK_AT) < max(5.0, CALLBACK_INTERVAL_S):
         return
@@ -3011,6 +3580,7 @@ def payload_for_path(path: str) -> tuple[int, dict]:
             "hub_admin_sync": LATEST_HUB_ADMIN_SYNC,
             "contract_deploy": LATEST_CONTRACT_DEPLOY,
             "full_hub_runtime_diag": LATEST_FULL_HUB_RUNTIME_DIAG,
+            "fullhub_image_build": LATEST_FULLHUB_IMAGE_BUILD,
         }
     if path in {"/processes", "/result", "/probe/result"}:
         return 200, {**base, "processes": MANIFEST.get("processes") or [], "probe": LATEST_PROBE}
@@ -3022,6 +3592,8 @@ def payload_for_path(path: str) -> tuple[int, dict]:
         return 200, {**base, "contract_deploy": LATEST_CONTRACT_DEPLOY}
     if path in {"/full-hub-runtime-diagnostics/status", "/full-hub-runtime-diagnostics/result"}:
         return 200, {**base, "full_hub_runtime_diag": LATEST_FULL_HUB_RUNTIME_DIAG}
+    if path in {"/fullhub-image-build/status", "/fullhub-image-build/result", "/full-hub-image-build/status", "/full-hub-image-build/result"}:
+        return 200, {**base, "fullhub_image_build": LATEST_FULLHUB_IMAGE_BUILD}
     return 404, {**base, "ok": False, "error": "not-found", "path": path}
 
 class Handler(BaseHTTPRequestHandler):
@@ -3089,6 +3661,9 @@ if CONTRACT_DEPLOY_REQUEST:
 if FULL_HUB_RUNTIME_DIAG_REQUEST:
     publish_to_coolify_metadata()
     threading.Thread(target=full_hub_runtime_diag_thread, daemon=True).start()
+if FULLHUB_IMAGE_BUILD_REQUEST:
+    publish_to_coolify_metadata()
+    threading.Thread(target=fullhub_image_build_thread, daemon=True).start()
 
 print(f"all-father host agent listening on 0.0.0.0:{PORT}", flush=True)
 ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
@@ -3140,6 +3715,7 @@ def render_head_compose(
     hub_admin_sync_request: Mapping[str, Any] | None = None,
     contract_deploy_request: Mapping[str, Any] | None = None,
     full_hub_runtime_diag_request: Mapping[str, Any] | None = None,
+    fullhub_image_build_request: Mapping[str, Any] | None = None,
 ) -> str:
     # The control head must be bootstrappable through Coolify raw compose with no
     # repository build context and no private image registry.  It therefore uses
@@ -3178,6 +3754,9 @@ def render_head_compose(
     ).decode("ascii")
     full_hub_runtime_diag_request_b64_value = base64.b64encode(
         json.dumps(dict(full_hub_runtime_diag_request_for_env or {}), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    fullhub_image_build_request_b64_value = base64.b64encode(
+        json.dumps(dict(fullhub_image_build_request or {}), sort_keys=True).encode("utf-8")
     ).decode("ascii")
     lines = [
         f"name: {head.service_name}",
@@ -3243,6 +3822,10 @@ def render_head_compose(
         yaml_env_b64_chunk_lines(
             "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64",
             full_hub_runtime_diag_request_b64_value,
+        )
+        + yaml_env_b64_chunk_lines(
+            "MC_ALLFATHER_FULLHUB_IMAGE_BUILD_REQUEST_B64",
+            fullhub_image_build_request_b64_value,
         )
         + [f"      MC_ALLFATHER_SUPERNODES_ROOT: {yaml_quote('/host-supernodes')}"]
     )
@@ -4648,6 +5231,7 @@ def service_payload(
     hub_admin_sync_request: Mapping[str, Any] | None = None,
     contract_deploy_request: Mapping[str, Any] | None = None,
     full_hub_runtime_diag_request: Mapping[str, Any] | None = None,
+    fullhub_image_build_request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     compose = render_head_compose(
         plan,
@@ -4663,6 +5247,7 @@ def service_payload(
         hub_admin_sync_request=hub_admin_sync_request,
         contract_deploy_request=contract_deploy_request,
         full_hub_runtime_diag_request=full_hub_runtime_diag_request,
+        fullhub_image_build_request=fullhub_image_build_request,
     )
     payload = {
         "server_uuid": (context or {}).get("server_uuid") or "",
@@ -4739,6 +5324,7 @@ def sync_head_service(
     hub_admin_sync_request: Mapping[str, Any] | None = None,
     contract_deploy_request: Mapping[str, Any] | None = None,
     full_hub_runtime_diag_request: Mapping[str, Any] | None = None,
+    fullhub_image_build_request: Mapping[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     explicit_uuid = explicit_service_uuid_for_host(head, args)
     service_uuid = explicit_uuid
@@ -4764,6 +5350,7 @@ def sync_head_service(
             hub_admin_sync_request=hub_admin_sync_request,
             contract_deploy_request=contract_deploy_request,
             full_hub_runtime_diag_request=full_hub_runtime_diag_request,
+            fullhub_image_build_request=fullhub_image_build_request,
         )
         fdb_tool().update_service(client, service_uuid, head.service_name, compose, tried)
         return service_uuid, "updated", existing
@@ -4782,6 +5369,7 @@ def sync_head_service(
         hub_admin_sync_request=hub_admin_sync_request,
         contract_deploy_request=contract_deploy_request,
         full_hub_runtime_diag_request=full_hub_runtime_diag_request,
+        fullhub_image_build_request=fullhub_image_build_request,
     )
     service_uuid = fdb_tool().create_service(client, payload, tried)
     # Patch the new head once its UUID is known so the single host-agent can
@@ -4800,6 +5388,7 @@ def sync_head_service(
         hub_admin_sync_request=hub_admin_sync_request,
         contract_deploy_request=contract_deploy_request,
         full_hub_runtime_diag_request=full_hub_runtime_diag_request,
+        fullhub_image_build_request=fullhub_image_build_request,
     )
     fdb_tool().update_service(client, service_uuid, head.service_name, compose, tried)
     return service_uuid, "created", existing
@@ -10231,13 +10820,12 @@ ThreadingHTTPServer(("0.0.0.0", PUBLIC_GUARD_PORT), Handler).serve_forever()
 
 
 def dockerfile_payload_install_run(payloads: Mapping[str, str]) -> str:
-    """Return a Dockerfile RUN step that writes compressed base64 payloads without heredocs.
+    """Return the legacy inline-payload Dockerfile RUN step.
 
-    Coolify/BuildKit rejected the earlier generated Dockerfile at the giant
-    ``RUN python - <<'PY'`` heredoc with ``unterminated heredoc``.  Keep every
-    Dockerfile line short and avoid heredocs entirely by appending wrapped
-    compressed base64 chunks through portable shell ``printf`` calls, then decoding
-    them with Python inside the image.
+    This remains for existing Coolify inline-compose build paths.  New host-local
+    Stage 1/2 builds should use ``dockerfile_context_payload_install_run`` plus a
+    Docker build context, because a giant shell ``RUN printf ...`` command can
+    fail after the base dependency layer and can also dump unusable payload spam.
     """
 
     lines = ["RUN set -eux; \\"]
@@ -10257,6 +10845,48 @@ def dockerfile_payload_install_run(payloads: Mapping[str, str]) -> str:
         suffix = "; \\" if index < len(items) - 1 else ""
         lines.append(f"    rm -f {tmp_path}{suffix}")
     return "\n".join(lines)
+
+
+def dockerfile_context_payload_install_run(payloads: Mapping[str, str]) -> tuple[str, dict[str, str], list[dict[str, str]]]:
+    """Return Dockerfile COPY/RUN payload install steps plus build-context files.
+
+    The Stage 1/2 control surface sends these files in the Docker build tar
+    context.  That keeps the generated Dockerfile small, avoids shell argument
+    length failures in ``/bin/sh -c``, and prevents Docker failure messages from
+    containing the full base64 runtime payload.
+    """
+
+    copy_lines: list[str] = []
+    run_lines = ["RUN set -eux; \\"]
+    context_files: dict[str, str] = {}
+    manifest: list[dict[str, str]] = []
+    items = list(payloads.items())
+    for index, (target, payload_b64) in enumerate(items):
+        target_text = str(target)
+        tmp_path = f"/tmp/allfather-payload-{index}.b64"
+        context_path = f"allfather-payloads/allfather-payload-{index}.b64"
+        context_files[context_path] = str(payload_b64 or "")
+        copy_lines.append(f"COPY {context_path} {tmp_path}")
+        parent = str(Path(target_text).parent).replace("\\", "/")
+        if parent and parent != ".":
+            run_lines.append(f"    mkdir -p {shell_single_quote(parent)}; \\")
+        target_json = json.dumps(target_text)
+        tmp_json = json.dumps(tmp_path)
+        run_lines.append(
+            "    python3 -c 'import base64, pathlib, zlib; "
+            f"pathlib.Path({target_json}).write_bytes(zlib.decompress(base64.b64decode(pathlib.Path({tmp_json}).read_bytes())))'; \\"
+        )
+        run_lines.append(f"    chmod 0755 {shell_single_quote(target_text)}; \\")
+        suffix = "; \\" if index < len(items) - 1 else ""
+        run_lines.append(f"    rm -f {shell_single_quote(tmp_path)}{suffix}")
+        manifest.append(
+            {
+                "target": target_text,
+                "context_path": context_path,
+                "sha256": hashlib.sha256(str(payload_b64 or "").encode("ascii")).hexdigest(),
+            }
+        )
+    return "\n".join(copy_lines + [""] + run_lines), context_files, manifest
 
 
 def super_base_dockerfile_inline(source_image: str = DEFAULT_SUPER_BASE_SOURCE_IMAGE) -> str:
@@ -10392,7 +11022,7 @@ def super_node_dockerfile_inline(base_image: str, guard_script: str | None = Non
             "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
         }
     )
-    return f"""
+    return rf"""
 FROM {source}
 
 LABEL main_computer.allfather.full_hub_runtime="true" \
@@ -10402,9 +11032,9 @@ LABEL main_computer.allfather.full_hub_runtime="true" \
 
 RUN set -eux; \
     mkdir -p /opt/allfather-build; \
-    printf '%s\\n' {shell_single_quote(build_cache_bust)} > /opt/allfather-build/deployment-id; \
-    printf '%s\\n' {shell_single_quote(full_hub_runtime_sha256)} > /opt/allfather-build/full-hub-runtime-sha256; \
-    printf '%s\\n' {shell_single_quote(guard_script_sha256)} > /opt/allfather-build/guard-script-sha256
+    printf '%s\n' {shell_single_quote(build_cache_bust)} > /opt/allfather-build/deployment-id; \
+    printf '%s\n' {shell_single_quote(full_hub_runtime_sha256)} > /opt/allfather-build/full-hub-runtime-sha256; \
+    printf '%s\n' {shell_single_quote(guard_script_sha256)} > /opt/allfather-build/guard-script-sha256
 
 USER root
 
@@ -10494,6 +11124,159 @@ ENV PATH="/opt/allfather-super-venv/bin:$PATH"
 
 ENTRYPOINT ["/opt/allfather-super-venv/bin/python", "-u", "/usr/local/bin/allfather-super-entrypoint.py"]
 """.strip()
+
+def super_node_dockerfile_context_inline(base_image: str, guard_script: str | None = None, *, build_id: str = "") -> dict[str, Any]:
+    """Return a self-contained super-node Dockerfile plus Docker build-context payload files.
+
+    This is the host-local build path used by the Allfather control surface.  It
+    avoids embedding the runtime archive as thousands of ``printf`` commands in
+    one Dockerfile ``RUN`` instruction.
+    """
+
+    requested = str(base_image or "").strip()
+    local_base_requested = (
+        not requested
+        or requested == DEFAULT_SUPER_BASE_IMAGE
+        or requested.startswith("main-computer/allfather-super-base:")
+    )
+    source = DEFAULT_SUPER_BASE_SOURCE_IMAGE if local_base_requested else requested
+    contract_sources_b64 = base64.b64encode(
+        zlib.compress((json.dumps(allfather_contract_sources_b64(), sort_keys=True) + "\n").encode("utf-8"))
+    ).decode("ascii")
+    contract_builder_b64 = base64.b64encode(
+        zlib.compress(allfather_contract_artifact_builder_script().encode("utf-8"))
+    ).decode("ascii")
+    guard_script_b64 = base64.b64encode(zlib.compress((guard_script or super_server_command_script()).encode("utf-8"))).decode("ascii")
+    wrapper_script_b64 = base64.b64encode(zlib.compress(super_node_entrypoint_wrapper_script().encode("utf-8"))).decode("ascii")
+    full_hub_runtime_b64 = allfather_full_hub_runtime_archive_b64()
+    full_hub_runtime_sha256 = hashlib.sha256(full_hub_runtime_b64.encode("ascii")).hexdigest()
+    guard_script_sha256 = hashlib.sha256(guard_script_b64.encode("ascii")).hexdigest()
+    build_cache_bust = str(build_id or "").strip() or hashlib.sha256(
+        (full_hub_runtime_sha256 + ":" + guard_script_sha256).encode("utf-8")
+    ).hexdigest()[:24]
+    payloads = {
+        "/opt/allfather-contracts/contract-sources-b64.json": contract_sources_b64,
+        "/opt/allfather-contracts/build-contract-artifacts.py": contract_builder_b64,
+        "/opt/main-computer-src.zip": full_hub_runtime_b64,
+        "/usr/local/bin/allfather-super-guard.py": guard_script_b64,
+        "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
+    }
+    payload_install, context_files_b64, payload_manifest = dockerfile_context_payload_install_run(payloads)
+    dockerfile = rf"""
+FROM {source}
+
+LABEL main_computer.allfather.full_hub_runtime="true" \
+      main_computer.allfather.build_id={json.dumps(build_cache_bust)} \
+      main_computer.allfather.full_hub_runtime_sha256={json.dumps(full_hub_runtime_sha256)} \
+      main_computer.allfather.guard_script_sha256={json.dumps(guard_script_sha256)} \
+      main_computer.allfather.payload_mode="docker-build-context"
+
+RUN set -eux; \
+    mkdir -p /opt/allfather-build; \
+    printf '%s\n' {shell_single_quote(build_cache_bust)} > /opt/allfather-build/deployment-id; \
+    printf '%s\n' {shell_single_quote(full_hub_runtime_sha256)} > /opt/allfather-build/full-hub-runtime-sha256; \
+    printf '%s\n' {shell_single_quote(guard_script_sha256)} > /opt/allfather-build/guard-script-sha256
+
+USER root
+
+RUN set -eux; \
+    if ! command -v apt-get >/dev/null 2>&1; then \
+        echo "The all-father super-node image currently requires a Debian/Ubuntu Besu base so FoundationDB server .deb packages can be installed." >&2; \
+        exit 1; \
+    fi; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        bash build-essential ca-certificates curl python3 python3-dev python3-pip python3-venv procps netcat-openbsd; \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        curl -fsSL -o /tmp/foundationdb-clients.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_amd64.deb"; \
+        curl -fsSL -o /tmp/foundationdb-server.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-server_7.4.6-1_amd64.deb"; \
+    elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+        curl -fsSL -o /tmp/foundationdb-clients.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_arm64.deb"; \
+        curl -fsSL -o /tmp/foundationdb-server.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-server_7.4.6-1_arm64.deb"; \
+    else \
+        echo "Unsupported FoundationDB architecture: $(dpkg --print-architecture)" >&2; \
+        exit 1; \
+    fi; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \
+    rm -f /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 -m venv /opt/allfather-super-venv; \
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel; \
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir "foundationdb==7.4.6" "web3==6.20.4"; \
+    curl -fsSL -o /usr/local/bin/solc \
+        "https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux"; \
+    chmod 0755 /usr/local/bin/solc; \
+    solc --version; \
+    mkdir -p /opt/allfather-contracts; \
+    ln -sf /opt/allfather-super-venv/bin/python /usr/local/bin/python; \
+    ln -sf /opt/allfather-super-venv/bin/pip /usr/local/bin/pip; \
+    if [ -x /usr/sbin/fdbserver ]; then \
+        ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver; \
+    elif [ -x /usr/bin/fdbserver ]; then \
+        ln -sf /usr/bin/fdbserver /usr/local/bin/fdbserver; \
+    else \
+        echo "FoundationDB server binary was not found after package install" >&2; \
+        exit 1; \
+    fi; \
+    if [ -x /usr/bin/fdbcli ]; then \
+        ln -sf /usr/bin/fdbcli /usr/local/bin/fdbcli; \
+    elif [ -x /usr/sbin/fdbcli ]; then \
+        ln -sf /usr/sbin/fdbcli /usr/local/bin/fdbcli; \
+    else \
+        echo "FoundationDB CLI binary was not found after package install" >&2; \
+        exit 1; \
+    fi; \
+    if ! command -v besu >/dev/null 2>&1; then \
+        echo "Besu binary is required in the all-father super-node image" >&2; \
+        exit 1; \
+    fi; \
+    besu --version; \
+    fdbserver --version; \
+    fdbcli --version
+
+{payload_install}
+
+RUN set -eux; \
+    python3 /opt/allfather-contracts/build-contract-artifacts.py \
+        /opt/allfather-contracts/contract-sources-b64.json \
+        /opt/allfather-contracts/contracts-artifacts.json; \
+    test -s /opt/allfather-contracts/contracts-artifacts.json; \
+    rm -rf /opt/main-computer-src; \
+    mkdir -p /opt/main-computer-src; \
+    python3 -c 'import zipfile; zipfile.ZipFile("/opt/main-computer-src.zip").extractall("/opt/main-computer-src")'; \
+    test -s /opt/main-computer-src/main_computer/hub.py; \
+    test -s /opt/main-computer-src/main_computer/config/mainnet_contracts.json
+
+ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super \
+    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-full,hub-bootstrap-fallback,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets,sprawl-free-host-agent-build \
+    MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint \
+    MC_ALLFATHER_IMAGE_SOURCE={source} \
+    MC_ALLFATHER_SHARED_BASE_BUILDER=disabled \
+    PYTHONPATH=/opt/main-computer-src
+
+EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
+
+ENV PATH="/opt/allfather-super-venv/bin:$PATH"
+
+ENTRYPOINT ["/opt/allfather-super-venv/bin/python", "-u", "/usr/local/bin/allfather-super-entrypoint.py"]
+""".strip()
+    return {
+        "dockerfile": dockerfile,
+        "context_files_b64": context_files_b64,
+        "payload_manifest": payload_manifest,
+        "payload_mode": "docker-build-context",
+        "full_hub_runtime_sha256": full_hub_runtime_sha256,
+        "guard_script_sha256": guard_script_sha256,
+        "build_id": build_cache_bust,
+        "source_image": source,
+    }
+
+
 def escape_compose_interpolation(text: str) -> str:
     """Escape Docker Compose interpolation inside literal inline payloads.
 
@@ -13302,6 +14085,264 @@ def full_hub_runtime_diag_result_from_service_metadata(detail: Mapping[str, Any]
     if not isinstance(result, Mapping):
         return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
     return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+
+def fullhub_image_build_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read full-hub image build status from the allfather head metadata."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if FULLHUB_IMAGE_BUILD_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_FULLHUB_IMAGE_BUILD_RESULT_B64 entry found"}
+    encoded = description.split(FULLHUB_IMAGE_BUILD_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+def fullhub_image_build_log_tail_from_result(result: Mapping[str, Any]) -> tuple[int, int, list[str]]:
+    """Return (tail_start_line, total_line_count, sanitized_tail_lines) from image-build metadata."""
+
+    relay = result.get("log_relay") if isinstance(result.get("log_relay"), Mapping) else {}
+    raw_tail = relay.get("tail") if isinstance(relay.get("tail"), list) else result.get("build_log_tail")
+    tail: list[str] = []
+    if isinstance(raw_tail, list):
+        tail = [str(item or "")[:240] for item in raw_tail if str(item or "").strip()]
+    if not tail:
+        encoded = str(relay.get("tail_b64") or "")
+        if encoded:
+            try:
+                decoded = base64.b64decode(encoded).decode("utf-8", "replace")
+                tail = []
+                for raw_line in decoded.splitlines():
+                    clean = str(raw_line or "").strip()
+                    lower = clean.lower()
+                    if not clean:
+                        continue
+                    if (
+                        "printf '%s" in clean
+                        or 'printf "%s' in clean
+                        or 'process "/bin/sh -c' in clean
+                        or "allfather-payload" in lower
+                        or "base64" in lower
+                        or "zlib" in lower
+                    ):
+                        continue
+                    tail.append(clean[:240])
+                tail = tail[-80:]
+            except Exception:
+                tail = []
+    try:
+        line_count = int(relay.get("line_count") or result.get("build_log_line_count") or 0)
+    except Exception:
+        line_count = 0
+    if line_count <= 0:
+        line_count = len(tail)
+    try:
+        tail_start_line = int(relay.get("tail_start_line") or 0)
+    except Exception:
+        tail_start_line = 0
+    if tail and tail_start_line <= 0:
+        tail_start_line = max(1, line_count - len(tail) + 1)
+    if not tail:
+        tail_start_line = 0
+    return tail_start_line, line_count, tail
+
+
+def fullhub_image_build_pending_result(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a fresh pending marker for one full-hub image build request."""
+
+    return {
+        "ok": False,
+        "service": str(request.get("service_name") or "allfather-fullhub-image-build"),
+        "status": "pending",
+        "phase": "pending",
+        "network_key": str(request.get("network") or request.get("network_key") or ""),
+        "coolify_server": str(request.get("host") or request.get("coolify_server") or ""),
+        "request_id": str(request.get("request_id") or ""),
+        "image": {"tag": str(request.get("image_tag") or "")},
+        "reason": "full-hub image build request queued; waiting for allfather control-surface result",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+
+
+def prime_head_fullhub_image_build_marker(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    request: Mapping[str, Any],
+    *,
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    """Replace any stale image-build marker with the current request id."""
+
+    request_id = str(request.get("request_id") or "").strip()
+    if not request_id:
+        return {"ok": False, "reason": "missing request_id"}
+    pending = fullhub_image_build_pending_result(request)
+    encoded = base64.b64encode(json.dumps(pending, sort_keys=True).encode("utf-8")).decode("ascii")
+    detail = fetch_service_detail(client, service_uuid, tried)
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    current_description = str(body.get("description") or "") if isinstance(body, Mapping) else ""
+    base_description = remove_callback_marker_lines(current_description, FULLHUB_IMAGE_BUILD_CALLBACK_MARKER)
+    if not base_description:
+        base_description = "Main Computer all-father host agent. This is the single per-host control container."
+    description = base_description.rstrip() + "\n" + FULLHUB_IMAGE_BUILD_CALLBACK_MARKER + encoded + "\n"
+    patch = patch_head_service_description(
+        client,
+        service_uuid,
+        description,
+        tried,
+        operation="prime-fullhub-image-build-marker",
+    )
+    result = {
+        "ok": bool(patch.get("ok")),
+        "request_id": request_id,
+        "phase": "pending",
+        "image_tag": str(request.get("image_tag") or ""),
+        "patch": patch,
+    }
+    if args is not None:
+        operator_log(args, f"stage1-2: primed fullhub image build marker host={request.get('host') or request.get('coolify_server') or ''} request_id={request_id} ok={result['ok']}")
+    return result
+
+
+def wait_for_head_fullhub_image_build_ready(
+    client: Any,
+    head_service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+    poll_s: float = 2.0,
+    expected_request_id: str = "",
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    """Poll Coolify service metadata for the control-surface image-build marker.
+
+    This deliberately does not call any host-private IP, SSH endpoint, or 10-net
+    URL. The remote allfather head/control surface performs host-local Docker
+    work and publishes a compact result back through the Coolify service
+    description.
+    """
+
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
+    first = True
+    attempts = 0
+    last_log_signature = ""
+    last_log_at = 0.0
+    log_interval = operator_log_interval_s(args) if args is not None else 15.0
+    stale_marker_request_ids: list[str] = []
+    pending_observed_since = 0.0
+    pending_consume_timeout_s = max(60.0, min(180.0, float(wait_s or 0.0) / 4.0 if wait_s else 120.0))
+    last_log_tail_request_id = ""
+    last_printed_log_line = 0
+
+    while first or time.time() < deadline:
+        first = False
+        attempts += 1
+        detail = fetch_service_detail(client, head_service_uuid, tried)
+        last_result = fullhub_image_build_result_from_service_metadata(detail)
+        result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        phase = str(result.get("phase") or result.get("status") or "")
+        request_id = str(result.get("request_id") or "")
+        image = result.get("image") if isinstance(result.get("image"), Mapping) else {}
+        image_tag = str(image.get("tag") or "")
+        signature = (
+            f"attempt={attempts} observed={bool(last_result.get('ok'))} phase={phase or 'not-observed'} "
+            f"request_id={request_id or '<missing>'} image={image_tag or '<missing>'}"
+        )
+        if last_result.get("error"):
+            signature += f" error={str(last_result.get('error'))[:180]}"
+        now = time.time()
+        if expected_request_id and request_id and request_id != expected_request_id:
+            if request_id not in stale_marker_request_ids:
+                stale_marker_request_ids.append(request_id or "<missing>")
+            stale_signature = f"stale_request_id={request_id or '<missing>'} expected_request_id={expected_request_id}"
+            if args is not None and (stale_signature != last_log_signature or (now - last_log_at) >= log_interval):
+                remaining = max(0.0, deadline - now)
+                operator_log(args, f"stage1-2: ignoring stale fullhub image build marker: {stale_signature}; remaining={remaining:.0f}s")
+                last_log_signature = stale_signature
+                last_log_at = now
+            time.sleep(max(1.0, float(poll_s)))
+            continue
+        if args is not None and (signature != last_log_signature or (now - last_log_at) >= log_interval):
+            remaining = max(0.0, deadline - now)
+            operator_log(args, f"stage1-2: waiting fullhub image build marker: {signature}; remaining={remaining:.0f}s")
+            last_log_signature = signature
+            last_log_at = now
+
+        if request_id != last_log_tail_request_id:
+            last_log_tail_request_id = request_id
+            last_printed_log_line = 0
+        if args is not None and request_id and (not expected_request_id or request_id == expected_request_id):
+            tail_start_line, line_count, tail_lines = fullhub_image_build_log_tail_from_result(result)
+            if tail_lines:
+                printed_line = last_printed_log_line
+                for offset, line in enumerate(tail_lines):
+                    line_number = tail_start_line + offset if tail_start_line else offset + 1
+                    if line_number > last_printed_log_line:
+                        operator_log(args, f"stage1-2: [{str(result.get('coolify_server') or 'control-surface')} fullhub build] {line}")
+                        printed_line = max(printed_line, line_number)
+                if printed_line > last_printed_log_line:
+                    last_printed_log_line = printed_line
+                elif line_count > last_printed_log_line and tail_start_line > last_printed_log_line:
+                    # The relay window rolled before the local runner saw every line. Print the bounded window once.
+                    operator_log(args, f"stage1-2: fullhub build log relay window advanced to line {tail_start_line}; earlier lines were not retained in metadata")
+                    last_printed_log_line = max(last_printed_log_line, tail_start_line - 1)
+
+        if last_result.get("ok"):
+            if phase == "pending":
+                if pending_observed_since <= 0.0:
+                    pending_observed_since = now
+                elif (now - pending_observed_since) >= pending_consume_timeout_s:
+                    return {
+                        "observed": True,
+                        "ready": False,
+                        "reason": (
+                            "control surface did not consume the fullhub image build marker; "
+                            "the service likely did not restart with the build-worker command"
+                        ),
+                        "result": dict(result),
+                        "source": last_result.get("source"),
+                        "attempts": attempts,
+                        "last_status": last_log_signature or signature,
+                        "pending_consume_timeout_s": pending_consume_timeout_s,
+                    }
+            elif phase in {"ready", "verified", "failed", "docker-build-failed", "verify-container-failed", "inspect-failed", "image-env-failed"} or str(result.get("status") or "") in {"ready", "failed"}:
+                ready = bool(result.get("ok")) and str(result.get("status") or "") == "ready"
+                return {
+                    "observed": True,
+                    "ready": ready,
+                    "reason": str(result.get("reason") or result.get("error") or ("fullhub image build completed" if ready else "fullhub image build failed")),
+                    "result": dict(result),
+                    "source": last_result.get("source"),
+                    "attempts": attempts,
+                    "last_status": last_log_signature or signature,
+                }
+            else:
+                pending_observed_since = 0.0
+        time.sleep(max(1.0, float(poll_s)))
+    return {
+        "observed": bool(last_result.get("ok")),
+        "ready": False,
+        "reason": str(last_result.get("error") or "timed out waiting for fullhub image build marker"),
+        "result": last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {},
+        "source": last_result.get("source"),
+        "attempts": attempts,
+        "last_status": last_log_signature,
+        "timeout_s": wait_s,
+    }
 
 
 def full_hub_runtime_diag_pending_result(request: Mapping[str, Any]) -> dict[str, Any]:

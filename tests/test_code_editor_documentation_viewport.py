@@ -124,7 +124,7 @@ class CodeEditorDocumentationViewportTests(unittest.TestCase):
                 self.assertIn(text, APPLICATIONS_INDEX_HTML)
 
 
-    def test_documentation_viewport_defaults_collapsed_above_instruction(self) -> None:
+    def test_documentation_viewport_defaults_collapsed_inside_proof_dock(self) -> None:
         script = SCRIPT_PATH.read_text(encoding="utf-8")
         style = STYLE_PATH.read_text(encoding="utf-8")
 
@@ -136,8 +136,12 @@ class CodeEditorDocumentationViewportTests(unittest.TestCase):
         self.assertIn('.code-editor-doc-viewport[data-mode="collapsed"] .code-editor-doc-status', style)
         self.assertIn('.code-editor-doc-script-widget[hidden]', style)
         self.assertLess(
+            APPLICATIONS_INDEX_HTML.index('data-code-editor-region="right-pane"'),
             APPLICATIONS_INDEX_HTML.index('id="code-editor-doc-viewport"'),
-            APPLICATIONS_INDEX_HTML.index('data-mc-component-id="code-editor.aider.instruction"'),
+        )
+        self.assertLess(
+            APPLICATIONS_INDEX_HTML.index('id="code-editor-doc-viewport"'),
+            APPLICATIONS_INDEX_HTML.index('data-mc-component-id="code-editor.aider.history-panel"'),
         )
 
     def test_script_controlled_vram_viewport_has_widget_and_api(self) -> None:
