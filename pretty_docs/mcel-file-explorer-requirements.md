@@ -137,6 +137,110 @@ verification:
   - tests/test_mcel_documentation.py
 ```
 
+## Semantic app form
+
+File Explorer is defined by browse subjects, safe inspection actions, a primary
+entry-inspection work surface, supporting classification context, boundary
+feedback, and transient selection/search evidence. Visual arrangement is inferred
+from those semantics rather than fixed physical slots.
+
+```mcel-form-primitive
+id: file-explorer.form.subject.browse-scope
+app: file-explorer
+status: specified
+primitive: subject
+meaning: The selected trusted root, current path, directory entry set, selected entry, previewable content, and mounted-root evidence.
+relationships:
+  - The selected entry belongs to the selected root and current path scope.
+  - Preview content, metadata, category, and suggested app derive from the selected entry.
+  - Mounted-root evidence explains when a displayed path is backed by a host path mapping.
+constraints:
+  - Root and path boundaries remain explicit for every selected entry.
+  - Relative traversal cannot escape the selected browse scope.
+  - Read-only browsing must not imply delete, move, rename, write, Git, upload, download, or shell authority.
+```
+
+```mcel-form-primitive
+id: file-explorer.form.action.inspect-entry-safely
+app: file-explorer
+status: specified
+primitive: action
+meaning: The user selects roots, searches within scope, chooses entries, previews readable content, and decides handoff without mutating files.
+relationships:
+  - Search and selection operate within the active browse scope.
+  - Preview derives evidence from the selected entry and documented preview limits.
+  - Handoff suggestions connect entry category to another Main Computer app.
+constraints:
+  - Inspection actions are read-only.
+  - Preview failures must report the reason instead of attempting mutation.
+  - Handoff suggestions must not open, write, stage, publish, or execute without a separate explicit app action.
+```
+
+```mcel-form-primitive
+id: file-explorer.form.work-surface.entry-inspection
+app: file-explorer
+status: specified
+primitive: work-surface
+meaning: The primary stable work surface for browsing entries, selecting a file or folder subject, inspecting metadata, and viewing safe preview evidence.
+relationships:
+  - Enables root selection, scoped search, directory entry inspection, metadata preview, content preview, and app-handoff reasoning.
+  - Keeps selected entry identity connected to preview and classification evidence.
+  - Preserves read-only status as part of the inspection task.
+constraints:
+  - The primary inspection surface must remain visible and usable while browsing.
+  - Preview evidence must stay tied to the selected entry.
+  - Read-only status must remain visible enough to prevent accidental mutation assumptions.
+```
+
+```mcel-form-primitive
+id: file-explorer.form.context.selection-and-classification
+app: file-explorer
+status: specified
+primitive: context
+meaning: Supporting context that explains current root, path, selected entry, metadata, category, suggested app, and preview availability.
+relationships:
+  - Explains why an entry is classified as code, text, spreadsheet, game, asset, binary, oversized, or other.
+  - Connects preview availability to size, type, readability, and safety limits.
+  - Connects selected entries to possible downstream app handoff.
+constraints:
+  - Context must not claim file mutation authority.
+  - Category and suggested-app evidence must be distinguishable from the file contents themselves.
+  - Missing or unreadable preview must produce explicit evidence, not blank ambiguity.
+```
+
+```mcel-form-primitive
+id: file-explorer.form.feedback.boundary-and-preview-state
+app: file-explorer
+status: specified
+primitive: feedback
+meaning: Feedback about selected scope, read-only status, search state, preview readiness, preview failure, mounted-root status, and contract health.
+relationships:
+  - Observes browse scope, selected entry, preview limits, search progress, and runtime integrity.
+  - Supports user safety, developer diagnosis, and automated contract checking.
+  - Distinguishes active browse problems from historical or resolved findings.
+constraints:
+  - Feedback must not interrupt ordinary browsing unless a boundary, preview, or safety rule is violated.
+  - Feedback must not cover or replace the primary inspection surface.
+  - Feedback must identify the affected root, path, entry, or operation when possible.
+```
+
+```mcel-form-primitive
+id: file-explorer.form.transient.search-and-selection-evidence
+app: file-explorer
+status: specified
+primitive: transient
+meaning: Temporary evidence created by search, selection change, preview loading, classification refresh, or handoff consideration.
+relationships:
+  - Supports the active inspect-entry action without becoming persistent file state.
+  - May highlight a selection, search result, classification change, or preview-loading lifecycle.
+  - Ends when the selection, query, preview, or handoff consideration changes.
+constraints:
+  - Transient evidence must remain bounded to the active browse scope.
+  - Transient evidence must not imply mutation or permission escalation.
+  - Transient evidence must not obscure root, path, selected-entry, or read-only identity.
+```
+
+
 ## Product law
 
 File Explorer is not a file manager, terminal, package installer, Git staging tool, or hidden write surface. It is a read-only filesystem observation and handoff app.

@@ -69,8 +69,32 @@ DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 RUNTIME_CLEANUP_CALLBACK_MARKER = "ALLFATHER_RUNTIME_CLEANUP_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
+DEFAULT_ALLFATHER_IMAGE_CACHE_ROOT = "/data/main-computer/allfather/image-cache"
 DEFAULT_SUPER_BASE_SOURCE_IMAGE = "hyperledger/besu:latest"
 DEFAULT_SUPER_BASE_IMAGE = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715"
+DEFAULT_ALLFATHER_SYSTEM_BASE_IMAGE_REPO = "main-computer/allfather-system-base"
+DEFAULT_ALLFATHER_FOUNDATION_BASE_IMAGE_REPO = "main-computer/allfather-foundation-base"
+DEFAULT_ALLFATHER_PYTHON_BASE_IMAGE_REPO = "main-computer/allfather-python-base"
+DEFAULT_ALLFATHER_FULLHUB_RUNTIME_IMAGE_REPO = "main-computer/allfather-fullhub-runtime"
+ALLFATHER_SYSTEM_BASE_APT_PACKAGES = (
+    "bash",
+    "build-essential",
+    "ca-certificates",
+    "curl",
+    "python3",
+    "python3-dev",
+    "python3-pip",
+    "python3-venv",
+    "procps",
+    "netcat-openbsd",
+)
+ALLFATHER_FOUNDATIONDB_VERSION = "7.4.6"
+ALLFATHER_SOLC_VERSION = "0.8.24"
+ALLFATHER_PYTHON_DEPENDENCIES = (
+    "foundationdb==7.4.6",
+    "web3==6.20.4",
+)
+
 DEFAULT_SUPER_IMAGE = DEFAULT_SUPER_BASE_IMAGE
 DEFAULT_SUPER_BASE_BUILDER_IMAGE = "docker:27-cli"
 DEFAULT_SUPER_BASE_BUILDER_PREFIX = "allfather-super-base-builder"
@@ -1293,6 +1317,7 @@ RUNTIME_CLEANUP_REQUEST_B64 = os.environ.get("MC_ALLFATHER_RUNTIME_CLEANUP_REQUE
 TRAEFIK_PROPAGATE_REQUEST_B64 = os.environ.get("MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64", "")
 HUB_ADMIN_SYNC_REQUEST_B64 = os.environ.get("MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64", "")
 SUPERNODES_ROOT = Path(os.environ.get("MC_ALLFATHER_SUPERNODES_ROOT", "/host-supernodes"))
+CHECKPOINT_IMAGE_CACHE_ROOT = Path(os.environ.get("MC_ALLFATHER_IMAGE_CACHE_ROOT", "/data/main-computer/allfather/image-cache"))
 
 LAST_CALLBACK_DIGEST = ""
 LAST_CALLBACK_AT = 0.0
@@ -1653,6 +1678,221 @@ def docker_json(method: str, path: str) -> tuple[int, object]:
         return status, raw.decode("utf-8", "replace")
 
 
+CHECKPOINT_CACHE_MANIFEST_KIND = "main_computer.allfather.checkpoint_image_cache.v1"
+
+def checkpoint_cache_key(step_name: str, image_tag: str) -> str:
+    stage = "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in str(step_name or "")).strip("-._") or "checkpoint"
+    digest = hashlib.sha256(str(image_tag or "").encode("utf-8")).hexdigest()[:24]
+    return stage[:48] + "-" + digest
+
+def checkpoint_cache_paths(step_name: str, image_tag: str) -> tuple[Path, Path]:
+    key = checkpoint_cache_key(step_name, image_tag)
+    return (
+        CHECKPOINT_IMAGE_CACHE_ROOT / (key + ".tar"),
+        CHECKPOINT_IMAGE_CACHE_ROOT / (key + ".json"),
+    )
+
+def checkpoint_cache_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def checkpoint_cache_atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".partial-" + str(os.getpid()) + "-" + str(threading.get_ident()))
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+def checkpoint_cache_validate(
+    step_name: str,
+    image_tag: str,
+    *,
+    verify_checksum: bool,
+) -> tuple[bool, dict, str]:
+    archive_path, manifest_path = checkpoint_cache_paths(step_name, image_tag)
+    if not archive_path.is_file() or not manifest_path.is_file():
+        return False, {}, "durable checkpoint archive not found"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, {}, "durable checkpoint manifest unreadable: " + type(exc).__name__ + ": " + str(exc)
+    if not isinstance(manifest, dict):
+        return False, {}, "durable checkpoint manifest is not an object"
+    expected = {
+        "kind": CHECKPOINT_CACHE_MANIFEST_KIND,
+        "stage": str(step_name),
+        "tag": str(image_tag),
+        "verified": True,
+    }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            return False, {}, "durable checkpoint manifest mismatch for " + key
+    try:
+        archive_size = int(archive_path.stat().st_size)
+        expected_size = int(manifest.get("archive_size") or 0)
+    except Exception as exc:
+        return False, {}, "durable checkpoint archive stat failed: " + type(exc).__name__ + ": " + str(exc)
+    if archive_size <= 0 or archive_size != expected_size:
+        return False, {}, "durable checkpoint archive size mismatch"
+    expected_sha = str(manifest.get("archive_sha256") or "").strip().lower()
+    if len(expected_sha) != 64:
+        return False, {}, "durable checkpoint manifest has invalid archive_sha256"
+    if verify_checksum:
+        actual_sha = checkpoint_cache_file_sha256(archive_path)
+        if actual_sha != expected_sha:
+            return False, {}, "durable checkpoint archive sha256 mismatch"
+    return True, {
+        "state": "present",
+        "archive_path": str(archive_path),
+        "manifest_path": str(manifest_path),
+        "archive_sha256": expected_sha,
+        "archive_size": archive_size,
+        "image_id": str(manifest.get("image_id") or ""),
+        "fingerprint": str(manifest.get("fingerprint") or ""),
+        "verified": True,
+    }, ""
+
+def docker_export_image_archive(image_tag: str, destination: Path) -> tuple[str, int]:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        destination.name + ".partial-" + str(os.getpid()) + "-" + str(threading.get_ident())
+    )
+    digest = hashlib.sha256()
+    size = 0
+    conn = UnixHTTPConnection("/var/run/docker.sock")
+    try:
+        conn.request("GET", "/images/" + urllib.parse.quote(image_tag, safe="") + "/get")
+        response = conn.getresponse()
+        status = int(response.status)
+        if status >= 300:
+            raw = response.read(8192).decode("utf-8", "replace")
+            raise RuntimeError("docker image export failed status=" + str(status) + ": " + short_text(raw, 800))
+        with temporary.open("wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if size <= 0:
+            raise RuntimeError("docker image export returned an empty archive")
+        os.replace(temporary, destination)
+        return digest.hexdigest(), size
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except Exception:
+            pass
+
+def docker_load_image_archive(archive_path: Path) -> tuple[bool, str]:
+    conn = UnixHTTPConnection("/var/run/docker.sock")
+    try:
+        with archive_path.open("rb") as handle:
+            conn.request(
+                "POST",
+                "/images/load?quiet=1",
+                body=handle,
+                headers={
+                    "Content-Type": "application/x-tar",
+                    "Content-Length": str(archive_path.stat().st_size),
+                },
+            )
+            response = conn.getresponse()
+            status = int(response.status)
+            raw = response.read().decode("utf-8", "replace")
+        if status >= 300:
+            return False, "docker image load failed status=" + str(status) + ": " + short_text(raw, 800)
+        errors = build_log_error_lines(raw, limit=10)
+        if errors:
+            return False, "docker image load reported errors: " + "; ".join(errors)
+        return True, ""
+    except Exception as exc:
+        return False, "docker image load failed: " + type(exc).__name__ + ": " + str(exc)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def ensure_checkpoint_archive(
+    step_name: str,
+    image_tag: str,
+    image_json: dict,
+    *,
+    force: bool = False,
+) -> tuple[bool, dict, str]:
+    if not force:
+        valid, metadata, error = checkpoint_cache_validate(step_name, image_tag, verify_checksum=False)
+        if valid:
+            return True, metadata, ""
+    archive_path, manifest_path = checkpoint_cache_paths(step_name, image_tag)
+    try:
+        archive_sha256, archive_size = docker_export_image_archive(image_tag, archive_path)
+        fingerprint = str(image_tag).rsplit(":", 1)[-1] if ":" in str(image_tag) else hashlib.sha256(str(image_tag).encode("utf-8")).hexdigest()
+        manifest = {
+            "kind": CHECKPOINT_CACHE_MANIFEST_KIND,
+            "stage": str(step_name),
+            "tag": str(image_tag),
+            "image_id": str(image_json.get("Id") or ""),
+            "created": str(image_json.get("Created") or ""),
+            "fingerprint": fingerprint,
+            "archive_sha256": archive_sha256,
+            "archive_size": archive_size,
+            "verified": True,
+            "exported_at": time.time(),
+        }
+        checkpoint_cache_atomic_json(manifest_path, manifest)
+        return True, {
+            "state": "seeded",
+            "archive_path": str(archive_path),
+            "manifest_path": str(manifest_path),
+            "archive_sha256": archive_sha256,
+            "archive_size": archive_size,
+            "image_id": str(image_json.get("Id") or ""),
+            "fingerprint": fingerprint,
+            "verified": True,
+        }, ""
+    except Exception as exc:
+        return False, {}, "durable checkpoint export failed: " + type(exc).__name__ + ": " + str(exc)
+
+def restore_checkpoint_archive(step_name: str, image_tag: str) -> tuple[bool, dict, str]:
+    valid, metadata, error = checkpoint_cache_validate(step_name, image_tag, verify_checksum=True)
+    if not valid:
+        return False, {}, error
+    loaded, load_error = docker_load_image_archive(Path(str(metadata.get("archive_path") or "")))
+    if not loaded:
+        return False, metadata, load_error
+    image_json, inspect_error = inspect_image_by_tag(image_tag)
+    if inspect_error or not image_json:
+        return False, metadata, "restored checkpoint image inspect failed: " + inspect_error
+    restored = dict(metadata)
+    restored.update(
+        {
+            "state": "restored",
+            "image_id": str(image_json.get("Id") or ""),
+            "created": str(image_json.get("Created") or ""),
+        }
+    )
+    return True, restored, ""
+
+
 def build_log_safe_lines(raw_text: str, limit: int = 120) -> list[str]:
     out = []
     for line in str(raw_text or "").splitlines():
@@ -1897,6 +2137,53 @@ def remove_verify_container(container_id: str) -> None:
     if container_id:
         docker_api("DELETE", f"/containers/{urllib.parse.quote(container_id, safe='')}?force=1&v=1")
 
+
+def run_image_verify_container(image_tag: str, verify_script: str, *, name_prefix: str = "allfather-image-verify") -> tuple[bool, str, list[str]]:
+    script = str(verify_script or "").strip()
+    if not script:
+        return True, "", []
+    name = name_prefix + "-" + hashlib.sha256((image_tag + script + str(time.time())).encode("utf-8")).hexdigest()[:16]
+    body = json.dumps(
+        {
+            "Image": image_tag,
+            "Entrypoint": ["sh", "-lc"],
+            "Cmd": [script],
+            "AttachStdout": True,
+            "AttachStderr": True,
+        }
+    ).encode("utf-8")
+    status, raw = docker_api(
+        "POST",
+        f"/containers/create?name={urllib.parse.quote(name, safe='')}",
+        body=body,
+        headers={"Content-Type": "application/json"},
+    )
+    if status >= 300:
+        return False, f"verify container create failed status={status}: {short_text(raw.decode('utf-8', 'replace'), 800)}", []
+    try:
+        cid = json.loads(raw.decode("utf-8")).get("Id", "")
+    except Exception as exc:
+        return False, f"verify container create returned invalid JSON: {type(exc).__name__}: {exc}", []
+    try:
+        status, raw = docker_api("POST", f"/containers/{urllib.parse.quote(cid, safe='')}/start")
+        if status >= 300:
+            return False, f"verify container start failed status={status}: {short_text(raw.decode('utf-8', 'replace'), 800)}", []
+        status, raw = docker_api("POST", f"/containers/{urllib.parse.quote(cid, safe='')}/wait")
+        if status >= 300:
+            return False, f"verify container wait failed status={status}: {short_text(raw.decode('utf-8', 'replace'), 800)}", []
+        try:
+            wait_payload = json.loads(raw.decode("utf-8"))
+            code = int(wait_payload.get("StatusCode", 1))
+        except Exception:
+            code = 1
+        _, logs_raw = docker_api("GET", f"/containers/{urllib.parse.quote(cid, safe='')}/logs?stdout=1&stderr=1")
+        logs = build_log_safe_lines(logs_raw.decode("utf-8", "replace"), limit=40)
+        if code != 0:
+            return False, f"verify container exited {code}", logs
+        return True, "", logs
+    finally:
+        remove_verify_container(cid)
+
 def run_fullhub_image_verify_container(image_tag: str) -> tuple[bool, str, list[str]]:
     verify_script = (
         "set -eu\n"
@@ -1996,9 +2283,651 @@ def fullhub_image_build_running_result(log_path: str, latest_log_path: str) -> d
     )
     return base
 
+
+def checkpoint_stage_result(
+    *,
+    step_name: str,
+    checkpoint: str,
+    image_tag: str,
+    status: str,
+    phase: str,
+    reason: str,
+    image_id: str = "",
+    created: str = "",
+    build_http_status: int | None = None,
+    verify_log_tail: list[str] | None = None,
+    error: str = "",
+    durable_cache: dict | None = None,
+) -> dict:
+    result = {
+        "step": step_name,
+        "checkpoint": checkpoint,
+        "image_tag": image_tag,
+        "status": status,
+        "phase": phase,
+        "reason": reason,
+        "image_id": image_id,
+        "created": created,
+        "verify_log_tail": list(verify_log_tail or []),
+        "updated_at": time.time(),
+    }
+    if build_http_status is not None:
+        result["build_http_status"] = int(build_http_status)
+    if error:
+        result["error"] = str(error)[:600]
+    if isinstance(durable_cache, dict) and durable_cache:
+        result["durable_cache"] = dict(durable_cache)
+    return result
+
+
+def publish_fullhub_checkpoint_progress(
+    base: dict,
+    *,
+    checkpoint_results: list[dict],
+    current_checkpoint: str,
+    phase: str,
+    image_tag: str,
+    log_path: str,
+    latest_log_path: str,
+    safe_lines: list[str],
+    errors: list[str] | None = None,
+    ok: bool = False,
+    status: str = "running",
+    reason: str = "full-hub checkpoint image build running",
+) -> dict:
+    global LATEST_FULLHUB_IMAGE_BUILD
+    relay = fullhub_build_log_metadata(safe_lines, log_path, latest_log_path, errors=errors or [])
+    image = base.get("image") if isinstance(base.get("image"), dict) else {}
+    image = dict(image)
+    image["tag"] = image_tag
+    image["log_path"] = log_path
+    image["latest_log_path"] = latest_log_path
+    base.update(
+        {
+            "ok": bool(ok),
+            "status": status,
+            "phase": phase,
+            "reason": reason,
+            "image": image,
+            "checkpoint": current_checkpoint,
+            "current_checkpoint": current_checkpoint,
+            "checkpoint_results": list(checkpoint_results),
+            "image_build_plan": "four-checkpoint-images",
+            "log_relay": relay,
+            "build_log_tail": relay.get("tail") or [],
+            "build_log_line_count": relay.get("line_count") or 0,
+            "updated_at": time.time(),
+        }
+    )
+    LATEST_FULLHUB_IMAGE_BUILD = dict(base)
+    publish_to_coolify_metadata()
+    return base
+
+
+def run_fullhub_checkpoint_image_build_once(log_path: str, latest_log_path: str) -> dict:
+    steps = FULLHUB_IMAGE_BUILD_REQUEST.get("image_build_steps") if isinstance(FULLHUB_IMAGE_BUILD_REQUEST, dict) else None
+    if not isinstance(steps, list) or not steps:
+        raise RuntimeError("missing image_build_steps")
+    request_id = str(FULLHUB_IMAGE_BUILD_REQUEST.get("request_id") or "")
+    final_image_tag = str(FULLHUB_IMAGE_BUILD_REQUEST.get("image_tag") or "").strip()
+    if not final_image_tag:
+        raise RuntimeError("missing final image_tag")
+    base = fullhub_image_build_running_result(log_path, latest_log_path)
+    base["image_build_plan"] = "four-checkpoint-images"
+    base["checkpoint_results"] = []
+    base["image_tags"] = dict(FULLHUB_IMAGE_BUILD_REQUEST.get("image_tags") if isinstance(FULLHUB_IMAGE_BUILD_REQUEST.get("image_tags"), dict) else {})
+    base["image_tags"].setdefault("fullhub-runtime", final_image_tag)
+    checkpoint_results: list[dict] = []
+    safe_lines: list[str] = []
+    all_errors: list[str] = []
+
+    def append_checkpoint_line(name: str, image_tag: str) -> None:
+        line = "ALLFATHER_BUILD_CHECKPOINT " + name + " image=" + image_tag
+        safe_lines.append(line)
+        print(line, flush=True)
+
+    print("ALLFATHER_FULLHUB_IMAGE_BUILD_START " + json.dumps({
+        "request_id": request_id,
+        "image_tag": final_image_tag,
+        "log_path": log_path,
+        "latest_log_path": latest_log_path,
+        "docker_transport": "docker-engine-api-socket",
+        "image_build_plan": "four-checkpoint-images",
+        "step_count": len(steps),
+    }, sort_keys=True), flush=True)
+
+    for raw_step in steps:
+        if not isinstance(raw_step, dict):
+            raise RuntimeError("image_build_steps contained a non-object step")
+        step = dict(raw_step)
+        name = str(step.get("name") or "").strip()
+        image_tag = str(step.get("tag") or "").strip()
+        dockerfile_b64 = str(step.get("dockerfile_b64") or "")
+        dockerfile_sha256 = str(step.get("dockerfile_sha256") or "").strip().lower()
+        context_files_b64 = step.get("build_context_files_b64")
+        if not isinstance(context_files_b64, dict):
+            context_files_b64 = {}
+        verify_script = str(step.get("verify_script") or "")
+        cache_hit_checkpoint = str(step.get("checkpoint_cache_hit") or "")
+        restored_checkpoint = str(step.get("checkpoint_restored") or f"{name}-cache-restored")
+        built_checkpoint = str(step.get("checkpoint_built") or f"{name}-built")
+        verified_checkpoint = str(step.get("checkpoint_verified") or built_checkpoint)
+        durable_cache_required = bool(step.get("durable_cache"))
+        durable_cache_refresh = False
+        if not name:
+            raise RuntimeError("image_build_steps step missing name")
+        if not image_tag:
+            raise RuntimeError(f"{name} step missing tag")
+        current_checkpoint = f"{name}-ensure"
+        publish_fullhub_checkpoint_progress(
+            base,
+            checkpoint_results=checkpoint_results,
+            current_checkpoint=current_checkpoint,
+            phase=name,
+            image_tag=image_tag,
+            log_path=log_path,
+            latest_log_path=latest_log_path,
+            safe_lines=safe_lines,
+            errors=all_errors,
+            reason=f"ensuring {name} image",
+        )
+
+        image_json, inspect_error = inspect_image_by_tag(image_tag)
+        durable_restore_error = ""
+        if image_json and not inspect_error:
+            verified, verify_error, verify_logs = run_image_verify_container(
+                image_tag,
+                verify_script,
+                name_prefix="allfather-" + name + "-cache-verify",
+            )
+            if not verified:
+                checkpoint = checkpoint_stage_result(
+                    step_name=name,
+                    checkpoint=f"{name}-cache-verify-failed",
+                    image_tag=image_tag,
+                    status="failed",
+                    phase=f"{name}-cache-verify-failed",
+                    reason="cached checkpoint image failed verification",
+                    verify_log_tail=verify_logs,
+                    error=verify_error,
+                )
+                checkpoint_results.append(checkpoint)
+                all_errors.append(verify_error)
+                publish_fullhub_checkpoint_progress(
+                    base,
+                    checkpoint_results=checkpoint_results,
+                    current_checkpoint=checkpoint["checkpoint"],
+                    phase=checkpoint["phase"],
+                    image_tag=image_tag,
+                    log_path=log_path,
+                    latest_log_path=latest_log_path,
+                    safe_lines=safe_lines + verify_logs,
+                    errors=all_errors,
+                    status="failed",
+                    reason=checkpoint["reason"],
+                )
+                base.update({"error": verify_error[:800]})
+                return base
+            durable_cache = {}
+            if durable_cache_required:
+                publish_fullhub_checkpoint_progress(
+                    base,
+                    checkpoint_results=checkpoint_results,
+                    current_checkpoint=f"{name}-cache-seed",
+                    phase=f"{name}-cache-seed",
+                    image_tag=image_tag,
+                    log_path=log_path,
+                    latest_log_path=latest_log_path,
+                    safe_lines=safe_lines + verify_logs,
+                    errors=all_errors,
+                    reason=f"ensuring durable archive for verified {name} checkpoint",
+                )
+                archived, durable_cache, archive_error = ensure_checkpoint_archive(name, image_tag, image_json)
+                if not archived:
+                    checkpoint = checkpoint_stage_result(
+                        step_name=name,
+                        checkpoint=f"{name}-cache-export-failed",
+                        image_tag=image_tag,
+                        status="failed",
+                        phase=f"{name}-cache-export-failed",
+                        reason="verified checkpoint image could not be persisted",
+                        image_id=str(image_json.get("Id") or ""),
+                        created=str(image_json.get("Created") or ""),
+                        verify_log_tail=verify_logs,
+                        error=archive_error,
+                    )
+                    checkpoint_results.append(checkpoint)
+                    all_errors.append(archive_error)
+                    publish_fullhub_checkpoint_progress(
+                        base,
+                        checkpoint_results=checkpoint_results,
+                        current_checkpoint=checkpoint["checkpoint"],
+                        phase=checkpoint["phase"],
+                        image_tag=image_tag,
+                        log_path=log_path,
+                        latest_log_path=latest_log_path,
+                        safe_lines=safe_lines + verify_logs,
+                        errors=all_errors,
+                        status="failed",
+                        reason=checkpoint["reason"],
+                    )
+                    base.update({"error": archive_error[:800]})
+                    return base
+                if str(durable_cache.get("state") or "") == "seeded":
+                    append_checkpoint_line(f"{name}-cache-seeded", image_tag)
+            checkpoint_name = cache_hit_checkpoint or f"{name}-cache-hit"
+            append_checkpoint_line(checkpoint_name, image_tag)
+            checkpoint = checkpoint_stage_result(
+                step_name=name,
+                checkpoint=checkpoint_name,
+                image_tag=image_tag,
+                status="ready",
+                phase=f"{name}-cache-hit",
+                reason="checkpoint image cache hit, verified, and durably retained" if durable_cache_required else "checkpoint image cache hit and verified",
+                image_id=str(image_json.get("Id") or ""),
+                created=str(image_json.get("Created") or ""),
+                verify_log_tail=verify_logs,
+                durable_cache=durable_cache,
+            )
+            checkpoint_results.append(checkpoint)
+            publish_fullhub_checkpoint_progress(
+                base,
+                checkpoint_results=checkpoint_results,
+                current_checkpoint=checkpoint_name,
+                phase=checkpoint["phase"],
+                image_tag=image_tag,
+                log_path=log_path,
+                latest_log_path=latest_log_path,
+                safe_lines=safe_lines + verify_logs,
+                errors=all_errors,
+                reason=checkpoint["reason"],
+            )
+            continue
+
+        if durable_cache_required:
+            publish_fullhub_checkpoint_progress(
+                base,
+                checkpoint_results=checkpoint_results,
+                current_checkpoint=f"{name}-cache-restore-started",
+                phase=f"{name}-cache-restore",
+                image_tag=image_tag,
+                log_path=log_path,
+                latest_log_path=latest_log_path,
+                safe_lines=safe_lines,
+                errors=all_errors,
+                reason=f"local {name} image missing; checking durable checkpoint archive",
+            )
+            restored, durable_cache, durable_restore_error = restore_checkpoint_archive(name, image_tag)
+            if restored:
+                restored_json, restored_inspect_error = inspect_image_by_tag(image_tag)
+                restored_verified, restored_verify_error, restored_verify_logs = run_image_verify_container(
+                    image_tag,
+                    verify_script,
+                    name_prefix="allfather-" + name + "-restore-verify",
+                )
+                if restored_json and not restored_inspect_error and restored_verified:
+                    append_checkpoint_line(restored_checkpoint, image_tag)
+                    checkpoint = checkpoint_stage_result(
+                        step_name=name,
+                        checkpoint=restored_checkpoint,
+                        image_tag=image_tag,
+                        status="ready",
+                        phase=f"{name}-cache-restored",
+                        reason="checkpoint image restored from durable archive and verified",
+                        image_id=str(restored_json.get("Id") or ""),
+                        created=str(restored_json.get("Created") or ""),
+                        verify_log_tail=restored_verify_logs,
+                        durable_cache=durable_cache,
+                    )
+                    checkpoint_results.append(checkpoint)
+                    publish_fullhub_checkpoint_progress(
+                        base,
+                        checkpoint_results=checkpoint_results,
+                        current_checkpoint=restored_checkpoint,
+                        phase=checkpoint["phase"],
+                        image_tag=image_tag,
+                        log_path=log_path,
+                        latest_log_path=latest_log_path,
+                        safe_lines=safe_lines + restored_verify_logs,
+                        errors=all_errors,
+                        reason=checkpoint["reason"],
+                    )
+                    continue
+                durable_restore_error = (
+                    restored_inspect_error
+                    or restored_verify_error
+                    or f"restored {name} image did not pass verification"
+                )
+                durable_cache_refresh = True
+            elif "not found" not in durable_restore_error.lower():
+                durable_cache_refresh = True
+            if durable_restore_error:
+                line = "ALLFATHER_BUILD_CHECKPOINT " + name + "-cache-restore-unavailable image=" + image_tag + " reason=" + durable_restore_error[:180]
+                safe_lines.append(line)
+                print(line, flush=True)
+
+        if not dockerfile_b64:
+            detail = f"; durable cache restore failed: {durable_restore_error}" if durable_restore_error else ""
+            raise RuntimeError(f"{name} step missing dockerfile_b64 and image does not exist: {image_tag}{detail}")
+        dockerfile_text = base64.b64decode(dockerfile_b64.encode("ascii")).decode("utf-8")
+        actual_sha = hashlib.sha256(dockerfile_text.encode("utf-8")).hexdigest()
+        if dockerfile_sha256 and actual_sha != dockerfile_sha256:
+            raise RuntimeError(f"{name} dockerfile sha256 mismatch: got {actual_sha} expected {dockerfile_sha256}")
+        append_checkpoint_line(f"{name}-build-started", image_tag)
+        publish_fullhub_checkpoint_progress(
+            base,
+            checkpoint_results=checkpoint_results,
+            current_checkpoint=f"{name}-build-started",
+            phase=f"{name}-docker-build",
+            image_tag=image_tag,
+            log_path=log_path,
+            latest_log_path=latest_log_path,
+            safe_lines=safe_lines,
+            errors=all_errors,
+            reason=f"building {name} checkpoint image",
+        )
+        status, step_log_text, errors = docker_build_image_stream(image_tag, dockerfile_text, log_path, latest_log_path, context_files_b64)
+        step_lines = build_log_safe_lines(step_log_text)
+        safe_lines.extend(step_lines)
+        all_errors.extend(errors)
+        if status >= 300 or errors:
+            checkpoint = checkpoint_stage_result(
+                step_name=name,
+                checkpoint=f"{name}-docker-build-failed",
+                image_tag=image_tag,
+                status="failed",
+                phase=f"{name}-docker-build-failed",
+                reason=f"{name} docker build failed",
+                build_http_status=status,
+                error="; ".join(errors[:5]) or f"docker build failed status={status}",
+            )
+            checkpoint_results.append(checkpoint)
+            publish_fullhub_checkpoint_progress(
+                base,
+                checkpoint_results=checkpoint_results,
+                current_checkpoint=checkpoint["checkpoint"],
+                phase=checkpoint["phase"],
+                image_tag=image_tag,
+                log_path=log_path,
+                latest_log_path=latest_log_path,
+                safe_lines=safe_lines,
+                errors=all_errors,
+                status="failed",
+                reason=checkpoint["reason"],
+            )
+            base.update({"error": checkpoint.get("error", "")})
+            return base
+        image_json, inspect_error = inspect_image_by_tag(image_tag)
+        if inspect_error or not image_json:
+            checkpoint = checkpoint_stage_result(
+                step_name=name,
+                checkpoint=f"{name}-inspect-failed",
+                image_tag=image_tag,
+                status="failed",
+                phase=f"{name}-inspect-failed",
+                reason=f"{name} image inspect failed",
+                build_http_status=status,
+                error=inspect_error,
+            )
+            checkpoint_results.append(checkpoint)
+            publish_fullhub_checkpoint_progress(
+                base,
+                checkpoint_results=checkpoint_results,
+                current_checkpoint=checkpoint["checkpoint"],
+                phase=checkpoint["phase"],
+                image_tag=image_tag,
+                log_path=log_path,
+                latest_log_path=latest_log_path,
+                safe_lines=safe_lines,
+                errors=all_errors + [inspect_error],
+                status="failed",
+                reason=checkpoint["reason"],
+            )
+            base.update({"error": inspect_error[:800]})
+            return base
+        if built_checkpoint and built_checkpoint != verified_checkpoint:
+            append_checkpoint_line(built_checkpoint, image_tag)
+            built_result = checkpoint_stage_result(
+                step_name=name,
+                checkpoint=built_checkpoint,
+                image_tag=image_tag,
+                status="built",
+                phase=f"{name}-built",
+                reason=f"{name} checkpoint image built; verification pending",
+                image_id=str(image_json.get("Id") or ""),
+                created=str(image_json.get("Created") or ""),
+                build_http_status=status,
+            )
+            checkpoint_results.append(built_result)
+            publish_fullhub_checkpoint_progress(
+                base,
+                checkpoint_results=checkpoint_results,
+                current_checkpoint=built_checkpoint,
+                phase=built_result["phase"],
+                image_tag=image_tag,
+                log_path=log_path,
+                latest_log_path=latest_log_path,
+                safe_lines=safe_lines,
+                errors=all_errors,
+                reason=built_result["reason"],
+            )
+        verified, verify_error, verify_logs = run_image_verify_container(
+            image_tag,
+            verify_script,
+            name_prefix="allfather-" + name + "-verify",
+        )
+        if not verified:
+            checkpoint = checkpoint_stage_result(
+                step_name=name,
+                checkpoint=f"{name}-verify-failed",
+                image_tag=image_tag,
+                status="failed",
+                phase=f"{name}-verify-failed",
+                reason=f"{name} image verification failed",
+                image_id=str(image_json.get("Id") or ""),
+                created=str(image_json.get("Created") or ""),
+                build_http_status=status,
+                verify_log_tail=verify_logs,
+                error=verify_error,
+            )
+            checkpoint_results.append(checkpoint)
+            all_errors.append(verify_error)
+            publish_fullhub_checkpoint_progress(
+                base,
+                checkpoint_results=checkpoint_results,
+                current_checkpoint=checkpoint["checkpoint"],
+                phase=checkpoint["phase"],
+                image_tag=image_tag,
+                log_path=log_path,
+                latest_log_path=latest_log_path,
+                safe_lines=safe_lines + verify_logs,
+                errors=all_errors,
+                status="failed",
+                reason=checkpoint["reason"],
+            )
+            base.update({"error": verify_error[:800]})
+            return base
+        durable_cache = {}
+        if durable_cache_required:
+            publish_fullhub_checkpoint_progress(
+                base,
+                checkpoint_results=checkpoint_results,
+                current_checkpoint=f"{name}-cache-seed",
+                phase=f"{name}-cache-seed",
+                image_tag=image_tag,
+                log_path=log_path,
+                latest_log_path=latest_log_path,
+                safe_lines=safe_lines + verify_logs,
+                errors=all_errors,
+                reason=f"persisting verified {name} checkpoint archive",
+            )
+            archived, durable_cache, archive_error = ensure_checkpoint_archive(
+                name,
+                image_tag,
+                image_json,
+                force=durable_cache_refresh,
+            )
+            if not archived:
+                checkpoint = checkpoint_stage_result(
+                    step_name=name,
+                    checkpoint=f"{name}-cache-export-failed",
+                    image_tag=image_tag,
+                    status="failed",
+                    phase=f"{name}-cache-export-failed",
+                    reason="built checkpoint image could not be persisted",
+                    image_id=str(image_json.get("Id") or ""),
+                    created=str(image_json.get("Created") or ""),
+                    build_http_status=status,
+                    verify_log_tail=verify_logs,
+                    error=archive_error,
+                )
+                checkpoint_results.append(checkpoint)
+                all_errors.append(archive_error)
+                publish_fullhub_checkpoint_progress(
+                    base,
+                    checkpoint_results=checkpoint_results,
+                    current_checkpoint=checkpoint["checkpoint"],
+                    phase=checkpoint["phase"],
+                    image_tag=image_tag,
+                    log_path=log_path,
+                    latest_log_path=latest_log_path,
+                    safe_lines=safe_lines + verify_logs,
+                    errors=all_errors,
+                    status="failed",
+                    reason=checkpoint["reason"],
+                )
+                base.update({"error": archive_error[:800]})
+                return base
+            if str(durable_cache.get("state") or "") == "seeded":
+                append_checkpoint_line(f"{name}-cache-seeded", image_tag)
+        append_checkpoint_line(verified_checkpoint, image_tag)
+        checkpoint = checkpoint_stage_result(
+            step_name=name,
+            checkpoint=verified_checkpoint,
+            image_tag=image_tag,
+            status="ready",
+            phase=f"{name}-built",
+            reason=f"{name} checkpoint image built, verified, and durably retained" if durable_cache_required else f"{name} checkpoint image built and verified",
+            image_id=str(image_json.get("Id") or ""),
+            created=str(image_json.get("Created") or ""),
+            build_http_status=status,
+            verify_log_tail=verify_logs,
+            durable_cache=durable_cache,
+        )
+        checkpoint_results.append(checkpoint)
+        publish_fullhub_checkpoint_progress(
+            base,
+            checkpoint_results=checkpoint_results,
+            current_checkpoint=verified_checkpoint,
+            phase=checkpoint["phase"],
+            image_tag=image_tag,
+            log_path=log_path,
+            latest_log_path=latest_log_path,
+            safe_lines=safe_lines + verify_logs,
+            errors=all_errors,
+            reason=checkpoint["reason"],
+        )
+
+    final_json, final_error = inspect_image_by_tag(final_image_tag)
+    if final_error or not final_json:
+        base.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "phase": "fullhub-runtime-inspect-failed",
+                "reason": "final fullhub-runtime image inspect failed",
+                "error": final_error,
+                "checkpoint_results": checkpoint_results,
+                "updated_at": time.time(),
+            }
+        )
+        publish_to_coolify_metadata()
+        return base
+    env = image_env_list(final_json)
+    has_hub_full = any(item.startswith("MC_ALLFATHER_IMAGE_CAPABILITIES=") and "hub-full" in item for item in env)
+    has_pythonpath = any(item == "PYTHONPATH=/opt/main-computer-src" for item in env)
+    if not has_hub_full or not has_pythonpath:
+        error = f"built image failed env verification: hub_full={has_hub_full} pythonpath={has_pythonpath}"
+        base.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "phase": "image-env-failed",
+                "reason": "built image failed env verification",
+                "error": error,
+                "checkpoint_results": checkpoint_results,
+                "updated_at": time.time(),
+            }
+        )
+        publish_to_coolify_metadata()
+        return base
+    if not any(str(item.get("checkpoint") or "") == "fullhub-import-verified" for item in checkpoint_results if isinstance(item, dict)):
+        append_checkpoint_line("fullhub-import-verified", final_image_tag)
+        checkpoint_results.append(
+            checkpoint_stage_result(
+                step_name="fullhub-runtime",
+                checkpoint="fullhub-import-verified",
+                image_tag=final_image_tag,
+                status="ready",
+                phase="fullhub-import-verified",
+                reason="fullhub runtime imports verified",
+                image_id=str(final_json.get("Id") or ""),
+                created=str(final_json.get("Created") or ""),
+            )
+        )
+    append_checkpoint_line("fullhub-image-ready", final_image_tag)
+    checkpoint_results.append(
+        checkpoint_stage_result(
+            step_name="fullhub-runtime",
+            checkpoint="fullhub-image-ready",
+            image_tag=final_image_tag,
+            status="ready",
+            phase="fullhub-image-ready",
+            reason="fullhub runtime image ready",
+            image_id=str(final_json.get("Id") or ""),
+            created=str(final_json.get("Created") or ""),
+        )
+    )
+    image = {
+        "tag": final_image_tag,
+        "id": str(final_json.get("Id") or ""),
+        "created": str(final_json.get("Created") or ""),
+        "hub_full_env": True,
+        "pythonpath_env": True,
+        "verified": True,
+        "log_path": log_path,
+        "latest_log_path": latest_log_path,
+    }
+    base.update(
+        {
+            "ok": True,
+            "status": "ready",
+            "phase": "verified",
+            "reason": "four-checkpoint full-hub runtime image built and verified by allfather control surface",
+            "image": image,
+            "checkpoint": "fullhub-image-ready",
+            "current_checkpoint": "fullhub-image-ready",
+            "checkpoint_results": checkpoint_results,
+            "image_build_plan": "four-checkpoint-images",
+            "log_path": log_path,
+            "latest_log_path": latest_log_path,
+            "completed_at": time.time(),
+            "updated_at": time.time(),
+        }
+    )
+    relay = fullhub_build_log_metadata(safe_lines, log_path, latest_log_path, errors=all_errors)
+    base["log_relay"] = relay
+    base["build_log_tail"] = relay.get("tail") or []
+    base["build_log_line_count"] = relay.get("line_count") or 0
+    return base
+
+
 def run_fullhub_image_build_once(log_path: str, latest_log_path: str) -> dict:
     if not FULLHUB_IMAGE_BUILD_REQUEST:
         return initial_fullhub_image_build_state()
+    image_build_steps = FULLHUB_IMAGE_BUILD_REQUEST.get("image_build_steps") if isinstance(FULLHUB_IMAGE_BUILD_REQUEST, dict) else None
+    if isinstance(image_build_steps, list) and image_build_steps:
+        return run_fullhub_checkpoint_image_build_once(log_path, latest_log_path)
     request_id = str(FULLHUB_IMAGE_BUILD_REQUEST.get("request_id") or "")
     image_tag = str(FULLHUB_IMAGE_BUILD_REQUEST.get("image_tag") or "").strip()
     dockerfile_b64 = str(FULLHUB_IMAGE_BUILD_REQUEST.get("dockerfile_b64") or "")
@@ -2207,9 +3136,11 @@ def run_runtime_cleanup_once() -> dict:
     coolify_server = str(CLEANUP_REQUEST.get("coolify_server") or COOLIFY_SERVER or "").strip()
     super_prefix = str(CLEANUP_REQUEST.get("super_prefix") or "").strip()
     service_name = str(CLEANUP_REQUEST.get("service_name") or "allfather-head-runtime-cleanup").strip()
+    request_id = str(CLEANUP_REQUEST.get("request_id") or "").strip()
     result = {
         "ok": False,
         "service": service_name,
+        "request_id": request_id,
         "host_agent_service": "main-computer-allfather-host-agent",
         "status": "cleaning",
         "phase": "cleaning",
@@ -3739,6 +4670,23 @@ def render_head_compose(
         full_hub_runtime_diag_request_for_env["runtime_archive_b64"] = "<embedded-in-head-agent-script>"
         full_hub_runtime_diag_request_for_env["runtime_archive_transport"] = "embedded-script"
     command_script = head_server_command_script(full_hub_runtime_archive_b64=full_hub_runtime_archive_b64_for_script)
+    command_script_b64_value = base64.b64encode(command_script.encode("utf-8")).decode("ascii")
+    command_loader_script = """import base64, hashlib, os
+name = 'MC_ALLFATHER_HEAD_AGENT_SCRIPT_B64'
+chunk_count = int(os.environ.get(name + '_CHUNKS') or '0')
+if chunk_count:
+    encoded = ''.join(os.environ.get(f'{name}_{index:03d}', '') for index in range(chunk_count))
+else:
+    encoded = os.environ.get(name, '')
+expected_length = os.environ.get(name + '_TOTAL_LENGTH', '').strip()
+if expected_length and len(encoded) != int(expected_length):
+    raise SystemExit(f'{name} length mismatch: expected {expected_length}, got {len(encoded)}')
+expected_sha = os.environ.get(name + '_SHA256', '').strip().lower()
+if expected_sha and hashlib.sha256(encoded.encode('utf-8')).hexdigest() != expected_sha:
+    raise SystemExit(f'{name} sha256 mismatch')
+source = base64.b64decode(encoded.encode('ascii')).decode('utf-8')
+exec(compile(source, '<allfather-head-agent>', 'exec'), {'__name__': '__main__', '__file__': '<allfather-head-agent>'})
+"""
     probe_targets_b64_value = base64.b64encode(json.dumps(list(probe_targets or []), sort_keys=True).encode("utf-8")).decode("ascii")
     runtime_cleanup_request_b64_value = base64.b64encode(
         json.dumps(dict(runtime_cleanup_request or {}), sort_keys=True).encode("utf-8")
@@ -3771,8 +4719,8 @@ def render_head_compose(
         "      - -c",
         "      - |",
     ]
-    compose_command_script = command_script.replace("$", "$$")
-    lines.extend(f"        {line}" for line in compose_command_script.splitlines())
+    compose_command_loader_script = command_loader_script.replace("$", "$$")
+    lines.extend(f"        {line}" for line in compose_command_loader_script.splitlines())
     lines.extend(
         [
             "    environment:",
@@ -3786,6 +4734,7 @@ def render_head_compose(
             f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(head.guard_container_port)}",
             f"      MC_ALLFATHER_GUARD_HOST_PORT: {yaml_quote(head.guard_host_port)}",
             f"      MC_ALLFATHER_STATE_ROOT: {yaml_quote(head.state_root)}",
+            f"      MC_ALLFATHER_IMAGE_CACHE_ROOT: {yaml_quote(DEFAULT_ALLFATHER_IMAGE_CACHE_ROOT)}",
             f"      MC_ALLFATHER_DESIRED_COUNTS: {yaml_quote(json.dumps(manifest['desired_counts'], sort_keys=True))}",
             f"      MC_ALLFATHER_PEER_GUARDS: {yaml_quote(','.join(peer['guard_url'] for peer in head.peers))}",
             f"      MC_ALLFATHER_GUARDRAILS: {yaml_quote(json.dumps(plan.guardrails, sort_keys=True))}",
@@ -3804,6 +4753,7 @@ def render_head_compose(
             f"      - {yaml_quote(port_spec)}",
             "    volumes:",
             f"      - {yaml_quote(f'{parent}:{parent}')}",
+            f"      - {yaml_quote(f'{DEFAULT_ALLFATHER_IMAGE_CACHE_ROOT}:{DEFAULT_ALLFATHER_IMAGE_CACHE_ROOT}')}",
             f"      - {yaml_quote('/var/run/docker.sock:/var/run/docker.sock')}",
             f"      - {yaml_quote(f'{DEFAULT_SUPER_STATE_ROOT_PREFIX.rstrip(chr(47))}:/host-supernodes')}",
             "    healthcheck:",
@@ -3820,6 +4770,10 @@ def render_head_compose(
     ports_index = lines.index("    ports:")
     lines[ports_index:ports_index] = (
         yaml_env_b64_chunk_lines(
+            "MC_ALLFATHER_HEAD_AGENT_SCRIPT_B64",
+            command_script_b64_value,
+        )
+        + yaml_env_b64_chunk_lines(
             "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64",
             full_hub_runtime_diag_request_b64_value,
         )
@@ -4532,6 +5486,154 @@ def service_detail_compose_diagnostics(
     }
 
 
+def service_runtime_image_from_detail(
+    detail: Mapping[str, Any],
+    *,
+    service_name: str,
+) -> dict[str, Any]:
+    """Read the exact image tag already configured for a live Coolify service.
+
+    remove-node may need to redeploy an existing service with a handoff manifest,
+    but that does not justify consulting or rebuilding the Stage 1/2 image ladder.
+    The running service's own compose is the source of truth for this operation.
+    """
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {
+            "ok": False,
+            "service_name": str(service_name or ""),
+            "image": "",
+            "reason": "service detail body was not a mapping",
+        }
+
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - PyYAML is present in the project test env.
+        raise AllfatherControlError("PyYAML is required to inspect the live super-node compose.") from exc
+
+    candidates = _compose_strings_from_service_detail_body(body)
+    parse_errors: list[str] = []
+    for compose_text in candidates:
+        try:
+            loaded = yaml.safe_load(str(compose_text or ""))
+        except Exception as exc:
+            parse_errors.append(f"{type(exc).__name__}: {exc}")
+            continue
+        if not isinstance(loaded, Mapping):
+            continue
+        services = loaded.get("services")
+        if not isinstance(services, Mapping):
+            continue
+
+        service = services.get(service_name)
+        if not isinstance(service, Mapping) and len(services) == 1:
+            service = next(iter(services.values()))
+        if not isinstance(service, Mapping):
+            continue
+
+        image = str(service.get("image") or "").strip()
+        if not image or "${" in image:
+            continue
+        return {
+            "ok": True,
+            "service_name": str(service_name or ""),
+            "image": image,
+            "reason": "exact image read from live Coolify service compose",
+            "candidate_count": len(candidates),
+        }
+
+    return {
+        "ok": False,
+        "service_name": str(service_name or ""),
+        "image": "",
+        "reason": (
+            "live Coolify service compose did not expose a literal image tag"
+            + (f"; parse errors: {'; '.join(parse_errors[:3])}" if parse_errors else "")
+        ),
+        "candidate_count": len(candidates),
+    }
+
+
+def live_super_runtime_image_for_remove(
+    client: Any,
+    *,
+    service_name: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve a running super-node's existing image without invoking Stage 1/2."""
+
+    service_uuid, existing = hub_service_tool().find_service(
+        client,
+        service_name=service_name,
+        explicit_uuid="",
+        tried=tried,
+    )
+    if not service_uuid:
+        raise AllfatherControlError(
+            f"Cannot prepare removal handoff for {service_name}: the live Coolify service UUID is missing."
+        )
+
+    detail = fetch_service_detail(client, service_uuid, tried)
+    image = service_runtime_image_from_detail(detail, service_name=service_name)
+    if not bool(image.get("ok")) and isinstance(existing, Mapping):
+        image = service_runtime_image_from_detail(
+            {"ok": True, "body": dict(existing)},
+            service_name=service_name,
+        )
+    image_tag = str(image.get("image") or "").strip()
+    if not bool(image.get("ok")) or not image_tag:
+        raise AllfatherControlError(
+            f"Cannot prepare removal handoff for {service_name}: {image.get('reason') or 'live image tag was not observed'}. "
+            "remove-node will not run Stage 1/2 or rebuild images; repair the live service metadata before retrying."
+        )
+    return {
+        "ok": True,
+        "service_name": service_name,
+        "service_uuid": service_uuid,
+        "image": image_tag,
+        "source": "live-coolify-service-compose",
+        "reason": str(image.get("reason") or "live image tag observed"),
+    }
+
+
+def attach_live_runtime_image_to_remove_manifest(
+    manifest: dict[str, Any],
+    *,
+    image_tag: str,
+    service_name: str,
+) -> str:
+    """Pin a removal-handoff redeploy to the service's already-running image."""
+
+    tag = str(image_tag or "").strip()
+    if not tag:
+        raise AllfatherControlError(
+            f"Cannot prepare removal handoff for {service_name}: live runtime image tag is empty."
+        )
+    bootstrap = manifest.setdefault("bootstrap", {})
+    if isinstance(bootstrap, dict):
+        bootstrap["full_hub_runtime_requested"] = True
+        bootstrap["bootstrap_image_fallback"] = False
+    manifest["runtime_image"] = {
+        "tag": tag,
+        "source": "live-predelete-verified-service",
+        "verified": True,
+        "service_build_disabled": True,
+        "bootstrap_fallback": False,
+    }
+    manifest.setdefault("safety", {})
+    if isinstance(manifest["safety"], dict):
+        manifest["safety"].update(
+            {
+                "super_node_uses_verified_fullhub_runtime_image": True,
+                "super_node_service_build_disabled": True,
+                "bootstrap_image": False,
+                "remove_node_image_rebuild_disabled": True,
+            }
+        )
+    return tag
+
+
 def _looks_like_deployment_mapping(value: Mapping[str, Any]) -> bool:
     keys = {str(key or "").lower() for key in value.keys()}
     return bool(
@@ -5100,6 +6202,7 @@ def wait_for_head_runtime_cleanup_ready(
     *,
     wait_s: float,
     poll_s: float,
+    expected_request_id: str = "",
 ) -> dict[str, Any]:
     deadline = time.time() + max(0.0, float(wait_s or 0.0))
     last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
@@ -5109,26 +6212,42 @@ def wait_for_head_runtime_cleanup_ready(
         detail = fetch_service_detail(client, head_service_uuid, tried)
         last_result = runtime_cleanup_result_from_service_metadata(detail)
         result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        observed_request_id = str(result.get("request_id") or "").strip()
+        if expected_request_id and observed_request_id and observed_request_id != expected_request_id:
+            if time.time() >= deadline:
+                break
+            time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+            continue
         phase = str(result.get("phase") or result.get("status") or "")
-        if last_result.get("ok") and phase in {"ready", "failed"}:
+        if last_result.get("ok") and phase in {"ready", "failed"} and (
+            not expected_request_id or observed_request_id == expected_request_id
+        ):
             return {
                 "observed": True,
                 "ready": bool(result.get("ok")) and phase == "ready",
                 "reason": str(result.get("error") or ("runtime cleanup completed" if phase == "ready" else "runtime cleanup failed")),
                 "result": dict(result),
                 "source": last_result.get("source"),
+                "request_id": observed_request_id,
             }
         if time.time() >= deadline:
             break
         time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
     result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+    observed_request_id = str(result.get("request_id") or "").strip()
+    reason = str(result.get("error") or last_result.get("error") or "runtime cleanup metadata callback was not observed")
+    if expected_request_id and observed_request_id and observed_request_id != expected_request_id:
+        reason = f"stale runtime cleanup callback: expected {expected_request_id}, observed {observed_request_id}"
     return {
         "observed": bool(last_result.get("ok")),
         "ready": False,
-        "reason": str(result.get("error") or last_result.get("error") or "runtime cleanup metadata callback was not observed"),
+        "reason": reason,
         "result": dict(result),
         "source": last_result.get("source"),
+        "request_id": observed_request_id,
+        "expected_request_id": expected_request_id,
     }
+
 
 def probe_result_targets(probe_result: Mapping[str, Any]) -> list[dict[str, Any]]:
     result = probe_result.get("result") if isinstance(probe_result, Mapping) else None
@@ -8010,6 +9129,7 @@ components = manifest.get("components") if isinstance(manifest.get("components")
 ports = manifest.get("ports") if isinstance(manifest.get("ports"), dict) else {}
 bootstrap = manifest.get("bootstrap") if isinstance(manifest.get("bootstrap"), dict) else {}
 fdb_plan = manifest.get("foundationdb") if isinstance(manifest.get("foundationdb"), dict) else {}
+removal_handoff = manifest.get("removal_handoff") if isinstance(manifest.get("removal_handoff"), dict) else {}
 public_routes = manifest.get("public_routes") if isinstance(manifest.get("public_routes"), dict) else {}
 state_root = Path(str(manifest.get("state_root") or "/data/main-computer/allfather/supernodes/unknown"))
 network_key = str(manifest.get("network_key") or "")
@@ -8285,30 +9405,62 @@ def request_validator_votes_from_existing_guards(address: str) -> tuple[int, lis
             errors.append(f"{guard_url}: {error or payload.get('error') or 'vote request failed'}")
     return attempts, responses[:5], errors[:5]
 
-def propose_local_qbft_validator_vote(address: str) -> dict:
+def propose_local_qbft_validator_vote(address: str, add: bool = True) -> dict:
     normalized = normalize_eth_address(address)
     rpc_port = int(ports.get("rpc_container") or 8545)
     rpc_url = f"http://127.0.0.1:{rpc_port}"
     if not normalized:
-        return {"ok": False, "status": "invalid-address", "error": "invalid validator address", "address": str(address or "")}
+        return {"ok": False, "status": "invalid-address", "error": "invalid validator address", "address": str(address or ""), "add": bool(add)}
     if not child_running("validator_rpc"):
-        return {"ok": False, "status": "validator-rpc-not-running", "address": normalized}
+        return {"ok": False, "status": "validator-rpc-not-running", "address": normalized, "add": bool(add)}
     ok, admitted, validators, error = validator_in_latest_set(rpc_url, normalized, timeout=2.0)
-    if ok and admitted:
-        return {"ok": True, "status": "already-admitted", "address": normalized, "admitted": True, "validators": validators}
-    vote_ok, vote_result, vote_error = rpc_json_call(rpc_url, "qbft_proposeValidatorVote", [normalized, True], timeout=4.0)
+    if add and ok and admitted:
+        return {"ok": True, "status": "already-admitted", "address": normalized, "admitted": True, "validators": validators, "add": True}
+    if not add and ok and not admitted:
+        return {"ok": True, "status": "already-removed", "address": normalized, "admitted": False, "validators": validators, "add": False}
+    vote_ok, vote_result, vote_error = rpc_json_call(rpc_url, "qbft_proposeValidatorVote", [normalized, bool(add)], timeout=4.0)
     ok_after, admitted_after, validators_after, error_after = validator_in_latest_set(rpc_url, normalized, timeout=2.0)
     accepted = bool(vote_ok and vote_result is True)
+    desired_reached = bool(admitted_after) if add else not bool(admitted_after)
     return {
-        "ok": bool(accepted or admitted_after),
-        "status": "vote-submitted" if accepted and not admitted_after else ("admitted" if admitted_after else "vote-failed"),
+        "ok": bool(accepted or desired_reached),
+        "status": (
+            "vote-submitted"
+            if accepted and not desired_reached
+            else ("admitted" if add and admitted_after else ("removed" if (not add and not admitted_after) else "vote-failed"))
+        ),
         "address": normalized,
         "admitted": bool(admitted_after),
         "validators": validators_after or validators,
         "vote_result": vote_result,
         "vote_error": vote_error,
         "validators_error": error_after or error,
+        "add": bool(add),
     }
+
+def ensure_remove_handoff_validator(rpc_url: str, json_rpc_ok: bool) -> bool:
+    if not bool(removal_handoff.get("enabled")):
+        state("validator_removal_handoff", desired=False, running=False, status="not-requested", ready=True)
+        return True
+    target = normalize_eth_address(str(removal_handoff.get("target_validator_address") or ""))
+    if not target:
+        state("validator_removal_handoff", desired=True, running=False, status="missing-target-validator-address", ready=False)
+        return False
+    if not json_rpc_ok:
+        state("validator_removal_handoff", desired=True, running=False, status="waiting-validator-json-rpc", ready=False, target_validator_address=target)
+        return False
+    result = propose_local_qbft_validator_vote(target, add=False)
+    ready = bool(result.get("ok")) and not bool(result.get("admitted"))
+    state(
+        "validator_removal_handoff",
+        desired=True,
+        running=ready,
+        status="ready" if ready else str(result.get("status") or "pending"),
+        ready=ready,
+        target_validator_address=target,
+        vote_result=result,
+    )
+    return ready
 
 def ensure_joiner_validator_admission(rpc_url: str, key_file: Path, json_rpc_ok: bool, block_number: int | None, peer_count: int | None) -> bool:
     if not existing_network_joiner():
@@ -10015,6 +11167,7 @@ def ensure_fdb() -> bool:
     cluster_file = write_fdb_cluster_file()
     if not command_exists("fdbserver"):
         state("foundationdb", name=components.get("fdb"), desired=True, running=False, status="missing-fdbserver", port=fdb_port, cluster_file_present=cluster_file.exists())
+        state("fdb_coordinator_handoff", desired=bool(removal_handoff.get("enabled")), running=False, status="missing-fdbserver", ready=False)
         return False
     public_address = str((fdb_plan.get("new_node") or {}).get("fdb_endpoint") or f"{vpn_ip or '127.0.0.1'}:{ports.get('fdb_host') or fdb_port}")
     command = [
@@ -10044,9 +11197,80 @@ def ensure_fdb() -> bool:
                 configured = True
     elif running and str(fdb_plan.get("action") or "") != "initialize-new-cluster":
         configured = True
-    status = "running" if running and (listening or configured) else "starting"
+
+    handoff_requested = bool(removal_handoff.get("enabled"))
+    handoff_ready = not handoff_requested
+    handoff_output = ""
+    handoff_targets = [
+        str(item or "").strip()
+        for item in (removal_handoff.get("survivor_fdb_endpoints") or [])
+        if str(item or "").strip()
+    ]
+    if handoff_requested:
+        marker_payload = ",".join(sorted(set(handoff_targets)))
+        marker = state_root / "foundationdb" / ".remove-handoff-coordinators"
+        marker_matches = marker.exists() and marker.read_text(encoding="utf-8", errors="replace").strip() == marker_payload
+        if not handoff_targets:
+            state(
+                "fdb_coordinator_handoff",
+                desired=True,
+                running=False,
+                status="missing-survivor-coordinators",
+                ready=False,
+                target_coordinators=handoff_targets,
+            )
+        elif marker_matches:
+            handoff_ready = True
+            state(
+                "fdb_coordinator_handoff",
+                desired=True,
+                running=True,
+                status="ready",
+                ready=True,
+                target_coordinators=handoff_targets,
+            )
+        elif running and listening and command_exists("fdbcli"):
+            command_text = "coordinators " + " ".join(handoff_targets)
+            handoff_ok, handoff_output = run_once(
+                "fdb-remove-handoff",
+                ["fdbcli", "-C", str(cluster_file), "--exec", command_text],
+                timeout=30,
+            )
+            output_lower = handoff_output.lower()
+            handoff_ready = bool(
+                handoff_ok
+                or "coordinators changed" in output_lower
+                or "already" in output_lower
+                or "no change" in output_lower
+            )
+            if handoff_ready:
+                marker.write_text(marker_payload + "\n", encoding="utf-8")
+            state(
+                "fdb_coordinator_handoff",
+                desired=True,
+                running=handoff_ready,
+                status="ready" if handoff_ready else "reconfigure-failed",
+                ready=handoff_ready,
+                target_coordinators=handoff_targets,
+                output=handoff_output,
+            )
+        else:
+            state(
+                "fdb_coordinator_handoff",
+                desired=True,
+                running=False,
+                status="waiting-foundationdb",
+                ready=False,
+                target_coordinators=handoff_targets,
+            )
+    else:
+        state("fdb_coordinator_handoff", desired=False, running=False, status="not-requested", ready=True)
+
+    status = "running" if running and (listening or configured) and handoff_ready else "starting"
     if running and str(fdb_plan.get("action") or "") == "initialize-new-cluster" and not configured:
         status = "running-unconfigured"
+    if handoff_requested and not handoff_ready:
+        status = "waiting-coordinator-handoff"
     state(
         "foundationdb",
         name=components.get("fdb"),
@@ -10061,8 +11285,11 @@ def ensure_fdb() -> bool:
         public_address=public_address,
         last_exit_code=child_exit("foundationdb"),
         last_configure_output=configure_output,
+        coordinator_handoff_requested=handoff_requested,
+        coordinator_handoff_ready=handoff_ready,
+        coordinator_handoff_output=handoff_output,
     )
-    return running and (configured or listening)
+    return running and (configured or listening) and handoff_ready
 
 def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
     ensure_dirs()
@@ -10218,8 +11445,11 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
     block_production_ok = bool(json_rpc_ok and block_number is not None and int(block_number) > 0)
     is_joiner = existing_network_joiner()
     validator_admitted = ensure_joiner_validator_admission(rpc_url, key_file, json_rpc_ok, block_number, peer_count)
+    validator_removal_ready = ensure_remove_handoff_validator(rpc_url, json_rpc_ok)
     validator_address, validator_address_error = local_validator_address_from_key(key_file)
-    if running and block_production_ok:
+    if bool(removal_handoff.get("enabled")) and not validator_removal_ready:
+        status = "waiting-validator-removal-handoff"
+    elif running and block_production_ok:
         status = "running"
     elif running and log_block_production_ok and not json_rpc_ok:
         status = "waiting-validator-json-rpc-after-block-production"
@@ -10252,6 +11482,7 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         validator_address=validator_address,
         validator_address_error=validator_address_error,
         validator_admitted=bool(validator_admitted),
+        validator_removal_handoff_ready=bool(validator_removal_ready),
         rpc_http_ok=json_rpc_ok,
         json_rpc_ok=json_rpc_ok,
         rpc_port_listening=port_listening,
@@ -10273,7 +11504,7 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         child_uptime_s=child_uptime_s("validator_rpc"),
         log_tail="" if block_production_ok else log_tail,
     )
-    return running and block_production_ok
+    return running and block_production_ok and bool(validator_removal_ready)
 
 def full_hub_runtime_available() -> bool:
     return Path("/opt/main-computer-src/main_computer/hub.py").exists()
@@ -10522,10 +11753,11 @@ class Handler(BaseHTTPRequestHandler):
                 raw = self.rfile.read(length) if length > 0 else b"{}"
                 payload_in = json.loads(raw.decode("utf-8") or "{}")
                 address = str(payload_in.get("address") or "")
+                add = bool(payload_in.get("add", True))
             except Exception as exc:
                 self._send(400, {"ok": False, "error": f"invalid request body: {type(exc).__name__}: {exc}", "path": path})
                 return
-            self._send(200, propose_local_qbft_validator_vote(address))
+            self._send(200, propose_local_qbft_validator_vote(address, add=add))
         else:
             self._send(404, {"ok": False, "error": "not-found", "path": path})
 
@@ -10888,6 +12120,366 @@ def dockerfile_context_payload_install_run(payloads: Mapping[str, str]) -> tuple
         )
     return "\n".join(copy_lines + [""] + run_lines), context_files, manifest
 
+
+
+
+def allfather_checkpoint_fingerprint(payload: Mapping[str, Any], *, length: int = 24) -> str:
+    return hashlib.sha256(json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:length]
+
+
+def allfather_checkpoint_image_tags(source_image: str = DEFAULT_SUPER_BASE_SOURCE_IMAGE) -> dict[str, str]:
+    """Return deterministic source-free tags for the reusable allfather image ladder."""
+
+    source = str(source_image or DEFAULT_SUPER_BASE_SOURCE_IMAGE).strip() or DEFAULT_SUPER_BASE_SOURCE_IMAGE
+    system_fingerprint = allfather_checkpoint_fingerprint(
+        {
+            "stage": "system-base",
+            "source_image": source,
+            "apt_packages": list(ALLFATHER_SYSTEM_BASE_APT_PACKAGES),
+        }
+    )
+    system_tag = f"{DEFAULT_ALLFATHER_SYSTEM_BASE_IMAGE_REPO}:{system_fingerprint}"
+    foundation_fingerprint = allfather_checkpoint_fingerprint(
+        {
+            "stage": "foundation-base",
+            "base": system_tag,
+            "foundationdb_version": ALLFATHER_FOUNDATIONDB_VERSION,
+            "solc_version": ALLFATHER_SOLC_VERSION,
+        }
+    )
+    foundation_tag = f"{DEFAULT_ALLFATHER_FOUNDATION_BASE_IMAGE_REPO}:{foundation_fingerprint}"
+    python_fingerprint = allfather_checkpoint_fingerprint(
+        {
+            "stage": "python-base",
+            "base": foundation_tag,
+            "python_dependencies": list(ALLFATHER_PYTHON_DEPENDENCIES),
+        }
+    )
+    python_tag = f"{DEFAULT_ALLFATHER_PYTHON_BASE_IMAGE_REPO}:{python_fingerprint}"
+    return {
+        "source": source,
+        "system-base": system_tag,
+        "foundation-base": foundation_tag,
+        "python-base": python_tag,
+        "system_fingerprint": system_fingerprint,
+        "foundation_fingerprint": foundation_fingerprint,
+        "python_fingerprint": python_fingerprint,
+    }
+
+
+def allfather_system_base_dockerfile(source_image: str, fingerprint: str) -> str:
+    packages = " \\\n        ".join(ALLFATHER_SYSTEM_BASE_APT_PACKAGES)
+    return rf"""
+FROM {source_image}
+
+USER root
+
+LABEL main_computer.allfather.checkpoint_stage="system-base" \
+      main_computer.allfather.system_fingerprint={json.dumps(fingerprint)} \
+      main_computer.allfather.source_payload="none"
+
+RUN set -eux; \
+    if ! command -v apt-get >/dev/null 2>&1; then \
+        echo "The all-father system-base image requires a Debian/Ubuntu Besu base." >&2; \
+        exit 1; \
+    fi; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        {packages}; \
+    rm -rf /var/lib/apt/lists/*; \
+    command -v bash; \
+    command -v curl; \
+    command -v python3; \
+    command -v besu; \
+    besu --version
+
+ENV MC_ALLFATHER_IMAGE_KIND=allfather-system-base \
+    MC_ALLFATHER_IMAGE_CAPABILITIES=system-base,apt,build-tools,python3,besu \
+    MC_ALLFATHER_SOURCE_PAYLOAD=none
+""".strip()
+
+
+def allfather_foundation_base_dockerfile(system_base_image: str, fingerprint: str) -> str:
+    fdb_version = ALLFATHER_FOUNDATIONDB_VERSION
+    solc_version = ALLFATHER_SOLC_VERSION
+    return rf"""
+FROM {system_base_image}
+
+USER root
+
+LABEL main_computer.allfather.checkpoint_stage="foundation-base" \
+      main_computer.allfather.foundation_fingerprint={json.dumps(fingerprint)} \
+      main_computer.allfather.source_payload="none"
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    if [ "$arch" = "amd64" ]; then \
+        fdb_arch="amd64"; \
+    elif [ "$arch" = "arm64" ]; then \
+        fdb_arch="arm64"; \
+    else \
+        echo "Unsupported FoundationDB architecture: $arch" >&2; \
+        exit 1; \
+    fi; \
+    curl -fsSL -o /tmp/foundationdb-clients.deb \
+        "https://github.com/apple/foundationdb/releases/download/{fdb_version}/foundationdb-clients_{fdb_version}-1_${{fdb_arch}}.deb"; \
+    curl -fsSL -o /tmp/foundationdb-server.deb \
+        "https://github.com/apple/foundationdb/releases/download/{fdb_version}/foundationdb-server_{fdb_version}-1_${{fdb_arch}}.deb"; \
+    DEBIAN_FRONTEND=noninteractive apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \
+    rm -f /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL -o /usr/local/bin/solc \
+        "https://github.com/ethereum/solidity/releases/download/v{solc_version}/solc-static-linux"; \
+    chmod 0755 /usr/local/bin/solc; \
+    if [ -x /usr/sbin/fdbserver ]; then \
+        ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver; \
+    elif [ -x /usr/bin/fdbserver ]; then \
+        ln -sf /usr/bin/fdbserver /usr/local/bin/fdbserver; \
+    else \
+        echo "FoundationDB server binary was not found after package install" >&2; \
+        exit 1; \
+    fi; \
+    if [ -x /usr/bin/fdbcli ]; then \
+        ln -sf /usr/bin/fdbcli /usr/local/bin/fdbcli; \
+    elif [ -x /usr/sbin/fdbcli ]; then \
+        ln -sf /usr/sbin/fdbcli /usr/local/bin/fdbcli; \
+    else \
+        echo "FoundationDB CLI binary was not found after package install" >&2; \
+        exit 1; \
+    fi; \
+    command -v besu; \
+    command -v fdbserver; \
+    command -v fdbcli; \
+    command -v solc; \
+    besu --version; \
+    fdbserver --version; \
+    fdbcli --version; \
+    solc --version
+
+ENV MC_ALLFATHER_IMAGE_KIND=allfather-foundation-base \
+    MC_ALLFATHER_IMAGE_CAPABILITIES=foundation-base,fdb,solc,besu,qbft \
+    MC_ALLFATHER_SOURCE_PAYLOAD=none
+""".strip()
+
+
+def allfather_python_base_dockerfile(foundation_base_image: str, fingerprint: str) -> str:
+    deps = " ".join(shell_single_quote(item) for item in ALLFATHER_PYTHON_DEPENDENCIES)
+    return rf"""
+FROM {foundation_base_image}
+
+USER root
+
+LABEL main_computer.allfather.checkpoint_stage="python-base" \
+      main_computer.allfather.python_fingerprint={json.dumps(fingerprint)} \
+      main_computer.allfather.source_payload="none"
+
+RUN set -eux; \
+    python3 -m venv /opt/allfather-super-venv; \
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel; \
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir {deps}; \
+    ln -sf /opt/allfather-super-venv/bin/python /usr/local/bin/python; \
+    ln -sf /opt/allfather-super-venv/bin/pip /usr/local/bin/pip; \
+    /opt/allfather-super-venv/bin/python -c 'import fdb, web3; print("fdb import ok"); print("web3 import ok")'
+
+ENV MC_ALLFATHER_IMAGE_KIND=allfather-python-base \
+    MC_ALLFATHER_IMAGE_CAPABILITIES=python-base,python-venv,web3,fdb-python \
+    MC_ALLFATHER_SOURCE_PAYLOAD=none \
+    PATH="/opt/allfather-super-venv/bin:$PATH"
+""".strip()
+
+
+def allfather_fullhub_runtime_dockerfile_context(
+    python_base_image: str,
+    *,
+    guard_script: str | None = None,
+    build_id: str = "",
+) -> dict[str, Any]:
+    contract_sources_b64 = base64.b64encode(
+        zlib.compress((json.dumps(allfather_contract_sources_b64(), sort_keys=True) + "\n").encode("utf-8"))
+    ).decode("ascii")
+    contract_builder_b64 = base64.b64encode(
+        zlib.compress(allfather_contract_artifact_builder_script().encode("utf-8"))
+    ).decode("ascii")
+    guard_script_b64 = base64.b64encode(zlib.compress((guard_script or super_server_command_script()).encode("utf-8"))).decode("ascii")
+    wrapper_script_b64 = base64.b64encode(zlib.compress(super_node_entrypoint_wrapper_script().encode("utf-8"))).decode("ascii")
+    full_hub_runtime_b64 = allfather_full_hub_runtime_archive_b64()
+    full_hub_runtime_sha256 = hashlib.sha256(full_hub_runtime_b64.encode("ascii")).hexdigest()
+    guard_script_sha256 = hashlib.sha256(guard_script_b64.encode("ascii")).hexdigest()
+    build_cache_bust = str(build_id or "").strip() or hashlib.sha256(
+        (full_hub_runtime_sha256 + ":" + guard_script_sha256).encode("utf-8")
+    ).hexdigest()[:24]
+    payloads = {
+        "/opt/allfather-contracts/contract-sources-b64.json": contract_sources_b64,
+        "/opt/allfather-contracts/build-contract-artifacts.py": contract_builder_b64,
+        "/opt/main-computer-src.zip": full_hub_runtime_b64,
+        "/usr/local/bin/allfather-super-guard.py": guard_script_b64,
+        "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
+    }
+    payload_install, context_files_b64, payload_manifest = dockerfile_context_payload_install_run(payloads)
+    dockerfile = rf"""
+FROM {python_base_image}
+
+LABEL main_computer.allfather.checkpoint_stage="fullhub-runtime" \
+      main_computer.allfather.full_hub_runtime="true" \
+      main_computer.allfather.build_id={json.dumps(build_cache_bust)} \
+      main_computer.allfather.full_hub_runtime_sha256={json.dumps(full_hub_runtime_sha256)} \
+      main_computer.allfather.guard_script_sha256={json.dumps(guard_script_sha256)} \
+      main_computer.allfather.payload_mode="docker-build-context"
+
+USER root
+
+RUN set -eux; \
+    mkdir -p /opt/allfather-build /opt/allfather-contracts; \
+    printf '%s\n' {shell_single_quote(build_cache_bust)} > /opt/allfather-build/deployment-id; \
+    printf '%s\n' {shell_single_quote(full_hub_runtime_sha256)} > /opt/allfather-build/full-hub-runtime-sha256; \
+    printf '%s\n' {shell_single_quote(guard_script_sha256)} > /opt/allfather-build/guard-script-sha256
+
+{payload_install}
+
+RUN set -eux; \
+    python3 /opt/allfather-contracts/build-contract-artifacts.py \
+        /opt/allfather-contracts/contract-sources-b64.json \
+        /opt/allfather-contracts/contracts-artifacts.json; \
+    test -s /opt/allfather-contracts/contracts-artifacts.json; \
+    rm -rf /opt/main-computer-src; \
+    mkdir -p /opt/main-computer-src; \
+    python3 -c 'import zipfile; zipfile.ZipFile("/opt/main-computer-src.zip").extractall("/opt/main-computer-src")'; \
+    test -s /opt/main-computer-src/main_computer/hub.py; \
+    test -s /opt/main-computer-src/main_computer/config/mainnet_contracts.json; \
+    chmod 0755 /usr/local/bin/allfather-super-guard.py /usr/local/bin/allfather-super-entrypoint.py
+
+ENV MC_ALLFATHER_IMAGE_KIND=allfather-fullhub-runtime \
+    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-full,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets,sprawl-free-host-agent-build \
+    MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint \
+    MC_ALLFATHER_SHARED_BASE_BUILDER=checkpoint-image-ladder \
+    PYTHONPATH=/opt/main-computer-src
+
+EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
+
+ENV PATH="/opt/allfather-super-venv/bin:$PATH"
+
+ENTRYPOINT ["/opt/allfather-super-venv/bin/python", "-u", "/usr/local/bin/allfather-super-entrypoint.py"]
+""".strip()
+    return {
+        "dockerfile": dockerfile,
+        "context_files_b64": context_files_b64,
+        "payload_manifest": payload_manifest,
+        "payload_mode": "docker-build-context",
+        "full_hub_runtime_sha256": full_hub_runtime_sha256,
+        "guard_script_sha256": guard_script_sha256,
+        "build_id": build_cache_bust,
+        "source_image": python_base_image,
+    }
+
+
+def allfather_checkpoint_image_build_plan(
+    *,
+    source_image: str = DEFAULT_SUPER_BASE_SOURCE_IMAGE,
+    runtime_image_tag: str,
+    guard_script: str | None = None,
+    build_id: str = "",
+) -> dict[str, Any]:
+    """Return a four-checkpoint image build plan for the Stage 1/2 control surface.
+
+    Images 1-3 deliberately contain no git/source payload, request id, run id,
+    host, or network.  The final fullhub-runtime image is the first source-bearing
+    image in the ladder.
+    """
+
+    requested = str(source_image or "").strip()
+    source = DEFAULT_SUPER_BASE_SOURCE_IMAGE if (
+        not requested
+        or requested == DEFAULT_SUPER_BASE_IMAGE
+        or requested.startswith("main-computer/allfather-super-base:")
+    ) else requested
+    tags = allfather_checkpoint_image_tags(source)
+    runtime = allfather_fullhub_runtime_dockerfile_context(tags["python-base"], guard_script=guard_script, build_id=build_id)
+    steps: list[dict[str, Any]] = [
+        {
+            "name": "system-base",
+            "tag": tags["system-base"],
+            "dockerfile": allfather_system_base_dockerfile(tags["source"], tags["system_fingerprint"]),
+            "context_files_b64": {},
+            "checkpoint_cache_hit": "system-base-cache-hit",
+            "checkpoint_restored": "system-base-cache-restored",
+            "checkpoint_built": "system-base-built",
+            "durable_cache": True,
+            "verify_script": "set -eu\ncommand -v apt-get\ncommand -v bash\ncommand -v curl\ncommand -v python3\ncommand -v besu\nbesu --version\n",
+            "source_payload": "none",
+        },
+        {
+            "name": "foundation-base",
+            "tag": tags["foundation-base"],
+            "dockerfile": allfather_foundation_base_dockerfile(tags["system-base"], tags["foundation_fingerprint"]),
+            "context_files_b64": {},
+            "checkpoint_cache_hit": "foundation-base-cache-hit",
+            "checkpoint_restored": "foundation-base-cache-restored",
+            "checkpoint_built": "foundation-base-built",
+            "durable_cache": True,
+            "verify_script": "set -eu\ncommand -v besu\ncommand -v fdbserver\ncommand -v fdbcli\ncommand -v solc\nbesu --version\nfdbserver --version\nfdbcli --version\nsolc --version\n",
+            "source_payload": "none",
+        },
+        {
+            "name": "python-base",
+            "tag": tags["python-base"],
+            "dockerfile": allfather_python_base_dockerfile(tags["foundation-base"], tags["python_fingerprint"]),
+            "context_files_b64": {},
+            "checkpoint_cache_hit": "python-base-cache-hit",
+            "checkpoint_restored": "python-base-cache-restored",
+            "checkpoint_built": "python-base-built",
+            "durable_cache": True,
+            "verify_script": "set -eu\n/opt/allfather-super-venv/bin/python - <<'PY'\nimport fdb\nimport web3\nprint('fdb import ok')\nprint('web3 import ok')\nPY\n",
+            "source_payload": "none",
+        },
+        {
+            "name": "fullhub-runtime",
+            "tag": str(runtime_image_tag),
+            "dockerfile": str(runtime.get("dockerfile") or ""),
+            "context_files_b64": dict(runtime.get("context_files_b64") if isinstance(runtime.get("context_files_b64"), Mapping) else {}),
+            "checkpoint_cache_hit": "",
+            "checkpoint_restored": "",
+            "checkpoint_built": "runtime-payload-decoded",
+            "durable_cache": False,
+            "checkpoint_verified": "fullhub-import-verified",
+            "checkpoint_ready": "fullhub-image-ready",
+            "verify_script": "set -eu\ntest -f /opt/main-computer-src/main_computer/hub.py\ntest -f /opt/allfather-build/full-hub-runtime-sha256\npython - <<'PY'\nimport importlib.util\nfor name in ('main_computer', 'main_computer.hub'):\n    spec = importlib.util.find_spec(name)\n    if spec is None:\n        raise SystemExit(f'{name} not importable')\n    print(name, spec.origin)\nPY\n",
+            "source_payload": "fullhub-runtime",
+            "payload_manifest": runtime.get("payload_manifest") if isinstance(runtime.get("payload_manifest"), list) else [],
+            "payload_mode": runtime.get("payload_mode") or "docker-build-context",
+            "full_hub_runtime_sha256": runtime.get("full_hub_runtime_sha256") or "",
+            "guard_script_sha256": runtime.get("guard_script_sha256") or "",
+        },
+    ]
+    for step in steps:
+        dockerfile = str(step.get("dockerfile") or "")
+        step["dockerfile_sha256"] = hashlib.sha256(dockerfile.encode("utf-8")).hexdigest()
+        files = step.get("context_files_b64") if isinstance(step.get("context_files_b64"), Mapping) else {}
+        step["build_context_file_count"] = len(files)
+        step["build_context_manifest_sha256"] = hashlib.sha256(
+            json.dumps(
+                {str(path): hashlib.sha256(str(value or "").encode("ascii")).hexdigest() for path, value in sorted(files.items())},
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+    return {
+        "kind": "main_computer.allfather.checkpoint_image_build_plan.v1",
+        "source_image": tags["source"],
+        "image_tags": {
+            "system-base": tags["system-base"],
+            "foundation-base": tags["foundation-base"],
+            "python-base": tags["python-base"],
+            "fullhub-runtime": str(runtime_image_tag),
+        },
+        "fingerprints": {
+            "system": tags["system_fingerprint"],
+            "foundation": tags["foundation_fingerprint"],
+            "python": tags["python_fingerprint"],
+        },
+        "steps": steps,
+        "runtime": runtime,
+    }
 
 def super_base_dockerfile_inline(source_image: str = DEFAULT_SUPER_BASE_SOURCE_IMAGE) -> str:
     """Return the heavy dependency base Dockerfile.
@@ -11892,6 +13484,34 @@ def wait_for_super_runtime_cleanup_ready(
     }
 
 
+def clear_head_runtime_cleanup_marker(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    request_id: str,
+) -> dict[str, Any]:
+    detail = fetch_service_detail(client, service_uuid, tried)
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    current_description = str(body.get("description") or "") if isinstance(body, Mapping) else ""
+    description = remove_callback_marker_lines(current_description, RUNTIME_CLEANUP_CALLBACK_MARKER)
+    if not description:
+        description = "Main Computer all-father host agent. This is the single per-host control container."
+    result = patch_head_service_description(
+        client,
+        service_uuid,
+        description.rstrip() + "\n",
+        tried,
+        operation="clear-stale-runtime-cleanup-marker",
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "request_id": request_id,
+        "marker": RUNTIME_CLEANUP_CALLBACK_MARKER,
+        "patch": result,
+    }
+
+
 def run_super_runtime_cleanup(
     plan: HeadPlan,
     network_key: str,
@@ -11918,12 +13538,21 @@ def run_super_runtime_cleanup(
             reason="Dry-run: the allfather head host-agent would move super-node state directories and remove stale containers.",
         )
 
+    request_id = (
+        "runtime-cleanup-"
+        + clean_node_network_key(network_key)
+        + "-"
+        + re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(head.coolify_server or "")).strip("-")
+        + "-"
+        + str(int(time.time() * 1000))
+    )
     cleanup_request = {
         "network_key": clean_node_network_key(network_key),
         "coolify_server": str(head.coolify_server or ""),
         "super_prefix": super_prefix(network_key, head),
         "service_name": super_runtime_cleanup_service_name(network_key, head),
         "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
+        "request_id": request_id,
     }
     service_uuid, service_action, _existing = sync_head_service(
         client,
@@ -11934,9 +13563,31 @@ def run_super_runtime_cleanup(
         tried,
         runtime_cleanup_request=cleanup_request,
     )
+    marker_clear = clear_head_runtime_cleanup_marker(
+        client,
+        service_uuid,
+        tried,
+        request_id=request_id,
+    )
+    if not bool(marker_clear.get("ok")):
+        return {
+            "enabled": True,
+            "ready": False,
+            "dry_run": False,
+            "reason": "could not clear stale runtime cleanup callback before control-surface restart",
+            "service_name": head.service_name,
+            "service_uuid": service_uuid,
+            "service_action": f"head-agent-{service_action}",
+            "request_id": request_id,
+            "marker_clear": marker_clear,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
     operator_log(
         args,
-        f"runtime-cleanup: using head host-agent {head.service_name} uuid={service_uuid or '<unknown>'}; no cleanup helper service will be created",
+        f"runtime-cleanup: using head host-agent {head.service_name} uuid={service_uuid or '<unknown>'} "
+        f"request_id={request_id}; no cleanup helper service will be created",
     )
     hub_service_tool().trigger_deploy_service(
         client,
@@ -11950,16 +13601,18 @@ def run_super_runtime_cleanup(
         tried,
         wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
         poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
+        expected_request_id=request_id,
     )
     payload = wait_result.get("result") if isinstance(wait_result.get("result"), Mapping) else {}
     return {
         "enabled": True,
         "ready": bool(wait_result.get("ready")),
         "dry_run": False,
-        "reason": wait_result.get("reason") or ("last-node runtime cleanup completed" if wait_result.get("ready") else "runtime cleanup did not complete"),
+        "reason": wait_result.get("reason") or ("runtime cleanup completed" if wait_result.get("ready") else "runtime cleanup did not complete"),
         "service_name": head.service_name,
         "service_uuid": service_uuid,
         "service_action": f"head-agent-{service_action}",
+        "request_id": request_id,
         "legacy_helper_service_name": super_runtime_cleanup_service_name(network_key, head),
         "status_url": head.guard_url,
         "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
@@ -11970,6 +13623,7 @@ def run_super_runtime_cleanup(
         "archive_dir": payload.get("archive_dir"),
         "observed": bool(wait_result.get("observed")),
         "observed_result": dict(payload),
+        "marker_clear": marker_clear,
         "public_guard_routes": False,
         "ssh_used": False,
         "direct_vpn_used": False,
@@ -12449,20 +14103,37 @@ def render_super_node_compose(
         if private_bind_host:
             return f"{private_bind_host}:{host_port}:{container_port}/{clean_protocol}"
         return f"{host_port}:{container_port}/{clean_protocol}"
-    dockerfile_inline = escape_compose_interpolation(super_node_dockerfile_inline(image, guard_script=command_script, build_id=str(manifest.get("deployment_id") or "")))
+    runtime_image = manifest.get("runtime_image") if isinstance(manifest.get("runtime_image"), Mapping) else {}
+    verified_runtime_image_tag = str(runtime_image.get("tag") or "").strip()
+    compose_image = verified_runtime_image_tag or image
+    use_verified_runtime_image = bool(verified_runtime_image_tag)
     lines = [
         f"name: {service_name}",
         "",
         "services:",
         f"  {service_name}:",
-        "    # Build-only service: do not set image here. Coolify runs a pull phase",
-        "    # before build, and a local generated image name causes pull access",
-        "    # denied instead of letting the inline Dockerfile build.",
-        "    build:",
-        "      context: .",
-        "      dockerfile_inline: |",
     ]
-    lines.extend(yaml_block_scalar(dockerfile_inline, 8))
+    if use_verified_runtime_image:
+        lines.extend(
+            [
+                f"    image: {yaml_quote(compose_image)}",
+                "    # Stage 3 consumes a Stage 1/2 verified fullhub-runtime image.",
+                "    # Do not let Coolify rebuild or fall back to a bootstrap Dockerfile here.",
+                "    pull_policy: never",
+            ]
+        )
+    else:
+        dockerfile_inline = escape_compose_interpolation(super_node_dockerfile_inline(image, guard_script=command_script, build_id=str(manifest.get("deployment_id") or "")))
+        lines.extend(
+            [
+                "    # Legacy/generated build path. Normal add-node now prefunk-verifies",
+                "    # a fullhub-runtime image first and skips this branch.",
+                "    build:",
+                "      context: .",
+                "      dockerfile_inline: |",
+            ]
+        )
+        lines.extend(yaml_block_scalar(dockerfile_inline, 8))
     lines.extend([
         f"    container_name: {yaml_quote(super_container_name_from_manifest(manifest))}",
         "    # Keep container_name stable because hub-propagate routes Traefik to this",
@@ -12477,7 +14148,9 @@ def render_super_node_compose(
         [
             "    environment:",
             f"      MC_ALLFATHER_SUPER_NODE: {yaml_quote('1')}",
-            f"      MC_ALLFATHER_SUPER_BASE_IMAGE: {yaml_quote(image)}",
+            f"      MC_ALLFATHER_SUPER_BASE_IMAGE: {yaml_quote(compose_image)}",
+            f"      MC_ALLFATHER_RUNTIME_IMAGE: {yaml_quote(compose_image)}",
+            f"      MC_ALLFATHER_VERIFIED_FULLHUB_RUNTIME_IMAGE: {yaml_quote('1' if use_verified_runtime_image else '0')}",
             f"      MC_ALLFATHER_COMPONENTS: {yaml_quote('guard,hub,fdb,validator-rpc')}",
             f"      MC_ALLFATHER_RUNTIME_MODE: {yaml_quote('guard-first')}",
             f"      MC_ALLFATHER_NETWORK: {yaml_quote(str(manifest.get('network_key') or ''))}",
@@ -12910,6 +14583,8 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
         "hub": _component_status(functions, "hub"),
         "hub_admin": _component_status(functions, "hub_admin"),
         "contracts": _component_status(functions, "contracts"),
+        "fdb_coordinator_handoff": _component_status(functions, "fdb_coordinator_handoff"),
+        "validator_removal_handoff": _component_status(functions, "validator_removal_handoff"),
     }
 
     error = str(internal_status.get("error") or "").strip()
@@ -12978,6 +14653,25 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
                 reason += f" vote_errors={vote_errors}"
             return {"ready": False, "terminal": False, "reason": reason, "components": components}
 
+    removal = manifest.get("removal_handoff") if isinstance(manifest.get("removal_handoff"), Mapping) else {}
+    if bool(removal.get("enabled")):
+        fdb_handoff = _component_snapshot(functions, "fdb_coordinator_handoff")
+        validator_handoff = _component_snapshot(functions, "validator_removal_handoff")
+        if not bool(fdb_handoff.get("ready")):
+            return {
+                "ready": False,
+                "terminal": False,
+                "reason": f"FDB coordinator handoff not ready: {components['fdb_coordinator_handoff'] or 'missing'}",
+                "components": components,
+            }
+        if not bool(validator_handoff.get("ready")):
+            return {
+                "ready": False,
+                "terminal": False,
+                "reason": f"validator removal handoff not ready: {components['validator_removal_handoff'] or 'missing'}",
+                "components": components,
+            }
+
     contracts_requested = bool((manifest.get("bootstrap") or {}).get("contracts_requested")) if isinstance(manifest.get("bootstrap"), Mapping) else False
     contracts = _component_snapshot(functions, "contracts")
     contracts_status = str(contracts.get("status") or "").strip()
@@ -12995,6 +14689,744 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
         "components": components,
         "contracts_requested": contracts_requested,
     }
+
+
+
+def hub_propagate_hub_verify_check(
+    internal_status: Mapping[str, Any] | None,
+    node: Mapping[str, Any],
+    *,
+    expected_fdb_endpoints: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Read-only full-hub gate for hub-propagate.
+
+    This is intentionally stricter than add-node's "new service converged"
+    readiness gate about the hub identity: hub-propagate must not repair or
+    publish around a bootstrap/stale/unhealthy hub.  It only consumes the
+    Coolify-managed private probe output; the local runner does not call 10-net
+    addresses directly.
+    """
+
+    service_name = str(node.get("service_name") or "").strip()
+    if not isinstance(internal_status, Mapping) or not internal_status:
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": "private super-node guard status not observed",
+            "service_name": service_name,
+            "components": {},
+        }
+    if not bool(internal_status.get("observed")):
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": str(internal_status.get("error") or internal_status.get("reason") or "private super-node guard status not observed"),
+            "service_name": service_name,
+            "components": {},
+        }
+
+    functions_value = internal_status.get("functions")
+    functions = functions_value if isinstance(functions_value, Mapping) else {}
+    components = {
+        "foundationdb": _component_status(functions, "foundationdb"),
+        "validator_rpc": _component_status(functions, "validator_rpc"),
+        "validator_admission": _component_status(functions, "validator_admission"),
+        "hub": _component_status(functions, "hub"),
+        "hub_admin": _component_status(functions, "hub_admin"),
+        "contracts": _component_status(functions, "contracts"),
+    }
+
+    base_error = str(internal_status.get("error") or "").strip()
+    if base_error and not functions:
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": base_error,
+            "service_name": service_name,
+            "components": components,
+        }
+
+    fdb_check = hub_propagate_fdb_verify_check(
+        functions,
+        node,
+        expected_fdb_endpoints=list(expected_fdb_endpoints or expected_fdb_endpoints_for_hub_verify([node])),
+    )
+    if not bool(fdb_check.get("ready")):
+        return {
+            **fdb_check,
+            "components": {**components, **(fdb_check.get("components") if isinstance(fdb_check.get("components"), Mapping) else {})},
+        }
+
+    validator = _component_snapshot(functions, "validator_rpc")
+    if not (
+        str(validator.get("status") or "") == "running"
+        and bool(validator.get("running"))
+        and bool(validator.get("rpc_http_ok"))
+        and bool(validator.get("json_rpc_ok"))
+        and bool(validator.get("block_production_ok"))
+    ):
+        reason = f"validator_rpc not healthy for hub propagation: {components['validator_rpc'] or 'missing'}"
+        block_number = validator.get("block_number")
+        if block_number is not None:
+            reason += f" block_number={block_number}"
+        error = str(validator.get("block_production_error") or validator.get("peer_count_error") or "").strip()
+        if error:
+            reason += f" error={error}"
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": reason,
+            "service_name": service_name,
+            "components": components,
+        }
+
+    admission = _component_snapshot(functions, "validator_admission")
+    admission_status = str(admission.get("status") or "").strip()
+    if bool(admission.get("required")) or bool(admission.get("desired")):
+        if not (admission_status == "admitted" and bool(admission.get("admitted"))):
+            return {
+                "ready": False,
+                "terminal": False,
+                "reason": f"validator admission not healthy for hub propagation: {components['validator_admission'] or 'missing'}",
+                "service_name": service_name,
+                "components": components,
+            }
+
+    hub = _component_snapshot(functions, "hub")
+    if not (
+        str(hub.get("status") or "") == "running-full-main-computer-hub"
+        and bool(hub.get("running"))
+        and bool(hub.get("health_ok"))
+        and bool(hub.get("full_hub_runtime_available"))
+        and bool(hub.get("full_main_computer_hub"))
+        and not bool(hub.get("bootstrap_hub"))
+    ):
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": f"hub is not a healthy full Main Computer hub: {components['hub'] or 'missing'}",
+            "service_name": service_name,
+            "components": components,
+        }
+
+    hub_admin = _component_snapshot(functions, "hub_admin")
+    if not (
+        str(hub_admin.get("status") or "") == "bootstrapped"
+        and bool(hub_admin.get("private_key_present"))
+        and (bool(hub_admin.get("completed")) or bool(hub_admin.get("running")))
+    ):
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": f"hub_admin not bootstrapped for hub propagation: {components['hub_admin'] or 'missing'}",
+            "service_name": service_name,
+            "components": components,
+        }
+
+    contracts = _component_snapshot(functions, "contracts")
+    contracts_status = str(contracts.get("status") or "").strip()
+    if bool(contracts.get("desired")):
+        if not (contracts_status == "deployed" and (bool(contracts.get("completed")) or bool(contracts.get("running")))):
+            return {
+                "ready": False,
+                "terminal": False,
+                "reason": f"contracts requested but not deployed for hub propagation: {contracts_status or 'missing'}",
+                "service_name": service_name,
+                "components": components,
+            }
+    elif contracts_status not in {"disabled", "not-required-existing-network", "deployed", ""}:
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": f"contracts status is not settled for hub propagation: {contracts_status or 'missing'}",
+            "service_name": service_name,
+            "components": components,
+        }
+
+    return {
+        "ready": True,
+        "terminal": False,
+        "reason": "full hub verified for propagation",
+        "service_name": service_name,
+        "components": components,
+        "block_number": validator.get("block_number"),
+        "validator_address": validator.get("validator_address"),
+        "hub_admin_address": hub_admin.get("address"),
+        "full_main_computer_hub": True,
+        "bootstrap_hub": False,
+    }
+
+
+
+def _hub_verify_fail(reason: str, service_name: str, *, components: Mapping[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
+    payload = {
+        "ready": False,
+        "terminal": False,
+        "reason": reason,
+        "service_name": service_name,
+        "components": dict(components or {}),
+    }
+    payload.update({key: value for key, value in extra.items() if value not in (None, "", [], {})})
+    return payload
+
+
+def expected_fdb_endpoints_for_hub_verify(nodes: Sequence[Mapping[str, Any]]) -> list[str]:
+    endpoints: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        for key in ("fdb_endpoint", "public_address"):
+            value = str(node.get(key) or "").strip()
+            if value:
+                endpoints.add(value)
+    return sorted(endpoints)
+
+
+def hub_propagate_fdb_verify_check(
+    functions: Mapping[str, Any],
+    node: Mapping[str, Any],
+    *,
+    expected_fdb_endpoints: Sequence[str],
+) -> dict[str, Any]:
+    service_name = str(node.get("service_name") or "").strip()
+    fdb = _component_snapshot(functions, "foundationdb")
+    components = {"foundationdb": _component_status(functions, "foundationdb")}
+    if not fdb:
+        return _hub_verify_fail("foundationdb status missing from private hub probe", service_name, components=components)
+    required_booleans = {
+        "running": bool(fdb.get("running")),
+        "configured": bool(fdb.get("configured")),
+        "listening": bool(fdb.get("listening")),
+        "cluster_file_present": bool(fdb.get("cluster_file_present")),
+    }
+    missing = [key for key, ok in required_booleans.items() if not ok]
+    if str(fdb.get("status") or "") != "running" or missing:
+        return _hub_verify_fail(
+            "foundationdb not completely set up for hub propagation: "
+            + (components["foundationdb"] or "missing")
+            + (f" missing={','.join(missing)}" if missing else ""),
+            service_name,
+            components=components,
+            foundationdb=dict(fdb),
+        )
+    expected = [str(item or "").strip() for item in expected_fdb_endpoints if str(item or "").strip()]
+    actual_public_address = str(fdb.get("public_address") or "").strip()
+    node_endpoint = str(node.get("fdb_endpoint") or "").strip()
+    if node_endpoint and actual_public_address and actual_public_address != node_endpoint:
+        return _hub_verify_fail(
+            f"foundationdb public address mismatch: expected node endpoint {node_endpoint}, observed {actual_public_address}",
+            service_name,
+            components=components,
+            foundationdb=dict(fdb),
+        )
+    if expected and actual_public_address and actual_public_address not in set(expected):
+        return _hub_verify_fail(
+            f"foundationdb public address {actual_public_address} is not in expected network coordinator set",
+            service_name,
+            components=components,
+            expected_fdb_endpoints=expected,
+            foundationdb=dict(fdb),
+        )
+    return {
+        "ready": True,
+        "terminal": False,
+        "reason": "foundationdb fully set up for hub propagation",
+        "service_name": service_name,
+        "components": components,
+        "expected_fdb_endpoints": expected,
+        "public_address": actual_public_address,
+        "bootstrap_action": fdb.get("bootstrap_action"),
+        "cluster_file_present": bool(fdb.get("cluster_file_present")),
+    }
+
+
+def _public_hub_route_health_is_full(
+    health: Mapping[str, Any],
+    *,
+    network_key: str,
+    allowed_cell_ids: Sequence[str],
+    expected_cell_id: str = "",
+) -> tuple[bool, str]:
+    if not bool(health.get("observed")):
+        return False, str(health.get("error") or "public hub route did not respond")
+    if not bool(health.get("ok")):
+        return False, str(health.get("error") or f"public hub route returned non-ok status {health.get('status_code')}")
+    if bool(health.get("bootstrap_hub")):
+        return False, "public hub route is still serving bootstrap hub"
+    if not bool(health.get("full_main_computer_hub")):
+        return False, "public hub route is not serving the full Main Computer hub"
+    payload = health.get("payload") if isinstance(health.get("payload"), Mapping) else {}
+    observed_network = str(health.get("network_key") or payload.get("network_key") or "").strip()
+    if observed_network and observed_network != clean_node_network_key(network_key):
+        return False, f"public hub route network mismatch: expected {clean_node_network_key(network_key)}, observed {observed_network}"
+    observed_cell = str(health.get("cell_id") or payload.get("cell_id") or "").strip()
+    allowed = {str(item or "").strip() for item in allowed_cell_ids if str(item or "").strip()}
+    if expected_cell_id and observed_cell and observed_cell != expected_cell_id:
+        return False, f"public hub route cell mismatch: expected {expected_cell_id}, observed {observed_cell}"
+    if allowed and observed_cell and observed_cell not in allowed:
+        return False, f"public hub route returned unexpected cell_id {observed_cell}"
+    return True, "public route serves verified full hub"
+
+
+def verify_traefik_routes_before_hub_propagate(
+    client: Any,
+    head: HeadNode,
+    args: argparse.Namespace,
+    network_key: str,
+    local_nodes: Sequence[Mapping[str, Any]],
+    tried: list[dict[str, Any]],
+    *,
+    domain_suffix: str,
+    all_nodes: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Read-only check that existing public Traefik routes match this hub topology.
+
+    This verifier intentionally does not write Traefik dynamic files and does
+    not consult prior propagation callback markers.  The live public Hub HTTPS
+    route probes are the source of truth for verify-only mode.
+    """
+
+    enabled = not bool(getattr(args, "skip_traefik_route_verify", False) or getattr(args, "skip_public_route_verify", False))
+    result: dict[str, Any] = {
+        "enabled": enabled,
+        "ok": False if enabled else None,
+        "reason": "disabled by --skip-traefik-route-verify" if not enabled else "traefik route verification has not completed",
+        "host": head.coolify_server,
+        "network": clean_node_network_key(network_key),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "repair_attempted": False,
+        "routes": [],
+        "errors": [],
+    }
+    if not enabled:
+        return result
+    route_records = local_hub_route_records(network_key, head, local_nodes, domain_suffix=domain_suffix)
+    aggregate_domain = public_network_hub_domain(network_key, domain_suffix)
+    result["source"] = "live-public-route-probe"
+    result["route_domains"] = [str(record.get("domain") or "") for record in route_records if str(record.get("domain") or "").strip()]
+    if aggregate_domain:
+        result["route_domains"].append(aggregate_domain)
+    result["backend_count"] = len(route_records)
+
+    timeout_s = max(0.5, float(getattr(args, "public_route_verify_timeout_s", 6.0) or 6.0))
+    allowed_cells = [str(node.get("service_name") or "") for node in local_nodes if isinstance(node, Mapping)]
+    aggregate_allowed_cells = [
+        str(node.get("service_name") or "")
+        for node in (all_nodes if all_nodes is not None else local_nodes)
+        if isinstance(node, Mapping)
+    ]
+    all_route_ok = True
+    for record in route_records:
+        domain = str(record.get("domain") or "").strip()
+        expected_cell = str(record.get("service_name") or "").strip()
+        health = probe_public_hub_health(domain, timeout_s=timeout_s)
+        ok, reason = _public_hub_route_health_is_full(
+            health,
+            network_key=network_key,
+            allowed_cell_ids=allowed_cells,
+            expected_cell_id=expected_cell,
+        )
+        entry = {
+            "kind": "node-hub",
+            "domain": domain,
+            "expected_service_name": expected_cell,
+            "backend_url": str(record.get("backend_url") or ""),
+            "health_url": str(record.get("health_url") or ""),
+            "ok": bool(ok),
+            "reason": reason,
+            "status_code": health.get("status_code"),
+            "observed_cell_id": health.get("cell_id"),
+            "bootstrap_hub": health.get("bootstrap_hub"),
+            "full_main_computer_hub": health.get("full_main_computer_hub"),
+            "url": health.get("url"),
+        }
+        result["routes"].append({key: value for key, value in entry.items() if value not in (None, "", [], {})})
+        if not ok:
+            all_route_ok = False
+            result["errors"].append({"domain": domain, "error": reason})
+
+    aggregate_health = probe_public_hub_health(aggregate_domain, timeout_s=timeout_s)
+    aggregate_ok, aggregate_reason = _public_hub_route_health_is_full(
+        aggregate_health,
+        network_key=network_key,
+        allowed_cell_ids=aggregate_allowed_cells,
+    )
+    result["aggregate_route"] = {
+        "domain": aggregate_domain,
+        "ok": bool(aggregate_ok),
+        "reason": aggregate_reason,
+        "status_code": aggregate_health.get("status_code"),
+        "observed_cell_id": aggregate_health.get("cell_id"),
+        "bootstrap_hub": aggregate_health.get("bootstrap_hub"),
+        "full_main_computer_hub": aggregate_health.get("full_main_computer_hub"),
+        "url": aggregate_health.get("url"),
+    }
+    if not aggregate_ok:
+        all_route_ok = False
+        result["errors"].append({"domain": aggregate_domain, "error": aggregate_reason})
+
+    result["ok"] = bool(all_route_ok)
+    if result["ok"]:
+        result["reason"] = "Traefik public hub routes are serving verified full hubs"
+    else:
+        result["reason"] = "; ".join(str(item.get("error") or "") for item in result["errors"][:3] if isinstance(item, Mapping)) or "Traefik route verification failed"
+    return result
+
+
+def verify_hubs_before_hub_propagate(
+    plan: HeadPlan,
+    args: argparse.Namespace,
+    network_key: str,
+    selected_heads: Sequence[HeadNode],
+    inventory: Mapping[str, Any],
+    tried_by_host: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Verify existing hubs before hub-propagate mutates anything.
+
+    For now this is intentionally fail-fast and read-only with respect to super
+    nodes: if any hub is not a healthy full runtime hub, hub-propagate stops and
+    does not attempt container/runtime repair, route propagation, or admin sync.
+    """
+
+    enabled = not bool(getattr(args, "skip_hub_verify", False))
+    result: dict[str, Any] = {
+        "enabled": enabled,
+        "ok": False if enabled else None,
+        "reason": "disabled by --skip-hub-verify" if not enabled else "hub verification has not completed",
+        "network": clean_node_network_key(network_key),
+        "selected_hosts": [str(head.coolify_server) for head in selected_heads],
+        "expected_hub_count": 0,
+        "verified_hub_count": 0,
+        "nodes": [],
+        "errors": [],
+        "failed_fast": False,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "repair_attempted": False,
+        "traefik_route_verify_enabled": not bool(getattr(args, "skip_traefik_route_verify", False)),
+        "verified_route_count": 0,
+        "aggregate_route_count": 0,
+    }
+    if not enabled:
+        return result
+
+    all_nodes = [dict(item) for item in (inventory.get("nodes") or []) if isinstance(item, Mapping)]
+    result["inventory_super_node_count"] = len(all_nodes)
+    operator_log(
+        args,
+        "hub-verify: starting read-only fail-fast preflight "
+        f"network={clean_node_network_key(network_key)} selected_hosts={','.join(result['selected_hosts']) or '<none>'} "
+        f"discovered_super_nodes={len(all_nodes)} repair_attempted=false",
+    )
+    if not all_nodes:
+        result.update(
+            {
+                "ok": False,
+                "reason": "no super-node hubs discovered to verify before hub-propagate",
+                "failed_fast": True,
+                "errors": [{"host": "", "service_name": "", "error": "no super-node hubs discovered"}],
+            }
+        )
+        return result
+
+    wait_s = max(1.0, float(getattr(args, "hub_verify_wait_s", 120.0) or 120.0))
+    domain_suffix = public_domain_suffix(args)
+    expected_fdb_endpoints = expected_fdb_endpoints_for_hub_verify(all_nodes)
+    result["expected_fdb_endpoints"] = expected_fdb_endpoints
+    local_by_host = inventory.get("local_nodes_by_host") if isinstance(inventory.get("local_nodes_by_host"), Mapping) else {}
+    selected_host_names = {str(head.coolify_server) for head in selected_heads}
+    target_count = 0
+    for head in selected_heads:
+        local_nodes = [
+            dict(item)
+            for item in (local_by_host.get(head.coolify_server, []) if isinstance(local_by_host, Mapping) else [])
+            if isinstance(item, Mapping)
+        ]
+        if not local_nodes:
+            operator_log(
+                args,
+                f"hub-verify: host={head.coolify_server} skipped because no local super-node hubs were discovered",
+            )
+            result["nodes"].append(
+                {
+                    "host": head.coolify_server,
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "no local super-node hubs on this selected host",
+                }
+            )
+            continue
+
+        target_count += len(local_nodes)
+        result["expected_hub_count"] = int(result.get("expected_hub_count") or 0) + len(local_nodes)
+        tried = tried_by_host.setdefault(head.coolify_server, [])
+        host_entry: dict[str, Any] = {
+            "host": head.coolify_server,
+            "ok": False,
+            "node_count": len(local_nodes),
+            "nodes": [],
+            "probe": {},
+            "fdb": {"expected_endpoints": expected_fdb_endpoints},
+            "traefik_routes": {},
+        }
+        result["nodes"].append(host_entry)
+        try:
+            operator_log(
+                args,
+                f"hub-verify: host={head.coolify_server} verifying {len(local_nodes)} full hub(s) before propagation "
+                f"services={','.join(str(item.get('service_name') or '') for item in local_nodes)} wait_s={wait_s:.0f}",
+            )
+            if getattr(args, "dry_run", False):
+                host_entry.update({"ok": None, "dry_run": True, "reason": "dry-run; would verify hubs before propagation"})
+                continue
+
+            client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+            host_entry["token_source"] = token_source
+            version = request_coolify_version(
+                client,
+                tried,
+                args=args,
+                host=head.coolify_server,
+                operation="coolify-version-hub-propagate-verify",
+            )
+            if not version.ok:
+                raise AllfatherControlError(
+                    f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
+                )
+            context = resolve_context(client, args, head, tried)
+            probe_service_uuid, probe_action, _probe_existing = sync_probe_service(
+                client,
+                plan,
+                head,
+                args,
+                context,
+                tried,
+                super_inventory=all_nodes,
+            )
+            host_entry["probe"] = {
+                "service_uuid": probe_service_uuid,
+                "action": probe_action,
+                "deployed": False,
+                "expected_service_names": [str(item.get("service_name") or "") for item in local_nodes],
+            }
+            operator_log(
+                args,
+                f"hub-verify: host={head.coolify_server} probe_service action={probe_action} uuid={probe_service_uuid or '<missing>'} "
+                f"expected={','.join(host_entry['probe']['expected_service_names'])}",
+            )
+            if not getattr(args, "no_deploy", False):
+                operator_log(args, f"hub-verify: host={head.coolify_server} deploying verification probe force=true")
+                hub_service_tool().trigger_deploy_service(client, service_uuid=probe_service_uuid, force=True, tried=tried)
+                host_entry["probe"]["deployed"] = True
+            else:
+                host_entry.update({"ok": False, "reason": "verification probe deploy skipped by --no-deploy"})
+                result["ok"] = False
+                result["reason"] = "verification probe deploy skipped by --no-deploy"
+                result["failed_fast"] = True
+                result["errors"].append({"host": head.coolify_server, "service_name": "", "error": result["reason"]})
+                operator_log(args, f"hub-propagate: fail-fast before propagation because hub verification probe was not deployed host={head.coolify_server}")
+                return result
+
+            expected_targets = probe_target_records_for_plan(plan, super_inventory=local_nodes)
+            operator_log(
+                args,
+                f"hub-verify: host={head.coolify_server} waiting for private probe metadata "
+                f"targets={len(expected_targets)} wait_s={wait_s:.0f}",
+            )
+            probe_detail, probe_result = wait_for_probe_metadata_result(
+                client,
+                probe_service_uuid,
+                tried,
+                expected_targets=expected_targets,
+                wait_s=wait_s,
+            )
+            covers_expected = probe_result_covers_expected_super_targets(probe_result, expected_targets)
+            operator_log(
+                args,
+                f"hub-verify: host={head.coolify_server} probe metadata ok={bool(probe_result.get('ok'))} "
+                f"covers_expected={covers_expected}",
+            )
+            if not probe_result.get("ok") or not covers_expected:
+                probe_applications = application_records_from_service_detail(probe_detail)
+                probe_application_uuid = probe_applications[0]["uuid"] if probe_applications else ""
+                operator_log(
+                    args,
+                    f"hub-verify: host={head.coolify_server} metadata incomplete; checking probe logs fallback "
+                    f"application_uuid={probe_application_uuid or '<missing>'}",
+                )
+                logs = fetch_probe_logs(client, probe_service_uuid, tried, application_uuid=probe_application_uuid)
+                log_result = latest_probe_result(logs)
+                if log_result.get("ok"):
+                    probe_result = log_result
+                    covers_expected = probe_result_covers_expected_super_targets(probe_result, expected_targets)
+                host_entry["probe"]["logs_fallback"] = {
+                    "ok": bool(logs.get("ok")),
+                    "source": logs.get("source"),
+                    "result_ok": bool(log_result.get("ok")),
+                    "covers_expected": bool(covers_expected),
+                }
+                operator_log(
+                    args,
+                    f"hub-verify: host={head.coolify_server} logs fallback ok={bool(logs.get('ok'))} "
+                    f"result_ok={bool(log_result.get('ok'))} covers_expected={bool(covers_expected)}",
+                )
+            host_entry["probe"]["metadata_ok"] = bool(probe_result.get("ok"))
+            host_entry["probe"]["covers_expected"] = bool(covers_expected)
+            statuses = super_statuses_from_probe_result(probe_result)
+            host_ok = True
+            for node in sorted(local_nodes, key=network_super_node_sort_key):
+                service_name = str(node.get("service_name") or "").strip()
+                internal_status = statuses.get(service_name, {})
+                check = hub_propagate_hub_verify_check(
+                    internal_status,
+                    node,
+                    expected_fdb_endpoints=expected_fdb_endpoints,
+                )
+                node_entry = {
+                    "service_name": service_name,
+                    "host": head.coolify_server,
+                    "guard_url": str(node.get("guard_url") or ""),
+                    "ok": bool(check.get("ready")),
+                    "reason": str(check.get("reason") or ""),
+                    "readiness": check,
+                    "internal_status": internal_status,
+                }
+                host_entry["nodes"].append(node_entry)
+                components = check.get("components") if isinstance(check.get("components"), Mapping) else {}
+                component_summary = ",".join(f"{key}={value or '-'}" for key, value in components.items()) if components else "components=not-observed"
+                operator_log(
+                    args,
+                    f"hub-verify: {service_name or '<unknown>'}: ok={bool(check.get('ready'))} "
+                    f"reason={check.get('reason') or ''} {component_summary}",
+                )
+                if bool(check.get("ready")):
+                    result["verified_hub_count"] = int(result.get("verified_hub_count") or 0) + 1
+                if not bool(check.get("ready")):
+                    host_ok = False
+                    error = {
+                        "host": head.coolify_server,
+                        "service_name": service_name,
+                        "error": str(check.get("reason") or "hub verification failed"),
+                    }
+                    result["errors"].append(error)
+                    result["ok"] = False
+                    result["reason"] = str(check.get("reason") or "hub verification failed")
+                    result["failed_fast"] = True
+                    host_entry.update({"ok": False, "reason": result["reason"]})
+                    operator_log(
+                        args,
+                        f"hub-propagate: fail-fast before propagation because hub verify failed "
+                        f"host={head.coolify_server} service={service_name or '<unknown>'} reason={result['reason']}",
+                    )
+                    return result
+            if host_ok:
+                route_check = verify_traefik_routes_before_hub_propagate(
+                    client,
+                    head,
+                    args,
+                    network_key,
+                    local_nodes,
+                    tried,
+                    domain_suffix=domain_suffix,
+                    all_nodes=all_nodes,
+                )
+                host_entry["traefik_routes"] = route_check
+                route_domains = ",".join(str(item.get("domain") or "") for item in (route_check.get("routes") or []) if isinstance(item, Mapping))
+                aggregate = route_check.get("aggregate_route") if isinstance(route_check.get("aggregate_route"), Mapping) else {}
+                operator_log(
+                    args,
+                    f"hub-verify: host={head.coolify_server} traefik routes ok={route_check.get('ok')} "
+                    f"source={route_check.get('source') or 'live-public-route-probe'} "
+                    f"node_domains={route_domains or '<none>'} aggregate={aggregate.get('domain') or '<none>'} "
+                    f"reason={route_check.get('reason') or ''}",
+                )
+                result["verified_route_count"] = int(result.get("verified_route_count") or 0) + sum(
+                    1 for item in (route_check.get("routes") or []) if isinstance(item, Mapping) and item.get("ok") is True
+                )
+                if isinstance(route_check.get("aggregate_route"), Mapping) and route_check["aggregate_route"].get("ok") is True:
+                    result["aggregate_route_count"] = int(result.get("aggregate_route_count") or 0) + 1
+                route_verify_enabled = bool(route_check.get("enabled", True))
+                if route_verify_enabled and route_check.get("ok") is not True:
+                    reason = str(route_check.get("reason") or "Traefik route verification failed")
+                    result["errors"].append({"host": head.coolify_server, "service_name": "", "error": reason})
+                    result["ok"] = False
+                    result["reason"] = reason
+                    result["failed_fast"] = True
+                    host_entry.update({"ok": False, "reason": reason})
+                    operator_log(
+                        args,
+                        f"hub-propagate: fail-fast before propagation because Traefik route verify failed "
+                        f"host={head.coolify_server} reason={reason}",
+                    )
+                    return result
+            host_reason = (
+                "all local hubs and routes verified"
+                if bool(result.get("traefik_route_verify_enabled"))
+                else "all local hubs verified; Traefik route verification disabled"
+            )
+            host_entry.update({"ok": host_ok, "reason": host_reason if host_ok else "one or more local hubs failed verification"})
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            host_entry.update({"ok": False, "reason": reason, "error": reason})
+            error = {"host": head.coolify_server, "service_name": "", "error": reason}
+            result["errors"].append(error)
+            result["ok"] = False
+            result["reason"] = reason
+            result["failed_fast"] = True
+            operator_log(args, f"hub-propagate: fail-fast before propagation because hub verify crashed host={head.coolify_server}: {reason}")
+            return result
+
+    if target_count <= 0:
+        result.update(
+            {
+                "ok": False,
+                "reason": "no selected hosts had local super-node hubs to verify",
+                "failed_fast": True,
+                "errors": [{"host": ",".join(sorted(selected_host_names)), "service_name": "", "error": "no selected hosts had local super-node hubs"}],
+            }
+        )
+    elif not result["errors"]:
+        expected = int(result.get("expected_hub_count") or 0)
+        verified = int(result.get("verified_hub_count") or 0)
+        if verified != expected:
+            result.update(
+                {
+                    "ok": False,
+                    "reason": f"hub verification count mismatch: verified {verified} of {expected}",
+                    "failed_fast": True,
+                    "errors": [
+                        {
+                            "host": ",".join(sorted(selected_host_names)),
+                            "service_name": "",
+                            "error": f"hub verification count mismatch: verified {verified} of {expected}",
+                        }
+                    ],
+                }
+            )
+            operator_log(args, f"hub-propagate: fail-fast before propagation because {result['reason']}")
+        else:
+            route_verify_enabled = bool(result.get("traefik_route_verify_enabled"))
+            success_reason = (
+                "all selected full hubs, FDB, and Traefik routes verified before propagation"
+                if route_verify_enabled
+                else "all selected full hubs and FDB verified; Traefik route verification disabled"
+            )
+            result.update({"ok": True, "reason": success_reason})
+            operator_log(
+                args,
+                (
+                    "hub-verify: all selected full hubs/FDB/routes verified "
+                    if route_verify_enabled
+                    else "hub-verify: all selected full hubs/FDB verified; route verification disabled "
+                )
+                + f"hubs={verified}/{expected} public_routes={result.get('verified_route_count', 0)} "
+                f"aggregate_routes={result.get('aggregate_route_count', 0)}",
+            )
+    return result
+
 
 
 def wait_for_add_node_ready(
@@ -14168,6 +16600,8 @@ def fullhub_image_build_pending_result(request: Mapping[str, Any]) -> dict[str, 
         "coolify_server": str(request.get("host") or request.get("coolify_server") or ""),
         "request_id": str(request.get("request_id") or ""),
         "image": {"tag": str(request.get("image_tag") or "")},
+        "image_tags": dict(request.get("image_tags") if isinstance(request.get("image_tags"), Mapping) else {}),
+        "image_build_plan": str(request.get("image_build_plan") or ""),
         "reason": "full-hub image build request queued; waiting for allfather control-surface result",
         "public_guard_routes": False,
         "ssh_used": False,
@@ -14184,36 +16618,41 @@ def prime_head_fullhub_image_build_marker(
     *,
     args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
-    """Replace any stale image-build marker with the current request id."""
+    """Clear stale local result markers before the remote worker publishes its own result.
+
+    The current build result marker must be authored by the running control
+    surface.  If the local runner writes a fresh ``pending`` result, Stage 2 can
+    confuse a local placeholder for proof that the remote worker consumed the
+    request.  The request itself is still delivered through the reconciled
+    control-surface compose/environment.
+    """
 
     request_id = str(request.get("request_id") or "").strip()
     if not request_id:
         return {"ok": False, "reason": "missing request_id"}
-    pending = fullhub_image_build_pending_result(request)
-    encoded = base64.b64encode(json.dumps(pending, sort_keys=True).encode("utf-8")).decode("ascii")
     detail = fetch_service_detail(client, service_uuid, tried)
     body = detail.get("body") if isinstance(detail, Mapping) else {}
     current_description = str(body.get("description") or "") if isinstance(body, Mapping) else ""
     base_description = remove_callback_marker_lines(current_description, FULLHUB_IMAGE_BUILD_CALLBACK_MARKER)
     if not base_description:
         base_description = "Main Computer all-father host agent. This is the single per-host control container."
-    description = base_description.rstrip() + "\n" + FULLHUB_IMAGE_BUILD_CALLBACK_MARKER + encoded + "\n"
+    description = base_description.rstrip() + "\n"
     patch = patch_head_service_description(
         client,
         service_uuid,
         description,
         tried,
-        operation="prime-fullhub-image-build-marker",
+        operation="clear-stale-fullhub-image-build-marker",
     )
     result = {
         "ok": bool(patch.get("ok")),
         "request_id": request_id,
-        "phase": "pending",
+        "phase": "cleared",
         "image_tag": str(request.get("image_tag") or ""),
         "patch": patch,
     }
     if args is not None:
-        operator_log(args, f"stage1-2: primed fullhub image build marker host={request.get('host') or request.get('coolify_server') or ''} request_id={request_id} ok={result['ok']}")
+        operator_log(args, f"stage1-2: cleared stale fullhub image build marker host={request.get('host') or request.get('coolify_server') or ''} request_id={request_id} ok={result['ok']}")
     return result
 
 
@@ -14246,6 +16685,7 @@ def wait_for_head_fullhub_image_build_ready(
     pending_observed_since = 0.0
     pending_consume_timeout_s = max(60.0, min(180.0, float(wait_s or 0.0) / 4.0 if wait_s else 120.0))
     last_log_tail_request_id = ""
+    last_log_tail_stream_key = ""
     last_printed_log_line = 0
 
     while first or time.time() < deadline:
@@ -14258,9 +16698,11 @@ def wait_for_head_fullhub_image_build_ready(
         request_id = str(result.get("request_id") or "")
         image = result.get("image") if isinstance(result.get("image"), Mapping) else {}
         image_tag = str(image.get("tag") or "")
+        checkpoint = str(result.get("current_checkpoint") or result.get("checkpoint") or "")
         signature = (
             f"attempt={attempts} observed={bool(last_result.get('ok'))} phase={phase or 'not-observed'} "
             f"request_id={request_id or '<missing>'} image={image_tag or '<missing>'}"
+            + (f" checkpoint={checkpoint}" if checkpoint else "")
         )
         if last_result.get("error"):
             signature += f" error={str(last_result.get('error'))[:180]}"
@@ -14284,9 +16726,26 @@ def wait_for_head_fullhub_image_build_ready(
 
         if request_id != last_log_tail_request_id:
             last_log_tail_request_id = request_id
+            last_log_tail_stream_key = ""
             last_printed_log_line = 0
         if args is not None and request_id and (not expected_request_id or request_id == expected_request_id):
+            relay = result.get("log_relay") if isinstance(result.get("log_relay"), Mapping) else {}
+            stream_image_tag = str((result.get("image") if isinstance(result.get("image"), Mapping) else {}).get("tag") or image_tag or "")
+            stream_key = "|".join(
+                [
+                    request_id,
+                    stream_image_tag,
+                    str(result.get("current_checkpoint") or result.get("checkpoint") or ""),
+                    str(relay.get("log_path") or ""),
+                    str(relay.get("latest_log_path") or ""),
+                ]
+            )
             tail_start_line, line_count, tail_lines = fullhub_image_build_log_tail_from_result(result)
+            if stream_key != last_log_tail_stream_key or (line_count and line_count < last_printed_log_line):
+                last_log_tail_stream_key = stream_key
+                last_printed_log_line = 0
+                if args is not None and tail_lines:
+                    operator_log(args, f"stage1-2: fullhub build log stream changed image={stream_image_tag or '<missing>'} checkpoint={checkpoint or '<missing>'}; replaying current relay window")
             if tail_lines:
                 printed_line = last_printed_log_line
                 for offset, line in enumerate(tail_lines):
@@ -15210,7 +17669,144 @@ def propagate_hub_for_network(
     all_nodes = list(inventory.get("nodes") or [])
     propagations: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = list(inventory.get("errors") or [])
+    hub_verify: dict[str, Any] = {
+        "enabled": not bool(getattr(args, "skip_hub_verify", False)),
+        "ok": None,
+        "reason": "not started",
+        "failed_fast": False,
+        "repair_attempted": False,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
 
+    if errors:
+        hub_verify.update(
+            {
+                "ok": False,
+                "reason": "super-node inventory failed before hub verification",
+                "failed_fast": True,
+                "errors": list(errors),
+            }
+        )
+        return {
+            "ok": False,
+            "operation": "hub-propagate",
+            "legacy_command": legacy_command,
+            "network": network,
+            "route_authority": "live-coolify-super-node-inventory",
+            "domain_suffix": domain_suffix,
+            "selected_hosts": [head.coolify_server for head in selected_heads],
+            "inventory": {
+                "checked_hosts": inventory.get("checked_hosts"),
+                "super_node_count": len(inventory.get("nodes") or []),
+                "super_nodes": inventory.get("nodes") or [],
+                "errors": inventory.get("errors"),
+            },
+            "hub_verify": hub_verify,
+            "huddle": {"private_state_updates": {}, "admin_count": 0, "admin_records": []},
+            "hub_admin_contract_sync": {"enabled": False, "ok": None, "reason": "skipped because inventory failed"},
+            "propagations": [],
+            "errors": errors,
+            "failed_fast": True,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    hub_verify = verify_hubs_before_hub_propagate(
+        plan,
+        args,
+        network,
+        selected_heads,
+        inventory,
+        tried_by_host,
+    )
+    operator_log(
+        args,
+        "hub-propagate: hub verification preflight complete "
+        f"ok={hub_verify.get('ok')} reason={hub_verify.get('reason') or ''} "
+        f"verified={hub_verify.get('verified_hub_count', 0)}/{hub_verify.get('expected_hub_count', 0)} "
+        f"public_routes={hub_verify.get('verified_route_count', 0)} "
+        f"aggregate_routes={hub_verify.get('aggregate_route_count', 0)} "
+        f"failed_fast={hub_verify.get('failed_fast')}",
+    )
+    if hub_verify.get("ok") is not True:
+        verify_errors = list(hub_verify.get("errors") or [])
+        errors.extend(verify_errors or [{"host": "hub-verify", "error": str(hub_verify.get("reason") or "hub verification did not pass")}])
+        operator_log(args, "hub-propagate: stopping before route/admin propagation because hub verification did not pass")
+        return {
+            "ok": False,
+            "operation": "hub-propagate",
+            "legacy_command": legacy_command,
+            "network": network,
+            "route_authority": "live-coolify-super-node-inventory",
+            "domain_suffix": domain_suffix,
+            "selected_hosts": [head.coolify_server for head in selected_heads],
+            "inventory": {
+                "checked_hosts": inventory.get("checked_hosts"),
+                "super_node_count": len(inventory.get("nodes") or []),
+                "super_nodes": inventory.get("nodes") or [],
+                "errors": inventory.get("errors"),
+            },
+            "hub_verify": hub_verify,
+            "huddle": {"private_state_updates": {}, "admin_count": 0, "admin_records": []},
+            "hub_admin_contract_sync": {"enabled": False, "ok": None, "reason": "skipped because hub verification failed"},
+            "propagations": [],
+            "errors": errors,
+            "failed_fast": True,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    propagate_after_verify = bool(getattr(args, "propagate_after_verify", False))
+    if not propagate_after_verify:
+        operator_log(
+            args,
+            "hub-propagate: hub verification passed; verify-only mode is active; "
+            "stopping before huddle/admin/route propagation",
+        )
+        return {
+            "ok": True,
+            "operation": "hub-propagate",
+            "legacy_command": legacy_command,
+            "network": network,
+            "route_authority": "live-coolify-super-node-inventory",
+            "domain_suffix": domain_suffix,
+            "selected_hosts": [head.coolify_server for head in selected_heads],
+            "inventory": {
+                "checked_hosts": inventory.get("checked_hosts"),
+                "super_node_count": len(inventory.get("nodes") or []),
+                "super_nodes": inventory.get("nodes") or [],
+                "errors": inventory.get("errors"),
+            },
+            "hub_verify": hub_verify,
+            "verify_only": True,
+            "propagate_after_verify": False,
+            "failed_fast": False,
+            "huddle": {
+                "enabled": False,
+                "ok": None,
+                "reason": "verify-only mode; huddle materialization skipped after hub/FDB/Traefik route verification",
+                "private_state_updates": {},
+                "admin_count": 0,
+                "admin_records": [],
+            },
+            "hub_admin_contract_sync": {
+                "enabled": False,
+                "ok": None,
+                "reason": "verify-only mode; Hub admin contract sync skipped after hub/FDB/Traefik route verification",
+            },
+            "propagations": [],
+            "errors": [],
+            "reason": "hub/FDB/Traefik route verification passed; propagation skipped by verify-only default",
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    operator_log(args, "hub-propagate: hub verification passed; --propagate-after-verify supplied; starting huddle/admin/route propagation")
     private_state_path = repo_relative_path(args.private_state)
     private_state = load_yaml_mapping(private_state_path)
     private_state, hub_admin_records, huddle_updates = materialize_private_state_for_hub_propagate(
@@ -15375,60 +17971,16 @@ def propagate_hub_for_network(
                 )
             operator_log(args, f"hub-propagate: host={head.coolify_server} resolving head service context")
             context = resolve_context(client, args, head, tried)
-            operator_log(args, f"hub-propagate: host={head.coolify_server} starting full hub runtime sync")
-            full_hub_runtime_sync = sync_full_hub_runtime_for_host(
-                plan,
-                network,
-                head,
-                local_nodes=local_nodes,
-                all_nodes=all_nodes,
-                private_state=private_state,
-                domain_suffix=domain_suffix,
-                client=client,
-                args=args,
-                tried=tried,
-            )
-            entry["full_hub_runtime_sync"] = full_hub_runtime_sync
-            if full_hub_runtime_sync.get("ok") is False:
-                runtime_failure_reason = str(full_hub_runtime_sync.get("reason") or "full hub runtime sync failed")
-                runtime_diag = run_full_hub_runtime_container_diagnostics(
-                    plan,
-                    network,
-                    head,
-                    sync_result=full_hub_runtime_sync,
-                    client=client,
-                    args=args,
-                    context=context,
-                    tried=tried,
-                    inventory_nodes=inventory.get("nodes") or [],
-                )
-                entry["full_hub_runtime_container_diagnostics"] = runtime_diag
-                if full_hub_runtime_diag_recovered(runtime_diag):
-                    operator_log(args, f"hub-propagate: host={head.coolify_server} full hub runtime recovered by container repair; continuing Traefik/admin handoff")
-                    full_hub_runtime_sync = {
-                        **full_hub_runtime_sync,
-                        "ok": True,
-                        "recovered_by_container_runtime_repair": True,
-                        "recovery_source": "full_hub_runtime_container_diagnostics",
-                    }
-                    entry["full_hub_runtime_sync"] = full_hub_runtime_sync
-                else:
-                    entry["ok"] = False
-                    errors.append({"host": head.coolify_server, "error": runtime_failure_reason})
-                    entry["propagator_result"] = {
-                        "ok": None,
-                        "observed": False,
-                        "reason": "skipped because full hub runtime sync failed; see full_hub_runtime_container_diagnostics",
-                    }
-                    if head_admin_sync_request:
-                        entry["hub_admin_contract_sync"] = {
-                            **entry.get("hub_admin_contract_sync", {}),
-                            "ok": None,
-                            "observed": False,
-                            "reason": "skipped because full hub runtime sync failed; see full_hub_runtime_container_diagnostics",
-                        }
-                    operator_log(args, f"hub-propagate: host={head.coolify_server} skipping Traefik/admin handoff because full hub runtime sync failed")
-                    continue
+            operator_log(args, f"hub-propagate: host={head.coolify_server} using preflight hub verification; runtime repair disabled")
+            entry["full_hub_runtime_sync"] = {
+                "enabled": False,
+                "ok": True,
+                "reason": "hub-propagate already completed read-only full-hub verification; runtime repair is disabled for fail-fast mode",
+                "repair_attempted": False,
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
             operator_log(args, f"hub-propagate: host={head.coolify_server} updating head host-agent service")
             service_uuid, action, _existing = sync_head_service(
                 client,
@@ -15556,6 +18108,8 @@ def propagate_hub_for_network(
             "super_nodes": inventory.get("nodes") or [],
             "errors": inventory.get("errors"),
         },
+        "hub_verify": hub_verify,
+        "failed_fast": False,
         "huddle": {
             "private_state_updates": huddle_updates,
             "admin_count": len(hub_admin_records),
@@ -15800,6 +18354,359 @@ def traefik_propagate(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any
     return hub_propagate(plan, args)
 
 
+
+def lifecycle_inventory_or_raise(
+    plan: HeadPlan,
+    network_key: str,
+    args: argparse.Namespace,
+    tried_by_host: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    inventory = collect_network_super_inventory_for_traefik(plan, network_key, args, tried_by_host)
+    errors = [dict(item) for item in (inventory.get("errors") or []) if isinstance(item, Mapping)]
+    if errors:
+        rendered = "; ".join(f"{item.get('host')}: {item.get('error')}" for item in errors)
+        raise AllfatherControlError(
+            f"Cannot establish network-global {clean_node_network_key(network_key)} super-node inventory: {rendered}"
+        )
+    return inventory
+
+
+def lifecycle_inventory_for_nodes(
+    plan: HeadPlan,
+    nodes: Sequence[Mapping[str, Any]],
+    base_inventory: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    copied = [dict(item) for item in nodes if isinstance(item, Mapping)]
+    local_by_host: dict[str, list[dict[str, Any]]] = {head.coolify_server: [] for head in plan.heads}
+    for node in copied:
+        local_by_host.setdefault(str(node.get("coolify_server") or ""), []).append(node)
+    return {
+        "nodes": copied,
+        "local_nodes_by_host": local_by_host,
+        "services_by_server": dict((base_inventory or {}).get("services_by_server") or {}),
+        "checked_hosts": [head.coolify_server for head in plan.heads],
+        "errors": [],
+        "token_sources": dict((base_inventory or {}).get("token_sources") or {}),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+def lifecycle_heads_for_nodes(plan: HeadPlan, nodes: Sequence[Mapping[str, Any]]) -> list[HeadNode]:
+    host_names = {str(item.get("coolify_server") or "") for item in nodes if isinstance(item, Mapping)}
+    return [head for head in plan.heads if head.coolify_server in host_names]
+
+
+def lifecycle_verify_nodes(
+    plan: HeadPlan,
+    args: argparse.Namespace,
+    network_key: str,
+    nodes: Sequence[Mapping[str, Any]],
+    base_inventory: Mapping[str, Any],
+    tried_by_host: dict[str, list[dict[str, Any]]],
+    *,
+    verify_routes: bool,
+) -> dict[str, Any]:
+    if not nodes:
+        return {
+            "enabled": True,
+            "ok": True,
+            "reason": "no surviving nodes require verification",
+            "expected_hub_count": 0,
+            "verified_hub_count": 0,
+            "nodes": [],
+            "errors": [],
+            "failed_fast": False,
+            "repair_attempted": False,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+    verify_args = argparse.Namespace(**vars(args))
+    verify_args.skip_hub_verify = False
+    verify_args.skip_traefik_route_verify = not bool(verify_routes)
+    verify_args.no_deploy = False
+    verify_args.hub_verify_wait_s = float(
+        getattr(args, "hub_verify_wait_s", getattr(args, "deploy_wait_s", 300.0)) or 300.0
+    )
+    return verify_hubs_before_hub_propagate(
+        plan,
+        verify_args,
+        network_key,
+        lifecycle_heads_for_nodes(plan, nodes),
+        lifecycle_inventory_for_nodes(plan, nodes, base_inventory),
+        tried_by_host,
+    )
+
+
+def target_validator_address_from_verify(verify_result: Mapping[str, Any], service_name: str) -> str:
+    for host_entry in verify_result.get("nodes") or []:
+        if not isinstance(host_entry, Mapping):
+            continue
+        for node_entry in host_entry.get("nodes") or []:
+            if not isinstance(node_entry, Mapping):
+                continue
+            if str(node_entry.get("service_name") or "") != service_name:
+                continue
+            internal = node_entry.get("internal_status") if isinstance(node_entry.get("internal_status"), Mapping) else {}
+            functions = internal.get("functions") if isinstance(internal.get("functions"), Mapping) else {}
+            validator = functions.get("validator_rpc") if isinstance(functions.get("validator_rpc"), Mapping) else {}
+            admission = functions.get("validator_admission") if isinstance(functions.get("validator_admission"), Mapping) else {}
+            return str(validator.get("validator_address") or admission.get("validator_address") or "").strip()
+    return ""
+
+
+def cleanup_empty_network_runtime_all_hosts(
+    plan: HeadPlan,
+    network_key: str,
+    args: argparse.Namespace,
+    tried_by_host: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    hosts: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for head in plan.heads:
+        tried = tried_by_host.setdefault(head.coolify_server, [])
+        try:
+            if getattr(args, "dry_run", False):
+                cleanup = run_super_runtime_cleanup(plan, network_key, head, None, args, {}, tried)
+            else:
+                client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+                version = request_coolify_version(
+                    client,
+                    tried,
+                    args=args,
+                    host=head.coolify_server,
+                    operation="coolify-version-zero-node-cleanup",
+                )
+                if not version.ok:
+                    raise AllfatherControlError(
+                        f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
+                    )
+                context = resolve_super_context(client, args, head, tried)
+                cleanup = run_super_runtime_cleanup(plan, network_key, head, client, args, context, tried)
+                cleanup["token_source"] = token_source
+            cleanup_ok = bool(cleanup.get("ready")) or bool(cleanup.get("dry_run")) or not bool(cleanup.get("enabled"))
+            hosts.append({"host": head.coolify_server, "cleanup": cleanup, "ok": cleanup_ok})
+            if not cleanup_ok:
+                errors.append(
+                    {
+                        "host": head.coolify_server,
+                        "error": str(cleanup.get("reason") or cleanup.get("error") or "runtime cleanup did not complete"),
+                    }
+                )
+                break
+        except Exception as exc:
+            errors.append({"host": head.coolify_server, "error": f"{type(exc).__name__}: {exc}"})
+            break
+    return {
+        "enabled": True,
+        "ok": not bool(errors),
+        "network": clean_node_network_key(network_key),
+        "hosts": hosts,
+        "errors": errors,
+        "reason": "zero-node runtime state cleaned on all participating hosts" if not errors else str(errors[0].get("error") or "zero-node cleanup failed"),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+def prepare_remove_survivor_handoff(
+    plan: HeadPlan,
+    args: argparse.Namespace,
+    network_key: str,
+    all_nodes: Sequence[Mapping[str, Any]],
+    target: Mapping[str, Any],
+    survivors: Sequence[Mapping[str, Any]],
+    private_state: Mapping[str, Any],
+    private_state_path: Path,
+    preverify: Mapping[str, Any],
+    tried_by_host: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    if not survivors:
+        return {
+            "enabled": False,
+            "ok": True,
+            "reason": "target is the final live node; no survivor handoff is required",
+            "services": [],
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    target_name = str(target.get("service_name") or "")
+    target_validator = target_validator_address_from_verify(preverify, target_name)
+    target_fdb_endpoint = str(target.get("fdb_endpoint") or "").strip()
+    survivor_nodes = sorted([dict(item) for item in survivors], key=network_super_node_sort_key)
+    survivor_fdb_endpoints = sorted(
+        {
+            str(item.get("fdb_endpoint") or "").strip()
+            for item in survivor_nodes
+            if str(item.get("fdb_endpoint") or "").strip()
+        }
+    )
+    if not target_validator:
+        raise AllfatherControlError(
+            f"Cannot safely remove {target_name}: target validator address was not observed during pre-delete verification."
+        )
+    if not survivor_fdb_endpoints:
+        raise AllfatherControlError(
+            f"Cannot safely remove {target_name}: no survivor FoundationDB endpoints were discovered."
+        )
+
+    handoff = {
+        "enabled": True,
+        "target_service_name": target_name,
+        "target_validator_address": target_validator,
+        "target_fdb_endpoint": target_fdb_endpoint,
+        "survivor_fdb_endpoints": survivor_fdb_endpoints,
+        "requested_at": time.time(),
+    }
+    current_nodes = sorted([dict(item) for item in all_nodes], key=network_super_node_sort_key)
+    services: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+
+    for node in current_nodes:
+        node_name = str(node.get("service_name") or "")
+        node_head = head_for_coolify_server(plan, str(node.get("coolify_server") or ""))
+        ordinal = int(node.get("ordinal") or 0)
+        is_target = node_name == target_name
+        ordered_basis = current_nodes if is_target else survivor_nodes
+        index = next(
+            (i for i, item in enumerate(ordered_basis) if str(item.get("service_name") or "") == node_name),
+            0,
+        )
+        lower_nodes = [dict(item) for item in ordered_basis[:index]]
+        no_contracts = bool(lower_nodes)
+        state_for_node, wallets, private_updates = materialize_private_state_for_add_node(
+            private_state,
+            private_state_path,
+            network_key,
+            ordinal=ordinal,
+            cell_id=node_name,
+            no_contracts=no_contracts,
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+        manifest = super_manifest(
+            network_key,
+            node_head,
+            ordinal,
+            wallets=wallets,
+            private_state=state_for_node,
+            existing_nodes=lower_nodes,
+            no_contracts=no_contracts,
+            publish_routes=bool(getattr(args, "publish_routes", False)),
+        )
+        manifest["deployment_id"] = "dry-run" if getattr(args, "dry_run", False) else new_super_deployment_id()
+        manifest["removal_handoff"] = dict(handoff)
+
+        node_args = argparse.Namespace(**vars(args))
+
+        if getattr(args, "dry_run", False):
+            manifest["runtime_image"] = {
+                "tag": "<preserve-live-service-image>",
+                "source": "live-coolify-service-compose-at-apply-time",
+                "verified": True,
+                "service_build_disabled": True,
+                "bootstrap_fallback": False,
+            }
+            services.append(
+                {
+                    "service_name": node_name,
+                    "host": node_head.coolify_server,
+                    "target": is_target,
+                    "ok": True,
+                    "dry_run": True,
+                    "manifest": manifest,
+                    "image_prefunk": {
+                        "enabled": False,
+                        "reason": "remove-node preserves the live service image and never invokes Stage 1/2",
+                    },
+                    "private_state_updates": private_updates,
+                }
+            )
+            continue
+
+        tried = tried_by_host.setdefault(node_head.coolify_server, [])
+        client, _token_source = fdb_tool().client_for_server(node_head.coolify_server, node_args)
+        live_image = live_super_runtime_image_for_remove(
+            client,
+            service_name=node_name,
+            tried=tried,
+        )
+        manifest_image = attach_live_runtime_image_to_remove_manifest(
+            manifest,
+            image_tag=str(live_image.get("image") or ""),
+            service_name=node_name,
+        )
+        node_args.super_image = manifest_image
+        context = resolve_super_context(client, node_args, node_head, tried)
+        hub_admin_key = wallet_private_key(wallets, "hub_admin")
+        deployer_key = wallet_private_key(wallets, "deployer") if manifest["bootstrap"]["contracts_requested"] else ""
+        operator_log(
+            args,
+            f"remove-handoff: updating {node_name} target={str(is_target).lower()} "
+            f"survivor_fdb={','.join(survivor_fdb_endpoints)} target_validator={target_validator}",
+        )
+        service_uuid, action, _existing = sync_super_node_service(
+            client,
+            manifest,
+            node_args,
+            context,
+            tried,
+            hub_admin_private_key=hub_admin_key,
+            deployer_private_key=deployer_key,
+        )
+        hub_service_tool().trigger_deploy_service(
+            client,
+            service_uuid=service_uuid,
+            force=True,
+            tried=tried,
+        )
+        wait_result = wait_for_add_node_ready(
+            plan,
+            node_head,
+            manifest,
+            client,
+            node_args,
+            context,
+            tried,
+            service_uuid=service_uuid,
+        )
+        entry = {
+            "service_name": node_name,
+            "host": node_head.coolify_server,
+            "target": is_target,
+            "service_uuid": service_uuid,
+            "service_action": action,
+            "ok": bool(wait_result.get("ready")),
+            "reason": wait_result.get("reason"),
+            "deploy_wait": wait_result,
+            "private_state_updates": private_updates,
+            "runtime_image": manifest_image,
+        }
+        services.append(entry)
+        if not entry["ok"]:
+            failures.append(entry)
+            break
+
+    return {
+        "enabled": True,
+        "ok": not bool(failures),
+        "reason": "survivor FDB coordinators and QBFT validator set prepared before deletion" if not failures else str(failures[0].get("reason") or "survivor handoff failed"),
+        "target_service_name": target_name,
+        "target_validator_address": target_validator,
+        "target_fdb_endpoint": target_fdb_endpoint,
+        "survivor_fdb_endpoints": survivor_fdb_endpoints,
+        "services": services,
+        "errors": failures,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network_key = clean_node_network_key(args.network)
     if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
@@ -15810,58 +18717,43 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     state = load_yaml_mapping(private_state_path)
 
     tried: list[dict[str, Any]] = []
-    service_uuid = ""
-    target_status = ""
-    services: list[dict[str, Any]]
+    tried_by_host: dict[str, list[dict[str, Any]]] = {head.coolify_server: tried}
     token_source = "dry-run:no-api"
     deleted = False
     delete_response: dict[str, Any] | None = None
-
-    if getattr(args, "dry_run", False) and getattr(args, "existing_count", None) is not None:
-        existing_count = max(0, int(args.existing_count))
-        if existing_count < 1:
-            raise AllfatherControlError(f"No {network_key} super-node exists on {head.coolify_server}; nothing to remove.")
-        services = [{"name": super_service_name(network_key, head, item), "uuid": f"dry-run-{item}", "status": "dry-run"} for item in range(1, existing_count + 1)]
-    else:
-        client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
-        version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
-        if not version.ok:
-            raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
-        services = service_items_for_client(client, tried, args=args)
-
-    ordinals = existing_super_ordinals(services, network_key, head)
-    if not ordinals:
-        raise AllfatherControlError(f"No {network_key} super-node exists on {head.coolify_server}; nothing to remove.")
-    ordinal = max(ordinals)
-    service_name = super_service_name(network_key, head, ordinal)
-    remaining_count = len(ordinals) - 1
-
-    target_item: Mapping[str, Any] | None = None
-    for item in services:
-        if service_name_from_item(item) == service_name:
-            target_item = item
-            break
-    if target_item is None:
-        raise AllfatherControlError(f"Could not find Coolify service record for {service_name!r}.")
-
-    service_uuid = service_uuid_from_item(target_item)
-    target_status = service_status_from_item(target_item)
-    if not service_uuid:
-        raise AllfatherControlError(f"Cannot remove {service_name}: Coolify service UUID is missing.")
-
-    delete_confirmed_absent = False
     delete_wait_result: dict[str, Any] | None = None
+    delete_confirmed_absent = False
+    predelete_verify: dict[str, Any] = {
+        "enabled": False,
+        "ok": True,
+        "reason": "no surviving nodes require pre-delete verification",
+    }
+    survivor_handoff: dict[str, Any] = {
+        "enabled": False,
+        "ok": True,
+        "reason": "no surviving nodes require handoff",
+    }
+    postdelete_verify: dict[str, Any] = {
+        "enabled": False,
+        "ok": True,
+        "reason": "no surviving nodes require post-delete verification",
+    }
+    zero_node_cleanup: dict[str, Any] = {
+        "enabled": False,
+        "ok": True,
+        "reason": "network still has live nodes",
+    }
     runtime_cleanup: dict[str, Any] = planned_super_runtime_cleanup_result(
         network_key,
         head,
         enabled=False,
         dry_run=bool(getattr(args, "dry_run", False)),
-        reason="Runtime cleanup only runs when this removal leaves no super-nodes on the host.",
+        reason="Target-host runtime cleanup runs only when no local super-nodes remain after deletion.",
     )
     helper_cleanup: dict[str, Any] = {
         "enabled": False,
         "ready": None,
-        "reason": "Legacy helper cleanup only runs when this removal leaves no super-nodes on the host.",
+        "reason": "Legacy helper cleanup runs only when no local super-nodes remain after deletion.",
         "preserved_head_service": head.service_name,
         "delete_candidates": [],
         "deleted": [],
@@ -15877,86 +18769,258 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "reason": "not requested",
     }
 
-    if getattr(args, "dry_run", False):
+    if getattr(args, "dry_run", False) and getattr(args, "existing_count", None) is not None:
+        existing_count = max(0, int(args.existing_count))
+        if existing_count < 1:
+            raise AllfatherControlError(f"No {network_key} super-node exists on {head.coolify_server}; nothing to remove.")
+        services = [
+            {"name": super_service_name(network_key, head, item), "uuid": f"dry-run-{item}", "status": "dry-run"}
+            for item in range(1, existing_count + 1)
+        ]
+        ordinals = existing_super_ordinals(services, network_key, head)
+        ordinal = max(ordinals)
+        service_name = super_service_name(network_key, head, ordinal)
+        service_uuid = f"dry-run-{ordinal}"
+        target_status = "dry-run"
+        remaining_host_count = existing_count - 1
+        remaining_network_count = remaining_host_count
+        network_nodes_before = [super_inventory_entry(network_key, head, item, source="dry-run") for item in range(1, existing_count + 1)]
+        network_nodes_after = [item for item in network_nodes_before if str(item.get("service_name") or "") != service_name]
         _new_state, private_state_updates = cleanup_private_state_for_remove_node(
             state,
             private_state_path,
             network_key,
-            remaining_count=remaining_count,
+            remaining_count=remaining_network_count,
             dry_run=True,
             keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
         )
-        if remaining_count == 0:
-            runtime_cleanup = run_super_runtime_cleanup(plan, network_key, head, None, args, {}, tried)
-            helper_cleanup = prune_allfather_helper_services(
-                None,
-                network_key,
-                head,
-                args,
-                tried,
-                services=services,
-                host_super_nodes_remaining=False,
+        if remaining_network_count == 0:
+            zero_node_cleanup = cleanup_empty_network_runtime_all_hosts(plan, network_key, args, tried_by_host)
+            runtime_cleanup = next(
+                (
+                    dict(item.get("cleanup") or {})
+                    for item in (zero_node_cleanup.get("hosts") or [])
+                    if str(item.get("host") or "") == head.coolify_server
+                ),
+                runtime_cleanup,
             )
-    else:
-        delete_response = delete_coolify_service(client, service_uuid=service_uuid, service_name=service_name, tried=tried)
-        deleted = True
-        delete_wait_result = wait_for_coolify_service_absent(
-            client,
-            service_name=service_name,
-            tried=tried,
-            wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
-            poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
-            args=args,
+        remove_ready = bool(zero_node_cleanup.get("ok")) if remaining_network_count == 0 else True
+        return {
+            "ok": remove_ready,
+            "operation": "remove-node",
+            "network": network_key,
+            "host": head.coolify_server,
+            "host_slot": head.slot,
+            "ordinal": ordinal,
+            "service_name": service_name,
+            "service_uuid": service_uuid,
+            "service_status_before_remove": target_status,
+            "service_deleted": False,
+            "delete_confirmed_absent": False,
+            "remaining_host_super_nodes": remaining_host_count,
+            "remaining_network_super_nodes": remaining_network_count,
+            "removed_last_host_node": remaining_host_count == 0,
+            "removed_last_network_node": remaining_network_count == 0,
+            "network_pristine_after_remove": remaining_network_count == 0 and bool(zero_node_cleanup.get("ok")),
+            "network_inventory_before": {"node_count": len(network_nodes_before), "services": [item["service_name"] for item in network_nodes_before]},
+            "network_inventory_after": {"node_count": len(network_nodes_after), "services": [item["service_name"] for item in network_nodes_after]},
+            "predelete_verify": predelete_verify,
+            "survivor_handoff": survivor_handoff,
+            "postdelete_verify": postdelete_verify,
+            "private_state_updates": private_state_updates,
+            "runtime_cleanup": runtime_cleanup,
+            "zero_node_cleanup": zero_node_cleanup,
+            "helper_cleanup": helper_cleanup,
+            "hub_propagation": traefik_propagation,
+            "traefik_propagation": traefik_propagation,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "private_state_is_topology": False,
+            "token_source": token_source,
+            "tried": tried,
+            "note": "Dry-run lifecycle plan uses network-global remaining count for last-node cleanup.",
+        }
+
+    client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+    version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
+    if not version.ok:
+        raise AllfatherControlError(
+            f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
         )
-        delete_confirmed_absent = bool(delete_wait_result.get("confirmed_absent"))
-        if not delete_confirmed_absent:
+    services = service_items_for_client(client, tried, args=args)
+    ordinals = existing_super_ordinals(services, network_key, head)
+    if not ordinals:
+        raise AllfatherControlError(f"No {network_key} super-node exists on {head.coolify_server}; nothing to remove.")
+    ordinal = max(ordinals)
+    service_name = super_service_name(network_key, head, ordinal)
+
+    target_item = next((item for item in services if service_name_from_item(item) == service_name), None)
+    if target_item is None:
+        raise AllfatherControlError(f"Could not find Coolify service record for {service_name!r}.")
+    service_uuid = service_uuid_from_item(target_item)
+    target_status = service_status_from_item(target_item)
+    if not service_uuid:
+        raise AllfatherControlError(f"Cannot remove {service_name}: Coolify service UUID is missing.")
+
+    inventory_before = lifecycle_inventory_or_raise(plan, network_key, args, tried_by_host)
+    network_nodes_before = [dict(item) for item in (inventory_before.get("nodes") or []) if isinstance(item, Mapping)]
+    target_node = next((item for item in network_nodes_before if str(item.get("service_name") or "") == service_name), None)
+    if target_node is None:
+        raise AllfatherControlError(
+            f"Network-global inventory did not contain target {service_name}; refusing a host-local deletion."
+        )
+    survivors = [item for item in network_nodes_before if str(item.get("service_name") or "") != service_name]
+    operator_log(
+        args,
+        f"inventory: network_nodes={len(network_nodes_before)} target={service_name} "
+        f"survivors={','.join(str(item.get('service_name') or '') for item in survivors) or '<none>'}",
+    )
+
+    if survivors:
+        predelete_verify = lifecycle_verify_nodes(
+            plan,
+            args,
+            network_key,
+            network_nodes_before,
+            inventory_before,
+            tried_by_host,
+            verify_routes=False,
+        )
+        if predelete_verify.get("ok") is not True:
             raise AllfatherControlError(
-                f"Coolify accepted deletion for {service_name!r}, but the service is still present in live inventory "
-                f"after {delete_wait_result.get('wait_s')}s. Private seed material was not cleaned. Do not run add-node yet; "
-                "run remove-node again or rerun discover until the stale service disappears."
+                f"Pre-delete full-stack verification failed; {service_name} was not deleted: "
+                f"{predelete_verify.get('reason') or 'unknown verification failure'}"
             )
-        remaining_count = len(existing_super_ordinals(delete_wait_result.get("services", []), network_key, head))
-        _new_state, private_state_updates = cleanup_private_state_for_remove_node(
+        survivor_handoff = prepare_remove_survivor_handoff(
+            plan,
+            args,
+            network_key,
+            network_nodes_before,
+            target_node,
+            survivors,
             state,
             private_state_path,
-            network_key,
-            remaining_count=remaining_count,
-            dry_run=False,
-            keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
+            predelete_verify,
+            tried_by_host,
         )
-        if remaining_count == 0:
-            context = resolve_super_context(client, args, head, tried)
-            runtime_cleanup = run_super_runtime_cleanup(plan, network_key, head, client, args, context, tried)
-            if not bool(runtime_cleanup.get("ready")):
-                raise AllfatherControlError(
-                    f"Last-node runtime cleanup did not complete for {network_key} on {head.coolify_server}: "
-                    f"{runtime_cleanup.get('reason') or runtime_cleanup.get('error') or 'unknown error'}"
-                )
-            helper_cleanup = prune_allfather_helper_services(
-                client,
-                network_key,
-                head,
-                args,
-                tried,
-                services=delete_wait_result.get("services", []),
-                host_super_nodes_remaining=False,
+        if survivor_handoff.get("ok") is not True:
+            raise AllfatherControlError(
+                f"Survivor handoff failed; {service_name} was not deleted: "
+                f"{survivor_handoff.get('reason') or 'unknown handoff failure'}"
             )
+        operator_log(args, f"remove-handoff: complete target={service_name}; deletion is now allowed")
+
+    delete_response = delete_coolify_service(
+        client,
+        service_uuid=service_uuid,
+        service_name=service_name,
+        tried=tried,
+    )
+    deleted = True
+    delete_wait_result = wait_for_coolify_service_absent(
+        client,
+        service_name=service_name,
+        tried=tried,
+        wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
+        poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
+        args=args,
+    )
+    delete_confirmed_absent = bool(delete_wait_result.get("confirmed_absent"))
+    if not delete_confirmed_absent:
+        raise AllfatherControlError(
+            f"Coolify accepted deletion for {service_name!r}, but the service is still present in live inventory "
+            f"after {delete_wait_result.get('wait_s')}s. The service may be partially deleted; do not run add-node yet."
+        )
+
+    inventory_after = lifecycle_inventory_or_raise(plan, network_key, args, tried_by_host)
+    network_nodes_after = [dict(item) for item in (inventory_after.get("nodes") or []) if isinstance(item, Mapping)]
+    if any(str(item.get("service_name") or "") == service_name for item in network_nodes_after):
+        raise AllfatherControlError(f"Deleted target {service_name} is still present in network-global inventory.")
+    remaining_network_count = len(network_nodes_after)
+    remaining_local_count = sum(
+        1 for item in network_nodes_after if str(item.get("coolify_server") or "") == head.coolify_server
+    )
+
+    _new_state, private_state_updates = cleanup_private_state_for_remove_node(
+        state,
+        private_state_path,
+        network_key,
+        remaining_count=remaining_network_count,
+        dry_run=False,
+        keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
+    )
+
+    if remaining_network_count == 0:
+        operator_log(args, f"last-node: {service_name} was the final live {network_key} node; cleaning runtime state on all hosts")
+        zero_node_cleanup = cleanup_empty_network_runtime_all_hosts(
+            plan,
+            network_key,
+            args,
+            tried_by_host,
+        )
+        runtime_cleanup = next(
+            (
+                dict(item.get("cleanup") or {})
+                for item in (zero_node_cleanup.get("hosts") or [])
+                if str(item.get("host") or "") == head.coolify_server
+            ),
+            runtime_cleanup,
+        )
+    elif remaining_local_count == 0:
+        context = resolve_super_context(client, args, head, tried)
+        runtime_cleanup = run_super_runtime_cleanup(plan, network_key, head, client, args, context, tried)
+        helper_cleanup = prune_allfather_helper_services(
+            client,
+            network_key,
+            head,
+            args,
+            tried,
+            services=delete_wait_result.get("services", []),
+            host_super_nodes_remaining=False,
+        )
+
+    if remaining_network_count > 0:
+        postdelete_verify = lifecycle_verify_nodes(
+            plan,
+            args,
+            network_key,
+            network_nodes_after,
+            inventory_after,
+            tried_by_host,
+            verify_routes=False,
+        )
 
     if bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False)):
-        if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
-            raise AllfatherControlError("Refusing to rewrite mainnet Traefik routes without --allow-mainnet.")
         if getattr(args, "dry_run", False):
             traefik_propagation = {
                 "enabled": True,
                 "ok": None,
-                "reason": "dry-run; run hub-propagate after the live topology changes",
+                "reason": "dry-run; route propagation not executed",
+            }
+        elif postdelete_verify.get("ok") is not True and remaining_network_count > 0:
+            traefik_propagation = {
+                "enabled": True,
+                "ok": False,
+                "reason": "post-delete survivor verification failed; route propagation was not attempted",
             }
         else:
             traefik_propagation = propagate_hub_for_network(plan, args, network_key=network_key)
-    remove_ready = (not bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False))) or getattr(args, "dry_run", False) or bool(traefik_propagation.get("ok"))
+
+    cleanup_ok = bool(zero_node_cleanup.get("ok")) if remaining_network_count == 0 else (
+        not bool(runtime_cleanup.get("enabled")) or bool(runtime_cleanup.get("ready"))
+    )
+    survivor_ok = bool(postdelete_verify.get("ok")) if remaining_network_count > 0 else True
+    route_ok = (
+        not bool(getattr(args, "hub_propagate", False) or getattr(args, "traefik_propagate", False))
+        or bool(traefik_propagation.get("ok"))
+    )
+    remove_ready = bool(delete_confirmed_absent and cleanup_ok and survivor_ok and route_ok)
+    partial_success = bool(delete_confirmed_absent and not remove_ready)
 
     result = {
-        "ok": bool(remove_ready),
+        "ok": remove_ready,
+        "partial_success": partial_success,
         "operation": "remove-node",
         "network": network_key,
         "host": head.coolify_server,
@@ -15965,31 +19029,55 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "service_name": service_name,
         "service_uuid": service_uuid,
         "service_status_before_remove": target_status,
-        "removed_last_host_node": remaining_count == 0,
-        "remaining_host_super_nodes": remaining_count,
-        "network_pristine_after_remove": remaining_count == 0,
+        "service_deleted": deleted,
+        "delete_confirmed_absent": delete_confirmed_absent,
+        "remaining_host_super_nodes": remaining_local_count,
+        "remaining_network_super_nodes": remaining_network_count,
+        "removed_last_host_node": remaining_local_count == 0,
+        "removed_last_network_node": remaining_network_count == 0,
+        "network_pristine_after_remove": remaining_network_count == 0 and cleanup_ok,
+        "network_inventory_before": {
+            "node_count": len(network_nodes_before),
+            "services": [str(item.get("service_name") or "") for item in network_nodes_before],
+            "checked_hosts": list(inventory_before.get("checked_hosts") or []),
+        },
+        "network_inventory_after": {
+            "node_count": len(network_nodes_after),
+            "services": [str(item.get("service_name") or "") for item in network_nodes_after],
+            "checked_hosts": list(inventory_after.get("checked_hosts") or []),
+        },
+        "predelete_verify": predelete_verify,
+        "survivor_handoff": survivor_handoff,
+        "postdelete_verify": postdelete_verify,
         "private_state_updates": private_state_updates,
         "runtime_cleanup": runtime_cleanup,
+        "zero_node_cleanup": zero_node_cleanup,
         "helper_cleanup": helper_cleanup,
         "hub_propagation": traefik_propagation,
         "traefik_propagation": traefik_propagation,
-        "service_deleted": deleted,
-        "delete_confirmed_absent": delete_confirmed_absent,
-        "delete_wait": (
-            {key: value for key, value in (delete_wait_result or {}).items() if key != "services"}
-            if (getattr(args, "verbose", False) or delete_wait_result)
-            else None
-        ),
-        "delete_response": delete_response if getattr(args, "verbose", False) else ("<hidden; pass --verbose>" if delete_response else None),
+        "delete_wait": {key: value for key, value in (delete_wait_result or {}).items() if key != "services"},
+        "delete_response": delete_response if getattr(args, "verbose", False) else "<hidden; pass --verbose>",
         "public_guard_routes": False,
         "ssh_used": False,
         "direct_vpn_used": False,
         "private_state_is_topology": False,
         "token_source": token_source,
-        "tried": tried if getattr(args, "verbose", False) else summarize_coolify_attempts(tried),
+        "tried": tried_by_host if getattr(args, "verbose", False) else {
+            host_name: summarize_coolify_attempts(host_tried)
+            for host_name, host_tried in tried_by_host.items()
+        },
+        "reason": (
+            ""
+            if remove_ready
+            else (
+                str(zero_node_cleanup.get("reason") or "zero-node cleanup failed")
+                if remaining_network_count == 0 and not cleanup_ok
+                else str(postdelete_verify.get("reason") or runtime_cleanup.get("reason") or traefik_propagation.get("reason") or "remove-node finished with unverified follow-up state")
+            )
+        ),
         "note": (
-            "Removed the highest-numbered super-node for this network+host. "
-            "No renumbering is performed. Generated seed material and runtime state are cleaned only when this removal leaves the network empty."
+            "remove-node uses network-global live inventory. Survivor FDB/QBFT handoff is completed before deletion; "
+            "final-node deletion automatically cleans runtime state across all participating hosts."
         ),
     }
     return result
@@ -16002,6 +19090,13 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     head = choose_head_for_host(plan, args.host)
     private_state_path = repo_relative_path(args.private_state)
     state = load_yaml_mapping(private_state_path)
+    image_prefunk = ensure_add_node_stage_1_2_prefunk(plan, args, head)
+    verified_runtime_image = image_prefunk.get("image") if isinstance(image_prefunk.get("image"), Mapping) else {}
+    verified_runtime_image_tag = str(verified_runtime_image.get("tag") or "").strip()
+    if verified_runtime_image_tag:
+        setattr(args, "super_image", verified_runtime_image_tag)
+    elif not getattr(args, "dry_run", False):
+        raise AllfatherControlError(f"add-node requires a verified Stage 1/2 fullhub-runtime image for {head.coolify_server}: {image_prefunk.get('reason')}")
 
     tried: list[dict[str, Any]] = []
     preflight: dict[str, Any] = {
@@ -16050,6 +19145,16 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "ssh_used": False,
         "direct_vpn_used": False,
     }
+    zero_topology_prefunk: dict[str, Any] = {
+        "enabled": False,
+        "ok": True,
+        "reason": "live network already has one or more super-nodes",
+        "runtime_cleanup": {},
+        "private_state_cleanup": {},
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
     if getattr(args, "dry_run", False) and getattr(args, "existing_count", None) is not None:
         existing_count = max(0, int(args.existing_count))
         ordinal = existing_count + 1
@@ -16064,6 +19169,30 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             "ssh_used": False,
             "direct_vpn_used": False,
         }
+        if existing_count == 0:
+            _dry_state, dry_private_cleanup = cleanup_private_state_for_remove_node(
+                state,
+                private_state_path,
+                network_key,
+                remaining_count=0,
+                dry_run=True,
+                keep_seed_material=False,
+            )
+            zero_topology_prefunk = {
+                "enabled": True,
+                "ok": True,
+                "reason": "dry-run: zero live nodes would trigger network-wide stale runtime cleanup before first-node initialization",
+                "runtime_cleanup": cleanup_empty_network_runtime_all_hosts(
+                    plan,
+                    network_key,
+                    args,
+                    {head.coolify_server: tried},
+                ),
+                "private_state_cleanup": dry_private_cleanup,
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
         token_source = "dry-run:no-api"
         context: dict[str, Any] = {}
         service_uuid = ""
@@ -16086,6 +19215,49 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             tried,
         )
         network_existing_nodes = list(network_inventory.get("nodes") or [])
+        inventory_errors = [dict(item) for item in (network_inventory.get("errors") or []) if isinstance(item, Mapping)]
+        if inventory_errors:
+            rendered = "; ".join(f"{item.get('host')}: {item.get('error')}" for item in inventory_errors)
+            raise AllfatherControlError(
+                f"add-node could not prove the network-global live topology before creating a node: {rendered}"
+            )
+        if not network_existing_nodes:
+            operator_log(
+                args,
+                f"zero-topology: no live {network_key} super-nodes exist; cleaning stale runtime state before first-node initialization",
+            )
+            zero_tried_by_host: dict[str, list[dict[str, Any]]] = {head.coolify_server: tried}
+            runtime_zero_cleanup = cleanup_empty_network_runtime_all_hosts(
+                plan,
+                network_key,
+                args,
+                zero_tried_by_host,
+            )
+            if runtime_zero_cleanup.get("ok") is not True:
+                raise AllfatherControlError(
+                    f"add-node refused first-node initialization because zero-node runtime cleanup failed: "
+                    f"{runtime_zero_cleanup.get('reason') or 'unknown cleanup failure'}"
+                )
+            state, zero_private_cleanup = cleanup_private_state_for_remove_node(
+                state,
+                private_state_path,
+                network_key,
+                remaining_count=0,
+                dry_run=False,
+                keep_seed_material=False,
+            )
+            state = load_yaml_mapping(private_state_path)
+            zero_topology_prefunk = {
+                "enabled": True,
+                "ok": True,
+                "reason": "zero live nodes confirmed; stale runtime/topology files cleaned before first-node initialization",
+                "runtime_cleanup": runtime_zero_cleanup,
+                "private_state_cleanup": zero_private_cleanup,
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+            operator_log(args, "zero-topology: cleanup complete; proceeding with canonical first-node initialization")
         context = resolve_super_context(client, args, head, tried)
         resume_existing = False
         resume_reason = ""
@@ -16093,6 +19265,16 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         resume_ordinal = max(ordinals) if ordinals else 0
         if resume_ordinal > 0:
             resume_cell_id = super_service_name(network_key, head, resume_ordinal)
+            resume_matches = matching_service_items(services, resume_cell_id)
+            resume_coolify_status = ",".join(
+                sorted(
+                    {
+                        service_status_from_item(item)
+                        for item in resume_matches
+                        if service_status_from_item(item)
+                    }
+                )
+            )
             existing_nodes_for_probe = existing_super_inventory_from_services(services, network_key, head)
             try:
                 resume_probe_uuid, _resume_probe_action, _resume_probe_existing = sync_probe_service(
@@ -16149,8 +19331,20 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                     "service_name": resume_cell_id,
                     "observed": False,
                     "ready": False,
+                    "coolify_status": resume_coolify_status,
                     "reason": f"{type(exc).__name__}: {exc}",
                 }
+            if not resume_existing and add_node_service_status_requires_resume(resume_coolify_status):
+                resume_existing = True
+                resume_reason = (
+                    f"existing Coolify service status is {resume_coolify_status}; "
+                    "repairing the same ordinal instead of creating a new node"
+                )
+                resume_probe.setdefault("service_name", resume_cell_id)
+                resume_probe.setdefault("observed", False)
+                resume_probe.setdefault("ready", False)
+                resume_probe["coolify_status"] = resume_coolify_status
+                resume_probe["reason"] = resume_reason
 
         if resume_existing:
             ordinal = resume_ordinal
@@ -16244,6 +19438,9 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         publish_routes=bool(getattr(args, "publish_routes", False)),
     )
     manifest["deployment_id"] = "dry-run" if getattr(args, "dry_run", False) else new_super_deployment_id()
+    if verified_runtime_image_tag:
+        verified_runtime_image_tag = attach_verified_runtime_image_to_super_manifest(manifest, image_prefunk)
+        setattr(args, "super_image", verified_runtime_image_tag)
     hub_admin_key = wallet_private_key(wallets, "hub_admin")
     deployer_key = wallet_private_key(wallets, "deployer") if manifest["bootstrap"]["contracts_requested"] else ""
     compose = render_super_node_compose(
@@ -16255,21 +19452,37 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     )
 
     if not getattr(args, "dry_run", False):
-        operator_log(args, f"plan: next node {cell_id}; base_image={getattr(args, 'super_image', DEFAULT_SUPER_IMAGE)}")
+        operator_log(args, f"plan: next node {cell_id}; runtime_image={getattr(args, 'super_image', DEFAULT_SUPER_IMAGE)}")
         if not getattr(args, "no_deploy", False):
-            super_base = ensure_super_base_image(
-                plan,
-                head,
-                client,
-                args,
-                context,
-                tried,
-            )
-            if not bool(super_base.get("ready")):
-                operator_log(args, f"base-image: blocked: {super_base.get('reason')}")
-                raise AllfatherControlError(
-                    f"Managed super base image is not ready on {head.coolify_server}: {super_base.get('reason')}"
+            if verified_runtime_image_tag:
+                super_base = {
+                    "enabled": False,
+                    "ready": True,
+                    "reason": "Stage 1/2 verified fullhub-runtime image is used directly; no per-service Coolify build or bootstrap base image",
+                    "target_image": verified_runtime_image_tag,
+                    "source": "stage-1-2-verified-fullhub-runtime",
+                    "service_name": "",
+                    "service_uuid": "",
+                    "service_action": "not-created",
+                    "observed_by": "stage-1-2-handoff",
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                }
+            else:
+                super_base = ensure_super_base_image(
+                    plan,
+                    head,
+                    client,
+                    args,
+                    context,
+                    tried,
                 )
+                if not bool(super_base.get("ready")):
+                    operator_log(args, f"base-image: blocked: {super_base.get('reason')}")
+                    raise AllfatherControlError(
+                        f"Managed super base image is not ready on {head.coolify_server}: {super_base.get('reason')}"
+                    )
             if existing_nodes:
                 validator_admission_prep = ensure_existing_validator_admission_endpoints(
                     plan,
@@ -16374,6 +19587,11 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "hub_admin_create_requested": bool(manifest["bootstrap"].get("hub_admin_create_requested")),
         "hub_admin_private_key_required_for_node_add": False,
         "hub_admin_scope": "node",
+        "image_prefunk": stage_1_2_redact_mapping(image_prefunk),
+        "zero_topology_prefunk": stage_1_2_redact_mapping(zero_topology_prefunk),
+        "verified_fullhub_runtime_image": stage_1_2_redact_mapping(verified_runtime_image),
+        "super_node_service_build_disabled": bool(verified_runtime_image_tag),
+        "bootstrap_image": False,
         "private_state_updates": private_state_updates,
         "fdb": {
             "action": manifest["foundationdb"]["action"],
@@ -16494,14 +19712,1059 @@ def add_common_head_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--image", default=DEFAULT_IMAGE)
 
 
+
+# --- Stage 1/2 control-surface image reconciler (canonical implementation) ---
+STAGE_1_2_OPERATION = "allfather-control-1-2"
+DEFAULT_STAGE_1_2_OUTPUT_ROOT = REPO_ROOT / "runtime" / "allfather-control-stage-1-2"
+DEFAULT_STAGE_1_2_BUILD_WAIT_S = 2400.0
+DEFAULT_STAGE_1_2_POLL_S = 5.0
+
+
+def stage_1_2_log(args: argparse.Namespace, message: str) -> None:
+    if bool(getattr(args, "quiet", False)):
+        return
+    print(f"[allfather {STAGE_1_2_OPERATION}] {message}", file=sys.stderr, flush=True)
+
+
+def stage_1_2_utc_run_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def stage_1_2_clean_image_part(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "").strip()).strip("-").lower()
+    return cleaned or "unknown"
+
+
+def stage_1_2_b64_text(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def stage_1_2_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def stage_1_2_redact_mapping(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, raw in value.items():
+            lower = str(key).lower()
+            if any(token in lower for token in ("token", "secret", "password", "private_key", "api_key")):
+                redacted[str(key)] = "<redacted>" if raw not in (None, "") else raw
+            elif str(key) in {"dockerfile_b64", "build_context_files_b64"}:
+                redacted[str(key)] = "<base64-payload>"
+                redacted[str(key) + "_bytes"] = len(json.dumps(raw, sort_keys=True)) if isinstance(raw, (dict, list)) else len(str(raw or ""))
+            elif str(key) in {"image_build_steps"} and isinstance(raw, list):
+                redacted[str(key)] = [stage_1_2_redact_mapping(item) for item in raw]
+            else:
+                redacted[str(key)] = stage_1_2_redact_mapping(raw)
+        return redacted
+    if isinstance(value, list):
+        return [stage_1_2_redact_mapping(item) for item in value]
+    return value
+
+
+
+def ensure_stage_1_2_arg_compat(args: argparse.Namespace) -> None:
+    """Populate CLI attributes expected by reused allfather_control helpers.
+
+    This script has its own small CLI, but it deliberately reuses lower-level
+    helpers from tools/allfather_control.py and tools/coolify_fdb_cluster.py.
+    Those helpers were written for the full allfather_control.py argparse
+    namespace, so keep every expected remote/Coolify attribute present even when
+    this staged runner does not expose or use it directly.
+    """
+
+    defaults: dict[str, Any] = {
+        "command": STAGE_1_2_OPERATION,
+        "json": False,
+        "verbose": False,
+        "progress": False,
+        "quiet": False,
+        "include_compose": False,
+        "coolify_token": "",
+        "coolify_token_env": fdb_tool().DEFAULT_TOKEN_ENV,
+        "coolify_token_file": "",
+        "set_coolify_token": [],
+        "set_coolify_token_env": [],
+        "set_coolify_token_file": [],
+        "set_coolify_url": [],
+        "coolify_project_uuid": "",
+        "set_coolify_project_uuid": [],
+        "coolify_project_name": DEFAULT_COOLIFY_PROJECT_NAME,
+        "coolify_environment_name": DEFAULT_CONTROL_ENVIRONMENT,
+        "coolify_environment_uuid": "",
+        "set_coolify_environment_uuid": [],
+        "no_create_environment": False,
+        "coolify_server_uuid": "",
+        "coolify_server_name": "",
+        "set_coolify_server_uuid": [],
+        "set_coolify_server_name": [],
+        "coolify_destination_uuid": "",
+        "set_coolify_destination_uuid": [],
+        "coolify_service_uuid": "",
+        "set_coolify_service_uuid": [],
+        "coolify_timeout_s": DEFAULT_COOLIFY_TIMEOUT_S,
+        "coolify_retries": DEFAULT_COOLIFY_RETRIES,
+        "coolify_retry_sleep_s": DEFAULT_COOLIFY_RETRY_SLEEP_S,
+        "guard_host_base": DEFAULT_GUARD_HOST_BASE,
+        "guard_container_port": DEFAULT_GUARD_CONTAINER_PORT,
+        "state_root_prefix": DEFAULT_STATE_ROOT_PREFIX,
+        "dockerfile": DEFAULT_DOCKERFILE,
+        "image": DEFAULT_IMAGE,
+    }
+    for name, value in defaults.items():
+        if not hasattr(args, name):
+            if isinstance(value, list):
+                value = list(value)
+            setattr(args, name, value)
+
+
+def stage_1_2_selected_plan(plan: HeadPlan, selected_hosts: Sequence[str]) -> HeadPlan:
+    if not selected_hosts:
+        return plan
+    wanted = {str(item).strip() for item in selected_hosts if str(item).strip()}
+    heads = tuple(head for head in plan.heads if head.coolify_server in wanted or head.slot in wanted or head.head_id in wanted)
+    matched = {head.coolify_server for head in heads} | {head.slot for head in heads} | {head.head_id for head in heads}
+    missing = sorted(wanted - matched)
+    if missing:
+        raise AllfatherControlError("Unknown selected host(s): " + ", ".join(missing))
+    return HeadPlan(
+        kind=plan.kind,
+        private_state_path=plan.private_state_path,
+        heads=heads,
+        desired_counts=plan.desired_counts,
+        guardrails=plan.guardrails,
+    )
+
+
+def stage_1_2_build_request_for_head(args: argparse.Namespace, head: HeadNode, *, run_id: str, run_dir: Path) -> dict[str, Any]:
+    network = clean_node_network_key(args.network)
+    image_tag = str(args.fullhub_image_tag or "").strip()
+    if image_tag and len(args.host or []) > 1:
+        raise AllfatherControlError("--fullhub-image-tag is only safe with one selected host")
+    if not image_tag:
+        image_tag = (
+            f"{DEFAULT_ALLFATHER_FULLHUB_RUNTIME_IMAGE_REPO}:"
+            f"{stage_1_2_clean_image_part(network)}-{stage_1_2_clean_image_part(head.coolify_server)}-{stage_1_2_clean_image_part(run_id)}"
+        )
+
+    request_id = f"fullhub-image-build-{network}-{head.coolify_server}-{run_id}"
+    build_id = f"{network}-{head.coolify_server}-{run_id}"
+    plan = allfather_checkpoint_image_build_plan(
+        source_image=getattr(args, "super_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+        runtime_image_tag=image_tag,
+        build_id=build_id,
+    )
+
+    image_build_steps: list[dict[str, Any]] = []
+    dockerfile_dir = run_dir / "dockerfiles" / head.coolify_server
+    dockerfile_dir.mkdir(parents=True, exist_ok=True)
+    step_manifest: list[dict[str, Any]] = []
+
+    for raw_step in plan.get("steps") or []:
+        if not isinstance(raw_step, Mapping):
+            continue
+        step = dict(raw_step)
+        name = stage_1_2_clean_image_part(str(step.get("name") or "step"))
+        dockerfile = str(step.pop("dockerfile", "") or "")
+        context_files_b64 = step.pop("context_files_b64", {})
+        if not isinstance(context_files_b64, Mapping):
+            context_files_b64 = {}
+        dockerfile_sha256 = hashlib.sha256(dockerfile.encode("utf-8")).hexdigest()
+        step["dockerfile_b64"] = stage_1_2_b64_text(dockerfile)
+        step["dockerfile_sha256"] = dockerfile_sha256
+        step["build_context_files_b64"] = dict(context_files_b64)
+        step["build_context_file_count"] = len(context_files_b64)
+        step["build_context_manifest_sha256"] = hashlib.sha256(
+            json.dumps(
+                {
+                    str(path): hashlib.sha256(str(value or "").encode("ascii")).hexdigest()
+                    for path, value in sorted(context_files_b64.items())
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        image_build_steps.append(step)
+
+        dockerfile_path = dockerfile_dir / f"{name}.Dockerfile"
+        dockerfile_path.write_text(dockerfile, encoding="utf-8")
+        step_manifest.append(
+            {
+                "name": step.get("name"),
+                "tag": step.get("tag"),
+                "dockerfile": str(dockerfile_path),
+                "dockerfile_sha256": dockerfile_sha256,
+                "build_context_file_count": len(context_files_b64),
+                "build_context_manifest_sha256": step["build_context_manifest_sha256"],
+                "source_payload": step.get("source_payload") or "",
+                "checkpoint_cache_hit": step.get("checkpoint_cache_hit") or "",
+                "checkpoint_restored": step.get("checkpoint_restored") or "",
+                "checkpoint_built": step.get("checkpoint_built") or "",
+                "checkpoint_verified": step.get("checkpoint_verified") or "",
+                "durable_cache": bool(step.get("durable_cache")),
+            }
+        )
+
+    image_tags = plan.get("image_tags") if isinstance(plan.get("image_tags"), Mapping) else {}
+    stage_1_2_write_json(
+        run_dir / "dockerfiles" / f"{head.coolify_server}.checkpoint-image-plan.json",
+        {
+            "kind": plan.get("kind") or "main_computer.allfather.checkpoint_image_build_plan.v1",
+            "image_tags": dict(image_tags),
+            "fingerprints": stage_1_2_redact_mapping(plan.get("fingerprints") if isinstance(plan.get("fingerprints"), Mapping) else {}),
+            "steps": step_manifest,
+            "source_image": plan.get("source_image") or "",
+            "source_payload_rule": "images 1-3 contain no git/source payload, request_id, run_id, host, or network; fullhub-runtime is the first source-bearing image",
+        },
+    )
+
+    dockerfile_sha256 = hashlib.sha256(
+        json.dumps(
+            [{"name": step.get("name"), "tag": step.get("tag"), "dockerfile_sha256": step.get("dockerfile_sha256")} for step in image_build_steps],
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    context_manifest_sha256 = hashlib.sha256(
+        json.dumps(
+            [{"name": step.get("name"), "build_context_manifest_sha256": step.get("build_context_manifest_sha256")} for step in image_build_steps],
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    return {
+        "kind": "main_computer.allfather.fullhub_image_build_request.v3",
+        "service_name": "allfather-fullhub-image-build",
+        "network": network,
+        "host": head.coolify_server,
+        "run_id": run_id,
+        "request_id": request_id,
+        "image_tag": image_tag,
+        "image_tags": dict(image_tags),
+        "build_id": build_id,
+        "image_build_plan": "four-checkpoint-images",
+        "image_build_steps": image_build_steps,
+        "dockerfile_sha256": dockerfile_sha256,
+        "build_context_manifest_sha256": context_manifest_sha256,
+        "docker_timeout_s": int(args.docker_build_timeout_s),
+        "verification": {
+            "requires_checkpoint_images": ["system-base", "foundation-base", "python-base", "fullhub-runtime"],
+            "requires_durable_checkpoint_archives": ["system-base", "foundation-base", "python-base"],
+            "requires_hub_full_capability": True,
+            "requires_pythonpath": "/opt/main-computer-src",
+            "requires_hub_import": True,
+            "requires_full_hub_runtime_sha256_file": True,
+            "fail_fast": True,
+        },
+        "transport": "allfather-control-surface-coolify-metadata",
+        "local_runner_uses_ssh": False,
+        "local_runner_uses_10_net": False,
+    }
+
+
+def stage_1_2_reconcile_head_and_build_image(
+    plan: HeadPlan,
+    head: HeadNode,
+    args: argparse.Namespace,
+    *,
+    build_request: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    tried: list[dict[str, Any]] = []
+    client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+    version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
+    if not version.ok:
+        raise AllfatherControlError(
+            f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
+        )
+
+    context = resolve_context(client, args, head, tried)
+    service_uuid, action, existing = sync_head_service(
+        client,
+        plan,
+        head,
+        args,
+        context,
+        tried,
+        probe_targets=probe_target_records_for_plan(plan, super_inventory=[]),
+        fullhub_image_build_request=build_request,
+    )
+
+    marker_prime = prime_head_fullhub_image_build_marker(
+        client,
+        service_uuid,
+        tried,
+        build_request,
+        args=args,
+    )
+
+    deploy_result = None
+    if not (args.no_deploy_control or args.dry_run):
+        stage_1_2_log(args, f"stage1: triggering control-surface deploy host={head.coolify_server}")
+        deploy_result = hub_service_tool().trigger_deploy_service(
+            client,
+            service_uuid=service_uuid,
+            force=True,
+            tried=tried,
+        )
+
+    stage1 = {
+        "host": head.coolify_server,
+        "head_id": head.head_id,
+        "service_name": head.service_name,
+        "service_uuid": service_uuid,
+        "service_action": action,
+        "token_source": token_source,
+        "context": stage_1_2_redact_mapping(context),
+        "guard_url": head.guard_url,
+        "internal_guard_url_metadata_only": head.guard_url,
+        "local_runner_probe_attempted": False,
+        "local_runner_uses_ssh": False,
+        "local_runner_uses_10_net": False,
+        "deployed": deploy_result is not None,
+        "deploy_result": stage_1_2_redact_mapping(deploy_result),
+        "existing": stage_1_2_redact_mapping(existing),
+        "marker_prime": stage_1_2_redact_mapping(marker_prime),
+        "tried": stage_1_2_redact_mapping(tried),
+    }
+
+    if args.no_wait or args.dry_run:
+        stage2 = {
+            "host": head.coolify_server,
+            "request_id": str(build_request.get("request_id") or ""),
+            "image_tag": str(build_request.get("image_tag") or ""),
+            "image_tags": stage_1_2_redact_mapping(build_request.get("image_tags") if isinstance(build_request.get("image_tags"), Mapping) else {}),
+            "image_build_plan": str(build_request.get("image_build_plan") or ""),
+            "checkpoint_results": [],
+            "status": "submitted" if not args.dry_run else "planned",
+            "verified": False,
+            "reason": "--no-wait or --dry-run_stage_1_2_cli_args",
+            "source": "coolify-service-description",
+            "local_runner_probe_attempted": False,
+            "local_runner_uses_ssh": False,
+            "local_runner_uses_10_net": False,
+        }
+        return stage1, stage2
+
+    stage_1_2_log(args, f"stage2: waiting for control-surface fullhub image build marker host={head.coolify_server}")
+    wait = wait_for_head_fullhub_image_build_ready(
+        client,
+        service_uuid,
+        tried,
+        wait_s=float(args.build_wait_s),
+        poll_s=float(args.poll_s),
+        expected_request_id=str(build_request.get("request_id") or ""),
+        args=args,
+    )
+    result = wait.get("result") if isinstance(wait.get("result"), Mapping) else {}
+    image = result.get("image") if isinstance(result.get("image"), Mapping) else {}
+    stage2 = {
+        "host": head.coolify_server,
+        "request_id": str(build_request.get("request_id") or ""),
+        "image_tag": str(image.get("tag") or build_request.get("image_tag") or ""),
+        "image_id": str(image.get("id") or ""),
+        "image_created": str(image.get("created") or ""),
+        "image_tags": stage_1_2_redact_mapping(result.get("image_tags") if isinstance(result.get("image_tags"), Mapping) else build_request.get("image_tags") if isinstance(build_request.get("image_tags"), Mapping) else {}),
+        "image_build_plan": str(result.get("image_build_plan") or build_request.get("image_build_plan") or ""),
+        "checkpoint": str(result.get("current_checkpoint") or result.get("checkpoint") or ""),
+        "checkpoint_results": stage_1_2_redact_mapping(result.get("checkpoint_results") if isinstance(result.get("checkpoint_results"), list) else []),
+        "verified": bool(wait.get("ready")),
+        "status": str(result.get("status") or result.get("phase") or ("ready" if wait.get("ready") else "failed")),
+        "phase": str(result.get("phase") or ""),
+        "reason": str(wait.get("reason") or result.get("reason") or result.get("error") or ""),
+        "log_relay": stage_1_2_redact_mapping(result.get("log_relay") if isinstance(result.get("log_relay"), Mapping) else {}),
+        "build_log_tail": stage_1_2_redact_mapping(result.get("build_log_tail") if isinstance(result.get("build_log_tail"), list) else []),
+        "wait": stage_1_2_redact_mapping(wait),
+        "source": "coolify-service-description",
+        "local_runner_probe_attempted": False,
+        "local_runner_uses_ssh": False,
+        "local_runner_uses_10_net": False,
+    }
+    return stage1, stage2
+
+
+def run_stage_1_2_cli_args(args: argparse.Namespace) -> dict[str, Any]:
+    ensure_stage_1_2_arg_compat(args)
+    network = clean_node_network_key(args.network)
+    if network == "mainnet" and not args.allow_mainnet:
+        raise AllfatherControlError("Refusing to run_stage_1_2_cli_args mainnet stage 1/2 without --allow-mainnet.")
+
+    run_id = args.run_id or stage_1_2_utc_run_id()
+    output_root = Path(args.output_root)
+    run_dir = output_root / network / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    stage_1_2_log(args, f"stage0: building desired control plan network={network}")
+    plan = stage_1_2_selected_plan(build_plan_from_args(args), args.host or [])
+    if not plan.heads:
+        raise AllfatherControlError("No selected heads remain after host filtering.")
+
+    stage: dict[str, Any] = {
+        "ok": False,
+        "operation": STAGE_1_2_OPERATION,
+        "network": network,
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "run_dir": str(run_dir),
+        "desired": {
+            "hosts": [head.coolify_server for head in plan.heads],
+            "control_services": [head.service_name for head in plan.heads],
+            "super_node_deploys": False,
+            "traefik_writes": False,
+            "bootstrap_image": False,
+            "fullhub_image_per_host": True,
+            "fullhub_image_build_plan": "four-checkpoint-images",
+        },
+        "safety": {
+            "coolify_api_only_from_local_runner": True,
+            "local_runner_uses_ssh": False,
+            "local_runner_uses_10_net": False,
+            "control_surface_writes": not args.dry_run,
+            "control_surface_deploys": not args.no_deploy_control and not args.dry_run,
+            "control_surface_deploy_force_recreate": not args.no_deploy_control and not args.dry_run,
+            "control_surface_docker_builds": not args.no_wait and not args.dry_run,
+            "super_node_deploys": False,
+            "super_node_recreates": False,
+            "docker_tags_to_service_images": False,
+            "traefik_writes": False,
+            "bootstrap_image": False,
+        },
+        "stage1_control_surface": [],
+        "stage2_fullhub_images": [],
+        "next_stage_inputs": {
+            "verified_fullhub_image_by_host": {},
+            "control_service_uuid_by_host": {},
+        },
+        "errors": [],
+        "skipped_hosts": [],
+    }
+
+    stage_1_2_write_json(run_dir / "plan.json", plan.to_dict())
+
+    for head in plan.heads:
+        stage_1_2_log(args, f"stage1: reconciling allfather control surface host={head.coolify_server}")
+        build_request = stage_1_2_build_request_for_head(args, head, run_id=run_id, run_dir=run_dir)
+        stage_1_2_write_json(
+            run_dir / "build-requests" / f"{head.coolify_server}.fullhub-build-request.redacted.json",
+            stage_1_2_redact_mapping(build_request),
+        )
+
+        if args.dry_run:
+            compose = render_head_compose(
+                plan,
+                head,
+                image=args.image,
+                probe_targets=probe_target_records_for_plan(plan, super_inventory=[]),
+                fullhub_image_build_request=build_request,
+            )
+            compose_path = run_dir / "compose" / f"{head.coolify_server}.control.compose.yml"
+            compose_path.parent.mkdir(parents=True, exist_ok=True)
+            compose_path.write_text(compose, encoding="utf-8")
+            stage1 = {
+                "host": head.coolify_server,
+                "service_name": head.service_name,
+                "guard_url": head.guard_url,
+                "internal_guard_url_metadata_only": head.guard_url,
+                "local_runner_probe_attempted": False,
+                "local_runner_uses_ssh": False,
+                "local_runner_uses_10_net": False,
+                "dry_run": True,
+                "compose": str(compose_path),
+                "service_action": "planned",
+            }
+            stage2 = {
+                "host": head.coolify_server,
+                "request_id": str(build_request.get("request_id") or ""),
+                "image_tag": str(build_request.get("image_tag") or ""),
+                "image_tags": stage_1_2_redact_mapping(build_request.get("image_tags") if isinstance(build_request.get("image_tags"), Mapping) else {}),
+                "image_build_plan": str(build_request.get("image_build_plan") or ""),
+                "checkpoint_results": [],
+                "status": "planned",
+                "verified": False,
+                "dry_run": True,
+                "source": "coolify-service-description",
+            }
+        else:
+            stage1, stage2 = stage_1_2_reconcile_head_and_build_image(plan, head, args, build_request=build_request)
+
+        stage["stage1_control_surface"].append(stage1)
+        stage["stage2_fullhub_images"].append(stage2)
+        stage_1_2_write_json(run_dir / "hosts" / f"{head.coolify_server}.stage1.json", stage1)
+        stage_1_2_write_json(run_dir / "hosts" / f"{head.coolify_server}.stage2.json", stage2)
+
+        if stage1.get("service_uuid"):
+            stage["next_stage_inputs"]["control_service_uuid_by_host"][head.coolify_server] = stage1.get("service_uuid")
+        if stage2.get("verified"):
+            stage["next_stage_inputs"]["verified_fullhub_image_by_host"][head.coolify_server] = {
+                "tag": stage2.get("image_tag"),
+                "id": stage2.get("image_id"),
+                "created": stage2.get("image_created"),
+                "request_id": stage2.get("request_id"),
+                "image_tags": stage2.get("image_tags") or {},
+                "image_build_plan": stage2.get("image_build_plan") or "",
+                "checkpoint_results": stage2.get("checkpoint_results") or [],
+            }
+        elif not args.dry_run and not args.no_wait:
+            stage["errors"].append(
+                {
+                    "host": head.coolify_server,
+                    "stage": "stage2_fullhub_image",
+                    "reason": stage2.get("reason") or "full-hub image was not verified",
+                    "status": stage2.get("status"),
+                }
+            )
+            remaining_heads = plan.heads[plan.heads.index(head) + 1 :]
+            if remaining_heads:
+                for skipped in remaining_heads:
+                    skipped_record = {
+                        "host": skipped.coolify_server,
+                        "stage": "stage2_fullhub_image",
+                        "status": "skipped",
+                        "reason": f"prior full-hub image build failed on {head.coolify_server}; stopping Stage 2 fail-fast",
+                    }
+                    stage["skipped_hosts"].append(skipped_record)
+                    stage["errors"].append(skipped_record)
+                stage_1_2_log(args, f"stage2: stopping after failed fullhub image build host={head.coolify_server}; skipped={','.join(item.coolify_server for item in remaining_heads)}")
+            break
+
+    stage["ok"] = not stage["errors"] and (
+        args.dry_run
+        or args.no_wait
+        or len(stage["next_stage_inputs"]["verified_fullhub_image_by_host"]) == len(plan.heads)
+    )
+    stage_1_2_write_json(run_dir / "stage_1_2.json", stage)
+    latest = output_root / network / "latest-stage-1-2.json"
+    latest.parent.mkdir(parents=True, exist_ok=True)
+    latest.write_text(json.dumps(stage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    return {
+        "ok": bool(stage["ok"]),
+        "operation": STAGE_1_2_OPERATION,
+        "network": network,
+        "run_id": run_id,
+        "selected_hosts": [head.coolify_server for head in plan.heads],
+        "stage1_control_surface_count": len(stage["stage1_control_surface"]),
+        "stage2_fullhub_image_count": len(stage["stage2_fullhub_images"]),
+        "verified_fullhub_image_count": len(stage["next_stage_inputs"]["verified_fullhub_image_by_host"]),
+        "skipped_hosts": stage.get("skipped_hosts", []),
+        "errors": stage["errors"],
+        "safety": stage["safety"],
+        "output": {
+            "run_dir": str(run_dir),
+            "stage_file": str(run_dir / "stage_1_2.json"),
+            "latest_file": str(latest),
+        },
+    }
+
+
+
+def add_stage_1_2_args(parser: argparse.ArgumentParser) -> None:
+    """Add the reconciler CLI shared by allfather_control.py and the compatibility wrapper."""
+
+    parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS)
+    parser.add_argument("--allow-mainnet", action="store_true")
+    parser.add_argument("--host", action="append", default=[], help="Coolify host name/slot/head id to include; repeatable.")
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--output-root", default=str(DEFAULT_STAGE_1_2_OUTPUT_ROOT))
+    parser.add_argument("--private-state", default=str(DEFAULT_PRIVATE_STATE_PATH))
+    parser.add_argument("--image", default=DEFAULT_IMAGE, help="Image used for the Allfather control surface service.")
+    parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Base image for the generated full-hub super-node image.")
+    parser.add_argument("--fullhub-image-tag", default="", help="Explicit full-hub image tag; only allowed with one --host.")
+    parser.add_argument("--docker-build-timeout-s", type=int, default=7200)
+    parser.add_argument("--build-wait-s", type=float, default=DEFAULT_STAGE_1_2_BUILD_WAIT_S)
+    parser.add_argument("--poll-s", type=float, default=DEFAULT_STAGE_1_2_POLL_S)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-deploy-control", action="store_true", help="Update/create the control service but do not trigger deploy.")
+    parser.add_argument("--no-wait", action="store_true", help="Submit the control-surface build request and return without waiting.")
+    parser.add_argument("--operator-log-interval-s", type=float, default=15.0)
+
+    parser.add_argument("--dockerfile", default=DEFAULT_DOCKERFILE)
+    parser.add_argument("--guard-host-base", type=int, default=DEFAULT_GUARD_HOST_BASE)
+    parser.add_argument("--guard-container-port", type=int, default=DEFAULT_GUARD_CONTAINER_PORT)
+    parser.add_argument("--state-root-prefix", default=DEFAULT_STATE_ROOT_PREFIX)
+
+    parser.add_argument("--coolify-timeout-s", type=float, default=DEFAULT_COOLIFY_TIMEOUT_S)
+    parser.add_argument("--coolify-retries", type=int, default=DEFAULT_COOLIFY_RETRIES)
+    parser.add_argument("--coolify-retry-sleep-s", type=float, default=DEFAULT_COOLIFY_RETRY_SLEEP_S)
+    parser.add_argument("--coolify-project-name", default=DEFAULT_COOLIFY_PROJECT_NAME)
+    parser.add_argument("--coolify-environment-name", default=DEFAULT_CONTROL_ENVIRONMENT)
+    parser.add_argument("--coolify-destination-uuid", default="")
+    parser.add_argument("--set-coolify-destination-uuid", action="append", default=[])
+    parser.add_argument("--coolify-service-uuid", default="")
+    parser.add_argument("--set-coolify-service-uuid", action="append", default=[])
+    parser.add_argument("--set-coolify-url", action="append", default=[])
+    parser.add_argument("--coolify-url", default="")
+    parser.add_argument("--coolify-token", default="", help="One Coolify token for every selected host. Prefer private-state token references.")
+    parser.add_argument("--set-coolify-token", action="append", default=[], help="Per-host token. Format: <host>:<token>")
+    parser.add_argument("--set-coolify-token-env", action="append", default=[])
+    parser.add_argument("--set-coolify-token-file", action="append", default=[])
+    parser.add_argument("--coolify-token-env", default=fdb_tool().DEFAULT_TOKEN_ENV)
+    parser.add_argument("--coolify-token-file", default="")
+
+    parser.add_argument("--coolify-project-uuid", default="")
+    parser.add_argument("--set-coolify-project-uuid", action="append", default=[])
+    parser.add_argument("--coolify-environment-uuid", default="")
+    parser.add_argument("--set-coolify-environment-uuid", action="append", default=[])
+    parser.add_argument("--no-create-environment", action="store_true")
+    parser.add_argument("--coolify-server-uuid", default="")
+    parser.add_argument("--coolify-server-name", default="")
+    parser.add_argument("--set-coolify-server-uuid", action="append", default=[])
+    parser.add_argument("--set-coolify-server-name", action="append", default=[])
+
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--progress", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+
+
+def build_stage_1_2_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Stage 1/2 Allfather reconciler: deploy/update the control surface, then ask that same "
+            "control surface to build and verify one real full-hub image per host. No SSH, no 10-net "
+            "local probes, no helper services, no super-node deployment."
+        ),
+        allow_abbrev=False,
+    )
+    add_stage_1_2_args(parser)
+    return parser
+
+
+def stage_1_2_main(argv: Sequence[str] | None = None) -> int:
+    parser = build_stage_1_2_parser()
+    args = parser.parse_args(argv)
+    if not hasattr(args, "command"):
+        setattr(args, "command", STAGE_1_2_OPERATION)
+    try:
+        result = run_stage_1_2_cli_args(args)
+    except Exception as exc:
+        payload = {
+            "ok": False,
+            "operation": STAGE_1_2_OPERATION,
+            "network": getattr(args, "network", ""),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        print_json(payload)
+        return 1
+    print_json(result)
+    return 0 if result.get("ok") else 2
+
+# --- End Stage 1/2 control-surface image reconciler ---
+
+
+def add_node_stage_1_2_latest_path(args: argparse.Namespace, network_key: str) -> Path:
+    root = Path(getattr(args, "stage_1_2_output_root", DEFAULT_STAGE_1_2_OUTPUT_ROOT))
+    return root / clean_node_network_key(network_key) / "latest-stage-1-2.json"
+
+
+def load_json_file_if_present(path: Path) -> dict[str, Any] | None:
+    try:
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return dict(payload) if isinstance(payload, Mapping) else None
+
+
+def stage_1_2_verified_image_for_add_node(
+    stage: Mapping[str, Any] | None,
+    *,
+    network_key: str,
+    host: str,
+) -> tuple[bool, dict[str, Any], str]:
+    """Validate a Stage 1/2 handoff and return the verified image for one host."""
+
+    if not isinstance(stage, Mapping):
+        return False, {}, "no Stage 1/2 handoff file found"
+    if not bool(stage.get("ok")):
+        return False, {}, "latest Stage 1/2 handoff is not ok"
+    if clean_node_network_key(str(stage.get("network") or network_key)) != clean_node_network_key(network_key):
+        return False, {}, f"latest Stage 1/2 handoff is for network={stage.get('network')!r}, not {network_key!r}"
+    desired = stage.get("desired") if isinstance(stage.get("desired"), Mapping) else {}
+    safety = stage.get("safety") if isinstance(stage.get("safety"), Mapping) else {}
+    if bool(safety.get("bootstrap_image")):
+        return False, {}, "latest Stage 1/2 handoff allowed a bootstrap image"
+    if str(desired.get("fullhub_image_build_plan") or "") not in {"", "four-checkpoint-images"}:
+        return False, {}, f"latest Stage 1/2 handoff used unexpected image plan {desired.get('fullhub_image_build_plan')!r}"
+    next_inputs = stage.get("next_stage_inputs") if isinstance(stage.get("next_stage_inputs"), Mapping) else {}
+    images = next_inputs.get("verified_fullhub_image_by_host") if isinstance(next_inputs.get("verified_fullhub_image_by_host"), Mapping) else {}
+    image = images.get(host)
+    if not isinstance(image, Mapping):
+        return False, {}, f"latest Stage 1/2 handoff has no verified fullhub-runtime image for {host}"
+    tag = str(image.get("tag") or "").strip()
+    if not tag:
+        return False, {}, f"latest Stage 1/2 handoff image for {host} has no tag"
+    if "allfather-fullhub-runtime:" not in tag:
+        return False, {}, f"latest Stage 1/2 image for {host} is not an allfather-fullhub-runtime tag: {tag}"
+    image_tags = image.get("image_tags") if isinstance(image.get("image_tags"), Mapping) else {}
+    required_checkpoint_tags = {
+        "system-base": "allfather-system-base:",
+        "foundation-base": "allfather-foundation-base:",
+        "python-base": "allfather-python-base:",
+    }
+    for stage_name, expected_repo in required_checkpoint_tags.items():
+        checkpoint_tag = str(image_tags.get(stage_name) or "").strip()
+        if not checkpoint_tag:
+            return False, {}, f"latest Stage 1/2 handoff image for {host} is missing {stage_name} checkpoint tag"
+        if expected_repo not in checkpoint_tag:
+            return False, {}, f"latest Stage 1/2 {stage_name} tag for {host} is unexpected: {checkpoint_tag}"
+    return True, dict(image), "latest Stage 1/2 handoff is valid for add-node"
+
+
+def stage_1_2_args_for_add_node(args: argparse.Namespace, head: HeadNode, *, network_key: str) -> argparse.Namespace:
+    """Build a Stage 1/2 namespace from add-node arguments for one target host."""
+
+    values = dict(vars(args))
+    values.update(
+        {
+            "command": "reconcile-images",
+            "network": network_key,
+            "host": [head.coolify_server],
+            "run_id": str(getattr(args, "image_prefunk_run_id", "") or ""),
+            "output_root": str(getattr(args, "stage_1_2_output_root", DEFAULT_STAGE_1_2_OUTPUT_ROOT)),
+            "fullhub_image_tag": "",
+            "docker_build_timeout_s": int(getattr(args, "docker_build_timeout_s", 7200) or 7200),
+            "build_wait_s": float(getattr(args, "build_wait_s", DEFAULT_STAGE_1_2_BUILD_WAIT_S) or DEFAULT_STAGE_1_2_BUILD_WAIT_S),
+            "poll_s": float(getattr(args, "poll_s", DEFAULT_STAGE_1_2_POLL_S) or DEFAULT_STAGE_1_2_POLL_S),
+            "no_wait": False,
+            "no_deploy_control": False,
+            "operator_log_interval_s": float(getattr(args, "operator_log_interval_s", 15.0) or 15.0),
+            "dry_run": False,
+        }
+    )
+    return argparse.Namespace(**values)
+
+
+
+def add_node_runtime_image_presence_request(
+    image: Mapping[str, Any],
+    *,
+    network_key: str,
+    head: HeadNode,
+) -> dict[str, Any]:
+    """Return a verify-only request for the checkpoint ladder and runtime image.
+
+    The request contains no Dockerfiles. The remote control surface may verify
+    local checkpoint images, seed durable archives for them, or restore them from
+    those archives. Any checkpoint absent from both Docker and durable storage
+    makes the request fail so add-node can run the real Stage 1/2 build.
+    """
+
+    tag = str(image.get("tag") or "").strip()
+    if not tag:
+        raise AllfatherControlError("cannot verify a Stage 1/2 runtime image without a tag")
+    image_tags = image.get("image_tags") if isinstance(image.get("image_tags"), Mapping) else {}
+    required_tags = {
+        "system-base": str(image_tags.get("system-base") or "").strip(),
+        "foundation-base": str(image_tags.get("foundation-base") or "").strip(),
+        "python-base": str(image_tags.get("python-base") or "").strip(),
+        "fullhub-runtime": tag,
+    }
+    missing = [name for name, value in required_tags.items() if not value]
+    if missing:
+        raise AllfatherControlError(
+            "cannot verify Stage 1/2 checkpoint retention without image tag(s): " + ", ".join(missing)
+        )
+
+    run_id = stage_1_2_utc_run_id() + "-" + str(int(time.time() * 1000) % 1_000_000).zfill(6)
+    request_id = (
+        f"fullhub-image-presence-{stage_1_2_clean_image_part(network_key)}-"
+        f"{stage_1_2_clean_image_part(head.coolify_server)}-{stage_1_2_clean_image_part(run_id)}"
+    )
+    verify_scripts = {
+        "system-base": "set -eu\ncommand -v apt-get\ncommand -v bash\ncommand -v curl\ncommand -v python3\ncommand -v besu\nbesu --version\n",
+        "foundation-base": "set -eu\ncommand -v besu\ncommand -v fdbserver\ncommand -v fdbcli\ncommand -v solc\nbesu --version\nfdbserver --version\nfdbcli --version\nsolc --version\n",
+        "python-base": "set -eu\n/opt/allfather-super-venv/bin/python - <<'PY'\nimport fdb\nimport web3\nprint('fdb import ok')\nprint('web3 import ok')\nPY\n",
+        "fullhub-runtime": (
+            "set -eu\n"
+            "test -f /opt/main-computer-src/main_computer/hub.py\n"
+            "test -f /opt/allfather-build/full-hub-runtime-sha256\n"
+            "python - <<'PY'\n"
+            "import importlib.util\n"
+            "for name in ('main_computer', 'main_computer.hub'):\n"
+            "    spec = importlib.util.find_spec(name)\n"
+            "    if spec is None:\n"
+            "        raise SystemExit(f'{name} not importable')\n"
+            "    print(name, spec.origin)\n"
+            "PY\n"
+        ),
+    }
+    steps = []
+    for name in ("system-base", "foundation-base", "python-base", "fullhub-runtime"):
+        durable = name != "fullhub-runtime"
+        built = "runtime-payload-decoded" if name == "fullhub-runtime" else f"{name}-built"
+        verified = "fullhub-import-verified" if name == "fullhub-runtime" else built
+        steps.append(
+            {
+                "name": name,
+                "tag": required_tags[name],
+                "dockerfile_b64": "",
+                "dockerfile_sha256": "",
+                "build_context_files_b64": {},
+                "build_context_file_count": 0,
+                "build_context_manifest_sha256": hashlib.sha256(b"{}").hexdigest(),
+                "checkpoint_cache_hit": f"{name}-cache-hit",
+                "checkpoint_restored": f"{name}-cache-restored" if durable else "",
+                "checkpoint_built": built,
+                "checkpoint_verified": verified,
+                "checkpoint_ready": "fullhub-image-ready" if name == "fullhub-runtime" else "",
+                "verify_script": verify_scripts[name],
+                "source_payload": "fullhub-runtime" if name == "fullhub-runtime" else "none",
+                "durable_cache": durable,
+            }
+        )
+    return {
+        "kind": "main_computer.allfather.fullhub_image_build_request.v3",
+        "service_name": "allfather-fullhub-image-build",
+        "network": clean_node_network_key(network_key),
+        "host": head.coolify_server,
+        "run_id": run_id,
+        "request_id": request_id,
+        "image_tag": tag,
+        "image_tags": dict(required_tags),
+        "build_id": "verify-existing-" + hashlib.sha256(tag.encode("utf-8")).hexdigest()[:16],
+        "image_build_plan": "four-checkpoint-images",
+        "image_build_steps": steps,
+        "dockerfile_sha256": "",
+        "build_context_manifest_sha256": hashlib.sha256(b"[]").hexdigest(),
+        "docker_timeout_s": 900,
+        "verification": {
+            "verify_existing_only": True,
+            "requires_checkpoint_images": ["system-base", "foundation-base", "python-base", "fullhub-runtime"],
+            "requires_durable_checkpoint_archives": ["system-base", "foundation-base", "python-base"],
+            "requires_hub_full_capability": True,
+            "requires_pythonpath": "/opt/main-computer-src",
+            "requires_hub_import": True,
+            "requires_full_hub_runtime_sha256_file": True,
+            "fail_fast": True,
+        },
+        "transport": "allfather-control-surface-coolify-metadata",
+        "local_runner_uses_ssh": False,
+        "local_runner_uses_10_net": False,
+    }
+
+
+def verify_add_node_runtime_image_on_host(
+    plan: HeadPlan,
+    args: argparse.Namespace,
+    head: HeadNode,
+    image: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prove the handed-off runtime image still exists on the target Docker host."""
+
+    network_key = clean_node_network_key(args.network)
+    request = add_node_runtime_image_presence_request(
+        image,
+        network_key=network_key,
+        head=head,
+    )
+    verify_args = stage_1_2_args_for_add_node(args, head, network_key=network_key)
+    verify_args.build_wait_s = min(
+        max(900.0, float(getattr(args, "image_presence_wait_s", 3600.0) or 3600.0)),
+        max(900.0, float(getattr(args, "build_wait_s", DEFAULT_STAGE_1_2_BUILD_WAIT_S) or DEFAULT_STAGE_1_2_BUILD_WAIT_S)),
+    )
+    verify_args.docker_build_timeout_s = int(verify_args.build_wait_s)
+    selected_plan = stage_1_2_selected_plan(plan, [head.coolify_server])
+    operator_log(
+        args,
+        f"image-prefunk: verifying runtime image exists on host={head.coolify_server} image={request['image_tag']}",
+    )
+    stage1, stage2 = stage_1_2_reconcile_head_and_build_image(
+        selected_plan,
+        head,
+        verify_args,
+        build_request=request,
+    )
+    ready = bool(stage2.get("verified"))
+    reason = str(stage2.get("reason") or ("runtime image exists and verified" if ready else "runtime image presence verification failed"))
+    operator_log(
+        args,
+        f"image-prefunk: runtime image host verification ready={ready} host={head.coolify_server} "
+        f"image={request['image_tag']} reason={reason[:240]}",
+    )
+    return {
+        "enabled": True,
+        "ready": ready,
+        "host": head.coolify_server,
+        "network": network_key,
+        "image_tag": request["image_tag"],
+        "request_id": request["request_id"],
+        "reason": reason,
+        "stage1": stage_1_2_redact_mapping(stage1),
+        "stage2": stage_1_2_redact_mapping(stage2),
+        "local_runner_uses_ssh": False,
+        "local_runner_uses_10_net": False,
+    }
+
+
+def add_node_service_status_requires_resume(status: str) -> bool:
+    """Return whether an existing Coolify service should be repaired in place."""
+
+    normalized = str(status or "").strip().lower()
+    return any(
+        token in normalized
+        for token in (
+            "exited",
+            "stopped",
+            "failed",
+            "error",
+            "unhealthy",
+            "degraded",
+            "restarting",
+        )
+    )
+
+
+def ensure_add_node_stage_1_2_prefunk(plan: HeadPlan, args: argparse.Namespace, head: HeadNode) -> dict[str, Any]:
+    """Ensure add-node has a verified Stage 1/2 fullhub-runtime image for its host.
+
+    This is the handoff gate between image construction and topology growth:
+    add-node may run/reuse Stage 1/2, but super-node services must consume a
+    verified fullhub-runtime image and must not use Coolify's per-service build
+    path or bootstrap fallback.
+    """
+
+    network_key = clean_node_network_key(args.network)
+    latest_path = add_node_stage_1_2_latest_path(args, network_key)
+    latest = load_json_file_if_present(latest_path)
+    force = bool(getattr(args, "force_image_prefunk", False))
+    valid, image, reason = stage_1_2_verified_image_for_add_node(latest, network_key=network_key, host=head.coolify_server)
+
+    if bool(getattr(args, "dry_run", False)):
+        return {
+            "enabled": True,
+            "ready": bool(valid),
+            "reused_latest": bool(valid),
+            "ran_stage_1_2": False,
+            "reason": reason if valid else "dry-run; Stage 1/2 image prefunk was not run: " + reason,
+            "latest_file": str(latest_path),
+            "stage_1_2": stage_1_2_redact_mapping(latest or {}),
+            "image": image if valid else {},
+            "host": head.coolify_server,
+            "network": network_key,
+            "local_runner_uses_ssh": False,
+            "local_runner_uses_10_net": False,
+        }
+
+    image_presence: dict[str, Any] = {
+        "enabled": False,
+        "ready": None,
+        "reason": "no reusable Stage 1/2 handoff image was available",
+        "local_runner_uses_ssh": False,
+        "local_runner_uses_10_net": False,
+    }
+    if valid and not force:
+        image_presence = verify_add_node_runtime_image_on_host(plan, args, head, image)
+        if bool(image_presence.get("ready")):
+            operator_log(
+                args,
+                f"image-prefunk: reusing host-verified Stage 1/2 fullhub-runtime image "
+                f"host={head.coolify_server} image={image.get('tag')}",
+            )
+            return {
+                "enabled": True,
+                "ready": True,
+                "reused_latest": True,
+                "ran_stage_1_2": False,
+                "reason": "latest Stage 1/2 handoff image exists on the target host and passed fullhub verification",
+                "latest_file": str(latest_path),
+                "stage_1_2": {
+                    "ok": True,
+                    "run_id": str((latest or {}).get("run_id") or ""),
+                    "operation": str((latest or {}).get("operation") or ""),
+                    "network": str((latest or {}).get("network") or network_key),
+                },
+                "image_presence": stage_1_2_redact_mapping(image_presence),
+                "image": image,
+                "host": head.coolify_server,
+                "network": network_key,
+                "local_runner_uses_ssh": False,
+                "local_runner_uses_10_net": False,
+            }
+        reason = (
+            f"latest Stage 1/2 handoff image is not usable on {head.coolify_server}: "
+            f"{image_presence.get('reason') or 'host image verification failed'}"
+        )
+        operator_log(args, f"image-prefunk: stale/missing runtime image detected; rebuilding Stage 1/2 host={head.coolify_server}")
+
+    operator_log(args, f"image-prefunk: Stage 1/2 required for {head.coolify_server}: {reason}")
+    stage_args = stage_1_2_args_for_add_node(args, head, network_key=network_key)
+    stage_result = run_stage_1_2_cli_args(stage_args)
+    latest_after_path = Path((stage_result.get("output") or {}).get("latest_file") or latest_path)
+    latest_after = load_json_file_if_present(latest_after_path)
+    valid_after, image_after, reason_after = stage_1_2_verified_image_for_add_node(
+        latest_after,
+        network_key=network_key,
+        host=head.coolify_server,
+    )
+    if not valid_after:
+        raise AllfatherControlError(
+            f"add-node image prefunk failed for {head.coolify_server}: {reason_after}; "
+            f"stage_1_2_ok={stage_result.get('ok')!r}; latest={latest_after_path}"
+        )
+    operator_log(args, f"image-prefunk: verified Stage 1/2 fullhub-runtime image host={head.coolify_server} image={image_after.get('tag')}")
+    return {
+        "enabled": True,
+        "ready": True,
+        "reused_latest": False,
+        "ran_stage_1_2": True,
+        "reason": reason_after,
+        "latest_file": str(latest_after_path),
+        "stage_1_2_result": stage_1_2_redact_mapping(stage_result),
+        "prior_image_presence": stage_1_2_redact_mapping(image_presence),
+        "image": image_after,
+        "host": head.coolify_server,
+        "network": network_key,
+        "local_runner_uses_ssh": False,
+        "local_runner_uses_10_net": False,
+    }
+
+
+def attach_verified_runtime_image_to_super_manifest(manifest: dict[str, Any], image_prefunk: Mapping[str, Any]) -> str:
+    image = image_prefunk.get("image") if isinstance(image_prefunk.get("image"), Mapping) else {}
+    tag = str(image.get("tag") or "").strip()
+    if not tag:
+        raise AllfatherControlError("Stage 1/2 image prefunk did not provide a verified runtime image tag")
+    bootstrap = manifest.setdefault("bootstrap", {})
+    if isinstance(bootstrap, dict):
+        bootstrap["full_hub_runtime_requested"] = True
+        bootstrap["bootstrap_image_fallback"] = False
+    manifest["runtime_image"] = {
+        "tag": tag,
+        "id": str(image.get("id") or ""),
+        "created": str(image.get("created") or ""),
+        "request_id": str(image.get("request_id") or ""),
+        "image_build_plan": str(image.get("image_build_plan") or "four-checkpoint-images"),
+        "source": "stage-1-2-verified-fullhub-runtime",
+        "verified": True,
+        "service_build_disabled": True,
+        "bootstrap_fallback": False,
+    }
+    manifest.setdefault("safety", {})
+    if isinstance(manifest["safety"], dict):
+        manifest["safety"].update(
+            {
+                "super_node_uses_verified_fullhub_runtime_image": True,
+                "super_node_service_build_disabled": True,
+                "bootstrap_image": False,
+            }
+        )
+    return tag
+
+
 def add_hub_propagate_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hub-domain-suffix", "--traefik-domain-suffix", dest="hub_domain_suffix", default=DEFAULT_PUBLIC_DOMAIN_SUFFIX, help="Public DNS suffix for generated Hub routes.")
     parser.add_argument("--hub-propagate-wait-s", "--traefik-propagate-wait-s", dest="hub_propagate_wait_s", type=float, default=DEFAULT_TRAEFIK_PROPAGATE_WAIT_S, help="Seconds to wait for the Hub route propagation result.")
     parser.add_argument("--hub-admin-contract-sync-wait-s", type=float, default=DEFAULT_HUB_ADMIN_CONTRACT_SYNC_WAIT_S, help="Seconds to wait for Hub admin authorization transactions.")
     parser.add_argument("--hub-admin-contract-address", default="", help="Override HubCreditBridgeEscrow address. Default reads main_computer/config/<network>_contracts.json.")
     parser.add_argument("--no-contract-admin-sync", action="store_true", help="Only reconcile public Hub routes and private-state huddle records; do not authorize Hub admins on HubCreditBridgeEscrow.")
-    parser.add_argument("--no-full-hub-runtime-sync", action="store_true", help="Do not rebuild/redeploy existing super-nodes whose public Hub endpoint is still bootstrap-only.")
-    parser.add_argument("--full-hub-runtime-wait-s", type=float, default=DEFAULT_TRAEFIK_PROPAGATE_WAIT_S, help="Seconds to wait for each rebuilt super-node to report full Main Computer hub health.")
+    parser.add_argument("--skip-hub-verify", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-traefik-route-verify", "--skip-public-route-verify", dest="skip_traefik_route_verify", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--public-route-verify-timeout-s", type=float, default=6.0, help="Seconds per public HTTPS Hub route health probe during read-only hub-propagate verification.")
+    parser.add_argument("--hub-verify-wait-s", type=float, default=180.0, help="Seconds to wait for read-only full-hub/FDB/Traefik-route verification before hub-propagate decides whether propagation is allowed.")
+    parser.add_argument("--propagate-after-verify", action="store_true", help="Opt in to huddle/admin/route propagation after hub/FDB/route verification passes. Default is verify-only fail-fast mode.")
+    parser.add_argument("--no-full-hub-runtime-sync", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--full-hub-runtime-wait-s", type=float, default=DEFAULT_TRAEFIK_PROPAGATE_WAIT_S, help=argparse.SUPPRESS)
     parser.add_argument("--full-hub-runtime-status-interval-s", type=float, default=DEFAULT_FULL_HUB_RUNTIME_STATUS_INTERVAL_S, help="Seconds between Coolify build/deployment/log diagnostics while waiting for full hub health.")
     parser.add_argument("--full-hub-runtime-stale-bootstrap-fail-s", type=float, default=DEFAULT_FULL_HUB_RUNTIME_STALE_BOOTSTRAP_FAIL_S, help="Fail early once Coolify is running/healthy with a full-runtime compose but public hub health still reports bootstrap-only for this many seconds. Use 0 to wait until timeout.")
     parser.add_argument("--full-hub-runtime-diag-wait-s", type=float, default=DEFAULT_FULL_HUB_RUNTIME_DIAG_WAIT_S, help="Seconds to wait for the head-agent container-side full-hub diagnostics/repair marker.")
@@ -16579,6 +20842,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     traefik_parser.add_argument("--no-deploy", action="store_true", help="Create/update the head agent but do not trigger deploy.")
     traefik_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after head-agent sync.")
 
+
+    images_parser = subparsers.add_parser(
+        "reconcile-images",
+        aliases=["stage-1-2"],
+        help="Reconcile the control surface and build verified four-checkpoint full-hub images; no super-node deployment.",
+    )
+    add_stage_1_2_args(images_parser)
+
     deploy_contracts_parser = subparsers.add_parser("deploy-contracts", help="Deploy selected all-father contracts through a live super-node and write local contract config.")
     add_remote_args(deploy_contracts_parser)
     add_common_head_args(deploy_contracts_parser)
@@ -16606,8 +20877,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--hub-propagate", action="store_true", help="After the node is ready, reconcile public Hub routes, huddle admins, and contract admin authorization from live topology.")
     add_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)
     add_node_parser.add_argument("--include-compose", action="store_true", help="Include rendered compose with private keys redacted.")
+    add_node_parser.add_argument("--stage-1-2-output-root", default=str(DEFAULT_STAGE_1_2_OUTPUT_ROOT), help="Stage 1/2 handoff root used by add-node image prefunk.")
+    add_node_parser.add_argument("--image-prefunk-run-id", default="", help="Run id to use if add-node must run Stage 1/2 image prefunk. Default: current UTC timestamp.")
+    add_node_parser.add_argument("--force-image-prefunk", action="store_true", help="Force add-node to rerun Stage 1/2 before consuming the verified fullhub-runtime image.")
+    add_node_parser.add_argument("--docker-build-timeout-s", type=int, default=7200, help="Seconds the remote control-surface Docker build may run if add-node must prefunk Stage 1/2.")
+    add_node_parser.add_argument("--build-wait-s", type=float, default=DEFAULT_STAGE_1_2_BUILD_WAIT_S, help="Seconds add-node waits for Stage 1/2 image prefunk when no valid handoff exists.")
+    add_node_parser.add_argument("--image-presence-wait-s", type=float, default=3600.0, help="Seconds add-node waits while verifying the runtime image and seeding/restoring durable checkpoint archives.")
+    add_node_parser.add_argument("--poll-s", type=float, default=DEFAULT_STAGE_1_2_POLL_S, help=argparse.SUPPRESS)
     add_hub_propagate_options(add_node_parser)
-    add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Managed all-father super-node dependency base image used by the generated per-node image.")
+    add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Legacy/generated super-node image base. Normal add-node overrides this with the Stage 1/2 verified fullhub-runtime image.")
     add_node_parser.add_argument("--super-base-source-image", default=DEFAULT_SUPER_BASE_SOURCE_IMAGE, help="Besu/QBFT source image used by the managed Coolify super-base-builder service.")
     add_node_parser.add_argument("--super-base-builder-image", default=DEFAULT_SUPER_BASE_BUILDER_IMAGE, help=argparse.SUPPRESS)
     add_node_parser.add_argument("--super-base-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait for the managed Coolify super-base-builder service to make the dependency image available.")
@@ -16621,7 +20899,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--deploy-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait remotely for the new super-node guard/FDB/RPC/Hub/hub_admin/contracts readiness signal after deploy. Set 0 to return immediately after triggering deploy.")
     add_node_parser.add_argument("--deploy-poll-s", type=float, default=DEFAULT_ADD_NODE_READY_POLL_S, help=argparse.SUPPRESS)
 
-    remove_node_parser = subparsers.add_parser("remove-node", help="Remove the last all-father super-node from mainnet or testnet on one Coolify host.")
+    remove_node_parser = subparsers.add_parser("remove-node", help="Safely remove the highest all-father super-node on one host using network-global FDB/QBFT lifecycle checks.")
     add_remote_args(remove_node_parser)
     add_common_head_args(remove_node_parser)
     remove_node_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network to shrink: testnet or mainnet.")
@@ -16632,7 +20910,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("--delete-wait-s", type=float, default=DEFAULT_REMOVE_DELETE_WAIT_S, help="Seconds to wait for Coolify inventory to stop reporting the deleted service before cleaning seed material.")
     remove_node_parser.add_argument("--delete-poll-s", type=float, default=DEFAULT_REMOVE_DELETE_POLL_S, help=argparse.SUPPRESS)
     remove_node_parser.add_argument("--keep-seed-material", action="store_true", help="Do not clean generated first-node keys/FDB identity when the network becomes empty.")
-    remove_node_parser.add_argument("--keep-runtime-state", action="store_true", help="Do not deploy the remote last-node runtime cleanup service that moves stale super-node state directories.")
+    remove_node_parser.add_argument("--keep-runtime-state", action="store_true", help="Preserve stale super-node runtime directories instead of automatic host/final-network cleanup. Intended only for forensic recovery.")
     remove_node_parser.add_argument("--hub-propagate", action="store_true", help="After removal, reconcile public Hub routes, huddle admins, and contract admin authorization from live topology.")
     remove_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)
     add_hub_propagate_options(remove_node_parser)
@@ -16961,17 +21239,34 @@ def compact_hub_propagate_for_operator(payload: Mapping[str, Any]) -> dict[str, 
         elif error:
             compact_errors.append({"error": _operator_short_reason(error)})
 
+    selected_hosts = payload.get("selected_hosts") if isinstance(payload.get("selected_hosts"), list) else []
+    hub_verify = payload.get("hub_verify") if isinstance(payload.get("hub_verify"), Mapping) else {}
+    compact_hub_verify: dict[str, Any] = {}
+    if hub_verify:
+        compact_hub_verify = {
+            "enabled": hub_verify.get("enabled"),
+            "ok": hub_verify.get("ok"),
+            "reason": _operator_short_reason(hub_verify.get("reason")),
+            "verified_hub_count": hub_verify.get("verified_hub_count"),
+            "expected_hub_count": hub_verify.get("expected_hub_count"),
+            "verified_route_count": hub_verify.get("verified_route_count"),
+            "aggregate_route_count": hub_verify.get("aggregate_route_count"),
+            "failed_fast": hub_verify.get("failed_fast"),
+            "repair_attempted": hub_verify.get("repair_attempted"),
+        }
+        compact_hub_verify = {key: value for key, value in compact_hub_verify.items() if value not in (None, "", {}, [])}
     return {
         "ok": bool(payload.get("ok")),
         "operation": payload.get("operation"),
         "network": payload.get("network"),
         "summary": {
-            "hosts": len(propagations),
+            "hosts": len(selected_hosts) if selected_hosts else len(propagations),
             "failed_hosts": sum(1 for item in propagations if item.get("ok") is False),
             "super_nodes": len(super_nodes),
             "ssh_used": bool(payload.get("ssh_used")),
         },
         "reason": _operator_short_reason(payload.get("reason")),
+        "hub_verify": compact_hub_verify,
         "errors": compact_errors,
         "propagations": propagations,
         "full_json": "rerun with --json or --verbose for raw Coolify/API details",
@@ -17012,6 +21307,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print_json(compact_discover_for_operator(payload))
             return 0
+        if args.command in {"reconcile-images", "stage-1-2"}:
+            payload = run_stage_1_2_cli_args(args)
+            print_json(payload)
+            return 0 if bool(payload.get("ok", False)) else 2
         if args.command in {"hub-propagate", "traefik-propagate"}:
             payload = hub_propagate(plan, args)
             if getattr(args, "json", False) or getattr(args, "verbose", False) or getattr(args, "dry_run", False):

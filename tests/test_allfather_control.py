@@ -4207,3 +4207,463 @@ def test_hub_propagate_main_preserves_full_json_with_json_flag(monkeypatch: pyte
     printed = json.loads(capsys.readouterr().out)
     assert printed["raw_marker"] == "kept-with-json"
 
+
+
+def test_add_node_zero_live_topology_plans_cleanup_before_first_node(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.add_node(plan, args)
+
+    assert payload["network_inventory"]["join_context"] == "first-network-node"
+    assert payload["zero_topology_prefunk"]["enabled"] is True
+    assert payload["zero_topology_prefunk"]["ok"] is True
+    assert payload["zero_topology_prefunk"]["runtime_cleanup"]["ok"] is True
+    assert payload["zero_topology_prefunk"]["private_state_cleanup"]["remaining_node_count"] == 0
+
+
+def test_remove_node_last_network_node_plans_network_wide_cleanup(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.remove_node(plan, args)
+
+    assert payload["removed_last_network_node"] is True
+    assert payload["remaining_network_super_nodes"] == 0
+    assert payload["zero_node_cleanup"]["enabled"] is True
+    assert payload["zero_node_cleanup"]["ok"] is True
+    assert payload["network_pristine_after_remove"] is True
+
+
+def test_generated_super_runtime_contains_remove_handoff_guards() -> None:
+    script = control.super_server_command_script()
+
+    assert 'removal_handoff = manifest.get("removal_handoff")' in script
+    assert "fdb_coordinator_handoff" in script
+    assert "validator_removal_handoff" in script
+    assert 'qbft_proposeValidatorVote", [normalized, bool(add)]' in script
+    compile(script, "<allfather-super-remove-handoff>", "exec")
+
+
+def test_generated_head_runtime_cleanup_is_request_scoped() -> None:
+    script = control.head_server_command_script()
+
+    assert 'request_id = str(CLEANUP_REQUEST.get("request_id") or "").strip()' in script
+    assert '"request_id": request_id' in script
+    compile(script, "<allfather-head-runtime-cleanup>", "exec")
+
+
+def _image_prefunk_test_head() -> control.HeadNode:
+    return control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="10.116.0.3",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/control-plane/coolify-a",
+        peers=(),
+    )
+
+
+def _image_prefunk_test_plan(head: control.HeadNode) -> control.HeadPlan:
+    return control.HeadPlan(
+        kind="main_computer.allfather_head_plan.v1",
+        private_state_path="runtime/state/all_father.private.yaml",
+        heads=(head,),
+        desired_counts={"allfather_heads": 1},
+        guardrails={},
+    )
+
+
+def test_add_node_runtime_image_presence_request_is_verify_only() -> None:
+    head = _image_prefunk_test_head()
+    tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-a-test"
+
+    request = control.add_node_runtime_image_presence_request(
+        {
+            "tag": tag,
+            "image_tags": {
+                "system-base": "main-computer/allfather-system-base:system-test",
+                "foundation-base": "main-computer/allfather-foundation-base:foundation-test",
+                "python-base": "main-computer/allfather-python-base:python-test",
+            },
+        },
+        network_key="mainnet",
+        head=head,
+    )
+
+    assert request["image_tag"] == tag
+    assert request["verification"]["verify_existing_only"] is True
+    assert len(request["image_build_steps"]) == 4
+    assert all(step["dockerfile_b64"] == "" for step in request["image_build_steps"])
+    runtime_step = request["image_build_steps"][-1]
+    assert runtime_step["name"] == "fullhub-runtime"
+    assert runtime_step["tag"] == tag
+    assert "main_computer.hub" in runtime_step["verify_script"]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("exited", True),
+        ("starting:unhealthy", True),
+        ("restarting", True),
+        ("running:healthy", False),
+        ("", False),
+    ],
+)
+def test_add_node_service_status_requires_resume(status: str, expected: bool) -> None:
+    assert control.add_node_service_status_requires_resume(status) is expected
+
+
+def test_add_node_prefunk_rebuilds_when_handoff_image_is_missing_on_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    head = _image_prefunk_test_head()
+    plan = _image_prefunk_test_plan(head)
+    output_root = tmp_path / "stage12"
+    latest = output_root / "mainnet" / "latest-stage-1-2.json"
+    latest.parent.mkdir(parents=True)
+    old_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-a-old"
+    new_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-a-rebuilt"
+
+    def write_latest(tag: str) -> None:
+        latest.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "network": "mainnet",
+                    "run_id": "test",
+                    "desired": {"fullhub_image_build_plan": "four-checkpoint-images"},
+                    "safety": {"bootstrap_image": False},
+                    "next_stage_inputs": {
+                        "verified_fullhub_image_by_host": {
+                            "coolify-a": {
+                                "tag": tag,
+                                "id": "sha256:test",
+                                "image_build_plan": "four-checkpoint-images",
+                                "image_tags": {
+                                    "system-base": "main-computer/allfather-system-base:system-test",
+                                    "foundation-base": "main-computer/allfather-foundation-base:foundation-test",
+                                    "python-base": "main-computer/allfather-python-base:python-test",
+                                },
+                            }
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_latest(old_tag)
+    monkeypatch.setattr(
+        control,
+        "verify_add_node_runtime_image_on_host",
+        lambda *args, **kwargs: {
+            "enabled": True,
+            "ready": False,
+            "reason": "docker image inspect failed status=404",
+        },
+    )
+
+    def fake_run_stage_1_2_cli_args(_args: argparse.Namespace) -> dict[str, object]:
+        write_latest(new_tag)
+        return {
+            "ok": True,
+            "output": {"latest_file": str(latest)},
+            "verified_fullhub_image_count": 1,
+        }
+
+    monkeypatch.setattr(control, "run_stage_1_2_cli_args", fake_run_stage_1_2_cli_args)
+    args = argparse.Namespace(
+        network="mainnet",
+        allow_mainnet=True,
+        command="add-node",
+        stage_1_2_output_root=str(output_root),
+        force_image_prefunk=False,
+        dry_run=False,
+        host=["coolify-a"],
+        build_wait_s=300.0,
+        docker_build_timeout_s=300,
+        poll_s=1.0,
+        operator_log_interval_s=1.0,
+    )
+
+    result = control.ensure_add_node_stage_1_2_prefunk(plan, args, head)
+
+    assert result["ready"] is True
+    assert result["reused_latest"] is False
+    assert result["ran_stage_1_2"] is True
+    assert result["image"]["tag"] == new_tag
+    assert result["prior_image_presence"]["ready"] is False
+
+
+def test_checkpoint_plan_marks_source_independent_layers_for_durable_retention() -> None:
+    plan = control.allfather_checkpoint_image_build_plan(
+        runtime_image_tag="main-computer/allfather-fullhub-runtime:test-runtime",
+        build_id="test",
+    )
+    steps = {step["name"]: step for step in plan["steps"]}
+
+    for name in ("system-base", "foundation-base", "python-base"):
+        assert steps[name]["durable_cache"] is True
+        assert steps[name]["checkpoint_restored"] == f"{name}-cache-restored"
+    assert steps["fullhub-runtime"]["durable_cache"] is False
+
+
+def test_head_compose_mounts_persistent_checkpoint_image_cache(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+
+    compose = control.render_head_compose(plan, plan.heads[0])
+
+    cache_root = control.DEFAULT_ALLFATHER_IMAGE_CACHE_ROOT
+    assert f'MC_ALLFATHER_IMAGE_CACHE_ROOT: "{cache_root}"' in compose
+    assert f'"{cache_root}:{cache_root}"' in compose
+
+
+def test_head_agent_checkpoint_cache_uses_docker_export_and_load_streams() -> None:
+    script = control.head_server_command_script()
+
+    compile(script, "<allfather-head-agent>", "exec")
+    assert '"/images/" + urllib.parse.quote(image_tag, safe="") + "/get"' in script
+    assert '"/images/load?quiet=1"' in script
+    assert "CHECKPOINT_CACHE_MANIFEST_KIND" in script
+    assert "archive_sha256" in script
+    assert "os.replace(temporary, destination)" in script
+
+
+def test_add_node_presence_request_verifies_and_seeds_entire_checkpoint_ladder(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    image = {
+        "tag": "main-computer/allfather-fullhub-runtime:runtime-test",
+        "image_tags": {
+            "system-base": "main-computer/allfather-system-base:system-test",
+            "foundation-base": "main-computer/allfather-foundation-base:foundation-test",
+            "python-base": "main-computer/allfather-python-base:python-test",
+        },
+    }
+
+    request = control.add_node_runtime_image_presence_request(
+        image,
+        network_key="mainnet",
+        head=head,
+    )
+    steps = {step["name"]: step for step in request["image_build_steps"]}
+
+    assert list(step["name"] for step in request["image_build_steps"]) == [
+        "system-base",
+        "foundation-base",
+        "python-base",
+        "fullhub-runtime",
+    ]
+    for name in ("system-base", "foundation-base", "python-base"):
+        assert steps[name]["dockerfile_b64"] == ""
+        assert steps[name]["durable_cache"] is True
+        assert steps[name]["checkpoint_restored"] == f"{name}-cache-restored"
+    assert steps["fullhub-runtime"]["durable_cache"] is False
+    assert request["verification"]["requires_durable_checkpoint_archives"] == [
+        "system-base",
+        "foundation-base",
+        "python-base",
+    ]
+
+
+def test_add_node_handoff_rejects_missing_checkpoint_tags() -> None:
+    stage = {
+        "ok": True,
+        "network": "mainnet",
+        "desired": {"fullhub_image_build_plan": "four-checkpoint-images"},
+        "safety": {"bootstrap_image": False},
+        "next_stage_inputs": {
+            "verified_fullhub_image_by_host": {
+                "coolify-a": {
+                    "tag": "main-computer/allfather-fullhub-runtime:runtime-test",
+                    "image_tags": {},
+                }
+            }
+        },
+    }
+
+    valid, image, reason = control.stage_1_2_verified_image_for_add_node(
+        stage,
+        network_key="mainnet",
+        host="coolify-a",
+    )
+
+    assert valid is False
+    assert image == {}
+    assert "missing system-base checkpoint tag" in reason
+
+
+def test_hub_verify_treats_disabled_traefik_route_check_as_neutral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    node = {
+        "service_name": "testneta-super1",
+        "coolify_server": head.coolify_server,
+        "guard_url": "http://10.116.0.3:41800",
+        "fdb_endpoint": "10.116.0.3:44650",
+    }
+    inventory = {
+        "nodes": [node],
+        "local_nodes_by_host": {head.coolify_server: [node]},
+    }
+    args = argparse.Namespace(
+        skip_hub_verify=False,
+        skip_traefik_route_verify=True,
+        dry_run=False,
+        no_deploy=False,
+        hub_verify_wait_s=30.0,
+        hub_domain_suffix="example.invalid",
+        verbose=False,
+        json=False,
+    )
+
+    class FakeVersion:
+        ok = True
+        status = 200
+        body = {}
+
+    class FakeFdbTool:
+        @staticmethod
+        def client_for_server(server: str, args: argparse.Namespace) -> tuple[object, str]:
+            return object(), "test-token"
+
+    class FakeHubServiceTool:
+        @staticmethod
+        def trigger_deploy_service(
+            client: object,
+            *,
+            service_uuid: str,
+            force: bool,
+            tried: list[dict[str, object]],
+        ) -> None:
+            return None
+
+    monkeypatch.setattr(control, "fdb_tool", lambda: FakeFdbTool())
+    monkeypatch.setattr(control, "hub_service_tool", lambda: FakeHubServiceTool())
+    monkeypatch.setattr(control, "request_coolify_version", lambda *a, **k: FakeVersion())
+    monkeypatch.setattr(control, "resolve_context", lambda *a, **k: {})
+    monkeypatch.setattr(control, "sync_probe_service", lambda *a, **k: ("probe-uuid", "head-agent-updated", {}))
+    monkeypatch.setattr(control, "probe_target_records_for_plan", lambda *a, **k: [])
+    monkeypatch.setattr(control, "wait_for_probe_metadata_result", lambda *a, **k: ({}, {"ok": True}))
+    monkeypatch.setattr(control, "probe_result_covers_expected_super_targets", lambda *a, **k: True)
+    monkeypatch.setattr(control, "super_statuses_from_probe_result", lambda *a, **k: {"testneta-super1": {}})
+    monkeypatch.setattr(
+        control,
+        "hub_propagate_hub_verify_check",
+        lambda *a, **k: {"ready": True, "reason": "full hub verified", "components": {}},
+    )
+
+    result = control.verify_hubs_before_hub_propagate(
+        plan,
+        args,
+        "testnet",
+        [head],
+        inventory,
+        {head.coolify_server: []},
+    )
+
+    assert result["ok"] is True
+    assert result["failed_fast"] is False
+    assert result["traefik_route_verify_enabled"] is False
+    assert result["verified_hub_count"] == 1
+    assert "route verification disabled" in result["reason"]
+    assert result["errors"] == []
+
+
+def test_remove_node_reads_live_runtime_image_without_stage12_prefunk() -> None:
+    service_name = "mainneta-super1"
+    image_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-a-test"
+    compose = f"""
+services:
+  {service_name}:
+    image: {image_tag}
+    pull_policy: never
+"""
+    detail = {
+        "ok": True,
+        "body": {
+            "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        },
+    }
+
+    result = control.service_runtime_image_from_detail(
+        detail,
+        service_name=service_name,
+    )
+
+    assert result["ok"] is True
+    assert result["image"] == image_tag
+    assert result["reason"] == "exact image read from live Coolify service compose"
+
+
+def test_remove_survivor_handoff_never_invokes_image_build_prefunk() -> None:
+    source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+    start = source.index("def prepare_remove_survivor_handoff(")
+    end = source.index("\ndef remove_node(", start)
+    function_source = source[start:end]
+
+    assert "ensure_add_node_stage_1_2_prefunk" not in function_source
+    assert "verify_add_node_runtime_image_on_host" not in function_source
+    assert "stage_1_2_reconcile_head_and_build_image" not in function_source
+    assert "live_super_runtime_image_for_remove" in function_source
+    assert "attach_live_runtime_image_to_remove_manifest" in function_source
+
+
+def test_remove_manifest_pins_live_image_and_disables_build_fallback() -> None:
+    manifest: dict[str, object] = {
+        "bootstrap": {},
+        "safety": {},
+    }
+    image_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-a-test"
+
+    selected = control.attach_live_runtime_image_to_remove_manifest(
+        manifest,
+        image_tag=image_tag,
+        service_name="mainneta-super1",
+    )
+
+    assert selected == image_tag
+    assert manifest["runtime_image"]["tag"] == image_tag
+    assert manifest["runtime_image"]["source"] == "live-predelete-verified-service"
+    assert manifest["runtime_image"]["service_build_disabled"] is True
+    assert manifest["bootstrap"]["bootstrap_image_fallback"] is False
+    assert manifest["safety"]["remove_node_image_rebuild_disabled"] is True

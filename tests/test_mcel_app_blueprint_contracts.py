@@ -43,6 +43,7 @@ REFACTOR_ELEMENTS = [
 
 GENERIC_ASPECTS = [
     "overview",
+    "form",
     "objects",
     "workflows",
     "layout",
@@ -59,6 +60,7 @@ GENERIC_ASPECTS = [
 
 BLUEPRINT_DETAIL_GROUPS = [
     "aspect-contract",
+    "semantic-form-primitives",
     "layout-zone-contract",
     "support-hints",
     "export-contract",
@@ -258,6 +260,52 @@ def test_inspectable_blueprints_share_generic_aspect_model() -> None:
     planner_ids = {blueprint["appId"] for blueprint in result["plannerBlueprints"]}
     assert {"document-editor", "mcel-lab"} <= planner_ids
     assert result["plannerSnapshot"]["inspectableBlueprintCount"] >= 2
+
+
+def test_requirements_backed_blueprints_expose_semantic_form_primitives() -> None:
+    blueprint_path = SCRIPTS / "mcel-app-blueprints-core.js"
+    registry_path = SCRIPTS / "mcel-requirements-registry.js"
+    script = textwrap.dedent(
+        f"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const sandbox = {{console}};
+        sandbox.window = sandbox;
+        vm.runInNewContext(fs.readFileSync({json.dumps(str(registry_path))}, "utf8"), sandbox, {{filename: "mcel-requirements-registry.js"}});
+        vm.runInNewContext(fs.readFileSync({json.dumps(str(blueprint_path))}, "utf8"), sandbox, {{filename: "mcel-app-blueprints-core.js"}});
+        const blueprints = sandbox.McelAppBlueprintsCore.listInspectableAppBlueprints();
+        const byApp = Object.fromEntries(blueprints.map((blueprint) => [blueprint.appId, blueprint]));
+        process.stdout.write(JSON.stringify({{
+          appIds: blueprints.map((blueprint) => blueprint.appId),
+          codeEditor: byApp["code-editor"],
+          calculator: byApp["calculator"],
+          lab: byApp["mcel-lab"],
+          formGroups: sandbox.McelAppBlueprintsCore.formPrimitiveGroups(byApp["code-editor"].formPrimitives),
+        }}));
+        """
+    )
+    result = run_node_json(script)
+
+    assert {
+        "calculator",
+        "code-editor",
+        "file-explorer",
+        "git-tools",
+        "mcel-lab",
+        "website-builder",
+    } <= set(result["appIds"])
+    assert result["codeEditor"]["formPrimitiveCount"] >= 6
+    assert result["calculator"]["formPrimitiveCount"] >= 6
+    assert result["lab"]["requirementsContract"]["formPrimitiveCount"] >= 8
+    assert "form" in result["codeEditor"]["aspectIds"]
+    assert "semantic-form-primitives" in [group["id"] for group in result["codeEditor"]["detailGroups"]]
+    assert "subject" in result["codeEditor"]["formPrimitiveKinds"]
+    assert "work-surface" in result["codeEditor"]["formPrimitiveKinds"]
+    assert "feedback" in result["codeEditor"]["formPrimitiveKinds"]
+    assert "subject" in result["formGroups"]
+    assert result["codeEditor"]["rootSelector"] == "#code-editor-app"
+    assert result["calculator"]["route"] == "/applications/calculator"
+
 
 
 def test_removal_and_rework_annotations_require_dependency_checks() -> None:

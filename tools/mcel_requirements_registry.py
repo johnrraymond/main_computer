@@ -114,6 +114,15 @@ DEFAULT_REQUIRED_FIELDS = {
     ],
     "mcel-use-case": ["id", "app", "status", "type", "primary_object", "user_goal", "acceptance"],
     "mcel-object": ["id", "app", "status", "object", "identity", "state_model", "owned_by"],
+    "mcel-form-primitive": [
+        "id",
+        "app",
+        "status",
+        "primitive",
+        "meaning",
+        "relationships",
+        "constraints",
+    ],
     "mcel-region": ["id", "app", "status", "region", "role", "responsibility"],
     "mcel-requirement": [
         "id",
@@ -906,6 +915,7 @@ def build_app_contract_summaries(registry: RequirementsRegistry) -> list[dict[st
         finding_blocks = [block for block in app_blocks if block.block_type == "mcel-finding"]
         requirement_blocks = [block for block in app_blocks if block.block_type == "mcel-requirement"]
         runtime_check_blocks = [block for block in app_blocks if block.block_type == "mcel-runtime-check"]
+        form_primitive_blocks = [block for block in app_blocks if block.block_type == "mcel-form-primitive"]
 
         present_families = {block_type for block_type, count in type_counts.items() if count > 0}
         missing_families = sorted(required_families - present_families)
@@ -981,6 +991,17 @@ def build_app_contract_summaries(registry: RequirementsRegistry) -> list[dict[st
                     }
                     for block in requirement_blocks
                 ],
+                "form_primitives": [
+                    {
+                        "id": block.block_id,
+                        "status": block.status,
+                        "primitive": block.fields.get("primitive", ""),
+                        "meaning": block.fields.get("meaning", ""),
+                        "relationships": block.fields.get("relationships", []),
+                        "constraints": block.fields.get("constraints", []),
+                    }
+                    for block in form_primitive_blocks
+                ],
                 "runtime_checks": [
                     {
                         "id": block.block_id,
@@ -1027,6 +1048,8 @@ def build_lab_payload(registry: RequirementsRegistry) -> dict[str, Any]:
             "intent_risk_counts": contract["intent_risk_counts"],
             "adapter_status_counts": contract["adapter_status_counts"],
             "use_cases": contract["use_cases"],
+            "form_primitive_count": len(contract.get("form_primitives", [])),
+            "form_primitives": contract.get("form_primitives", [])[:10],
             "region_count": len(contract["regions"]),
             "intent_count": contract["block_type_counts"].get("mcel-intent", 0),
             "mutation_intent_count": len(contract["mutation_intents"]),
@@ -1061,6 +1084,7 @@ def build_lab_payload(registry: RequirementsRegistry) -> dict[str, Any]:
                 "target_runtime_status": contract["target_runtime_status"],
                 "required_use_case_count": len(contract["use_cases"]),
                 "required_region_count": contract["region_count"],
+                "declared_form_primitive_count": contract.get("form_primitive_count", 0),
                 "required_intent_count": contract["intent_count"],
                 "mutation_intent_count": contract["mutation_intent_count"],
                 "prohibited_intent_count": contract["prohibited_intent_count"],

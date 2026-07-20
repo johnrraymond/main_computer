@@ -4,6 +4,8 @@
   const VERSION = "mcel-diagnostics-counter-widget-v4";
   const STARTUP_ERROR_WARNING_MS = 5000;
   const REFRESH_INTERVAL_MS = 30000;
+  const DIAGNOSTIC_EVENT_ENDPOINT = "/api/mcel/diagnostics/events";
+  const DIAGNOSTIC_EVENT_HEARTBEAT_MS = 5 * 60 * 1000;
   const DEFAULT_APP_ID = "code-editor";
 
   const APP_WIDGETS = Object.freeze({
@@ -53,6 +55,17 @@
         "#website-builder-app .website-builder-actions",
         "#website-builder-app .website-builder-summary",
         "#website-builder-app"
+      ]
+    },
+    "mcel-lab": {
+      root: "#mcel-lab-app",
+      placeholder: "#mcel-lab-diagnostics-counter",
+      id: "mcel-lab-diagnostics-counter",
+      anchors: [
+        "#mcel-lab-app #mcel-lab-diagnostics-slot",
+        "#mcel-lab-app .mcel-lab-blueprint-status",
+        "#mcel-lab-app .mcel-lab-blueprint-actions",
+        "#mcel-lab-app"
       ]
     }
   });
@@ -216,9 +229,22 @@
     };
   }
 
-  function compactIssue(finding) {
+  function normalizedVerdict(report, counts) {
+    if (!report || typeof report !== "object") return "unknown";
+    const safeCounts = counts || {errors: 0, warnings: 0};
+    if (Number(safeCounts.errors || 0) > 0) return "fail";
+    if (String(report.verdict || "").toLowerCase() === "unknown") return "unknown";
+    return "pass";
+  }
+
+  function compactIssue(finding, options = {}) {
+    const normalizedSeverity = normalizeIssueSeverity(finding?.severity, options);
+    const originalNormalizedSeverity = normalizeIssueSeverity(finding?.severity, {startupWindow: false});
     return {
       severity: finding?.severity || "",
+      normalizedSeverity,
+      originalNormalizedSeverity,
+      countedAsStartupWarning: Boolean(options.startupWindow && originalNormalizedSeverity === "error" && normalizedSeverity === "warning"),
       code: finding?.code || "",
       finding: finding?.finding || "",
       recommendedNextProbe: finding?.recommendedNextProbe || ""
@@ -379,11 +405,28 @@
     };
   }
 
+  function compactMeasurements(report) {
+    const measurements = report?.measurements || {};
+    const result = {};
+    for (const key of [
+      "visualIntegrityViolations",
+      "layoutCollisions",
+      "overlays",
+      "forbiddenRegions"
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(measurements, key)) {
+        result[key] = measurements[key];
+      }
+    }
+    return result;
+  }
+
   function compactPayload(report, counts, history) {
     const safeCounts = counts || {errors: 0, warnings: 0, ok: 0};
+    const startupWindow = isStartupWindow(history, report?.timestamp || new Date().toISOString());
     const currentIssues = (Array.isArray(report?.findings) ? report.findings : [])
-      .filter((finding) => normalizeIssueSeverity(finding?.severity))
-      .map(compactIssue);
+      .filter((finding) => normalizeIssueSeverity(finding?.severity, {startupWindow}))
+      .map((finding) => compactIssue(finding, {startupWindow}));
     return {
       schema: "mcel-diagnostics-counter-copy-v4",
       widgetVersion: VERSION,
@@ -391,7 +434,8 @@
       contractId: report?.contractId || "",
       route: report?.route || (typeof location !== "undefined" ? location.href : ""),
       timestamp: report?.timestamp || new Date().toISOString(),
-      verdict: report?.verdict || "unknown",
+      verdict: normalizedVerdict(report, safeCounts),
+      rawVerdict: report?.verdict || "unknown",
       counts: safeCounts,
       current: {
         counts: safeCounts,
@@ -400,6 +444,7 @@
       history: compactIssueHistory(history),
       buckets: compactBuckets(report, history),
       primarySurface: report?.summary?.primarySurface || null,
+      measurements: compactMeasurements(report),
       issues: currentIssues
     };
   }
@@ -520,6 +565,79 @@
     }, 1200);
   }
 
+  function diagnosticEventSignature(payload) {
+    const issues = Array.isArray(payload?.issues) ? payload.issues : [];
+    const issueSignature = issues
+      .map((issue) => [
+        issue?.normalizedSeverity || issue?.severity || "",
+        issue?.code || "",
+        issue?.finding || "",
+        issue?.recommendedNextProbe || ""
+      ].join(":"))
+      .sort()
+      .join("|");
+    const counts = payload?.counts || {};
+    return [
+      payload?.appId || "",
+      payload?.contractId || "",
+      payload?.verdict || "",
+      counts.errors || 0,
+      counts.warnings || 0,
+      issueSignature
+    ].join("\u001f");
+  }
+
+  function shouldEmitDiagnosticEvent(widget, payload, nowMs = Date.now()) {
+    if (!widget || !payload) return false;
+    const signature = diagnosticEventSignature(payload);
+    const lastSignature = widget.__mcelDiagnosticsLastEventSignature || "";
+    const lastEventAt = Number(widget.__mcelDiagnosticsLastEventAt || 0);
+    if (signature !== lastSignature) return true;
+    const counts = payload.counts || {};
+    const activeIssueCount = Number(counts.errors || 0) + Number(counts.warnings || 0);
+    return activeIssueCount > 0 && nowMs - lastEventAt >= DIAGNOSTIC_EVENT_HEARTBEAT_MS;
+  }
+
+  function emitDiagnosticEvent(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    const body = JSON.stringify({event: payload});
+    const nav = typeof navigator !== "undefined" ? navigator : null;
+
+    if (nav?.sendBeacon && typeof Blob !== "undefined") {
+      try {
+        const blob = new Blob([body], {type: "application/json"});
+        if (nav.sendBeacon(DIAGNOSTIC_EVENT_ENDPOINT, blob)) return true;
+      } catch {}
+    }
+
+    if (typeof fetch === "function") {
+      try {
+        fetch(DIAGNOSTIC_EVENT_ENDPOINT, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body,
+          credentials: "same-origin",
+          keepalive: true
+        }).catch(() => {});
+        return true;
+      } catch {}
+    }
+
+    return false;
+  }
+
+  function maybeEmitDiagnosticEvent(widget, report, counts, history) {
+    const payload = compactPayload(report, counts, history);
+    const nowMs = Date.now();
+    if (!shouldEmitDiagnosticEvent(widget, payload, nowMs)) return payload;
+
+    widget.__mcelDiagnosticsLastEventSignature = diagnosticEventSignature(payload);
+    widget.__mcelDiagnosticsLastEventAt = nowMs;
+    widget.__mcelDiagnosticsLastEventPayload = payload;
+    emitDiagnosticEvent(payload);
+    return payload;
+  }
+
   function inactiveStatus(widget) {
     const counts = {errors: 0, warnings: 0, ok: 0};
     render(widget, counts);
@@ -568,6 +686,7 @@
     widget.__mcelDiagnosticsCounts = counts;
     widget.__mcelDiagnosticsIssueHistory = history;
     widget.__mcelDiagnosticsInactive = false;
+    maybeEmitDiagnosticEvent(widget, report, counts, history);
     return {report, counts, history};
   }
 
@@ -653,7 +772,12 @@
       summarizeReport,
       derivedOkCount,
       compactPayload,
+      compactMeasurements,
       compactBuckets,
+      diagnosticEventSignature,
+      shouldEmitDiagnosticEvent,
+      emitDiagnosticEvent,
+      maybeEmitDiagnosticEvent,
       formatCount,
       createIssueHistory,
       updateIssueHistory,
@@ -661,7 +785,10 @@
       issueHistoryCounts,
       isStartupWindow,
       normalizeIssueSeverity,
+      normalizedVerdict,
       STARTUP_ERROR_WARNING_MS,
+      DIAGNOSTIC_EVENT_ENDPOINT,
+      DIAGNOSTIC_EVENT_HEARTBEAT_MS,
       APP_WIDGETS
     })
   });

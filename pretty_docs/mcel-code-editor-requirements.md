@@ -44,6 +44,126 @@ verification:
   - tests/test_mcel_documentation.py
 ```
 
+## Semantic app form
+
+The Code Editor should be described first as reusable app-form primitives, then rendered
+by layout. The current desktop projection may use explorer, editor, inspector, status,
+or overlay DOM regions, but the requirement does not depend on left/right placement.
+Layout is valid only when it preserves primitive meaning, authority, lifecycle, and
+intrusion policy.
+
+```mcel-form-primitive
+id: code-editor.form.subject.source-workspace
+app: code-editor
+status: specified
+primitive: subject
+meaning: The project/workspace source tree and selected source file that the app helps inspect, edit, and safely change.
+relationships:
+  - Selected file is part of the source workspace.
+  - Source text, diagnostics, SCM evidence, and Aider context derive from the selected workspace subject.
+  - Generated runtime or proof artifacts are derived evidence, not canonical source.
+constraints:
+  - Author-owned source remains canonical.
+  - Runtime chrome and generated helper surfaces must not become saved source.
+  - Selection identity must remain visible enough to anchor editing and review.
+```
+
+```mcel-form-primitive
+id: code-editor.form.action.edit-source
+app: code-editor
+status: specified
+primitive: action
+meaning: Inspect and change selected source text while preserving explicit save, patch, execution, and remote-mutation boundaries.
+relationships:
+  - Acts on code-editor.form.subject.source-workspace.
+  - Uses code-editor.form.work-surface.selected-source-editor as the authoritative work surface.
+  - May consume supporting context, evidence, and feedback without allowing those projections to mutate source implicitly.
+constraints:
+  - Preview, suggestion, diagnosis, and review are not writes.
+  - Save/apply/execute/remote mutation require explicit intents and receipts.
+  - Read-only Aider requests cannot mutate files.
+```
+
+```mcel-form-primitive
+id: code-editor.form.work-surface.selected-source-editor
+app: code-editor
+status: specified
+primitive: work-surface
+meaning: The authoritative stable surface where the selected file's source text is edited.
+relationships:
+  - Enables code-editor.form.action.edit-source.
+  - Represents the selected file from code-editor.form.subject.source-workspace.
+  - May be implemented by Monaco or a mode-gated fallback, but exactly one editor surface may hold primary authority.
+constraints:
+  - Must remain visible and usable in authoring mode.
+  - Must not be covered, replaced, or out-ranked by supporting context, feedback, proof, preview, or diagnostic projections.
+  - Must preserve selected-path and dirty-state evidence.
+```
+
+```mcel-form-primitive
+id: code-editor.form.context.project-selection
+app: code-editor
+status: specified
+primitive: context
+meaning: Supporting context that lets the user choose, understand, and compare source workspace subjects.
+relationships:
+  - Selects or explains the active source workspace/file subject.
+  - Supports editing, review, SCM evidence, and Aider context gathering.
+  - May project through any selection affordance that preserves subject identity and editing flow.
+constraints:
+  - Must not claim primary editor authority.
+  - Must not obscure the selected source editor below usable geometry.
+  - Must keep the current selected subject traceable when file-backed editing is active.
+```
+
+```mcel-form-primitive
+id: code-editor.form.context.reasoning-evidence
+app: code-editor
+status: specified
+primitive: context
+meaning: Supporting explanation, evidence, diagnostics, ownership hints, documentation references, and Aider context that help reason about the selected source subject or proposed action.
+relationships:
+  - Observes or explains source text, diagnostics, requirements, SCM evidence, Aider plans, and test/source ownership.
+  - May be available on demand, adjacent, tabbed, collapsed, or deferred by layout inference.
+  - Shares viewport with the primary work surface only when it preserves primary authority and geometry.
+constraints:
+  - Must not become the selected-file editor.
+  - Must not leak as an unowned overlay over the primary work surface.
+  - Must remain distinguishable from canonical source and from write/apply controls.
+```
+
+```mcel-form-primitive
+id: code-editor.form.feedback.integrity-and-activity
+app: code-editor
+status: specified
+primitive: feedback
+meaning: Signals about app integrity, contract health, dirty/save state, policy gates, activity, failures, receipts, and recovery posture.
+relationships:
+  - Observes the source workspace, editor usability, runtime contract, action lifecycle, and persistence state.
+  - May render as status text, badges, counters, inline findings, panels, or machine-readable reports.
+  - Supports users, developers, and automation without defining a physical slot.
+constraints:
+  - Ambient feedback must not interrupt or cover the primary work surface.
+  - Noticeable or corrective feedback must identify the condition it observes.
+  - Feedback projections must be owned so they are not reported as random overlays.
+```
+
+```mcel-form-primitive
+id: code-editor.form.transient.widget-structure-editing
+app: code-editor
+status: specified
+primitive: transient
+meaning: Temporary structure-editing UI used only while an explicit widget or layout editing mode is active.
+relationships:
+  - Supports structural editing operations rather than ordinary source editing.
+  - May cover or annotate the app only while its explicit mode is active.
+  - Is shell/tool infrastructure when inert and a transient projection when active.
+constraints:
+  - Active widget editor panes, selections, and dock previews are forbidden in normal authoring mode.
+  - The inert widget-editor root is not itself a visible work surface.
+  - Transient structure-editing UI must identify its mode and owner when visible.
+```
+
 ## Roadmap use cases
 
 These use cases define the product workflow for the Code Editor requirements. They keep source editing, AI assistance, file writes, and execution boundaries visible before any implementation work is treated as complete.
@@ -210,11 +330,11 @@ requirement: >
   the selected-file editor without replacing it, overlaying it, or competing with
   it as the dominant object.
 acceptance:
-  - The active selected-file editor owns the center/primary region.
+  - The active selected-file editor owns the primary work-surface projection.
   - File map and open editors remain navigation, not primary content.
   - Aider, MCEL tools, and diagnostics are secondary support surfaces.
   - Evidence and history can be expanded without hiding dirty state or the editor.
-  - Advanced/runtime/proof controls are collapsed, right-pane contained, or mode-gated by default.
+  - Advanced/runtime/proof controls are collapsed, owned by supporting projections, or mode-gated by default.
 ```
 
 ```mcel-requirement
@@ -225,18 +345,20 @@ type: layout-law
 aspect: layout
 object: SourceWorkspace
 requirement: >
-  Code Editor authoring mode must present a stable authoring cockpit: a left
-  explorer, a central selected-file editor, an optional right assistant and
-  diagnostics pane, and a persistent status bar. The right pane may show MCEL
-  tools, diagnosis history, contract findings, Aider context, source ownership,
-  and test ownership hints, but it remains secondary and must never obscure,
-  replace, or compete with the central editor.
+  Code Editor authoring mode must render the semantic app form: a primary
+  selected-source editing work surface, supporting project-selection context,
+  optional reasoning/evidence context, ambient integrity/activity feedback, and
+  explicit mode-bound transients. The requirement is semantic, not directional;
+  layout may project those primitives as panes, drawers, tabs, compact chrome, or
+  overlays only when the projection preserves primary editor authority,
+  usability, lifecycle, and intrusion policy.
 acceptance:
-  - Explorer, primary editor, right pane, and status bar have owned region identities.
-  - Exactly one authoritative selected-file editor is visible and usable in authoring mode.
-  - The right assistant/diagnostics pane may be visible, collapsed, or tabbed without failing authoring mode.
-  - The right pane does not reduce the primary editor below its minimum usable geometry.
-  - Diagnostics and proof output visible inside the right pane are allowed; the same surfaces leaking into the editor region are failures.
+  - Every visible authoring surface projects from a declared app, shell, or tool primitive.
+  - Exactly one authoritative selected-file editor work surface is visible and usable in authoring mode.
+  - Project-selection context remains available enough to identify or change the selected subject.
+  - Reasoning, evidence, diagnostics, and assistant context may be visible, collapsed, tabbed, or deferred without becoming primary.
+  - Ambient feedback is owned, low-intrusion, and does not cover or shrink the primary editor below minimum geometry.
+  - Mode-bound transients such as active widget editing are hidden unless the explicit mode allows them.
   - Runtime preview, source HTML, fallback textarea, generated runtime rails, and proof docks remain hidden unless an explicit mode allows them.
 ```
 
@@ -288,10 +410,11 @@ acceptance:
 ## Workbench anatomy
 
 The Code Editor should normally be inspected as an owned-region authoring cockpit.
-The left explorer, central selected-file editor, optional right assistant/diagnostics
-pane, and persistent status bar must each have an explicit responsibility. Runtime
-checks should treat the central editor as the only primary surface and the right pane
-as an allowed secondary surface.
+The selected-source editor, project-selection context, reasoning/evidence context,
+ambient feedback, and mode-bound transients must each have an explicit responsibility.
+Current DOM regions are layout projections of those primitives, not the requirement
+itself. Runtime checks should treat the selected-source editor as the only primary
+work surface and supporting/feedback projections as non-primary surfaces.
 
 
 ```mcel-region
@@ -324,6 +447,8 @@ role: project-navigation
 responsibility: >
   Let the user choose files, project context, open editors, and selected-file
   sets without applying patches or executing commands.
+form_primitives:
+  - code-editor.form.context.project-selection
 purpose: File map, project tree, open editors, selected files, and repository context.
 expected_elements:
   - file search
@@ -343,9 +468,12 @@ status: specified
 region: primary
 role: primary-authoring-surface
 responsibility: >
-  Own the central selected-file editor, draft review, concrete diffs, and explicit
-  preview modes while preventing secondary tools from becoming the source of truth.
-purpose: Central selected-file editor, author-owned draft, selected path evidence, diff review when requested, and runtime preview only when explicitly selected.
+  Own the selected-file editor, draft review, concrete diffs, and explicit preview
+  modes while preventing supporting tools from becoming the source of truth.
+form_primitives:
+  - code-editor.form.work-surface.selected-source-editor
+  - code-editor.form.action.edit-source
+purpose: Selected-file editor, author-owned draft, selected path evidence, diff review when requested, and runtime preview only when explicitly selected.
 expected_elements:
   - selected-file Monaco editor
   - selected file path
@@ -355,7 +483,7 @@ expected_elements:
   - diff preview when reviewing a concrete change
 must_not_contain:
   - default raw Aider transcript dump
-  - MCEL proof or diagnostics overlay not assigned to the right pane
+  - MCEL proof or diagnostics projection not assigned to an owned supporting or feedback primitive
   - unreviewed patch application
   - remote sync controls
   - fallback textarea while Monaco is active
@@ -365,14 +493,18 @@ must_not_contain:
 id: code-editor.region.inspector
 app: code-editor
 status: specified
-region: right-assistant-diagnostics-pane
-role: secondary-assistant-diagnostics-surface
+region: supporting-reasoning-evidence-projection
+role: secondary-context-and-feedback-surface
 responsibility: >
-  Own the optional right pane for Aider context, MCEL tools, diagnosis history,
-  contract findings, selected-file evidence, SCM manifests, source ownership,
-  test ownership, documentation references, and action-specific preflight
-  information without becoming the primary editor.
-purpose: Optional right assistant and diagnostics pane for support surfaces that should not leak into the central editor.
+  Project optional reasoning, evidence, diagnostics, Aider context, SCM manifests,
+  source ownership, test ownership, documentation references, and action-specific
+  preflight information without becoming the primary editor. A desktop renderer may
+  currently place this projection beside the editor, but MCEL treats that placement
+  as layout inference rather than the requirement.
+purpose: Supporting reasoning/evidence/feedback projection for surfaces that should not leak into or compete with the selected-source editor.
+form_primitives:
+  - code-editor.form.context.reasoning-evidence
+  - code-editor.form.feedback.integrity-and-activity
 expected_elements:
   - Aider instruction
   - selected file list
@@ -388,7 +520,7 @@ must_not_contain:
   - selected-file source edits that bypass the primary editor
   - unscoped write controls
   - hidden command execution
-  - proof or diagnostic surfaces that cover the central editor
+  - proof or diagnostic projections that cover the primary work surface
 ```
 
 ```mcel-region
@@ -442,6 +574,8 @@ role: persistent-status-strip
 responsibility: >
   Keep draft, save, policy, gate, activity, failure, and receipt state visible
   without becoming a hidden source of truth.
+form_primitives:
+  - code-editor.form.feedback.integrity-and-activity
 purpose: Persistent action state that tells the user whether drafts, persistence, gates, policies, and actions are clean, dirty, blocked, running, failed, or complete.
 expected_elements:
   - dirty state
@@ -646,10 +780,12 @@ requires:
 ## Runtime-observable diagnosis contract
 
 The Code Editor contract must be diagnoseable while the app is running. The authoring
-golden path is now the cockpit contract: default authoring mode exposes exactly one
-usable Monaco selected-file editor in the center, preserves the left explorer and
-status bar, allows a secondary right assistant/diagnostics pane, and keeps runtime,
-source-model, fallback, proof, and generated rail surfaces out of the primary editor.
+golden path is now a semantic app-form contract: default authoring mode exposes exactly
+one usable selected-source editor work surface, preserves enough project-selection
+context and ambient feedback to orient the user, allows supporting reasoning/evidence
+projections as non-primary surfaces, and keeps runtime, source-model, fallback, proof,
+generated rail, and mode-bound transient surfaces out of the primary editor unless an
+explicit mode allows them.
 
 ```mcel-runtime-check
 id: code-editor.runtime-check.authoring-primary-monaco
@@ -712,14 +848,14 @@ test_binding: code-editor.test.authoring-monaco-diagnosis
 
 
 ```mcel-runtime-check
-id: code-editor.runtime-check.authoring-right-pane-policy
+id: code-editor.runtime-check.authoring-supporting-projection-policy
 app: code-editor
 status: specified
 mode: authoring
 contract: code-editor.contract.authoring.monaco-golden-path
 check: secondary-surface-policy
-check_category: surfaces
-focus: right-assistant-diagnostics-pane
+check_category: form
+focus: supporting-context-feedback-projection
 severity: warning
 observes:
   - ".code-studio-inspector"
@@ -727,24 +863,30 @@ observes:
   - "#code-editor-mcel-tools-toggle"
   - "#code-editor-diagnostics-counter"
 expects:
-  - The right assistant/diagnostics pane is allowed in authoring mode as a secondary surface.
-  - The right pane may be visible, collapsed, tabbed, or trigger-only without becoming the primary editor.
-  - MCEL tools, diagnosis history, contract findings, source ownership, and test ownership belong in the right pane or an explicit mode.
-  - The right pane must not cover the Monaco editor or reduce it below its minimum geometry.
+  - Supporting reasoning, evidence, diagnostics, and assistant context are allowed in authoring mode as non-primary projections.
+  - Supporting projections may be visible, collapsed, tabbed, deferred, or trigger-only without becoming the primary editor.
+  - MCEL tools, diagnosis history, contract findings, source ownership, and test ownership must project from owned context or feedback primitives, or from an explicit mode.
+  - Supporting projections must not cover the Monaco editor or reduce it below its minimum geometry.
+form_primitives:
+  - code-editor.form.context.reasoning-evidence
+  - code-editor.form.feedback.integrity-and-activity
 optional_regions:
-  - code-editor.region.right-assistant | .code-studio-inspector | Right assistant and diagnostics pane
+  - code-editor.region.inspector | .code-studio-inspector | Supporting reasoning/evidence projection
 allowed_regions:
-  - code-editor.allowed.mcel-tools-toggle | #code-editor-mcel-tools-toggle | MCEL tools toggle
-  - code-editor.allowed.diagnostics-counter | #code-editor-diagnostics-counter | Diagnostics counter
+  - code-editor.allowed.mcel-tools-toggle | #code-editor-mcel-tools-toggle | MCEL tools toggle projection
+  - code-editor.allowed.diagnostics-counter | #code-editor-diagnostics-counter | Ambient integrity feedback projection
 geometry_policies:
-  - right-pane-visible-min-width-240
-  - right-pane-max-width-ratio-0.40
-  - right-pane-must-collapse-before-primary-breaks
+  - supporting-projection-visible-min-width-240
+  - supporting-projection-max-width-ratio-0.40
+  - supporting-projection-must-collapse-before-primary-breaks
 overlay_policy:
-  - diagnostics-contained-in-right-pane-are-allowed
+  - diagnostics-owned-by-supporting-or-feedback-projection-are-allowed
   - diagnostics-covering-primary-editor-are-forbidden
-failure_message: The right pane is an allowed secondary authoring surface, not a competing editor or leaked overlay.
-next_probe: rightPane.containment
+semantic_policy:
+  - supporting-context-must-not-claim-primary-authority
+  - ambient-feedback-must-not-cover-primary-work-surface
+failure_message: Supporting context and feedback projections are allowed when they do not compete with the selected-source editor.
+next_probe: semanticProjection.containment
 source_binding: code-editor.binding.authoring-cockpit-layout
 test_binding: code-editor.test.authoring-cockpit-diagnosis
 ```
@@ -770,13 +912,15 @@ observes:
   - ".code-studio-runtime-fallback"
   - ".code-studio-proof-dock"
   - "#code-studio-bottom-panel"
-  - "#mc-widget-editor-root"
+  - "#mc-widget-editor-pane.open"
+  - ".mc-widget-selection:not([hidden])"
+  - ".mc-widget-dock-preview:not([hidden])"
 expects:
   - Source model pane is hidden.
   - Serialized and contract panes are hidden.
   - Generated runtime window/layout/file rail are absent from the default path.
   - Fallback textarea is not visible in the Monaco golden path.
-  - Proof and widget overlays are not visible in authoring mode.
+  - Proof docks and active widget editor overlays are not visible in authoring mode; the inert widget-editor shell is not treated as a visible overlay.
 forbids:
   - code-editor.forbidden.source-pane | [data-code-studio-pane="source"] | MCEL source model pane
   - code-editor.forbidden.serialized-pane | [data-code-studio-pane="serialized"] | Serialized output pane
@@ -786,7 +930,7 @@ forbids:
   - code-editor.forbidden.runtime-file-rail | .code-studio-runtime-files | Generated runtime file rail
   - code-editor.forbidden.fallback-textarea | #code-studio-runtime-draft, .code-studio-runtime-fallback | Fallback textarea
   - code-editor.forbidden.proof-dock | .code-studio-proof-dock, #code-studio-bottom-panel | MCEL proof/evidence dock
-  - code-editor.forbidden.widget-overlay | #mc-widget-editor-root | Widget editor overlay
+  - code-editor.forbidden.widget-overlay | #mc-widget-editor-pane.open, .mc-widget-selection:not([hidden]), .mc-widget-dock-preview:not([hidden]) | Active widget editor overlay
 failure_message: MCEL diagnostic/runtime scaffolding must not leak into Code Editor authoring mode.
 next_probe: overlay.detector
 source_binding: code-editor.binding.authoring-monaco-surface
@@ -852,9 +996,9 @@ source_candidates:
   - main_computer/web/applications/scripts/mcel-diagnostics-counter-widget.js
 binding_confidence: high
 verification:
-  - Runtime diagnosis must preserve explorer, primary editor, optional right pane, and status bar identities.
-  - Right-pane diagnostics must be classified as secondary support, not competing primary editor surfaces.
-  - Right-pane expansion must not reduce the Monaco selected-file editor below usable geometry.
+  - Runtime diagnosis must preserve project-selection context, the primary editor work surface, supporting context/feedback projections, and ambient status feedback.
+  - Diagnostics must be classified by primitive role: supporting context, ambient feedback, explicit transient, or forbidden unowned overlay.
+  - Supporting projections must collapse, defer, or reflow before they reduce the Monaco selected-file editor below usable geometry.
 ```
 
 ```mcel-test-binding
@@ -881,11 +1025,11 @@ test_candidates:
   - tests/test_mcel_requirements_registry.py
   - tests/test_mcel_code_studio_app.py
 missing_tests:
-  - Browser containment smoke test for expanded, collapsed, and tabbed right-pane states.
-  - Browser lifecycle smoke test proving resize collapses the right pane before the primary editor breaks.
+  - Browser containment smoke test for expanded, collapsed, tabbed, deferred, and compact supporting-context projections.
+  - Browser lifecycle smoke test proving resize preserves the primary editor before supporting projections consume space.
 verification:
-  - Registry tests confirm the right pane compiles as an optional secondary region.
-  - Browser diagnosis should report right-pane leaks separately from primary-surface failures.
+  - Registry tests confirm semantic form primitives parse and supporting projections compile as optional regions.
+  - Browser diagnosis should report unowned or mode-invalid projections separately from primary-surface failures.
 ```
 
 ## First useful findings for MCEL Lab

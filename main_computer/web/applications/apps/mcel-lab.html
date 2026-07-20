@@ -74,12 +74,14 @@
   <div class="mcel-lab-blueprint-workbench mc-app-workspace" aria-label="MCEL Lab blueprint workbench">
     <aside
       class="mcel-lab-blueprint-navigation mc-app-pane"
+      data-mcel-visual-owner="navigation-context"
+      data-mcel-visual-stack="semantic-cards"
       data-mcel-zone="navigation"
       data-mcel-layout-zone="navigation"
       data-mcel-element="element.layout.navigation-zone"
       aria-label="App and aspect navigation"
     >
-      <section class="mcel-lab-shell-card" aria-label="Inspectable apps">
+      <section class="mcel-lab-shell-card mcel-lab-targets-card" data-mcel-visual-owner="inspectable-targets" aria-label="Inspectable apps">
         <div class="mcel-lab-shell-card-heading">
           <p class="eyebrow">Apps</p>
           <h4>Inspectable targets</h4>
@@ -97,7 +99,8 @@
       </section>
 
       <section
-        class="mcel-lab-shell-card"
+        class="mcel-lab-shell-card mcel-lab-registry-card"
+        data-mcel-visual-owner="requirements-registry-context"
         aria-label="Requirements registry"
         data-mcel-zone="evidence"
         data-mcel-layout-zone="evidence"
@@ -113,18 +116,19 @@
         </p>
         <dl class="mcel-lab-blueprint-facts" id="mcel-requirements-registry-facts">
           <div><dt>Registry</dt><dd>mcel-requirements-registry-v1</dd></div>
-          <div><dt>Apps</dt><dd>calculator, code-editor, file-explorer, git-tools, website-builder</dd></div>
+          <div><dt>Apps</dt><dd>document-editor, calculator, code-editor, file-explorer, git-tools, mcel-lab, website-builder</dd></div>
           <div><dt>Comparison</dt><dd>requirements → adapter readiness</dd></div>
         </dl>
       </section>
 
-      <section class="mcel-lab-shell-card" aria-label="Aspect navigator">
+      <section class="mcel-lab-shell-card mcel-lab-aspect-card" data-mcel-visual-owner="aspect-navigation-context" aria-label="Aspect navigator">
         <div class="mcel-lab-shell-card-heading">
           <p class="eyebrow">Aspects</p>
           <h4>Generic aspect navigator</h4>
         </div>
         <div id="mcel-blueprint-aspect-list" class="mcel-lab-blueprint-pills" role="list">
           <button type="button" data-mcel-blueprint-aspect-option="overview" aria-pressed="true">Overview</button>
+          <button type="button" data-mcel-blueprint-aspect-option="form" aria-pressed="false">Form</button>
           <button type="button" data-mcel-blueprint-aspect-option="objects" aria-pressed="false">Objects</button>
           <button type="button" data-mcel-blueprint-aspect-option="workflows" aria-pressed="false">Workflows</button>
           <button type="button" data-mcel-blueprint-aspect-option="layout" aria-pressed="false">Layout</button>
@@ -146,6 +150,7 @@
         </summary>
         <ol id="mcel-blueprint-outline" class="mcel-lab-blueprint-outline">
           <li data-mcel-blueprint-outline-item="overview"><span>Overview</span></li>
+          <li data-mcel-blueprint-outline-item="form"><span>Form</span></li>
           <li data-mcel-blueprint-outline-item="objects"><span>Objects</span></li>
           <li data-mcel-blueprint-outline-item="workflows"><span>Workflows</span></li>
           <li data-mcel-blueprint-outline-item="layout"><span>Layout</span></li>
@@ -163,12 +168,14 @@
 
     <main
       class="mcel-lab-blueprint-primary mc-app-primary"
+      data-mcel-visual-owner="primary-blueprint-workspace"
+      data-mcel-visual-stack="primary-workspace"
       data-mcel-zone="primary"
       data-mcel-layout-zone="primary"
       data-mcel-element="element.layout.primary-work-zone"
       aria-label="Selected app and aspect workspace"
     >
-      <section class="mcel-lab-shell-card mcel-lab-work-area" aria-label="App aspect work area">
+      <section class="mcel-lab-shell-card mcel-lab-work-area" data-mcel-visual-owner="selected-aspect-work-area" data-mcel-visual-stack="work-area-rows" aria-label="App aspect work area">
         <div class="mcel-lab-work-area-header">
           <div>
             <p class="eyebrow">Work area</p>
@@ -177,7 +184,7 @@
           <span id="mcel-blueprint-work-badge" class="mcel-lab-work-badge">mount idle</span>
         </div>
 
-        <div class="mcel-lab-work-surface" id="mcel-blueprint-work-surface" aria-label="Mounted app work surface">
+        <div class="mcel-lab-work-surface" id="mcel-blueprint-work-surface" data-mcel-visual-owner="mounted-app-work-surface" aria-label="Mounted app work surface">
           <div class="mcel-lab-work-surface-empty">
             <span>Mount target</span>
             <strong id="mcel-blueprint-mount-route">/applications/document</strong>
@@ -191,6 +198,7 @@
         <div
           id="mcel-blueprint-selection-receipt"
           class="mcel-lab-selection-receipt"
+          data-mcel-visual-owner="selection-receipt-feedback"
           data-mcel-selection-state="empty"
           aria-live="polite"
         >
@@ -200,7 +208,7 @@
           </button>
         </div>
 
-        <details class="mcel-lab-work-context" aria-label="Selected aspect context">
+        <details class="mcel-lab-work-context" data-mcel-visual-owner="selected-aspect-context" aria-label="Selected aspect context">
           <summary>
             <span class="eyebrow">Aspect context</span>
             <strong id="mcel-blueprint-aspect-summary">
@@ -233,10 +241,11 @@
 
     </main>
 
-    <aside class="mcel-lab-blueprint-right-rail" aria-label="Inspector and evidence rail">
+    <aside class="mcel-lab-blueprint-right-rail" data-mcel-visual-owner="inspection-context" data-mcel-visual-stack="semantic-cards" aria-label="Inspector and evidence rail">
       <section
         id="mcel-blueprint-selected-element-card"
         class="mcel-lab-shell-card mcel-lab-selected-element-card"
+        data-mcel-visual-owner="selected-element-inspector"
         tabindex="-1"
         data-mcel-zone="inspector"
         data-mcel-layout-zone="inspector"
@@ -432,6 +441,12 @@
     <output id="mcel-blueprint-selection-status">Selection: inspect mode is off.</output>
     <output id="mcel-blueprint-saved-status">Annotations: not saved.</output>
     <output id="mcel-blueprint-export-status">Export: not available.</output>
+    <span
+      id="mcel-lab-diagnostics-slot"
+      class="mcel-lab-diagnostics-slot"
+      data-mcel-feedback-projection="contract-health"
+      aria-label="MCEL Lab diagnostics counter slot"
+    ></span>
   </footer>
 
   <details

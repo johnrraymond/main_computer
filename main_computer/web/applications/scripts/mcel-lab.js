@@ -170,6 +170,9 @@
           requiredEvidence: aspect.requiredEvidence || []
         } : null,
         layoutZones: blueprint.layoutZones || [],
+        formPrimitiveCount: blueprint.formPrimitiveCount || mcelBlueprintShellFormPrimitives(blueprint).length,
+        formPrimitiveKinds: blueprint.formPrimitiveKinds || {},
+        formPrimitives: mcelBlueprintShellFormPrimitives(blueprint),
         sourceHints: blueprint.sourceHints || [],
         testHints: blueprint.testHints || [],
         docHints: blueprint.docHints || [],
@@ -224,6 +227,146 @@
       });
     }
 
+
+    function mcelBlueprintShellFormPrimitiveKindLabel(kind) {
+      return String(kind || "unknown")
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    }
+
+    function mcelBlueprintShellFormPrimitiveKindOrder() {
+      return [
+        "subject",
+        "action",
+        "work-surface",
+        "context",
+        "feedback",
+        "constraint",
+        "transient",
+        "interruption"
+      ];
+    }
+
+    function mcelBlueprintShellFormPrimitives(blueprint) {
+      return Array.isArray(blueprint?.formPrimitives) ? blueprint.formPrimitives.filter(Boolean) : [];
+    }
+
+    function mcelBlueprintShellGroupFormPrimitives(blueprint) {
+      const groups = new Map();
+      mcelBlueprintShellFormPrimitives(blueprint).forEach((primitive) => {
+        const kind = String(primitive?.primitive || "unknown").trim().toLowerCase() || "unknown";
+        if (!groups.has(kind)) groups.set(kind, []);
+        groups.get(kind).push(primitive);
+      });
+      const order = mcelBlueprintShellFormPrimitiveKindOrder();
+      return Array.from(groups.entries()).sort((left, right) => {
+        const leftIndex = order.indexOf(left[0]);
+        const rightIndex = order.indexOf(right[0]);
+        if (leftIndex !== -1 || rightIndex !== -1) {
+          return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
+        }
+        return left[0].localeCompare(right[0]);
+      });
+    }
+
+    function mcelBlueprintShellAppendPrimitiveValues(parent, label, values) {
+      const cleanValues = (Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean);
+      if (!cleanValues.length) return;
+      const wrap = document.createElement("div");
+      wrap.className = "mcel-lab-form-primitive-values";
+      const title = document.createElement("span");
+      title.textContent = label;
+      const list = document.createElement("ul");
+      cleanValues.slice(0, 6).forEach((value) => {
+        const item = document.createElement("li");
+        item.textContent = mcelBlueprintShellShortText(value, 180);
+        list.appendChild(item);
+      });
+      wrap.append(title, list);
+      parent.appendChild(wrap);
+    }
+
+    function mcelBlueprintShellRenderFormPrimitiveViewer(parent, blueprint, options = {}) {
+      if (!parent) return;
+      const primitives = mcelBlueprintShellFormPrimitives(blueprint);
+      const viewer = document.createElement("section");
+      viewer.className = "mcel-lab-form-primitive-viewer";
+      viewer.dataset.mcelFormPrimitiveViewer = "true";
+      viewer.dataset.mcelFormPrimitiveApp = blueprint?.appId || "";
+      viewer.dataset.mcelFormPrimitiveMode = options.compact ? "compact" : "work-surface";
+      viewer.setAttribute("aria-label", `${blueprint?.label || blueprint?.appId || "App"} semantic form primitives`);
+
+      const header = document.createElement("header");
+      header.className = "mcel-lab-form-primitive-header";
+      const titleWrap = document.createElement("div");
+      const eyebrow = document.createElement("p");
+      eyebrow.className = "eyebrow";
+      eyebrow.textContent = "Semantic form";
+      const title = document.createElement(options.compact ? "h5" : "h4");
+      title.textContent = `${blueprint?.label || blueprint?.appId || "App"} primitives`;
+      const copy = document.createElement("p");
+      copy.textContent = primitives.length
+        ? "These primitives come from parsed MCEL requirements docs. They describe app meaning before layout decides how to project it."
+        : "No parsed mcel-form-primitive blocks are available for this app yet.";
+      titleWrap.append(eyebrow, title, copy);
+
+      const badge = document.createElement("span");
+      badge.className = "mcel-lab-work-badge";
+      badge.textContent = `${primitives.length} primitive${primitives.length === 1 ? "" : "s"}`;
+      header.append(titleWrap, badge);
+      viewer.appendChild(header);
+
+      if (!primitives.length) {
+        const empty = document.createElement("p");
+        empty.className = "mcel-lab-muted-note";
+        empty.textContent = "Add mcel-form-primitive blocks to the app requirements document to make this aspect inspectable.";
+        viewer.appendChild(empty);
+        parent.appendChild(viewer);
+        return;
+      }
+
+      const groups = document.createElement("div");
+      groups.className = "mcel-lab-form-primitive-groups";
+      mcelBlueprintShellGroupFormPrimitives(blueprint).forEach(([kind, entries]) => {
+        const group = document.createElement("section");
+        group.className = "mcel-lab-form-primitive-group";
+        group.dataset.mcelFormPrimitiveKind = kind;
+
+        const groupTitle = document.createElement("h5");
+        groupTitle.textContent = `${mcelBlueprintShellFormPrimitiveKindLabel(kind)} · ${entries.length}`;
+        group.appendChild(groupTitle);
+
+        const grid = document.createElement("div");
+        grid.className = "mcel-lab-form-primitive-grid";
+        entries.forEach((primitive) => {
+          const card = document.createElement("article");
+          card.className = "mcel-lab-form-primitive-card";
+          card.dataset.mcelFormPrimitiveId = primitive?.id || "";
+          card.dataset.mcelFormPrimitiveKind = kind;
+
+          const cardTitle = document.createElement("strong");
+          cardTitle.textContent = primitive?.id || kind;
+          const meaning = document.createElement("p");
+          meaning.textContent = mcelBlueprintShellShortText(primitive?.meaning || "Meaning pending.", options.compact ? 180 : 260);
+
+          const facts = document.createElement("dl");
+          facts.className = "mcel-lab-form-primitive-facts";
+          mcelBlueprintShellAppendFact(facts, "Kind", kind);
+          mcelBlueprintShellAppendFact(facts, "Status", primitive?.status || "unspecified");
+          card.append(cardTitle, meaning, facts);
+
+          mcelBlueprintShellAppendPrimitiveValues(card, "Relationships", primitive?.relationships);
+          mcelBlueprintShellAppendPrimitiveValues(card, "Constraints", primitive?.constraints);
+          grid.appendChild(card);
+        });
+
+        group.appendChild(grid);
+        groups.appendChild(group);
+      });
+      viewer.appendChild(groups);
+      parent.appendChild(viewer);
+    }
+
     function mcelBlueprintShellRenderDetailGroupBody(body, group, blueprint, aspect, api) {
       const renderer = group?.renderer || "facts";
       if (renderer === "aspect-contract") {
@@ -234,6 +377,11 @@
         mcelBlueprintShellAppendFact(facts, "Finding policy", aspect?.findingPolicy || "missing evidence produces findings");
         mcelBlueprintShellAppendFact(facts, "Contract element", aspect?.elementId || "element.inspection.aspect-panel");
         body.appendChild(facts);
+        return;
+      }
+
+      if (renderer === "semantic-form-primitives") {
+        mcelBlueprintShellRenderFormPrimitiveViewer(body, blueprint, {compact: true});
         return;
       }
 
@@ -2190,7 +2338,18 @@
       mcelBlueprintShellApplyInspectMode(blueprint);
     }
 
-    function mcelBlueprintShellRenderWorkSurface(workSurface, blueprint) {
+    function mcelBlueprintShellRenderFormPrimitiveWorkSurface(workSurface, blueprint) {
+      if (!workSurface) return;
+      workSurface.innerHTML = "";
+      workSurface.dataset.mcelMountState = "form-primitives";
+      mcelBlueprintShellRenderFormPrimitiveViewer(workSurface, blueprint, {compact: false});
+    }
+
+    function mcelBlueprintShellRenderWorkSurface(workSurface, blueprint, aspect = null) {
+      if (aspect?.id === "form") {
+        mcelBlueprintShellRenderFormPrimitiveWorkSurface(workSurface, blueprint);
+        return;
+      }
       const report = mcelBlueprintShellReportFor(blueprint);
       if (report) {
         mcelBlueprintShellRenderMountedWorkSurface(workSurface, report, blueprint);
@@ -2433,7 +2592,7 @@
           ? `Refresh mounted preview for ${blueprint.label || blueprint.appId}`
           : `Mount ${blueprint.label || blueprint.appId} into the work area`);
       }
-      mcelBlueprintShellRenderWorkSurface(workSurface, blueprint);
+      mcelBlueprintShellRenderWorkSurface(workSurface, blueprint, aspect);
       if (mountRoute) {
         mountRoute.textContent = blueprint.route || "route pending";
       }
@@ -2466,20 +2625,20 @@
 
       const selectedRecord = mcelBlueprintShellSelectedElementFor(blueprint);
       mcelBlueprintShellPopulateList(findings, mountReport ? [
-        `${blueprint.label || blueprint.appId} uses the shared ${aspects.length}-aspect model.`,
+        `${blueprint.label || blueprint.appId} uses the shared ${aspects.length}-aspect model with ${mcelBlueprintShellFormPrimitives(blueprint).length} semantic form primitives.`,
         selectedRecord
           ? `Selected ${selectedRecord.selector} in ${selectedRecord.layoutZone || selectedRecord.role}.`
           : "No rendered element has been selected yet.",
         `Mount evidence captured ${mountReport.dataMcelAttributes?.length || 0} MCEL attribute groups, ${(mountReport.layoutZones || []).length} layout zone groups, and ${mountReport.boundingBoxes?.length || 0} bounding boxes.`
       ] : [
-        `${blueprint.label || blueprint.appId} uses the shared ${aspects.length}-aspect model.`,
+        `${blueprint.label || blueprint.appId} uses the shared ${aspects.length}-aspect model with ${mcelBlueprintShellFormPrimitives(blueprint).length} semantic form primitives.`,
         "Runtime evidence is pending until the selected app is mounted."
       ]);
 
       if (validityStatus) {
         validityStatus.textContent = mountReport
-          ? `Blueprint loaded and mounted: ${blueprint.appId} · ${aspects.length} aspects · ${(blueprint.layoutZones || []).length} zones.`
-          : `Blueprint loaded: ${blueprint.appId} · ${aspects.length} aspects · ${(blueprint.layoutZones || []).length} zones.`;
+          ? `Blueprint loaded and mounted: ${blueprint.appId} · ${aspects.length} aspects · ${mcelBlueprintShellFormPrimitives(blueprint).length} form primitives · ${(blueprint.layoutZones || []).length} zones.`
+          : `Blueprint loaded: ${blueprint.appId} · ${aspects.length} aspects · ${mcelBlueprintShellFormPrimitives(blueprint).length} form primitives · ${(blueprint.layoutZones || []).length} zones.`;
       }
       if (savedStatus) {
         mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);

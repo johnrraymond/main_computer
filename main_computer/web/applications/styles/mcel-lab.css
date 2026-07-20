@@ -6933,6 +6933,7 @@ body.mcel-modal-open {
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 12px;
   min-height: min(960px, calc(100vh - 170px));
+  isolation: isolate;
 }
 
 .mcel-lab-blueprint-topbar {
@@ -7014,30 +7015,37 @@ body.mcel-modal-open {
 
 .mcel-lab-blueprint-workbench {
   --mcel-lab-workbench-block-size: clamp(620px, calc(100dvh - 250px), 780px);
-  grid-template-columns: clamp(190px, 15vw, 230px) minmax(700px, 1fr) clamp(320px, 23vw, 370px);
+  grid-template-columns: minmax(300px, 0.82fr) minmax(640px, 2.12fr) minmax(300px, 1fr);
   grid-template-areas: "navigation primary rail";
   block-size: var(--mcel-lab-workbench-block-size);
   min-block-size: 0;
   gap: 12px;
   overflow: hidden;
+  isolation: isolate;
 }
 
 .mcel-lab-blueprint-navigation {
   grid-area: navigation;
-  gap: 12px;
-  min-width: 0;
-  max-block-size: 100%;
-}
-
-.mcel-lab-blueprint-primary {
-  grid-area: primary;
   display: grid;
-  grid-template-rows: minmax(620px, 1fr);
+  align-content: start;
   gap: 12px;
   min-width: 0;
   min-height: 0;
   max-block-size: 100%;
   overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.mcel-lab-blueprint-primary {
+  grid-area: primary;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  max-block-size: 100%;
+  overflow: hidden;
   scrollbar-gutter: stable;
 }
 
@@ -7055,19 +7063,63 @@ body.mcel-modal-open {
 }
 
 .mcel-lab-shell-card {
+  position: relative;
+  z-index: 0;
   min-width: 0;
   min-height: 0;
   padding: 14px;
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 14px;
-  background: rgba(15, 23, 42, 0.76);
+  background: rgba(15, 23, 42, 0.96);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow-wrap: anywhere;
+  contain: layout paint;
 }
 
 .mcel-lab-shell-card-heading {
   display: grid;
   gap: 4px;
   margin-bottom: 10px;
+}
+
+.mcel-lab-targets-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-block-size: clamp(210px, 28dvh, 340px);
+  overflow: hidden;
+}
+
+.mcel-lab-targets-card .mcel-lab-blueprint-list {
+  min-block-size: 0;
+  max-block-size: 100%;
+  overflow: hidden auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.mcel-lab-targets-card .mcel-lab-blueprint-list button {
+  min-height: 58px;
+}
+
+.mcel-lab-registry-card,
+.mcel-lab-aspect-card,
+.mcel-lab-navigation-disclosure {
+  background: rgba(15, 23, 42, 0.98);
+  overflow: hidden;
+}
+
+.mcel-lab-registry-card .mcel-lab-blueprint-facts {
+  max-block-size: clamp(120px, 18dvh, 210px);
+  overflow: hidden auto;
+  scrollbar-gutter: stable;
+}
+
+.mcel-lab-aspect-card .mcel-lab-blueprint-pills {
+  max-block-size: clamp(160px, 22dvh, 280px);
+  overflow: hidden auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .mcel-lab-blueprint-list,
@@ -7079,11 +7131,26 @@ body.mcel-modal-open {
 
 .mcel-lab-blueprint-list button {
   display: grid;
+  grid-template-rows: auto auto;
+  align-content: center;
   gap: 4px;
   width: 100%;
   padding: 10px 12px;
+  overflow: hidden;
   text-align: left;
   border-radius: 12px;
+  line-height: 1.18;
+  background: rgb(15, 23, 42);
+  contain: paint;
+}
+
+.mcel-lab-blueprint-list button strong,
+.mcel-lab-blueprint-list button span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcel-lab-blueprint-list button span,
@@ -7097,7 +7164,7 @@ body.mcel-modal-open {
 .mcel-lab-blueprint-list button[aria-pressed="true"],
 .mcel-lab-blueprint-pills button[aria-pressed="true"] {
   border-color: rgba(125, 211, 252, 0.78);
-  background: rgba(14, 116, 144, 0.26);
+  background: rgb(8, 51, 68);
 }
 
 .mcel-lab-blueprint-pills {
@@ -7105,8 +7172,13 @@ body.mcel-modal-open {
 }
 
 .mcel-lab-blueprint-pills button {
+  min-height: 34px;
   padding: 7px 9px;
+  overflow: hidden;
   text-align: center;
+  line-height: 1.2;
+  background: rgb(15, 23, 42);
+  contain: paint;
 }
 
 .mcel-lab-blueprint-outline {
@@ -7127,8 +7199,10 @@ body.mcel-modal-open {
 
 .mcel-lab-work-area {
   display: grid;
-  grid-template-rows: auto minmax(540px, 1fr) auto;
+  grid-template-rows: auto minmax(280px, 1fr) auto auto;
   gap: 12px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .mcel-lab-work-area-header {
@@ -7150,7 +7224,8 @@ body.mcel-modal-open {
 
 .mcel-lab-work-surface {
   display: grid;
-  min-height: 560px;
+  min-height: 0;
+  overflow: hidden;
   padding: 8px;
   border: 1px dashed rgba(125, 211, 252, 0.24);
   border-radius: 14px;
@@ -7187,6 +7262,7 @@ body.mcel-modal-open {
   gap: 10px;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .mcel-lab-mounted-preview-header {
@@ -7204,8 +7280,8 @@ body.mcel-modal-open {
 
 .mcel-lab-mounted-preview-frame {
   min-width: 0;
-  min-height: 560px;
-  max-height: 74vh;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   padding: 12px;
   border: 1px solid rgba(125, 211, 252, 0.2);
@@ -7311,6 +7387,10 @@ body.mcel-modal-open {
   margin: 0;
 }
 
+.mcel-lab-blueprint-navigation .mcel-lab-blueprint-facts {
+  grid-template-columns: 1fr;
+}
+
 .mcel-lab-blueprint-facts dt {
   color: rgba(226, 232, 240, 0.58);
   font-size: 0.76rem;
@@ -7399,6 +7479,125 @@ body.mcel-modal-open {
   white-space: pre-wrap;
 }
 
+.mcel-lab-form-primitive-viewer {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mcel-lab-form-primitive-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcel-lab-form-primitive-header p:not(.eyebrow) {
+  max-width: 78ch;
+  margin: 4px 0 0;
+  color: rgba(226, 232, 240, 0.66);
+  line-height: 1.4;
+}
+
+.mcel-lab-form-primitive-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.mcel-lab-form-primitive-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mcel-lab-form-primitive-group > h5 {
+  margin: 0;
+  color: rgba(186, 230, 253, 0.9);
+  font-size: 0.86rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.mcel-lab-form-primitive-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mcel-lab-form-primitive-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 12px;
+  background: rgba(8, 47, 73, 0.18);
+}
+
+.mcel-lab-form-primitive-card > strong {
+  color: rgba(248, 250, 252, 0.92);
+  overflow-wrap: anywhere;
+}
+
+.mcel-lab-form-primitive-card > p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.72);
+  line-height: 1.38;
+}
+
+.mcel-lab-form-primitive-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+
+.mcel-lab-form-primitive-facts div {
+  display: inline-flex;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.34);
+  font-size: 0.74rem;
+}
+
+.mcel-lab-form-primitive-facts dt {
+  color: rgba(226, 232, 240, 0.56);
+  text-transform: uppercase;
+}
+
+.mcel-lab-form-primitive-facts dd {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.82);
+}
+
+.mcel-lab-form-primitive-values {
+  display: grid;
+  gap: 4px;
+}
+
+.mcel-lab-form-primitive-values > span {
+  color: rgba(226, 232, 240, 0.58);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mcel-lab-form-primitive-values ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 18px;
+  color: rgba(226, 232, 240, 0.68);
+}
+
+.mcel-lab-blueprint-right-rail .mcel-lab-form-primitive-grid,
+.mcel-lab-form-primitive-viewer[data-mcel-form-primitive-mode="compact"] .mcel-lab-form-primitive-grid {
+  grid-template-columns: 1fr;
+}
+
 .mcel-lab-findings {
   display: grid;
   gap: 8px;
@@ -7408,8 +7607,17 @@ body.mcel-modal-open {
 
 .mcel-lab-blueprint-status {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
   gap: 6px;
+  align-items: center;
+}
+
+.mcel-lab-diagnostics-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: max-content;
+  min-height: 28px;
 }
 
 .mcel-lab-blueprint-status output {
@@ -7451,6 +7659,60 @@ body.mcel-modal-open {
   padding: 12px;
   overflow: auto;
   border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+
+@media (max-width: 1320px) {
+  .mcel-lab-blueprint-topbar {
+    grid-template-columns: minmax(0, 1fr) repeat(2, minmax(160px, 220px));
+  }
+
+  .mcel-lab-blueprint-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .mcel-lab-blueprint-workbench {
+    grid-template-columns: minmax(300px, 0.75fr) minmax(640px, 1.25fr);
+    grid-template-areas:
+      "navigation primary"
+      "rail primary";
+  }
+
+  .mcel-lab-blueprint-right-rail {
+    max-block-size: 360px;
+  }
+}
+
+@media (max-width: 980px) {
+  .mcel-lab-blueprint-topbar,
+  .mcel-lab-blueprint-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-lab-blueprint-workbench {
+    grid-template-areas:
+      "navigation"
+      "primary"
+      "rail";
+    block-size: auto;
+    overflow: visible;
+  }
+
+  .mcel-lab-blueprint-navigation,
+  .mcel-lab-blueprint-primary,
+  .mcel-lab-blueprint-right-rail {
+    max-block-size: none;
+    overflow: visible;
+  }
+
+  .mcel-lab-blueprint-status {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-lab-diagnostics-slot {
+    justify-content: flex-start;
+  }
 }
 
 
@@ -7505,20 +7767,22 @@ body.mcel-modal-open {
 
 .mcel-lab-work-context > summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
   align-items: baseline;
   padding: 9px 11px;
 }
 
 .mcel-lab-work-context > summary strong {
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   color: rgba(226, 232, 240, 0.82);
   font-size: 0.8rem;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .mcel-lab-work-context-body {
@@ -7610,12 +7874,13 @@ body.mcel-modal-open {
 }
 
 .mcel-lab-selected-element-card {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  position: relative;
+  top: auto;
+  z-index: 0;
   display: grid;
   gap: 10px;
-  background: rgba(15, 23, 42, 0.96);
+  background: rgba(15, 23, 42, 0.98);
+  overflow: hidden;
 }
 
 .mcel-lab-inspector-heading {

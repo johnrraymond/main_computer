@@ -195,3 +195,23 @@ def test_blueprint_studio_doc_requires_refactor_annotations_as_app_aspect() -> N
 
     for phrase in required_phrases:
         assert phrase in text
+
+def test_blueprint_studio_doc_registers_mcel_lab_semantic_app_form_contract() -> None:
+    text = DOC.read_text(encoding="utf-8")
+
+    required_phrases = [
+        "```mcel-app",
+        "id: mcel-lab",
+        "```mcel-form-primitive",
+        "mcel-lab.form.subject.app-blueprint",
+        "mcel-lab.form.work-surface.blueprint-inspection",
+        "mcel-lab.form.feedback.validation-and-mount-state",
+        "mcel-lab.form.constraint.self-hosting-safety",
+        "mcel-lab.form.transient.point-inspection",
+        "mcel-lab.use-case.inspect-blueprint-from-doc-contract",
+        "mcel-lab.contract.default.blueprint-studio-health",
+    ]
+
+    for phrase in required_phrases:
+        assert phrase in text
+

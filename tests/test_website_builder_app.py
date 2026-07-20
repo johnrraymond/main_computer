@@ -66,6 +66,9 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "website-builder-visit-dev-card" in app
     assert "website-builder-visit-remote-prod-card" in app
     assert "website-builder-preview-frame" in app
+    assert 'class="website-builder-preview-card website-builder-preview"' in app
+    assert 'data-mcel-surface-id="website-builder.surface.preview"' in app
+    assert 'data-mcel-primitive-projection="website-builder.form.work-surface.site-authoring"' in app
     assert "website-builder-chat-toggle" in app
     assert "website-builder-chat-panel" in app
     assert "data-chat-console-embed=\"website-builder\"" in app

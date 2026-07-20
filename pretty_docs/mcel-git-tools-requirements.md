@@ -56,6 +56,110 @@ verification:
   - tests/test_mcel_documentation.py
 ```
 
+## Semantic app form
+
+Git Tools is defined by repository subjects, governed repository actions,
+evidence-first work surfaces, supporting preflight context, risk feedback, and
+explicit transients for confirmation and recovery. Visual arrangement is inferred
+from those semantics so raw Git plumbing does not become the default user path.
+
+```mcel-form-primitive
+id: git-tools.form.subject.repository-project
+app: git-tools
+status: specified
+primitive: subject
+meaning: The selected repository project, branch, remote, working-tree evidence, file basket, patch inventory, ignore rules, secrets filters, and publish target.
+relationships:
+  - Branch, remote, status, diff, staged intent, publish target, and receipts belong to the selected repository project.
+  - Patch inventory and file basket evidence derive from repository state but must remain distinguishable from executed Git actions.
+  - Publishing evidence connects repository state to an explicit governed target.
+constraints:
+  - Repository identity, branch, and remote target must remain traceable before any mutation.
+  - Local evidence, remote evidence, and planned actions must not be conflated.
+  - Raw Git details may support evidence but must not become hidden default authority.
+```
+
+```mcel-form-primitive
+id: git-tools.form.action.governed-repository-change
+app: git-tools
+status: specified
+primitive: action
+meaning: The user inspects repository state, selects files, stages intent, commits, edits ignore/filter rules, or publishes through governed preflight and receipt flow.
+relationships:
+  - Read actions gather status, branch, remote, diff, patch, and file evidence.
+  - Mutation actions require preflight, explicit confirmation, execution boundary, and receipt.
+  - Recovery actions derive from failed preflight, failed execution, or stale repository evidence.
+constraints:
+  - Commit and push remain separate actions.
+  - Mutation actions require explicit target evidence and confirmation.
+  - Failed actions must produce recovery evidence without pretending repository or remote state changed.
+```
+
+```mcel-form-primitive
+id: git-tools.form.work-surface.repository-workflow
+app: git-tools
+status: specified
+primitive: work-surface
+meaning: The primary stable work surface for repository triage, status review, file selection, commit preparation, governed publish actions, and recovery.
+relationships:
+  - Enables repository selection, status refresh, file-basket review, patch inventory review, commit preparation, ignore/filter editing, publish preflight, and recovery.
+  - Keeps evidence, intended mutation, confirmation, execution, and receipt connected.
+  - Presents advanced Git details as supporting evidence rather than default authority.
+constraints:
+  - The primary repository workflow surface must remain visible and usable.
+  - Mutation controls must remain tied to current repository, branch, target, and preflight evidence.
+  - Evidence views must not silently execute Git commands.
+```
+
+```mcel-form-primitive
+id: git-tools.form.context.evidence-and-preflight
+app: git-tools
+status: specified
+primitive: context
+meaning: Supporting context that explains branch, remote, status, diff, staged intent, ignore/filter effects, publish target, command preview, receipts, and recovery paths.
+relationships:
+  - Explains what evidence supports a commit, ignore change, filter change, push, or publish operation.
+  - Connects stale, missing, or conflicting evidence to preflight failures.
+  - Connects receipts and recovery suggestions to the operation that produced them.
+constraints:
+  - Context must not hide the distinction between proposed and executed changes.
+  - Command preview must remain evidence until the user confirms execution.
+  - Receipts must name the affected repository, branch, remote, or target when available.
+```
+
+```mcel-form-primitive
+id: git-tools.form.feedback.risk-and-operation-state
+app: git-tools
+status: specified
+primitive: feedback
+meaning: Feedback about repository freshness, dirty state, staged intent, preflight readiness, confirmation requirement, execution result, recovery state, and contract health.
+relationships:
+  - Observes repository evidence, action risk, preflight state, execution state, and runtime integrity.
+  - Supports user safety, developer diagnosis, and automation without changing repository state.
+  - Distinguishes active blockers from resolved or historical findings.
+constraints:
+  - Feedback must not make a mutation appear successful without a matching receipt.
+  - Feedback must not cover or replace the primary repository workflow surface.
+  - High-risk or failed operations may demand attention but must remain tied to recovery evidence.
+```
+
+```mcel-form-primitive
+id: git-tools.form.transient.confirmation-and-recovery
+app: git-tools
+status: specified
+primitive: transient
+meaning: Temporary confirmation, preflight, execution-progress, command-preview, receipt, and recovery evidence around governed Git and publishing actions.
+relationships:
+  - Supports explicit mutation or recovery actions without becoming repository state itself.
+  - May demand attention when action risk, missing evidence, conflict, or failure requires a user decision.
+  - Ends when the user confirms, cancels, receives a receipt, or switches repository subject.
+constraints:
+  - Transient mutation UI requires a clear trigger and action target.
+  - Transient evidence must preserve repository, branch, remote, and target identity.
+  - Transient recovery must not perform a follow-up mutation without another explicit action.
+```
+
+
 ## Roadmap use cases
 
 These use cases define Git Tools as a governed repository workflow app. The existing local-Gitea push slice is the reference implementation; the remaining daily Git workflows should reach the same inspect, evidence, preflight, confirm, execute, receipt, and recover standard.

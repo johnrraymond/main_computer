@@ -85,8 +85,13 @@
 #calculator-app .calculator-mode-switch .mcel-diagnostics-counter,
 #file-explorer-app .file-explorer-toolbar .mcel-diagnostics-counter,
 #git-tools-app .git-tools-feedback-resolution .mcel-diagnostics-counter,
-#website-builder-app .website-builder-actions .mcel-diagnostics-counter {
+#website-builder-app .website-builder-actions .mcel-diagnostics-counter,
+#mcel-lab-app .mcel-lab-diagnostics-slot .mcel-diagnostics-counter {
   align-self: center;
+}
+
+#mcel-lab-app .mcel-lab-diagnostics-slot .mcel-diagnostics-counter {
+  margin-inline: 0;
 }
 
 #git-tools-app .git-tools-feedback-resolution .mcel-diagnostics-counter {

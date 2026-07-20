@@ -9,11 +9,14 @@
     calculator: "default",
     "file-explorer": "default",
     "git-tools": "default",
-    "website-builder": "default"
+    "website-builder": "default",
+    "mcel-lab": "default"
   });
 
   const COMMON_OVERLAY_SELECTORS = Object.freeze([
-    "#mc-widget-editor-root",
+    "#mc-widget-editor-pane.open",
+    ".mc-widget-selection:not([hidden])",
+    ".mc-widget-dock-preview:not([hidden])",
     ".code-studio-proof-dock",
     "#code-studio-bottom-panel",
     ".floating-tab",
@@ -28,7 +31,7 @@
       contractId: "code-editor.contract.authoring.monaco-golden-path",
       appId: "code-editor",
       mode: "authoring",
-      intent: "Expose one usable Monaco selected-file editor with an owned explorer, optional right assistant/diagnostics pane, and status bar.",
+      intent: "Expose one usable selected-source editor work surface with owned project-selection context, supporting context/feedback projection, and ambient status feedback.",
       derivedFromBlockTypes: [
         "mcel-region",
         "mcel-requirement",
@@ -36,7 +39,8 @@
         "mcel-boundary",
         "mcel-source-binding",
         "mcel-test-binding",
-        "mcel-runtime-check"
+        "mcel-runtime-check",
+        "mcel-form-primitive"
       ],
       primarySurface: {
         id: "code-editor.surface.monaco-selected-file-editor",
@@ -53,7 +57,7 @@
         {id: "code-editor.region.status-bar", selector: ".code-studio-statusbar", label: "Status bar"}
       ],
       optionalRegions: [
-        {id: "code-editor.region.right-pane", selector: ".code-studio-inspector", label: "Right assistant/diagnostics pane", role: "secondary-assistant"}
+        {id: "code-editor.region.inspector", selector: ".code-studio-inspector", label: "Supporting reasoning/evidence projection", role: "secondary-context-feedback"}
       ],
       forbiddenRegions: [
         {id: "code-editor.forbidden.source-pane", selector: "[data-code-studio-pane=\"source\"]", label: "MCEL source model pane"},
@@ -64,7 +68,7 @@
         {id: "code-editor.forbidden.runtime-file-rail", selector: ".code-studio-runtime-files", label: "Generated runtime file rail"},
         {id: "code-editor.forbidden.fallback-textarea", selector: "#code-studio-runtime-draft, .code-studio-runtime-fallback", label: "Fallback textarea"},
         {id: "code-editor.forbidden.proof-dock", selector: ".code-studio-proof-dock, #code-studio-bottom-panel", label: "MCEL proof/evidence dock"},
-        {id: "code-editor.forbidden.widget-overlay", selector: "#mc-widget-editor-root", label: "Widget editor overlay"}
+        {id: "code-editor.forbidden.widget-overlay", selector: "#mc-widget-editor-pane.open, .mc-widget-selection:not([hidden]), .mc-widget-dock-preview:not([hidden])", label: "Active widget editor overlay"}
       ],
       lifecycleAssertions: [
         "startup-authoring-mode-has-one-primary-editor",
@@ -341,6 +345,38 @@
     }
   }
 
+  function selectorUsesDocumentScope(selector) {
+    return String(selector || "").includes("mc-widget");
+  }
+
+  function activeWidgetEditorOverlaySelector() {
+    return "#mc-widget-editor-pane.open, .mc-widget-selection:not([hidden]), .mc-widget-dock-preview:not([hidden])";
+  }
+
+  function computeForbiddenRegionBox(el, forbidden = {}) {
+    const selector = String(forbidden?.selector || "");
+    const box = computeBox(el);
+    if (selector.includes("#mc-widget-editor-root") && el?.id === "mc-widget-editor-root") {
+      const active = query(activeWidgetEditorOverlaySelector(), el);
+      if (!active) {
+        return {
+          ...box,
+          visible: false,
+          inactiveWidgetEditorShell: true,
+          activeWidgetEditorOverlay: false
+        };
+      }
+      const activeBox = computeBox(active);
+      return {
+        ...activeBox,
+        activeWidgetEditorOverlay: Boolean(activeBox.visible),
+        rootSelector: "#mc-widget-editor-root",
+        rootBox: compactBox(box)
+      };
+    }
+    return box;
+  }
+
   function getComputedStyleSafe(el) {
     try {
       if (typeof getComputedStyle === "function") return getComputedStyle(el);
@@ -516,6 +552,46 @@
       }
     }
 
+
+    const layoutCollisions = Array.isArray(snapshot.layoutCollisions) ? snapshot.layoutCollisions : [];
+    if (layoutCollisions.length) {
+      const blocksPrimarySurface = layoutCollisions.some((collision) => collision?.blocksPrimarySurface);
+      addFinding(
+        findings,
+        blocksPrimarySurface ? "critical" : "warning",
+        "semantic-layout-overlap-detected",
+        blocksPrimarySurface
+          ? "Rendered semantic projections overlap the primary work surface."
+          : "Rendered semantic projections overlap or bleed outside their owned layout containers.",
+        {layoutCollisions},
+        "layout.collisionProbe"
+      );
+    }
+
+    const contentFitViolations = Array.isArray(snapshot.contentFitViolations) ? snapshot.contentFitViolations : [];
+    if (contentFitViolations.length) {
+      addFinding(
+        findings,
+        "warning",
+        "semantic-content-fit-violation",
+        "Rendered semantic projections clip or overwrite their own readable content.",
+        {contentFitViolations},
+        "layout.contentFitProbe"
+      );
+    }
+
+    const visualIntegrityViolations = Array.isArray(snapshot.visualIntegrityViolations) ? snapshot.visualIntegrityViolations : [];
+    if (visualIntegrityViolations.length) {
+      addFinding(
+        findings,
+        "critical",
+        "visual-integrity-violation",
+        "Rendered semantic surfaces collide, bleed, or overwrite readable content.",
+        {visualIntegrityViolations},
+        "layout.visualIntegrityProbe"
+      );
+    }
+
     if (!host.exists) {
       addFinding(
         findings,
@@ -640,7 +716,10 @@
         optionalRegions,
         surfaces,
         forbiddenRegions,
-        ownerChain
+        ownerChain,
+        layoutCollisions,
+        contentFitViolations,
+        visualIntegrityViolations
       },
       contract: {
         id: contract.contractId,
@@ -707,6 +786,482 @@
     return rootRegion?.selector || defaultRootSelector(appId);
   }
 
+
+  function overlapMetrics(a, b) {
+    if (!a?.visible || !b?.visible) {
+      return {overlaps: false, area: 0, width: 0, height: 0};
+    }
+    const left = Math.max(Number(a.x || 0), Number(b.x || 0));
+    const top = Math.max(Number(a.y || 0), Number(b.y || 0));
+    const right = Math.min(Number(a.right || 0), Number(b.right || 0));
+    const bottom = Math.min(Number(a.bottom || 0), Number(b.bottom || 0));
+    const width = Math.max(0, Math.round(right - left));
+    const height = Math.max(0, Math.round(bottom - top));
+    const area = width * height;
+    return {overlaps: area > 0, area, width, height, left, top, right, bottom};
+  }
+
+  function boxBleed(ownerBox, childBox, tolerance = 6) {
+    if (!ownerBox?.visible || !childBox?.visible) return null;
+    const bleed = {
+      top: Math.max(0, Math.round(Number(ownerBox.y || 0) - Number(childBox.y || 0))),
+      right: Math.max(0, Math.round(Number(childBox.right || 0) - Number(ownerBox.right || 0))),
+      bottom: Math.max(0, Math.round(Number(childBox.bottom || 0) - Number(ownerBox.bottom || 0))),
+      left: Math.max(0, Math.round(Number(ownerBox.x || 0) - Number(childBox.x || 0)))
+    };
+    const maxBleed = Math.max(bleed.top, bleed.right, bleed.bottom, bleed.left);
+    if (maxBleed <= tolerance) return null;
+    return {...bleed, maxBleed};
+  }
+
+  function layoutCollisionCandidateSelector(appId) {
+    if (appId === "mcel-lab") {
+      return [
+        ".mcel-lab-blueprint-workbench",
+        ".mcel-lab-blueprint-navigation",
+        ".mcel-lab-blueprint-primary",
+        ".mcel-lab-blueprint-right-rail",
+        ".mcel-lab-blueprint-status",
+        ".mcel-lab-work-area",
+        ".mcel-lab-blueprint-list",
+        ".mcel-lab-blueprint-pills",
+        ".mcel-lab-blueprint-facts",
+        ".mcel-lab-mounted-preview",
+        ".mcel-lab-work-context",
+        ".mcel-lab-blueprint-navigation > .mcel-lab-shell-card",
+        ".mcel-lab-blueprint-right-rail > .mcel-lab-shell-card"
+      ].join(", ");
+    }
+    return "[data-mcel-layout-zone], [data-mcel-zone]";
+  }
+
+  function layoutBleedDescendantSelector(appId) {
+    if (appId === "mcel-lab") {
+      return [
+        "button",
+        "select",
+        "input",
+        "textarea",
+        "output",
+        "summary",
+        "h4",
+        "p",
+        "dl",
+        "ol",
+        "ul",
+        "[data-mcel-blueprint-app-option]",
+        "[data-mcel-blueprint-aspect-option]"
+      ].join(", ");
+    }
+    return "button, select, input, textarea, output, summary, [data-mcel-layout-zone], [data-mcel-zone]";
+  }
+
+  function directVisibleChildren(container) {
+    return Array.from(container?.children || [])
+      .filter(isElement)
+      .map((el) => ({el, box: computeBox(el)}))
+      .filter((entry) => entry.box.visible && entry.box.width > 8 && entry.box.height > 8);
+  }
+
+  function detectSiblingLayoutCollisions(container, context = {}) {
+    const collisions = [];
+    const children = directVisibleChildren(container);
+    for (let index = 0; index < children.length; index += 1) {
+      for (let otherIndex = index + 1; otherIndex < children.length; otherIndex += 1) {
+        const first = children[index];
+        const second = children[otherIndex];
+        const metrics = overlapMetrics(first.box, second.box);
+        if (metrics.area < 36 || metrics.width < 6 || metrics.height < 6) continue;
+        collisions.push({
+          type: "sibling-overlap",
+          appId: context.appId || "",
+          container: selectorFor(container),
+          first: compactBox(first.box),
+          second: compactBox(second.box),
+          overlap: metrics,
+          blocksPrimarySurface: false
+        });
+      }
+    }
+    return collisions;
+  }
+
+  function detectSemanticProjectionBleed(owner, context = {}) {
+    const collisions = [];
+    const ownerBox = computeBox(owner);
+    if (!ownerBox.visible) return collisions;
+    const overflow = String(ownerBox.overflow || "");
+    const clipsOverflow = /hidden|clip|auto|scroll/.test(overflow);
+    const descendants = queryAll(layoutBleedDescendantSelector(context.appId), owner)
+      .filter((el) => el !== owner && isElement(el));
+    const siblingBoxes = Array.from(owner.parentElement?.children || [])
+      .filter((candidate) => candidate !== owner && isElement(candidate))
+      .map((el) => ({el, box: computeBox(el)}))
+      .filter((entry) => entry.box.visible);
+
+    descendants.forEach((el) => {
+      const childBox = computeBox(el);
+      if (!childBox.visible || childBox.width < 8 || childBox.height < 8) return;
+      const bleed = boxBleed(ownerBox, childBox, 6);
+      if (bleed && !clipsOverflow) {
+        collisions.push({
+          type: "semantic-projection-overflow",
+          appId: context.appId || "",
+          owner: compactBox(ownerBox),
+          child: compactBox(childBox),
+          bleed,
+          blocksPrimarySurface: false
+        });
+      }
+
+      siblingBoxes.forEach((sibling) => {
+        const metrics = overlapMetrics(childBox, sibling.box);
+        if (metrics.area < 64 || metrics.width < 8 || metrics.height < 8) return;
+        collisions.push({
+          type: "semantic-projection-overlap",
+          appId: context.appId || "",
+          owner: compactBox(ownerBox),
+          child: compactBox(childBox),
+          sibling: compactBox(sibling.box),
+          overlap: metrics,
+          blocksPrimarySurface: false
+        });
+      });
+    });
+
+    return collisions;
+  }
+
+  function detectLayoutCollisions(root, context = {}) {
+    if (!isElement(root)) return [];
+    const appId = String(context.appId || "");
+    const collisions = [];
+    const seen = new Set();
+    queryAll(layoutCollisionCandidateSelector(appId), root).forEach((container) => {
+      if (!isElement(container) || seen.has(container)) return;
+      seen.add(container);
+      detectSiblingLayoutCollisions(container, context).forEach((collision) => collisions.push(collision));
+      if (appId === "mcel-lab" && container.classList?.contains("mcel-lab-shell-card")) {
+        detectSemanticProjectionBleed(container, context).forEach((collision) => collisions.push(collision));
+      }
+    });
+    return collisions.slice(0, 12);
+  }
+
+  function contentFitCandidateSelector(appId) {
+    if (appId === "mcel-lab") {
+      return [
+        ".mcel-lab-blueprint-list button",
+        ".mcel-lab-blueprint-pills button",
+        ".mcel-lab-selection-receipt",
+        ".mcel-lab-work-context > summary",
+        ".mcel-lab-selected-element-card"
+      ].join(", ");
+    }
+    return "[data-mcel-layout-zone], [data-mcel-zone]";
+  }
+
+  function detectContentFitViolations(root, context = {}) {
+    if (!isElement(root)) return [];
+    const violations = [];
+    const tolerance = 3;
+    queryAll(contentFitCandidateSelector(context.appId), root).forEach((el) => {
+      if (!isElement(el)) return;
+      const box = computeBox(el);
+      if (!box.visible || box.width < 8 || box.height < 8) return;
+
+      const styles = window.getComputedStyle ? window.getComputedStyle(el) : {};
+      const overflowX = String(styles.overflowX || styles.overflow || "");
+      const overflowY = String(styles.overflowY || styles.overflow || "");
+      const allowsHorizontalScroll = /auto|scroll/.test(overflowX);
+      const allowsVerticalScroll = /auto|scroll/.test(overflowY);
+      const clientWidth = Number(el.clientWidth || 0);
+      const clientHeight = Number(el.clientHeight || 0);
+      const scrollWidth = Number(el.scrollWidth || 0);
+      const scrollHeight = Number(el.scrollHeight || 0);
+      const horizontalClipped = scrollWidth > clientWidth + tolerance && !allowsHorizontalScroll;
+      const verticalClipped = scrollHeight > clientHeight + tolerance && !allowsVerticalScroll;
+
+      if (!horizontalClipped && !verticalClipped) return;
+      violations.push({
+        type: "semantic-content-fit",
+        appId: context.appId || "",
+        selector: selectorFor(el),
+        box: compactBox(box),
+        scroll: {
+          clientWidth: Math.round(clientWidth),
+          clientHeight: Math.round(clientHeight),
+          scrollWidth: Math.round(scrollWidth),
+          scrollHeight: Math.round(scrollHeight)
+        },
+        clipped: {
+          horizontal: horizontalClipped,
+          vertical: verticalClipped
+        }
+      });
+    });
+    return violations.slice(0, 12);
+  }
+
+
+  function visualIntegrityOwnerSelector(appId) {
+    if (appId === "mcel-lab") {
+      return [
+        "[data-mcel-visual-owner]",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]",
+        ".mcel-lab-shell-card",
+        ".mcel-lab-blueprint-list button",
+        ".mcel-lab-blueprint-pills button",
+        ".mcel-lab-selection-receipt",
+        ".mcel-lab-work-context",
+        ".mcel-lab-work-area > *"
+      ].join(", ");
+    }
+    return "[data-mcel-visual-owner], [data-mcel-layout-zone], [data-mcel-zone]";
+  }
+
+  function visualIntegrityTextSelector(appId) {
+    if (appId === "mcel-lab") {
+      return [
+        ".mcel-lab-shell-card-heading .eyebrow",
+        ".mcel-lab-shell-card-heading h4",
+        ".mcel-lab-blueprint-list button > strong",
+        ".mcel-lab-blueprint-list button > span",
+        ".mcel-lab-blueprint-pills button",
+        ".mcel-lab-small-copy",
+        ".mcel-lab-blueprint-facts dt",
+        ".mcel-lab-blueprint-facts dd",
+        ".mcel-lab-selection-receipt span",
+        ".mcel-lab-work-context > summary strong",
+        ".mcel-lab-work-context > summary .eyebrow",
+        ".mcel-lab-selected-element-card h4",
+        ".mcel-lab-selected-element-card p"
+      ].join(", ");
+    }
+    return "[data-mcel-readable], [data-mcel-layout-zone] h1, [data-mcel-layout-zone] h2, [data-mcel-layout-zone] h3, [data-mcel-layout-zone] h4, [data-mcel-layout-zone] p, [data-mcel-layout-zone] button";
+  }
+
+  function visualStackContainerSelector(appId) {
+    if (appId === "mcel-lab") {
+      return [
+        ".mcel-lab-blueprint-workbench",
+        ".mcel-lab-blueprint-navigation",
+        ".mcel-lab-blueprint-right-rail",
+        ".mcel-lab-work-area",
+        ".mcel-lab-blueprint-list",
+        ".mcel-lab-blueprint-pills",
+        ".mcel-lab-blueprint-facts",
+        ".mcel-lab-work-context-body"
+      ].join(", ");
+    }
+    return "[data-mcel-visual-stack], [data-mcel-layout-zone], [data-mcel-zone]";
+  }
+
+  function fullBox(box) {
+    if (!box) return {};
+    return {
+      exists: Boolean(box.exists),
+      visible: Boolean(box.visible),
+      selector: box.selector || "",
+      tag: box.tag || "",
+      id: box.id || "",
+      className: box.className || "",
+      x: Number(box.x || 0),
+      y: Number(box.y || 0),
+      width: Number(box.width || 0),
+      height: Number(box.height || 0),
+      right: Number(box.right || 0),
+      bottom: Number(box.bottom || 0),
+      display: box.display || "",
+      position: box.position || "",
+      overflow: box.overflow || "",
+      textPreview: box.textPreview || ""
+    };
+  }
+
+  function boxFromClientRect(rect, selector = "", metadata = {}) {
+    const x = Math.round(Number(rect.x || rect.left || 0));
+    const y = Math.round(Number(rect.y || rect.top || 0));
+    const width = Math.round(Number(rect.width || 0));
+    const height = Math.round(Number(rect.height || 0));
+    return {
+      exists: true,
+      visible: width > 0 && height > 0,
+      selector,
+      x,
+      y,
+      width,
+      height,
+      right: Math.round(Number(rect.right || x + width)),
+      bottom: Math.round(Number(rect.bottom || y + height)),
+      ...metadata
+    };
+  }
+
+  function elementDepth(el, root) {
+    let depth = 0;
+    let node = el;
+    while (isElement(node) && node !== root) {
+      depth += 1;
+      node = node.parentElement;
+    }
+    return depth;
+  }
+
+  function closestVisualOwner(el, root, context = {}) {
+    const selector = visualIntegrityOwnerSelector(context.appId);
+    let node = el;
+    while (isElement(node) && node !== root) {
+      try {
+        if (typeof node.matches === "function" && node.matches(selector)) return node;
+      } catch {}
+      node = node.parentElement;
+    }
+    return isElement(root) ? root : null;
+  }
+
+  function ownerDescriptor(owner, root) {
+    if (!isElement(owner)) return {};
+    const box = computeBox(owner);
+    return {
+      selector: selectorFor(owner),
+      role: owner.getAttribute?.("data-mcel-zone") ||
+        owner.getAttribute?.("data-mcel-layout-zone") ||
+        owner.getAttribute?.("data-mcel-visual-owner") ||
+        "",
+      depth: elementDepth(owner, root),
+      box: fullBox(box)
+    };
+  }
+
+  function textRangesForElement(el) {
+    if (!isElement(el) || !el.textContent || !String(el.textContent).trim()) return [];
+    const doc = el.ownerDocument || getDocument();
+    if (!doc?.createRange) return [];
+    const range = doc.createRange();
+    try {
+      range.selectNodeContents(el);
+      return Array.from(range.getClientRects ? range.getClientRects() : []);
+    } catch {
+      return [];
+    } finally {
+      try {
+        range.detach?.();
+      } catch {}
+    }
+  }
+
+  function collectReadableTextBoxes(root, context = {}) {
+    if (!isElement(root)) return [];
+    const boxes = [];
+    queryAll(visualIntegrityTextSelector(context.appId), root).forEach((el) => {
+      if (!isElement(el)) return;
+      const owner = closestVisualOwner(el, root, context);
+      const ownerBox = computeBox(owner);
+      if (!ownerBox.visible) return;
+      const text = textPreview(el);
+      if (!text) return;
+      const rects = textRangesForElement(el);
+      rects.slice(0, 4).forEach((rect, index) => {
+        const box = boxFromClientRect(rect, selectorFor(el), {
+          text,
+          lineIndex: index,
+          owner: ownerDescriptor(owner, root)
+        });
+        if (box.visible && box.width >= 4 && box.height >= 4) boxes.push({el, owner, box});
+      });
+    });
+    return boxes;
+  }
+
+  function elementsAreRelated(first, second) {
+    if (!isElement(first) || !isElement(second)) return false;
+    return first === second || first.contains(second) || second.contains(first);
+  }
+
+  function detectVisualStackOverlaps(root, context = {}) {
+    if (!isElement(root)) return [];
+    const violations = [];
+    queryAll(visualStackContainerSelector(context.appId), root).forEach((container) => {
+      if (!isElement(container)) return;
+      const children = directVisibleChildren(container)
+        .filter((entry) => entry.box.width >= 8 && entry.box.height >= 8);
+      for (let index = 0; index < children.length; index += 1) {
+        for (let otherIndex = index + 1; otherIndex < children.length; otherIndex += 1) {
+          const first = children[index];
+          const second = children[otherIndex];
+          if (elementsAreRelated(first.el, second.el)) continue;
+          const metrics = overlapMetrics(first.box, second.box);
+          if (metrics.area < 48 || metrics.width < 8 || metrics.height < 5) continue;
+          violations.push({
+            type: "semantic-stack-overlap",
+            appId: context.appId || "",
+            container: selectorFor(container),
+            first: fullBox(first.box),
+            second: fullBox(second.box),
+            overlap: metrics
+          });
+        }
+      }
+    });
+    return violations;
+  }
+
+  function detectReadableTextIntegrityViolations(root, context = {}) {
+    const violations = [];
+    const readable = collectReadableTextBoxes(root, context);
+    readable.forEach((entry) => {
+      const ownerBox = computeBox(entry.owner);
+      const bleed = boxBleed(ownerBox, entry.box, 2);
+      if (bleed) {
+        violations.push({
+          type: "readable-text-outside-owner",
+          appId: context.appId || "",
+          owner: ownerDescriptor(entry.owner, root),
+          text: fullBox(entry.box),
+          bleed
+        });
+      }
+    });
+
+    for (let index = 0; index < readable.length; index += 1) {
+      for (let otherIndex = index + 1; otherIndex < readable.length; otherIndex += 1) {
+        const first = readable[index];
+        const second = readable[otherIndex];
+        if (elementsAreRelated(first.el, second.el)) continue;
+        const sameOwner = first.owner && second.owner && first.owner === second.owner;
+        const ownerOverlapRelevant = sameOwner ||
+          (!elementsAreRelated(first.owner, second.owner) &&
+            overlapMetrics(computeBox(first.owner), computeBox(second.owner)).area > 0);
+        if (!ownerOverlapRelevant) continue;
+        const metrics = overlapMetrics(first.box, second.box);
+        if (metrics.area < 20 || metrics.width < 6 || metrics.height < 4) continue;
+        violations.push({
+          type: "readable-text-overlap",
+          appId: context.appId || "",
+          first: fullBox(first.box),
+          second: fullBox(second.box),
+          firstOwner: ownerDescriptor(first.owner, root),
+          secondOwner: ownerDescriptor(second.owner, root),
+          overlap: metrics
+        });
+      }
+    }
+
+    return violations;
+  }
+
+  function detectVisualIntegrityViolations(root, context = {}) {
+    if (!isElement(root)) return [];
+    const violations = [
+      ...detectVisualStackOverlaps(root, context),
+      ...detectReadableTextIntegrityViolations(root, context)
+    ];
+    return violations.slice(0, 16);
+  }
+
+
   function buildDiagnosisSnapshot(appId = "code-editor", options = {}) {
     const doc = getDocument();
     const contract = resolveDiagnosisContract(appId, options);
@@ -744,7 +1299,7 @@
     const forbiddenRegions = [];
     for (const forbidden of contract.forbiddenRegions) {
       const selector = forbidden.selector || "";
-      const forbiddenScope = selector.includes("#mc-widget-editor-root") ? doc : scope;
+      const forbiddenScope = selectorUsesDocumentScope(selector) ? doc : scope;
       const matches = queryAll(selector, forbiddenScope);
       if (!matches.length) {
         forbiddenRegions.push({
@@ -760,7 +1315,7 @@
             selector: forbidden.selector,
             label: forbidden.label,
             matchIndex: index,
-            box: computeBox(el),
+            box: computeForbiddenRegionBox(el, forbidden),
             severity: forbidden.severity || "critical"
           });
         });
@@ -799,6 +1354,9 @@
       ownerChain,
       overlays: detectOverlays(root || doc, {appId, mode: rootMode}),
       panes: collectPaneState(root || doc),
+      layoutCollisions: detectLayoutCollisions(root || doc, {appId, mode: rootMode, contract}),
+      contentFitViolations: detectContentFitViolations(root || doc, {appId, mode: rootMode, contract}),
+      visualIntegrityViolations: detectVisualIntegrityViolations(root || doc, {appId, mode: rootMode, contract}),
       contract
     };
   }
@@ -832,7 +1390,7 @@
   }
 
   function classifyOverlay(selector, box, context = {}) {
-    const isWidgetEditor = selector === "#mc-widget-editor-root";
+    const isWidgetEditor = selector.includes("mc-widget");
     const isProof = selector.includes("proof") || selector.includes("bottom-panel");
     const isFloating = selector.includes("floating") || selector.includes("side-tab") || selector.includes("vertical-tab");
     const classification = isWidgetEditor
@@ -892,7 +1450,13 @@
         recommendedNextProbe: finding?.recommendedNextProbe || ""
       };
       if (code.includes("overlay") || code.includes("forbidden-region")) buckets.activeOverlayIssues.push(compact);
-      else if (code.includes("layout") || code.includes("collapsed")) buckets.activeLayoutIssues.push(compact);
+      else if (
+        code.includes("layout") ||
+        code.includes("collapsed") ||
+        code.includes("visual") ||
+        code.includes("content-fit") ||
+        code.includes("overlap")
+      ) buckets.activeLayoutIssues.push(compact);
       else if (code.includes("surface") || code.includes("editor") || code.includes("competing")) buckets.activeSurfaceIssues.push(compact);
       else buckets.activeContractIssues.push(compact);
 
@@ -937,6 +1501,8 @@
     report.focus = options.focus || "contract";
     report.measurements.overlays = snapshot.overlays;
     report.measurements.panes = snapshot.panes;
+    report.measurements.layoutCollisions = snapshot.layoutCollisions;
+    report.measurements.contentFitViolations = snapshot.contentFitViolations;
     report = applyOverlayFindings(report, snapshot);
     report.buckets = buildReportBuckets(report);
 
@@ -1047,7 +1613,14 @@
         findCollapsedOwner,
         visibleAndUseful,
         buildReportBuckets,
-        detectOverlays
+        detectOverlays,
+        detectLayoutCollisions,
+        detectContentFitViolations,
+        detectVisualIntegrityViolations,
+        collectReadableTextBoxes,
+        overlapMetrics,
+        computeForbiddenRegionBox,
+        selectorUsesDocumentScope
       })
     });
 

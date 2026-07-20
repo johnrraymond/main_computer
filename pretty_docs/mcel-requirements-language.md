@@ -80,6 +80,50 @@ mcel-runtime-check
 The first family is the required core. The second family is optional until the app needs
 more precision than a single requirement or intent block can hold.
 
+
+## Static sanity checking
+
+Use the requirements registry for parsing and schema validation:
+
+```bash
+python tools/mcel_requirements_registry.py --strict-schema
+```
+
+Use the MCEL sanity checker for cross-layer coherence:
+
+```bash
+python tools/mcel_sanity_check.py --strict
+```
+
+Sanity Checker v1 is static and documentation-first. It does not replace live
+browser diagnosis. It verifies that the docs, MCEL block registry, semantic
+app-form primitives, runtime checks, diagnostic code strings, and generated browser
+requirements registry still agree.
+
+The checker currently treats these as hard failures:
+
+```text
+registry parse errors
+strict-schema failures
+missing core app contract families
+missing primary-surface evidence
+unknown form primitive kinds
+empty form primitive relationship/constraint lists
+stale generated browser requirements registry payload
+unnormalized MCEL diagnosis code strings
+```
+
+The checker currently treats these as adoption warnings or info:
+
+```text
+apps that still infer meaning from regions because they do not yet declare form primitives
+semantic primitive blocks that mention physical layout terms
+MCEL-named narrative docs that do not yet contain machine-readable MCEL blocks
+```
+
+This keeps the first checker useful against the current repository while still
+showing the path toward stronger contract coverage.
+
 ## Normative keywords
 
 Normative keywords may appear in prose, but they only carry MCEL normative meaning
@@ -295,10 +339,75 @@ required_fields:
   - owned_by
 ```
 
+### `mcel-form-primitive`
+
+Defines the semantic building blocks an app is made from before any renderer chooses
+a physical layout. A form primitive should describe what something **means**, what it
+owns, and what constraints preserve that meaning. It should not prescribe whether the
+projection becomes a left pane, right pane, bottom bar, drawer, chip, modal, or overlay.
+
+The primitive vocabulary starts intentionally small:
+
+```text
+subject        thing the app is about
+action         operation that changes or inspects state
+work-surface   place where the user performs work on a subject
+context        information that selects, explains, filters, previews, or compares
+feedback       signal about state, validity, progress, risk, or result
+constraint     law that protects meaning, authority, safety, or user intent
+transient      temporary UI used during an operation or explicit mode
+interruption   attention-demanding condition that may block or redirect work
+```
+
+Required fields:
+
+```text
+id
+app
+status
+primitive
+meaning
+relationships
+constraints
+```
+
+Recommended fields:
+
+```text
+subjects
+actions
+authority
+persistence
+salience
+intrusion
+lifecycle
+owners
+runtime_observables
+layout_affinity
+```
+
+```mcel-grammar
+id: grammar.block.mcel-form-primitive
+status: specified
+block: mcel-form-primitive
+purpose: Defines a semantic app-form primitive before visual layout is inferred or rendered.
+required_fields:
+  - id
+  - app
+  - status
+  - primitive
+  - meaning
+  - relationships
+  - constraints
+```
+
 ### `mcel-region`
 
-Defines layout responsibility. A region is not just a visual position; it is an owned
-product responsibility.
+Defines a rendered projection of one or more form primitives. A region is still an
+owned product responsibility, but it is downstream of app form: it may describe the
+current DOM/layout projection without becoming the source of the app's meaning. Avoid
+hard-coding direction such as left/right/top/bottom unless the physical placement is
+itself a product requirement.
 
 Required fields:
 
@@ -679,7 +788,9 @@ required_fields:
 
 ### `mcel-layout-pattern`
 
-Use this when a repeated layout grammar appears across apps.
+Use this when repeated rendering rules appear across apps. Layout patterns should infer
+placement from form primitives, authority, persistence, salience, and intrusion; they
+should not make incidental physical placement part of the app requirement language.
 
 Required fields:
 
@@ -806,7 +917,8 @@ Use runtime checks for facts like:
 Runtime checks are intentionally tied back to normal MCEL blocks:
 
 ```text
-mcel-region          says which UI regions matter
+mcel-form-primitive  says what app parts mean before layout renders them
+mcel-region          says how those primitives are currently projected into UI
 mcel-requirement     says what MUST / MUST NOT be true
 mcel-boundary        says which surfaces must not be confused
 mcel-acceptance      says which lifecycle facts should be checked
@@ -829,17 +941,41 @@ geometry-minimum             a surface or region must preserve useful width and 
 overlay-policy               overlays are allowed only where the mode contract assigns them
 lifecycle-contract-preserved startup, route, file-click, mode-switch, and resize preserve the same contract
 source-test-ownership        findings include likely source and test owners when known
+form-primitive-preserved     rendered UI still preserves the primitive's declared meaning
+visual-integrity-baseline    owned semantic projections remain readable, contained, and non-overlapping
+feedback-intrusion-policy    feedback remains as quiet or interrupting as declared
+transient-mode-policy        transient UI appears only during its declared operation or mode
+unowned-surface-policy       visible UI projects from an app, shell, or tool primitive
+```
+
+The visual integrity baseline is inherited by any app that exposes owned semantic
+projections. It exists because a DOM node can be present, visible, and nonzero-sized
+while still being unusable: text can paint across neighboring cards, stacked rows can
+overlap, scroll containers can leak their children, or feedback/context surfaces can
+cover the primary work surface. A runtime diagnosis must therefore check visual
+ownership and readability, not only DOM existence.
+
+Minimum visual-integrity probes:
+
+```text
+semantic-stack-overlap       sibling cards, rows, controls, or panels overlap in a stack
+readable-text-overlap        text from one owned surface paints over text from another
+readable-text-outside-owner  readable text paints outside the surface that owns it
+semantic-content-fit         a control/card clips content without scroll or intentional truncation
+primary-occlusion            supporting context, feedback, or transient UI covers the primary work surface
 ```
 
 A runtime check may also declare normalized diagnostic fields:
 
 ```text
 check_category     stable bucket such as surface, layout, overlays, lifecycle, ownership, or geometry
-focus              the narrower probe focus such as primary-editor, right-pane, panes, or resize
+focus              the narrower probe focus such as primary-editor, supporting-context, feedback, transients, panes, or resize
 optional_regions   compact id | selector | label entries for secondary regions that may be visible
 allowed_regions    compact id | selector | label entries for explicit controls, counters, rails, or panes
 geometry_policies  named geometry laws the runtime should evaluate when it has measurements
 overlay_policy     named overlay laws that separate contained diagnostics from leaked overlays
+form_primitives    primitive IDs that the runtime check is preserving
+semantic_policy    named laws that preserve meaning, authority, salience, or intrusion
 ```
 
 Optional regions are not failures merely because they are hidden, collapsed, tabbed, or
@@ -851,6 +987,40 @@ Overlay policy is deliberately softer than an app's primary surface law. A visib
 editor, proof surface, or floating diagnostic tab should be reported with selector and
 box evidence, but it should not automatically turn a healthy primary surface into a
 failed app unless the app-specific contract marks that overlay as a hard boundary.
+
+
+## Diagnostic event logging
+
+The browser-side diagnostics counter is not only a visual affordance. It is also a
+diagnostic emitter. When a runtime diagnosis first runs, when its verdict or issue set
+changes, when an issue resolves, or when an active issue remains for a heartbeat
+interval, the widget should emit a compact `mcel-diagnostic-event-v1` record to the
+backend.
+
+The passive event log is not a FLOG. It does not drive the browser or prove a workflow.
+It preserves evidence from real app sessions so MCEL Lab, patch planning, and later
+active probes can answer what happened, where, and when.
+
+The initial backend endpoints are:
+
+```text
+POST /api/mcel/diagnostics/events
+GET  /api/mcel/diagnostics/events?appId=<app>&limit=<n>
+GET  /api/mcel/diagnostics/summary
+```
+
+The first storage target is append-only JSON Lines:
+
+```text
+runtime/mcel_diagnostics/events.jsonl
+```
+
+Logged events should include the app ID, contract ID, route, normalized verdict,
+raw verdict when available, counts, active issues, compact history counts, primary
+surface summary, and visual/layout measurement evidence when present. Events should
+be bounded and sanitized before storage. The widget should avoid flooding by emitting
+on state transitions and issue changes rather than every diagnosis interval.
+
 
 ## Codebase-derived aspects
 
@@ -871,6 +1041,46 @@ annotations
 findings
 repair
 ```
+
+## App form before layout
+
+MCEL app documents should declare semantic form before they declare rendered regions.
+The form layer gives layout and diagnostics reusable primitives. The renderer can then
+choose physical placement from available space, input mode, task priority, and density
+without changing the requirement.
+
+```text
+mcel-app
+  names the app, dominant object, sources, and readiness posture
+
+mcel-form-primitive
+  names subjects, actions, work surfaces, context, feedback, constraints,
+  transients, and interruptions
+
+mcel-region
+  maps one or more primitives into the current rendered UI
+
+mcel-layout-pattern
+  describes repeatable rendering inference rules across apps
+
+mcel-runtime-check
+  observes whether the rendered projection preserves the declared primitive meaning
+```
+
+The guiding law is:
+
+```text
+MCEL defines the semantic form of the app.
+Layout renders that form.
+Runtime diagnosis checks whether the rendered form preserves meaning, authority,
+usability, lifecycle, and intrusion policy.
+```
+
+No visible UI element should exist only as a widget or a physical slot. It should be
+traceable to a declared app, shell, or tool primitive. Physical words such as left,
+right, top, bottom, rail, drawer, or pane are allowed as implementation evidence, but
+they should not be the base requirement unless that physical placement is itself the
+user-visible product law.
 
 ## Codebase-derived layout zones
 
@@ -945,38 +1155,41 @@ advanced boundary
 
 Core law: suggestion, preview, and review do not equal write/apply.
 
-### Authoring cockpit with right assistant pane
+### Form-first authoring workspace
 
-Seen in the Code Editor target layout and useful for other source/design tools that
-need a large primary authoring surface plus a secondary assistant or diagnostics pane.
+Seen in the Code Editor target behavior and useful for other source/design tools that
+need a dominant authoring surface, supporting selection/context, ambient feedback, and
+mode-gated transients. This is not a left/right template; it is a semantic app-form
+pattern that layout can project differently by viewport and task.
 
 ```text
-left navigation/explorer
-central primary authoring surface
-optional right assistant/diagnostics pane
-bottom status strip
-mode-gated preview/proof/debug surfaces
+subject selection/context
+primary authoring work-surface
+supporting inspection, explanation, or evidence context
+ambient feedback about state, validity, progress, or integrity
+mode-gated preview/proof/debug/transient surfaces
 ```
 
-Core law: the right pane is an allowed secondary surface, not a second primary editor.
-It may contain diagnostics, assistant output, contract findings, ownership hints, and
-MCEL tools, but it must collapse before the primary surface becomes unusable.
+Core law: the primary authoring work-surface remains authoritative. Supporting context,
+feedback, and transients may be visible only in ways that preserve the primary surface's
+meaning, usability, and authority.
 
 ```mcel-layout-pattern
-id: layout-pattern.authoring-cockpit-with-right-assistant
+id: layout-pattern.form-first-authoring-workspace
 status: specified
-pattern: authoring-cockpit-with-right-assistant
+pattern: form-first-authoring-workspace
 regions:
-  - navigation/explorer
-  - primary authoring surface
-  - optional right assistant or diagnostics pane
-  - persistent status strip
-  - mode-gated preview/proof/debug boundary
+  - subject selection or context projection
+  - primary authoring work-surface projection
+  - supporting inspection/evidence/feedback projection
+  - ambient feedback projection
+  - mode-gated transient or interruption projection
 responsibility_law: >
-  Every visible surface in authoring mode must have an owned region, role, and
-  runtime-check policy. The central primary surface remains authoritative; the
-  right pane supports diagnosis, assistance, and ownership evidence without
-  replacing or covering the primary work surface.
+  Layout is inferred from primitive meaning rather than fixed direction. Every visible
+  surface in authoring mode must project from an owned primitive with a role, lifecycle,
+  authority, and runtime-check policy. Supporting context and feedback help the user
+  reason about the work without replacing, covering, or competing with the primary
+  work-surface.
 applies_to:
   - code-editor
 ```
@@ -1027,6 +1240,7 @@ A complete first-pass app requirements document should include:
 1 mcel-app
 at least 1 mcel-use-case
 at least 1 mcel-object or clearly named dominant_object
+enough mcel-form-primitive blocks to describe the app's semantic form
 at least 5 mcel-region blocks, or enough to cover the live app shell
 at least 5 mcel-requirement blocks
 at least 5 mcel-intent blocks, including prohibited intents where relevant
@@ -1167,3 +1381,37 @@ show which apps are parseable, strict-schema-ready, adapter-ready, and verified
 
 The docs are the source of product intent. The registry makes that intent inspectable.
 Adapters, tests, receipts, and browser evidence remain the source of implementation truth.
+
+## FLOG runtime contract smoke
+
+The passive diagnostics widget records what real sessions observe. FLOG is the active
+counterpart: it opens contracted MCEL apps, waits past startup grace, calls the same
+browser diagnosis API used by the widget, and writes reproducible evidence reports.
+
+The first MCEL runtime FLOG is intentionally small and builds on the existing FLOG
+smoke convention in `main_computer/flog_*_smoke.py`:
+
+```bash
+python main_computer/flog_mcel_runtime_smoke.py --base-url http://127.0.0.1:8765
+python main_computer/flog_mcel_runtime_smoke.py --app code-editor
+python main_computer/flog_mcel_runtime_smoke.py --emit-events
+```
+
+FLOG v1 scenarios are default-load contract checks. Each scenario verifies that:
+
+```text
+- the app route loads
+- `window.MCEL.diagnose(appId)` is available
+- active critical and warning findings are zero
+- the primary surface is usable
+- exactly one authoritative primary surface is present
+- visual-integrity violations are absent when the app reports them
+- the FLOG result can be emitted as the same diagnostic event schema used by the widget
+```
+
+The script writes JSON and Markdown reports under `runtime/reports/flog/mcel-runtime/`.
+It is not a second truth system. It uses the docs-backed registry to discover contracted
+apps, the browser's runtime diagnosis engine for evidence, and the diagnostics event
+schema for backend logging. App-specific interaction scenarios should be added only as
+the corresponding app specs become explicit enough to say what the interaction proves.
+

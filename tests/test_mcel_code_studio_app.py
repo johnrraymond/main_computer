@@ -1741,8 +1741,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "mcel-requirement",
             "mcel-acceptance",
             "mcel-boundary",
+            "mcel-form-primitive",
             "Monaco selected-file editor",
-            "Right assistant/diagnostics pane",
+            "Supporting reasoning/evidence projection",
             "optionalRegions",
             "Generated runtime file rail",
             "Fallback textarea",
@@ -1791,6 +1792,125 @@ console.log(JSON.stringify({{
         self.assertIn("if (matchesSelector(base, selector)) return base;", script)
         self.assertIn("matches.unshift(base);", script)
 
+    def test_mcel_self_diagnosis_ignores_inactive_widget_editor_shell(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+function makeElement({{id = "", className = "", hidden = false, width = 0, height = 0, children = []}} = {{}}) {{
+  const element = {{
+    nodeType: 1,
+    tagName: "DIV",
+    id,
+    className,
+    hidden,
+    children,
+    parentElement: null,
+    getAttribute(name) {{
+      if (name === "style") return "";
+      if (name === "aria-hidden") return null;
+      return null;
+    }},
+    getBoundingClientRect() {{
+      return {{x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height}};
+    }},
+    matches(selector) {{
+      if (selector === "#mc-widget-editor-root") return id === "mc-widget-editor-root";
+      if (selector === "#mc-widget-editor-pane.open") return id === "mc-widget-editor-pane" && String(className).split(/\\s+/).includes("open");
+      if (selector === ".mc-widget-selection:not([hidden])") return String(className).split(/\\s+/).includes("mc-widget-selection") && !hidden;
+      if (selector === ".mc-widget-dock-preview:not([hidden])") return String(className).split(/\\s+/).includes("mc-widget-dock-preview") && !hidden;
+      return false;
+    }},
+    querySelectorAll(selector) {{
+      return children.filter((child) => child.matches(selector) || (selector.includes(",") && selector.split(",").some((part) => child.matches(part.trim()))));
+    }},
+    querySelector(selector) {{
+      return this.querySelectorAll(selector)[0] || null;
+    }},
+    contains(target) {{
+      return target === this || children.includes(target);
+    }}
+  }};
+  children.forEach((child) => {{ child.parentElement = element; }});
+  return element;
+}}
+
+const inactiveRoot = makeElement({{id: "mc-widget-editor-root", width: 1600, height: 1000}});
+global.document = {{
+  querySelectorAll(selector) {{
+    if (selector === "#mc-widget-editor-root") return [inactiveRoot];
+    return [];
+  }},
+  querySelector(selector) {{
+    return this.querySelectorAll(selector)[0] || null;
+  }}
+}};
+global.getComputedStyle = () => ({{
+  display: "block",
+  visibility: "visible",
+  opacity: "1",
+  position: "fixed",
+  gridTemplateRows: "",
+  gridTemplateColumns: "",
+  gridRow: "",
+  gridColumn: "",
+  gridArea: "",
+  alignSelf: "",
+  justifySelf: "",
+  width: "",
+  height: "",
+  minWidth: "",
+  minHeight: "",
+  maxWidth: "",
+  maxHeight: "",
+  overflow: "",
+  overflowX: "",
+  overflowY: "",
+  zIndex: "",
+  pointerEvents: "none"
+}});
+global.window = {{}};
+require({script_literal});
+const api = window.McelSelfDiagnosis;
+const inactiveOverlays = api._private.detectOverlays(inactiveRoot, {{appId: "code-editor", mode: "authoring"}});
+const inactiveBox = api._private.computeForbiddenRegionBox(inactiveRoot, {{selector: "#mc-widget-editor-root"}});
+const activePane = makeElement({{id: "mc-widget-editor-pane", className: "open", width: 380, height: 800}});
+const activeRoot = makeElement({{id: "mc-widget-editor-root", width: 1600, height: 1000, children: [activePane]}});
+global.document.querySelectorAll = (selector) => {{
+  if (selector === "#mc-widget-editor-pane.open") return [activePane];
+  if (selector === "#mc-widget-editor-root") return [activeRoot];
+  return [];
+}};
+const activeOverlays = api._private.detectOverlays(activeRoot, {{appId: "code-editor", mode: "authoring"}});
+const activeBox = api._private.computeForbiddenRegionBox(activeRoot, {{selector: "#mc-widget-editor-root"}});
+console.log(JSON.stringify({{
+  inactiveOverlayCount: inactiveOverlays.length,
+  inactiveBoxVisible: inactiveBox.visible,
+  inactiveShell: inactiveBox.inactiveWidgetEditorShell,
+  activeOverlayCount: activeOverlays.length,
+  activeClassification: activeOverlays[0]?.classification || "",
+  activeBoxVisible: activeBox.visible,
+  activeWidgetEditorOverlay: activeBox.activeWidgetEditorOverlay
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["inactiveOverlayCount"], 0)
+        self.assertFalse(payload["inactiveBoxVisible"])
+        self.assertTrue(payload["inactiveShell"])
+        self.assertEqual(payload["activeOverlayCount"], 1)
+        self.assertEqual(payload["activeClassification"], "widget-editor-overlay")
+        self.assertTrue(payload["activeBoxVisible"])
+        self.assertTrue(payload["activeWidgetEditorOverlay"])
+
+
     def test_code_editor_has_passive_mcel_diagnostics_counter_element(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")
         applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
@@ -1817,9 +1937,12 @@ console.log(JSON.stringify({{
         self.assertIn("mcel-diagnostics-counter-history-v3", script)
         self.assertIn("Click to copy current and historical issues", script)
         self.assertIn("mountAll", script)
-        for app_id in ["calculator", "file-explorer", "git-tools", "website-builder"]:
+        for app_id in ["calculator", "file-explorer", "git-tools", "website-builder", "mcel-lab"]:
             with self.subTest(app_id=app_id):
                 self.assertIn(app_id, script)
+
+        self.assertIn("#mcel-lab-app #mcel-lab-diagnostics-slot", script)
+        self.assertIn("#mcel-lab-app .mcel-lab-diagnostics-slot .mcel-diagnostics-counter", style)
 
         self.assertIn(".mcel-diagnostics-counter__error", style)
         self.assertIn(".mcel-diagnostics-counter__warning", style)
@@ -1975,6 +2098,7 @@ const startupReport = {{
 }};
 const startupCounts = widget._private.summarizeReport(startupReport, history);
 widget._private.updateIssueHistory(history, startupReport, "2026-07-18T20:39:21.000Z");
+const startupPayload = widget._private.compactPayload(startupReport, startupCounts, history);
 const clearReport = {{
   ...startupReport,
   verdict: "pass",
@@ -1986,6 +2110,9 @@ const clearCounts = widget._private.summarizeReport(clearReport, history);
 const payload = widget._private.compactPayload(clearReport, clearCounts, history);
 console.log(JSON.stringify({{
   startupCounts,
+  startupVerdict: startupPayload.verdict,
+  startupRawVerdict: startupPayload.rawVerdict,
+  startupIssue: startupPayload.current.issues[0],
   clearCounts,
   historyCounts: payload.history.counts,
   historyIssue: payload.history.issues[0]
@@ -2000,6 +2127,10 @@ console.log(JSON.stringify({{
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["startupCounts"]["errors"], 0)
         self.assertEqual(payload["startupCounts"]["warnings"], 1)
+        self.assertEqual(payload["startupVerdict"], "pass")
+        self.assertEqual(payload["startupRawVerdict"], "fail")
+        self.assertEqual(payload["startupIssue"]["normalizedSeverity"], "warning")
+        self.assertTrue(payload["startupIssue"]["countedAsStartupWarning"])
         self.assertEqual(payload["clearCounts"]["errors"], 0)
         self.assertEqual(payload["clearCounts"]["warnings"], 0)
         self.assertEqual(payload["historyCounts"], {

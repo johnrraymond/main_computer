@@ -2048,6 +2048,12 @@ def dispatch_get(self) -> None:
     if urlsplit(self.path).path == "/api/applications/git/project/commit/stream":
         self._handle_git_project_commit_stream()
         return
+    if route_path == "/api/mcel/diagnostics/events":
+        self._handle_mcel_diagnostics_events_get()
+        return
+    if route_path == "/api/mcel/diagnostics/summary":
+        self._handle_mcel_diagnostics_summary_get()
+        return
     if self.path == "/api/revisions/status":
         self.server.signal("api-revisions-status")
         self._send_json(self.server.revisions.status())
@@ -2441,6 +2447,9 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/docs/export/pdf-vector-fit-smoke":
         self._handle_docs_export_pdf_vector_fit_smoke()
+        return
+    if route_path == "/api/mcel/diagnostics/events":
+        self._handle_mcel_diagnostics_event_post()
         return
     if route_path == "/api/applications/mcel/annotations/read":
         self._handle_mcel_annotations_read()

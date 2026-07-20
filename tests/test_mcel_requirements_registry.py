@@ -26,6 +26,7 @@ EXPECTED_APP_CONTRACTS = {
     "code-editor",
     "file-explorer",
     "git-tools",
+    "mcel-lab",
     "website-builder",
 }
 
@@ -37,13 +38,14 @@ def test_registry_parses_current_mcel_docs_without_hard_errors() -> None:
     assert registry.valid
     assert summary["registry_version"] == REGISTRY_VERSION
     assert set(summary["app_contracts"]) == EXPECTED_APP_CONTRACTS
-    assert summary["total_blocks"] >= 200
-    assert summary["block_type_counts"]["mcel-app"] == 5
-    assert summary["block_type_counts"]["mcel-grammar"] >= 17
-    assert summary["block_type_counts"]["mcel-requirement"] >= 45
-    assert summary["block_type_counts"]["mcel-intent"] >= 50
-    assert summary["block_type_counts"]["mcel-region"] >= 40
-    assert summary["block_type_counts"]["mcel-runtime-check"] >= 16
+    assert summary["total_blocks"] >= 300
+    assert summary["block_type_counts"]["mcel-app"] == 6
+    assert summary["block_type_counts"]["mcel-grammar"] >= 18
+    assert summary["block_type_counts"]["mcel-requirement"] >= 55
+    assert summary["block_type_counts"]["mcel-intent"] >= 57
+    assert summary["block_type_counts"]["mcel-region"] >= 50
+    assert summary["block_type_counts"]["mcel-form-primitive"] >= 40
+    assert summary["block_type_counts"]["mcel-runtime-check"] >= 19
 
 
 def test_registry_preserves_source_locations_and_expected_use_cases() -> None:
@@ -64,6 +66,8 @@ def test_registry_preserves_source_locations_and_expected_use_cases() -> None:
         "git-tools.use-case.add-ignore-rule",
         "git-tools.use-case.switch-branch-safely",
         "git-tools.use-case.select-files-stage-commit",
+        "mcel-lab.use-case.inspect-blueprint-from-doc-contract",
+        "mcel-lab.use-case.self-host-refactor-context",
     }
     assert expected_ids <= set(blocks)
 
@@ -104,6 +108,15 @@ def test_registry_loads_grammar_and_is_strict_schema_ready() -> None:
         "observes",
         "expects",
     ]
+    assert registry.grammar_required_fields["mcel-form-primitive"] == [
+        "id",
+        "app",
+        "status",
+        "primitive",
+        "meaning",
+        "relationships",
+        "constraints",
+    ]
     assert "missing-required-field" not in warning_codes
     assert "custom-risk-alias" not in warning_codes
     assert "unknown-adapter-status" not in warning_codes
@@ -142,6 +155,8 @@ def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
 
     optional_selectors = {entry["selector"] for entry in code_editor["optionalRegions"]}
     assert ".code-studio-inspector" in optional_selectors
+    optional_ids = {entry["id"] for entry in code_editor["optionalRegions"]}
+    assert "code-editor.region.inspector" in optional_ids
 
     allowed_selectors = {entry["selector"] for entry in code_editor["allowedRegions"]}
     assert "#code-editor-mcel-tools-toggle" in allowed_selectors
@@ -149,12 +164,13 @@ def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
 
     forbidden_selectors = {entry["selector"] for entry in code_editor["forbiddenRegions"]}
     assert "#code-studio-runtime-draft, .code-studio-runtime-fallback" in forbidden_selectors
-    assert "#mc-widget-editor-root" in forbidden_selectors
+    assert "#mc-widget-editor-pane.open, .mc-widget-selection:not([hidden]), .mc-widget-dock-preview:not([hidden])" in forbidden_selectors
+    assert "#mc-widget-editor-root" not in forbidden_selectors
 
     assert "file-click-keeps-one-primary-editor" in code_editor["lifecycleAssertions"]
-    assert "right-pane-must-collapse-before-primary-breaks" in code_editor["geometryPolicies"]
+    assert "supporting-projection-must-collapse-before-primary-breaks" in code_editor["geometryPolicies"]
     assert "diagnostics-covering-primary-editor-are-forbidden" in code_editor["overlayPolicy"]
-    assert {"surface", "layout", "overlays", "lifecycle", "surfaces"} <= set(code_editor["checkCategories"])
+    assert {"surface", "layout", "overlays", "lifecycle", "form"} <= set(code_editor["checkCategories"])
     assert {check["check"] for check in code_editor["checks"]} >= {
         "primary-surface",
         "required-regions-visible",
@@ -174,12 +190,41 @@ def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
     assert git_tools["primarySurface"]["hostSelector"] == "#git-project-workflow-surface"
 
     website_builder = contracts["website-builder"]["mode_contracts"]["default"]
-    assert website_builder["primarySurface"]["hostSelector"] == ".website-builder-preview"
+    assert website_builder["primarySurface"]["hostSelector"] == "[data-mcel-surface-id='website-builder.surface.preview']"
+
+    lab = contracts["mcel-lab"]["mode_contracts"]["default"]
+    assert lab["contractId"] == "mcel-lab.contract.default.blueprint-studio-health"
+    assert lab["primarySurface"]["hostSelector"] == ".mcel-lab-blueprint-primary"
+    assert lab["primarySurface"]["editorSelector"] == "#mcel-blueprint-work-surface"
+    assert "form" in lab["checkCategories"]
+    assert "#mcel-blueprint-app-select" in {entry["selector"] for entry in lab["requiredRegions"]}
 
     payload = build_lab_payload(registry)
     payload_contract = payload["runtime_diagnostic_contracts"]["code-editor"]["mode_contracts"]["authoring"]
     assert payload_contract["contractId"] == code_editor["contractId"]
+    assert payload["app_contracts"]["code-editor"]["form_primitive_count"] >= 7
+    assert "code-editor.form.feedback.integrity-and-activity" in {
+        entry["id"] for entry in payload["app_contracts"]["code-editor"]["form_primitives"]
+    }
+    assert payload["app_contracts"]["calculator"]["form_primitive_count"] >= 6
+    assert payload["app_contracts"]["file-explorer"]["form_primitive_count"] >= 6
+    assert payload["app_contracts"]["git-tools"]["form_primitive_count"] >= 6
+    assert payload["app_contracts"]["website-builder"]["form_primitive_count"] >= 6
+    assert "calculator.form.feedback.validation-and-compute-state" in {
+        entry["id"] for entry in payload["app_contracts"]["calculator"]["form_primitives"]
+    }
+    assert "file-explorer.form.feedback.boundary-and-preview-state" in {
+        entry["id"] for entry in payload["app_contracts"]["file-explorer"]["form_primitives"]
+    }
+    assert "git-tools.form.feedback.risk-and-operation-state" in {
+        entry["id"] for entry in payload["app_contracts"]["git-tools"]["form_primitives"]
+    }
+    assert "website-builder.form.feedback.save-preview-publish-state" in {
+        entry["id"] for entry in payload["app_contracts"]["website-builder"]["form_primitives"]
+    }
     assert "calculator" in payload["runtime_diagnostic_contracts"]
+    assert "mcel-lab" in payload["runtime_diagnostic_contracts"]
+    assert payload["app_contracts"]["mcel-lab"]["form_primitive_count"] >= 8
 
 
 def test_intent_blocks_use_canonical_risk_and_io_fields() -> None:
@@ -220,11 +265,25 @@ def test_registry_groups_blocks_by_app_contract() -> None:
         assert block_types["mcel-acceptance"] >= 1
         assert block_types["mcel-finding"] >= 1
 
-    assert Counter(block.block_type for block in by_app["calculator"])["mcel-use-case"] >= 1
-    assert Counter(block.block_type for block in by_app["code-editor"])["mcel-use-case"] >= 1
-    assert Counter(block.block_type for block in by_app["file-explorer"])["mcel-use-case"] >= 1
-    assert Counter(block.block_type for block in by_app["git-tools"])["mcel-use-case"] >= 1
-    assert Counter(block.block_type for block in by_app["website-builder"])["mcel-use-case"] >= 1
+    calculator_counts = Counter(block.block_type for block in by_app["calculator"])
+    assert calculator_counts["mcel-use-case"] >= 1
+    assert calculator_counts["mcel-form-primitive"] >= 6
+    code_editor_counts = Counter(block.block_type for block in by_app["code-editor"])
+    assert code_editor_counts["mcel-use-case"] >= 1
+    assert code_editor_counts["mcel-form-primitive"] >= 7
+    file_explorer_counts = Counter(block.block_type for block in by_app["file-explorer"])
+    assert file_explorer_counts["mcel-use-case"] >= 1
+    assert file_explorer_counts["mcel-form-primitive"] >= 6
+    git_tools_counts = Counter(block.block_type for block in by_app["git-tools"])
+    assert git_tools_counts["mcel-use-case"] >= 1
+    assert git_tools_counts["mcel-form-primitive"] >= 6
+    website_builder_counts = Counter(block.block_type for block in by_app["website-builder"])
+    assert website_builder_counts["mcel-use-case"] >= 1
+    assert website_builder_counts["mcel-form-primitive"] >= 6
+    lab_counts = Counter(block.block_type for block in by_app["mcel-lab"])
+    assert lab_counts["mcel-use-case"] >= 2
+    assert lab_counts["mcel-form-primitive"] >= 8
+    assert lab_counts["mcel-runtime-check"] >= 3
 
 
 def test_region_blocks_are_responsibility_normalized() -> None:
@@ -243,6 +302,136 @@ def test_region_blocks_are_responsibility_normalized() -> None:
         assert isinstance(block.fields.get("region"), str) and block.fields["region"].strip()
         assert isinstance(block.fields.get("role"), str) and block.fields["role"].strip()
         assert isinstance(block.fields.get("responsibility"), str) and block.fields["responsibility"].strip()
+
+
+def test_code_editor_form_primitives_define_semantic_anatomy() -> None:
+    registry = build_registry(ROOT)
+    blocks = registry.by_id()
+
+    expected_ids = {
+        "code-editor.form.subject.source-workspace",
+        "code-editor.form.action.edit-source",
+        "code-editor.form.work-surface.selected-source-editor",
+        "code-editor.form.context.project-selection",
+        "code-editor.form.context.reasoning-evidence",
+        "code-editor.form.feedback.integrity-and-activity",
+        "code-editor.form.transient.widget-structure-editing",
+    }
+    assert expected_ids <= set(blocks)
+
+    primitive_types = {
+        blocks[block_id].fields["primitive"]
+        for block_id in expected_ids
+    }
+    assert {"subject", "action", "work-surface", "context", "feedback", "transient"} <= primitive_types
+
+    editor_surface = blocks["code-editor.form.work-surface.selected-source-editor"]
+    assert editor_surface.fields["primitive"] == "work-surface"
+    assert "authoritative stable surface" in editor_surface.fields["meaning"]
+    assert any("visible and usable" in item for item in editor_surface.fields["constraints"])
+
+    feedback = blocks["code-editor.form.feedback.integrity-and-activity"]
+    assert feedback.fields["primitive"] == "feedback"
+    assert any("not interrupt or cover" in item for item in feedback.fields["constraints"])
+
+
+
+def test_core_apps_have_semantic_form_coverage() -> None:
+    registry = build_registry(ROOT)
+    blocks = registry.by_id()
+
+    expected_by_app = {
+        "calculator": {
+            "calculator.form.subject.calculation-session",
+            "calculator.form.action.evaluate-and-explain",
+            "calculator.form.work-surface.deterministic-compute",
+            "calculator.form.context.result-evidence",
+            "calculator.form.feedback.validation-and-compute-state",
+            "calculator.form.transient.explicit-helper-evaluation",
+        },
+        "file-explorer": {
+            "file-explorer.form.subject.browse-scope",
+            "file-explorer.form.action.inspect-entry-safely",
+            "file-explorer.form.work-surface.entry-inspection",
+            "file-explorer.form.context.selection-and-classification",
+            "file-explorer.form.feedback.boundary-and-preview-state",
+            "file-explorer.form.transient.search-and-selection-evidence",
+        },
+        "git-tools": {
+            "git-tools.form.subject.repository-project",
+            "git-tools.form.action.governed-repository-change",
+            "git-tools.form.work-surface.repository-workflow",
+            "git-tools.form.context.evidence-and-preflight",
+            "git-tools.form.feedback.risk-and-operation-state",
+            "git-tools.form.transient.confirmation-and-recovery",
+        },
+        "website-builder": {
+            "website-builder.form.subject.website-project",
+            "website-builder.form.action.author-preview-publish",
+            "website-builder.form.work-surface.site-authoring",
+            "website-builder.form.context.runtime-and-publish-evidence",
+            "website-builder.form.feedback.save-preview-publish-state",
+            "website-builder.form.transient.setup-publish-and-handoff",
+        },
+    }
+
+    for app_id, expected_ids in expected_by_app.items():
+        assert expected_ids <= set(blocks)
+        primitive_types = {blocks[block_id].fields["primitive"] for block_id in expected_ids}
+        assert {"subject", "action", "work-surface", "context", "feedback", "transient"} <= primitive_types
+
+        work_surface = next(
+            blocks[block_id]
+            for block_id in expected_ids
+            if blocks[block_id].fields["primitive"] == "work-surface"
+        )
+        assert "primary" in work_surface.fields["meaning"]
+
+        feedback = next(
+            blocks[block_id]
+            for block_id in expected_ids
+            if blocks[block_id].fields["primitive"] == "feedback"
+        )
+        assert any("must not cover or replace" in item for item in feedback.fields["constraints"])
+
+
+def test_mcel_lab_form_primitives_register_self_hosting_contract() -> None:
+    registry = build_registry(ROOT)
+    blocks = registry.by_id()
+    payload = build_lab_payload(registry)
+
+    expected_ids = {
+        "mcel-lab.form.subject.app-blueprint",
+        "mcel-lab.form.action.inspect-blueprint",
+        "mcel-lab.form.work-surface.blueprint-inspection",
+        "mcel-lab.form.context.app-and-aspect-selection",
+        "mcel-lab.form.context.implementation-evidence",
+        "mcel-lab.form.feedback.validation-and-mount-state",
+        "mcel-lab.form.constraint.self-hosting-safety",
+        "mcel-lab.form.transient.point-inspection",
+        "mcel-lab.form.interruption.unsafe-repair-boundary",
+    }
+    assert expected_ids <= set(blocks)
+
+    primitive_types = {blocks[block_id].fields["primitive"] for block_id in expected_ids}
+    assert {
+        "subject",
+        "action",
+        "work-surface",
+        "context",
+        "feedback",
+        "constraint",
+        "transient",
+        "interruption",
+    } <= primitive_types
+
+    safety = blocks["mcel-lab.form.constraint.self-hosting-safety"]
+    assert any("must not directly rewrite" in item for item in safety.fields["constraints"])
+
+    lab_contract = payload["app_contracts"]["mcel-lab"]
+    assert lab_contract["contract_complete"] is True
+    assert lab_contract["dominant_object"] == "AppBlueprint"
+    assert lab_contract["form_primitive_count"] >= 8
 
 
 def test_registry_cli_emits_machine_readable_json_summary(tmp_path: Path) -> None:
@@ -298,7 +487,7 @@ def test_registry_report_and_lab_payload_are_useful_app_contract_views() -> None
     payload = build_lab_payload(registry)
     assert payload["payload_version"] == "mcel-requirements-lab-payload-v1"
     assert payload["strict_schema_ready"] is True
-    assert payload["summary"]["total_blocks"] >= 208
+    assert payload["summary"]["total_blocks"] >= 270
     assert set(payload["app_contracts"]) == EXPECTED_APP_CONTRACTS
     assert payload["app_comparison_seeds"]["git-tools"]["required_use_case_count"] >= 4
     assert payload["app_comparison_seeds"]["calculator"]["runtime_comparison_status"] == "pending-live-adapter-snapshot"
@@ -356,6 +545,7 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
     vm.runInNewContext(fs.readFileSync({json.dumps(str(script_path))}, "utf8"), sandbox, {{filename: "mcel-requirements-registry.js"}});
     const api = sandbox.McelRequirementsRegistry;
     const gitContract = api.getAppContract("git-tools");
+    const labContract = api.getAppContract("mcel-lab");
     const codeEditorDiagnosis = api.getRuntimeDiagnosisContract("code-editor", "authoring");
     const missingComparison = api.compareAppToRuntime("calculator", {{}});
     const gitComparison = api.compareAppToRuntime("git-tools", {{
@@ -382,8 +572,11 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
       appCount: api.listAppContracts().length,
       totalBlocks: api.getSummary().total_blocks,
       gitUseCaseCount: gitContract.use_cases.length,
+      labFormPrimitiveCount: labContract.form_primitive_count,
+      labDominantObject: labContract.dominant_object,
       codeEditorOptionalSelectors: codeEditorDiagnosis.optionalRegions.map((entry) => entry.selector),
       codeEditorAllowedSelectors: codeEditorDiagnosis.allowedRegions.map((entry) => entry.selector),
+      codeEditorForbiddenSelectors: codeEditorDiagnosis.forbiddenRegions.map((entry) => entry.selector),
       missingStatus: missingComparison.comparisonStatus,
       missingGaps: missingComparison.gaps,
       gitStatus: gitComparison.comparisonStatus,
@@ -401,15 +594,19 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
     data = json.loads(result.stdout)
 
     assert data["strictSchemaReady"] is True
-    assert data["appCount"] == 5
-    assert data["totalBlocks"] >= 208
+    assert data["appCount"] == 6
+    assert data["totalBlocks"] >= 270
     assert data["gitUseCaseCount"] >= 4
+    assert data["labFormPrimitiveCount"] >= 8
+    assert data["labDominantObject"] == "AppBlueprint"
     assert ".code-studio-inspector" in data["codeEditorOptionalSelectors"]
     assert "#code-editor-mcel-tools-toggle" in data["codeEditorAllowedSelectors"]
+    assert "#mc-widget-editor-pane.open, .mc-widget-selection:not([hidden]), .mc-widget-dock-preview:not([hidden])" in data["codeEditorForbiddenSelectors"]
+    assert "#mc-widget-editor-root" not in data["codeEditorForbiddenSelectors"]
     assert data["missingStatus"] == "requirements-runtime-gap"
     assert "No live domain adapter snapshot is available." in data["missingGaps"]
     assert data["gitStatus"] == "requirements-runtime-aligned-or-unverified"
-    assert data["snapshotAppCount"] == 5
+    assert data["snapshotAppCount"] == 6
     assert data["snapshotStatusCounts"]["requirements-runtime-gap"] >= 1
 
 

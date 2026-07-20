@@ -195,6 +195,111 @@ verification:
   - tests/test_mcel_documentation.py
 ```
 
+## Semantic app form
+
+Website Builder is defined by website-project subjects, author/preview/publish
+actions, primary authoring work surfaces, supporting runtime and deployment
+context, feedback about save/publish state, and explicit transients for setup,
+generation, and confirmation. Visual arrangement is inferred from those
+semantics instead of fixed physical placement.
+
+```mcel-form-primitive
+id: website-builder.form.subject.website-project
+app: website-builder
+status: specified
+primitive: subject
+meaning: The selected saved website, page source, builder state, manifest, runtime configuration, generated evidence, publish target, and repository handoff state.
+relationships:
+  - Site manifest, builder state, source files, generated runtime evidence, and publish receipts belong to the selected website project.
+  - Author-owned source, local runtime data, generated files, deployment targets, and Git handoff evidence must remain distinguishable.
+  - Publish lane evidence derives from an explicit target and preflight state.
+constraints:
+  - Selected website identity must remain traceable across edit, preview, save, configure, publish, and handoff actions.
+  - Generated runtime evidence must not be confused with author-owned source.
+  - Remote or deployment state must not be implied by local save or preview.
+```
+
+```mcel-form-primitive
+id: website-builder.form.action.author-preview-publish
+app: website-builder
+status: specified
+primitive: action
+meaning: The user selects a website, edits content or style, previews draft output, saves source artifacts, configures runtime layers, publishes to an explicit lane, or hands work to Git Tools.
+relationships:
+  - Edit and save actions mutate only the selected website source artifacts.
+  - Preview actions derive evidence without publishing.
+  - Publish actions require target evidence, preflight, confirmation, execution, and receipt.
+constraints:
+  - Save, preview, local publish, dev publish, remote publish, and Git handoff remain separate actions.
+  - Destructive runtime or storage choices require explicit acknowledgement.
+  - Failed preview, save, setup, publish, or handoff actions must preserve recovery evidence.
+```
+
+```mcel-form-primitive
+id: website-builder.form.work-surface.site-authoring
+app: website-builder
+status: specified
+primitive: work-surface
+meaning: The primary stable work surface for selecting a website project, authoring source, inspecting preview evidence, configuring runtime state, and preparing publish or handoff actions.
+relationships:
+  - Enables site selection, content/style editing, source save, draft preview, runtime setup review, publish preflight, and Git Tools handoff.
+  - Keeps author-owned source, generated evidence, runtime setup, and publish state connected to the selected website project.
+  - Presents deployment evidence as a governed extension of the authoring workflow.
+constraints:
+  - The primary authoring surface must remain visible and usable during editing and preview.
+  - Publish and runtime setup controls must remain tied to selected website and explicit target evidence.
+  - Generated evidence must not claim source authority.
+```
+
+```mcel-form-primitive
+id: website-builder.form.context.runtime-and-publish-evidence
+app: website-builder
+status: specified
+primitive: context
+meaning: Supporting context that explains manifest state, builder state, source artifacts, generated runtime files, database/CMS layers, publish targets, receipts, and Git handoff evidence.
+relationships:
+  - Explains whether evidence came from source, generated runtime, local server, dev deployment, remote target, or repository handoff.
+  - Connects runtime setup dependencies to explicit choices and receipts.
+  - Connects publish results to the lane and target that produced them.
+constraints:
+  - Context must keep author-owned source, generated files, runtime data, and deployed state distinguishable.
+  - Context must not hide destructive storage or remote deployment risk.
+  - Receipts must name the selected website and target lane when available.
+```
+
+```mcel-form-primitive
+id: website-builder.form.feedback.save-preview-publish-state
+app: website-builder
+status: specified
+primitive: feedback
+meaning: Feedback about dirty state, save result, preview readiness, runtime setup state, publish preflight, publish result, Git handoff readiness, and contract health.
+relationships:
+  - Observes selected website state, authoring activity, preview generation, setup progress, publish workflow, handoff state, and runtime integrity.
+  - Supports user safety, developer diagnosis, and automation without changing website source by itself.
+  - Distinguishes active issues from historical or resolved findings.
+constraints:
+  - Feedback must not claim deployment success without a matching receipt.
+  - Feedback must not cover or replace the primary authoring surface.
+  - Feedback must identify the selected website, lane, runtime layer, or handoff target when possible.
+```
+
+```mcel-form-primitive
+id: website-builder.form.transient.setup-publish-and-handoff
+app: website-builder
+status: specified
+primitive: transient
+meaning: Temporary setup, generation, confirmation, execution-progress, receipt, and recovery evidence for runtime configuration, publish, and Git handoff operations.
+relationships:
+  - Supports explicit setup, publish, or handoff actions without becoming website source itself.
+  - May demand attention when storage, deployment, or repository risk requires a user decision.
+  - Ends when the user confirms, cancels, receives a receipt, or switches website subject.
+constraints:
+  - Transient mutation UI requires a clear selected website and target.
+  - Transient evidence must preserve source/generated/runtime/deployment boundaries.
+  - Transient recovery must not perform follow-up mutation without another explicit action.
+```
+
+
 ## How saved websites work
 
 A saved website is a repository-scoped project folder, not an opaque CMS record and not a hidden remote deployment.
@@ -1045,12 +1150,12 @@ contract: website-builder.contract.default.app-health
 check: primary-surface
 severity: critical
 primary_surface_id: website-builder.surface.preview
-host_selector: ".website-builder-preview"
-editor_selector: ".website-builder-preview"
+host_selector: "[data-mcel-surface-id='website-builder.surface.preview']"
+editor_selector: "[data-mcel-surface-id='website-builder.surface.preview']"
 min_width: 420
 min_height: 320
 observes:
-  - ".website-builder-preview"
+  - "[data-mcel-surface-id='website-builder.surface.preview']"
 expects:
   - Website Builder preview/design surface is visible and usable.
   - The selected site surface is not collapsed by inspector or publishing panels.
@@ -1072,13 +1177,13 @@ observes:
   - "#website-builder-app"
   - ".website-builder-main"
   - ".website-builder-summary"
-  - ".website-builder-preview"
+  - "[data-mcel-surface-id='website-builder.surface.preview']"
   - ".website-builder-inspector"
 required_regions:
   - website-builder.region.root | #website-builder-app | Website Builder app root
   - website-builder.region.main | .website-builder-main | Website Builder shell
   - website-builder.region.summary | .website-builder-summary | Website summary
-  - website-builder.region.preview | .website-builder-preview | Preview/design surface
+  - website-builder.region.preview | [data-mcel-surface-id='website-builder.surface.preview'] | Preview/design surface
   - website-builder.region.inspector | .website-builder-inspector | Inspector
 expects:
   - Root, shell, summary, preview, and inspector remain visible.

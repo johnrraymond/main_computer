@@ -1,9 +1,10 @@
     (function (global) {
       "use strict";
 
-      const BLUEPRINTS_CORE_VERSION = "0.2.0";
+      const BLUEPRINTS_CORE_VERSION = "0.3.0";
       const GENERIC_ASPECT_IDS = Object.freeze([
         "overview",
+        "form",
         "objects",
         "workflows",
         "layout",
@@ -115,6 +116,12 @@
           source: "selectedAspect"
         }),
         Object.freeze({
+          id: "semantic-form-primitives",
+          label: "Semantic form primitives",
+          renderer: "semantic-form-primitives",
+          source: "requirementsContract.form_primitives"
+        }),
+        Object.freeze({
           id: "layout-zone-contract",
           label: "Layout zone contract",
           renderer: "layout-zones",
@@ -165,6 +172,7 @@
       function buildGenericAspects() {
         return Object.freeze([
           aspect("overview", "Overview", "element.inspection.aspect-panel", ["app identity", "dominant object", "route", "purpose"]),
+          aspect("form", "Form", "element.inspection.aspect-panel", ["subjects", "actions", "work surfaces", "context", "feedback", "constraints", "transients", "interruptions"]),
           aspect("objects", "Objects", "element.inspection.aspect-panel", ["dominant object", "object model", "relationships"]),
           aspect("workflows", "Workflows", "element.inspection.aspect-panel", ["workflow map", "primary workflow", "secondary workflows"]),
           aspect("layout", "Layout", "element.inspection.aspect-panel", ["layout zones", "zone bindings", "primary surface policy"]),
@@ -296,6 +304,274 @@
           ]),
           requiredSelectedElementFields: REQUIRED_INSPECTION_FIELDS,
           detailSource: "blueprint.inspectionPolicy"
+        });
+      }
+
+
+      const REQUIREMENTS_APP_RUNTIME_HINTS = Object.freeze({
+        "calculator": Object.freeze({
+          label: "Calculator",
+          route: "/applications/calculator",
+          rootSelector: "#calculator-app",
+          sourceHints: Object.freeze([
+            "main_computer/web/applications/apps/calculator.html",
+            "main_computer/web/applications/scripts/calculator.js",
+            "main_computer/web/applications/styles/calculator.css"
+          ]),
+          testHints: Object.freeze(["tests/test_mcel_calculator_requirements.py"]),
+          docHints: Object.freeze(["pretty_docs/mcel-calculator-requirements.md"]),
+          riskFamilies: Object.freeze(["expression-evaluation", "graph-domain", "local-state"])
+        }),
+        "code-editor": Object.freeze({
+          label: "Code Editor",
+          route: "/applications/code-editor",
+          rootSelector: "#code-editor-app",
+          sourceHints: Object.freeze([
+            "main_computer/web/applications/apps/code-editor.html",
+            "main_computer/web/applications/scripts/code-editor-mcel-studio.js",
+            "main_computer/web/applications/scripts/mcel-self-diagnosis.js",
+            "main_computer/web/applications/styles/code-editor.css"
+          ]),
+          testHints: Object.freeze([
+            "tests/test_mcel_code_studio_app.py",
+            "tests/test_flog_code_editor_live_smoke.py"
+          ]),
+          docHints: Object.freeze(["pretty_docs/mcel-code-editor-requirements.md"]),
+          riskFamilies: Object.freeze(["source-mutation", "ai-assisted-edit", "runtime-preview-leakage"])
+        }),
+        "file-explorer": Object.freeze({
+          label: "File Explorer",
+          route: "/applications/file-explorer",
+          rootSelector: "#file-explorer-app",
+          sourceHints: Object.freeze([
+            "main_computer/web/applications/apps/file-explorer.html",
+            "main_computer/web/applications/scripts/file-explorer.js",
+            "main_computer/web/applications/styles/file-explorer.css"
+          ]),
+          testHints: Object.freeze(["tests/test_mcel_requirements_registry.py"]),
+          docHints: Object.freeze(["pretty_docs/mcel-file-explorer-requirements.md"]),
+          riskFamilies: Object.freeze(["filesystem-read", "path-selection", "mutation-prohibited"])
+        }),
+        "git-tools": Object.freeze({
+          label: "Git Tools",
+          route: "/applications/git-tools",
+          rootSelector: "#git-tools-app",
+          sourceHints: Object.freeze([
+            "main_computer/web/applications/apps/git-tools.html",
+            "main_computer/web/applications/scripts/git-tools-mcel.js",
+            "main_computer/web/applications/scripts/git-tools-semantic-adapter.js",
+            "main_computer/web/applications/styles/git-tools.css"
+          ]),
+          testHints: Object.freeze([
+            "tests/test_git_tools_semantic_runtime.py",
+            "tests/test_mcel_requirements_registry.py"
+          ]),
+          docHints: Object.freeze(["pretty_docs/mcel-git-tools-requirements.md"]),
+          riskFamilies: Object.freeze(["repository-mutation", "remote-publish", "manual-command"])
+        }),
+        "mcel-lab": Object.freeze({
+          label: "MCEL Lab",
+          route: "/applications/mcel-lab",
+          rootSelector: "#mcel-lab-app",
+          sourceHints: Object.freeze([
+            "main_computer/web/applications/apps/mcel-lab.html",
+            "main_computer/web/applications/scripts/mcel-lab.js",
+            "main_computer/web/applications/scripts/mcel-app-blueprints-core.js",
+            "main_computer/web/applications/styles/mcel-lab.css"
+          ]),
+          testHints: Object.freeze([
+            "tests/test_mcel_lab_app.py",
+            "tests/test_mcel_lab_blueprint_studio_documentation.py",
+            "tests/test_mcel_app_blueprint_contracts.py"
+          ]),
+          docHints: Object.freeze(["pretty_docs/mcel-lab-blueprint-studio.md"]),
+          riskFamilies: Object.freeze(["self-recursion", "specimen-boundary", "live-self-overwrite"])
+        }),
+        "website-builder": Object.freeze({
+          label: "Website Builder",
+          route: "/applications/website-builder",
+          rootSelector: "#website-builder-app",
+          sourceHints: Object.freeze([
+            "main_computer/web/applications/apps/website-builder.html",
+            "main_computer/web/applications/scripts/website-builder.js",
+            "main_computer/web/applications/styles/website-builder.css"
+          ]),
+          testHints: Object.freeze([
+            "tests/test_website_builder_application.py",
+            "tests/test_mcel_requirements_registry.py"
+          ]),
+          docHints: Object.freeze(["pretty_docs/mcel-website-builder-requirements.md"]),
+          riskFamilies: Object.freeze(["site-save", "site-publish", "runtime-page-generation"])
+        })
+      });
+
+      const FORM_PRIMITIVE_KIND_ORDER = Object.freeze([
+        "subject",
+        "action",
+        "work-surface",
+        "context",
+        "feedback",
+        "constraint",
+        "transient",
+        "interruption"
+      ]);
+
+      function uniqueStrings(values) {
+        const seen = new Set();
+        const result = [];
+        (Array.isArray(values) ? values : []).forEach((value) => {
+          const text = String(value || "").trim();
+          if (!text || seen.has(text)) return;
+          seen.add(text);
+          result.push(text);
+        });
+        return result;
+      }
+
+      function requirementsRegistryContracts() {
+        const registry = global.McelRequirementsRegistry;
+        if (!registry || typeof registry.listAppContracts !== "function") return [];
+        try {
+          return registry.listAppContracts() || [];
+        } catch (_error) {
+          return [];
+        }
+      }
+
+      function normalizeFormPrimitiveKind(value) {
+        return String(value || "unknown").trim().toLowerCase() || "unknown";
+      }
+
+      function formPrimitiveKindCounts(primitives) {
+        const counts = {};
+        (Array.isArray(primitives) ? primitives : []).forEach((primitive) => {
+          const kind = normalizeFormPrimitiveKind(primitive?.primitive);
+          counts[kind] = (counts[kind] || 0) + 1;
+        });
+        return Object.fromEntries(Object.entries(counts).sort((left, right) => {
+          const leftIndex = FORM_PRIMITIVE_KIND_ORDER.indexOf(left[0]);
+          const rightIndex = FORM_PRIMITIVE_KIND_ORDER.indexOf(right[0]);
+          if (leftIndex !== -1 || rightIndex !== -1) {
+            return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
+          }
+          return left[0].localeCompare(right[0]);
+        }));
+      }
+
+      function formPrimitiveGroups(primitives) {
+        const groups = {};
+        (Array.isArray(primitives) ? primitives : []).forEach((primitive) => {
+          const kind = normalizeFormPrimitiveKind(primitive?.primitive);
+          if (!groups[kind]) groups[kind] = [];
+          groups[kind].push(clone(primitive));
+        });
+        return Object.fromEntries(Object.entries(groups).sort((left, right) => {
+          const leftIndex = FORM_PRIMITIVE_KIND_ORDER.indexOf(left[0]);
+          const rightIndex = FORM_PRIMITIVE_KIND_ORDER.indexOf(right[0]);
+          if (leftIndex !== -1 || rightIndex !== -1) {
+            return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
+          }
+          return left[0].localeCompare(right[0]);
+        }));
+      }
+
+      function buildRequirementsBackedBlueprint(contract, baseBlueprint = null) {
+        if (!contract || !contract.app) return baseBlueprint ? clone(baseBlueprint) : null;
+        const appId = String(contract.app);
+        const hint = REQUIREMENTS_APP_RUNTIME_HINTS[appId] || {};
+        const label = contract.title || baseBlueprint?.label || hint.label || appId;
+        const route = baseBlueprint?.route || hint.route || `/applications/${appId}`;
+        const rootSelector = baseBlueprint?.rootSelector || hint.rootSelector || `#${appId}-app`;
+        const formPrimitives = Array.isArray(contract.form_primitives) ? clone(contract.form_primitives) : [];
+        const firstRegions = Array.isArray(contract.first_regions) ? clone(contract.first_regions) : [];
+        const runtimeChecks = Array.isArray(contract.runtime_checks) ? clone(contract.runtime_checks) : [];
+        const useCases = Array.isArray(contract.use_cases) ? clone(contract.use_cases) : [];
+        const sourceDoc = contract.source?.file ? [contract.source.file] : [];
+        const sourceHints = uniqueStrings([
+          ...(baseBlueprint?.sourceHints || []),
+          ...(hint.sourceHints || []),
+          ...sourceDoc
+        ]);
+        const testHints = uniqueStrings([
+          ...(baseBlueprint?.testHints || []),
+          ...(hint.testHints || [])
+        ]);
+        const docHints = uniqueStrings([
+          ...(baseBlueprint?.docHints || []),
+          ...(hint.docHints || []),
+          ...sourceDoc
+        ]);
+        const riskFamilies = uniqueStrings([
+          ...(baseBlueprint?.riskFamilies || []),
+          ...(hint.riskFamilies || [])
+        ]);
+        return {
+          ...(baseBlueprint || {}),
+          appId,
+          aliases: Array.isArray(baseBlueprint?.aliases) ? baseBlueprint.aliases.slice() : [],
+          label,
+          route,
+          rootSelector,
+          mountPolicy: baseBlueprint?.mountPolicy || mountPolicy(appId, rootSelector, route, {selfMountRecursionGuard: appId === "mcel-lab"}),
+          inspectionPolicy: baseBlueprint?.inspectionPolicy || inspectionPolicy(appId, {
+            hostSurfaceSelectors: ["#mcel-lab-app [data-mcel-layout-zone='primary']"]
+          }),
+          blueprintElementId: baseBlueprint?.blueprintElementId || "element.workbench.specification",
+          dominantObject: contract.dominant_object || baseBlueprint?.dominantObject || "App",
+          purpose: contract.primary_user_goal || baseBlueprint?.purpose || `Inspect the ${label} requirements contract, semantic form, runtime checks, and implementation evidence.`,
+          aspects: buildGenericAspects(),
+          aspectIds: GENERIC_ASPECT_IDS,
+          genericInspectionElements: GENERIC_INSPECTION_ELEMENTS,
+          genericRefactorElements: GENERIC_REFACTOR_ELEMENTS,
+          layoutZones: baseBlueprint?.layoutZones || GENERIC_LAYOUT_ZONES,
+          detailGroups: BLUEPRINT_DETAIL_GROUPS,
+          layoutBinding: baseBlueprint?.layoutBinding || {
+            root: rootSelector,
+            zones: Object.fromEntries(GENERIC_LAYOUT_ZONES.map((zone) => [zone, `[data-mcel-layout-zone='${zone}'], [data-mcel-zone='${zone}']`]))
+          },
+          sourceHints,
+          testHints,
+          docHints,
+          riskFamilies,
+          annotationPolicy: baseBlueprint?.annotationPolicy || annotationPolicy(appId),
+          exportPolicy: baseBlueprint?.exportPolicy || exportPolicy(appId),
+          requirementsContract: {
+            app: appId,
+            title: contract.title || label,
+            status: contract.status || "",
+            contractComplete: contract.contract_complete === true,
+            currentRuntimeStatus: contract.current_runtime_status || "",
+            targetRuntimeStatus: contract.target_runtime_status || "",
+            totalBlocks: Object.values(contract.block_type_counts || {}).reduce((total, value) => total + Number(value || 0), 0),
+            blockTypeCounts: clone(contract.block_type_counts || {}),
+            formPrimitiveCount: formPrimitives.length,
+            formPrimitiveKinds: formPrimitiveKindCounts(formPrimitives),
+            runtimeCheckCount: runtimeChecks.length,
+            regionCount: Number(contract.region_count || firstRegions.length || 0),
+            intentCount: Number(contract.intent_count || 0),
+            source: clone(contract.source || null)
+          },
+          formPrimitives,
+          formPrimitiveGroups: formPrimitiveGroups(formPrimitives),
+          formPrimitiveKinds: formPrimitiveKindCounts(formPrimitives),
+          formPrimitiveCount: formPrimitives.length,
+          regionContracts: firstRegions,
+          runtimeChecks,
+          useCases
+        };
+      }
+
+      function buildInspectableBlueprints() {
+        const byId = new Map(Object.values(BLUEPRINTS).map((blueprint) => [blueprint.appId, blueprint]));
+        requirementsRegistryContracts().forEach((contract) => {
+          const base = byId.get(contract.app) || null;
+          const blueprint = buildRequirementsBackedBlueprint(contract, base);
+          if (blueprint) byId.set(blueprint.appId, blueprint);
+        });
+        return Array.from(byId.values()).sort((left, right) => {
+          if (left.appId === "document-editor") return -1;
+          if (right.appId === "document-editor") return 1;
+          return String(left.label || left.appId).localeCompare(String(right.label || right.appId));
         });
       }
 
@@ -434,14 +710,14 @@
       }
 
       function listInspectableAppBlueprints() {
-        return Object.values(BLUEPRINTS).map(clone);
+        return buildInspectableBlueprints().map(clone);
       }
 
       function inspectableBlueprintFor(appId) {
         const normalized = normalizeAppId(appId);
-        const direct = BLUEPRINTS[normalized];
+        const direct = buildInspectableBlueprints().find((blueprint) => blueprint.appId === normalized);
         if (direct) return clone(direct);
-        const aliasMatch = Object.values(BLUEPRINTS).find((blueprint) => (blueprint.aliases || []).includes(normalized));
+        const aliasMatch = buildInspectableBlueprints().find((blueprint) => (blueprint.aliases || []).includes(normalized));
         return aliasMatch ? clone(aliasMatch) : null;
       }
 
@@ -487,6 +763,8 @@
         BLUEPRINTS: clone(BLUEPRINTS),
         listInspectableAppBlueprints,
         inspectableBlueprintFor,
+        formPrimitiveGroups,
+        formPrimitiveKindCounts,
         genericAspectIds,
         genericLayoutZones,
         genericDetailGroups,

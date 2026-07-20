@@ -1083,6 +1083,30 @@ def test_mcel_lab_diagnostics_are_collapsed_to_keep_primary_surface_focused() ->
     assert "MCEL_DIAGNOSTICS_OPENED" in ui
     assert ".mcel-lab-diagnostics" in style
     assert ".mcel-lab-diagnostics-actions" in style
+    assert 'id="mcel-lab-diagnostics-slot"' in app
+    assert 'data-mcel-feedback-projection="contract-health"' in app
+    assert ".mcel-lab-diagnostics-slot" in style
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr)) auto" in style
+    assert ".mcel-lab-blueprint-navigation .mcel-lab-blueprint-facts" in style
+
+
+
+
+def test_mcel_lab_blueprint_navigation_contains_visual_bleed_and_overlap_probe() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+    self_diagnosis = (WEB_APP / "scripts" / "mcel-self-diagnosis.js").read_text(encoding="utf-8")
+
+    assert 'class="mcel-lab-shell-card mcel-lab-targets-card"' in app
+    assert 'class="mcel-lab-shell-card mcel-lab-registry-card"' in app
+    assert 'class="mcel-lab-shell-card mcel-lab-aspect-card"' in app
+    assert ".mcel-lab-targets-card .mcel-lab-blueprint-list" in style
+    assert "overflow: hidden auto" in style
+    assert "contain: layout paint" in style
+    assert "detectLayoutCollisions" in self_diagnosis
+    assert "semantic-projection-overflow" in self_diagnosis
+    assert "semantic-layout-overlap-detected" in self_diagnosis
+    assert "layoutCollisions" in self_diagnosis
 
 
 def test_mcel_lab_acid_tests_stress_runtime_editor_serializer_and_evidence_contracts() -> None:
@@ -2739,4 +2763,46 @@ def test_mcel_lab_runtime_fields_written_by_effects_are_owned_and_defaulted() ->
         "Every manifest-owned runtime field should have an initial default runtime value. "
         f"Missing: {sorted(owned_runtime_fields - defaulted_runtime_fields)}"
     )
+
+
+
+def test_mcel_lab_blueprint_shell_uses_content_owned_layout_boundaries() -> None:
+    css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+    diagnosis = (WEB_APP / "scripts" / "mcel-self-diagnosis.js").read_text(encoding="utf-8")
+
+    assert ".mcel-lab-blueprint-list button {" in css
+    assert "grid-template-rows: auto auto;" in css
+    assert "contain: paint;" in css
+    assert ".mcel-lab-blueprint-list button strong," in css
+    assert "white-space: nowrap;" in css
+    assert ".mcel-lab-work-context > summary {" in css
+    assert "white-space: normal;" in css
+    assert ".mcel-lab-selected-element-card {" in css
+    assert "position: relative;" in css
+    assert "contentFitViolations" in diagnosis
+    assert "semantic-content-fit-violation" in diagnosis
+    assert "layout.contentFitProbe" in diagnosis
+
+
+def test_mcel_lab_visual_integrity_baseline_is_runtime_observable() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    diagnosis = (WEB_APP / "scripts" / "mcel-self-diagnosis.js").read_text(encoding="utf-8")
+    registry = (WEB_APP / "scripts" / "mcel-requirements-registry.js").read_text(encoding="utf-8")
+    lab_doc = (ROOT / "pretty_docs" / "mcel-lab-blueprint-studio.md").read_text(encoding="utf-8")
+    language = (ROOT / "pretty_docs" / "mcel-requirements-language.md").read_text(encoding="utf-8")
+
+    assert "mcel-lab.runtime.visual-integrity-baseline" in lab_doc
+    assert "visual-integrity-baseline" in registry
+    assert "visual-integrity-baseline    owned semantic projections remain readable" in language
+    assert 'data-mcel-visual-owner="navigation-context"' in app
+    assert 'data-mcel-visual-owner="selected-aspect-work-area"' in app
+    assert 'data-mcel-visual-owner="selected-element-inspector"' in app
+    assert "detectVisualIntegrityViolations" in diagnosis
+    assert "detectReadableTextIntegrityViolations" in diagnosis
+    assert "semantic-stack-overlap" in diagnosis
+    assert "readable-text-overlap" in diagnosis
+    assert "readable-text-outside-owner" in diagnosis
+    assert "visual-integrity-violation" in diagnosis
+    assert "layout.visualIntegrityProbe" in diagnosis
+    assert "visualIntegrityViolations" in diagnosis
 

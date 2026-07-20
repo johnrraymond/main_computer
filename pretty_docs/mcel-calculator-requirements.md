@@ -95,6 +95,110 @@ verification:
   - tests/test_mcel_documentation.py
 ```
 
+## Semantic app form
+
+Calculator is defined by calculation subjects, deterministic actions, owned compute
+work surfaces, supporting explanation context, feedback about evaluation state,
+and explicit helper transients. Visual arrangement is inferred from those
+semantics; the contract does not require a specific physical slot.
+
+```mcel-form-primitive
+id: calculator.form.subject.calculation-session
+app: calculator
+status: specified
+primitive: subject
+meaning: The active calculation scenario, including expressions, graph inputs, symbolic requests, result history, and explanation context.
+relationships:
+  - Arithmetic expressions, graph inputs, symbolic requests, and result explanations belong to the same calculation session subject.
+  - Deterministic numeric result evidence remains canonical for computed answers.
+  - Model explanations and symbolic evaluations are derived evidence, not silent replacements for computed results.
+constraints:
+  - Calculation identity must remain traceable across evaluate, graph, ask, and symbolic helper actions.
+  - Helper evidence must not mutate the canonical expression or result without an explicit user action.
+  - No calculation subject may imply filesystem, repository, package, or shell mutation.
+```
+
+```mcel-form-primitive
+id: calculator.form.action.evaluate-and-explain
+app: calculator
+status: specified
+primitive: action
+meaning: The user asks Calculator to evaluate expressions, draw graphs, request symbolic results, or explain deterministic output.
+relationships:
+  - Evaluation derives result evidence from the active calculation session.
+  - Graphing derives visual evidence from expression and range state.
+  - Explanation actions must cite or preserve the deterministic result they explain.
+constraints:
+  - Evaluation and graphing stay local and deterministic.
+  - Symbolic/model helpers run only through explicit helper actions.
+  - Failed parsing or evaluation must produce visible feedback instead of mutating unrelated state.
+```
+
+```mcel-form-primitive
+id: calculator.form.work-surface.deterministic-compute
+app: calculator
+status: specified
+primitive: work-surface
+meaning: The primary stable work surface where expression input, numeric result evidence, graph output, and helper results remain tied to the active calculation session.
+relationships:
+  - Enables expression evaluation, graph inspection, sample comparison, symbolic helper use, and result explanation.
+  - Keeps computed result evidence authoritative over helper prose.
+  - Presents derived graph or helper evidence as part of the same calculation task.
+constraints:
+  - The primary compute surface must remain visible and usable while Calculator is active.
+  - Derived helper output must not claim authority over deterministic result evidence.
+  - Transient helper activity must not obscure the calculation path beyond its explicit operation.
+```
+
+```mcel-form-primitive
+id: calculator.form.context.result-evidence
+app: calculator
+status: specified
+primitive: context
+meaning: Supporting context that explains formulas, ranges, history, parse state, graph evidence, and helper outputs for the active calculation session.
+relationships:
+  - Explains why a result, graph, symbolic response, or model explanation belongs to the current calculation.
+  - Connects validation failures to the input or helper action that produced them.
+  - Helps users compare values without changing the calculation subject.
+constraints:
+  - Context must remain subordinate to deterministic result evidence.
+  - Parse and validation context must identify the affected input or operation.
+  - Explanation context must not hide whether the result came from local evaluation, symbolic evaluation, or model help.
+```
+
+```mcel-form-primitive
+id: calculator.form.feedback.validation-and-compute-state
+app: calculator
+status: specified
+primitive: feedback
+meaning: Ambient and noticeable feedback about parse validity, compute success, graph readiness, helper status, and contract health.
+relationships:
+  - Observes evaluation state, validation failures, helper activity, and runtime integrity.
+  - Supports user, developer, and automation audiences without changing the calculation session.
+  - Can be summarized compactly or expanded into findings when investigation is needed.
+constraints:
+  - Feedback must not interrupt ordinary calculation unless an operation fails or becomes unsafe.
+  - Feedback must not cover or replace the primary compute surface.
+  - Feedback must distinguish current active issues from historical or resolved issues.
+```
+
+```mcel-form-primitive
+id: calculator.form.transient.explicit-helper-evaluation
+app: calculator
+status: specified
+primitive: transient
+meaning: Temporary helper activity for symbolic evaluation, model explanation, graph redraw, or validation recovery.
+relationships:
+  - Supports explicit helper actions without becoming the calculation session itself.
+  - May produce derived evidence, receipts, warnings, or recovery instructions.
+  - Ends when the helper action resolves, is dismissed, or is superseded by a new calculation action.
+constraints:
+  - Helper transients require user initiation or a visible lifecycle trigger.
+  - Helper transients must preserve the active calculation subject and deterministic result evidence.
+  - Helper transients must not perform hidden filesystem, repository, network-publish, package, or shell operations.
+```
+
+
 ## Product law
 
 Calculator is not a terminal, notebook, or hidden code runner. It is a deterministic local compute surface with explicit helper lanes.
