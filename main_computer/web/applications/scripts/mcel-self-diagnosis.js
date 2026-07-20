@@ -814,6 +814,97 @@
     return {...bleed, maxBleed};
   }
 
+  function rectFromBox(box) {
+    if (!box?.visible) return null;
+    const left = Number(box.x ?? box.left ?? 0);
+    const top = Number(box.y ?? box.top ?? 0);
+    const right = Number(box.right ?? left + Number(box.width || 0));
+    const bottom = Number(box.bottom ?? top + Number(box.height || 0));
+    if (right <= left || bottom <= top) return null;
+    return {left, top, right, bottom, width: right - left, height: bottom - top};
+  }
+
+  function intersectRects(first, second) {
+    if (!first || !second) return null;
+    const left = Math.max(Number(first.left || 0), Number(second.left || 0));
+    const top = Math.max(Number(first.top || 0), Number(second.top || 0));
+    const right = Math.min(Number(first.right || 0), Number(second.right || 0));
+    const bottom = Math.min(Number(first.bottom || 0), Number(second.bottom || 0));
+    if (right <= left || bottom <= top) return null;
+    return {left, top, right, bottom, width: right - left, height: bottom - top};
+  }
+
+  function rectFromClientBox(el) {
+    if (!isElement(el) || typeof el.getBoundingClientRect !== "function") return null;
+    const rect = el.getBoundingClientRect();
+    const left = Number(rect.left || rect.x || 0);
+    const top = Number(rect.top || rect.y || 0);
+    const right = Number(rect.right || left + Number(rect.width || 0));
+    const bottom = Number(rect.bottom || top + Number(rect.height || 0));
+    if (right <= left || bottom <= top) return null;
+    return {left, top, right, bottom, width: right - left, height: bottom - top};
+  }
+
+  function boxWithRect(box, rect) {
+    if (!box || !rect) {
+      return {...(box || {}), visible: false, width: 0, height: 0, x: 0, y: 0, right: 0, bottom: 0};
+    }
+    return {
+      ...box,
+      visible: Boolean(box.visible) && rect.width > 0 && rect.height > 0,
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      right: Math.round(rect.right),
+      bottom: Math.round(rect.bottom)
+    };
+  }
+
+  function elementClipsPaint(el) {
+    if (!isElement(el)) return false;
+    const style = getComputedStyleSafe(el);
+    const overflow = `${style.overflow || ""} ${style.overflowX || ""} ${style.overflowY || ""}`;
+    return /\b(hidden|clip|auto|scroll)\b/.test(overflow);
+  }
+
+  function clippedPaintRectForElement(el, stopAt = null) {
+    if (!isElement(el)) return null;
+    let clip = {
+      left: 0,
+      top: 0,
+      right: Number(window.innerWidth || 0),
+      bottom: Number(window.innerHeight || 0),
+      width: Number(window.innerWidth || 0),
+      height: Number(window.innerHeight || 0)
+    };
+    if (clip.right <= clip.left || clip.bottom <= clip.top) return null;
+
+    let node = el.parentElement;
+    while (isElement(node)) {
+      if (elementClipsPaint(node)) {
+        const nodeRect = rectFromClientBox(node);
+        clip = intersectRects(clip, nodeRect);
+        if (!clip) return null;
+      }
+      if (node === stopAt) break;
+      node = node.parentElement;
+    }
+    return clip;
+  }
+
+  function clippedPaintBox(el, box, stopAt = null) {
+    if (!isElement(el) || !box?.visible) return {...(box || {}), visible: false, width: 0, height: 0};
+    const rect = intersectRects(rectFromBox(box), clippedPaintRectForElement(el, stopAt));
+    return boxWithRect(box, rect);
+  }
+
+  function clippedRangeBox(el, box, stopAt = null) {
+    if (!isElement(el) || !box?.visible) return {...(box || {}), visible: false, width: 0, height: 0};
+    const rect = intersectRects(rectFromBox(box), clippedPaintRectForElement(el, stopAt));
+    return boxWithRect(box, rect);
+  }
+
   function layoutCollisionCandidateSelector(appId) {
     if (appId === "mcel-lab") {
       return [
@@ -890,25 +981,27 @@
     const collisions = [];
     const ownerBox = computeBox(owner);
     if (!ownerBox.visible) return collisions;
-    const overflow = String(ownerBox.overflow || "");
-    const clipsOverflow = /hidden|clip|auto|scroll/.test(overflow);
+    const ownerClipsPaint = elementClipsPaint(owner);
     const descendants = queryAll(layoutBleedDescendantSelector(context.appId), owner)
       .filter((el) => el !== owner && isElement(el));
     const siblingBoxes = Array.from(owner.parentElement?.children || [])
       .filter((candidate) => candidate !== owner && isElement(candidate))
-      .map((el) => ({el, box: computeBox(el)}))
+      .map((el) => ({el, box: clippedPaintBox(el, computeBox(el), owner.parentElement || null)}))
       .filter((entry) => entry.box.visible);
 
     descendants.forEach((el) => {
-      const childBox = computeBox(el);
+      const rawChildBox = computeBox(el);
+      const childBox = clippedPaintBox(el, rawChildBox, owner);
       if (!childBox.visible || childBox.width < 8 || childBox.height < 8) return;
+
       const bleed = boxBleed(ownerBox, childBox, 6);
-      if (bleed && !clipsOverflow) {
+      if (bleed && !ownerClipsPaint) {
         collisions.push({
           type: "semantic-projection-overflow",
           appId: context.appId || "",
           owner: compactBox(ownerBox),
           child: compactBox(childBox),
+          rawChild: compactBox(rawChildBox),
           bleed,
           blocksPrimarySurface: false
         });
@@ -1164,12 +1257,13 @@
       if (!text) return;
       const rects = textRangesForElement(el);
       rects.slice(0, 4).forEach((rect, index) => {
-        const box = boxFromClientRect(rect, selectorFor(el), {
+        const rawBox = boxFromClientRect(rect, selectorFor(el), {
           text,
           lineIndex: index,
           owner: ownerDescriptor(owner, root)
         });
-        if (box.visible && box.width >= 4 && box.height >= 4) boxes.push({el, owner, box});
+        const box = clippedRangeBox(el, rawBox, root);
+        if (box.visible && box.width >= 4 && box.height >= 4) boxes.push({el, owner, box, rawBox});
       });
     });
     return boxes;

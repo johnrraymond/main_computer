@@ -9438,29 +9438,153 @@ def propose_local_qbft_validator_vote(address: str, add: bool = True) -> dict:
         "add": bool(add),
     }
 
-def ensure_remove_handoff_validator(rpc_url: str, json_rpc_ok: bool) -> bool:
+def request_validator_removal_votes_from_guards(address: str) -> tuple[int, list[dict], list[str]]:
+    attempts = 0
+    responses: list[dict] = []
+    errors: list[str] = []
+    normalized = normalize_eth_address(address)
+    if not normalized:
+        return 0, [], ["invalid validator address"]
+    for guard_url_raw in removal_handoff.get("participant_guard_urls") or []:
+        guard_url = str(guard_url_raw or "").rstrip("/")
+        if not guard_url:
+            continue
+        attempts += 1
+        ok, payload, error = post_json(
+            f"{guard_url}/qbft/propose-validator",
+            {
+                "address": normalized,
+                "add": False,
+                "source": cell_id,
+                "network_key": network_key,
+                "handoff": "remove-node",
+            },
+            timeout=4.0,
+        )
+        responses.append(
+            {
+                "guard_url": guard_url,
+                "ok": bool(ok),
+                "status": str(payload.get("status") or ""),
+                "admitted": bool(payload.get("admitted")),
+                "validators": payload.get("validators") or [],
+                "vote_result": payload.get("vote_result"),
+            }
+        )
+        if not ok:
+            errors.append(f"{guard_url}: {error or payload.get('error') or 'removal vote request failed'}")
+    return attempts, responses[:10], errors[:10]
+
+
+def ensure_remove_handoff_validator(rpc_url: str, json_rpc_ok: bool, block_number: int | None) -> bool:
     if not bool(removal_handoff.get("enabled")):
         state("validator_removal_handoff", desired=False, running=False, status="not-requested", ready=True)
         return True
+
     target = normalize_eth_address(str(removal_handoff.get("target_validator_address") or ""))
     if not target:
         state("validator_removal_handoff", desired=True, running=False, status="missing-target-validator-address", ready=False)
         return False
     if not json_rpc_ok:
-        state("validator_removal_handoff", desired=True, running=False, status="waiting-validator-json-rpc", ready=False, target_validator_address=target)
+        state(
+            "validator_removal_handoff",
+            desired=True,
+            running=False,
+            status="waiting-validator-json-rpc",
+            ready=False,
+            target_validator_address=target,
+        )
         return False
-    result = propose_local_qbft_validator_vote(target, add=False)
-    ready = bool(result.get("ok")) and not bool(result.get("admitted"))
+
+    marker_path = state_root / "qbft" / ".validator-remove-handoff.json"
+    marker: dict = {}
+    try:
+        if marker_path.exists():
+            loaded = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker = loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        marker = {}
+    if normalize_eth_address(str(marker.get("target_validator_address") or "")) != target:
+        marker = {}
+
+    configured_baseline = int(removal_handoff.get("baseline_block_number") or 0)
+    observed_block = int(block_number or 0)
+    baseline_block = int(marker.get("baseline_block_number") or configured_baseline or observed_block or 0)
+    marker["target_validator_address"] = target
+    marker["baseline_block_number"] = baseline_block
+    marker["last_observed_block_number"] = observed_block
+    marker["participant_guard_urls"] = [
+        str(item or "").rstrip("/")
+        for item in (removal_handoff.get("participant_guard_urls") or [])
+        if str(item or "").strip()
+    ]
+
+    validators_ok, validators, validators_error = rpc_qbft_validators(rpc_url, timeout=2.0)
+    target_present = target in {str(item or "").lower() for item in validators}
+    local_vote: dict = {}
+    remote_attempts = 0
+    remote_votes: list[dict] = []
+    remote_errors: list[str] = []
+
+    if not validators_ok:
+        status = "waiting-validator-set"
+        ready = False
+    elif target_present:
+        local_vote = propose_local_qbft_validator_vote(target, add=False)
+        now = time.time()
+        last_remote_vote_at = float(marker.get("last_remote_vote_at") or 0.0)
+        if now - last_remote_vote_at >= 4.0:
+            remote_attempts, remote_votes, remote_errors = request_validator_removal_votes_from_guards(target)
+            marker["last_remote_vote_at"] = now
+            marker["remote_vote_attempts"] = int(marker.get("remote_vote_attempts") or 0) + remote_attempts
+            marker["last_remote_votes"] = remote_votes
+            marker["last_remote_errors"] = remote_errors
+        status = "waiting-validator-set-change"
+        ready = False
+    else:
+        # The validator-set transition itself is not enough. Prove the surviving
+        # set can finalize at least one later block before remove-node deletes the
+        # target service.
+        ready = bool(observed_block > baseline_block)
+        status = "ready" if ready else "waiting-post-removal-block"
+
+    marker["validators"] = validators
+    marker["validators_ok"] = bool(validators_ok)
+    marker["validators_error"] = validators_error
+    marker["target_present"] = bool(target_present)
+    marker["status"] = status
+    marker["ready"] = bool(ready)
+    marker["updated_at"] = time.time()
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker_path.with_suffix(marker_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(marker_path)
+    except Exception:
+        pass
+
     state(
         "validator_removal_handoff",
         desired=True,
-        running=ready,
-        status="ready" if ready else str(result.get("status") or "pending"),
-        ready=ready,
+        running=bool(ready),
+        status=status,
+        ready=bool(ready),
         target_validator_address=target,
-        vote_result=result,
+        target_present=bool(target_present),
+        validators=validators,
+        validators_ok=bool(validators_ok),
+        validators_error=validators_error,
+        baseline_block_number=baseline_block,
+        block_number=observed_block,
+        post_removal_block_advanced=bool(observed_block > baseline_block),
+        local_vote_result=local_vote,
+        remote_vote_attempts=remote_attempts,
+        remote_vote_results=remote_votes,
+        remote_vote_errors=remote_errors,
+        participant_guard_urls=marker.get("participant_guard_urls") or [],
     )
-    return ready
+    return bool(ready)
+
 
 def ensure_joiner_validator_admission(rpc_url: str, key_file: Path, json_rpc_ok: bool, block_number: int | None, peer_count: int | None) -> bool:
     if not existing_network_joiner():
@@ -11445,7 +11569,7 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
     block_production_ok = bool(json_rpc_ok and block_number is not None and int(block_number) > 0)
     is_joiner = existing_network_joiner()
     validator_admitted = ensure_joiner_validator_admission(rpc_url, key_file, json_rpc_ok, block_number, peer_count)
-    validator_removal_ready = ensure_remove_handoff_validator(rpc_url, json_rpc_ok)
+    validator_removal_ready = ensure_remove_handoff_validator(rpc_url, json_rpc_ok, block_number)
     validator_address, validator_address_error = local_validator_address_from_key(key_file)
     if bool(removal_handoff.get("enabled")) and not validator_removal_ready:
         status = "waiting-validator-removal-handoff"
@@ -18457,6 +18581,129 @@ def target_validator_address_from_verify(verify_result: Mapping[str, Any], servi
     return ""
 
 
+def latest_validator_block_number_from_verify(verify_result: Mapping[str, Any]) -> int:
+    """Return the highest live validator block observed by lifecycle verification."""
+    highest = 0
+    for host_entry in verify_result.get("nodes") or []:
+        if not isinstance(host_entry, Mapping):
+            continue
+        for node_entry in host_entry.get("nodes") or []:
+            if not isinstance(node_entry, Mapping):
+                continue
+            internal = node_entry.get("internal_status") if isinstance(node_entry.get("internal_status"), Mapping) else {}
+            functions = internal.get("functions") if isinstance(internal.get("functions"), Mapping) else {}
+            validator = functions.get("validator_rpc") if isinstance(functions.get("validator_rpc"), Mapping) else {}
+            for key in ("block_number", "rpc_block_number", "log_block_number"):
+                try:
+                    highest = max(highest, int(validator.get(key) or 0))
+                except (TypeError, ValueError):
+                    continue
+    return highest
+
+
+def removal_handoff_pending_details(verify_result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return exact in-progress validator-removal states observed by lifecycle verification."""
+    details: list[dict[str, Any]] = []
+    for host_entry in verify_result.get("nodes") or []:
+        if not isinstance(host_entry, Mapping):
+            continue
+        for node_entry in host_entry.get("nodes") or []:
+            if not isinstance(node_entry, Mapping):
+                continue
+            service_name = str(node_entry.get("service_name") or "").strip()
+            internal = node_entry.get("internal_status") if isinstance(node_entry.get("internal_status"), Mapping) else {}
+            functions = internal.get("functions") if isinstance(internal.get("functions"), Mapping) else {}
+            validator = functions.get("validator_rpc") if isinstance(functions.get("validator_rpc"), Mapping) else {}
+            removal = (
+                functions.get("validator_removal_handoff")
+                if isinstance(functions.get("validator_removal_handoff"), Mapping)
+                else {}
+            )
+            foundationdb = functions.get("foundationdb") if isinstance(functions.get("foundationdb"), Mapping) else {}
+            if (
+                service_name
+                and str(validator.get("status") or "").strip() == "waiting-validator-removal-handoff"
+                and bool(removal.get("desired"))
+                and not bool(removal.get("ready"))
+                and bool(validator.get("running"))
+                and bool(validator.get("json_rpc_ok") or validator.get("rpc_http_ok"))
+                and int(validator.get("block_number") or 0) > 0
+                and str(validator.get("validator_address") or "").strip()
+                and str(removal.get("target_validator_address") or "").strip()
+                and str(foundationdb.get("status") or "").strip() == "running"
+                and bool(foundationdb.get("running"))
+            ):
+                details.append(
+                    {
+                        "service_name": service_name,
+                        "host": str(node_entry.get("host") or host_entry.get("host") or ""),
+                        "validator_address": str(validator.get("validator_address") or "").strip(),
+                        "target_validator_address": str(removal.get("target_validator_address") or "").strip(),
+                        "validator_status": str(validator.get("status") or "").strip(),
+                        "removal_status": str(removal.get("status") or "").strip(),
+                        "block_number": validator.get("block_number"),
+                    }
+                )
+    return details
+
+def resumable_remove_preverify(
+    preverify: Mapping[str, Any],
+    target_verify: Mapping[str, Any],
+    *,
+    target_service_name: str,
+) -> dict[str, Any] | None:
+    """Convert only an exact, matching in-progress removal handoff into a resumable preflight."""
+    initial_errors = [
+        dict(item)
+        for item in (preverify.get("errors") or [])
+        if isinstance(item, Mapping) and str(item.get("service_name") or "").strip()
+    ]
+    initial_pending = removal_handoff_pending_details(preverify)
+    initial_pending_names = {str(item.get("service_name") or "") for item in initial_pending}
+    initial_error_names = {str(item.get("service_name") or "") for item in initial_errors}
+    if not initial_errors or not initial_error_names.issubset(initial_pending_names):
+        return None
+
+    target_address = target_validator_address_from_verify(target_verify, target_service_name)
+    if not target_address:
+        return None
+
+    target_errors = [
+        dict(item)
+        for item in (target_verify.get("errors") or [])
+        if isinstance(item, Mapping) and str(item.get("service_name") or "").strip()
+    ]
+    target_pending = removal_handoff_pending_details(target_verify)
+    target_pending_names = {str(item.get("service_name") or "") for item in target_pending}
+    target_error_names = {str(item.get("service_name") or "") for item in target_errors}
+    if target_verify.get("ok") is not True:
+        if not target_errors or not target_error_names.issubset(target_pending_names):
+            return None
+
+    normalized_target = target_address.lower()
+    pending = initial_pending + target_pending
+    mismatched = [
+        item
+        for item in pending
+        if str(item.get("target_validator_address") or "").strip().lower() != normalized_target
+    ]
+    if mismatched:
+        return None
+
+    merged = dict(preverify)
+    merged["ok"] = True
+    merged["failed_fast"] = False
+    merged["reason"] = "existing matching validator-removal handoff detected; resuming safely"
+    merged["resume_detected"] = True
+    merged["resume_pending_services"] = sorted(
+        {str(item.get("service_name") or "") for item in pending if str(item.get("service_name") or "")}
+    )
+    merged["target_verify"] = dict(target_verify)
+    merged["errors_before_resume"] = initial_errors
+    merged["errors"] = []
+    merged["nodes"] = list(preverify.get("nodes") or []) + list(target_verify.get("nodes") or [])
+    return merged
+
 def cleanup_empty_network_runtime_all_hosts(
     plan: HeadPlan,
     network_key: str,
@@ -18555,18 +18802,39 @@ def prepare_remove_survivor_handoff(
             f"Cannot safely remove {target_name}: no survivor FoundationDB endpoints were discovered."
         )
 
+    current_nodes = sorted([dict(item) for item in all_nodes], key=network_super_node_sort_key)
+    participant_guard_urls = sorted(
+        {
+            str(item.get("guard_url") or "").rstrip("/")
+            for item in current_nodes
+            if str(item.get("guard_url") or "").strip()
+        }
+    )
+    participant_services = [
+        str(item.get("service_name") or "").strip()
+        for item in current_nodes
+        if str(item.get("service_name") or "").strip()
+    ]
+    baseline_block_number = latest_validator_block_number_from_verify(preverify)
     handoff = {
         "enabled": True,
         "target_service_name": target_name,
         "target_validator_address": target_validator,
         "target_fdb_endpoint": target_fdb_endpoint,
         "survivor_fdb_endpoints": survivor_fdb_endpoints,
+        "participant_guard_urls": participant_guard_urls,
+        "participant_services": participant_services,
+        "baseline_block_number": baseline_block_number,
         "requested_at": time.time(),
     }
-    current_nodes = sorted([dict(item) for item in all_nodes], key=network_super_node_sort_key)
     services: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    prepared_services: list[dict[str, Any]] = []
 
+    # Phase 1: update and deploy every participant before waiting on any one
+    # service. QBFT removal needs the voting services to observe the same
+    # handoff; waiting after the first deploy can deadlock before peers receive
+    # the manifest.
     for node in current_nodes:
         node_name = str(node.get("service_name") or "")
         node_head = head_for_coolify_server(plan, str(node.get("coolify_server") or ""))
@@ -18600,7 +18868,6 @@ def prepare_remove_survivor_handoff(
         )
         manifest["deployment_id"] = "dry-run" if getattr(args, "dry_run", False) else new_super_deployment_id()
         manifest["removal_handoff"] = dict(handoff)
-
         node_args = argparse.Namespace(**vars(args))
 
         if getattr(args, "dry_run", False):
@@ -18664,29 +18931,54 @@ def prepare_remove_survivor_handoff(
             force=True,
             tried=tried,
         )
-        wait_result = wait_for_add_node_ready(
-            plan,
-            node_head,
-            manifest,
-            client,
-            node_args,
-            context,
-            tried,
-            service_uuid=service_uuid,
-        )
         entry = {
             "service_name": node_name,
             "host": node_head.coolify_server,
             "target": is_target,
             "service_uuid": service_uuid,
             "service_action": action,
-            "ok": bool(wait_result.get("ready")),
-            "reason": wait_result.get("reason"),
-            "deploy_wait": wait_result,
+            "ok": False,
+            "reason": "deployed; waiting for shared removal handoff",
+            "deploy_wait": {},
             "private_state_updates": private_updates,
             "runtime_image": manifest_image,
+            "image_prefunk": {
+                "enabled": False,
+                "reason": "remove-node preserved the live image and did not invoke Stage 1/2",
+            },
         }
         services.append(entry)
+        prepared_services.append(
+            {
+                "entry": entry,
+                "head": node_head,
+                "manifest": manifest,
+                "client": client,
+                "args": node_args,
+                "context": context,
+                "tried": tried,
+                "service_uuid": service_uuid,
+            }
+        )
+
+    # Phase 2: all participants now have the same handoff request, so each can
+    # vote/converge while we wait. This also makes a rerun idempotently resume a
+    # handoff that a prior invocation left in progress.
+    for prepared in prepared_services:
+        entry = prepared["entry"]
+        wait_result = wait_for_add_node_ready(
+            plan,
+            prepared["head"],
+            prepared["manifest"],
+            prepared["client"],
+            prepared["args"],
+            prepared["context"],
+            prepared["tried"],
+            service_uuid=prepared["service_uuid"],
+        )
+        entry["ok"] = bool(wait_result.get("ready"))
+        entry["reason"] = wait_result.get("reason")
+        entry["deploy_wait"] = wait_result
         if not entry["ok"]:
             failures.append(entry)
             break
@@ -18701,6 +18993,7 @@ def prepare_remove_survivor_handoff(
         "survivor_fdb_endpoints": survivor_fdb_endpoints,
         "services": services,
         "errors": failures,
+        "resumed": bool(preverify.get("resume_detected")),
         "public_guard_routes": False,
         "ssh_used": False,
         "direct_vpn_used": False,
@@ -18888,10 +19181,45 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             verify_routes=False,
         )
         if predelete_verify.get("ok") is not True:
-            raise AllfatherControlError(
-                f"Pre-delete full-stack verification failed; {service_name} was not deleted: "
-                f"{predelete_verify.get('reason') or 'unknown verification failure'}"
-            )
+            pending = removal_handoff_pending_details(predelete_verify)
+            if pending:
+                operator_log(
+                    args,
+                    "remove-handoff: existing in-progress validator-removal handoff detected; "
+                    f"verifying target={service_name} so the operation can resume idempotently",
+                )
+                target_verify = lifecycle_verify_nodes(
+                    plan,
+                    args,
+                    network_key,
+                    [target_node],
+                    inventory_before,
+                    tried_by_host,
+                    verify_routes=False,
+                )
+                resumed_verify = resumable_remove_preverify(
+                    predelete_verify,
+                    target_verify,
+                    target_service_name=service_name,
+                )
+                if resumed_verify is not None:
+                    predelete_verify = resumed_verify
+                    operator_log(
+                        args,
+                        "remove-handoff: matching prior handoff confirmed; "
+                        f"resuming services={','.join(predelete_verify.get('resume_pending_services') or [])}",
+                    )
+                else:
+                    raise AllfatherControlError(
+                        f"Pre-delete full-stack verification failed; {service_name} was not deleted. "
+                        "An in-progress validator-removal handoff was observed, but it did not match the "
+                        f"current target safely: {predelete_verify.get('reason') or 'unknown verification failure'}"
+                    )
+            else:
+                raise AllfatherControlError(
+                    f"Pre-delete full-stack verification failed; {service_name} was not deleted: "
+                    f"{predelete_verify.get('reason') or 'unknown verification failure'}"
+                )
         survivor_handoff = prepare_remove_survivor_handoff(
             plan,
             args,

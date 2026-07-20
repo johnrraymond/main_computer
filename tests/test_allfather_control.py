@@ -4667,3 +4667,159 @@ def test_remove_manifest_pins_live_image_and_disables_build_fallback() -> None:
     assert manifest["runtime_image"]["service_build_disabled"] is True
     assert manifest["bootstrap"]["bootstrap_image_fallback"] is False
     assert manifest["safety"]["remove_node_image_rebuild_disabled"] is True
+
+def test_generated_super_runtime_removal_handoff_votes_all_participants_and_requires_new_block() -> None:
+    script = control.super_server_command_script()
+
+    assert 'removal_handoff.get("participant_guard_urls")' in script
+    assert 'f"{guard_url}/qbft/propose-validator"' in script
+    assert '"add": False' in script
+    assert 'status = "waiting-validator-set-change"' in script
+    assert 'status = "ready" if ready else "waiting-post-removal-block"' in script
+    assert 'ready = bool(observed_block > baseline_block)' in script
+    compile(script, "<allfather-super-removal-convergence>", "exec")
+
+
+def test_remove_handoff_deploys_every_participant_before_waiting() -> None:
+    source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+    start = source.index("def prepare_remove_survivor_handoff(")
+    end = source.index("\ndef remove_node(", start)
+    function_source = source[start:end]
+
+    deploy_phase = function_source.index("# Phase 1: update and deploy every participant")
+    trigger = function_source.index("trigger_deploy_service(", deploy_phase)
+    wait_phase = function_source.index("# Phase 2: all participants now have the same handoff request")
+    wait = function_source.index("wait_for_add_node_ready(", wait_phase)
+
+    assert trigger < wait_phase < wait
+    assert '"participant_guard_urls": participant_guard_urls' in function_source
+    assert '"baseline_block_number": baseline_block_number' in function_source
+
+
+def _removal_verify_node(
+    service_name: str,
+    validator_address: str,
+    target_validator_address: str,
+    *,
+    pending: bool,
+    block_number: int = 2926,
+) -> dict[str, object]:
+    validator_status = "waiting-validator-removal-handoff" if pending else "running"
+    return {
+        "host": "coolify-a",
+        "nodes": [
+            {
+                "service_name": service_name,
+                "host": "coolify-a",
+                "internal_status": {
+                    "functions": {
+                        "foundationdb": {
+                            "running": True,
+                            "status": "running",
+                        },
+                        "validator_rpc": {
+                            "running": True,
+                            "status": validator_status,
+                            "json_rpc_ok": True,
+                            "rpc_http_ok": True,
+                            "block_number": block_number,
+                            "validator_address": validator_address,
+                        },
+                        "validator_removal_handoff": {
+                            "desired": pending,
+                            "ready": not pending,
+                            "status": "waiting-validator-set-change" if pending else "not-requested",
+                            "target_validator_address": target_validator_address if pending else "",
+                        },
+                    }
+                },
+            }
+        ],
+    }
+
+
+def test_resumable_remove_preverify_accepts_only_matching_live_handoff() -> None:
+    target_address = "0x" + "22" * 20
+    survivor_address = "0x" + "11" * 20
+    preverify = {
+        "ok": False,
+        "reason": "validator_rpc not healthy for hub propagation: waiting-validator-removal-handoff",
+        "failed_fast": True,
+        "errors": [
+            {
+                "service_name": "mainneta-super1",
+                "error": "waiting-validator-removal-handoff",
+            }
+        ],
+        "nodes": [
+            _removal_verify_node(
+                "mainneta-super1",
+                survivor_address,
+                target_address,
+                pending=True,
+            )
+        ],
+    }
+    target_verify = {
+        "ok": True,
+        "errors": [],
+        "nodes": [
+            _removal_verify_node(
+                "mainneta-super2",
+                target_address,
+                target_address,
+                pending=False,
+            )
+        ],
+    }
+
+    resumed = control.resumable_remove_preverify(
+        preverify,
+        target_verify,
+        target_service_name="mainneta-super2",
+    )
+
+    assert resumed is not None
+    assert resumed["ok"] is True
+    assert resumed["resume_detected"] is True
+    assert resumed["resume_pending_services"] == ["mainneta-super1"]
+
+
+def test_resumable_remove_preverify_rejects_mismatched_target() -> None:
+    actual_target = "0x" + "22" * 20
+    stale_target = "0x" + "33" * 20
+    survivor_address = "0x" + "11" * 20
+    preverify = {
+        "ok": False,
+        "errors": [{"service_name": "mainneta-super1", "error": "waiting-validator-removal-handoff"}],
+        "nodes": [
+            _removal_verify_node(
+                "mainneta-super1",
+                survivor_address,
+                stale_target,
+                pending=True,
+            )
+        ],
+    }
+    target_verify = {
+        "ok": True,
+        "errors": [],
+        "nodes": [
+            _removal_verify_node(
+                "mainneta-super2",
+                actual_target,
+                actual_target,
+                pending=False,
+            )
+        ],
+    }
+
+    assert (
+        control.resumable_remove_preverify(
+            preverify,
+            target_verify,
+            target_service_name="mainneta-super2",
+        )
+        is None
+    )
+

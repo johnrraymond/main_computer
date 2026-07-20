@@ -272,6 +272,8 @@ def test_report_summary_and_markdown(flog):
     assert report["kind"] == "mcel.flog.runtime-contracts.report"
     assert report["viewport"] == {"width": 1920, "height": 1200}
     assert report["summary"]["status"] == "pass"
+    assert report["results"][0]["scenarioId"] == "calculator.default-load"
+    assert report["results"][0]["status"] == "pass"
 
     markdown = flog.render_markdown(report)
 
@@ -279,3 +281,48 @@ def test_report_summary_and_markdown(flog):
     assert "calculator.default-load" in markdown
     assert "1920x1200" in markdown
     assert "window.MCEL.diagnose" in markdown
+
+
+def test_report_results_surface_failed_visual_evidence(flog):
+    scenario = flog.scenario_for_app("mcel-lab")
+    diagnosis = passing_diagnosis("mcel-lab")
+    diagnosis["verdict"] = "fail"
+    diagnosis["summary"]["critical"] = 1
+    diagnosis["findings"] = [
+        {
+            "severity": "critical",
+            "code": "visual-integrity-violation",
+            "finding": "Rendered semantic surfaces collide.",
+        }
+    ]
+    diagnosis["measurements"]["visualIntegrityViolations"] = [
+        {
+            "type": "readable-text-outside-owner",
+            "owner": {"selector": "details.mcel-lab-work-context"},
+        }
+    ]
+
+    trial = {
+        "scenarioId": scenario.id,
+        "app": scenario.app,
+        "route": scenario.route,
+        "diagnosis": flog.compact_diagnosis(diagnosis),
+        "classification": flog.classify_diagnosis(diagnosis),
+    }
+    report = flog.build_report(
+        repo=REPO_ROOT,
+        base_url="http://127.0.0.1:8765",
+        scenarios=[scenario],
+        trials=[trial],
+        viewport={"width": 1920, "height": 1200},
+    )
+
+    assert report["summary"]["status"] == "fail"
+    assert report["results"][0]["status"] == "fail"
+    assert report["results"][0]["issueEvidence"][0]["code"] == "visual-integrity-violation"
+    assert report["results"][0]["visualIntegrityViolations"][0]["type"] == "readable-text-outside-owner"
+
+    markdown = flog.render_markdown(report)
+    assert "Failed scenario evidence" in markdown
+    assert "visual-integrity-violation" in markdown
+    assert "details.mcel-lab-work-context" in markdown

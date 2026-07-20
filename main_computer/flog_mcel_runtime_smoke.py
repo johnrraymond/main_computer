@@ -333,6 +333,40 @@ def classify_diagnosis(
     }
 
 
+def _evidence_payload_for_trial(trial: dict[str, Any]) -> dict[str, Any]:
+    widget = trial.get("widgetPayload") if isinstance(trial.get("widgetPayload"), dict) else {}
+    diagnosis = trial.get("diagnosis") if isinstance(trial.get("diagnosis"), dict) else {}
+    return widget or diagnosis
+
+
+def trial_result_summary(trial: dict[str, Any], *, evidence_limit: int = 5) -> dict[str, Any]:
+    classification = trial.get("classification") if isinstance(trial.get("classification"), dict) else {}
+    evidence = _evidence_payload_for_trial(trial)
+    measurements = evidence.get("measurements") if isinstance(evidence.get("measurements"), dict) else {}
+    issues = evidence.get("issues")
+    if not isinstance(issues, list):
+        current = evidence.get("current") if isinstance(evidence.get("current"), dict) else {}
+        issues = current.get("issues") if isinstance(current.get("issues"), list) else evidence.get("findings")
+    if not isinstance(issues, list):
+        issues = []
+
+    return {
+        "scenarioId": trial.get("scenarioId") or trial.get("id") or "",
+        "app": trial.get("app") or "",
+        "route": trial.get("route") or "",
+        "url": trial.get("url") or "",
+        "status": classification.get("status") or "unknown",
+        "counts": classification.get("counts") or {},
+        "failures": classification.get("failures") or [],
+        "warnings": classification.get("warnings") or [],
+        "primarySurface": classification.get("primarySurface") or {},
+        "issueEvidence": issues[:evidence_limit],
+        "visualIntegrityViolations": (measurements.get("visualIntegrityViolations") or [])[:evidence_limit],
+        "layoutCollisions": (measurements.get("layoutCollisions") or [])[:evidence_limit],
+        "contentFitViolations": (measurements.get("contentFitViolations") or [])[:evidence_limit],
+    }
+
+
 def compact_diagnosis(diagnosis: dict[str, Any]) -> dict[str, Any]:
     findings = diagnosis.get("findings") if isinstance(diagnosis, dict) else []
     if not isinstance(findings, list):
@@ -603,6 +637,7 @@ def build_report(
         },
         "scenarios": [scenario.to_dict() for scenario in scenarios],
         "summary": summarize_trials(trials),
+        "results": [trial_result_summary(trial) for trial in trials],
         "trials": trials,
     }
 
@@ -641,6 +676,38 @@ def render_markdown(report: dict[str, Any]) -> str:
                 notes=notes.replace("|", "\\|"),
             )
         )
+
+    failed_results = [result for result in report.get("results") or [] if result.get("status") == "fail"]
+    if failed_results:
+        lines.extend(["", "## Failed scenario evidence", ""])
+        for result in failed_results:
+            lines.append(f"### {result.get('scenarioId', '')}")
+            for reason in result.get("failures") or []:
+                lines.append(f"- Failure: {reason}")
+            for issue in result.get("issueEvidence") or []:
+                code = issue.get("code", "") if isinstance(issue, dict) else ""
+                finding = issue.get("finding", issue) if isinstance(issue, dict) else issue
+                finding_text = str(finding).replace("|", "\\|")
+                lines.append(f"- Issue: `{code}` {finding_text}")
+            visual = result.get("visualIntegrityViolations") or []
+            if visual:
+                lines.append(f"- Visual integrity evidence: {len(visual)} sampled violation(s)")
+                for item in visual[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    owner = item.get("owner") or {}
+                    selector = owner.get("selector") if isinstance(owner, dict) else ""
+                    lines.append(f"  - `{item.get('type', '')}` owner `{selector}`")
+            collisions = result.get("layoutCollisions") or []
+            if collisions:
+                lines.append(f"- Layout collision evidence: {len(collisions)} sampled collision(s)")
+                for item in collisions[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    owner = item.get("owner") or {}
+                    selector = owner.get("selector") if isinstance(owner, dict) else item.get("container", "")
+                    lines.append(f"  - `{item.get('type', '')}` owner `{selector}`")
+            lines.append("")
 
     lines.extend(
         [
