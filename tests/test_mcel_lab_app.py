@@ -1107,6 +1107,8 @@ def test_mcel_lab_blueprint_navigation_contains_visual_bleed_and_overlap_probe()
     assert "semantic-projection-overflow" in self_diagnosis
     assert "semantic-layout-overlap-detected" in self_diagnosis
     assert "layoutCollisions" in self_diagnosis
+    assert "rawChild" in self_diagnosis
+    assert "Compare the painted fragment, not the raw scroll/layout box" in self_diagnosis
 
 
 def test_mcel_lab_acid_tests_stress_runtime_editor_serializer_and_evidence_contracts() -> None:
@@ -2802,6 +2804,7 @@ def test_mcel_lab_visual_integrity_baseline_is_runtime_observable() -> None:
     assert "semantic-stack-overlap" in diagnosis
     assert "readable-text-overlap" in diagnosis
     assert "readable-text-outside-owner" in diagnosis
+    assert "clippedRangeBox(el, rawBox, owner.parentElement || root)" in diagnosis
     assert "visual-integrity-violation" in diagnosis
     assert "layout.visualIntegrityProbe" in diagnosis
     assert "visualIntegrityViolations" in diagnosis

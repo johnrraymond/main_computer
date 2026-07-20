@@ -4680,20 +4680,48 @@ def test_generated_super_runtime_removal_handoff_votes_all_participants_and_requ
     compile(script, "<allfather-super-removal-convergence>", "exec")
 
 
-def test_remove_handoff_deploys_every_participant_before_waiting() -> None:
+def test_remove_handoff_converges_live_qbft_before_any_super_redeploy() -> None:
     source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
     start = source.index("def prepare_remove_survivor_handoff(")
     end = source.index("\ndef remove_node(", start)
     function_source = source[start:end]
 
-    deploy_phase = function_source.index("# Phase 1: update and deploy every participant")
-    trigger = function_source.index("trigger_deploy_service(", deploy_phase)
-    wait_phase = function_source.index("# Phase 2: all participants now have the same handoff request")
-    wait = function_source.index("wait_for_add_node_ready(", wait_phase)
+    live_vote = function_source.index("run_live_qbft_remove_handoff(")
+    convergence_gate = function_source.index('if live_qbft.get("ok") is not True')
+    survivor_loop = function_source.index("for index, node in enumerate(survivor_nodes):")
+    redeploy = function_source.index("sync_super_node_service(", survivor_loop)
 
-    assert trigger < wait_phase < wait
+    assert live_vote < convergence_gate < survivor_loop < redeploy
+    assert "for node in current_nodes:" not in function_source
+    assert '"target_redeployed": False' in function_source
     assert '"participant_guard_urls": participant_guard_urls' in function_source
     assert '"baseline_block_number": baseline_block_number' in function_source
+
+
+def test_head_agent_live_qbft_remove_uses_running_guard_rpc_and_callback() -> None:
+    script = control.head_server_command_script()
+
+    assert 'MC_ALLFATHER_QBFT_REMOVE_REQUEST_B64' in script
+    assert 'ALLFATHER_QBFT_REMOVE_RESULT_B64:' in script
+    assert 'f"{clean}/qbft/propose-validator"' in script
+    assert '"add": False' in script
+    assert '"handoff": "remove-node-live-rpc"' in script
+    assert '"waiting-validator-set-change"' in script
+    assert '"waiting-post-removal-block"' in script
+    assert '"post_removal_block_advanced"' in script
+    compile(script, "<allfather-head-live-qbft-remove>", "exec")
+
+
+def test_remove_handoff_does_not_redeploy_target_service() -> None:
+    source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+    start = source.index("def prepare_remove_survivor_handoff(")
+    end = source.index("\ndef remove_node(", start)
+    function_source = source[start:end]
+
+    assert "for index, node in enumerate(survivor_nodes):" in function_source
+    assert "for node in current_nodes:" not in function_source
+    assert '"target": False' in function_source
+    assert '"target_redeployed": False' in function_source
 
 
 def _removal_verify_node(

@@ -68,6 +68,7 @@ DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S = 6.0
 DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 RUNTIME_CLEANUP_CALLBACK_MARKER = "ALLFATHER_RUNTIME_CLEANUP_RESULT_B64:"
+QBFT_REMOVE_CALLBACK_MARKER = "ALLFATHER_QBFT_REMOVE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
 DEFAULT_ALLFATHER_IMAGE_CACHE_ROOT = "/data/main-computer/allfather/image-cache"
 DEFAULT_SUPER_BASE_SOURCE_IMAGE = "hyperledger/besu:latest"
@@ -1263,6 +1264,7 @@ CALLBACK_SERVICE_UUID = os.environ.get("MC_ALLFATHER_AGENT_CALLBACK_SERVICE_UUID
 CALLBACK_INTERVAL_S = float(os.environ.get("MC_ALLFATHER_AGENT_CALLBACK_INTERVAL_S", "15"))
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 RUNTIME_CLEANUP_CALLBACK_MARKER = "ALLFATHER_RUNTIME_CLEANUP_RESULT_B64:"
+QBFT_REMOVE_CALLBACK_MARKER = "ALLFATHER_QBFT_REMOVE_RESULT_B64:"
 TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
 HUB_ADMIN_SYNC_CALLBACK_MARKER = "ALLFATHER_HUB_ADMIN_SYNC_RESULT_B64:"
 CONTRACT_DEPLOY_CALLBACK_MARKER = "ALLFATHER_CONTRACT_DEPLOY_RESULT_B64:"
@@ -1314,6 +1316,7 @@ def read_b64_env(name: str) -> str:
 FULL_HUB_RUNTIME_DIAG_REQUEST_B64 = read_b64_env("MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64")
 FULLHUB_IMAGE_BUILD_REQUEST_B64 = read_b64_env("MC_ALLFATHER_FULLHUB_IMAGE_BUILD_REQUEST_B64")
 RUNTIME_CLEANUP_REQUEST_B64 = os.environ.get("MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64", "")
+QBFT_REMOVE_REQUEST_B64 = os.environ.get("MC_ALLFATHER_QBFT_REMOVE_REQUEST_B64", "")
 TRAEFIK_PROPAGATE_REQUEST_B64 = os.environ.get("MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64", "")
 HUB_ADMIN_SYNC_REQUEST_B64 = os.environ.get("MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64", "")
 SUPERNODES_ROOT = Path(os.environ.get("MC_ALLFATHER_SUPERNODES_ROOT", "/host-supernodes"))
@@ -1331,6 +1334,13 @@ LATEST_PROBE = {
     "updated_at": None,
 }
 LATEST_CLEANUP = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "status": "not-requested",
+    "phase": "not-requested",
+    "updated_at": None,
+}
+LATEST_QBFT_REMOVE = {
     "ok": False,
     "service": "main-computer-allfather-host-agent",
     "status": "not-requested",
@@ -1388,6 +1398,9 @@ if not isinstance(TARGETS, list):
 CLEANUP_REQUEST = decode_json_b64(RUNTIME_CLEANUP_REQUEST_B64, {})
 if not isinstance(CLEANUP_REQUEST, dict):
     CLEANUP_REQUEST = {}
+QBFT_REMOVE_REQUEST = decode_json_b64(QBFT_REMOVE_REQUEST_B64, {})
+if not isinstance(QBFT_REMOVE_REQUEST, dict):
+    QBFT_REMOVE_REQUEST = {}
 TRAEFIK_PROPAGATE_REQUEST = decode_json_b64(TRAEFIK_PROPAGATE_REQUEST_B64, {})
 if not isinstance(TRAEFIK_PROPAGATE_REQUEST, dict):
     TRAEFIK_PROPAGATE_REQUEST = {}
@@ -1557,6 +1570,209 @@ def fetch_json(url: str) -> dict:
         payload.setdefault("url", url)
         return payload
     return {"ok": False, "url": url, "error": "json payload was not an object"}
+
+
+def post_json(url: str, payload: dict) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT_S) as response:
+            raw = response.read()
+    except Exception as exc:
+        return {"ok": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "url": url, "error": f"invalid-json: {type(exc).__name__}: {exc}"}
+    if not isinstance(decoded, dict):
+        return {"ok": False, "url": url, "error": "json payload was not an object"}
+    decoded.setdefault("url", url)
+    return decoded
+
+
+def normalize_eth_address(value: str) -> str:
+    clean = str(value or "").strip().lower()
+    if len(clean) == 42 and clean.startswith("0x") and all(ch in "0123456789abcdef" for ch in clean[2:]):
+        return clean
+    return ""
+
+
+def qbft_remove_participant_status(guard_url: str, target: str) -> dict:
+    clean = str(guard_url or "").rstrip("/")
+    vote = post_json(
+        f"{clean}/qbft/propose-validator",
+        {
+            "address": target,
+            "add": False,
+            "source": CELL_ID,
+            "network_key": str(QBFT_REMOVE_REQUEST.get("network_key") or ""),
+            "handoff": "remove-node-live-rpc",
+            "request_id": str(QBFT_REMOVE_REQUEST.get("request_id") or ""),
+        },
+    )
+    status_payload = fetch_json(f"{clean}/status")
+    functions = status_payload.get("functions") if isinstance(status_payload.get("functions"), dict) else {}
+    validator = functions.get("validator_rpc") if isinstance(functions.get("validator_rpc"), dict) else {}
+    validators = vote.get("validators") if isinstance(vote.get("validators"), list) else []
+    validators = [normalize_eth_address(item) for item in validators]
+    validators = [item for item in validators if item]
+    block_number = 0
+    for candidate in (
+        validator.get("block_number"),
+        validator.get("rpc_block_number"),
+        validator.get("log_block_number"),
+    ):
+        try:
+            block_number = max(block_number, int(candidate or 0))
+        except Exception:
+            pass
+    return {
+        "guard_url": clean,
+        "ok": bool(vote.get("ok")) and bool(status_payload.get("ok")),
+        "vote_ok": bool(vote.get("ok")),
+        "vote_status": str(vote.get("status") or ""),
+        "vote_result": vote.get("vote_result"),
+        "validators": validators,
+        "target_present": target in set(validators),
+        "status_ok": bool(status_payload.get("ok")),
+        "validator_running": bool(validator.get("running")),
+        "json_rpc_ok": bool(validator.get("json_rpc_ok") or validator.get("rpc_http_ok")),
+        "block_number": block_number,
+        "peer_count": validator.get("peer_count"),
+        "error": str(vote.get("error") or status_payload.get("error") or ""),
+    }
+
+
+def initial_qbft_remove_state() -> dict:
+    if not QBFT_REMOVE_REQUEST:
+        return {
+            "ok": False,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": None,
+        }
+    return {
+        "ok": False,
+        "service": "allfather-qbft-live-removal",
+        "status": "pending",
+        "phase": "pending",
+        "request_id": str(QBFT_REMOVE_REQUEST.get("request_id") or ""),
+        "network_key": str(QBFT_REMOVE_REQUEST.get("network_key") or ""),
+        "target_service_name": str(QBFT_REMOVE_REQUEST.get("target_service_name") or ""),
+        "target_validator_address": normalize_eth_address(QBFT_REMOVE_REQUEST.get("target_validator_address") or ""),
+        "baseline_block_number": int(QBFT_REMOVE_REQUEST.get("baseline_block_number") or 0),
+        "participant_guard_urls": [
+            str(item or "").rstrip("/")
+            for item in (QBFT_REMOVE_REQUEST.get("participant_guard_urls") or [])
+            if str(item or "").strip()
+        ],
+        "participants": [],
+        "reason": "live QBFT validator-removal request accepted; validators will not be restarted",
+        "updated_at": time.time(),
+    }
+
+
+LATEST_QBFT_REMOVE = initial_qbft_remove_state()
+
+
+def qbft_remove_thread() -> None:
+    global LATEST_QBFT_REMOVE
+    base = initial_qbft_remove_state()
+    request_id = str(base.get("request_id") or "")
+    target = normalize_eth_address(base.get("target_validator_address") or "")
+    guard_urls = list(base.get("participant_guard_urls") or [])
+    baseline = int(base.get("baseline_block_number") or 0)
+    wait_s = max(10.0, float(QBFT_REMOVE_REQUEST.get("wait_s") or 300.0))
+    poll_s = max(1.0, float(QBFT_REMOVE_REQUEST.get("poll_s") or 4.0))
+    if not request_id or not target or not guard_urls:
+        base.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "phase": "failed",
+                "error": "QBFT removal request requires request_id, target validator address, and participant guard URLs",
+                "updated_at": time.time(),
+            }
+        )
+        LATEST_QBFT_REMOVE = base
+        publish_to_coolify_metadata()
+        return
+
+    deadline = time.time() + wait_s
+    target_absent_observed_at_block = 0
+    while True:
+        participants = [qbft_remove_participant_status(url, target) for url in guard_urls]
+        reachable = [item for item in participants if item.get("status_ok") and item.get("json_rpc_ok")]
+        validators_observed = [item for item in reachable if item.get("validators")]
+        target_present = any(bool(item.get("target_present")) for item in validators_observed)
+        all_absent = bool(validators_observed) and len(validators_observed) == len(guard_urls) and not target_present
+        max_block = max([int(item.get("block_number") or 0) for item in reachable] or [0])
+        min_block = min([int(item.get("block_number") or 0) for item in reachable] or [0])
+        if all_absent and not target_absent_observed_at_block:
+            target_absent_observed_at_block = max_block
+        post_removal_block = bool(
+            all_absent
+            and max_block > max(baseline, target_absent_observed_at_block)
+        )
+        if all_absent and max_block > baseline and target_absent_observed_at_block == max_block:
+            # The vote response and status can first observe the removal only after
+            # the committing block. Treat that committed later block as sufficient.
+            post_removal_block = True
+
+        if all_absent and post_removal_block:
+            phase = "ready"
+            ok = True
+            reason = "target validator removed through live RPC and a post-removal block was observed"
+        elif time.time() >= deadline:
+            phase = "failed"
+            ok = False
+            reason = "live QBFT validator-removal did not converge before timeout"
+        elif not reachable:
+            phase = "waiting-participants"
+            ok = False
+            reason = "waiting for live validator RPC participants"
+        elif all_absent:
+            phase = "waiting-post-removal-block"
+            ok = False
+            reason = "validator set converged; waiting for a block finalized by the survivor set"
+        else:
+            phase = "waiting-validator-set-change"
+            ok = False
+            reason = "removal votes submitted through running guards; waiting for validator set convergence"
+
+        LATEST_QBFT_REMOVE = {
+            **base,
+            "ok": ok,
+            "status": phase,
+            "phase": phase,
+            "reason": reason,
+            "participants": participants,
+            "participant_count": len(guard_urls),
+            "reachable_count": len(reachable),
+            "validators_observed_count": len(validators_observed),
+            "target_present": bool(target_present),
+            "all_participants_report_target_absent": bool(all_absent),
+            "baseline_block_number": baseline,
+            "target_absent_observed_at_block": target_absent_observed_at_block,
+            "min_block_number": min_block,
+            "max_block_number": max_block,
+            "post_removal_block_advanced": bool(post_removal_block),
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "updated_at": time.time(),
+        }
+        print("ALLFATHER_QBFT_REMOVE_RESULT " + json.dumps(LATEST_QBFT_REMOVE, sort_keys=True), flush=True)
+        publish_to_coolify_metadata()
+        if phase in {"ready", "failed"}:
+            return
+        time.sleep(poll_s)
+
 
 def run_probe_once() -> dict:
     results = []
@@ -4405,6 +4621,7 @@ def publish_to_coolify_metadata() -> None:
     now = time.time()
     probe_encoded = encode_marker_payload(compact_probe_result(LATEST_PROBE)) if LATEST_PROBE.get("updated_at") is not None else ""
     cleanup_encoded = encode_marker_payload(LATEST_CLEANUP) if LATEST_CLEANUP.get("updated_at") is not None else ""
+    qbft_remove_encoded = encode_marker_payload(LATEST_QBFT_REMOVE) if LATEST_QBFT_REMOVE.get("updated_at") is not None else ""
     traefik_encoded = encode_marker_payload(LATEST_TRAEFIK_PROPAGATE) if LATEST_TRAEFIK_PROPAGATE.get("updated_at") is not None else ""
     hub_admin_sync_encoded = encode_marker_payload(LATEST_HUB_ADMIN_SYNC) if LATEST_HUB_ADMIN_SYNC.get("updated_at") is not None else ""
     contract_deploy_encoded = encode_marker_payload(LATEST_CONTRACT_DEPLOY) if LATEST_CONTRACT_DEPLOY.get("updated_at") is not None else ""
@@ -4415,6 +4632,8 @@ def publish_to_coolify_metadata() -> None:
         description += PROBE_CALLBACK_MARKER + probe_encoded + "\n"
     if cleanup_encoded:
         description += RUNTIME_CLEANUP_CALLBACK_MARKER + cleanup_encoded + "\n"
+    if qbft_remove_encoded:
+        description += QBFT_REMOVE_CALLBACK_MARKER + qbft_remove_encoded + "\n"
     if traefik_encoded:
         description += TRAEFIK_PROPAGATE_CALLBACK_MARKER + traefik_encoded + "\n"
     if hub_admin_sync_encoded:
@@ -4507,6 +4726,7 @@ def payload_for_path(path: str) -> tuple[int, dict]:
             "guardrails": MANIFEST.get("guardrails") or {},
             "probe_target_count": len(TARGETS),
             "runtime_cleanup": LATEST_CLEANUP,
+            "qbft_remove": LATEST_QBFT_REMOVE,
             "traefik_propagate": LATEST_TRAEFIK_PROPAGATE,
             "hub_admin_sync": LATEST_HUB_ADMIN_SYNC,
             "contract_deploy": LATEST_CONTRACT_DEPLOY,
@@ -4517,6 +4737,8 @@ def payload_for_path(path: str) -> tuple[int, dict]:
         return 200, {**base, "processes": MANIFEST.get("processes") or [], "probe": LATEST_PROBE}
     if path in {"/runtime-cleanup/status", "/runtime-cleanup/result"}:
         return 200, {**base, "runtime_cleanup": LATEST_CLEANUP}
+    if path in {"/qbft-remove/status", "/qbft-remove/result"}:
+        return 200, {**base, "qbft_remove": LATEST_QBFT_REMOVE}
     if path in {"/traefik-propagate/status", "/traefik-propagate/result", "/hub-propagate/status", "/hub-propagate/result"}:
         return 200, {**base, "traefik_propagate": LATEST_TRAEFIK_PROPAGATE, "hub_admin_sync": LATEST_HUB_ADMIN_SYNC}
     if path in {"/contract-deploy/status", "/contract-deploy/result", "/deploy-contracts/status", "/deploy-contracts/result"}:
@@ -4555,6 +4777,10 @@ class Handler(BaseHTTPRequestHandler):
             cleanup_thread()
             self._send(200, dict(LATEST_CLEANUP))
             return
+        if path == "/qbft-remove":
+            threading.Thread(target=qbft_remove_thread, daemon=True).start()
+            self._send(202, dict(LATEST_QBFT_REMOVE))
+            return
         if path == "/traefik-propagate":
             traefik_propagate_thread()
             self._send(200, dict(LATEST_TRAEFIK_PROPAGATE))
@@ -4583,6 +4809,9 @@ else:
     LATEST_PROBE = run_probe_once()
 if CLEANUP_REQUEST:
     threading.Thread(target=cleanup_thread, daemon=True).start()
+if QBFT_REMOVE_REQUEST:
+    publish_to_coolify_metadata()
+    threading.Thread(target=qbft_remove_thread, daemon=True).start()
 if TRAEFIK_PROPAGATE_REQUEST:
     threading.Thread(target=traefik_propagate_thread, daemon=True).start()
 if HUB_ADMIN_SYNC_REQUEST:
@@ -4642,6 +4871,7 @@ def render_head_compose(
     callback_token: str = "",
     callback_service_uuid: str = "",
     runtime_cleanup_request: Mapping[str, Any] | None = None,
+    qbft_remove_request: Mapping[str, Any] | None = None,
     traefik_propagate_request: Mapping[str, Any] | None = None,
     hub_admin_sync_request: Mapping[str, Any] | None = None,
     contract_deploy_request: Mapping[str, Any] | None = None,
@@ -4690,6 +4920,9 @@ exec(compile(source, '<allfather-head-agent>', 'exec'), {'__name__': '__main__',
     probe_targets_b64_value = base64.b64encode(json.dumps(list(probe_targets or []), sort_keys=True).encode("utf-8")).decode("ascii")
     runtime_cleanup_request_b64_value = base64.b64encode(
         json.dumps(dict(runtime_cleanup_request or {}), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    qbft_remove_request_b64_value = base64.b64encode(
+        json.dumps(dict(qbft_remove_request or {}), sort_keys=True).encode("utf-8")
     ).decode("ascii")
     traefik_propagate_request_b64_value = base64.b64encode(
         json.dumps(dict(traefik_propagate_request or {}), sort_keys=True).encode("utf-8")
@@ -4746,6 +4979,7 @@ exec(compile(source, '<allfather-head-agent>', 'exec'), {'__name__': '__main__',
             f"      MC_ALLFATHER_AGENT_CALLBACK_SERVICE_UUID: {yaml_quote(callback_service_uuid)}",
             f"      MC_ALLFATHER_AGENT_CALLBACK_INTERVAL_S: {yaml_quote(DEFAULT_PROBE_INTERVAL_S)}",
             f"      MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64: {yaml_quote(runtime_cleanup_request_b64_value)}",
+            f"      MC_ALLFATHER_QBFT_REMOVE_REQUEST_B64: {yaml_quote(qbft_remove_request_b64_value)}",
             f"      MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64: {yaml_quote(traefik_propagate_request_b64_value)}",
             f"      MC_ALLFATHER_HUB_ADMIN_SYNC_REQUEST_B64: {yaml_quote(hub_admin_sync_request_b64_value)}",
             f"      MC_ALLFATHER_CONTRACT_DEPLOY_REQUEST_B64: {yaml_quote(contract_deploy_request_b64_value)}",
@@ -5943,6 +6177,92 @@ def runtime_cleanup_result_from_service_metadata(detail: Mapping[str, Any]) -> d
 
 
 
+def qbft_remove_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the live-QBFT removal result callback from allfather head metadata."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if QBFT_REMOVE_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_QBFT_REMOVE_RESULT_B64 entry found"}
+    encoded = description.split(QBFT_REMOVE_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+def wait_for_head_qbft_remove_ready(
+    client: Any,
+    head_service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+    poll_s: float,
+    expected_request_id: str = "",
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any]:
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
+    first = True
+    last_signature = ""
+    last_log_at = 0.0
+    while first or time.time() < deadline:
+        first = False
+        detail = fetch_service_detail(client, head_service_uuid, tried)
+        last_result = qbft_remove_result_from_service_metadata(detail)
+        result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        observed_request_id = str(result.get("request_id") or "").strip()
+        if expected_request_id and observed_request_id and observed_request_id != expected_request_id:
+            if time.time() >= deadline:
+                break
+            time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+            continue
+        phase = str(result.get("phase") or result.get("status") or "not-observed")
+        signature = (
+            f"phase={phase} target_present={result.get('target_present')} "
+            f"validators={result.get('validators_observed_count')} "
+            f"block={result.get('max_block_number')}"
+        )
+        now = time.time()
+        if args is not None and (signature != last_signature or now - last_log_at >= 20.0):
+            operator_log(args, f"remove-handoff: live-qbft {signature}; remaining={max(0.0, deadline-now):.0f}s")
+            last_signature = signature
+            last_log_at = now
+        if last_result.get("ok") and phase in {"ready", "failed"} and (
+            not expected_request_id or observed_request_id == expected_request_id
+        ):
+            return {
+                "observed": True,
+                "ready": bool(result.get("ok")) and phase == "ready",
+                "reason": str(result.get("error") or result.get("reason") or ("live QBFT removal completed" if phase == "ready" else "live QBFT removal failed")),
+                "result": dict(result),
+                "source": last_result.get("source"),
+                "request_id": observed_request_id,
+            }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+    result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+    observed_request_id = str(result.get("request_id") or "").strip()
+    reason = str(result.get("error") or result.get("reason") or last_result.get("error") or "live QBFT removal metadata callback was not observed")
+    if expected_request_id and observed_request_id and observed_request_id != expected_request_id:
+        reason = f"stale live QBFT removal callback: expected {expected_request_id}, observed {observed_request_id}"
+    return {
+        "observed": bool(last_result.get("ok")),
+        "ready": False,
+        "reason": reason,
+        "result": dict(result),
+        "source": last_result.get("source"),
+        "request_id": observed_request_id,
+        "expected_request_id": expected_request_id,
+    }
+
+
 def traefik_propagate_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
     """Read the Traefik propagation result callback from the allfather head metadata."""
 
@@ -6346,6 +6666,7 @@ def service_payload(
     callback_token: str = "",
     callback_service_uuid: str = "",
     runtime_cleanup_request: Mapping[str, Any] | None = None,
+    qbft_remove_request: Mapping[str, Any] | None = None,
     traefik_propagate_request: Mapping[str, Any] | None = None,
     hub_admin_sync_request: Mapping[str, Any] | None = None,
     contract_deploy_request: Mapping[str, Any] | None = None,
@@ -6362,6 +6683,7 @@ def service_payload(
         callback_token=callback_token,
         callback_service_uuid=callback_service_uuid,
         runtime_cleanup_request=runtime_cleanup_request,
+        qbft_remove_request=qbft_remove_request,
         traefik_propagate_request=traefik_propagate_request,
         hub_admin_sync_request=hub_admin_sync_request,
         contract_deploy_request=contract_deploy_request,
@@ -6439,6 +6761,7 @@ def sync_head_service(
     *,
     probe_targets: Sequence[Mapping[str, Any]] | None = None,
     runtime_cleanup_request: Mapping[str, Any] | None = None,
+    qbft_remove_request: Mapping[str, Any] | None = None,
     traefik_propagate_request: Mapping[str, Any] | None = None,
     hub_admin_sync_request: Mapping[str, Any] | None = None,
     contract_deploy_request: Mapping[str, Any] | None = None,
@@ -6465,6 +6788,7 @@ def sync_head_service(
             callback_token=callback_token,
             callback_service_uuid=service_uuid,
             runtime_cleanup_request=runtime_cleanup_request,
+            qbft_remove_request=qbft_remove_request,
             traefik_propagate_request=traefik_propagate_request,
             hub_admin_sync_request=hub_admin_sync_request,
             contract_deploy_request=contract_deploy_request,
@@ -6484,6 +6808,7 @@ def sync_head_service(
         callback_token=callback_token,
         callback_service_uuid="",
         runtime_cleanup_request=runtime_cleanup_request,
+        qbft_remove_request=qbft_remove_request,
         traefik_propagate_request=traefik_propagate_request,
         hub_admin_sync_request=hub_admin_sync_request,
         contract_deploy_request=contract_deploy_request,
@@ -6503,6 +6828,7 @@ def sync_head_service(
         callback_token=callback_token,
         callback_service_uuid=service_uuid,
         runtime_cleanup_request=runtime_cleanup_request,
+        qbft_remove_request=qbft_remove_request,
         traefik_propagate_request=traefik_propagate_request,
         hub_admin_sync_request=hub_admin_sync_request,
         contract_deploy_request=contract_deploy_request,
@@ -18759,6 +19085,163 @@ def cleanup_empty_network_runtime_all_hosts(
     }
 
 
+def clear_head_qbft_remove_marker(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    request_id: str,
+) -> dict[str, Any]:
+    detail = fetch_service_detail(client, service_uuid, tried)
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    current_description = str(body.get("description") or "") if isinstance(body, Mapping) else ""
+    description = remove_callback_marker_lines(current_description, QBFT_REMOVE_CALLBACK_MARKER)
+    if not description:
+        description = "Main Computer all-father host agent. This is the single per-host control container."
+    result = patch_head_service_description(
+        client,
+        service_uuid,
+        description.rstrip() + "\n",
+        tried,
+        operation="clear-stale-qbft-remove-marker",
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "request_id": request_id,
+        "marker": QBFT_REMOVE_CALLBACK_MARKER,
+        "patch": result,
+    }
+
+
+def run_live_qbft_remove_handoff(
+    plan: HeadPlan,
+    args: argparse.Namespace,
+    network_key: str,
+    current_nodes: Sequence[Mapping[str, Any]],
+    target: Mapping[str, Any],
+    target_validator: str,
+    baseline_block_number: int,
+    tried_by_host: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Remove a validator through already-running guards before any node redeploy.
+
+    The operator process never calls private guard URLs directly. The existing
+    per-host allfather head is updated with a request, then performs the private
+    POST/poll loop from the remote VPN context.
+    """
+
+    target_name = str(target.get("service_name") or "")
+    target_host = str(target.get("coolify_server") or "")
+    head = head_for_coolify_server(plan, target_host)
+    guard_urls = sorted(
+        {
+            str(item.get("guard_url") or "").rstrip("/")
+            for item in current_nodes
+            if str(item.get("guard_url") or "").strip()
+        }
+    )
+    if not guard_urls:
+        raise AllfatherControlError(
+            f"Cannot safely remove {target_name}: no live participant guard URLs were discovered."
+        )
+    request_id = (
+        "qbft-remove-"
+        + clean_node_network_key(network_key)
+        + "-"
+        + re.sub(r"[^a-zA-Z0-9_.-]+", "-", target_name).strip("-")
+        + "-"
+        + str(int(time.time() * 1000))
+    )
+    request = {
+        "request_id": request_id,
+        "network_key": clean_node_network_key(network_key),
+        "target_service_name": target_name,
+        "target_validator_address": str(target_validator or "").strip(),
+        "participant_guard_urls": guard_urls,
+        "baseline_block_number": int(baseline_block_number or 0),
+        "wait_s": float(getattr(args, "hub_verify_wait_s", 300.0) or 300.0),
+        "poll_s": max(1.0, float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S) or DEFAULT_REMOVE_DELETE_POLL_S)),
+    }
+    tried = tried_by_host.setdefault(head.coolify_server, [])
+    client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+    context = resolve_super_context(client, args, head, tried)
+    service_uuid, action, _existing = sync_head_service(
+        client,
+        plan,
+        head,
+        args,
+        context,
+        tried,
+        probe_targets=probe_target_records_for_plan(plan, super_inventory=current_nodes),
+        qbft_remove_request=request,
+    )
+    marker_clear = clear_head_qbft_remove_marker(
+        client,
+        service_uuid,
+        tried,
+        request_id=request_id,
+    )
+    if not marker_clear.get("ok"):
+        return {
+            "enabled": True,
+            "ok": False,
+            "ready": False,
+            "reason": "could not clear stale live-QBFT removal callback before head-agent restart",
+            "request_id": request_id,
+            "service_uuid": service_uuid,
+            "marker_clear": marker_clear,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+    operator_log(
+        args,
+        f"remove-handoff: submitting live QBFT removal through head={head.service_name} "
+        f"target={target_name} validator={target_validator}; validators will not be restarted",
+    )
+    hub_service_tool().trigger_deploy_service(
+        client,
+        service_uuid=service_uuid,
+        force=True,
+        tried=tried,
+    )
+    wait = wait_for_head_qbft_remove_ready(
+        client,
+        service_uuid,
+        tried,
+        wait_s=float(request["wait_s"]),
+        poll_s=float(request["poll_s"]),
+        expected_request_id=request_id,
+        args=args,
+    )
+    result = wait.get("result") if isinstance(wait.get("result"), Mapping) else {}
+    return {
+        "enabled": True,
+        "ok": bool(wait.get("ready")),
+        "ready": bool(wait.get("ready")),
+        "reason": str(wait.get("reason") or ""),
+        "request_id": request_id,
+        "target_service_name": target_name,
+        "target_validator_address": str(target_validator or ""),
+        "baseline_block_number": int(baseline_block_number or 0),
+        "participant_guard_urls": guard_urls,
+        "participants": list(result.get("participants") or []),
+        "max_block_number": result.get("max_block_number"),
+        "target_present": result.get("target_present"),
+        "post_removal_block_advanced": result.get("post_removal_block_advanced"),
+        "head_service_name": head.service_name,
+        "head_service_uuid": service_uuid,
+        "head_service_action": f"head-agent-{action}",
+        "marker_clear": marker_clear,
+        "observed": bool(wait.get("observed")),
+        "observed_result": dict(result),
+        "token_source": token_source,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
 def prepare_remove_survivor_handoff(
     plan: HeadPlan,
     args: argparse.Namespace,
@@ -18816,6 +19299,52 @@ def prepare_remove_survivor_handoff(
         if str(item.get("service_name") or "").strip()
     ]
     baseline_block_number = latest_validator_block_number_from_verify(preverify)
+
+    if getattr(args, "dry_run", False):
+        live_qbft = {
+            "enabled": True,
+            "ok": True,
+            "ready": True,
+            "dry_run": True,
+            "reason": "Dry-run: removal votes would be submitted through running validator guards before any service redeploy.",
+            "target_service_name": target_name,
+            "target_validator_address": target_validator,
+            "baseline_block_number": baseline_block_number,
+            "participant_guard_urls": participant_guard_urls,
+        }
+    else:
+        live_qbft = run_live_qbft_remove_handoff(
+            plan,
+            args,
+            network_key,
+            current_nodes,
+            target,
+            target_validator,
+            baseline_block_number,
+            tried_by_host,
+        )
+    if live_qbft.get("ok") is not True:
+        return {
+            "enabled": True,
+            "ok": False,
+            "reason": str(live_qbft.get("reason") or "live QBFT validator-removal did not converge"),
+            "target_service_name": target_name,
+            "target_validator_address": target_validator,
+            "target_fdb_endpoint": target_fdb_endpoint,
+            "survivor_fdb_endpoints": survivor_fdb_endpoints,
+            "live_qbft_handoff": live_qbft,
+            "services": [],
+            "errors": [live_qbft],
+            "resumed": bool(preverify.get("resume_detected")),
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    # Only after the live validator set has converged do we restart survivors to
+    # apply the FDB coordinator plan and persist the completed handoff. The target
+    # is deliberately never redeployed; it is already outside the validator set
+    # and remains running only until deletion is confirmed safe.
     handoff = {
         "enabled": True,
         "target_service_name": target_name,
@@ -18825,27 +19354,19 @@ def prepare_remove_survivor_handoff(
         "participant_guard_urls": participant_guard_urls,
         "participant_services": participant_services,
         "baseline_block_number": baseline_block_number,
+        "live_qbft_completed": True,
+        "live_qbft_request_id": str(live_qbft.get("request_id") or ""),
         "requested_at": time.time(),
     }
     services: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     prepared_services: list[dict[str, Any]] = []
 
-    # Phase 1: update and deploy every participant before waiting on any one
-    # service. QBFT removal needs the voting services to observe the same
-    # handoff; waiting after the first deploy can deadlock before peers receive
-    # the manifest.
-    for node in current_nodes:
+    for index, node in enumerate(survivor_nodes):
         node_name = str(node.get("service_name") or "")
         node_head = head_for_coolify_server(plan, str(node.get("coolify_server") or ""))
         ordinal = int(node.get("ordinal") or 0)
-        is_target = node_name == target_name
-        ordered_basis = current_nodes if is_target else survivor_nodes
-        index = next(
-            (i for i, item in enumerate(ordered_basis) if str(item.get("service_name") or "") == node_name),
-            0,
-        )
-        lower_nodes = [dict(item) for item in ordered_basis[:index]]
+        lower_nodes = [dict(item) for item in survivor_nodes[:index]]
         no_contracts = bool(lower_nodes)
         state_for_node, wallets, private_updates = materialize_private_state_for_add_node(
             private_state,
@@ -18882,7 +19403,7 @@ def prepare_remove_survivor_handoff(
                 {
                     "service_name": node_name,
                     "host": node_head.coolify_server,
-                    "target": is_target,
+                    "target": False,
                     "ok": True,
                     "dry_run": True,
                     "manifest": manifest,
@@ -18913,8 +19434,8 @@ def prepare_remove_survivor_handoff(
         deployer_key = wallet_private_key(wallets, "deployer") if manifest["bootstrap"]["contracts_requested"] else ""
         operator_log(
             args,
-            f"remove-handoff: updating {node_name} target={str(is_target).lower()} "
-            f"survivor_fdb={','.join(survivor_fdb_endpoints)} target_validator={target_validator}",
+            f"remove-handoff: QBFT converged; updating survivor {node_name} "
+            f"for FDB coordinators={','.join(survivor_fdb_endpoints)}",
         )
         service_uuid, action, _existing = sync_super_node_service(
             client,
@@ -18934,11 +19455,11 @@ def prepare_remove_survivor_handoff(
         entry = {
             "service_name": node_name,
             "host": node_head.coolify_server,
-            "target": is_target,
+            "target": False,
             "service_uuid": service_uuid,
             "service_action": action,
             "ok": False,
-            "reason": "deployed; waiting for shared removal handoff",
+            "reason": "deployed after live QBFT convergence; waiting for survivor FDB handoff",
             "deploy_wait": {},
             "private_state_updates": private_updates,
             "runtime_image": manifest_image,
@@ -18961,9 +19482,6 @@ def prepare_remove_survivor_handoff(
             }
         )
 
-    # Phase 2: all participants now have the same handoff request, so each can
-    # vote/converge while we wait. This also makes a rerun idempotently resume a
-    # handoff that a prior invocation left in progress.
     for prepared in prepared_services:
         entry = prepared["entry"]
         wait_result = wait_for_add_node_ready(
@@ -18986,19 +19504,24 @@ def prepare_remove_survivor_handoff(
     return {
         "enabled": True,
         "ok": not bool(failures),
-        "reason": "survivor FDB coordinators and QBFT validator set prepared before deletion" if not failures else str(failures[0].get("reason") or "survivor handoff failed"),
+        "reason": (
+            "live QBFT validator removal converged before survivor FDB redeploy and target deletion"
+            if not failures
+            else str(failures[0].get("reason") or "survivor handoff failed")
+        ),
         "target_service_name": target_name,
         "target_validator_address": target_validator,
         "target_fdb_endpoint": target_fdb_endpoint,
         "survivor_fdb_endpoints": survivor_fdb_endpoints,
+        "live_qbft_handoff": live_qbft,
         "services": services,
         "errors": failures,
         "resumed": bool(preverify.get("resume_detected")),
+        "target_redeployed": False,
         "public_guard_routes": False,
         "ssh_used": False,
         "direct_vpn_used": False,
     }
-
 
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network_key = clean_node_network_key(args.network)
