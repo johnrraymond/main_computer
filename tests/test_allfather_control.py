@@ -2533,6 +2533,55 @@ def test_remove_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
         control.remove_node(plan, args)
 
 
+def test_remove_node_requires_delete_last_node_for_final_mainnet_node(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "mainnet",
+            "--allow-mainnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    with pytest.raises(control.AllfatherControlError, match="--delete-last-node"):
+        control.remove_node(plan, args)
+
+
+def test_remove_node_allows_final_mainnet_node_with_explicit_delete_last_node(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "mainnet",
+            "--allow-mainnet",
+            "--delete-last-node",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.remove_node(plan, args)
+
+    assert payload["removed_last_network_node"] is True
+    assert payload["remaining_network_super_nodes"] == 0
+    assert payload["zero_node_cleanup"]["enabled"] is True
+    assert payload["ok"] is True
+
+
 def test_remove_node_errors_when_no_super_node_exists(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(
@@ -3216,6 +3265,88 @@ def test_ethereum_address_derivation_is_local_and_deterministic() -> None:
         control.ethereum_address_from_private_key("0x" + "0" * 63 + "1")
         == "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
     )
+
+
+def test_add_node_materializes_wallet_addresses_with_private_keys(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    state = control.load_yaml_mapping(path)
+
+    _, wallets, updates = control.materialize_private_state_for_add_node(
+        state,
+        path,
+        "mainnet",
+        ordinal=1,
+        cell_id="mainneta-super1",
+        no_contracts=False,
+        dry_run=False,
+    )
+
+    written = control.load_yaml_mapping(path)
+    deployer = written["networks"]["mainnet"]["wallets"]["deployer"]
+    node_hub_admin = written["networks"]["mainnet"]["node_seed_material"]["mainneta-super1"]["wallets"]["hub_admin"]
+
+    assert deployer["private_key"]
+    assert deployer["address"] == control.ethereum_address_from_private_key(deployer["private_key"])
+    assert deployer["metadata"]["address_derivation"] == "local-derive-from-private-key"
+    assert node_hub_admin["private_key"]
+    assert node_hub_admin["address"] == control.ethereum_address_from_private_key(node_hub_admin["private_key"])
+    assert node_hub_admin["metadata"]["address_derivation"] == "local-derive-from-private-key"
+    assert control.wallet_address(wallets, "deployer") == deployer["address"]
+    assert control.wallet_address(wallets, "hub_admin") == node_hub_admin["address"]
+    assert updates["written"] is True
+    assert "deployer" in updates["wallets_generated"]
+    assert "hub_admin" in updates["wallets_generated"]
+
+
+def test_add_node_backfills_addresses_for_existing_generated_private_keys(tmp_path: Path) -> None:
+    path = tmp_path / "all_father.private.yaml"
+    deployer_key = "0x" + "0" * 63 + "1"
+    hub_admin_key = "0x" + "0" * 63 + "2"
+    path.write_text(
+        f"""
+kind: main_computer.all_father.private_state.v1
+networks:
+  mainnet:
+    wallets:
+      deployer:
+        address: null
+        private_key: "{deployer_key}"
+        metadata:
+          address_derivation: runtime-derive-from-private-key
+    node_seed_material:
+      mainneta-super1:
+        wallets:
+          hub_admin:
+            address: null
+            private_key: "{hub_admin_key}"
+            metadata:
+              address_derivation: runtime-derive-from-private-key
+""".lstrip(),
+        encoding="utf-8",
+    )
+    state = control.load_yaml_mapping(path)
+
+    _, _, updates = control.materialize_private_state_for_add_node(
+        state,
+        path,
+        "mainnet",
+        ordinal=1,
+        cell_id="mainneta-super1",
+        no_contracts=False,
+        dry_run=False,
+    )
+
+    written = control.load_yaml_mapping(path)
+    deployer = written["networks"]["mainnet"]["wallets"]["deployer"]
+    node_hub_admin = written["networks"]["mainnet"]["node_seed_material"]["mainneta-super1"]["wallets"]["hub_admin"]
+
+    assert deployer["address"] == control.ethereum_address_from_private_key(deployer_key)
+    assert deployer["metadata"]["address_derivation"] == "local-derive-from-private-key"
+    assert node_hub_admin["address"] == control.ethereum_address_from_private_key(hub_admin_key)
+    assert node_hub_admin["metadata"]["address_derivation"] == "local-derive-from-private-key"
+    assert updates["written"] is True
+    wallet_updates = [item for item in updates["generated"] if str(item.get("kind", "")).startswith("wallet_")]
+    assert {item["kind"] for item in wallet_updates} == {"wallet_address"}
 
 
 def test_hub_propagate_parser_replaces_traefik_name(tmp_path: Path) -> None:
@@ -4209,7 +4340,7 @@ def test_hub_propagate_main_preserves_full_json_with_json_flag(monkeypatch: pyte
 
 
 
-def test_add_node_zero_live_topology_plans_cleanup_before_first_node(tmp_path: Path) -> None:
+def test_add_node_zero_live_topology_skips_cleanup_by_default_local_policy(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(
         [
@@ -4222,6 +4353,34 @@ def test_add_node_zero_live_topology_plans_cleanup_before_first_node(tmp_path: P
             "--dry-run",
             "--existing-count",
             "0",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.add_node(plan, args)
+
+    assert payload["network_inventory"]["join_context"] == "first-network-node"
+    assert payload["zero_topology_prefunk"]["enabled"] is False
+    assert payload["zero_topology_prefunk"]["ok"] is True
+    assert "--cleanup-zero-topology-runtime" in payload["zero_topology_prefunk"]["reason"]
+    assert payload["zero_topology_prefunk"]["runtime_cleanup"]["enabled"] is False
+    assert payload["zero_topology_prefunk"]["private_state_cleanup"]["enabled"] is False
+
+
+def test_add_node_zero_live_topology_cleanup_requires_explicit_opt_in(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+            "--cleanup-zero-topology-runtime",
         ]
     )
     plan = control.build_plan_from_args(args)
@@ -4259,6 +4418,55 @@ def test_remove_node_last_network_node_plans_network_wide_cleanup(tmp_path: Path
     assert payload["zero_node_cleanup"]["enabled"] is True
     assert payload["zero_node_cleanup"]["ok"] is True
     assert payload["network_pristine_after_remove"] is True
+
+
+def test_zero_node_cleanup_attempts_all_heads_and_uses_extended_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = write_private_state(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+    calls: list[tuple[str, float | None]] = []
+
+    def fake_runtime_cleanup(
+        plan_arg,
+        network_key,
+        head,
+        client,
+        args_arg,
+        context,
+        tried,
+        *,
+        wait_s_override=None,
+    ):
+        calls.append((head.coolify_server, wait_s_override))
+        return {
+            "enabled": True,
+            "ready": head.coolify_server == "coolify-a",
+            "dry_run": False,
+            "reason": "ready" if head.coolify_server == "coolify-a" else "metadata callback was not observed",
+            "wait_s": wait_s_override,
+        }
+
+    monkeypatch.setattr(control, "run_super_runtime_cleanup", fake_runtime_cleanup)
+
+    cleanup = control.cleanup_empty_network_runtime_all_hosts(plan, "testnet", args, {})
+
+    assert [host["host"] for host in cleanup["hosts"]] == ["coolify-a", "coolify-b"]
+    assert [host for host, _wait in calls] == ["coolify-a", "coolify-b"]
+    assert all(wait is not None and wait >= control.DEFAULT_ZERO_NODE_RUNTIME_CLEANUP_WAIT_S for _host, wait in calls)
+    assert cleanup["ok"] is False
+    assert cleanup["errors"] == [{"host": "coolify-b", "error": "metadata callback was not observed"}]
 
 
 def test_generated_super_runtime_contains_remove_handoff_guards() -> None:
@@ -4850,4 +5058,54 @@ def test_resumable_remove_preverify_rejects_mismatched_target() -> None:
         )
         is None
     )
+
+def test_prune_allfather_helper_services_uses_live_inventory_names(monkeypatch) -> None:
+    head = control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="10.116.0.3",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/head/coolify-a",
+        peers=(),
+    )
+    args = argparse.Namespace(dry_run=False, delete_wait_s=0.0, delete_poll_s=0.0, verbose=True)
+    tried: list[dict[str, object]] = []
+    deleted: list[tuple[str, str]] = []
+
+    def fake_delete(client, *, service_uuid: str, service_name: str, tried: list[dict[str, object]]) -> dict[str, object]:
+        deleted.append((service_name, service_uuid))
+        return {"ok": True}
+
+    def fake_wait(client, *, service_name: str, tried: list[dict[str, object]], wait_s: float, poll_s: float, args) -> dict[str, object]:
+        return {"confirmed_absent": True, "wait_s": wait_s, "poll_s": poll_s}
+
+    monkeypatch.setattr(control, "delete_coolify_service", fake_delete)
+    monkeypatch.setattr(control, "wait_for_coolify_service_absent", fake_wait)
+
+    result = control.prune_allfather_helper_services(
+        object(),
+        "mainnet",
+        head,
+        args,
+        tried,
+        services=[
+            {
+                "name": "allfather-super-runtime-cleanup-mainnet-coolify-a",
+                "uuid": "cleanup-uuid",
+                "status": "exited",
+            }
+        ],
+        host_super_nodes_remaining=True,
+    )
+
+    assert result["ready"] is True
+    assert deleted == [("allfather-super-runtime-cleanup-mainnet-coolify-a", "cleanup-uuid")]
+    assert result["missing"] == []
+    assert result["deleted"][0]["service_name"] == "allfather-super-runtime-cleanup-mainnet-coolify-a"
+
+
 

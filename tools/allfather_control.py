@@ -59,6 +59,7 @@ DEFAULT_COOLIFY_TIMEOUT_S = 120.0
 DEFAULT_COOLIFY_RETRIES = 5
 DEFAULT_COOLIFY_RETRY_SLEEP_S = 5.0
 DEFAULT_REMOVE_DELETE_WAIT_S = 45.0
+DEFAULT_ZERO_NODE_RUNTIME_CLEANUP_WAIT_S = 300.0
 DEFAULT_REMOVE_DELETE_POLL_S = 2.0
 DEFAULT_ADD_NODE_READY_WAIT_S = 1800.0
 DEFAULT_ADD_NODE_READY_POLL_S = 5.0
@@ -793,8 +794,8 @@ def utc_now_iso() -> str:
 
 
 def generated_private_key() -> str:
-    # Ethereum private keys are 32-byte secp256k1 scalars.  Addresses are derived
-    # by hub-propagate when a key is assigned to live Hub admin state.
+    # Ethereum private keys are 32-byte secp256k1 scalars.  Addresses are
+    # derived locally when the key is materialized into private state.
     while True:
         key = "0x" + secrets.token_hex(32)
         if int(key[2:], 16) != 0:
@@ -7955,20 +7956,35 @@ def materialize_wallet_key(
     if not isinstance(record, dict):
         record = {}
         wallets[wallet_name] = record
-    if nonempty_private_value(record.get("private_key")):
-        return
-    record["private_key"] = generated_private_key()
-    record.setdefault("address", None)
+
+    private_key = nonempty_private_value(record.get("private_key"))
+    private_key_generated = False
+    if not private_key:
+        private_key = generated_private_key()
+        record["private_key"] = private_key
+        private_key_generated = True
+        generated.append({"kind": "wallet_private_key", "wallet": wallet_name, "reason": reason})
+
+    address_generated = False
+    if not nonempty_private_value(record.get("address")):
+        record["address"] = ethereum_address_from_private_key(private_key)
+        address_generated = True
+        generated.append({"kind": "wallet_address", "wallet": wallet_name, "reason": reason})
+
     metadata = ensure_mapping_child(record, "metadata")
-    metadata.update(
-        {
-            "generated_by": PRIVATE_STATE_GENERATOR,
-            "generated_at": utc_now_iso(),
-            "reason": reason,
-            "address_derivation": "runtime-derive-from-private-key",
-        }
-    )
-    generated.append({"kind": "wallet_private_key", "wallet": wallet_name, "reason": reason})
+    if private_key_generated:
+        metadata.update(
+            {
+                "generated_by": PRIVATE_STATE_GENERATOR,
+                "generated_at": utc_now_iso(),
+                "reason": reason,
+                "address_derivation": "local-derive-from-private-key",
+            }
+        )
+    elif address_generated:
+        metadata["address_derivation"] = "local-derive-from-private-key"
+    else:
+        metadata.setdefault("address_derivation", "local-derive-from-private-key")
 
 
 def materialize_fdb_identity(
@@ -8949,6 +8965,11 @@ def matching_service_items(services: Iterable[Mapping[str, Any]], service_name: 
         for item in services
         if isinstance(item, Mapping) and service_name_from_item(item) == clean
     ]
+
+
+def find_service_item_by_name(services: Iterable[Mapping[str, Any]], service_name: str) -> Mapping[str, Any] | None:
+    matches = matching_service_items(services, service_name)
+    return matches[0] if matches else None
 
 
 def service_item_summaries(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -13970,6 +13991,8 @@ def run_super_runtime_cleanup(
     args: argparse.Namespace,
     context: Mapping[str, Any],
     tried: list[dict[str, Any]],
+    *,
+    wait_s_override: float | None = None,
 ) -> dict[str, Any]:
     if bool(getattr(args, "keep_runtime_state", False)):
         return planned_super_runtime_cleanup_result(
@@ -14045,11 +14068,16 @@ def run_super_runtime_cleanup(
         force=True,
         tried=tried,
     )
+    wait_s = (
+        float(wait_s_override)
+        if wait_s_override is not None
+        else float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S))
+    )
     wait_result = wait_for_head_runtime_cleanup_ready(
         client,
         service_uuid,
         tried,
-        wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
+        wait_s=wait_s,
         poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
         expected_request_id=request_id,
     )
@@ -14063,6 +14091,7 @@ def run_super_runtime_cleanup(
         "service_uuid": service_uuid,
         "service_action": f"head-agent-{service_action}",
         "request_id": request_id,
+        "wait_s": wait_s,
         "legacy_helper_service_name": super_runtime_cleanup_service_name(network_key, head),
         "status_url": head.guard_url,
         "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
@@ -19038,11 +19067,24 @@ def cleanup_empty_network_runtime_all_hosts(
 ) -> dict[str, Any]:
     hosts: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    zero_node_wait_s = max(
+        float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S) or DEFAULT_REMOVE_DELETE_WAIT_S),
+        DEFAULT_ZERO_NODE_RUNTIME_CLEANUP_WAIT_S,
+    )
     for head in plan.heads:
         tried = tried_by_host.setdefault(head.coolify_server, [])
         try:
             if getattr(args, "dry_run", False):
-                cleanup = run_super_runtime_cleanup(plan, network_key, head, None, args, {}, tried)
+                cleanup = run_super_runtime_cleanup(
+                    plan,
+                    network_key,
+                    head,
+                    None,
+                    args,
+                    {},
+                    tried,
+                    wait_s_override=zero_node_wait_s,
+                )
             else:
                 client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
                 version = request_coolify_version(
@@ -19057,7 +19099,16 @@ def cleanup_empty_network_runtime_all_hosts(
                         f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
                     )
                 context = resolve_super_context(client, args, head, tried)
-                cleanup = run_super_runtime_cleanup(plan, network_key, head, client, args, context, tried)
+                cleanup = run_super_runtime_cleanup(
+                    plan,
+                    network_key,
+                    head,
+                    client,
+                    args,
+                    context,
+                    tried,
+                    wait_s_override=zero_node_wait_s,
+                )
                 cleanup["token_source"] = token_source
             cleanup_ok = bool(cleanup.get("ready")) or bool(cleanup.get("dry_run")) or not bool(cleanup.get("enabled"))
             hosts.append({"host": head.coolify_server, "cleanup": cleanup, "ok": cleanup_ok})
@@ -19068,16 +19119,27 @@ def cleanup_empty_network_runtime_all_hosts(
                         "error": str(cleanup.get("reason") or cleanup.get("error") or "runtime cleanup did not complete"),
                     }
                 )
-                break
         except Exception as exc:
+            hosts.append(
+                {
+                    "host": head.coolify_server,
+                    "cleanup": {
+                        "enabled": True,
+                        "ready": False,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                        "wait_s": zero_node_wait_s,
+                    },
+                    "ok": False,
+                }
+            )
             errors.append({"host": head.coolify_server, "error": f"{type(exc).__name__}: {exc}"})
-            break
     return {
         "enabled": True,
         "ok": not bool(errors),
         "network": clean_node_network_key(network_key),
         "hosts": hosts,
         "errors": errors,
+        "wait_s": zero_node_wait_s,
         "reason": "zero-node runtime state cleaned on all participating hosts" if not errors else str(errors[0].get("error") or "zero-node cleanup failed"),
         "public_guard_routes": False,
         "ssh_used": False,
@@ -19600,6 +19662,8 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         target_status = "dry-run"
         remaining_host_count = existing_count - 1
         remaining_network_count = remaining_host_count
+        if network_key == "mainnet" and remaining_network_count == 0 and not getattr(args, "delete_last_node", False):
+            raise AllfatherControlError("Refusing to remove the final live mainnet node without --delete-last-node.")
         network_nodes_before = [super_inventory_entry(network_key, head, item, source="dry-run") for item in range(1, existing_count + 1)]
         network_nodes_after = [item for item in network_nodes_before if str(item.get("service_name") or "") != service_name]
         _new_state, private_state_updates = cleanup_private_state_for_remove_node(
@@ -19692,6 +19756,9 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         f"inventory: network_nodes={len(network_nodes_before)} target={service_name} "
         f"survivors={','.join(str(item.get('service_name') or '') for item in survivors) or '<none>'}",
     )
+
+    if network_key == "mainnet" and not survivors and not getattr(args, "delete_last_node", False):
+        raise AllfatherControlError("Refusing to remove the final live mainnet node without --delete-last-node.")
 
     if survivors:
         predelete_verify = lifecycle_verify_nodes(
@@ -20021,29 +20088,49 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             "direct_vpn_used": False,
         }
         if existing_count == 0:
-            _dry_state, dry_private_cleanup = cleanup_private_state_for_remove_node(
-                state,
-                private_state_path,
-                network_key,
-                remaining_count=0,
-                dry_run=True,
-                keep_seed_material=False,
-            )
-            zero_topology_prefunk = {
-                "enabled": True,
-                "ok": True,
-                "reason": "dry-run: zero live nodes would trigger network-wide stale runtime cleanup before first-node initialization",
-                "runtime_cleanup": cleanup_empty_network_runtime_all_hosts(
-                    plan,
+            if getattr(args, "cleanup_zero_topology_runtime", False):
+                _dry_state, dry_private_cleanup = cleanup_private_state_for_remove_node(
+                    state,
+                    private_state_path,
                     network_key,
-                    args,
-                    {head.coolify_server: tried},
-                ),
-                "private_state_cleanup": dry_private_cleanup,
-                "public_guard_routes": False,
-                "ssh_used": False,
-                "direct_vpn_used": False,
-            }
+                    remaining_count=0,
+                    dry_run=True,
+                    keep_seed_material=False,
+                )
+                zero_topology_prefunk = {
+                    "enabled": True,
+                    "ok": True,
+                    "reason": "dry-run: --cleanup-zero-topology-runtime would clean stale runtime/private state before first-node initialization",
+                    "runtime_cleanup": cleanup_empty_network_runtime_all_hosts(
+                        plan,
+                        network_key,
+                        args,
+                        {head.coolify_server: tried},
+                    ),
+                    "private_state_cleanup": dry_private_cleanup,
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                }
+            else:
+                zero_topology_prefunk = {
+                    "enabled": False,
+                    "ok": True,
+                    "reason": "local policy skipped zero-topology runtime/private-state cleanup; pass --cleanup-zero-topology-runtime to opt in",
+                    "runtime_cleanup": {
+                        "enabled": False,
+                        "ok": True,
+                        "reason": "local policy skipped zero-topology runtime cleanup",
+                    },
+                    "private_state_cleanup": {
+                        "enabled": False,
+                        "ok": True,
+                        "reason": "local policy skipped zero-topology private-state cleanup",
+                    },
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                }
         token_source = "dry-run:no-api"
         context: dict[str, Any] = {}
         service_uuid = ""
@@ -20073,42 +20160,66 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                 f"add-node could not prove the network-global live topology before creating a node: {rendered}"
             )
         if not network_existing_nodes:
-            operator_log(
-                args,
-                f"zero-topology: no live {network_key} super-nodes exist; cleaning stale runtime state before first-node initialization",
-            )
-            zero_tried_by_host: dict[str, list[dict[str, Any]]] = {head.coolify_server: tried}
-            runtime_zero_cleanup = cleanup_empty_network_runtime_all_hosts(
-                plan,
-                network_key,
-                args,
-                zero_tried_by_host,
-            )
-            if runtime_zero_cleanup.get("ok") is not True:
-                raise AllfatherControlError(
-                    f"add-node refused first-node initialization because zero-node runtime cleanup failed: "
-                    f"{runtime_zero_cleanup.get('reason') or 'unknown cleanup failure'}"
+            if getattr(args, "cleanup_zero_topology_runtime", False):
+                operator_log(
+                    args,
+                    f"zero-topology: no live {network_key} super-nodes exist; --cleanup-zero-topology-runtime requested, cleaning stale runtime/private state before first-node initialization",
                 )
-            state, zero_private_cleanup = cleanup_private_state_for_remove_node(
-                state,
-                private_state_path,
-                network_key,
-                remaining_count=0,
-                dry_run=False,
-                keep_seed_material=False,
-            )
-            state = load_yaml_mapping(private_state_path)
-            zero_topology_prefunk = {
-                "enabled": True,
-                "ok": True,
-                "reason": "zero live nodes confirmed; stale runtime/topology files cleaned before first-node initialization",
-                "runtime_cleanup": runtime_zero_cleanup,
-                "private_state_cleanup": zero_private_cleanup,
-                "public_guard_routes": False,
-                "ssh_used": False,
-                "direct_vpn_used": False,
-            }
-            operator_log(args, "zero-topology: cleanup complete; proceeding with canonical first-node initialization")
+                zero_tried_by_host: dict[str, list[dict[str, Any]]] = {head.coolify_server: tried}
+                runtime_zero_cleanup = cleanup_empty_network_runtime_all_hosts(
+                    plan,
+                    network_key,
+                    args,
+                    zero_tried_by_host,
+                )
+                if runtime_zero_cleanup.get("ok") is not True:
+                    raise AllfatherControlError(
+                        f"add-node refused first-node initialization because zero-node runtime cleanup failed: "
+                        f"{runtime_zero_cleanup.get('reason') or 'unknown cleanup failure'}"
+                    )
+                state, zero_private_cleanup = cleanup_private_state_for_remove_node(
+                    state,
+                    private_state_path,
+                    network_key,
+                    remaining_count=0,
+                    dry_run=False,
+                    keep_seed_material=False,
+                )
+                state = load_yaml_mapping(private_state_path)
+                zero_topology_prefunk = {
+                    "enabled": True,
+                    "ok": True,
+                    "reason": "--cleanup-zero-topology-runtime requested; stale runtime/topology files cleaned before first-node initialization",
+                    "runtime_cleanup": runtime_zero_cleanup,
+                    "private_state_cleanup": zero_private_cleanup,
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                }
+                operator_log(args, "zero-topology: cleanup complete; proceeding with canonical first-node initialization")
+            else:
+                operator_log(
+                    args,
+                    f"zero-topology: no live {network_key} super-nodes exist; local policy skips stale runtime/private-state cleanup before first-node initialization",
+                )
+                zero_topology_prefunk = {
+                    "enabled": False,
+                    "ok": True,
+                    "reason": "local policy skipped zero-topology runtime/private-state cleanup; pass --cleanup-zero-topology-runtime to opt in",
+                    "runtime_cleanup": {
+                        "enabled": False,
+                        "ok": True,
+                        "reason": "local policy skipped zero-topology runtime cleanup",
+                    },
+                    "private_state_cleanup": {
+                        "enabled": False,
+                        "ok": True,
+                        "reason": "local policy skipped zero-topology private-state cleanup",
+                    },
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                }
         context = resolve_super_context(client, args, head, tried)
         resume_existing = False
         resume_reason = ""
@@ -21724,6 +21835,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--dry-run", action="store_true", help="Plan and render the next super-node without creating/updating Coolify.")
     add_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
     add_node_parser.add_argument("--no-contracts", action="store_true", help="Do not request first-node contract bootstrap.")
+    add_node_parser.add_argument("--cleanup-zero-topology-runtime", action="store_true", help="Opt in to stale runtime/private-state cleanup when add-node proves the network has zero live super-nodes. Default local policy skips cleanup.")
     add_node_parser.add_argument("--publish-routes", action="store_true", help="Publish Hub/RPC Traefik routes immediately and reconcile public Hub Traefik routes after readiness. Default defers public cutover.")
     add_node_parser.add_argument("--hub-propagate", action="store_true", help="After the node is ready, reconcile public Hub routes, huddle admins, and contract admin authorization from live topology.")
     add_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)
@@ -21756,6 +21868,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network to shrink: testnet or mainnet.")
     remove_node_parser.add_argument("--host", required=True, help="Coolify host name or all-father host slot, for example coolify-a or A.")
     remove_node_parser.add_argument("--allow-mainnet", action="store_true", help="Required before removing a mainnet super-node.")
+    remove_node_parser.add_argument("--delete-last-node", action="store_true", help="Required, in addition to --allow-mainnet, before deleting the final live mainnet super-node.")
     remove_node_parser.add_argument("--dry-run", action="store_true", help="Plan the removal without deleting the Coolify service or writing private state.")
     remove_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
     remove_node_parser.add_argument("--delete-wait-s", type=float, default=DEFAULT_REMOVE_DELETE_WAIT_S, help="Seconds to wait for Coolify inventory to stop reporting the deleted service before cleaning seed material.")
