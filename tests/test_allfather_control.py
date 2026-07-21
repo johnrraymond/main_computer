@@ -5277,8 +5277,30 @@ def _removal_verify_node(
     *,
     pending: bool,
     block_number: int = 2926,
+    include_removal_handoff: bool = True,
 ) -> dict[str, object]:
     validator_status = "waiting-validator-removal-handoff" if pending else "running"
+    functions: dict[str, object] = {
+        "foundationdb": {
+            "running": True,
+            "status": "running",
+        },
+        "validator_rpc": {
+            "running": True,
+            "status": validator_status,
+            "json_rpc_ok": True,
+            "rpc_http_ok": True,
+            "block_number": block_number,
+            "validator_address": validator_address,
+        },
+    }
+    if include_removal_handoff:
+        functions["validator_removal_handoff"] = {
+            "desired": pending,
+            "ready": not pending,
+            "status": "waiting-validator-set-change" if pending else "not-requested",
+            "target_validator_address": target_validator_address if pending else "",
+        }
     return {
         "host": "coolify-a",
         "nodes": [
@@ -5286,26 +5308,7 @@ def _removal_verify_node(
                 "service_name": service_name,
                 "host": "coolify-a",
                 "internal_status": {
-                    "functions": {
-                        "foundationdb": {
-                            "running": True,
-                            "status": "running",
-                        },
-                        "validator_rpc": {
-                            "running": True,
-                            "status": validator_status,
-                            "json_rpc_ok": True,
-                            "rpc_http_ok": True,
-                            "block_number": block_number,
-                            "validator_address": validator_address,
-                        },
-                        "validator_removal_handoff": {
-                            "desired": pending,
-                            "ready": not pending,
-                            "status": "waiting-validator-set-change" if pending else "not-requested",
-                            "target_validator_address": target_validator_address if pending else "",
-                        },
-                    }
+                    "functions": functions,
                 },
             }
         ],
@@ -5351,6 +5354,62 @@ def test_resumable_remove_preverify_accepts_only_matching_live_handoff() -> None
         preverify,
         target_verify,
         target_service_name="mainneta-super2",
+    )
+
+    assert resumed is not None
+    assert resumed["ok"] is True
+    assert resumed["resume_detected"] is True
+    assert resumed["resume_pending_services"] == ["mainneta-super1"]
+
+
+def test_resumable_remove_preverify_accepts_target_self_pending_handoff_without_second_handoff_component() -> None:
+    target_address = "0x" + "22" * 20
+    preverify = {
+        "ok": False,
+        "reason": "validator_rpc not healthy for hub propagation: waiting-validator-removal-handoff block_number=4169",
+        "failed_fast": True,
+        "errors": [
+            {
+                "service_name": "mainneta-super1",
+                "error": "validator_rpc not healthy for hub propagation: waiting-validator-removal-handoff block_number=4169",
+            }
+        ],
+        "nodes": [
+            _removal_verify_node(
+                "mainneta-super1",
+                target_address,
+                target_address,
+                pending=True,
+                block_number=4169,
+            )
+        ],
+    }
+    target_verify = {
+        "ok": False,
+        "reason": "validator_rpc not healthy for hub propagation: waiting-validator-removal-handoff block_number=4177",
+        "failed_fast": True,
+        "errors": [
+            {
+                "service_name": "mainneta-super1",
+                "error": "validator_rpc not healthy for hub propagation: waiting-validator-removal-handoff block_number=4177",
+            }
+        ],
+        "nodes": [
+            _removal_verify_node(
+                "mainneta-super1",
+                target_address,
+                target_address,
+                pending=True,
+                block_number=4177,
+                include_removal_handoff=False,
+            )
+        ],
+    }
+
+    resumed = control.resumable_remove_preverify(
+        preverify,
+        target_verify,
+        target_service_name="mainneta-super1",
     )
 
     assert resumed is not None

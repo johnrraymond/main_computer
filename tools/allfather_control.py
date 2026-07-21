@@ -949,6 +949,15 @@ def normalize_ethereum_private_key(private_key: Any) -> str:
     return "0x" + raw.lower()
 
 
+def normalize_observed_ethereum_address(address: Any) -> str:
+    raw = str(address or "").strip()
+    if raw.startswith(("0x", "0X")):
+        raw = raw[2:]
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", raw):
+        return ""
+    return "0x" + raw.lower()
+
+
 def checksum_ethereum_address(address_hex: str) -> str:
     raw = str(address_hex or "").strip().lower()
     if raw.startswith("0x"):
@@ -19637,6 +19646,45 @@ def target_validator_address_from_verify(verify_result: Mapping[str, Any], servi
     return ""
 
 
+def target_waiting_removal_validator_addresses(verify_result: Mapping[str, Any], service_name: str) -> set[str]:
+    """Return live target validator addresses observed in the removal-wait state.
+
+    This intentionally does not require the validator_removal_handoff component
+    itself. Some probe payloads can still prove the current target is alive and
+    waiting for removal handoff even when the handoff component is missing from
+    that specific target-only verification result.
+    """
+    addresses: set[str] = set()
+    for host_entry in verify_result.get("nodes") or []:
+        if not isinstance(host_entry, Mapping):
+            continue
+        for node_entry in host_entry.get("nodes") or []:
+            if not isinstance(node_entry, Mapping):
+                continue
+            if str(node_entry.get("service_name") or "").strip() != service_name:
+                continue
+            internal = node_entry.get("internal_status") if isinstance(node_entry.get("internal_status"), Mapping) else {}
+            functions = internal.get("functions") if isinstance(internal.get("functions"), Mapping) else {}
+            validator = functions.get("validator_rpc") if isinstance(functions.get("validator_rpc"), Mapping) else {}
+            foundationdb = functions.get("foundationdb") if isinstance(functions.get("foundationdb"), Mapping) else {}
+            address = normalize_observed_ethereum_address(str(validator.get("validator_address") or ""))
+            try:
+                block_number = int(validator.get("block_number") or 0)
+            except (TypeError, ValueError):
+                block_number = 0
+            if (
+                address
+                and str(validator.get("status") or "").strip() == "waiting-validator-removal-handoff"
+                and bool(validator.get("running"))
+                and bool(validator.get("json_rpc_ok") or validator.get("rpc_http_ok"))
+                and block_number > 0
+                and str(foundationdb.get("status") or "").strip() == "running"
+                and bool(foundationdb.get("running"))
+            ):
+                addresses.add(address)
+    return addresses
+
+
 def latest_validator_block_number_from_verify(verify_result: Mapping[str, Any]) -> int:
     """Return the highest live validator block observed by lifecycle verification."""
     highest = 0
@@ -19720,28 +19768,49 @@ def resumable_remove_preverify(
     if not initial_errors or not initial_error_names.issubset(initial_pending_names):
         return None
 
-    target_address = target_validator_address_from_verify(target_verify, target_service_name)
-    if not target_address:
-        return None
-
     target_errors = [
         dict(item)
         for item in (target_verify.get("errors") or [])
         if isinstance(item, Mapping) and str(item.get("service_name") or "").strip()
     ]
     target_pending = removal_handoff_pending_details(target_verify)
+    pending = initial_pending + target_pending
+    target_self_pending = [
+        item
+        for item in pending
+        if str(item.get("service_name") or "").strip() == target_service_name
+        and normalize_observed_ethereum_address(str(item.get("validator_address") or ""))
+        and normalize_observed_ethereum_address(str(item.get("validator_address") or ""))
+        == normalize_observed_ethereum_address(str(item.get("target_validator_address") or ""))
+    ]
+
+    target_address = normalize_observed_ethereum_address(target_validator_address_from_verify(target_verify, target_service_name))
+    if not target_address and target_self_pending:
+        target_address = normalize_observed_ethereum_address(str(target_self_pending[0].get("validator_address") or ""))
+    if not target_address:
+        return None
+
     target_pending_names = {str(item.get("service_name") or "") for item in target_pending}
     target_error_names = {str(item.get("service_name") or "") for item in target_errors}
     if target_verify.get("ok") is not True:
-        if not target_errors or not target_error_names.issubset(target_pending_names):
+        if not target_errors:
             return None
+        unresolved_target_errors = target_error_names - target_pending_names
+        if unresolved_target_errors:
+            target_waiting_addresses = target_waiting_removal_validator_addresses(target_verify, target_service_name)
+            safe_target_self_wait = (
+                unresolved_target_errors == {target_service_name}
+                and bool(target_self_pending)
+                and target_address in target_waiting_addresses
+            )
+            if not safe_target_self_wait:
+                return None
 
-    normalized_target = target_address.lower()
     pending = initial_pending + target_pending
     mismatched = [
         item
         for item in pending
-        if str(item.get("target_validator_address") or "").strip().lower() != normalized_target
+        if normalize_observed_ethereum_address(str(item.get("target_validator_address") or "")) != target_address
     ]
     if mismatched:
         return None

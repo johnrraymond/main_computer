@@ -236,6 +236,68 @@
     return globalThis.McelRequirementsRegistry || globalThis.window?.McelRequirementsRegistry || null;
   }
 
+  function getCodeEditorSurfaceDiagnostics() {
+    return globalThis.McelCodeEditorSurfaceDiagnostics || globalThis.window?.McelCodeEditorSurfaceDiagnostics || null;
+  }
+
+  function unavailableSurfacePathwaySummary(reason) {
+    return {
+      contractVersion: "mcel.code-editor-surface-diagnostics.v1",
+      status: "unavailable",
+      valid: false,
+      semanticRidgesPresent: false,
+      surfaceIrBuildable: false,
+      surfaceIrValid: false,
+      layoutGrammarPresent: false,
+      layoutGrammarValid: false,
+      extractable: false,
+      roundTripStatus: "unavailable",
+      counts: {errors: 0, warnings: 1, ok: 0},
+      diagnosticCodes: [reason || "code-editor-surface-diagnostics-api-unavailable"]
+    };
+  }
+
+  function attachMcelSurfacePathway(report, snapshot, options = {}) {
+    if (!report || report.appId !== "code-editor") return report;
+    const api = getCodeEditorSurfaceDiagnostics();
+    const pathwayInput = {
+      ...report,
+      measurements: {
+        ...(report.measurements || {}),
+        ...(snapshot ? {
+          viewport: snapshot.viewport || report.measurements?.viewport || {},
+          requiredRegions: snapshot.requiredRegions || report.measurements?.requiredRegions || {},
+          optionalRegions: snapshot.optionalRegions || report.measurements?.optionalRegions || {},
+          surfaces: snapshot.surfaces || report.measurements?.surfaces || {}
+        } : {})
+      }
+    };
+
+    let summary = null;
+    if (!api || typeof api.summarizeForDiagnosis !== "function") {
+      summary = unavailableSurfacePathwaySummary("code-editor-surface-diagnostics-api-unavailable");
+    } else {
+      try {
+        summary = api.summarizeForDiagnosis(pathwayInput, options.surfacePathwayOptions || {});
+      } catch (error) {
+        summary = {
+          ...unavailableSurfacePathwaySummary("code-editor-surface-diagnostics-threw"),
+          status: "fail",
+          valid: false,
+          counts: {errors: 1, warnings: 0, ok: 0},
+          errorMessage: String(error?.message || error || "")
+        };
+      }
+    }
+
+    report.mcelSurfacePathway = summary;
+    report.summary = {
+      ...(report.summary || {}),
+      mcelSurfacePathway: summary
+    };
+    return report;
+  }
+
   function getRegistryDiagnosisContract(appId, mode) {
     const registry = getRegistry();
     if (!registry) return null;
@@ -1540,6 +1602,7 @@
     report.measurements.layoutCollisions = snapshot.layoutCollisions;
     report.measurements.contentFitViolations = snapshot.contentFitViolations;
     report = applyOverlayFindings(report, snapshot);
+    report = attachMcelSurfacePathway(report, snapshot, options);
     report.buckets = buildReportBuckets(report);
 
     lastReport = report;
@@ -1649,6 +1712,8 @@
         findCollapsedOwner,
         visibleAndUseful,
         surfaceOwnershipProbe,
+        getCodeEditorSurfaceDiagnostics,
+        attachMcelSurfacePathway,
         buildReportBuckets,
         detectOverlays,
         detectLayoutCollisions,
