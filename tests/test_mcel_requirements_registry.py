@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -536,6 +539,10 @@ def test_registry_cli_emits_report_and_lab_payload(tmp_path: Path) -> None:
 
 
 def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is unavailable; requirements registry browser API smoke test cannot run")
+
     script_path = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-requirements-registry.js"
     script = f"""
     const fs = require("fs");
@@ -585,7 +592,7 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
     }}));
     """
     result = subprocess.run(
-        ["node", "-e", script],
+        [node, "-e", script],
         cwd=ROOT,
         text=True,
         capture_output=True,

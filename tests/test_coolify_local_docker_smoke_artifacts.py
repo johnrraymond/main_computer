@@ -137,7 +137,12 @@ Container 5b358f655c61_mc-applications-coolify Error response from daemon: Error
 
     def fake_run(command: list[str], *, check: bool = True, capture: bool = False, input_text=None, timeout_seconds=None):
         calls.append(command)
-        if command[:2] == ["docker", "rm"]:
+        if command[-4:] == [
+            "rm",
+            "-f",
+            "5b358f655c615f6f15094afb2566cf32b67f0e870d9830aa5ab671f0f0d4623b",
+            "mc-applications-coolify",
+        ]:
             return module.subprocess.CompletedProcess(command, 0, stdout="5b358f655c61\n", stderr="")
         if "down" in command:
             assert "-v" not in command
@@ -154,15 +159,13 @@ Container 5b358f655c61_mc-applications-coolify Error response from daemon: Error
     assert "down" in calls[1]
     assert "--remove-orphans" in calls[1]
     assert "-v" not in calls[1]
-    assert calls[2] == [
-        "docker",
+    assert calls[2][-4:] == [
         "rm",
         "-f",
         "5b358f655c615f6f15094afb2566cf32b67f0e870d9830aa5ab671f0f0d4623b",
         "mc-applications-coolify",
     ]
     assert calls[3][-5:] == ["up", "-d", "--build", "--force-recreate", "--remove-orphans"]
-
 
 def test_local_docker_compose_up_still_retries_stale_missing_container(monkeypatch, tmp_path: Path) -> None:
     module = load_local_docker_module()
@@ -433,10 +436,10 @@ def test_local_docker_python_script_has_local_only_onboarding_and_api_helpers() 
     module = load_local_docker_module()
 
     assert module.API_TOKEN_NAME == "main-computer-local-smoke"
-    assert module.API_TOKEN_ABILITIES == ["*"]
+    assert module.API_TOKEN_ABILITIES == ["root", "read", "write", "deploy"]
+    assert "*" not in module.API_TOKEN_ABILITIES
     assert module.api_url(Path("/repo"), "/v1/projects").endswith("/api/v1/projects")
     assert module.api_url(Path("/repo"), "/health").endswith("/api/health")
-
 
 def test_local_docker_python_script_accepts_next_phase_actions() -> None:
     module = load_local_docker_module()
@@ -523,6 +526,10 @@ def test_local_docker_ensure_api_token_retries_after_dashboard_404(monkeypatch, 
         calls.append("read-token")
         return "token-value"
 
+    def fake_abilities(root: Path, token: str):
+        calls.append(f"abilities:{token}")
+        return True, "existing token has required local smoke abilities"
+
     def fake_usable(root: Path, token: str):
         calls.append(f"probe:{token}")
         if calls.count("probe:token-value") == 1:
@@ -538,6 +545,7 @@ def test_local_docker_ensure_api_token_retries_after_dashboard_404(monkeypatch, 
 
     monkeypatch.setattr(module, "enable_api_in_db", fake_enable)
     monkeypatch.setattr(module, "read_api_token", fake_read)
+    monkeypatch.setattr(module, "api_token_has_required_abilities", fake_abilities)
     monkeypatch.setattr(module, "api_token_looks_usable", fake_usable)
     monkeypatch.setattr(module, "clear_coolify_runtime_caches", fake_clear)
     monkeypatch.setattr(module, "create_api_token_in_db", fail_create)
@@ -549,13 +557,13 @@ def test_local_docker_ensure_api_token_retries_after_dashboard_404(monkeypatch, 
     assert calls == [
         "enable",
         "read-token",
+        "abilities:token-value",
         "probe:token-value",
         "clear:a dashboard 404 from the Coolify API probe",
         "probe:token-value",
     ]
     assert "cleared Coolify runtime caches" in detail
     assert "can list projects" in detail
-
 
 def test_local_docker_ensure_api_token_reports_route_diagnostics_after_api_404_retry_fails(
     monkeypatch, tmp_path: Path
@@ -1174,7 +1182,8 @@ def test_local_docker_status_reuses_onboarding_login_check_for_auth(monkeypatch,
 
     state_source = module.local_state_dir(tmp_path) / "source"
     state_source.mkdir(parents=True)
-    (state_source / ".env").write_text(module.render_env(tmp_path), encoding="utf-8")
+    env_text, _changed = module.upsert_env_values(module.render_env(tmp_path), root=tmp_path)
+    (state_source / ".env").write_text(env_text, encoding="utf-8")
     module.credentials_file(tmp_path).write_text("credentials", encoding="utf-8")
 
     monkeypatch.setattr(module, "docker_compose_command", lambda root, args: ["docker", "compose", *args])
@@ -1199,7 +1208,6 @@ def test_local_docker_status_reuses_onboarding_login_check_for_auth(monkeypatch,
     assert calls == ["onboarding"]
     assert "Coolify first-run onboarding is not blocking local smoke" in output
     assert "generated credentials authenticated while checking the Coolify projects route" in output
-
 
 def test_local_docker_onboarding_status_accepts_api_smoke_when_projects_route_is_noisy(monkeypatch, tmp_path: Path) -> None:
     module = load_local_docker_module()
@@ -1328,9 +1336,9 @@ def test_local_docker_deploy_smoke_ensures_destination_network(monkeypatch) -> N
 
     def fake_run(cmd: list[str], *, check: bool = True, capture: bool = False, input_text=None, timeout_seconds=None):
         calls.append(cmd)
-        if cmd == ["docker", "network", "inspect", "coolify"]:
+        if cmd[-3:] == ["network", "inspect", "coolify"]:
             return module.subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not found")
-        if cmd == ["docker", "network", "create", "coolify"]:
+        if cmd[-3:] == ["network", "create", "coolify"]:
             return module.subprocess.CompletedProcess(cmd, 0, stdout="coolify\n", stderr="")
         raise AssertionError(cmd)
 
@@ -1340,11 +1348,10 @@ def test_local_docker_deploy_smoke_ensures_destination_network(monkeypatch) -> N
 
     assert ok
     assert "created local Docker destination network" in detail
-    assert calls == [
-        ["docker", "network", "inspect", "coolify"],
-        ["docker", "network", "create", "coolify"],
+    assert [cmd[-3:] for cmd in calls] == [
+        ["network", "inspect", "coolify"],
+        ["network", "create", "coolify"],
     ]
-
 
 def test_local_docker_deploy_smoke_drains_coolify_queue_once(monkeypatch, tmp_path: Path) -> None:
     module = load_local_docker_module()
@@ -1500,6 +1507,10 @@ def test_local_docker_ensure_infra_status_sets_up_ssh_ready_local_target(monkeyp
         calls.append("key")
         return True, "localhost PrivateKey id 0 is ready"
 
+    def fake_self_ssh(root: Path):
+        calls.append("self-ssh")
+        return True, "Coolify self-SSH deploy path is ready"
+
     def fake_target(root: Path):
         calls.append("target")
         return True, "local deployment target is ready", {"network": "coolify"}
@@ -1511,16 +1522,17 @@ def test_local_docker_ensure_infra_status_sets_up_ssh_ready_local_target(monkeyp
     monkeypatch.setattr(module, "api_smoke_status", fake_api)
     monkeypatch.setattr(module, "ensure_local_server_usable_in_db", fake_server)
     monkeypatch.setattr(module, "ensure_localhost_private_key_in_db", fake_key)
+    monkeypatch.setattr(module, "ensure_coolify_self_ssh_deploy_path", fake_self_ssh)
     monkeypatch.setattr(module, "local_deploy_target_from_db", fake_target)
     monkeypatch.setattr(module, "ensure_local_deploy_network", fake_network)
 
     ok, detail = module.ensure_infra_status(tmp_path)
 
     assert ok is True
-    assert calls == ["api", "server", "key", "target", "network:coolify"]
+    assert calls == ["api", "server", "key", "self-ssh", "target", "network:coolify"]
     assert "PrivateKey id 0 is ready" in detail
+    assert "self-SSH deploy path is ready" in detail
     assert "local Docker destination network exists" in detail
-
 
 def test_local_docker_smoke_compose_payload_is_base64_encoded(tmp_path: Path) -> None:
     module = load_local_docker_module()
@@ -1638,6 +1650,10 @@ def test_local_docker_deploy_smoke_status_uses_api_and_coolify_deploy(monkeypatc
         calls.append("private-key")
         return True, "localhost private key ready"
 
+    def fake_self_ssh(root: Path):
+        calls.append("self-ssh")
+        return True, "self-SSH deploy path ready"
+
     def fake_target(root: Path):
         calls.append("target")
         return True, "target ready", {
@@ -1693,6 +1709,7 @@ def test_local_docker_deploy_smoke_status_uses_api_and_coolify_deploy(monkeypatc
     monkeypatch.setattr(module, "api_smoke_status", fake_api_smoke)
     monkeypatch.setattr(module, "ensure_local_server_usable_in_db", fake_server_usable)
     monkeypatch.setattr(module, "ensure_localhost_private_key_in_db", fake_private_key)
+    monkeypatch.setattr(module, "ensure_coolify_self_ssh_deploy_path", fake_self_ssh)
     monkeypatch.setattr(module, "local_deploy_target_from_db", fake_target)
     monkeypatch.setattr(module, "ensure_local_deploy_network", fake_network)
     monkeypatch.setattr(module, "find_local_project_uuid_via_api", fake_project)
@@ -1714,6 +1731,7 @@ def test_local_docker_deploy_smoke_status_uses_api_and_coolify_deploy(monkeypatc
         "api-smoke",
         "server-usable",
         "private-key",
+        "self-ssh",
         "target",
         "network:coolify",
         "project:token-value",
@@ -1726,7 +1744,6 @@ def test_local_docker_deploy_smoke_status_uses_api_and_coolify_deploy(monkeypatc
         "queue",
         "wait:token-value:19080:main-computer-local-coolify-smoke-ok-abcd1234:deployment-uuid:180",
     ]
-
 
 def test_local_docker_deploy_smoke_discards_stale_service_record(monkeypatch, tmp_path: Path) -> None:
     module = load_local_docker_module()
@@ -1754,6 +1771,9 @@ def test_local_docker_deploy_smoke_discards_stale_service_record(monkeypatch, tm
 
     def fake_private_key(root: Path):
         return True, "localhost private key ready"
+
+    def fake_self_ssh(root: Path):
+        return True, "self-SSH deploy path ready"
 
     def fake_target(root: Path):
         return True, "target ready", {
@@ -1812,6 +1832,7 @@ def test_local_docker_deploy_smoke_discards_stale_service_record(monkeypatch, tm
     monkeypatch.setattr(module, "api_smoke_status", fake_api_smoke)
     monkeypatch.setattr(module, "ensure_local_server_usable_in_db", fake_server_usable)
     monkeypatch.setattr(module, "ensure_localhost_private_key_in_db", fake_private_key)
+    monkeypatch.setattr(module, "ensure_coolify_self_ssh_deploy_path", fake_self_ssh)
     monkeypatch.setattr(module, "local_deploy_target_from_db", fake_target)
     monkeypatch.setattr(module, "ensure_local_deploy_network", fake_network)
     monkeypatch.setattr(module, "find_local_project_uuid_via_api", fake_project)
@@ -1840,7 +1861,6 @@ def test_local_docker_deploy_smoke_discards_stale_service_record(monkeypatch, tm
         "deploy:fresh-service-uuid",
         "wait:19081:main-computer-local-coolify-smoke-ok-new",
     ]
-
 
 def test_local_docker_service_create_payload_uses_official_services_api(monkeypatch, tmp_path: Path) -> None:
     module = load_local_docker_module()
@@ -1958,11 +1978,11 @@ services:
 
     def fake_run(cmd: list[str], *, check: bool = True, capture: bool = False, input_text=None, timeout_seconds=None):
         calls.append(cmd)
-        if cmd[:2] == ["docker", "compose"]:
+        if "compose" in cmd and "up" in cmd:
             return module.subprocess.CompletedProcess(cmd, 0, stdout="Container started\n", stderr="")
-        if cmd[:3] == ["docker", "ps", "-q"]:
+        if "ps" in cmd and "-q" in cmd:
             return module.subprocess.CompletedProcess(cmd, 0, stdout="container-id\n", stderr="")
-        if cmd[:3] == ["docker", "network", "connect"]:
+        if "network" in cmd and "connect" in cmd:
             return module.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -1989,11 +2009,10 @@ services:
     assert "main-computer-local-smoke-nginx-19080-abcd1234" in rendered
     assert "127.0.0.1:19080:80" in rendered
     assert "main-computer-local-coolify-smoke-ok-abcd1234" in rendered
-    assert any(cmd[:2] == ["docker", "compose"] and "up" in cmd for cmd in calls)
-    assert any(cmd[:3] == ["docker", "network", "connect"] for cmd in calls)
+    assert any("compose" in cmd and "up" in cmd for cmd in calls)
+    assert any("network" in cmd and "connect" in cmd for cmd in calls)
 
-
-def test_local_docker_deploy_smoke_falls_back_after_coolify_queue_ssh_failure(monkeypatch, tmp_path: Path) -> None:
+def test_local_docker_deploy_smoke_reports_queue_ssh_failure_without_direct_docker_fallback(monkeypatch, tmp_path: Path) -> None:
     module = load_local_docker_module()
     calls: list[str] = []
     module.api_token_file(tmp_path).parent.mkdir(parents=True)
@@ -2007,6 +2026,9 @@ def test_local_docker_deploy_smoke_falls_back_after_coolify_queue_ssh_failure(mo
 
     def fake_private_key(root: Path):
         return True, "localhost private key ready"
+
+    def fake_self_ssh(root: Path):
+        return True, "self-SSH deploy path ready"
 
     def fake_target(root: Path):
         return True, "target ready", {
@@ -2048,17 +2070,20 @@ def test_local_docker_deploy_smoke_falls_back_after_coolify_queue_ssh_failure(mo
         calls.append("queue")
         return False, "root@host.docker.internal: Permission denied (publickey,password)."
 
-    def fake_local_fallback(root: Path, service_uuid: str, state: dict[str, object], target: dict[str, str], reason: str = ""):
-        calls.append(f"fallback:{reason}")
-        return True, "started local smoke service through Docker Desktop fallback"
+    def fail_local_fallback(*args, **kwargs):
+        raise AssertionError("deploy-smoke should report Coolify /deploy failure instead of hiding it with direct Docker")
+
+    def fake_diagnostics(root: Path, service_uuid: str, service_name: str, port: int):
+        calls.append(f"diagnostics:{service_uuid}:{port}")
+        return "Coolify deploy failure diagnostics"
 
     def fake_wait(root: Path, token: str, port: int, marker: str, deployment_uuid: str = "", *, timeout_seconds: int = 180):
-        calls.append(f"wait:{timeout_seconds}")
-        return True, "site reachable"
+        raise AssertionError("deploy-smoke should not wait for a site after the queue fails")
 
     monkeypatch.setattr(module, "api_smoke_status", fake_api_smoke)
     monkeypatch.setattr(module, "ensure_local_server_usable_in_db", fake_server_usable)
     monkeypatch.setattr(module, "ensure_localhost_private_key_in_db", fake_private_key)
+    monkeypatch.setattr(module, "ensure_coolify_self_ssh_deploy_path", fake_self_ssh)
     monkeypatch.setattr(module, "local_deploy_target_from_db", fake_target)
     monkeypatch.setattr(module, "ensure_local_deploy_network", fake_network)
     monkeypatch.setattr(module, "find_local_project_uuid_via_api", fake_project)
@@ -2069,21 +2094,21 @@ def test_local_docker_deploy_smoke_falls_back_after_coolify_queue_ssh_failure(mo
     monkeypatch.setattr(module, "smoke_service_record_compatible", fake_compatible)
     monkeypatch.setattr(module, "trigger_smoke_service_deploy_via_api", fake_deploy)
     monkeypatch.setattr(module, "drain_local_coolify_deployment_queue", fake_queue)
-    monkeypatch.setattr(module, "start_smoke_service_with_local_docker", fake_local_fallback)
+    monkeypatch.setattr(module, "start_smoke_service_with_local_docker", fail_local_fallback)
+    monkeypatch.setattr(module, "coolify_deploy_failure_diagnostics", fake_diagnostics)
     monkeypatch.setattr(module, "wait_for_smoke_deployment", fake_wait)
 
     ok, detail = module.deploy_smoke_status(tmp_path)
 
-    assert ok
-    assert "started local smoke service through Docker Desktop fallback" in detail
-    assert "site reachable" in detail
+    assert not ok
+    assert "Coolify /deploy path failed and no direct-Docker fallback was used" in detail
+    assert "Permission denied" in detail
+    assert "Coolify deploy failure diagnostics" in detail
     assert calls == [
         "deploy",
         "queue",
-        "fallback:root@host.docker.internal: Permission denied (publickey,password).",
-        "wait:180",
+        "diagnostics:service-uuid:19080",
     ]
-
 
 def test_local_docker_deploy_smoke_reports_coolify_failed_job_diagnostics() -> None:
     source = (REPO_ROOT / "tools/local-prod/coolify-local-docker.py").read_text(encoding="utf-8")

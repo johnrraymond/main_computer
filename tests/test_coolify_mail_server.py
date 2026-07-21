@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import stat
 import json
 import sys
 from pathlib import Path
@@ -116,4 +118,7 @@ def test_write_outputs_creates_operator_artifacts(tmp_path: Path) -> None:
     assert records["zone"] == "example.net"
     assert any(record["type"] == "MX" for record in records["records"])
     assert "setup config dkim domain example.net" in (tmp_path / "operator-commands.txt").read_text(encoding="utf-8")
-    assert (tmp_path / "verify-mail-server.sh").stat().st_mode & 0o111
+    verify_script = tmp_path / "verify-mail-server.sh"
+    assert verify_script.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
+    if os.name != "nt":
+        assert verify_script.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
