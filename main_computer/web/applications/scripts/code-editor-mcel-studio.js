@@ -6797,7 +6797,7 @@
         studioState.runtimeDraftText = nextDraftText;
 
         runtimePreview.innerHTML = `
-          <section class="code-studio-monaco-authoring-surface" data-code-editor-region="primary-editor" data-monaco-mounted="false" data-monaco-outcome="not-started" data-code-editor-selected-path="${escapeHtml(file.path)}">
+          <section class="code-studio-monaco-authoring-surface" data-code-editor-region="primary-editor" data-monaco-mounted="false" data-monaco-outcome="not-started" data-code-editor-selected-path="${escapeHtml(file.path)}" data-mcel-surface-id="code-editor.surface.monaco-selected-file-editor" data-mcel-surface-kind="monaco-editor" data-mcel-surface-role="primary-authoring-surface" data-mcel-surface-contract="code-editor.contract.authoring.monaco-golden-path" data-mcel-renderer="code-editor-mcel-studio" data-mcel-projection="authoring" data-mcel-region="code-editor.region.primary-editor" data-mcel-region-role="primary-authoring-surface" data-mcel-home-region="code-editor.region.primary-editor" data-mcel-actual-region="code-editor.region.primary-editor" data-mcel-teleported="false">
             <header class="code-studio-monaco-authoring-toolbar">
               <div class="code-studio-monaco-authoring-title">
                 <strong>${escapeHtml(file.path)}</strong>
@@ -6811,6 +6811,14 @@
               data-code-studio-monaco-runtime="host"
               data-code-editor-golden-path="monaco-authoring"
               data-code-editor-region="primary-editor-host"
+              data-mcel-node-id="code-editor.node.monaco-selected-file-editor"
+              data-mcel-node-type="primary_authoring_editor"
+              data-mcel-node-label="Monaco selected-file editor"
+              data-mcel-source="code-editor-mcel-studio.mountDirectMonacoAuthoring"
+              data-mcel-provenance="runtime.monaco.mount"
+              data-mcel-home-region="code-editor.region.primary-editor"
+              data-mcel-actual-region="code-editor.region.primary-editor"
+              data-mcel-teleported="false"
             >Loading Monaco editor…</div>
           </section>
         `;

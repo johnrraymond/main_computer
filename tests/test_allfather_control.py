@@ -2367,7 +2367,7 @@ def test_add_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
         control.add_node(plan, args)
 
 
-def test_remove_node_dry_run_removes_last_host_local_super_node_and_cleans_pristine_seed(tmp_path: Path) -> None:
+def test_remove_node_dry_run_preserves_private_seed_material_by_default_when_network_goes_empty(tmp_path: Path) -> None:
     path = tmp_path / "all_father.private.yaml"
     path.write_text(
         """
@@ -2422,15 +2422,78 @@ networks:
     assert payload["service_deleted"] is False
     assert payload["network_pristine_after_remove"] is True
     assert payload["private_state_updates"]["dry_run"] is True
-    assert payload["private_state_updates"]["seed_material_cleaned"] is True
-    removed_kinds = {item["kind"] for item in payload["private_state_updates"]["removed"]}
-    assert {"wallet_private_key", "foundationdb_seed", "network_seed"} <= removed_kinds
+    assert payload["private_state_updates"]["seed_material_cleaned"] is False
+    assert payload["private_state_updates"]["identity_material_preserved"] is True
+    assert payload["private_state_updates"]["removed"] == []
     assert payload["runtime_cleanup"]["enabled"] is True
     assert payload["runtime_cleanup"]["dry_run"] is True
     assert payload["runtime_cleanup"]["moves_runtime_state_dirs"] is True
     assert payload["runtime_cleanup"]["state_root_glob"].endswith("/testnet/coolify-a/testneta-super*")
     # Dry-run must not write secrets/state.
     assert "cluster_description: main-computer-testnet-allfather" in path.read_text(encoding="utf-8")
+
+
+def test_remove_node_dry_run_prune_seed_material_rotates_identity_when_requested(tmp_path: Path) -> None:
+    path = tmp_path / "all_father.private.yaml"
+    path.write_text(
+        """
+kind: main_computer.all_father.private_state.v1
+coolify:
+  hosts:
+    a:
+      name: coolify-a
+      url: https://coolify-a.example.invalid
+      api_token: token-a
+      vpn_ip: 10.116.0.3
+networks:
+  testnet:
+    wallets:
+      deployer:
+        private_key: "0x2222222222222222222222222222222222222222222222222222222222222222"
+        metadata:
+          generated_by: tools/allfather_control.py:add-node
+      captain:
+        private_key: "0x3333333333333333333333333333333333333333333333333333333333333333"
+        metadata:
+          generated_by: tools/allfather_control.py:add-node
+    node_seed_material:
+      testneta-super1:
+        wallets:
+          hub_admin:
+            private_key: "0x1111111111111111111111111111111111111111111111111111111111111111"
+            metadata:
+              generated_by: tools/allfather_control.py:add-node
+    foundationdb:
+      cluster_description: main-computer-testnet-allfather
+      cluster_id: abcdef1234567890
+      coordinator_policy: first-node-then-expand
+      reconfigure_after_join: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+            "--prune-seed-material",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.remove_node(plan, args)
+
+    assert payload["private_state_updates"]["dry_run"] is True
+    assert payload["private_state_updates"]["identity_material_preserved"] is False
+    assert payload["private_state_updates"]["seed_material_cleaned"] is True
+    removed_kinds = {item["kind"] for item in payload["private_state_updates"]["removed"]}
+    assert {"wallet_private_key", "node_seed_material", "foundationdb_seed"} <= removed_kinds
 
 
 def test_remove_node_dry_run_removes_highest_existing_super_node_without_renumbering(tmp_path: Path) -> None:
@@ -3282,7 +3345,12 @@ def test_add_node_materializes_wallet_addresses_with_private_keys(tmp_path: Path
     )
 
     written = control.load_yaml_mapping(path)
-    deployer = written["networks"]["mainnet"]["wallets"]["deployer"]
+    network_wallets = written["networks"]["mainnet"]["wallets"]
+    deployer = network_wallets["deployer"]
+    captain = network_wallets["captain"]
+    o1 = network_wallets["o1"]
+    o2 = network_wallets["o2"]
+    o3 = network_wallets["o3"]
     node_hub_admin = written["networks"]["mainnet"]["node_seed_material"]["mainneta-super1"]["wallets"]["hub_admin"]
 
     assert deployer["private_key"]
@@ -3291,11 +3359,22 @@ def test_add_node_materializes_wallet_addresses_with_private_keys(tmp_path: Path
     assert node_hub_admin["private_key"]
     assert node_hub_admin["address"] == control.ethereum_address_from_private_key(node_hub_admin["private_key"])
     assert node_hub_admin["metadata"]["address_derivation"] == "local-derive-from-private-key"
+    assert captain["private_key"] == node_hub_admin["private_key"]
+    assert captain["address"] == node_hub_admin["address"]
+    assert o1["private_key"] == deployer["private_key"]
+    assert o1["address"] == deployer["address"]
+    assert o2["private_key"] == control.deterministic_governance_office_private_key("mainnet", "mainneta-super1", 2)
+    assert o2["address"] == control.ethereum_address_from_private_key(o2["private_key"])
+    assert o3["private_key"] == control.deterministic_governance_office_private_key("mainnet", "mainneta-super1", 3)
+    assert o3["address"] == control.ethereum_address_from_private_key(o3["private_key"])
     assert control.wallet_address(wallets, "deployer") == deployer["address"]
     assert control.wallet_address(wallets, "hub_admin") == node_hub_admin["address"]
+    assert control.wallet_address(wallets, "captain") == captain["address"]
+    assert control.wallet_address(wallets, "o1") == o1["address"]
     assert updates["written"] is True
     assert "deployer" in updates["wallets_generated"]
     assert "hub_admin" in updates["wallets_generated"]
+    assert {"captain", "o1", "o2", "o3"}.issubset(set(updates["wallets_generated"]))
 
 
 def test_add_node_backfills_addresses_for_existing_generated_private_keys(tmp_path: Path) -> None:
@@ -3337,16 +3416,118 @@ networks:
     )
 
     written = control.load_yaml_mapping(path)
-    deployer = written["networks"]["mainnet"]["wallets"]["deployer"]
+    network_wallets = written["networks"]["mainnet"]["wallets"]
+    deployer = network_wallets["deployer"]
+    captain = network_wallets["captain"]
+    o1 = network_wallets["o1"]
+    o2 = network_wallets["o2"]
+    o3 = network_wallets["o3"]
     node_hub_admin = written["networks"]["mainnet"]["node_seed_material"]["mainneta-super1"]["wallets"]["hub_admin"]
 
     assert deployer["address"] == control.ethereum_address_from_private_key(deployer_key)
     assert deployer["metadata"]["address_derivation"] == "local-derive-from-private-key"
     assert node_hub_admin["address"] == control.ethereum_address_from_private_key(hub_admin_key)
     assert node_hub_admin["metadata"]["address_derivation"] == "local-derive-from-private-key"
+    assert captain["private_key"] == hub_admin_key
+    assert captain["address"] == control.ethereum_address_from_private_key(hub_admin_key)
+    assert o1["private_key"] == deployer_key
+    assert o1["address"] == control.ethereum_address_from_private_key(deployer_key)
+    assert o2["private_key"] == control.deterministic_governance_office_private_key("mainnet", "mainneta-super1", 2)
+    assert o2["address"] == control.ethereum_address_from_private_key(o2["private_key"])
+    assert o3["private_key"] == control.deterministic_governance_office_private_key("mainnet", "mainneta-super1", 3)
+    assert o3["address"] == control.ethereum_address_from_private_key(o3["private_key"])
     assert updates["written"] is True
     wallet_updates = [item for item in updates["generated"] if str(item.get("kind", "")).startswith("wallet_")]
-    assert {item["kind"] for item in wallet_updates} == {"wallet_address"}
+    assert {item["wallet"] for item in wallet_updates} >= {"deployer", "hub_admin", "captain", "o1", "o2", "o3"}
+
+
+def test_add_node_reuses_preserved_office_wallets_for_new_first_node_cell(tmp_path: Path) -> None:
+    path = tmp_path / "all_father.private.yaml"
+    captain_key = "0x" + "1" * 64
+    old_hub_admin_key = "0x" + "2" * 64
+    deployer_key = "0x" + "3" * 64
+    o2_key = "0x" + "4" * 64
+    o3_key = "0x" + "5" * 64
+    path.write_text(
+        f"""
+kind: main_computer.all_father.private_state.v1
+networks:
+  mainnet:
+    wallets:
+      deployer:
+        private_key: "{deployer_key}"
+      captain:
+        private_key: "{captain_key}"
+        address: "{control.ethereum_address_from_private_key(captain_key)}"
+      o2:
+        private_key: "{o2_key}"
+        address: "{control.ethereum_address_from_private_key(o2_key)}"
+      o3:
+        private_key: "{o3_key}"
+        address: "{control.ethereum_address_from_private_key(o3_key)}"
+    node_seed_material:
+      mainneta-super1:
+        wallets:
+          hub_admin:
+            private_key: "{old_hub_admin_key}"
+            address: "{control.ethereum_address_from_private_key(old_hub_admin_key)}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    state = control.load_yaml_mapping(path)
+
+    _, wallets, updates = control.materialize_private_state_for_add_node(
+        state,
+        path,
+        "mainnet",
+        ordinal=1,
+        cell_id="mainnetc-super1",
+        no_contracts=False,
+        dry_run=False,
+    )
+
+    written = control.load_yaml_mapping(path)
+    new_hub_admin = written["networks"]["mainnet"]["node_seed_material"]["mainnetc-super1"]["wallets"]["hub_admin"]
+    assert new_hub_admin["private_key"] == captain_key
+    assert new_hub_admin["address"] == control.ethereum_address_from_private_key(captain_key)
+    assert written["networks"]["mainnet"]["wallets"]["captain"]["private_key"] == captain_key
+    assert written["networks"]["mainnet"]["wallets"]["o2"]["private_key"] == o2_key
+    assert written["networks"]["mainnet"]["wallets"]["o3"]["private_key"] == o3_key
+    assert control.wallet_private_key(wallets, "hub_admin") == captain_key
+    assert any(item["wallet"] == "hub_admin" and item["kind"] == "wallet_private_key" for item in updates["generated"])
+
+
+def test_super_compose_passes_private_state_governance_office_keys_to_runtime() -> None:
+    key0 = "0x" + "1" * 64
+    key2 = "0x" + "4" * 64
+    compose = control.render_super_node_compose(
+        {
+            "cell_id": "mainneta-super1",
+            "network_key": "mainnet",
+            "deployment_id": "test",
+            "ports": {
+                "guard_container": 41414,
+                "guard_host": 41600,
+                "hub_container": 8785,
+                "rpc_container": 8545,
+                "fdb_container": 4550,
+                "fdb_host": 44650,
+                "p2p_container": 30303,
+                "p2p_host": 46300,
+            },
+            "foundationdb": {},
+            "bootstrap": {"contracts_requested": True},
+            "state_root": "/data/main-computer/allfather/supernodes/mainnet/coolify-a/mainneta-super1",
+        },
+        hub_admin_private_key=key0,
+        deployer_private_key="0x" + "3" * 64,
+        governance_office_private_keys={"captain": key0, "o2": key2},
+    )
+
+    assert f'MC_ALLFATHER_GOVERNANCE_OFFICE_0_PRIVATE_KEY: "{key0}"' in compose
+    assert f'MC_ALLFATHER_GOVERNANCE_OFFICE_2_PRIVATE_KEY: "{key2}"' in compose
+    assert "governance_office_env_private_key" in control.super_server_command_script()
+    assert "private-state-office" in control.super_server_command_script()
 
 
 def test_hub_propagate_parser_replaces_traefik_name(tmp_path: Path) -> None:
@@ -4420,55 +4601,6 @@ def test_remove_node_last_network_node_plans_network_wide_cleanup(tmp_path: Path
     assert payload["network_pristine_after_remove"] is True
 
 
-def test_zero_node_cleanup_attempts_all_heads_and_uses_extended_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = write_private_state(tmp_path)
-    args = control.parse_args(
-        [
-            "remove-node",
-            "testnet",
-            "--host",
-            "coolify-a",
-            "--private-state",
-            str(path),
-            "--dry-run",
-            "--existing-count",
-            "1",
-        ]
-    )
-    plan = control.build_plan_from_args(args)
-    calls: list[tuple[str, float | None]] = []
-
-    def fake_runtime_cleanup(
-        plan_arg,
-        network_key,
-        head,
-        client,
-        args_arg,
-        context,
-        tried,
-        *,
-        wait_s_override=None,
-    ):
-        calls.append((head.coolify_server, wait_s_override))
-        return {
-            "enabled": True,
-            "ready": head.coolify_server == "coolify-a",
-            "dry_run": False,
-            "reason": "ready" if head.coolify_server == "coolify-a" else "metadata callback was not observed",
-            "wait_s": wait_s_override,
-        }
-
-    monkeypatch.setattr(control, "run_super_runtime_cleanup", fake_runtime_cleanup)
-
-    cleanup = control.cleanup_empty_network_runtime_all_hosts(plan, "testnet", args, {})
-
-    assert [host["host"] for host in cleanup["hosts"]] == ["coolify-a", "coolify-b"]
-    assert [host for host, _wait in calls] == ["coolify-a", "coolify-b"]
-    assert all(wait is not None and wait >= control.DEFAULT_ZERO_NODE_RUNTIME_CLEANUP_WAIT_S for _host, wait in calls)
-    assert cleanup["ok"] is False
-    assert cleanup["errors"] == [{"host": "coolify-b", "error": "metadata callback was not observed"}]
-
-
 def test_generated_super_runtime_contains_remove_handoff_guards() -> None:
     script = control.super_server_command_script()
 
@@ -4843,6 +4975,160 @@ services:
     assert result["reason"] == "exact image read from live Coolify service compose"
 
 
+
+def test_remove_node_resolves_live_runtime_image_from_compose_variable() -> None:
+    service_name = "mainnetc-super1"
+    image_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-c-test"
+    compose = f"""
+services:
+  {service_name}:
+    image: ${{MC_RUNTIME_IMAGE}}
+    environment:
+      MC_RUNTIME_IMAGE: {image_tag}
+"""
+
+    detail = {
+        "ok": True,
+        "body": {
+            "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        },
+    }
+
+    result = control.service_runtime_image_from_detail(
+        detail,
+        service_name=service_name,
+    )
+
+    assert result["ok"] is True
+    assert result["image"] == image_tag
+    assert result["reason"] == "exact image read from live Coolify service compose"
+
+
+def test_remove_node_resolves_live_runtime_image_from_super_manifest_env() -> None:
+    service_name = "mainnetc-super1"
+    image_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-c-test"
+    manifest = {
+        "runtime_image": {
+            "tag": image_tag,
+            "verified": True,
+            "service_build_disabled": True,
+        }
+    }
+    manifest_b64 = base64.b64encode(json.dumps(manifest).encode("utf-8")).decode("ascii")
+    compose = f"""
+services:
+  {service_name}:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM scratch
+    environment:
+      MC_ALLFATHER_VERIFIED_FULLHUB_RUNTIME_IMAGE: "1"
+      MC_ALLFATHER_SUPER_MANIFEST_B64: {manifest_b64}
+      MC_ALLFATHER_RUNTIME_IMAGE: {image_tag}
+"""
+
+    detail = {
+        "ok": True,
+        "body": {
+            "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        },
+    }
+
+    result = control.service_runtime_image_from_detail(
+        detail,
+        service_name=service_name,
+    )
+
+    assert result["ok"] is True
+    assert result["image"] == image_tag
+    assert result["reason"] == "exact image read from live super-node runtime environment"
+
+
+def test_remove_node_resolves_live_runtime_image_from_service_detail_environment() -> None:
+    service_name = "mainnetc-super1"
+    image_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-c-test"
+
+    detail = {
+        "ok": True,
+        "body": {
+            "name": service_name,
+            "environment_variables": [
+                {"key": "MC_ALLFATHER_VERIFIED_FULLHUB_RUNTIME_IMAGE", "value": "1"},
+                {"key": "MC_ALLFATHER_RUNTIME_IMAGE", "value": image_tag},
+            ],
+        },
+    }
+
+    result = control.service_runtime_image_from_detail(
+        detail,
+        service_name=service_name,
+    )
+
+    assert result["ok"] is True
+    assert result["image"] == image_tag
+    assert result["reason"] == "exact image read from live Coolify service metadata"
+
+
+def test_remove_node_resolves_live_runtime_image_from_service_detail_registry_fields() -> None:
+    service_name = "mainnetc-super1"
+    image_name = "main-computer/allfather-fullhub-runtime"
+    image_tag = "mainnet-coolify-c-test"
+
+    detail = {
+        "ok": True,
+        "body": {
+            "name": service_name,
+            "application": {
+                "docker_registry_image_name": image_name,
+                "docker_registry_image_tag": image_tag,
+            },
+        },
+    }
+
+    result = control.service_runtime_image_from_detail(
+        detail,
+        service_name=service_name,
+    )
+
+    assert result["ok"] is True
+    assert result["image"] == f"{image_name}:{image_tag}"
+    assert result["reason"] == "exact image read from live Coolify service metadata"
+
+
+def test_remove_node_resolves_live_runtime_image_from_service_detail_manifest_env() -> None:
+    service_name = "mainnetc-super1"
+    image_tag = "main-computer/allfather-fullhub-runtime:mainnet-coolify-c-test"
+    manifest = {
+        "runtime_image": {
+            "tag": image_tag,
+            "verified": True,
+            "service_build_disabled": True,
+        }
+    }
+    manifest_b64 = base64.b64encode(json.dumps(manifest).encode("utf-8")).decode("ascii")
+
+    detail = {
+        "ok": True,
+        "body": {
+            "name": service_name,
+            "environment": {
+                "MC_ALLFATHER_SUPER_MANIFEST_B64": manifest_b64,
+            },
+        },
+    }
+
+    result = control.service_runtime_image_from_detail(
+        detail,
+        service_name=service_name,
+    )
+
+    assert result["ok"] is True
+    assert result["image"] == image_tag
+    assert result["reason"] == "exact image read from live Coolify service metadata"
+
+
+
 def test_remove_survivor_handoff_never_invokes_image_build_prefunk() -> None:
     source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
     start = source.index("def prepare_remove_survivor_handoff(")
@@ -4875,6 +5161,58 @@ def test_remove_manifest_pins_live_image_and_disables_build_fallback() -> None:
     assert manifest["runtime_image"]["service_build_disabled"] is True
     assert manifest["bootstrap"]["bootstrap_image_fallback"] is False
     assert manifest["safety"]["remove_node_image_rebuild_disabled"] is True
+
+
+def test_remove_handoff_patches_existing_compose_without_requiring_image_tag() -> None:
+    service_name = "mainnetc-super1"
+    original_compose = f"""
+services:
+  {service_name}:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM already-live-hidden-coolify-source
+    environment:
+      MC_ALLFATHER_RUNTIME_IMAGE: ${{COOLIFY_RUNTIME_IMAGE}}
+      MC_ALLFATHER_VERIFIED_FULLHUB_RUNTIME_IMAGE: "1"
+      MC_ALLFATHER_CELL_ID: {service_name}
+"""
+    manifest = {
+        "cell_id": service_name,
+        "network_key": "mainnet",
+        "deployment_id": "handoff-test",
+        "bootstrap": {
+            "full_hub_runtime_requested": True,
+            "contracts_requested": False,
+            "hub_admin_create_requested": False,
+        },
+        "foundationdb": {
+            "target_cluster_file_after_reconfigure": "main_computer_mainnet_allfather:test@10.116.0.2:44850",
+            "coordinator_reconfigure_required": True,
+        },
+        "ports": {},
+        "safety": {},
+        "removal_handoff": {"target_service_name": "mainneta-super1", "live_qbft_completed": True},
+    }
+
+    result = control.render_remove_survivor_handoff_compose_preserving_live_image(
+        {"ok": True, "body": {"docker_compose_raw": base64.b64encode(original_compose.encode()).decode()}},
+        {},
+        manifest,
+        service_name=service_name,
+        hub_admin_private_key="0x" + "1" * 64,
+        deployer_private_key="",
+        governance_office_private_keys={},
+    )
+
+    assert result["ok"] is True
+    patched = result["compose"]
+    assert "FROM already-live-hidden-coolify-source" in patched
+    assert "MC_ALLFATHER_SUPER_MANIFEST_B64" in patched
+    assert "MC_ALLFATHER_FDB_PLAN_B64" in patched
+    assert "MC_ALLFATHER_RUNTIME_IMAGE" in patched
+    assert "COOLIFY_RUNTIME_IMAGE" in patched
+    assert result["image_changed"] is False
 
 def test_generated_super_runtime_removal_handoff_votes_all_participants_and_requires_new_block() -> None:
     script = control.super_server_command_script()

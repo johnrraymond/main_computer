@@ -111,6 +111,49 @@ def test_mainnet_captain_wallet_reads_private_state_key_without_manifest_secret(
     assert wallet.private_key == private_key
 
 
+def test_mainnet_captain_wallet_prefers_private_state_when_manifest_has_dev_defaults(tmp_path) -> None:
+    deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
+    deployment_path.parent.mkdir(parents=True)
+    deployment = {
+        "chain": {"chain_id": 42424240},
+        "offices": [
+            {
+                "office": "O0",
+                "title": "Captain",
+                "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+            }
+        ],
+    }
+    private_key = "0x" + "2" * 64
+    private_state = tmp_path / "runtime" / "state" / "main_computer.private.yaml"
+    private_state.parent.mkdir(parents=True)
+    private_state.write_text(
+        "\n".join(
+            [
+                "schema_version: 1",
+                "networks:",
+                "  mainnet:",
+                "    wallets:",
+                "      captain:",
+                "        address: \"0x0e2d466Bd9252CF122F0100a862090bd4B3aCE75\"",
+                f"        private_key: \"{private_key}\"",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    wallet = resolve_captain_wallet(
+        "captain",
+        deployment=deployment,
+        deployment_path=deployment_path,
+        private_state_path=private_state,
+    )
+
+    assert wallet.address == "0x0e2d466Bd9252CF122F0100a862090bd4B3aCE75"
+    assert wallet.private_key == private_key
+
+
 def test_private_state_key_must_match_selected_office_address(tmp_path) -> None:
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
     deployment_path.parent.mkdir(parents=True)

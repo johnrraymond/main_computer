@@ -4767,3 +4767,43 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
     display: none !important;
   }
 }
+
+
+/* MCEL surface ownership patch: the Aider context card is supporting chrome, not
+   a competing editor surface. Keep it in its owned inspector region without
+   clipping the active-context identity or shoving controls under the selected
+   files area. */
+#code-editor-app .code-studio-aider-control-shell .aider-context-toolbar[data-mcel-region="code-editor.region.aider-context"] {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  overflow: visible;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-context-toolbar[data-mcel-region="code-editor.region.aider-context"] .aider-context-meta {
+  max-height: none;
+  display: block;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-context-toolbar[data-mcel-region="code-editor.region.aider-context"] .aider-context-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(92px, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-context-toolbar[data-mcel-region="code-editor.region.aider-context"] .aider-context-actions button {
+  min-width: 0;
+  min-height: 34px;
+  white-space: normal;
+  line-height: 1.15;
+}
+
+@media (max-width: 1120px) {
+  #code-editor-app .code-studio-aider-control-shell .aider-context-toolbar[data-mcel-region="code-editor.region.aider-context"] .aider-context-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

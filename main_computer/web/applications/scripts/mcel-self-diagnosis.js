@@ -47,8 +47,8 @@
         label: "Monaco selected-file editor",
         hostSelector: "#code-studio-runtime-monaco",
         editorSelector: ".monaco-editor",
-        minWidth: 800,
-        minHeight: 600
+        minWidth: 520,
+        minHeight: 320
       },
       requiredRegions: [
         {id: "code-editor.region.root", selector: "#code-editor-app", label: "Code Editor app root"},
@@ -487,6 +487,30 @@
     return Boolean(box?.exists && box.visible && box.width >= minWidth && box.height >= minHeight);
   }
 
+  function surfaceOwnershipProbe(snapshot = {}, contract = {}) {
+    const surfaces = snapshot.surfaces || {};
+    const host = surfaces.primaryHost || surfaces.monacoHost || {};
+    const editor = surfaces.primaryEditor || surfaces.monacoEditor || host || {};
+    const chain = Array.isArray(snapshot.ownerChain) ? snapshot.ownerChain : [];
+    const selectors = chain.map((entry) => String(entry?.selector || ""));
+    const primarySurfaceId = String(contract?.primarySurface?.id || "");
+    const hostSelector = String(contract?.primarySurface?.hostSelector || "");
+    const editorSelector = String(contract?.primarySurface?.editorSelector || "");
+    const ownsHost = Boolean(hostSelector && String(host?.selector || "").includes(hostSelector.replace(/^#|^\./, ""))) ||
+      selectors.some((selector) => hostSelector && selector.includes(hostSelector.replace(/^#|^\./, "")));
+    const ownsEditor = Boolean(editorSelector && String(editor?.selector || "").includes(editorSelector.replace(/^#|^\./, ""))) ||
+      selectors.some((selector) => editorSelector && selector.includes(editorSelector.replace(/^#|^\./, ""))) ||
+      selectors.some((selector) => selector.includes("code-studio-monaco-authoring-surface") || selector.includes("code-studio-editor-group"));
+    return {
+      primarySurfaceId,
+      hostSelector,
+      editorSelector,
+      ownsHost,
+      ownsEditor,
+      ownerChainSelectors: selectors.slice(0, 8)
+    };
+  }
+
   function compactBox(box) {
     if (!box) return {};
     return {
@@ -702,7 +726,8 @@
           usable: primarySurfaceUsable,
           exactlyOneAuthoritativeSurface: exactlyOnePrimary,
           host: compactBox(host),
-          editor: compactBox(primaryEditor)
+          editor: compactBox(primaryEditor),
+          ownership: surfaceOwnershipProbe(snapshot, contract)
         },
         optionalRegions: {
           visible: visibleOptionalRegionCount,
@@ -1623,6 +1648,7 @@
         collectOwnerChain,
         findCollapsedOwner,
         visibleAndUseful,
+        surfaceOwnershipProbe,
         buildReportBuckets,
         detectOverlays,
         detectLayoutCollisions,

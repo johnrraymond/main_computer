@@ -59,7 +59,6 @@ DEFAULT_COOLIFY_TIMEOUT_S = 120.0
 DEFAULT_COOLIFY_RETRIES = 5
 DEFAULT_COOLIFY_RETRY_SLEEP_S = 5.0
 DEFAULT_REMOVE_DELETE_WAIT_S = 45.0
-DEFAULT_ZERO_NODE_RUNTIME_CLEANUP_WAIT_S = 300.0
 DEFAULT_REMOVE_DELETE_POLL_S = 2.0
 DEFAULT_ADD_NODE_READY_WAIT_S = 1800.0
 DEFAULT_ADD_NODE_READY_POLL_S = 5.0
@@ -5721,6 +5720,316 @@ def service_detail_compose_diagnostics(
     }
 
 
+
+
+def _compose_environment_to_mapping(value: Any) -> dict[str, str]:
+    env: dict[str, str] = {}
+
+    def put(key: Any, nested: Any) -> None:
+        if key is None or nested is None:
+            return
+        name = str(key).strip()
+        if name:
+            env[name] = str(nested)
+
+    def put_mapping_item(item: Mapping[str, Any]) -> bool:
+        name = (
+            item.get("key")
+            or item.get("name")
+            or item.get("variable")
+            or item.get("env_key")
+            or item.get("environment_key")
+        )
+        if name is None:
+            return False
+        if "value" in item:
+            put(name, item.get("value"))
+            return True
+        if "env_value" in item:
+            put(name, item.get("env_value"))
+            return True
+        if "environment_value" in item:
+            put(name, item.get("environment_value"))
+            return True
+        return False
+
+    if isinstance(value, Mapping):
+        if put_mapping_item(value):
+            return env
+        for key, nested in value.items():
+            if isinstance(nested, Mapping) and "value" in nested:
+                put(key, nested.get("value"))
+            else:
+                put(key, nested)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                if "=" not in item:
+                    continue
+                key, nested = item.split("=", 1)
+                put(key, nested)
+            elif isinstance(item, Mapping):
+                if put_mapping_item(item):
+                    continue
+                for key, nested in item.items():
+                    put(key, nested)
+    elif isinstance(value, str):
+        for raw_line in value.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, nested = line.split("=", 1)
+            put(key, nested)
+    return env
+
+
+def _resolve_compose_variable(value: str, env: Mapping[str, str]) -> str:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return ""
+
+    unresolved = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal unresolved
+        braced_name = match.group(1)
+        braced_default = match.group(2)
+        plain_name = match.group(3)
+        name = braced_name or plain_name or ""
+        if name in env and str(env.get(name) or "").strip():
+            return str(env.get(name) or "").strip()
+        if braced_default is not None:
+            return str(braced_default)
+        unresolved = True
+        return match.group(0)
+
+    resolved = re.sub(
+        r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+        replace,
+        text_value,
+    ).strip()
+    if unresolved or "${" in resolved:
+        return ""
+    return resolved
+
+
+def _runtime_image_from_super_manifest_env(env: Mapping[str, str]) -> str:
+    manifest_b64 = str(env.get("MC_ALLFATHER_SUPER_MANIFEST_B64") or "").strip()
+    if not manifest_b64:
+        return ""
+    try:
+        manifest_raw = base64.b64decode(manifest_b64.encode("ascii"), validate=False).decode("utf-8")
+        manifest = json.loads(manifest_raw)
+    except Exception:
+        return ""
+    if not isinstance(manifest, Mapping):
+        return ""
+    runtime_image = manifest.get("runtime_image")
+    if not isinstance(runtime_image, Mapping):
+        return ""
+    tag = str(runtime_image.get("tag") or "").strip()
+    if not tag or "${" in tag:
+        return ""
+    if bool(runtime_image.get("verified")) or bool(runtime_image.get("service_build_disabled")):
+        return tag
+    return ""
+
+
+def _runtime_image_from_compose_service_environment(service: Mapping[str, Any]) -> str:
+    env = _compose_environment_to_mapping(service.get("environment"))
+    manifest_tag = _runtime_image_from_super_manifest_env(env)
+    if manifest_tag:
+        return manifest_tag
+    verified = str(env.get("MC_ALLFATHER_VERIFIED_FULLHUB_RUNTIME_IMAGE") or "").strip().lower()
+    if verified not in {"1", "true", "yes", "on"}:
+        return ""
+    for key in (
+        "MC_ALLFATHER_RUNTIME_IMAGE",
+        "MC_ALLFATHER_SUPER_BASE_IMAGE",
+    ):
+        tag = str(env.get(key) or "").strip()
+        if tag and "${" not in tag:
+            return tag
+    return ""
+
+
+
+_CONTAINER_IMAGE_DIRECT_KEYS = {
+    "image",
+    "docker_image",
+    "container_image",
+    "runtime_image",
+    "source_image",
+    "target_image",
+    "full_image",
+    "image_tag",
+}
+_CONTAINER_IMAGE_NAME_KEYS = {
+    "docker_registry_image_name",
+    "docker_image_name",
+    "image_name",
+    "repository",
+    "repo",
+}
+_CONTAINER_IMAGE_TAG_KEYS = {
+    "docker_registry_image_tag",
+    "tag",
+}
+
+
+def _looks_like_container_image_tag(value: Any) -> bool:
+    text = str(value or "").strip().strip("'\"")
+    if not text:
+        return False
+    if "${" in text or "$" in text:
+        return False
+    if any(ch.isspace() for ch in text):
+        return False
+    if len(text) > 512:
+        return False
+    if text.startswith(("http://", "https://")):
+        return False
+    if "/" not in text:
+        return False
+    last = text.rsplit("/", 1)[-1]
+    return ":" in last or "@sha256:" in text
+
+
+def _normalize_container_image_tag(value: Any) -> str:
+    text = str(value or "").strip().strip("'\"")
+    return text if _looks_like_container_image_tag(text) else ""
+
+
+def _combine_image_name_and_tag(name: Any, tag: Any) -> str:
+    image_name = str(name or "").strip().strip("'\"")
+    image_tag = str(tag or "").strip().strip("'\"")
+    if not image_name or not image_tag:
+        return ""
+    if "${" in image_name or "${" in image_tag:
+        return ""
+    if ":" in image_name.rsplit("/", 1)[-1] or "@sha256:" in image_name:
+        return _normalize_container_image_tag(image_name)
+    return _normalize_container_image_tag(f"{image_name}:{image_tag}")
+
+
+def _add_unique_image_candidate(candidates: list[str], value: Any) -> None:
+    image = _normalize_container_image_tag(value)
+    if image and image not in candidates:
+        candidates.append(image)
+
+
+def _service_detail_environment_mappings(body: Mapping[str, Any]) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+
+    def add(value: Any) -> None:
+        env = _compose_environment_to_mapping(value)
+        if not env:
+            return
+        key = tuple(sorted((str(k), str(v)) for k, v in env.items()))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(env)
+
+    def walk(item: Any, key_hint: str = "") -> None:
+        key = str(key_hint or "").lower()
+        if isinstance(item, Mapping):
+            if key in {"environment", "env", "environment_variables", "environments", "variables"} or "environment" in key:
+                add(item)
+            for nested_key, nested in item.items():
+                walk(nested, str(nested_key or ""))
+        elif isinstance(item, list):
+            if key in {"environment", "env", "environment_variables", "environments", "variables"} or "environment" in key:
+                add(item)
+            for nested in item:
+                walk(nested, key_hint)
+        elif isinstance(item, str):
+            if key in {"environment", "env", "environment_variables", "environments", "variables"} or "environment" in key:
+                add(item)
+
+    walk(body)
+    return found
+
+
+def _image_candidates_from_mapping(item: Mapping[str, Any], envs: list[Mapping[str, str]]) -> list[str]:
+    candidates: list[str] = []
+
+    def walk(value: Any, key_hint: str = "") -> None:
+        key = str(key_hint or "").lower()
+        if isinstance(value, Mapping):
+            runtime_image = value.get("runtime_image")
+            if isinstance(runtime_image, Mapping):
+                tag = str(runtime_image.get("tag") or runtime_image.get("image") or runtime_image.get("image_tag") or "").strip()
+                if (
+                    tag
+                    and (bool(runtime_image.get("verified")) or bool(runtime_image.get("service_build_disabled")))
+                ):
+                    _add_unique_image_candidate(candidates, tag)
+
+            direct = value.get("image")
+            if isinstance(direct, str):
+                resolved_values = [direct]
+                resolved_values.extend(_resolve_compose_variable(direct, env) for env in envs)
+                for candidate in resolved_values:
+                    _add_unique_image_candidate(candidates, candidate)
+
+            for name_key in _CONTAINER_IMAGE_NAME_KEYS:
+                if name_key in value:
+                    for tag_key in _CONTAINER_IMAGE_TAG_KEYS:
+                        if tag_key in value:
+                            _add_unique_image_candidate(candidates, _combine_image_name_and_tag(value.get(name_key), value.get(tag_key)))
+
+            if key in _CONTAINER_IMAGE_DIRECT_KEYS:
+                tag = str(value.get("tag") or value.get("image") or value.get("image_tag") or "").strip()
+                _add_unique_image_candidate(candidates, tag)
+
+            for nested_key, nested in value.items():
+                walk(nested, str(nested_key or ""))
+            return
+
+        if isinstance(value, list):
+            for nested in value:
+                walk(nested, key_hint)
+            return
+
+        if isinstance(value, str):
+            resolved_values = [value]
+            if "$" in value:
+                resolved_values.extend(_resolve_compose_variable(value, env) for env in envs)
+            if key in _CONTAINER_IMAGE_DIRECT_KEYS or key in _CONTAINER_IMAGE_TAG_KEYS or "image" in key:
+                for candidate in resolved_values:
+                    _add_unique_image_candidate(candidates, candidate)
+
+    walk(item)
+    return candidates
+
+
+def _runtime_image_from_service_detail_metadata(body: Mapping[str, Any]) -> str:
+    envs = _service_detail_environment_mappings(body)
+    for env in envs:
+        manifest_tag = _runtime_image_from_super_manifest_env(env)
+        if manifest_tag:
+            return manifest_tag
+        verified = str(env.get("MC_ALLFATHER_VERIFIED_FULLHUB_RUNTIME_IMAGE") or "").strip().lower()
+        if verified in {"1", "true", "yes", "on"}:
+            for key in (
+                "MC_ALLFATHER_RUNTIME_IMAGE",
+                "MC_ALLFATHER_SUPER_BASE_IMAGE",
+                "MC_RUNTIME_IMAGE",
+                "RUNTIME_IMAGE",
+            ):
+                tag = str(env.get(key) or "").strip()
+                if _looks_like_container_image_tag(tag):
+                    return tag
+
+    candidates = _image_candidates_from_mapping(body, envs)
+    for image in candidates:
+        if "allfather-fullhub-runtime" in image or "allfather-super" in image:
+            return image
+    return candidates[0] if candidates else ""
+
+
 def service_runtime_image_from_detail(
     detail: Mapping[str, Any],
     *,
@@ -5767,14 +6076,34 @@ def service_runtime_image_from_detail(
         if not isinstance(service, Mapping):
             continue
 
-        image = str(service.get("image") or "").strip()
-        if not image or "${" in image:
-            continue
+        env = _compose_environment_to_mapping(service.get("environment"))
+        image = _resolve_compose_variable(str(service.get("image") or "").strip(), env)
+        if image:
+            return {
+                "ok": True,
+                "service_name": str(service_name or ""),
+                "image": image,
+                "reason": "exact image read from live Coolify service compose",
+                "candidate_count": len(candidates),
+            }
+
+        image = _runtime_image_from_compose_service_environment(service)
+        if image:
+            return {
+                "ok": True,
+                "service_name": str(service_name or ""),
+                "image": image,
+                "reason": "exact image read from live super-node runtime environment",
+                "candidate_count": len(candidates),
+            }
+
+    image = _runtime_image_from_service_detail_metadata(body)
+    if image:
         return {
             "ok": True,
             "service_name": str(service_name or ""),
             "image": image,
-            "reason": "exact image read from live Coolify service compose",
+            "reason": "exact image read from live Coolify service metadata",
             "candidate_count": len(candidates),
         }
 
@@ -5783,7 +6112,7 @@ def service_runtime_image_from_detail(
         "service_name": str(service_name or ""),
         "image": "",
         "reason": (
-            "live Coolify service compose did not expose a literal image tag"
+            "live Coolify service metadata did not expose a verified runtime image tag"
             + (f"; parse errors: {'; '.join(parse_errors[:3])}" if parse_errors else "")
         ),
         "candidate_count": len(candidates),
@@ -5867,6 +6196,184 @@ def attach_live_runtime_image_to_remove_manifest(
             }
         )
     return tag
+
+
+_REMOVE_HANDOFF_PRESERVE_IMAGE_ENV_KEYS = {
+    "MC_ALLFATHER_RUNTIME_IMAGE",
+    "MC_ALLFATHER_SUPER_BASE_IMAGE",
+    "MC_ALLFATHER_VERIFIED_FULLHUB_RUNTIME_IMAGE",
+    "MC_RUNTIME_IMAGE",
+    "RUNTIME_IMAGE",
+}
+
+
+def _super_node_service_from_compose_mapping(
+    loaded: Mapping[str, Any],
+    *,
+    service_name: str,
+) -> dict[str, Any] | None:
+    services = loaded.get("services")
+    if not isinstance(services, Mapping):
+        return None
+    service = services.get(service_name)
+    if isinstance(service, dict):
+        return service
+    if len(services) == 1:
+        only = next(iter(services.values()))
+        if isinstance(only, dict):
+            return only
+    return None
+
+
+def _rendered_super_environment_for_handoff(
+    manifest: Mapping[str, Any],
+    *,
+    hub_admin_private_key: str,
+    deployer_private_key: str,
+    governance_office_private_keys: Mapping[str, str] | None = None,
+    publish_routes: bool = False,
+) -> dict[str, str]:
+    """Return the environment the normal renderer would give a survivor handoff.
+
+    This helper is intentionally used only to copy runtime configuration into an
+    existing live compose.  It must not cause the remove-node path to select a new
+    image or a build fallback.
+    """
+
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - PyYAML is present in the project test env.
+        raise AllfatherControlError("PyYAML is required to patch survivor handoff compose.") from exc
+
+    rendered = render_super_node_compose(
+        manifest,
+        image="<preserve-live-service-image>",
+        hub_admin_private_key=hub_admin_private_key,
+        deployer_private_key=deployer_private_key,
+        governance_office_private_keys=governance_office_private_keys,
+        publish_routes=publish_routes,
+    )
+    loaded = yaml.safe_load(rendered)
+    if not isinstance(loaded, Mapping):
+        return {}
+    service_name = str(manifest.get("cell_id") or "")
+    service = _super_node_service_from_compose_mapping(loaded, service_name=service_name)
+    if not isinstance(service, Mapping):
+        return {}
+    env = _compose_environment_to_mapping(service.get("environment"))
+    for key in _REMOVE_HANDOFF_PRESERVE_IMAGE_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
+
+def render_remove_survivor_handoff_compose_preserving_live_image(
+    detail: Mapping[str, Any],
+    existing: Mapping[str, Any] | None,
+    manifest: Mapping[str, Any],
+    *,
+    service_name: str,
+    hub_admin_private_key: str,
+    deployer_private_key: str,
+    governance_office_private_keys: Mapping[str, str] | None = None,
+    publish_routes: bool = False,
+) -> dict[str, Any]:
+    """Patch the survivor's current compose without changing its image/build source.
+
+    remove-node has already verified the survivor's running hub/guard/FDB/validator
+    state through the private probe.  At this point the handoff needs only fresh
+    manifest/FDB/removal-handoff environment.  Requiring Coolify metadata to expose
+    a separately proven image tag is brittle and can block a safe delete.  This
+    path keeps the live compose's existing image/build fields exactly as they are
+    and updates only environment-driven handoff state.
+    """
+
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - PyYAML is present in the project test env.
+        raise AllfatherControlError("PyYAML is required to patch survivor handoff compose.") from exc
+
+    bodies: list[Mapping[str, Any]] = []
+    body = detail.get("body") if isinstance(detail, Mapping) else None
+    if isinstance(body, Mapping):
+        bodies.append(body)
+    if isinstance(existing, Mapping):
+        bodies.append(existing)
+
+    compose_candidates: list[str] = []
+    for candidate_body in bodies:
+        compose_candidates.extend(_compose_strings_from_service_detail_body(candidate_body))
+    seen: set[str] = set()
+    compose_candidates = [item for item in compose_candidates if item and not (item in seen or seen.add(item))]
+
+    if not compose_candidates:
+        return {
+            "ok": False,
+            "service_name": service_name,
+            "compose": "",
+            "reason": "live service compose was not observed; cannot patch survivor handoff without selecting an image",
+            "candidate_count": 0,
+        }
+
+    handoff_env = _rendered_super_environment_for_handoff(
+        manifest,
+        hub_admin_private_key=hub_admin_private_key,
+        deployer_private_key=deployer_private_key,
+        governance_office_private_keys=governance_office_private_keys,
+        publish_routes=publish_routes,
+    )
+    if not handoff_env:
+        return {
+            "ok": False,
+            "service_name": service_name,
+            "compose": "",
+            "reason": "could not render survivor handoff environment",
+            "candidate_count": len(compose_candidates),
+        }
+
+    parse_errors: list[str] = []
+    for compose_text in compose_candidates:
+        try:
+            loaded = yaml.safe_load(str(compose_text or ""))
+        except Exception as exc:
+            parse_errors.append(f"{type(exc).__name__}: {exc}")
+            continue
+        if not isinstance(loaded, dict):
+            continue
+
+        service = _super_node_service_from_compose_mapping(loaded, service_name=service_name)
+        if not isinstance(service, dict):
+            continue
+
+        existing_env = _compose_environment_to_mapping(service.get("environment"))
+        existing_env.update(handoff_env)
+        service["environment"] = existing_env
+
+        safety = manifest.get("safety") if isinstance(manifest.get("safety"), dict) else {}
+        safety["remove_node_image_preserved_from_live_compose"] = True
+        safety["remove_node_image_rebuild_disabled"] = True
+        if isinstance(manifest, dict):
+            manifest["safety"] = safety
+
+        return {
+            "ok": True,
+            "service_name": service_name,
+            "compose": yaml.safe_dump(loaded, sort_keys=False),
+            "reason": "patched live compose environment while preserving existing image/build source",
+            "candidate_count": len(compose_candidates),
+            "image_preserved": True,
+            "image_changed": False,
+        }
+
+    return {
+        "ok": False,
+        "service_name": service_name,
+        "compose": "",
+        "reason": (
+            "no live compose candidate contained the survivor service"
+            + (f"; parse errors: {'; '.join(parse_errors[:3])}" if parse_errors else "")
+        ),
+        "candidate_count": len(compose_candidates),
+    }
 
 
 def _looks_like_deployment_mapping(value: Mapping[str, Any]) -> bool:
@@ -7987,6 +8494,139 @@ def materialize_wallet_key(
         metadata.setdefault("address_derivation", "local-derive-from-private-key")
 
 
+def materialize_wallet_key_from_private_key(
+    wallets: dict[str, Any],
+    wallet_name: str,
+    *,
+    private_key: str,
+    reason: str,
+    generated: list[dict[str, Any]],
+    replace_existing: bool = False,
+) -> None:
+    private_key = nonempty_private_value(private_key)
+    if not private_key:
+        return
+
+    record = wallets.get(wallet_name)
+    if not isinstance(record, dict):
+        record = {}
+        wallets[wallet_name] = record
+
+    current_private_key = nonempty_private_value(record.get("private_key"))
+    private_key_changed = False
+    if not current_private_key:
+        record["private_key"] = private_key
+        private_key_changed = True
+        generated.append({"kind": "wallet_private_key", "wallet": wallet_name, "reason": reason})
+    elif replace_existing and current_private_key.lower() != private_key.lower():
+        record["private_key"] = private_key
+        private_key_changed = True
+        generated.append({"kind": "wallet_private_key_relinked", "wallet": wallet_name, "reason": reason})
+
+    wanted_address = ethereum_address_from_private_key(private_key)
+    current_address = nonempty_private_value(record.get("address"))
+    address_changed = False
+    if not current_address:
+        record["address"] = wanted_address
+        address_changed = True
+        generated.append({"kind": "wallet_address", "wallet": wallet_name, "reason": reason})
+    elif replace_existing and wanted_address and current_address.lower() != wanted_address.lower():
+        record["address"] = wanted_address
+        address_changed = True
+        generated.append({"kind": "wallet_address_relinked", "wallet": wallet_name, "reason": reason})
+
+    metadata = ensure_mapping_child(record, "metadata")
+    if private_key_changed:
+        metadata.update(
+            {
+                "generated_by": PRIVATE_STATE_GENERATOR,
+                "generated_at": utc_now_iso(),
+                "reason": reason,
+                "address_derivation": "local-derive-from-private-key",
+            }
+        )
+    elif address_changed:
+        metadata["address_derivation"] = "local-derive-from-private-key"
+    else:
+        metadata.setdefault("address_derivation", "local-derive-from-private-key")
+
+
+def deterministic_governance_office_private_key(network_key: str, cell_id: str, office_index: int) -> str:
+    digest = hashlib.sha256(
+        f"{clean_node_network_key(network_key)}:{cell_id}:governance-office-{int(office_index)}".encode("utf-8")
+    ).hexdigest()
+    if set(digest) == {"0"}:
+        digest = "1" + digest[1:]
+    return "0x" + digest
+
+
+def materialize_governance_office_wallets(
+    wallets: dict[str, Any],
+    *,
+    network_key: str,
+    cell_id: str,
+    hub_admin_private_key: str,
+    deployer_private_key: str,
+    generated: list[dict[str, Any]],
+) -> None:
+    """Persist Captain/O1/O2/O3 office keys without rotating existing identities.
+
+    The private-state file is the durable identity source.  When an office key is
+    already present, preserve it and make the runtime consume that key.  Missing
+    offices are initialized from the first-node hub_admin/deployer pair and the
+    legacy deterministic O2/O3 seeds.
+    """
+
+    materialize_wallet_key_from_private_key(
+        wallets,
+        "captain",
+        private_key=hub_admin_private_key,
+        reason=f"{network_key} {cell_id} captain/O0 governance bootstrap",
+        generated=generated,
+    )
+    materialize_wallet_key_from_private_key(
+        wallets,
+        "o1",
+        private_key=deployer_private_key,
+        reason=f"{network_key} {cell_id} O1 governance bootstrap",
+        generated=generated,
+    )
+    for office_index in (2, 3):
+        materialize_wallet_key_from_private_key(
+            wallets,
+            f"o{office_index}",
+            private_key=deterministic_governance_office_private_key(network_key, cell_id, office_index),
+            reason=f"{network_key} {cell_id} O{office_index} governance bootstrap",
+            generated=generated,
+        )
+
+
+def governance_office_private_keys(wallets: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "captain": wallet_private_key(wallets, "captain"),
+        "o1": wallet_private_key(wallets, "o1"),
+        "o2": wallet_private_key(wallets, "o2"),
+        "o3": wallet_private_key(wallets, "o3"),
+    }
+
+
+def governance_office_wallet_records(wallets: Mapping[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for index, name in enumerate(("captain", "o1", "o2", "o3")):
+        private_key = wallet_private_key(wallets, name)
+        address = wallet_address(wallets, name)
+        records.append(
+            {
+                "index": index,
+                "wallet": name,
+                "address": address,
+                "private_key_present": bool(private_key),
+                "source": "private-state" if private_key else "",
+            }
+        )
+    return records
+
+
 def materialize_fdb_identity(
     network: dict[str, Any],
     network_key: str,
@@ -8046,17 +8686,46 @@ def materialize_private_state_for_add_node(
     node_wallets = ensure_mapping_child(node_seed, "wallets")
     generated: list[dict[str, Any]] = []
 
-    materialize_wallet_key(
-        node_wallets,
-        "hub_admin",
-        reason=f"{network_key} {cell_id} node hub_admin bootstrap",
-        generated=generated,
-    )
-    if ordinal == 1 and not no_contracts:
+    preserved_captain_key = wallet_private_key(wallets, "captain")
+    if ordinal == 1 and preserved_captain_key:
+        materialize_wallet_key_from_private_key(
+            node_wallets,
+            "hub_admin",
+            private_key=preserved_captain_key,
+            reason=f"{network_key} {cell_id} node hub_admin relinked from preserved captain/O0",
+            generated=generated,
+            replace_existing=True,
+        )
+    else:
         materialize_wallet_key(
+            node_wallets,
+            "hub_admin",
+            reason=f"{network_key} {cell_id} node hub_admin bootstrap",
+            generated=generated,
+        )
+    if ordinal == 1 and not no_contracts:
+        preserved_o1_key = wallet_private_key(wallets, "o1")
+        if not wallet_private_key(wallets, "deployer") and preserved_o1_key:
+            materialize_wallet_key_from_private_key(
+                wallets,
+                "deployer",
+                private_key=preserved_o1_key,
+                reason=f"{network_key} first-node deployer relinked from preserved O1",
+                generated=generated,
+            )
+        else:
+            materialize_wallet_key(
+                wallets,
+                "deployer",
+                reason=f"{network_key} first-node contract bootstrap",
+                generated=generated,
+            )
+        materialize_governance_office_wallets(
             wallets,
-            "deployer",
-            reason=f"{network_key} first-node contract bootstrap",
+            network_key=network_key,
+            cell_id=str(cell_id or f"super{ordinal}"),
+            hub_admin_private_key=wallet_private_key(node_wallets, "hub_admin"),
+            deployer_private_key=wallet_private_key(wallets, "deployer"),
             generated=generated,
         )
 
@@ -8086,6 +8755,7 @@ def materialize_private_state_for_add_node(
         "wallets_generated": [item["wallet"] for item in generated if item.get("kind") == "wallet_private_key"],
         "node_hub_admin_cell_id": str(cell_id or f"super{ordinal}"),
         "node_hub_admin_private_key_present": bool(wallet_private_key(wallets_for_network, "hub_admin")),
+        "governance_office_wallets": governance_office_wallet_records(wallets_for_network),
         "node_seed_material_path": f"networks.{network_key}.node_seed_material.{cell_id or f'super{ordinal}'}.wallets.hub_admin",
         "fdb_identity_generated": any(str(item.get("kind", "")).startswith("fdb_") for item in generated),
         "fdb_cluster_description": str(fdb.get("cluster_description") or ""),
@@ -8553,6 +9223,7 @@ def require_wallet_material_for_add_node(network_key: str, ordinal: int, wallets
     hub_admin_address = wallet_address(wallets, "hub_admin")
     contracts_requested = ordinal == 1 and not no_contracts
     deployer_key = wallet_private_key(wallets, "deployer")
+    office_records = governance_office_wallet_records(wallets)
     return {
         "hub_admin_address": hub_admin_address,
         "hub_admin_private_key": hub_admin_key,
@@ -8562,6 +9233,8 @@ def require_wallet_material_for_add_node(network_key: str, ordinal: int, wallets
         "deployer_address": wallet_address(wallets, "deployer"),
         "deployer_private_key": deployer_key,
         "deployer_private_key_present": bool(deployer_key),
+        "governance_offices": office_records,
+        "governance_office_private_keys": governance_office_private_keys(wallets),
         "contracts_requested": contracts_requested,
         "contracts_deferred_until_hub_admin_ready": False,
         "contracts_deferred_until_deployer_ready": contracts_requested and not bool(deployer_key),
@@ -9436,6 +10109,7 @@ def super_manifest(
                 "address": wallet_material["deployer_address"],
                 "private_key_present": bool(wallet_material["deployer_private_key"]),
             },
+            "governance_offices": wallet_material["governance_offices"],
         },
         "guardrails": {
             "private_state_is_topology": False,
@@ -10198,6 +10872,16 @@ def derive_address(private_key: str) -> str:
     except Exception:
         return ""
 
+def governance_office_env_private_key(index: int) -> str:
+    for name in (
+        f"MC_ALLFATHER_GOVERNANCE_OFFICE_{index}_PRIVATE_KEY",
+        f"MC_ALLFATHER_OFFICE_{index}_PRIVATE_KEY",
+    ):
+        key = env_private_key(name)
+        if key:
+            return key
+    return ""
+
 def bootstrap_wallets() -> dict:
     hub_admin_key = env_private_key("MC_ALLFATHER_HUB_ADMIN_PRIVATE_KEY")
     deployer_key = env_private_key("MC_ALLFATHER_DEPLOYER_PRIVATE_KEY")
@@ -10206,15 +10890,23 @@ def bootstrap_wallets() -> dict:
         "deployer": {"private_key_present": bool(deployer_key), "address": derive_address(deployer_key), "scope": "network"},
     }
     office_keys = []
+    office_sources = []
     for index in range(4):
-        if index == 0 and hub_admin_key:
+        office_key = governance_office_env_private_key(index)
+        if office_key:
+            office_keys.append(office_key)
+            office_sources.append("private-state-office")
+        elif index == 0 and hub_admin_key:
             office_keys.append(hub_admin_key)
+            office_sources.append("hub-admin")
         elif index == 1 and deployer_key:
             office_keys.append(deployer_key)
+            office_sources.append("deployer")
         else:
             office_keys.append(deterministic_private_key(f"governance-office-{index}"))
+            office_sources.append("deterministic-node-seed")
     wallets["governance_offices"] = [
-        {"index": index, "address": derive_address(key), "runtime_key_source": "hub-admin" if index == 0 and hub_admin_key else "deployer" if index == 1 and deployer_key else "deterministic-node-seed"}
+        {"index": index, "address": derive_address(key), "runtime_key_source": office_sources[index]}
         for index, key in enumerate(office_keys)
     ]
     return wallets
@@ -13991,8 +14683,6 @@ def run_super_runtime_cleanup(
     args: argparse.Namespace,
     context: Mapping[str, Any],
     tried: list[dict[str, Any]],
-    *,
-    wait_s_override: float | None = None,
 ) -> dict[str, Any]:
     if bool(getattr(args, "keep_runtime_state", False)):
         return planned_super_runtime_cleanup_result(
@@ -14068,16 +14758,11 @@ def run_super_runtime_cleanup(
         force=True,
         tried=tried,
     )
-    wait_s = (
-        float(wait_s_override)
-        if wait_s_override is not None
-        else float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S))
-    )
     wait_result = wait_for_head_runtime_cleanup_ready(
         client,
         service_uuid,
         tried,
-        wait_s=wait_s,
+        wait_s=max(300.0, float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S))),
         poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
         expected_request_id=request_id,
     )
@@ -14091,7 +14776,6 @@ def run_super_runtime_cleanup(
         "service_uuid": service_uuid,
         "service_action": f"head-agent-{service_action}",
         "request_id": request_id,
-        "wait_s": wait_s,
         "legacy_helper_service_name": super_runtime_cleanup_service_name(network_key, head),
         "status_url": head.guard_url,
         "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
@@ -14103,6 +14787,7 @@ def run_super_runtime_cleanup(
         "observed": bool(wait_result.get("observed")),
         "observed_result": dict(payload),
         "marker_clear": marker_clear,
+        "wait_s": max(300.0, float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S))),
         "public_guard_routes": False,
         "ssh_used": False,
         "direct_vpn_used": False,
@@ -14561,6 +15246,7 @@ def render_super_node_compose(
     image: str = DEFAULT_SUPER_IMAGE,
     hub_admin_private_key: str = "",
     deployer_private_key: str = "",
+    governance_office_private_keys: Mapping[str, str] | None = None,
     publish_routes: bool = False,
 ) -> str:
     ports = manifest.get("ports") if isinstance(manifest.get("ports"), Mapping) else {}
@@ -14586,6 +15272,12 @@ def render_super_node_compose(
     verified_runtime_image_tag = str(runtime_image.get("tag") or "").strip()
     compose_image = verified_runtime_image_tag or image
     use_verified_runtime_image = bool(verified_runtime_image_tag)
+    office_private_keys = governance_office_private_keys or {}
+    office_env_lines = []
+    for office_index, office_name in enumerate(("captain", "o1", "o2", "o3")):
+        office_env_lines.append(
+            f"      MC_ALLFATHER_GOVERNANCE_OFFICE_{office_index}_PRIVATE_KEY: {yaml_quote(nonempty_private_value(office_private_keys.get(office_name) or ''))}"
+        )
     lines = [
         f"name: {service_name}",
         "",
@@ -14645,6 +15337,7 @@ def render_super_node_compose(
             f"      MC_ALLFATHER_FDB_RECONFIGURE_AFTER_JOIN: {yaml_quote('1' if fdb_plan.get('coordinator_reconfigure_required') else '0')}",
             f"      MC_ALLFATHER_HUB_ADMIN_PRIVATE_KEY: {yaml_quote(hub_admin_private_key)}",
             f"      MC_ALLFATHER_DEPLOYER_PRIVATE_KEY: {yaml_quote(deployer_private_key)}",
+            *office_env_lines,
             f"      MC_ALLFATHER_BOOTSTRAP_HUB_ADMIN: {yaml_quote('1')}",
             f"      MC_ALLFATHER_HUB_ADMIN_CREATE_IF_MISSING: {yaml_quote('1' if manifest.get('bootstrap', {}).get('hub_admin_create_requested') else '0')}",
             f"      MC_ALLFATHER_HUB_ADMIN_DEFER_UNTIL_QBFT: {yaml_quote('1')}",
@@ -14728,6 +15421,7 @@ def super_service_payload(
     context: Mapping[str, Any],
     hub_admin_private_key: str,
     deployer_private_key: str,
+    governance_office_private_keys: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     service_name = str(manifest.get("cell_id") or "")
     compose = render_super_node_compose(
@@ -14735,6 +15429,7 @@ def super_service_payload(
         image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
         hub_admin_private_key=hub_admin_private_key,
         deployer_private_key=deployer_private_key,
+        governance_office_private_keys=governance_office_private_keys,
         publish_routes=bool(getattr(args, "publish_routes", False)),
     )
     payload = {
@@ -14776,6 +15471,7 @@ def sync_super_node_service(
     *,
     hub_admin_private_key: str,
     deployer_private_key: str,
+    governance_office_private_keys: Mapping[str, str] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     service_name = str(manifest.get("cell_id") or "")
     service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
@@ -14784,6 +15480,7 @@ def sync_super_node_service(
         image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
         hub_admin_private_key=hub_admin_private_key,
         deployer_private_key=deployer_private_key,
+        governance_office_private_keys=governance_office_private_keys,
         publish_routes=bool(getattr(args, "publish_routes", False)),
     )
     if service_uuid:
@@ -14795,6 +15492,7 @@ def sync_super_node_service(
         context=context,
         hub_admin_private_key=hub_admin_private_key,
         deployer_private_key=deployer_private_key,
+        governance_office_private_keys=governance_office_private_keys,
     )
     service_uuid = fdb_tool().create_service(client, payload, tried)
     return service_uuid, "created", existing
@@ -14826,12 +15524,12 @@ def cleanup_private_state_for_remove_node(
     dry_run: bool,
     keep_seed_material: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Clean generated seed material when removing the last node in a network.
+    """Optionally prune generated seed material when a network reaches zero nodes.
 
-    The all-father private file is not topology.  This cleanup only runs when the
-    live Coolify inventory will have no super-nodes left for the network.  It
-    removes first-node seed material that add-node generated so the next add can
-    rebuild a pristine testnet/mainnet bootstrap.
+    The all-father private file is not topology.  Topology/runtime removal may
+    clean host state while preserving durable identity material.  By default,
+    keys/FDB seed values are kept so a later first-node add can reuse the same
+    private-state addresses and private keys.  Pass the prune flag to rotate.
     """
 
     network_key = clean_node_network_key(network_key)
@@ -14842,14 +15540,15 @@ def cleanup_private_state_for_remove_node(
         "written": False,
         "remaining_node_count": int(remaining_count),
         "pristine_requested": not bool(keep_seed_material),
+        "identity_material_preserved": bool(keep_seed_material),
         "seed_material_cleaned": False,
         "removed": [],
         "preserved": [],
-        "note": "Private state cleanup only removes seed material when the network has no remaining super-nodes.",
+        "note": "Private state seed material is preserved by default; pass the prune option to rotate identities.",
     }
 
     if keep_seed_material:
-        result["note"] = "Generated seed material was preserved because --keep-seed-material was passed."
+        result["note"] = "Generated seed material was preserved so future add-node runs can reuse private-state identities."
         return mutable_state, result
     if remaining_count > 0:
         result["note"] = "Generated seed material was preserved because other super-nodes remain in the network."
@@ -14864,7 +15563,7 @@ def cleanup_private_state_for_remove_node(
 
     wallets = network.get("wallets")
     if isinstance(wallets, dict):
-        for wallet_name in ("hub_admin", "deployer"):
+        for wallet_name in ("hub_admin", "deployer", "captain", "o1", "o2", "o3"):
             record = wallets.get(wallet_name)
             if generated_wallet_record(record):
                 wallets.pop(wallet_name, None)
@@ -16203,6 +16902,7 @@ def ensure_existing_validator_admission_endpoints(
             tried,
             hub_admin_private_key=hub_admin_key,
             deployer_private_key=deployer_key,
+            governance_office_private_keys=governance_office_private_keys(wallets),
         )
         operator_log(args, f"validator-admission: redeploying existing validator service {cell_id} uuid={service_uuid or '<unknown>'}")
         hub_service_tool().trigger_deploy_service(
@@ -18068,6 +18768,7 @@ def sync_full_hub_runtime_for_host(
                 tried,
                 hub_admin_private_key=wallet_private_key(wallets, "hub_admin"),
                 deployer_private_key=wallet_private_key(wallets, "deployer"),
+                governance_office_private_keys=governance_office_private_keys(wallets),
             )
             record_step("service-sync-done", service_uuid=service_uuid, action=action)
             node_result.update({"service_uuid": service_uuid, "service_action": action})
@@ -19067,24 +19768,11 @@ def cleanup_empty_network_runtime_all_hosts(
 ) -> dict[str, Any]:
     hosts: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    zero_node_wait_s = max(
-        float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S) or DEFAULT_REMOVE_DELETE_WAIT_S),
-        DEFAULT_ZERO_NODE_RUNTIME_CLEANUP_WAIT_S,
-    )
     for head in plan.heads:
         tried = tried_by_host.setdefault(head.coolify_server, [])
         try:
             if getattr(args, "dry_run", False):
-                cleanup = run_super_runtime_cleanup(
-                    plan,
-                    network_key,
-                    head,
-                    None,
-                    args,
-                    {},
-                    tried,
-                    wait_s_override=zero_node_wait_s,
-                )
+                cleanup = run_super_runtime_cleanup(plan, network_key, head, None, args, {}, tried)
             else:
                 client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
                 version = request_coolify_version(
@@ -19099,16 +19787,7 @@ def cleanup_empty_network_runtime_all_hosts(
                         f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
                     )
                 context = resolve_super_context(client, args, head, tried)
-                cleanup = run_super_runtime_cleanup(
-                    plan,
-                    network_key,
-                    head,
-                    client,
-                    args,
-                    context,
-                    tried,
-                    wait_s_override=zero_node_wait_s,
-                )
+                cleanup = run_super_runtime_cleanup(plan, network_key, head, client, args, context, tried)
                 cleanup["token_source"] = token_source
             cleanup_ok = bool(cleanup.get("ready")) or bool(cleanup.get("dry_run")) or not bool(cleanup.get("enabled"))
             hosts.append({"host": head.coolify_server, "cleanup": cleanup, "ok": cleanup_ok})
@@ -19119,27 +19798,16 @@ def cleanup_empty_network_runtime_all_hosts(
                         "error": str(cleanup.get("reason") or cleanup.get("error") or "runtime cleanup did not complete"),
                     }
                 )
+                continue
         except Exception as exc:
-            hosts.append(
-                {
-                    "host": head.coolify_server,
-                    "cleanup": {
-                        "enabled": True,
-                        "ready": False,
-                        "reason": f"{type(exc).__name__}: {exc}",
-                        "wait_s": zero_node_wait_s,
-                    },
-                    "ok": False,
-                }
-            )
             errors.append({"host": head.coolify_server, "error": f"{type(exc).__name__}: {exc}"})
+            continue
     return {
         "enabled": True,
         "ok": not bool(errors),
         "network": clean_node_network_key(network_key),
         "hosts": hosts,
         "errors": errors,
-        "wait_s": zero_node_wait_s,
         "reason": "zero-node runtime state cleaned on all participating hosts" if not errors else str(errors[0].get("error") or "zero-node cleanup failed"),
         "public_guard_routes": False,
         "ssh_used": False,
@@ -19480,34 +20148,72 @@ def prepare_remove_survivor_handoff(
 
         tried = tried_by_host.setdefault(node_head.coolify_server, [])
         client, _token_source = fdb_tool().client_for_server(node_head.coolify_server, node_args)
-        live_image = live_super_runtime_image_for_remove(
+        service_uuid, existing = hub_service_tool().find_service(
             client,
             service_name=node_name,
+            explicit_uuid="",
             tried=tried,
         )
-        manifest_image = attach_live_runtime_image_to_remove_manifest(
-            manifest,
-            image_tag=str(live_image.get("image") or ""),
-            service_name=node_name,
-        )
-        node_args.super_image = manifest_image
-        context = resolve_super_context(client, node_args, node_head, tried)
+        if not service_uuid:
+            raise AllfatherControlError(
+                f"Cannot prepare removal handoff for {node_name}: the live Coolify service UUID is missing."
+            )
+        detail = fetch_service_detail(client, service_uuid, tried)
         hub_admin_key = wallet_private_key(wallets, "hub_admin")
         deployer_key = wallet_private_key(wallets, "deployer") if manifest["bootstrap"]["contracts_requested"] else ""
+        office_keys = governance_office_private_keys(wallets)
         operator_log(
             args,
             f"remove-handoff: QBFT converged; updating survivor {node_name} "
             f"for FDB coordinators={','.join(survivor_fdb_endpoints)}",
         )
-        service_uuid, action, _existing = sync_super_node_service(
-            client,
+
+        context = resolve_super_context(client, node_args, node_head, tried)
+        preserved_compose = render_remove_survivor_handoff_compose_preserving_live_image(
+            detail,
+            existing if isinstance(existing, Mapping) else {},
             manifest,
-            node_args,
-            context,
-            tried,
+            service_name=node_name,
             hub_admin_private_key=hub_admin_key,
             deployer_private_key=deployer_key,
+            governance_office_private_keys=office_keys,
+            publish_routes=bool(getattr(args, "publish_routes", False)),
         )
+        if bool(preserved_compose.get("ok")):
+            fdb_tool().update_service(
+                client,
+                service_uuid,
+                node_name,
+                str(preserved_compose.get("compose") or ""),
+                tried,
+            )
+            action = "updated"
+            manifest_image = "<preserved-live-service-image>"
+        else:
+            # Last-resort compatibility with older services that do expose a usable
+            # image tag but not a patchable compose. This still does not run Stage
+            # 1/2 or rebuild images.
+            live_image = live_super_runtime_image_for_remove(
+                client,
+                service_name=node_name,
+                tried=tried,
+            )
+            manifest_image = attach_live_runtime_image_to_remove_manifest(
+                manifest,
+                image_tag=str(live_image.get("image") or ""),
+                service_name=node_name,
+            )
+            node_args.super_image = manifest_image
+            service_uuid, action, _existing = sync_super_node_service(
+                client,
+                manifest,
+                node_args,
+                context,
+                tried,
+                hub_admin_private_key=hub_admin_key,
+                deployer_private_key=deployer_key,
+                governance_office_private_keys=office_keys,
+            )
         hub_service_tool().trigger_deploy_service(
             client,
             service_uuid=service_uuid,
@@ -20095,12 +20801,12 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                     network_key,
                     remaining_count=0,
                     dry_run=True,
-                    keep_seed_material=False,
+                    keep_seed_material=not bool(getattr(args, "prune_zero_topology_seed_material", False)),
                 )
                 zero_topology_prefunk = {
                     "enabled": True,
                     "ok": True,
-                    "reason": "dry-run: --cleanup-zero-topology-runtime would clean stale runtime/private state before first-node initialization",
+                    "reason": "dry-run: --cleanup-zero-topology-runtime would clean stale runtime state before first-node initialization; private-state identities are preserved unless prune is requested",
                     "runtime_cleanup": cleanup_empty_network_runtime_all_hosts(
                         plan,
                         network_key,
@@ -20116,7 +20822,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                 zero_topology_prefunk = {
                     "enabled": False,
                     "ok": True,
-                    "reason": "local policy skipped zero-topology runtime/private-state cleanup; pass --cleanup-zero-topology-runtime to opt in",
+                    "reason": "local policy skipped zero-topology runtime cleanup; private-state identities remain durable",
                     "runtime_cleanup": {
                         "enabled": False,
                         "ok": True,
@@ -20163,7 +20869,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             if getattr(args, "cleanup_zero_topology_runtime", False):
                 operator_log(
                     args,
-                    f"zero-topology: no live {network_key} super-nodes exist; --cleanup-zero-topology-runtime requested, cleaning stale runtime/private state before first-node initialization",
+                    f"zero-topology: no live {network_key} super-nodes exist; --cleanup-zero-topology-runtime requested, cleaning stale runtime state before first-node initialization",
                 )
                 zero_tried_by_host: dict[str, list[dict[str, Any]]] = {head.coolify_server: tried}
                 runtime_zero_cleanup = cleanup_empty_network_runtime_all_hosts(
@@ -20183,13 +20889,13 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                     network_key,
                     remaining_count=0,
                     dry_run=False,
-                    keep_seed_material=False,
+                    keep_seed_material=not bool(getattr(args, "prune_zero_topology_seed_material", False)),
                 )
                 state = load_yaml_mapping(private_state_path)
                 zero_topology_prefunk = {
                     "enabled": True,
                     "ok": True,
-                    "reason": "--cleanup-zero-topology-runtime requested; stale runtime/topology files cleaned before first-node initialization",
+                    "reason": "--cleanup-zero-topology-runtime requested; stale runtime files cleaned before first-node initialization; private-state identities preserved unless prune was requested",
                     "runtime_cleanup": runtime_zero_cleanup,
                     "private_state_cleanup": zero_private_cleanup,
                     "public_guard_routes": False,
@@ -20200,12 +20906,12 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             else:
                 operator_log(
                     args,
-                    f"zero-topology: no live {network_key} super-nodes exist; local policy skips stale runtime/private-state cleanup before first-node initialization",
+                    f"zero-topology: no live {network_key} super-nodes exist; local policy skips stale runtime cleanup before first-node initialization; private-state identities remain durable",
                 )
                 zero_topology_prefunk = {
                     "enabled": False,
                     "ok": True,
-                    "reason": "local policy skipped zero-topology runtime/private-state cleanup; pass --cleanup-zero-topology-runtime to opt in",
+                    "reason": "local policy skipped zero-topology runtime cleanup; private-state identities remain durable",
                     "runtime_cleanup": {
                         "enabled": False,
                         "ok": True,
@@ -20410,6 +21116,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
         hub_admin_private_key=hub_admin_key,
         deployer_private_key=deployer_key,
+        governance_office_private_keys=governance_office_private_keys(wallets),
         publish_routes=bool(getattr(args, "publish_routes", False)),
     )
 
@@ -20472,6 +21179,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             tried,
             hub_admin_private_key=hub_admin_key,
             deployer_private_key=deployer_key,
+            governance_office_private_keys=governance_office_private_keys(wallets),
         )
         operator_log(args, f"node-service: {service_action} uuid={service_uuid or '<unknown>'}")
         synced_service_predeploy = require_synced_super_service_ready_for_deploy(
@@ -21835,7 +22543,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--dry-run", action="store_true", help="Plan and render the next super-node without creating/updating Coolify.")
     add_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
     add_node_parser.add_argument("--no-contracts", action="store_true", help="Do not request first-node contract bootstrap.")
-    add_node_parser.add_argument("--cleanup-zero-topology-runtime", action="store_true", help="Opt in to stale runtime/private-state cleanup when add-node proves the network has zero live super-nodes. Default local policy skips cleanup.")
+    add_node_parser.add_argument("--cleanup-zero-topology-runtime", action="store_true", help="Opt in to stale runtime cleanup when add-node proves the network has zero live super-nodes. Private-state identities are preserved unless --prune-zero-topology-seed-material is also passed.")
+    add_node_parser.add_argument("--prune-zero-topology-seed-material", action="store_true", help=argparse.SUPPRESS)
     add_node_parser.add_argument("--publish-routes", action="store_true", help="Publish Hub/RPC Traefik routes immediately and reconcile public Hub Traefik routes after readiness. Default defers public cutover.")
     add_node_parser.add_argument("--hub-propagate", action="store_true", help="After the node is ready, reconcile public Hub routes, huddle admins, and contract admin authorization from live topology.")
     add_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)
@@ -21873,7 +22582,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
     remove_node_parser.add_argument("--delete-wait-s", type=float, default=DEFAULT_REMOVE_DELETE_WAIT_S, help="Seconds to wait for Coolify inventory to stop reporting the deleted service before cleaning seed material.")
     remove_node_parser.add_argument("--delete-poll-s", type=float, default=DEFAULT_REMOVE_DELETE_POLL_S, help=argparse.SUPPRESS)
-    remove_node_parser.add_argument("--keep-seed-material", action="store_true", help="Do not clean generated first-node keys/FDB identity when the network becomes empty.")
+    remove_node_parser.add_argument("--keep-seed-material", action="store_true", default=True, help="Preserve generated first-node keys/FDB identity when the network becomes empty. This is the default durable-identity policy.")
+    remove_node_parser.add_argument("--prune-seed-material", dest="keep_seed_material", action="store_false", help="Remove generated first-node keys/FDB identity when the network becomes empty, forcing the next add-node to rotate identities.")
     remove_node_parser.add_argument("--keep-runtime-state", action="store_true", help="Preserve stale super-node runtime directories instead of automatic host/final-network cleanup. Intended only for forensic recovery.")
     remove_node_parser.add_argument("--hub-propagate", action="store_true", help="After removal, reconcile public Hub routes, huddle admins, and contract admin authorization from live topology.")
     remove_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)

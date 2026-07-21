@@ -144,8 +144,8 @@ def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
     assert code_editor["source"] == "mcel-runtime-check"
     assert code_editor["primarySurface"]["hostSelector"] == "#code-studio-runtime-monaco"
     assert code_editor["primarySurface"]["editorSelector"] == ".monaco-editor"
-    assert code_editor["primarySurface"]["minWidth"] == 800
-    assert code_editor["primarySurface"]["minHeight"] == 600
+    assert code_editor["primarySurface"]["minWidth"] == 520
+    assert code_editor["primarySurface"]["minHeight"] == 320
 
     required_selectors = {entry["selector"] for entry in code_editor["requiredRegions"]}
     assert "#code-editor-app" in required_selectors

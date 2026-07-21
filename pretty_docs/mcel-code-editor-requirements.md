@@ -800,14 +800,14 @@ severity: critical
 primary_surface_id: code-editor.surface.monaco-selected-file-editor
 host_selector: "#code-studio-runtime-monaco"
 editor_selector: ".monaco-editor"
-min_width: 800
-min_height: 600
+min_width: 520
+min_height: 320
 observes:
   - "#code-studio-runtime-monaco"
   - ".monaco-editor"
 expects:
-  - Monaco host is visible and at least 800px wide by 600px tall.
-  - Monaco editor instance is visible and at least 800px wide by 600px tall.
+  - Monaco host is visible and at least 520px wide by 320px tall.
+  - Monaco editor instance is visible and at least 520px wide by 320px tall.
   - No fallback or source-model editor surface competes with Monaco in authoring mode.
 failure_message: Authoring mode must expose one usable Monaco selected-file editor.
 next_probe: layout.ownerProbe

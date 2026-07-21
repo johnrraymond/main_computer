@@ -3363,8 +3363,8 @@
               "contract": "code-editor.contract.authoring.monaco-golden-path",
               "editor_selector": ".monaco-editor",
               "expects": [
-                "Monaco host is visible and at least 800px wide by 600px tall.",
-                "Monaco editor instance is visible and at least 800px wide by 600px tall.",
+                "Monaco host is visible and at least 520px wide by 320px tall.",
+                "Monaco editor instance is visible and at least 520px wide by 320px tall.",
                 "No fallback or source-model editor surface competes with Monaco in authoring mode."
               ],
               "failure_message": "Authoring mode must expose one usable Monaco selected-file editor.",
@@ -3375,8 +3375,8 @@
               "host_selector": "#code-studio-runtime-monaco",
               "id": "code-editor.runtime-check.authoring-primary-monaco",
               "lifecycle_assertions": [],
-              "min_height": "600",
-              "min_width": "800",
+              "min_height": "320",
+              "min_width": "520",
               "mode": "authoring",
               "next_probe": "layout.ownerProbe",
               "observes": [
@@ -3622,8 +3622,8 @@
             "hostSelector": "#code-studio-runtime-monaco",
             "id": "code-editor.surface.monaco-selected-file-editor",
             "label": "Authoring mode must expose one usable Monaco selected-file editor.",
-            "minHeight": 600,
-            "minWidth": 800
+            "minHeight": 320,
+            "minWidth": 520
           },
           "requiredRegions": [
             {

@@ -604,14 +604,29 @@ def resolve_captain_wallet(
     if not private_key and office_record is not None:
         private_key = _private_key_from_wallet_path(deployment_path=deployment_path, record=office_record)
     if not private_key:
-        private_key = _private_key_from_private_state(
+        address_was_default_dev_office = (
+            office_index is not None
+            and not _ADDRESS_RE.fullmatch(raw)
+            and _deployment_uses_non_dev_chain(deployment)
+            and _is_default_dev_office_address(office_index=office_index, address=address)
+        )
+        private_state_wallet = _wallet_record_from_private_state(
             deployment_path=deployment_path,
             private_state_path=private_state_path,
             deployment=deployment,
             office_index=office_index,
             selector=normalized,
             address=address,
+            allow_address_override=address_was_default_dev_office,
         )
+        private_key = _normalize_private_key(private_state_wallet.get("private_key") or private_state_wallet.get("privateKey") or "")
+        private_state_address = str(private_state_wallet.get("address") or "").strip()
+        if (
+            private_key
+            and address_was_default_dev_office
+            and _ADDRESS_RE.fullmatch(private_state_address)
+        ):
+            address = private_state_address
     if not private_key and office_index is not None:
         private_key = _default_dev_office_private_key(deployment=deployment, office_index=office_index, address=address)
 
@@ -1405,7 +1420,20 @@ def _wallet_role_candidates(*, office_index: int | None, selector: str) -> list[
     return unique
 
 
-def _private_key_from_private_state(
+def _deployment_uses_non_dev_chain(deployment: dict[str, Any]) -> bool:
+    try:
+        return int(_chain_value(deployment, "chain_id") or 0) != 42424242
+    except (TypeError, ValueError):
+        return True
+
+
+def _is_default_dev_office_address(*, office_index: int | None, address: str) -> bool:
+    if office_index is None or office_index < 0 or office_index >= len(_DEV_OFFICE_DEFAULTS):
+        return False
+    return str(_DEV_OFFICE_DEFAULTS[office_index].get("address") or "").lower() == str(address or "").lower()
+
+
+def _wallet_record_from_private_state(
     *,
     deployment_path: Path,
     private_state_path: Path | None,
@@ -1413,10 +1441,11 @@ def _private_key_from_private_state(
     office_index: int | None,
     selector: str,
     address: str,
-) -> str:
+    allow_address_override: bool = False,
+) -> dict[str, Any]:
     network = _deployment_network_name(deployment_path, deployment)
     if not network:
-        return ""
+        return {}
 
     for path in _private_state_candidate_paths(deployment_path=deployment_path, private_state_path=private_state_path):
         if not path.exists():
@@ -1429,13 +1458,41 @@ def _private_key_from_private_state(
             entry = wallets.get(role)
             if not isinstance(entry, dict):
                 continue
-            entry_address = str(entry.get("address") or "").strip()
-            if entry_address and _ADDRESS_RE.fullmatch(entry_address) and normalize_address(entry_address) != normalize_address(address):
-                continue
             private_key = _normalize_private_key(entry.get("private_key") or entry.get("privateKey") or "")
-            if private_key:
-                return private_key
-    return ""
+            if not private_key:
+                continue
+            entry_address = str(entry.get("address") or "").strip()
+            if (
+                not allow_address_override
+                and entry_address
+                and _ADDRESS_RE.fullmatch(entry_address)
+                and normalize_address(entry_address) != normalize_address(address)
+            ):
+                continue
+            result = dict(entry)
+            result["private_key"] = private_key
+            return result
+    return {}
+
+
+def _private_key_from_private_state(
+    *,
+    deployment_path: Path,
+    private_state_path: Path | None,
+    deployment: dict[str, Any],
+    office_index: int | None,
+    selector: str,
+    address: str,
+) -> str:
+    record = _wallet_record_from_private_state(
+        deployment_path=deployment_path,
+        private_state_path=private_state_path,
+        deployment=deployment,
+        office_index=office_index,
+        selector=selector,
+        address=address,
+    )
+    return _normalize_private_key(record.get("private_key") or record.get("privateKey") or "")
 
 
 def _private_key_from_wallet_path(*, deployment_path: Path, record: dict[str, Any]) -> str:

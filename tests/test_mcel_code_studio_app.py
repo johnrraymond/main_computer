@@ -2282,6 +2282,85 @@ console.log(JSON.stringify({{
         self.assertEqual(payload["optionalRegions"], {"visible": 1, "total": 1})
 
 
+    def test_mcel_self_diagnosis_accepts_owned_medium_monaco_surface(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+global.window = {{}};
+require({script_literal});
+const api = window.McelSelfDiagnosis;
+const report = api.evaluateCodeEditorAuthoringSnapshot({{
+  appId: "code-editor",
+  mode: "authoring",
+  route: "/applications/code-editor",
+  timestamp: "test",
+  viewport: {{width: 1180, height: 820}},
+  requiredRegions: {{
+    "code-editor.region.root": {{exists: true, visible: true, selector: "#code-editor-app", width: 1180, height: 820}},
+    "#code-editor-app": {{exists: true, visible: true, selector: "#code-editor-app", width: 1180, height: 820}},
+    "code-editor.region.explorer": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 244, height: 690}},
+    ".code-studio-sidebar": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 244, height: 690}},
+    "code-editor.region.editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 702, height: 438}},
+    ".code-studio-editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 702, height: 438}},
+    "code-editor.region.status-bar": {{exists: true, visible: true, selector: ".code-studio-statusbar", width: 1180, height: 22}},
+    ".code-studio-statusbar": {{exists: true, visible: true, selector: ".code-studio-statusbar", width: 1180, height: 22}}
+  }},
+  surfaces: {{
+    monacoHost: {{exists: true, visible: true, selector: "#code-studio-runtime-monaco", width: 702, height: 438, display: "block", gridRow: "2", gridColumn: "1"}},
+    monacoEditor: {{exists: true, visible: true, selector: "div.monaco-editor.no-user-select.showUnused.showDeprecated.vs-dark", width: 702, height: 438, display: "block", gridRow: "1", gridColumn: "1"}},
+    sourceTextarea: {{exists: true, visible: false, selector: "#code-studio-source-editor", width: 0, height: 0}},
+    runtimeDraft: {{exists: false, visible: false, selector: "#code-studio-runtime-draft", width: 0, height: 0}},
+    fallbackTextarea: {{exists: false, visible: false, selector: ".code-studio-runtime-fallback", width: 0, height: 0}}
+  }},
+  forbiddenRegions: [
+    {{id: "code-editor.forbidden.proof-dock", selector: ".code-studio-proof-dock, #code-studio-bottom-panel", label: "MCEL proof/evidence dock", box: {{exists: true, visible: false, selector: "#code-studio-bottom-panel", width: 0, height: 0}}}}
+  ],
+  ownerChain: [
+    {{exists: true, selector: "div.monaco-editor.no-user-select.showUnused.showDeprecated.vs-dark", width: 702, height: 438}},
+    {{exists: true, selector: "#code-studio-runtime-monaco", width: 702, height: 438}},
+    {{exists: true, selector: ".code-studio-monaco-authoring-surface", width: 702, height: 438}},
+    {{exists: true, selector: ".code-studio-editor-group", width: 702, height: 438}}
+  ]
+}});
+console.log(JSON.stringify({{
+  verdict: report.verdict,
+  codes: report.findings.map((finding) => finding.code).sort(),
+  primarySurface: report.summary.primarySurface
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["verdict"], "pass")
+        self.assertEqual(payload["codes"], [])
+        self.assertTrue(payload["primarySurface"]["usable"])
+        self.assertTrue(payload["primarySurface"]["exactlyOneAuthoritativeSurface"])
+        self.assertEqual(payload["primarySurface"]["ownership"]["primarySurfaceId"], "code-editor.surface.monaco-selected-file-editor")
+        self.assertTrue(payload["primarySurface"]["ownership"]["ownsEditor"])
+
+    def test_code_editor_primary_and_context_surfaces_have_mcel_ridges(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('data-mcel-region="code-editor.region.primary-editor-shell"', app)
+        self.assertIn('data-mcel-region="code-editor.region.aider-context"', app)
+        self.assertIn('data-mcel-surface-id="code-editor.surface.monaco-selected-file-editor"', script)
+        self.assertIn('data-mcel-node-id="code-editor.node.monaco-selected-file-editor"', script)
+        self.assertIn('data-mcel-source="code-editor-mcel-studio.mountDirectMonacoAuthoring"', script)
+        self.assertIn('aider-context-toolbar[data-mcel-region="code-editor.region.aider-context"]', style)
+        self.assertIn("max-height: none;", style)
+        self.assertIn("word-break: break-word;", style)
+
+
+
     def test_code_editor_generated_layout_contract_applies_without_raw_geometry(self) -> None:
         node = shutil.which("node")
         if not node:
