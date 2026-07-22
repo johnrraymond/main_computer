@@ -9404,6 +9404,28 @@ def existing_super_ordinals(services: Iterable[Mapping[str, Any]], network_key: 
     return sorted(set(ordinals))
 
 
+def explicit_remove_node_target(network_key: str, head: HeadNode, node_name: object) -> tuple[str, int]:
+    """Return the exact remove-node target requested by the operator.
+
+    remove-node is destructive and recovery-sensitive, so the target service must
+    be named explicitly instead of inferred from the highest host-local ordinal.
+    """
+    service_name = str(node_name or "").strip()
+    if not service_name:
+        raise AllfatherControlError(
+            "remove-node requires --node <service-name> so the target is explicit; "
+            f"for example --node {super_service_name(network_key, head, 1)}."
+        )
+    prefix = re.escape(super_prefix(network_key, head))
+    match = re.fullmatch(rf"{prefix}-super([1-9][0-9]*)", service_name)
+    if not match:
+        raise AllfatherControlError(
+            f"remove-node target --node {service_name!r} is not a {clean_node_network_key(network_key)} "
+            f"super-node on {head.coolify_server}; expected a name like {super_service_name(network_key, head, 1)!r}."
+        )
+    return service_name, int(match.group(1))
+
+
 def missing_super_ordinal_gaps(ordinals: Iterable[int]) -> list[int]:
     unique = sorted({int(item) for item in ordinals if int(item) > 0})
     if not unique:
@@ -20365,7 +20387,11 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
         raise AllfatherControlError("Refusing to remove a mainnet node without --allow-mainnet.")
     head = choose_head_for_host(plan, args.host)
-    operator_log(args, f"start: network={network_key} host={head.coolify_server} slot={head.slot}")
+    requested_service_name, requested_ordinal = explicit_remove_node_target(network_key, head, getattr(args, "node", ""))
+    operator_log(
+        args,
+        f"start: network={network_key} host={head.coolify_server} slot={head.slot} node={requested_service_name}",
+    )
     private_state_path = repo_relative_path(args.private_state)
     state = load_yaml_mapping(private_state_path)
 
@@ -20430,9 +20456,14 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             {"name": super_service_name(network_key, head, item), "uuid": f"dry-run-{item}", "status": "dry-run"}
             for item in range(1, existing_count + 1)
         ]
-        ordinals = existing_super_ordinals(services, network_key, head)
-        ordinal = max(ordinals)
-        service_name = super_service_name(network_key, head, ordinal)
+        ordinal = requested_ordinal
+        service_name = requested_service_name
+        if ordinal > existing_count:
+            visible = ", ".join(super_service_name(network_key, head, item) for item in range(1, existing_count + 1))
+            raise AllfatherControlError(
+                f"Requested --node {service_name!r} does not exist in dry-run inventory for {head.coolify_server}; "
+                f"visible super-nodes: {visible or '<none>'}."
+            )
         service_uuid = f"dry-run-{ordinal}"
         target_status = "dry-run"
         remaining_host_count = existing_count - 1
@@ -20507,12 +20538,16 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     ordinals = existing_super_ordinals(services, network_key, head)
     if not ordinals:
         raise AllfatherControlError(f"No {network_key} super-node exists on {head.coolify_server}; nothing to remove.")
-    ordinal = max(ordinals)
-    service_name = super_service_name(network_key, head, ordinal)
+    ordinal = requested_ordinal
+    service_name = requested_service_name
 
     target_item = next((item for item in services if service_name_from_item(item) == service_name), None)
     if target_item is None:
-        raise AllfatherControlError(f"Could not find Coolify service record for {service_name!r}.")
+        visible = ", ".join(super_service_name(network_key, head, item) for item in ordinals)
+        raise AllfatherControlError(
+            f"Requested --node {service_name!r} was not found on {head.coolify_server}; "
+            f"visible {network_key} super-nodes on that host: {visible or '<none>'}."
+        )
     service_uuid = service_uuid_from_item(target_item)
     target_status = service_status_from_item(target_item)
     if not service_uuid:
@@ -20769,7 +20804,8 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             )
         ),
         "note": (
-            "remove-node uses network-global live inventory. Survivor FDB/QBFT handoff is completed before deletion; "
+            "remove-node requires an explicit --node target and uses network-global live inventory. "
+            "Survivor FDB/QBFT handoff is completed before deletion; "
             "final-node deletion automatically cleans runtime state across all participating hosts."
         ),
     }
@@ -22640,11 +22676,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--deploy-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait remotely for the new super-node guard/FDB/RPC/Hub/hub_admin/contracts readiness signal after deploy. Set 0 to return immediately after triggering deploy.")
     add_node_parser.add_argument("--deploy-poll-s", type=float, default=DEFAULT_ADD_NODE_READY_POLL_S, help=argparse.SUPPRESS)
 
-    remove_node_parser = subparsers.add_parser("remove-node", help="Safely remove the highest all-father super-node on one host using network-global FDB/QBFT lifecycle checks.")
+    remove_node_parser = subparsers.add_parser("remove-node", help="Safely remove an explicitly named all-father super-node using network-global FDB/QBFT lifecycle checks.")
     add_remote_args(remove_node_parser)
     add_common_head_args(remove_node_parser)
     remove_node_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network to shrink: testnet or mainnet.")
     remove_node_parser.add_argument("--host", required=True, help="Coolify host name or all-father host slot, for example coolify-a or A.")
+    remove_node_parser.add_argument("--node", required=True, help="Exact super-node service to remove, for example mainneta-super1. The name must match the requested network and host.")
     remove_node_parser.add_argument("--allow-mainnet", action="store_true", help="Required before removing a mainnet super-node.")
     remove_node_parser.add_argument("--delete-last-node", action="store_true", help="Required, in addition to --allow-mainnet, before deleting the final live mainnet super-node.")
     remove_node_parser.add_argument("--dry-run", action="store_true", help="Plan the removal without deleting the Coolify service or writing private state.")

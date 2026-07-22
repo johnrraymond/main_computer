@@ -2367,6 +2367,48 @@ def test_add_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
         control.add_node(plan, args)
 
 
+def test_remove_node_parse_requires_explicit_node(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+
+    with pytest.raises(SystemExit):
+        control.parse_args(
+            [
+                "remove-node",
+                "testnet",
+                "--host",
+                "coolify-a",
+                "--private-state",
+                str(path),
+                "--dry-run",
+                "--existing-count",
+                "1",
+            ]
+        )
+
+
+def test_remove_node_rejects_node_outside_requested_host(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--node",
+            "testnetb-super1",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    with pytest.raises(control.AllfatherControlError, match="not a testnet super-node on coolify-a"):
+        control.remove_node(plan, args)
+
+
 def test_remove_node_dry_run_preserves_private_seed_material_by_default_when_network_goes_empty(tmp_path: Path) -> None:
     path = tmp_path / "all_father.private.yaml"
     path.write_text(
@@ -2404,6 +2446,8 @@ networks:
             "testnet",
             "--host",
             "coolify-a",
+            "--node",
+            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2477,6 +2521,8 @@ networks:
             "testnet",
             "--host",
             "coolify-a",
+            "--node",
+            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2496,7 +2542,7 @@ networks:
     assert {"wallet_private_key", "node_seed_material", "foundationdb_seed"} <= removed_kinds
 
 
-def test_remove_node_dry_run_removes_highest_existing_super_node_without_renumbering(tmp_path: Path) -> None:
+def test_remove_node_dry_run_removes_explicit_existing_super_node_without_renumbering(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(
         [
@@ -2504,6 +2550,8 @@ def test_remove_node_dry_run_removes_highest_existing_super_node_without_renumbe
             "testnet",
             "--host",
             "coolify-a",
+            "--node",
+            "testneta-super3",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2531,6 +2579,8 @@ def test_remove_node_keep_runtime_state_suppresses_last_node_runtime_cleanup(tmp
             "testnet",
             "--host",
             "coolify-a",
+            "--node",
+            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2583,6 +2633,8 @@ def test_remove_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
             "mainnet",
             "--host",
             "coolify-a",
+            "--node",
+            "mainneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2605,6 +2657,8 @@ def test_remove_node_requires_delete_last_node_for_final_mainnet_node(tmp_path: 
             "--allow-mainnet",
             "--host",
             "coolify-a",
+            "--node",
+            "mainneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2628,6 +2682,8 @@ def test_remove_node_allows_final_mainnet_node_with_explicit_delete_last_node(tm
             "--delete-last-node",
             "--host",
             "coolify-a",
+            "--node",
+            "mainneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2653,6 +2709,8 @@ def test_remove_node_errors_when_no_super_node_exists(tmp_path: Path) -> None:
             "testnet",
             "--host",
             "coolify-a",
+            "--node",
+            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -4583,6 +4641,8 @@ def test_remove_node_last_network_node_plans_network_wide_cleanup(tmp_path: Path
             "testnet",
             "--host",
             "coolify-a",
+            "--node",
+            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",

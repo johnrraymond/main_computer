@@ -4807,3 +4807,81 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+
+/* MCEL Code Editor visible surface pathway status.
+   Patch 10 makes the Patch 09 self-diagnosis plumbing visible in the title bar. */
+.code-editor-mcel-surface-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 24px;
+  max-width: 190px;
+  padding: 3px 9px;
+  border: 1px solid #3c3c3c;
+  border-radius: 999px;
+  background: #202020;
+  color: #c7c7c7;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-editor-mcel-surface-status__label {
+  color: #8c8c8c;
+}
+
+.code-editor-mcel-surface-status__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.code-editor-mcel-surface-status[data-mcel-surface-status-state="pass"] {
+  border-color: rgba(82, 196, 125, 0.64);
+  background: rgba(82, 196, 125, 0.12);
+  color: #9be7b0;
+}
+
+.code-editor-mcel-surface-status[data-mcel-surface-status-state="fail"],
+.code-editor-mcel-surface-status[data-mcel-surface-status-state="error"] {
+  border-color: rgba(255, 103, 103, 0.72);
+  background: rgba(255, 103, 103, 0.14);
+  color: #ffb3b3;
+}
+
+.code-editor-mcel-surface-status[data-mcel-surface-status-state="warning"],
+.code-editor-mcel-surface-status[data-mcel-surface-status-state="unavailable"] {
+  border-color: rgba(255, 197, 89, 0.72);
+  background: rgba(255, 197, 89, 0.12);
+  color: #ffd98f;
+}
+
+.code-editor-mcel-surface-status[data-mcel-surface-status-state="pending"],
+.code-editor-mcel-surface-status[data-mcel-surface-status-state="unknown"] {
+  border-color: rgba(138, 180, 248, 0.54);
+  background: rgba(138, 180, 248, 0.10);
+  color: #b8ccff;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-mcel-surface-status {
+  max-width: 170px;
+  min-height: 24px;
+  padding: 3px 8px;
+  font-size: 10px;
+}
+
+@media (max-width: 920px) {
+  #code-editor-app[data-mcel-layout-live="true"] .code-editor-mcel-surface-status__label {
+    display: none;
+  }
+
+  #code-editor-app[data-mcel-layout-live="true"] .code-editor-mcel-surface-status {
+    max-width: 96px;
+  }
+}
