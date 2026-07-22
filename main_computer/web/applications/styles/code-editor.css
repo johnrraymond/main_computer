@@ -4887,6 +4887,81 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
 }
 
 
+
+/* MCEL Code Editor authored surface status.
+   Hidden by default; appears only when the selected file contains MCEL surface ridges. */
+.code-editor-mcel-authoring-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 24px;
+  max-width: 190px;
+  padding: 3px 9px;
+  border: 1px solid rgba(138, 180, 248, 0.54);
+  border-radius: 999px;
+  background: rgba(138, 180, 248, 0.10);
+  color: #b8ccff;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-editor-mcel-authoring-status[hidden] {
+  display: none !important;
+}
+
+.code-editor-mcel-authoring-status__label {
+  color: #8c8c8c;
+}
+
+.code-editor-mcel-authoring-status__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.code-editor-mcel-authoring-status[data-mcel-authoring-status-state="pass"] {
+  border-color: rgba(82, 196, 125, 0.64);
+  background: rgba(82, 196, 125, 0.12);
+  color: #9be7b0;
+}
+
+.code-editor-mcel-authoring-status[data-mcel-authoring-status-state="fail"],
+.code-editor-mcel-authoring-status[data-mcel-authoring-status-state="error"] {
+  border-color: rgba(255, 103, 103, 0.72);
+  background: rgba(255, 103, 103, 0.14);
+  color: #ffb3b3;
+}
+
+.code-editor-mcel-authoring-status[data-mcel-authoring-status-state="warning"] {
+  border-color: rgba(255, 197, 89, 0.72);
+  background: rgba(255, 197, 89, 0.12);
+  color: #ffd98f;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-mcel-authoring-status {
+  max-width: 170px;
+  min-height: 24px;
+  padding: 3px 8px;
+  font-size: 10px;
+}
+
+@media (max-width: 920px) {
+  #code-editor-app[data-mcel-layout-live="true"] .code-editor-mcel-authoring-status__label {
+    display: none;
+  }
+
+  #code-editor-app[data-mcel-layout-live="true"] .code-editor-mcel-authoring-status {
+    max-width: 96px;
+  }
+}
+
+
 /* MCEL Code Editor ridge inspector.
    Patch 11 keeps detailed surface-pathway diagnostics lazy-opened and bounded. */
 .code-studio-title-actions {
