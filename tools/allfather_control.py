@@ -958,6 +958,119 @@ def normalize_observed_ethereum_address(address: Any) -> str:
     return "0x" + raw.lower()
 
 
+def _rlp_encode_bytes(raw: bytes) -> bytes:
+    if len(raw) == 1 and raw[0] < 0x80:
+        return raw
+    if len(raw) <= 55:
+        return bytes([0x80 + len(raw)]) + raw
+    length_bytes = len(raw).to_bytes((len(raw).bit_length() + 7) // 8, "big")
+    return bytes([0xB7 + len(length_bytes)]) + length_bytes + raw
+
+
+def _rlp_encode_list(items: Sequence[bytes]) -> bytes:
+    payload = b"".join(items)
+    if len(payload) <= 55:
+        return bytes([0xC0 + len(payload)]) + payload
+    length_bytes = len(payload).to_bytes((len(payload).bit_length() + 7) // 8, "big")
+    return bytes([0xF7 + len(length_bytes)]) + length_bytes + payload
+
+
+def qbft_genesis_extra_data(validators: Sequence[str]) -> str:
+    """Build Besu QBFT genesis extraData for an explicit validator set.
+
+    The payload is RLP([32-byte vanity, validator_addresses, vote, round, seals]).
+    This is only used by the offline reseal path, where every running super-node
+    receives the same genesis and keeps its existing local validator key.
+    """
+
+    normalized: list[str] = []
+    for address in validators:
+        clean = normalize_observed_ethereum_address(address)
+        if not clean:
+            raise AllfatherControlError(f"Invalid QBFT validator address for reseal: {address!r}")
+        if clean not in normalized:
+            normalized.append(clean)
+    if not normalized:
+        raise AllfatherControlError("QBFT reseal requires at least one validator address.")
+    vanity = b"\x00" * 32
+    validator_items = [_rlp_encode_bytes(bytes.fromhex(address[2:])) for address in normalized]
+    encoded = _rlp_encode_list(
+        [
+            _rlp_encode_bytes(vanity),
+            _rlp_encode_list(validator_items),
+            _rlp_encode_list([]),
+            _rlp_encode_bytes(b""),
+            _rlp_encode_list([]),
+        ]
+    )
+    return "0x" + encoded.hex()
+
+
+def _wallet_alloc_addresses_from_private_state(state: Mapping[str, Any], network_key: str) -> list[str]:
+    wallets = network_wallets_from_private_state(state, network_key)
+    addresses: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            address = normalize_observed_ethereum_address(value.get("address"))
+            if address and address not in addresses:
+                addresses.append(address)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(wallets)
+    return addresses
+
+
+def qbft_reseal_genesis(
+    network_key: str,
+    validator_addresses: Sequence[str],
+    *,
+    alloc_addresses: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    normalized_validators: list[str] = []
+    for address in validator_addresses:
+        clean = normalize_observed_ethereum_address(address)
+        if not clean:
+            raise AllfatherControlError(f"Invalid QBFT reseal validator address: {address!r}")
+        if clean not in normalized_validators:
+            normalized_validators.append(clean)
+    if not normalized_validators:
+        raise AllfatherControlError("QBFT reseal requires at least one running validator service with an address.")
+
+    alloc: dict[str, dict[str, str]] = {}
+    for address in list(alloc_addresses or []) + normalized_validators:
+        clean = normalize_observed_ethereum_address(address)
+        if clean:
+            alloc.setdefault(clean[2:], {"balance": "0x3635C9ADC5DEA00000"})
+
+    chain_id = 20260000 + (1 if clean_node_network_key(network_key) == "mainnet" else 2)
+    return {
+        "config": {
+            "chainId": chain_id,
+            "berlinBlock": 0,
+            "qbft": {
+                "blockperiodseconds": 2,
+                "emptyblockperiodseconds": 0,
+                "epochlength": 30000,
+                "requesttimeoutseconds": 4,
+            },
+        },
+        "nonce": "0x0",
+        "timestamp": "0x58ee40ba",
+        "gasLimit": "0x1fffffffffffff",
+        "difficulty": "0x1",
+        "mixHash": "0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365",
+        "coinbase": "0x0000000000000000000000000000000000000000",
+        "extraData": qbft_genesis_extra_data(normalized_validators),
+        "alloc": alloc,
+    }
+
+
+
 def checksum_ethereum_address(address_hex: str) -> str:
     raw = str(address_hex or "").strip().lower()
     if raw.startswith("0x"):
@@ -9404,28 +9517,6 @@ def existing_super_ordinals(services: Iterable[Mapping[str, Any]], network_key: 
     return sorted(set(ordinals))
 
 
-def explicit_remove_node_target(network_key: str, head: HeadNode, node_name: object) -> tuple[str, int]:
-    """Return the exact remove-node target requested by the operator.
-
-    remove-node is destructive and recovery-sensitive, so the target service must
-    be named explicitly instead of inferred from the highest host-local ordinal.
-    """
-    service_name = str(node_name or "").strip()
-    if not service_name:
-        raise AllfatherControlError(
-            "remove-node requires --node <service-name> so the target is explicit; "
-            f"for example --node {super_service_name(network_key, head, 1)}."
-        )
-    prefix = re.escape(super_prefix(network_key, head))
-    match = re.fullmatch(rf"{prefix}-super([1-9][0-9]*)", service_name)
-    if not match:
-        raise AllfatherControlError(
-            f"remove-node target --node {service_name!r} is not a {clean_node_network_key(network_key)} "
-            f"super-node on {head.coolify_server}; expected a name like {super_service_name(network_key, head, 1)!r}."
-        )
-    return service_name, int(match.group(1))
-
-
 def missing_super_ordinal_gaps(ordinals: Iterable[int]) -> list[int]:
     unique = sorted({int(item) for item in ordinals if int(item) > 0})
     if not unique:
@@ -10158,6 +10249,7 @@ def super_server_command_script() -> str:
     script = r"""
 from __future__ import annotations
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -10182,6 +10274,7 @@ ports = manifest.get("ports") if isinstance(manifest.get("ports"), dict) else {}
 bootstrap = manifest.get("bootstrap") if isinstance(manifest.get("bootstrap"), dict) else {}
 fdb_plan = manifest.get("foundationdb") if isinstance(manifest.get("foundationdb"), dict) else {}
 removal_handoff = manifest.get("removal_handoff") if isinstance(manifest.get("removal_handoff"), dict) else {}
+qbft_reseal = manifest.get("qbft_reseal") if isinstance(manifest.get("qbft_reseal"), dict) else {}
 public_routes = manifest.get("public_routes") if isinstance(manifest.get("public_routes"), dict) else {}
 state_root = Path(str(manifest.get("state_root") or "/data/main-computer/allfather/supernodes/unknown"))
 network_key = str(manifest.get("network_key") or "")
@@ -12485,11 +12578,190 @@ def ensure_fdb() -> bool:
     )
     return running and (configured or listening) and handoff_ready
 
+def qbft_reseal_enabled() -> bool:
+    return bool(qbft_reseal.get("enabled") and str(qbft_reseal.get("request_id") or "").strip())
+
+
+def qbft_reseal_fetch_bootnodes() -> list[str]:
+    bootnodes: list[str] = []
+    for item in qbft_reseal.get("bootnodes") or []:
+        value = str(item or "").strip()
+        if value and value not in bootnodes:
+            bootnodes.append(value)
+    for participant in qbft_reseal.get("participants") or []:
+        if not isinstance(participant, dict):
+            continue
+        guard_url = str(participant.get("guard_url") or "").rstrip("/")
+        if not guard_url:
+            continue
+        try:
+            request = urllib.request.Request(f"{guard_url}/qbft/bootstrap", headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=4.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            qbft = payload.get("qbft") if isinstance(payload, dict) else {}
+            for bootnode in (qbft.get("bootnodes") if isinstance(qbft, dict) else []) or []:
+                value = str(bootnode or "").strip()
+                if value and value not in bootnodes:
+                    bootnodes.append(value)
+        except Exception:
+            continue
+    return bootnodes
+
+
+def backup_reseal_path(path: Path, request_id: str) -> None:
+    try:
+        if not path.exists():
+            return
+        safe_request = re.sub(r"[^a-zA-Z0-9_.-]+", "-", request_id).strip("-") or str(int(time.time()))
+        backup = path.with_name(f"{path.name}.pre-reseal-{safe_request}")
+        if backup.exists():
+            if path.is_dir():
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                try:
+                    backup.unlink()
+                except Exception:
+                    pass
+        path.rename(backup)
+        super_log(f"qbft_reseal_backup path={path} backup={backup}")
+    except Exception as exc:
+        super_log(f"qbft_reseal_backup_failed path={path} error={type(exc).__name__}: {exc}")
+
+
+def clear_reseal_handoff_markers() -> None:
+    for marker in (
+        state_root / "qbft" / ".validator-remove-handoff.json",
+        state_root / "qbft" / ".validator-admission.json",
+    ):
+        try:
+            if marker.exists():
+                marker.unlink()
+        except Exception:
+            pass
+
+
+def apply_qbft_reseal_config(config_dir: Path, genesis: Path, key_file: Path) -> tuple[bool | None, str]:
+    if not qbft_reseal_enabled():
+        return None, ""
+
+    request_id = str(qbft_reseal.get("request_id") or "").strip()
+    genesis_payload = qbft_reseal.get("genesis") if isinstance(qbft_reseal.get("genesis"), dict) else {}
+    validators = [
+        normalize_eth_address(str(item or ""))
+        for item in (qbft_reseal.get("validators") or [])
+    ]
+    validators = [item for item in validators if item]
+    if not request_id:
+        state("qbft_reseal", desired=True, running=False, status="missing-request-id", ready=False)
+        return False, "qbft-reseal-missing-request-id"
+    if not genesis_payload or not validators:
+        state("qbft_reseal", desired=True, running=False, status="missing-genesis-or-validators", ready=False, request_id=request_id)
+        return False, "qbft-reseal-missing-genesis-or-validators"
+    if not key_file.exists():
+        state("qbft_reseal", desired=True, running=False, status="missing-existing-validator-key", ready=False, request_id=request_id)
+        return False, "qbft-reseal-missing-existing-validator-key"
+    local_address, local_error = local_validator_address_from_key(key_file)
+    if normalize_eth_address(local_address) not in set(validators):
+        state(
+            "qbft_reseal",
+            desired=True,
+            running=False,
+            status="local-validator-not-in-reseal-set",
+            ready=False,
+            request_id=request_id,
+            local_validator_address=local_address,
+            local_validator_address_error=local_error,
+            validators=validators,
+        )
+        return False, "qbft-reseal-local-validator-not-in-reseal-set"
+
+    desired_hash = hashlib.sha256(json.dumps(genesis_payload, sort_keys=True).encode("utf-8")).hexdigest()
+    marker_path = state_root / "qbft" / ".validator-reseal-applied.json"
+    marker: dict = {}
+    try:
+        if marker_path.exists():
+            loaded = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker = loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        marker = {}
+
+    current_genesis = load_json_object(genesis) if genesis.exists() else {}
+    already_applied = (
+        str(marker.get("request_id") or "") == request_id
+        and str(marker.get("genesis_sha256") or "") == desired_hash
+        and current_genesis == genesis_payload
+    )
+    bootnodes = qbft_reseal_fetch_bootnodes()
+    if already_applied:
+        write_bootnodes_config(config_dir, bootnodes)
+        clear_reseal_handoff_markers()
+        state(
+            "qbft_reseal",
+            desired=True,
+            running=True,
+            status="applied",
+            ready=True,
+            request_id=request_id,
+            validators=validators,
+            validator_count=len(validators),
+            local_validator_address=local_address,
+            bootnode_count=len(bootnodes),
+        )
+        return True, "existing-qbft-reseal-config"
+
+    stop_child("validator_rpc")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    backup_reseal_path(genesis, request_id)
+    backup_reseal_path(state_root / "qbft" / "data", request_id)
+    genesis.write_text(json.dumps(genesis_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_bootnodes_config(config_dir, bootnodes)
+    data_dir = state_root / "qbft" / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    clear_reseal_handoff_markers()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "request_id": request_id,
+                "genesis_sha256": desired_hash,
+                "validators": validators,
+                "local_validator_address": local_address,
+                "bootnode_count": len(bootnodes),
+                "applied_at_unix_s": time.time(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state(
+        "qbft_reseal",
+        desired=True,
+        running=True,
+        status="applied",
+        ready=True,
+        request_id=request_id,
+        validators=validators,
+        validator_count=len(validators),
+        local_validator_address=local_address,
+        bootnode_count=len(bootnodes),
+        genesis_sha256=desired_hash,
+    )
+    return True, "applied-qbft-reseal-config"
+
+
+
 def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
     ensure_dirs()
     config_dir = state_root / "qbft" / "config"
     genesis = config_dir / "genesis.json"
     key_file = config_dir / "key"
+    reseal_ok, reseal_reason = apply_qbft_reseal_config(config_dir, genesis, key_file)
+    if reseal_ok is not None:
+        if reseal_ok:
+            return True, reseal_reason, genesis, key_file
+        return False, reseal_reason, None, None
     if genesis.exists() and key_file.exists():
         if existing_network_joiner():
             sync_ok, sync_reason = sync_joiner_shared_qbft_config(config_dir, genesis, key_file)
@@ -15901,6 +16173,122 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
 
 
 
+def qbft_reseal_super_ready_check(internal_status: Mapping[str, Any] | None, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Return whether a super-node accepted and applied an offline QBFT reseal.
+
+    Reseal is a stop-the-world topology repair, not a normal add-node.  While
+    syncing each participant, do not wait on contract deployment, validator
+    admission, or full-hub propagation state: those may be stale by definition
+    in the broken topology being repaired.  The per-node completion signal is
+    that the guard applied the reseal config and restarted its local validator
+    with the expected validator identity.
+    """
+
+    if not isinstance(internal_status, Mapping) or not internal_status:
+        return {"ready": False, "terminal": False, "reason": "private super-node guard status not observed yet", "components": {}}
+    if not bool(internal_status.get("observed")):
+        return {"ready": False, "terminal": False, "reason": str(internal_status.get("reason") or "private super-node guard status not observed yet"), "components": {}}
+
+    functions_value = internal_status.get("functions")
+    functions = functions_value if isinstance(functions_value, Mapping) else {}
+    components = {
+        "foundationdb": _component_status(functions, "foundationdb"),
+        "validator_rpc": _component_status(functions, "validator_rpc"),
+        "qbft_reseal": _component_status(functions, "qbft_reseal"),
+        "validator_admission": _component_status(functions, "validator_admission"),
+        "hub": _component_status(functions, "hub"),
+        "hub_admin": _component_status(functions, "hub_admin"),
+        "contracts": _component_status(functions, "contracts"),
+    }
+
+    error = str(internal_status.get("error") or "").strip()
+    if error and not functions:
+        return {"ready": False, "terminal": "guard-startup-failed" in error, "reason": error, "components": components}
+
+    reseal = manifest.get("qbft_reseal") if isinstance(manifest.get("qbft_reseal"), Mapping) else {}
+    expected_request_id = str(reseal.get("request_id") or "").strip()
+    expected_validators = {
+        normalize_observed_ethereum_address(item)
+        for item in (reseal.get("validators") or [])
+    }
+    expected_validators = {item for item in expected_validators if item}
+
+    fdb = _component_snapshot(functions, "foundationdb")
+    if not (
+        str(fdb.get("status") or "") == "running"
+        and bool(fdb.get("running"))
+        and bool(fdb.get("configured"))
+        and bool(fdb.get("listening"))
+    ):
+        return {"ready": False, "terminal": False, "reason": f"foundationdb not ready: {components['foundationdb'] or 'missing'}", "components": components}
+
+    reseal_state = _component_snapshot(functions, "qbft_reseal")
+    reseal_status = str(reseal_state.get("status") or "").strip()
+    if not (
+        bool(reseal_state.get("ready"))
+        and reseal_status in {"applied", "existing-qbft-reseal-config"}
+    ):
+        terminal = reseal_status in {
+            "missing-request-id",
+            "missing-genesis-or-validators",
+            "missing-existing-validator-key",
+            "local-validator-not-in-reseal-set",
+        }
+        return {
+            "ready": False,
+            "terminal": terminal,
+            "reason": f"QBFT reseal not applied: {components['qbft_reseal'] or 'missing'}",
+            "components": components,
+        }
+    if expected_request_id and str(reseal_state.get("request_id") or "").strip() != expected_request_id:
+        return {
+            "ready": False,
+            "terminal": False,
+            "reason": "QBFT reseal request id has not converged",
+            "components": components,
+            "expected_request_id": expected_request_id,
+            "observed_request_id": str(reseal_state.get("request_id") or "").strip(),
+        }
+
+    validator = _component_snapshot(functions, "validator_rpc")
+    validator_address = normalize_observed_ethereum_address(validator.get("validator_address"))
+    if expected_validators and validator_address not in expected_validators:
+        return {
+            "ready": False,
+            "terminal": True,
+            "reason": f"local validator address is not in reseal set: {validator_address or 'missing'}",
+            "components": components,
+            "expected_validators": sorted(expected_validators),
+        }
+    if not (
+        str(validator.get("status") or "") == "running"
+        and bool(validator.get("running"))
+        and bool(validator.get("rpc_http_ok"))
+        and bool(validator.get("json_rpc_ok"))
+        and bool(validator.get("genesis_file_present"))
+        and validator_address
+    ):
+        block_number = validator.get("block_number")
+        reason = f"validator_rpc not ready after reseal: {components['validator_rpc'] or 'missing'}"
+        if block_number is not None:
+            reason += f" block_number={block_number}"
+        error_text = str(validator.get("validator_address_error") or validator.get("block_production_error") or "").strip()
+        if error_text:
+            reason += f" error={error_text}"
+        return {"ready": False, "terminal": False, "reason": reason, "components": components}
+
+    return {
+        "ready": True,
+        "terminal": False,
+        "reason": "QBFT reseal applied and validator RPC restarted",
+        "components": components,
+        "request_id": str(reseal_state.get("request_id") or ""),
+        "validator_address": validator_address,
+        "block_number": validator.get("block_number"),
+    }
+
+
+
 def hub_propagate_hub_verify_check(
     internal_status: Mapping[str, Any] | None,
     node: Mapping[str, Any],
@@ -16732,7 +17120,10 @@ def wait_for_add_node_ready(
 
         statuses = super_statuses_from_probe_result(last_probe_result)
         last_internal_status = statuses.get(service_name, {})
-        last_ready_check = add_node_super_ready_check(last_internal_status, manifest)
+        if isinstance(manifest.get("qbft_reseal"), Mapping) and bool((manifest.get("qbft_reseal") or {}).get("enabled")):
+            last_ready_check = qbft_reseal_super_ready_check(last_internal_status, manifest)
+        else:
+            last_ready_check = add_node_super_ready_check(last_internal_status, manifest)
         components = last_ready_check.get("components") if isinstance(last_ready_check.get("components"), Mapping) else {}
         component_summary = ",".join(f"{key}={value or '-'}" for key, value in components.items()) if components else "components=not-observed"
         signature = f"coolify={last_status or 'unknown'} reason={last_ready_check.get('reason') or 'not-ready'} {component_summary}"
@@ -20382,16 +20773,452 @@ def prepare_remove_survivor_handoff(
         "direct_vpn_used": False,
     }
 
+
+def _observed_validator_status_nodes(verify_result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    observed: list[dict[str, Any]] = []
+    for host_entry in verify_result.get("nodes") or []:
+        if not isinstance(host_entry, Mapping):
+            continue
+        host = str(host_entry.get("host") or "")
+        for node_entry in host_entry.get("nodes") or []:
+            if not isinstance(node_entry, Mapping):
+                continue
+            service_name = str(node_entry.get("service_name") or "").strip()
+            internal = node_entry.get("internal_status") if isinstance(node_entry.get("internal_status"), Mapping) else {}
+            functions = internal.get("functions") if isinstance(internal.get("functions"), Mapping) else {}
+            validator = functions.get("validator_rpc") if isinstance(functions.get("validator_rpc"), Mapping) else {}
+            address = normalize_observed_ethereum_address(validator.get("validator_address"))
+            try:
+                block_number = int(validator.get("block_number") or validator.get("rpc_block_number") or 0)
+            except (TypeError, ValueError):
+                block_number = 0
+            observed.append(
+                {
+                    "service_name": service_name,
+                    "host": str(node_entry.get("host") or host),
+                    "guard_url": str(node_entry.get("guard_url") or ""),
+                    "validator_address": address,
+                    "validator_running": bool(validator.get("running")),
+                    "validator_status": str(validator.get("status") or ""),
+                    "json_rpc_ok": bool(validator.get("json_rpc_ok") or validator.get("rpc_http_ok")),
+                    "block_number": block_number,
+                    "peer_count": validator.get("peer_count"),
+                    "internal_status": internal,
+                }
+            )
+    return observed
+
+
+def _running_qbft_reseal_nodes(
+    inventory_nodes: Sequence[Mapping[str, Any]],
+    verify_result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    observed_by_name = {
+        str(item.get("service_name") or ""): dict(item)
+        for item in _observed_validator_status_nodes(verify_result)
+        if str(item.get("service_name") or "")
+    }
+    running: list[dict[str, Any]] = []
+    for node in sorted([dict(item) for item in inventory_nodes if isinstance(item, Mapping)], key=network_super_node_sort_key):
+        service_name = str(node.get("service_name") or "").strip()
+        observed = observed_by_name.get(service_name, {})
+        validator_address = normalize_observed_ethereum_address(observed.get("validator_address"))
+        if not (
+            service_name
+            and validator_address
+            and bool(observed.get("validator_running"))
+            and bool(observed.get("json_rpc_ok"))
+        ):
+            continue
+        merged = dict(node)
+        merged.update(
+            {
+                "validator_address": validator_address,
+                "validator_status": str(observed.get("validator_status") or ""),
+                "validator_block_number": observed.get("block_number"),
+                "validator_peer_count": observed.get("peer_count"),
+            }
+        )
+        running.append(merged)
+    return running
+
+
+def _qbft_reseal_request_payload(
+    network_key: str,
+    running_nodes: Sequence[Mapping[str, Any]],
+    *,
+    private_state: Mapping[str, Any],
+    request_id: str,
+) -> dict[str, Any]:
+    validators = [
+        normalize_observed_ethereum_address(node.get("validator_address"))
+        for node in sorted(running_nodes, key=network_super_node_sort_key)
+    ]
+    validators = [item for item in validators if item]
+    if len(set(validators)) != len(validators):
+        duplicates = sorted({item for item in validators if validators.count(item) > 1})
+        raise AllfatherControlError(f"QBFT reseal observed duplicate validator address(es): {', '.join(duplicates)}")
+    alloc_addresses = _wallet_alloc_addresses_from_private_state(private_state, network_key)
+    genesis = qbft_reseal_genesis(network_key, validators, alloc_addresses=alloc_addresses)
+    participants = [
+        {
+            "service_name": str(node.get("service_name") or ""),
+            "host": str(node.get("coolify_server") or ""),
+            "guard_url": str(node.get("guard_url") or "").rstrip("/"),
+            "p2p_endpoint": str(node.get("p2p_endpoint") or ""),
+            "validator_address": normalize_observed_ethereum_address(node.get("validator_address")),
+        }
+        for node in sorted(running_nodes, key=network_super_node_sort_key)
+    ]
+    return {
+        "enabled": True,
+        "request_id": request_id,
+        "network_key": clean_node_network_key(network_key),
+        "mode": "offline-service-inventory-reseal",
+        "validators": validators,
+        "validator_count": len(validators),
+        "participants": participants,
+        "genesis": genesis,
+        "reason": "offline QBFT reseal from currently running super-node services",
+    }
+
+
+def reseal_qbft(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
+    network_key = clean_node_network_key(args.network)
+    if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
+        raise AllfatherControlError("Refusing to reseal mainnet QBFT without --allow-mainnet.")
+
+    private_state_path = repo_relative_path(args.private_state)
+    private_state = load_yaml_mapping(private_state_path)
+    tried_by_host: dict[str, list[dict[str, Any]]] = {}
+    request_id = (
+        "qbft-reseal-"
+        + network_key
+        + "-"
+        + str(int(time.time() * 1000))
+    )
+
+    inventory = lifecycle_inventory_or_raise(plan, network_key, args, tried_by_host)
+    inventory_nodes = [dict(item) for item in (inventory.get("nodes") or []) if isinstance(item, Mapping)]
+    if not inventory_nodes:
+        raise AllfatherControlError(f"No {network_key} super-node services were discovered; nothing to reseal.")
+
+    operator_log(
+        args,
+        f"reseal-qbft: discovered {len(inventory_nodes)} {network_key} super-node service(s); probing running validators",
+    )
+    verify_args = argparse.Namespace(**vars(args))
+    verify_args.skip_traefik_route_verify = True
+    verify_args.hub_verify_wait_s = float(getattr(args, "preflight_wait_s", getattr(args, "deploy_wait_s", 180.0)) or 180.0)
+    preflight: dict[str, Any] = {
+        "enabled": True,
+        "ok": True,
+        "reason": "running validator status collected",
+        "nodes": [],
+        "errors": [],
+        "failed_fast": False,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+    for inventory_node in sorted(inventory_nodes, key=network_super_node_sort_key):
+        node_verify = lifecycle_verify_nodes(
+            plan,
+            verify_args,
+            network_key,
+            [inventory_node],
+            inventory,
+            tried_by_host,
+            verify_routes=False,
+        )
+        preflight["nodes"].extend([dict(item) for item in (node_verify.get("nodes") or []) if isinstance(item, Mapping)])
+        if node_verify.get("ok") is not True:
+            preflight["ok"] = False
+            preflight["reason"] = str(node_verify.get("reason") or "one or more running validator status probes were unhealthy")
+            preflight["errors"].extend([dict(item) for item in (node_verify.get("errors") or []) if isinstance(item, Mapping)])
+    running_nodes = _running_qbft_reseal_nodes(inventory_nodes, preflight)
+    min_nodes = max(1, int(getattr(args, "require_min_nodes", 1) or 1))
+    if len(running_nodes) < min_nodes:
+        observed = _observed_validator_status_nodes(preflight)
+        raise AllfatherControlError(
+            f"QBFT reseal found {len(running_nodes)} running validator node(s), fewer than required {min_nodes}. "
+            f"Observed: {json.dumps([{k: v for k, v in item.items() if k != 'internal_status'} for item in observed], sort_keys=True)}"
+        )
+
+    reseal_request = _qbft_reseal_request_payload(
+        network_key,
+        running_nodes,
+        private_state=private_state,
+        request_id=request_id,
+    )
+    operator_log(
+        args,
+        "reseal-qbft: validator set from running services "
+        + ",".join(f"{item.get('service_name')}={item.get('validator_address')}" for item in running_nodes),
+    )
+
+    result: dict[str, Any] = {
+        "ok": None,
+        "operation": "reseal-qbft",
+        "network": network_key,
+        "request_id": request_id,
+        "inventory": {
+            "service_count": len(inventory_nodes),
+            "services": [str(item.get("service_name") or "") for item in inventory_nodes],
+            "running_validator_count": len(running_nodes),
+            "running_validators": [
+                {
+                    "service_name": str(item.get("service_name") or ""),
+                    "host": str(item.get("coolify_server") or ""),
+                    "validator_address": str(item.get("validator_address") or ""),
+                }
+                for item in running_nodes
+            ],
+        },
+        "reseal": {
+            "validator_count": len(reseal_request.get("validators") or []),
+            "validators": list(reseal_request.get("validators") or []),
+            "participants": list(reseal_request.get("participants") or []),
+        },
+        "preflight": preflight,
+        "nodes": [],
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "tried": tried_by_host if getattr(args, "verbose", False) else {
+            host_name: summarize_coolify_attempts(host_tried)
+            for host_name, host_tried in tried_by_host.items()
+        },
+    }
+
+    if getattr(args, "dry_run", False):
+        result.update(
+            {
+                "ok": None,
+                "reason": "dry-run; would redeploy each running super-node with offline QBFT reseal request",
+                "dry_run": True,
+            }
+        )
+        if getattr(args, "include_compose", False):
+            result["reseal"]["genesis"] = reseal_request.get("genesis")
+        return result
+
+    prepared_reseal_nodes: list[dict[str, Any]] = []
+    pending_reseal_nodes: list[dict[str, Any]] = []
+
+    # Reseal is a stop-the-world repair operation.  Updating an existing Coolify
+    # service in place can leave old compose/env attached even when the API
+    # returns success; in that shape the node restarts but the guard still reports
+    # qbft_reseal missing.  Delete every targeted super-node service first, wait
+    # for Coolify inventory to stop reporting it, then recreate each service from
+    # the authoritative rendered compose that carries MC_ALLFATHER_SUPER_MANIFEST_B64.
+    for node in sorted(running_nodes, key=network_super_node_sort_key):
+        service_name = str(node.get("service_name") or "")
+        node_head = head_for_coolify_server(plan, str(node.get("coolify_server") or ""))
+        tried = tried_by_host.setdefault(node_head.coolify_server, [])
+        client, token_source = fdb_tool().client_for_server(node_head.coolify_server, args)
+        context = resolve_super_context(client, args, node_head, tried)
+        manifest, wallets = manifest_for_existing_super_node_runtime_sync(
+            network_key,
+            node_head,
+            node,
+            all_nodes=running_nodes,
+            private_state=private_state,
+        )
+        manifest["deployment_id"] = new_super_deployment_id()
+        manifest["qbft_reseal"] = reseal_request
+
+        existing_uuid, existing = hub_service_tool().find_service(
+            client,
+            service_name=service_name,
+            explicit_uuid="",
+            tried=tried,
+        )
+        delete_result: dict[str, Any] | None = None
+        delete_wait_result: dict[str, Any] = {
+            "confirmed_absent": not bool(existing_uuid),
+            "service_name": service_name,
+            "reason": "service did not exist before reseal recreate",
+        }
+        if existing_uuid:
+            operator_log(args, f"reseal-qbft: stopping existing {service_name} on {node_head.coolify_server}")
+            delete_result = delete_coolify_service(
+                client,
+                service_uuid=existing_uuid,
+                service_name=service_name,
+                tried=tried,
+            )
+            delete_wait_result = wait_for_coolify_service_absent(
+                client,
+                service_name=service_name,
+                tried=tried,
+                wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S) or DEFAULT_REMOVE_DELETE_WAIT_S),
+                poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S) or DEFAULT_REMOVE_DELETE_POLL_S),
+                args=args,
+            )
+            if not bool(delete_wait_result.get("confirmed_absent")):
+                raise AllfatherControlError(
+                    f"Coolify accepted reseal stop for {service_name!r}, but the old service is still present; "
+                    "refusing to recreate because the reseal manifest may not become authoritative."
+                )
+
+        prepared_reseal_nodes.append(
+            {
+                "node": node,
+                "node_head": node_head,
+                "client": client,
+                "context": context,
+                "tried": tried,
+                "token_source": token_source,
+                "manifest": manifest,
+                "wallets": wallets,
+                "existing": existing if isinstance(existing, Mapping) else {},
+                "old_service_uuid": existing_uuid,
+                "delete_result": delete_result,
+                "delete_wait": delete_wait_result,
+            }
+        )
+
+    for prepared in prepared_reseal_nodes:
+        node = prepared["node"]
+        node_head = prepared["node_head"]
+        client = prepared["client"]
+        context = prepared["context"]
+        tried = prepared["tried"]
+        manifest = prepared["manifest"]
+        wallets = prepared["wallets"]
+        token_source = str(prepared.get("token_source") or "")
+        service_name = str(node.get("service_name") or "")
+
+        hub_admin_key = wallet_private_key(wallets, "hub_admin")
+        deployer_key = wallet_private_key(wallets, "deployer")
+        office_keys = governance_office_private_keys(wallets)
+
+        operator_log(args, f"reseal-qbft: recreating {service_name} on {node_head.coolify_server}")
+        payload = super_service_payload(
+            manifest,
+            args,
+            context=context,
+            hub_admin_private_key=hub_admin_key,
+            deployer_private_key=deployer_key,
+            governance_office_private_keys=office_keys,
+        )
+        service_uuid = fdb_tool().create_service(client, payload, tried)
+        action = "recreated"
+
+        deployed = False
+        wait_result: dict[str, Any] = {
+            "enabled": False,
+            "ready": None,
+            "reason": "deployment skipped by --no-deploy",
+        }
+        if not getattr(args, "no_deploy", False):
+            operator_log(args, f"reseal-qbft: deploying {service_name} force=true")
+            hub_service_tool().trigger_deploy_service(
+                client,
+                service_uuid=service_uuid,
+                force=True,
+                tried=tried,
+            )
+            deployed = True
+
+        node_result = {
+            "ok": None if not deployed else False,
+            "service_name": service_name,
+            "host": node_head.coolify_server,
+            "service_uuid": service_uuid,
+            "old_service_uuid": str(prepared.get("old_service_uuid") or ""),
+            "service_action": action,
+            "deployed": deployed,
+            "delete": prepared.get("delete_result"),
+            "delete_wait": prepared.get("delete_wait"),
+            "wait": wait_result,
+            "token_source": token_source,
+            "validator_address": str(node.get("validator_address") or ""),
+            "compose_source": "recreated-rendered-qbft-reseal-super-compose",
+            "existing": _small_mapping(prepared.get("existing") if isinstance(prepared.get("existing"), Mapping) else {}, ["uuid", "name", "status", "server_status"]),
+        }
+        result["nodes"].append(node_result)
+        pending_reseal_nodes.append(
+            {
+                "node_result": node_result,
+                "node_head": node_head,
+                "manifest": manifest,
+                "client": client,
+                "context": context,
+                "tried": tried,
+                "service_uuid": service_uuid,
+            }
+        )
+
+    for pending in pending_reseal_nodes:
+        node_result = pending["node_result"]
+        if not bool(node_result.get("deployed")):
+            continue
+        node_head = pending["node_head"]
+        manifest = pending["manifest"]
+        client = pending["client"]
+        context = pending["context"]
+        tried = pending["tried"]
+        service_uuid = str(pending.get("service_uuid") or "")
+        service_name = str(node_result.get("service_name") or "")
+        wait_args = argparse.Namespace(**vars(args))
+        wait_args.deploy_wait_s = float(getattr(args, "deploy_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S) or DEFAULT_ADD_NODE_READY_WAIT_S)
+        wait_args.deploy_poll_s = float(getattr(args, "deploy_poll_s", DEFAULT_ADD_NODE_READY_POLL_S) or DEFAULT_ADD_NODE_READY_POLL_S)
+        operator_log(args, f"reseal-qbft: waiting for {service_name} to apply reseal")
+        wait_result = wait_for_add_node_ready(
+            plan,
+            node_head,
+            manifest,
+            client,
+            wait_args,
+            context,
+            tried,
+            service_uuid=service_uuid,
+        )
+        node_result["wait"] = wait_result
+        node_result["ok"] = bool(wait_result.get("ready"))
+        if not bool(wait_result.get("ready")):
+            result.update(
+                {
+                    "ok": False,
+                    "reason": f"reseal deployment for {service_name} did not reach ready state: {wait_result.get('reason') or 'not ready'}",
+                }
+            )
+            return result
+
+    post_inventory = lifecycle_inventory_or_raise(plan, network_key, args, tried_by_host)
+    post_nodes = [dict(item) for item in (post_inventory.get("nodes") or []) if isinstance(item, Mapping)]
+    post_verify = lifecycle_verify_nodes(
+        plan,
+        args,
+        network_key,
+        post_nodes,
+        post_inventory,
+        tried_by_host,
+        verify_routes=False,
+    )
+    result["post_verify"] = post_verify
+    if result["nodes"] and all(item.get("ok") is True for item in result["nodes"]) and post_verify.get("ok") is True:
+        result.update({"ok": True, "reason": "QBFT reseal completed and running services verified"})
+    elif result["nodes"] and all(item.get("ok") is None for item in result["nodes"]):
+        result.update({"ok": None, "reason": "reseal service updates were applied but deployment was skipped"})
+    else:
+        result.update({"ok": False, "reason": str(post_verify.get("reason") or "QBFT reseal did not verify cleanly")})
+    result["tried"] = tried_by_host if getattr(args, "verbose", False) else {
+        host_name: summarize_coolify_attempts(host_tried)
+        for host_name, host_tried in tried_by_host.items()
+    }
+    return result
+
+
+
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network_key = clean_node_network_key(args.network)
     if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
         raise AllfatherControlError("Refusing to remove a mainnet node without --allow-mainnet.")
     head = choose_head_for_host(plan, args.host)
-    requested_service_name, requested_ordinal = explicit_remove_node_target(network_key, head, getattr(args, "node", ""))
-    operator_log(
-        args,
-        f"start: network={network_key} host={head.coolify_server} slot={head.slot} node={requested_service_name}",
-    )
+    operator_log(args, f"start: network={network_key} host={head.coolify_server} slot={head.slot}")
     private_state_path = repo_relative_path(args.private_state)
     state = load_yaml_mapping(private_state_path)
 
@@ -20456,14 +21283,9 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             {"name": super_service_name(network_key, head, item), "uuid": f"dry-run-{item}", "status": "dry-run"}
             for item in range(1, existing_count + 1)
         ]
-        ordinal = requested_ordinal
-        service_name = requested_service_name
-        if ordinal > existing_count:
-            visible = ", ".join(super_service_name(network_key, head, item) for item in range(1, existing_count + 1))
-            raise AllfatherControlError(
-                f"Requested --node {service_name!r} does not exist in dry-run inventory for {head.coolify_server}; "
-                f"visible super-nodes: {visible or '<none>'}."
-            )
+        ordinals = existing_super_ordinals(services, network_key, head)
+        ordinal = max(ordinals)
+        service_name = super_service_name(network_key, head, ordinal)
         service_uuid = f"dry-run-{ordinal}"
         target_status = "dry-run"
         remaining_host_count = existing_count - 1
@@ -20538,16 +21360,12 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     ordinals = existing_super_ordinals(services, network_key, head)
     if not ordinals:
         raise AllfatherControlError(f"No {network_key} super-node exists on {head.coolify_server}; nothing to remove.")
-    ordinal = requested_ordinal
-    service_name = requested_service_name
+    ordinal = max(ordinals)
+    service_name = super_service_name(network_key, head, ordinal)
 
     target_item = next((item for item in services if service_name_from_item(item) == service_name), None)
     if target_item is None:
-        visible = ", ".join(super_service_name(network_key, head, item) for item in ordinals)
-        raise AllfatherControlError(
-            f"Requested --node {service_name!r} was not found on {head.coolify_server}; "
-            f"visible {network_key} super-nodes on that host: {visible or '<none>'}."
-        )
+        raise AllfatherControlError(f"Could not find Coolify service record for {service_name!r}.")
     service_uuid = service_uuid_from_item(target_item)
     target_status = service_status_from_item(target_item)
     if not service_uuid:
@@ -20804,8 +21622,7 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             )
         ),
         "note": (
-            "remove-node requires an explicit --node target and uses network-global live inventory. "
-            "Survivor FDB/QBFT handoff is completed before deletion; "
+            "remove-node uses network-global live inventory. Survivor FDB/QBFT handoff is completed before deletion; "
             "final-node deletion automatically cleans runtime state across all participating hosts."
         ),
     }
@@ -22676,12 +23493,31 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--deploy-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait remotely for the new super-node guard/FDB/RPC/Hub/hub_admin/contracts readiness signal after deploy. Set 0 to return immediately after triggering deploy.")
     add_node_parser.add_argument("--deploy-poll-s", type=float, default=DEFAULT_ADD_NODE_READY_POLL_S, help=argparse.SUPPRESS)
 
-    remove_node_parser = subparsers.add_parser("remove-node", help="Safely remove an explicitly named all-father super-node using network-global FDB/QBFT lifecycle checks.")
+    reseal_parser = subparsers.add_parser(
+        "reseal-qbft",
+        help="Stop/rewrite/restart QBFT validator state from the currently running super-node service inventory.",
+    )
+    add_remote_args(reseal_parser)
+    add_common_head_args(reseal_parser)
+    reseal_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network whose QBFT validator topology should be resealed.")
+    reseal_parser.add_argument("--allow-mainnet", action="store_true", help="Required before resealing mainnet QBFT state.")
+    reseal_parser.add_argument("--dry-run", action="store_true", help="Discover running services and render the reseal plan without updating Coolify.")
+    reseal_parser.add_argument("--include-compose", action="store_true", help="Include generated genesis details in dry-run JSON.")
+    reseal_parser.add_argument("--no-deploy", action="store_true", help="Update each super-node service but do not trigger deployment.")
+    reseal_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after service sync.")
+    reseal_parser.add_argument("--require-min-nodes", type=int, default=1, help="Minimum running validator services required before reseal is allowed.")
+    reseal_parser.add_argument("--preflight-wait-s", type=float, default=180.0, help="Seconds to wait while collecting running validator service status before reseal.")
+    reseal_parser.add_argument("--deploy-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait for each resealed super-node to report ready after deploy.")
+    reseal_parser.add_argument("--deploy-poll-s", type=float, default=DEFAULT_ADD_NODE_READY_POLL_S, help=argparse.SUPPRESS)
+    reseal_parser.add_argument("--delete-wait-s", type=float, default=DEFAULT_REMOVE_DELETE_WAIT_S, help="Seconds to wait for each old super-node service to disappear from Coolify inventory before reseal recreates it.")
+    reseal_parser.add_argument("--delete-poll-s", type=float, default=DEFAULT_REMOVE_DELETE_POLL_S, help=argparse.SUPPRESS)
+    reseal_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help=argparse.SUPPRESS)
+
+    remove_node_parser = subparsers.add_parser("remove-node", help="Safely remove the highest all-father super-node on one host using network-global FDB/QBFT lifecycle checks.")
     add_remote_args(remove_node_parser)
     add_common_head_args(remove_node_parser)
     remove_node_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network to shrink: testnet or mainnet.")
     remove_node_parser.add_argument("--host", required=True, help="Coolify host name or all-father host slot, for example coolify-a or A.")
-    remove_node_parser.add_argument("--node", required=True, help="Exact super-node service to remove, for example mainneta-super1. The name must match the requested network and host.")
     remove_node_parser.add_argument("--allow-mainnet", action="store_true", help="Required before removing a mainnet super-node.")
     remove_node_parser.add_argument("--delete-last-node", action="store_true", help="Required, in addition to --allow-mainnet, before deleting the final live mainnet super-node.")
     remove_node_parser.add_argument("--dry-run", action="store_true", help="Plan the removal without deleting the Coolify service or writing private state.")
@@ -22695,7 +23531,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("--traefik-propagate", action="store_true", help=argparse.SUPPRESS)
     add_hub_propagate_options(remove_node_parser)
 
-    for subparser in (plan_parser, write_parser, boot_parser, discover_parser, hub_parser, traefik_parser, deploy_contracts_parser, add_node_parser, remove_node_parser):
+    for subparser in (plan_parser, write_parser, boot_parser, discover_parser, hub_parser, traefik_parser, deploy_contracts_parser, add_node_parser, reseal_parser, remove_node_parser):
         subparser.add_argument("--json", action="store_true", help="Print full detailed JSON. Default discover/hub-propagate output is an operator summary.")
         subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output, and print the full live progress trace.")
         subparser.add_argument("--progress", action="store_true", help="Print the full live progress trace on stderr while keeping compact JSON output.")
@@ -23104,6 +23940,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if bool(payload.get("ok", True)) else 1
         if args.command == "add-node":
             payload = add_node(plan, args)
+            print_json(payload)
+            return 0 if bool(payload.get("ok", True)) else 1
+        if args.command == "reseal-qbft":
+            payload = reseal_qbft(plan, args)
             print_json(payload)
             return 0 if bool(payload.get("ok", True)) else 1
         if args.command == "remove-node":

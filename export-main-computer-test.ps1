@@ -632,6 +632,7 @@ $exportItems = @(
   "run-exp-fdb-hub.py",
   ".githooks",
   "docker",
+  "mother.md",
   "deploy/local-platform",
   "deploy/scheduler-lab/docker-compose.worker-lab.yml",
   "deploy/scheduler-lab/Dockerfile.simulator",

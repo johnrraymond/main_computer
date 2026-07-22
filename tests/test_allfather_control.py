@@ -2367,48 +2367,6 @@ def test_add_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
         control.add_node(plan, args)
 
 
-def test_remove_node_parse_requires_explicit_node(tmp_path: Path) -> None:
-    path = write_private_state_with_wallets(tmp_path)
-
-    with pytest.raises(SystemExit):
-        control.parse_args(
-            [
-                "remove-node",
-                "testnet",
-                "--host",
-                "coolify-a",
-                "--private-state",
-                str(path),
-                "--dry-run",
-                "--existing-count",
-                "1",
-            ]
-        )
-
-
-def test_remove_node_rejects_node_outside_requested_host(tmp_path: Path) -> None:
-    path = write_private_state_with_wallets(tmp_path)
-    args = control.parse_args(
-        [
-            "remove-node",
-            "testnet",
-            "--host",
-            "coolify-a",
-            "--node",
-            "testnetb-super1",
-            "--private-state",
-            str(path),
-            "--dry-run",
-            "--existing-count",
-            "1",
-        ]
-    )
-    plan = control.build_plan_from_args(args)
-
-    with pytest.raises(control.AllfatherControlError, match="not a testnet super-node on coolify-a"):
-        control.remove_node(plan, args)
-
-
 def test_remove_node_dry_run_preserves_private_seed_material_by_default_when_network_goes_empty(tmp_path: Path) -> None:
     path = tmp_path / "all_father.private.yaml"
     path.write_text(
@@ -2446,8 +2404,6 @@ networks:
             "testnet",
             "--host",
             "coolify-a",
-            "--node",
-            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2521,8 +2477,6 @@ networks:
             "testnet",
             "--host",
             "coolify-a",
-            "--node",
-            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2542,7 +2496,7 @@ networks:
     assert {"wallet_private_key", "node_seed_material", "foundationdb_seed"} <= removed_kinds
 
 
-def test_remove_node_dry_run_removes_explicit_existing_super_node_without_renumbering(tmp_path: Path) -> None:
+def test_remove_node_dry_run_removes_highest_existing_super_node_without_renumbering(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(
         [
@@ -2550,8 +2504,6 @@ def test_remove_node_dry_run_removes_explicit_existing_super_node_without_renumb
             "testnet",
             "--host",
             "coolify-a",
-            "--node",
-            "testneta-super3",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2579,8 +2531,6 @@ def test_remove_node_keep_runtime_state_suppresses_last_node_runtime_cleanup(tmp
             "testnet",
             "--host",
             "coolify-a",
-            "--node",
-            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2633,8 +2583,6 @@ def test_remove_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
             "mainnet",
             "--host",
             "coolify-a",
-            "--node",
-            "mainneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2657,8 +2605,6 @@ def test_remove_node_requires_delete_last_node_for_final_mainnet_node(tmp_path: 
             "--allow-mainnet",
             "--host",
             "coolify-a",
-            "--node",
-            "mainneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2682,8 +2628,6 @@ def test_remove_node_allows_final_mainnet_node_with_explicit_delete_last_node(tm
             "--delete-last-node",
             "--host",
             "coolify-a",
-            "--node",
-            "mainneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -2709,8 +2653,6 @@ def test_remove_node_errors_when_no_super_node_exists(tmp_path: Path) -> None:
             "testnet",
             "--host",
             "coolify-a",
-            "--node",
-            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -4641,8 +4583,6 @@ def test_remove_node_last_network_node_plans_network_wide_cleanup(tmp_path: Path
             "testnet",
             "--host",
             "coolify-a",
-            "--node",
-            "testneta-super1",
             "--private-state",
             str(path),
             "--dry-run",
@@ -5566,3 +5506,196 @@ def test_prune_allfather_helper_services_uses_live_inventory_names(monkeypatch) 
 
 
 
+
+
+def test_qbft_reseal_genesis_extra_data_contains_validator_addresses() -> None:
+    validators = [
+        "0xb5c4647059841a636730dc1976056e631c71e229",
+        "0x6c0b35f9dfba3eeb551ca9353cbab08fee758cfd",
+    ]
+
+    genesis = control.qbft_reseal_genesis("mainnet", validators)
+
+    assert genesis["config"]["chainId"] == 20260001
+    assert genesis["extraData"].startswith("0x")
+    assert "b5c4647059841a636730dc1976056e631c71e229" in genesis["extraData"]
+    assert "6c0b35f9dfba3eeb551ca9353cbab08fee758cfd" in genesis["extraData"]
+    assert "b5c4647059841a636730dc1976056e631c71e229" in genesis["alloc"]
+    assert "6c0b35f9dfba3eeb551ca9353cbab08fee758cfd" in genesis["alloc"]
+
+
+def test_reseal_qbft_parser_requires_network_and_accepts_mainnet_guardrail() -> None:
+    args = control.parse_args(
+        [
+            "reseal-qbft",
+            "mainnet",
+            "--allow-mainnet",
+            "--dry-run",
+            "--require-min-nodes",
+            "2",
+        ]
+    )
+
+    assert args.command == "reseal-qbft"
+    assert args.network == "mainnet"
+    assert args.allow_mainnet is True
+    assert args.dry_run is True
+    assert args.require_min_nodes == 2
+    assert hasattr(args, "delete_wait_s")
+    assert hasattr(args, "delete_poll_s")
+
+
+def test_reseal_qbft_recreates_services_with_authoritative_rendered_compose() -> None:
+    source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+    start = source.index("def reseal_qbft(")
+    end = source.index("\n\ndef remove_node(", start)
+    function_source = source[start:end]
+
+    assert "recreated-rendered-qbft-reseal-super-compose" in function_source
+    assert "delete_coolify_service(" in function_source
+    assert "wait_for_coolify_service_absent(" in function_source
+    assert "fdb_tool().create_service(" in function_source
+    assert "sync_super_node_service(" not in function_source
+    assert "render_remove_survivor_handoff_compose_preserving_live_image" not in function_source
+    assert "live_super_runtime_image_for_remove" not in function_source
+    assert function_source.index("prepared_reseal_nodes.append(") < function_source.index("for prepared in prepared_reseal_nodes:")
+    assert function_source.index("pending_reseal_nodes.append(") < function_source.index("for pending in pending_reseal_nodes:")
+
+
+def test_qbft_reseal_ready_check_ignores_stale_contracts_and_admission() -> None:
+    manifest = {
+        "qbft_reseal": {
+            "enabled": True,
+            "request_id": "qbft-reseal-mainnet-test",
+            "validators": [
+                "0xb5c4647059841a636730dc1976056e631c71e229",
+                "0x6c0b35f9dfba3eeb551ca9353cbab08fee758cfd",
+            ],
+        }
+    }
+    internal_status = {
+        "observed": True,
+        "functions": {
+            "foundationdb": {
+                "status": "running",
+                "running": True,
+                "configured": True,
+                "listening": True,
+            },
+            "qbft_reseal": {
+                "status": "applied",
+                "ready": True,
+                "request_id": "qbft-reseal-mainnet-test",
+            },
+            "validator_rpc": {
+                "status": "running",
+                "running": True,
+                "rpc_http_ok": True,
+                "json_rpc_ok": True,
+                "genesis_file_present": True,
+                "validator_address": "0xb5c4647059841a636730dc1976056e631c71e229",
+                "block_number": 0,
+            },
+            "validator_admission": {
+                "status": "vote-requested",
+                "admitted": False,
+            },
+            "hub": {
+                "status": "running-full-main-computer-hub",
+            },
+            "hub_admin": {
+                "status": "bootstrapped",
+            },
+            "contracts": {
+                "status": "deployed",
+                "completed": False,
+            },
+        },
+    }
+
+    result = control.qbft_reseal_super_ready_check(internal_status, manifest)
+
+    assert result["ready"] is True
+    assert result["reason"] == "QBFT reseal applied and validator RPC restarted"
+    assert result["validator_address"] == "0xb5c4647059841a636730dc1976056e631c71e229"
+
+
+def test_wait_for_add_node_ready_uses_reseal_readiness_for_reseal_manifests() -> None:
+    source = Path(control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+    start = source.index("def wait_for_add_node_ready(")
+    end = source.index("\n\ndef ensure_existing_validator_admission_endpoints(", start)
+    function_source = source[start:end]
+
+    assert "qbft_reseal_super_ready_check(last_internal_status, manifest)" in function_source
+    assert "add_node_super_ready_check(last_internal_status, manifest)" in function_source
+
+
+def test_running_qbft_reseal_nodes_uses_live_validator_addresses() -> None:
+    inventory_nodes = [
+        {
+            "service_name": "mainneta-super1",
+            "coolify_server": "coolify-a",
+            "host_slot": "A",
+            "ordinal": 1,
+            "guard_url": "http://10.116.0.3:41600",
+        },
+        {
+            "service_name": "mainnetc-super1",
+            "coolify_server": "coolify-c",
+            "host_slot": "C",
+            "ordinal": 1,
+            "guard_url": "http://10.116.0.2:41800",
+        },
+    ]
+    verify_result = {
+        "nodes": [
+            {
+                "host": "coolify-a",
+                "nodes": [
+                    {
+                        "service_name": "mainneta-super1",
+                        "guard_url": "http://10.116.0.3:41600",
+                        "internal_status": {
+                            "functions": {
+                                "validator_rpc": {
+                                    "running": True,
+                                    "json_rpc_ok": True,
+                                    "validator_address": "0xb5c4647059841a636730dc1976056e631c71e229",
+                                    "block_number": 6164,
+                                    "status": "running",
+                                }
+                            }
+                        },
+                    }
+                ],
+            },
+            {
+                "host": "coolify-c",
+                "nodes": [
+                    {
+                        "service_name": "mainnetc-super1",
+                        "guard_url": "http://10.116.0.2:41800",
+                        "internal_status": {
+                            "functions": {
+                                "validator_rpc": {
+                                    "running": True,
+                                    "rpc_http_ok": True,
+                                    "validator_address": "0x6c0b35f9dfba3eeb551ca9353cbab08fee758cfd",
+                                    "block_number": 6164,
+                                    "status": "running",
+                                }
+                            }
+                        },
+                    }
+                ],
+            },
+        ]
+    }
+
+    running = control._running_qbft_reseal_nodes(inventory_nodes, verify_result)
+
+    assert [node["service_name"] for node in running] == ["mainneta-super1", "mainnetc-super1"]
+    assert [node["validator_address"] for node in running] == [
+        "0xb5c4647059841a636730dc1976056e631c71e229",
+        "0x6c0b35f9dfba3eeb551ca9353cbab08fee758cfd",
+    ]
