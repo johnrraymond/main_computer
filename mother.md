@@ -15,6 +15,127 @@ or roll it back. No Mother command may mutate live infrastructure during
 discovery, and no command may borrow a destructive helper from another lifecycle
 path merely because it happens to touch the same service.
 
+
+## Use case: first node, second node, topology handoff
+
+This use case is the reference story for Mother. It shows why service lifecycle
+and network topology lifecycle are separate.
+
+Goal:
+
+```text
+Start with no committed validator topology.
+Create the first super-node on coolify-a.
+Join that node to the empty topology.
+Create a second super-node on coolify-c.
+Join the second node to the running topology.
+Remove coolify-a from the topology.
+Delete/disable the coolify-a service.
+End with coolify-c as the solo effective network.
+```
+
+Prerequisite:
+
+```text
+/runtime/state/mother/ exists before the Mother control surface is deployed.
+/runtime/state/mother/identity.private.yaml exists inside that durable state root.
+```
+
+The Mother state root is the durable contract. The Mother container and API code
+are replaceable; authoritative identity, topology, action, rollback, route, guard,
+and lock state must not live only inside the container filesystem.
+
+`identity.private.yaml` is the source of reserved network identity. It contains
+the chain facts, officer/admin identity records, validator identity records, node
+reservations, routing reservations, and first-genesis material Mother needs
+before any service is deployed. The initial secret backend is inline local private
+YAML: private-key fields live directly in this file, and any key references are
+internal references to records in the same document.
+
+A representative flow:
+
+```text
+# 0. Observe the empty or partially empty world. Read-only only.
+mother diagnose mainnet
+
+# 1. Prepare the first service on coolify-a.
+mother add-node prep mainnet --node mainneta-super1 --host coolify-a
+mother add-node do mainnet
+mother add-node finalize mainnet
+
+# Result:
+#   mainneta-super1 exists in standby service state.
+#   Its reserved validator identity matches /runtime/state/mother/identity.private.yaml.
+#   It is not yet in QBFT topology.
+#   It is not in public RPC/Hub routing.
+
+# 2. Join the first service to the empty chain topology.
+mother join-topology prep mainnet --node mainneta-super1 --mode initial
+mother join-topology do mainnet
+mother join-topology finalize mainnet
+
+# Result:
+#   Mother installs the precomputed first-genesis material.
+#   mainneta-super1 is the only validator in QBFT topology.
+#   routing reflects the finalized topology policy.
+
+# 3. Prepare a second service on coolify-c.
+mother add-node prep mainnet --node mainnetc-super1 --host coolify-c
+mother add-node do mainnet
+mother add-node finalize mainnet
+
+# Result:
+#   mainnetc-super1 exists in standby service state.
+#   It has its reserved validator identity.
+#   It is not yet in QBFT topology.
+#   It is not in public RPC/Hub routing.
+
+# 4. Join the second service to the running chain topology.
+mother join-topology prep mainnet --node mainnetc-super1 --mode soft
+mother join-topology do mainnet
+mother join-topology finalize mainnet
+
+# Result:
+#   QBFT topology contains both validator addresses.
+#   public/internal routing policy includes mainnetc-super1 only after finalize.
+
+# 5. Remove coolify-a's service from chain and route topology.
+mother remove-topology prep mainnet --node mainneta-super1 --mode soft
+mother remove-topology do mainnet
+mother remove-topology finalize mainnet
+
+# Result:
+#   QBFT topology contains only mainnetc-super1's validator address.
+#   public/internal RPC and Hub routing no longer target mainneta-super1.
+#   mainneta-super1 is a detached/standby service, not an active validator.
+
+# 6. Delete or disable the detached coolify-a service.
+mother remove-node prep mainnet --node mainneta-super1
+mother remove-node do mainnet
+mother remove-node finalize mainnet
+
+# Result:
+#   mainneta-super1 is gone or disabled according to the prepared plan.
+#   coolify-c's mainnetc-super1 is the solo effective network.
+```
+
+At every point after `prep` and before `finalize`, `mother diagnose mainnet`
+must report the current operation ID, stage, owned scopes, completed checkpoints,
+and allowed next commands. Rollback is generic:
+
+```text
+mother rollback mainnet
+```
+
+It resolves the active operation from the Mother control surface and unwinds the
+durable rollback stack. The operator does not have to tell rollback which kind of
+operation is active.
+
+No unknown in this use case may be hidden inside an implementation. If a step
+depends on behavior that is not yet designed, the document must contain an
+explicit `MOTHER-OPEN-*` node before implementation begins.
+
+
 ## Design goals
 
 Mother exists to answer three questions before any change is made:
@@ -45,6 +166,288 @@ Mother must make the following facts distinct at all times:
 The Allfather failure mode was treating these topologies as interchangeable.
 Mother's first invariant is that they are never interchangeable.
 
+
+## Mother durable state and private identity
+
+Canonical durable state root:
+
+```text
+/runtime/state/mother/
+```
+
+Canonical inline private identity backend:
+
+```text
+/runtime/state/mother/identity.private.yaml
+```
+
+The state root is created before the Mother control surface is deployed. It is
+the durable source for identities, topology records, action journals, rollback
+stacks, route before-state snapshots, guard observations, locks, and network
+facts that must survive replacement of the Mother container or API
+implementation.
+
+The Mother container is disposable. Pushing a new Mother compose or replacing the
+mounted Mother API code must not destroy authoritative state. On startup, Mother
+must rehydrate its view from `/runtime/state/mother/` plus live guard/topology
+discovery.
+
+`identity.private.yaml` plays a similar role to the Allfather private file, but
+with stricter ownership boundaries:
+
+- it is owned by Mother, not by ad hoc lifecycle scripts;
+- it is topology-aware;
+- it records reserved node identities before nodes are deployed;
+- it stores private key material with restrictive permissions;
+- it is not a substitute for the operation ledger;
+- it must not be rewritten opportunistically by probes.
+
+The private identity file should be readable and writable only by the Mother
+control surface. Recommended local permission target is equivalent to `0600` on
+Unix-like systems. If the file is copied or backed up, that copy is also private
+state.
+
+Minimum conceptual contents:
+
+```yaml
+schema: mother.private.v1
+control_surface:
+  id: mother-control-001
+  created_at: "..."
+networks:
+  mainnet:
+    chain_id: 20260001
+    genesis:
+      source: mother-private
+      first_topology_mode: initial
+      qbft:
+        blockperiodseconds: 2
+        epochlength: 30000
+      alloc_accounts:
+        - ref: officer:mainnet:hub-admin
+    officers:
+      hub-admin:
+        address: "0x..."
+        private_key: "0x..."
+      deployer:
+        address: "0x..."
+        private_key: "0x..."
+    nodes:
+      mainneta-super1:
+        host: coolify-a
+        validator:
+          address: "0x..."
+          private_key: "0x..."
+        validator_key_ref: "networks.mainnet.nodes.mainneta-super1.validator"
+        guard_route_reservation: "..."
+        rpc_route_reservation: "..."
+        hub_route_reservation: "..."
+      mainnetc-super1:
+        host: coolify-c
+        validator:
+          address: "0x..."
+          private_key: "0x..."
+        validator_key_ref: "networks.mainnet.nodes.mainnetc-super1.validator"
+        guard_route_reservation: "..."
+        rpc_route_reservation: "..."
+        hub_route_reservation: "..."
+```
+
+The exact storage format may change, but these ownership rules may not:
+
+1. Mother reserves validator identity before `add-node`.
+2. `add-node` installs reserved identity; it does not invent validator identity.
+3. `join-topology` installs or activates chain topology using Mother-owned facts.
+4. The first-node genesis is generated from Mother private state, not guessed by
+   a running super-node.
+5. Public/officer/admin identities are generated before deployment and recorded
+   in private state.
+6. Operation records may refer to secrets in private state, but should not copy
+   raw private key material into non-secret operation ledgers.
+
+### Resolved design decisions
+
+The following items are no longer unknowns.
+
+`MOTHER-DESIGN-001: private-state-owned-node-identity`
+
+Mother owns planned node identity. A node's validator key, validator address,
+officer/admin addresses, and route reservations are generated or reserved before
+service deployment and recorded in `/runtime/state/mother/identity.private.yaml`.
+`add-node` installs the reserved identity. It does not generate an identity as a
+side effect of starting a service.
+
+`MOTHER-DESIGN-002: standby-removes-public-routing`
+
+Standby is the default service state after `add-node`. A standby service is not
+in public RPC routing, public Hub routing, aggregate public routing, or QBFT
+validator topology. Moving a service into standby removes it from public routing.
+Leaving standby does not itself publish routes; route membership is committed by
+`join-topology finalize`, `remove-topology finalize`, or a dedicated routing
+operation.
+
+`MOTHER-DESIGN-003: mother-owned-first-genesis`
+
+The first network genesis is generated before Mother deploys or before the first
+topology operation. `add-node` does not generate genesis. `join-topology --mode
+initial` installs the Mother-owned first-genesis material when joining the first
+node to an empty topology.
+
+`MOTHER-DESIGN-004: inline-local-private-yaml-secret-backend`
+
+`MOTHER-OPEN-001: exact-secret-backend` is resolved as inline local private YAML.
+The stable public durable contract is the Mother state root:
+
+```text
+/runtime/state/mother/
+```
+
+The private-state backend for the first implementation is:
+
+```text
+/runtime/state/mother/identity.private.yaml
+```
+
+It stores private identity material directly alongside derived public addresses.
+Mother private state may use internal references such as
+`networks.mainnet.wallets.captain` or
+`networks.mainnet.validators.mainneta-super1`, but those references resolve
+inside the same YAML document. They do not point to Vault, KMS, Docker secrets,
+a mounted secret directory, a host secret store, or another external backend
+unless a later schema version explicitly introduces that backend.
+
+The canonical wallet and validator identity shape is:
+
+```yaml
+networks:
+  mainnet:
+    wallets:
+      deployer:
+        address: "0x..."
+        private_key: "0x..."
+      captain:
+        address: "0x..."
+        private_key: "0x..."
+      o1:
+        address: "0x..."
+        private_key: "0x..."
+      o2:
+        address: "0x..."
+        private_key: "0x..."
+      o3:
+        address: "0x..."
+        private_key: "0x..."
+    validators:
+      mainneta-super1:
+        address: "0x..."
+        private_key: "0x..."
+```
+
+If an operation record needs to name a key, it records a private-state reference,
+not a raw private key. For example:
+
+```yaml
+validator_key_ref: "networks.mainnet.validators.mainneta-super1"
+governance_office_key_refs:
+  - "networks.mainnet.wallets.captain"
+  - "networks.mainnet.wallets.o1"
+  - "networks.mainnet.wallets.o2"
+  - "networks.mainnet.wallets.o3"
+```
+
+The resolver loads `/runtime/state/mother/identity.private.yaml`, follows the internal
+reference, verifies that the derived address matches the recorded address, and
+passes the private key only to the component that must sign or deploy. Topology
+operations may create, delete, or repair services and routes, but they must not
+delete, regenerate, or rotate these private-state identity records unless the
+operator explicitly requests identity rotation.
+
+`MOTHER-DESIGN-005: route-gated-standby-runtime`
+
+`MOTHER-OPEN-002: standby-hub-runtime-behavior` is resolved as internal-only,
+route-gated standby. A standby service may keep internal guard/runtime processes
+available for diagnostics and recovery, but public Traefik routes must not point
+at it. Entering standby withdraws RPC and Hub public routes and records the
+previous route state in the rollback stack before the route change is applied.
+Leaving standby does not publish routes by itself; public routing is committed by
+a join, remove, or explicit routing operation.
+
+`MOTHER-DESIGN-006: api-first-guard-runtime-control`
+
+`MOTHER-OPEN-003: guard-runtime-api` is resolved as API-first runtime control.
+High-level Mother actions are decomposed into ordered calls against the Mother
+control surface and per-node guard endpoints. Runtime topology changes must not
+depend on replacing compose files.
+
+Compose may provision or replace the disposable service shell, but runtime
+mutations are API operations. The guard API must expose idempotent primitives for
+at least:
+
+```text
+POST /guard/v1/identity/install-reserved
+POST /guard/v1/standby/enter
+POST /guard/v1/qbft/config/install
+POST /guard/v1/qbft/config/restore
+POST /guard/v1/validator-rpc/start
+POST /guard/v1/validator-rpc/stop
+GET  /guard/v1/topology/state
+```
+
+Every successful mutating guard or routing API call must have a durable undo
+packet pushed onto the operation rollback stack. The rollback stack must be
+inspectable through the Mother API before, during, and after the action.
+
+`MOTHER-DESIGN-007: disposable-mother-container-durable-state-root`
+
+The Mother container and Mother API implementation are replaceable. Operators may
+push a new Mother compose or install updated Mother API code whenever needed, but
+authoritative Mother state must live under `/runtime/state/mother/`, not inside
+the container filesystem. Mother startup must validate the state root, load
+identity, action, rollback, route, topology, guard, lock, and version records,
+then reconcile those records with live guard/topology discovery.
+
+Rollback stacks are required for topology/runtime mutations, not for ordinary
+Mother container replacement. The safety condition for replacing the Mother
+container is that the new implementation understands the mounted state schema or
+refuses mutating actions until an explicit migration is performed.
+
+`MOTHER-DESIGN-008: coolify-mediated-local-call-runner-transport`
+
+Mother and guard mutation APIs are local-only control APIs. They must bind to
+localhost or a private host/container network and must not be published through
+public Traefik routes. Public routes are for user-facing Hub/RPC traffic, not for
+runtime mutation endpoints.
+
+Remote operator access to Mother is mediated by Coolify/Allfather bootstrap
+access. The Coolify API is used to place a small call-runner on the target
+Coolify host. The runner executes a structured local HTTP call into the Mother
+API, records or prints the result, and then exits or waits for another request.
+
+Preferred transport is Option A: a one-shot temporary call-runner service per
+operator call. The operator creates or updates the service through Coolify,
+passes a request envelope, starts it, reads the result from logs or durable
+Mother state, and deletes or lets the temporary service stop.
+
+Accepted fallback is Option B: a persistent private call-runner service. A
+persistent runner is allowed only if it is disposable. It may be stopped,
+restarted, deleted, or manually killed without corrupting Mother state. It must
+not own authoritative topology, identity, operation, rollback, route, or lock
+state. Killing the runner may lose an in-flight transport response, but it must
+not erase a Mother operation once Mother has accepted it; the operator must be
+able to recover by reading Mother status, operation records, and idempotency
+results from `/runtime/state/mother/`.
+
+The runner must not be treated as a general public shell. Its normal contract is
+a structured local-call envelope such as target, method, path, body, and
+idempotency key. The runner may call only approved local/private Mother or guard
+endpoints.
+
+### Remaining open design nodes
+
+No remaining open design nodes are defined in this baseline. New unknowns must
+be added as explicit `MOTHER-OPEN-*` entries before code depends on them.
+
+
 ## Namespace
 
 Everything new uses the Mother namespace.
@@ -54,52 +457,73 @@ Recommended layout:
 ```text
 tools/mother/
   mother.py
-  diagnose_qbft.py
+  diagnose.py
   probe_topology.py
-  plan_topology.py
+  plan.py
   add_node.py
+  join_topology.py
+  remove_topology.py
   remove_node.py
   reseal_qbft.py
   restore_service.py
+  rollback.py
   common/
     coolify.py
     guards.py
     qbft.py
     inventory.py
     topology.py
-    state.py
+    routing.py
+    private_state.py
     operations.py
     locks.py
     planning.py
     reporting.py
-    rollback.py
+    rollback_stack.py
 ```
 
 Recommended command shape:
 
 ```text
-python tools/mother/mother.py diagnose qbft mainnet
+# Read-only.
+python tools/mother/mother.py diagnose mainnet
 
-python tools/mother/mother.py add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
-python tools/mother/mother.py remove-node prep mainnet --node mainneta-super1 --mode soft
-python tools/mother/mother.py reseal-qbft prep mainnet --nodes mainneta-super1,mainnetc-super1
+# Service lifecycle. add-node defaults to standby; no --standby flag exists.
+python tools/mother/mother.py add-node prep mainnet --node mainnetc-super1 --host coolify-c
+python tools/mother/mother.py add-node do mainnet
+python tools/mother/mother.py add-node finalize mainnet
 
-python tools/mother/mother.py do mainnet
-python tools/mother/mother.py finalize mainnet
+# Chain/routing topology lifecycle.
+python tools/mother/mother.py join-topology prep mainnet --node mainnetc-super1 --mode soft
+python tools/mother/mother.py join-topology do mainnet
+python tools/mother/mother.py join-topology finalize mainnet
+
+python tools/mother/mother.py remove-topology prep mainnet --node mainneta-super1 --mode soft
+python tools/mother/mother.py remove-topology do mainnet
+python tools/mother/mother.py remove-topology finalize mainnet
+
+# Service deletion after topology removal.
+python tools/mother/mother.py remove-node prep mainnet --node mainneta-super1
+python tools/mother/mother.py remove-node do mainnet
+python tools/mother/mother.py remove-node finalize mainnet
+
+# Generic rollback. Mother resolves the active operation from the control surface.
 python tools/mother/mother.py rollback mainnet
+python tools/mother/mother.py rollback mainnet --operation-id <id>
 
-python tools/mother/mother.py do mainnet --operation-id <id>        # optional cross-check
-python tools/mother/mother.py finalize mainnet --operation-id <id>  # optional cross-check
-python tools/mother/mother.py rollback mainnet --operation-id <id>  # optional cross-check
+# Hard full-set topology repair for existing services.
+python tools/mother/mother.py reseal-qbft prep mainnet --nodes mainneta-super1,mainnetc-super1
+python tools/mother/mother.py reseal-qbft do mainnet
+python tools/mother/mother.py reseal-qbft finalize mainnet
 ```
 
 Names may change, but the stage contract must not change: every mutating Mother
-operation starts with a kind-specific `prep`, then generic Mother `do`,
-`finalize`, or `rollback` commands resolve the active operation from the Mother
-control surface. `rollback` is not kind-specific. Once Mother has recorded an
-operation as current, rollback must be able to unwind it from the durable
-operation record without the caller restating what kind of operation is being
-rolled back.
+operation is run as `prep`, `do`, and `finalize`; every prepared, unfinalized
+operation accepts the generic `rollback` command until it has been finalized.
+
+`--standby` is not a normal-path flag. Standby is the default state produced by
+`add-node`.
+
 
 ## Relationship to Allfather
 
@@ -137,15 +561,19 @@ Mother decides how lifecycle operations are allowed to run.
 
 ## Mother control container
 
-The Mother control container is a small, persistent operator service that owns
-operation state and stage transitions. It is not a super-node and it is not part
-of the QBFT validator set.
+The Mother control container is a replaceable operator API process. It owns
+stage transitions while it is running, but it does not own authoritative state in
+its container filesystem. It is not a super-node and it is not part of the QBFT
+validator set. It must mount `/runtime/state/mother/` and reconstruct its control
+view from that durable state root plus live discovery after every start.
 
 ### Responsibilities
 
 The Mother control container is responsible for:
 
-- loading private-state and Coolify host configuration;
+- mounting and validating `/runtime/state/mother/`;
+- loading private-state and Coolify host configuration from the durable state
+  root;
 - discovering Coolify services and guard endpoints;
 - querying guard status and QBFT RPC state;
 - creating immutable prepared operation records;
@@ -153,7 +581,11 @@ The Mother control container is responsible for:
 - rejecting conflicting commands until the active operation is finalized or
   rolled back;
 - executing `do` only from a prepared operation record;
+- calling guard and routing APIs for runtime mutations;
+- pushing durable undo packets before or atomically with each successful
+  mutating substep;
 - exposing rollback for every non-finalized mutating operation;
+- exposing the current action, checkpoints, and rollback stack through the API;
 - recording checkpoints during `do`;
 - verifying postconditions during `finalize`;
 - releasing operation ownership only during `finalize` or `rollback`;
@@ -162,9 +594,11 @@ The Mother control container is responsible for:
 The Mother control container is not responsible for:
 
 - running validator processes itself;
-- holding validator keys;
+- holding authoritative state only inside the container filesystem;
+- holding validator keys outside the mounted private identity backend;
 - rebuilding super-node images;
-- replacing Coolify compose files during normal validator lifecycle operations;
+- using compose replacement as the normal mechanism for runtime topology
+  mutation;
 - deleting or recreating services except inside an explicit `restore-service`
   operation;
 - treating service count as consensus truth.
@@ -175,10 +609,20 @@ Mother must keep a durable operation ledger. This ledger can begin as files unde
 a Mother-owned persistent volume and later move to FDB or another durable store,
 but the semantics must be stable.
 
-Suggested ledger layout:
+Suggested durable state layout:
 
 ```text
-/mother-state/
+/runtime/state/mother/
+  identity.private.yaml
+  topology.yaml
+  version.json
+  locks/
+  guards/
+  routes/
+    <network>/
+      <host>.json
+  rollback/
+    <operation-id>.json
   operations/
     mainnet/
       network/
@@ -212,7 +656,7 @@ operation is active for that scope.
 At minimum, Mother should maintain:
 
 ```text
-/mother-state/
+/runtime/state/mother/
   current/
     mainnet.json
     scopes/
@@ -230,7 +674,7 @@ Each current-operation pointer must include:
   "kind": "reseal-qbft",
   "stage": "do-complete-pending-finalize",
   "scopes": ["network:mainnet", "service:mainneta-super1"],
-  "operation_path": "/mother-state/operations/mainnet/network/reseal-mainnet-001.json",
+  "operation_path": "/runtime/state/mother/operations/mainnet/network/reseal-mainnet-001.json",
   "allowed_next_commands": ["finalize", "rollback"]
 }
 ```
@@ -254,6 +698,9 @@ The control container should expose a local/operator-only API or CLI surface wit
 the following conceptual operations:
 
 ```text
+GET  /v1/status
+GET  /v1/version
+GET  /v1/state-root
 GET  /v1/diagnose/<network>
 GET  /v1/networks/<network>/current-operation
 GET  /v1/scopes/<scope>/current-operation
@@ -261,18 +708,105 @@ POST /v1/operations/<kind>/prep
 POST /v1/current/<network>/do
 POST /v1/current/<network>/finalize
 POST /v1/current/<network>/rollback
-POST /v1/operations/<operation-id>/do          # optional cross-check form
-POST /v1/operations/<operation-id>/finalize    # optional cross-check form
-POST /v1/operations/<operation-id>/rollback    # optional cross-check form
+POST /v1/operations/<operation-id>/do                 # optional cross-check form
+POST /v1/operations/<operation-id>/finalize           # optional cross-check form
+POST /v1/operations/<operation-id>/rollback           # optional cross-check form
 GET  /v1/operations/<operation-id>
+GET  /v1/operations/<operation-id>/checkpoints
+GET  /v1/operations/<operation-id>/rollback-stack
+GET  /v1/operations/<operation-id>/rollback-stack/<frame-id>
+GET  /v1/guards/<node>/topology-state
 ```
 
-The HTTP shape is optional; the stage semantics are not optional.
+The HTTP shape is optional; the stage semantics, state-root visibility, current
+operation visibility, and rollback-stack visibility are not optional.
+
+### Remote access through Coolify call-runners
+
+The Mother API is the control surface, but it is not a public internet API. A
+remote operator reaches it by asking the existing Coolify/Allfather bootstrap
+channel to start a small local call-runner on the target host.
+
+The preferred mode is a one-shot runner:
+
+```text
+operator
+  -> Coolify API
+  -> create/update/start temporary call-runner service
+  -> runner calls http://mother-control:<port>/v1/... or http://127.0.0.1:<port>/v1/...
+  -> runner writes stdout/log result and, when available, a durable result record
+  -> runner exits and may be deleted
+```
+
+The accepted fallback is a persistent private runner:
+
+```text
+operator
+  -> Coolify API
+  -> update request envelope for mother-call-runner
+  -> restart or signal runner
+  -> runner performs one local Mother/guard API call
+  -> runner records result
+```
+
+A persistent runner is convenience transport only. It is safe to manually stop,
+kill, recreate, or remove it. It must not hold authoritative Mother state, active
+operation state, rollback frames, locks, identity material, or route snapshots.
+Those records live under `/runtime/state/mother/` and inside the Mother API
+state model. If the runner is killed after Mother accepts a request, the
+operation remains recoverable through Mother's idempotency key, current-operation
+pointer, operation record, checkpoints, and rollback stack. If the runner is
+killed before Mother accepts the request, no Mother mutation has occurred.
+
+The call-runner request must be structured. It should not expose arbitrary shell
+as the normal operator interface. A baseline request envelope is:
+
+```json
+{
+  "request_id": "call-...",
+  "target": "mother",
+  "method": "POST",
+  "path": "/v1/operations/rpc-propagate/prep",
+  "idempotency_key": "idem-...",
+  "body": {
+    "network": "mainnet"
+  }
+}
+```
+
+The runner must restrict `target` to approved local/private services, restrict
+paths to Mother or guard API prefixes, and write enough result metadata for the
+operator to distinguish transport failure from a Mother API rejection.
 
 All mutation requests must include an idempotency key. Repeating the same request
 with the same idempotency key must return the same operation record or continue
 the same operation. Repeating a request with a different intent for an occupied
 scope must fail with a conflict.
+
+### Mother API implementation updates
+
+Updating Mother code is not a topology operation. Operators may replace the
+Mother compose, restart the Mother container, or install a new mounted API
+implementation without creating a topology rollback stack, provided no live
+topology/runtime mutation is being requested by that update.
+
+The update safety rule is state externality:
+
+```text
+Container/code may change.
+Authoritative Mother state remains under /runtime/state/mother/.
+```
+
+After every start, the Mother API must:
+
+- report its implementation version and supported state schemas;
+- report the mounted durable state root;
+- validate that it can read the current identity, operation, rollback, route,
+  topology, guard, lock, and version records;
+- refuse mutating actions if it cannot understand the mounted state schema;
+- keep read-only status/diagnose endpoints available when possible so the
+  operator can see why mutation is refused.
+
 
 ## Three-stage mutation contract
 
@@ -336,6 +870,9 @@ ledger and lock records.
 - refuse if the live state has drifted beyond the prepared preconditions unless
   the prepared operation explicitly declares that drift acceptable;
 - perform only the mutation steps recorded in the prepared operation;
+- perform runtime mutations through Mother, guard, and routing APIs instead of
+  hidden compose replacement;
+- push the prepared undo packet before or atomically with each mutating substep;
 - write a checkpoint before and after every mutation step;
 - leave the operation in a state that can either be finalized or rolled back.
 
@@ -352,17 +889,12 @@ ledger and lock records.
 - silently call another lifecycle path.
 
 If a step fails during `do`, Mother must leave the operation open and report the
-next allowed commands using the current operation, not a kind-specific rollback
-entrypoint:
+next allowed commands:
 
 ```text
-mother do <network> --operation-id <id>        # retry the current operation idempotently
-mother rollback <network> --operation-id <id>  # unwind the current operation from its rollback stack
+mother <kind> do --operation-id <id>        # retry idempotently
+mother rollback <network> [--operation-id <id>]  # roll back as far as safely possible
 ```
-
-The `--operation-id` value is only a safety cross-check. Mother must be able to
-derive the operation kind, affected scopes, completed forward steps, and rollback
-actions from the current operation record on the Mother control surface.
 
 ### `finalize`
 
@@ -382,30 +914,13 @@ actions from the current operation record on the Mother control surface.
 must leave the operation open and report the allowed next commands:
 
 ```text
-mother do <network> --operation-id <id>        # retry or complete the current mutation
-mother rollback <network> --operation-id <id>  # unwind the non-finalized current operation
+mother <kind> do --operation-id <id>        # retry or complete pending mutation
+mother rollback <network> [--operation-id <id>]  # undo the non-finalized operation
 ```
-
-Again, the kind comes from the operation record. The caller does not choose a
-rollback implementation.
 
 ### `rollback`
 
 `rollback` is valid for every prepared operation until `finalize` succeeds.
-
-Rollback is a Mother control-surface command, not a command owned by
-`add-node`, `remove-node`, or `reseal-qbft`. The caller must not have to know
-which forward actions already happened. The caller should be able to say only:
-
-```text
-mother rollback <network>
-```
-
-Mother then resolves the current operation pointer for that network or scope,
-loads the operation record, reads the operation kind from that record, and pops
-the durable rollback stack. A supplied `--operation-id` is only an assertion that
-the caller and Mother agree about the active operation; it is not instructions
-for how to roll back.
 
 `rollback` must:
 
@@ -436,38 +951,11 @@ rollback is clean.
 After `finalize`, rollback is no longer a stage of the completed operation.
 Changing the result of a finalized operation requires a new `prep`.
 
-#### Mother state is the rollback brain
-
-The Mother control surface must persist enough information to drive rollback
-without consulting the original caller. The operation record is the rollback
-brain.
-
-For each completed forward action, Mother must know:
-
-- which handler applied the action;
-- which machine, service, volume, route, validator key, marker, or config file
-  was touched;
-- what before-state or backup reference is needed to undo it;
-- whether the undo action is automatic, partial, or manual-only;
-- which verification proves the undo action succeeded;
-- whether the rollback frame has already been popped, skipped, failed, or
-  completed.
-
-Local scripts and guards may implement small primitives such as
-`validator.stop`, `validator.start`, `qbft_config.write`,
-`qbft_config.restore_backup`, `route.disable`, or `route.restore`, but they do
-not choose the rollback sequence. They return before-state, backup references,
-and verification facts to Mother. Mother stores those facts before treating the
-forward step as complete.
-
-The rollback command must not accept a user-authored list of undo actions. It
-must reject attempts to override the recorded rollback stack unless the operator
-starts a new explicit recovery operation.
-
 #### Rollback action stack
 
 Every mutation step that can affect live state must have a corresponding
-rollback frame before it is allowed to execute.
+rollback frame before it is allowed to execute. The active rollback frame list is
+durable state and must be inspectable through the Mother API.
 
 A rollback frame is a durable instruction owned by Mother, for example:
 
@@ -568,7 +1056,7 @@ Active operation blocks this command:
   scopes: network:mainnet, service:mainneta-super1, service:mainnetc-super1
 
 Allowed next commands:
-  mother finalize mainnet --operation-id reseal-mainnet-001
+  mother reseal-qbft finalize mainnet --operation-id reseal-mainnet-001
   mother rollback mainnet --operation-id reseal-mainnet-001
 ```
 
@@ -589,8 +1077,8 @@ It must answer with the current operation ID, its stage, and the exact allowed
 next commands. The normal allowed next commands are:
 
 ```text
-mother finalize <network>
-mother rollback <network>
+mother <kind> finalize <network> [--operation-id <id>]
+mother rollback <network> [--operation-id <id>]
 ```
 
 The operator should not need to pass `--operation-id` for these commands because
@@ -716,10 +1204,30 @@ complete. If another command is requested for an overlapping scope, Mother must
 reject it and print the active operation plus the allowed `finalize` or
 `rollback` command.
 
-### Soft and hard topology changes
+### Topology change commands and modes
 
-Mother supports two chain topology-change modes. The operator's primary command
-must choose or imply the mode during `prep`; `do` must not switch modes.
+Topology mutation is not part of `add-node` or `remove-node`.
+
+- `join-topology` adds an existing standby service to Besu/QBFT, RPC routing, and
+  Hub routing.
+- `remove-topology` removes an existing service from Besu/QBFT, RPC routing, and
+  Hub routing.
+- `reseal-qbft` repairs the entire selected QBFT topology in place.
+- `add-node` creates or repairs service existence only.
+- `remove-node` deletes or disables a service only after Mother proves it is no
+  longer in committed topology.
+
+Mother supports three topology-change modes. The operator's primary command must
+choose or imply the mode during `prep`; `do` must not switch modes.
+
+Initial topology change:
+
+```text
+Used only when committed chain topology is empty.
+Installs Mother-owned first-genesis material from /runtime/state/mother/identity.private.yaml.
+Starts the first validator from the reserved identity.
+No live QBFT vote exists because there are no prior validators.
+```
 
 Soft topology change:
 
@@ -739,18 +1247,24 @@ Validators are restarted and agreement is verified.
 ```
 
 Soft mode is for healthy consensus. Hard mode is for explicit maintenance or
-drift repair. A hard topology change is not service deployment. It may stop and
-restart validator subprocesses, but it must not delete/recreate Coolify services,
-rebuild images, or replace compose.
+drift repair. Initial mode is for the first node in an empty topology. A hard
+topology change is not service deployment. It may stop and restart validator
+subprocesses, but it must not delete/recreate Coolify services, rebuild images,
+or replace compose.
 
 ### Route gating
 
 Public routes are part of topology, but they are not proof of consensus
-membership. For add-node, public routes must stay disabled until the node is
-internally healthy and admitted into the desired QBFT topology. For remove-node,
-public routes may be disabled early after `prep`, but the super-node service must
-not be deleted until the chain topology no longer contains the target validator
-and `finalize` proves the prune.
+membership. Route changes are Mother routing API operations with rollback frames,
+not hidden compose side effects.
+
+For add-node, public routes must stay disabled until the node is internally
+healthy and admitted into the desired QBFT topology. For join-topology, publishing
+RPC and Hub routes must be the last mutating substep of `do`. For
+remove-topology, public routes may be withdrawn or drained early after `prep` and
+before validator removal. For remove-node, the super-node service must not be
+deleted until the chain topology no longer contains the target validator and
+`finalize` proves the prune.
 
 Mother must distinguish:
 
@@ -876,13 +1390,10 @@ Stage contract:
 
 ```text
 mother reseal-qbft prep ...
-mother do <network> --operation-id <id>
-mother finalize <network> --operation-id <id>
-mother rollback <network> --operation-id <id>
+mother reseal-qbft do --operation-id <id>
+mother reseal-qbft finalize --operation-id <id>
+mother rollback mainnet
 ```
-
-Only `prep` is kind-specific. `do`, `finalize`, and `rollback` resolve the
-operation kind from Mother's current operation record.
 
 Forbidden:
 
@@ -906,164 +1417,234 @@ Rollback expectation:
 
 ### `mother_add_node.py`
 
-Node deployment plus validator topology merge.
+Service creation or service repair only. It does not change QBFT topology.
 
 Purpose:
 
-- add a super-node service by deploying it to the internal network first;
-- keep public routes disabled while the node is joining;
-- prove the service owns a validator address and can run internally;
-- request the chain topology change in the operator-selected mode;
-- enable public routes only after the chain topology includes the node and
-  `finalize` proves the operation complete.
+- create or repair a super-node service;
+- install the reserved identity from `/runtime/state/mother/identity.private.yaml`;
+- bring the service to standby/internal-ready state;
+- keep public routes disabled;
+- keep the node out of QBFT topology;
+- produce a service that can later be joined by `join-topology`.
 
 Stage contract:
 
 ```text
-mother add-node prep ...
-mother do <network> --operation-id <id>
-mother finalize <network> --operation-id <id>
-mother rollback <network> --operation-id <id>
+mother add-node prep mainnet --node <service> --host <host>
+mother add-node do mainnet
+mother add-node finalize mainnet
+mother rollback mainnet
 ```
-
-Only `prep` is kind-specific. `do`, `finalize`, and `rollback` resolve the
-operation kind from Mother's current operation record.
 
 `prep` must run a topology probe and record:
 
-- current committed topology;
+- current committed service topology;
 - current observed service topology;
-- intended new service name, host, ports, routes, and validator role;
+- target service name, host, ports, and route reservations;
+- reserved validator identity from `/runtime/state/mother/identity.private.yaml`;
 - whether the service already exists;
-- whether the operation is a new deploy, recovery of a prepared-but-unfinalized
-  deploy, or an invalid conflict;
-- desired chain topology-change mode: `soft` or `hard`;
-- route policy: public routes disabled until finalize;
-- rollback model for each planned step.
+- whether the operation is a new deploy, repair, or invalid conflict;
+- standby route policy;
+- rollback frames for each planned mutation.
 
-`do` performs only the prepared plan:
+`do` performs only the prepared service plan:
 
-1. deploy or update the super-node only to the internal topology;
-2. wait for guard, FDB, Hub, and validator RPC to be internally reachable;
-3. read and record the validator address from the running service;
-4. request the chain topology change:
-   - `soft`: submit the live QBFT admission request;
-   - `hard`: perform the prepared offline in-place topology change;
-5. wait until the desired QBFT validator set includes the new validator;
-6. leave public routes disabled.
+1. create or repair the service;
+2. install the reserved node identity;
+3. ensure guard/internal diagnostics are reachable;
+4. prove the validator key exists and derives the reserved validator address;
+5. place the service in standby;
+6. ensure public RPC/Hub/aggregate routes are absent or disabled;
+7. ensure no QBFT admission or removal request was submitted.
 
 Forbidden:
 
-- enabling public routes before chain topology contains the validator;
+- submitting QBFT add-validator votes;
+- starting Besu on guessed or wrong genesis;
+- enabling public routes;
 - treating service creation as validator admission;
-- treating `vote-requested` as success;
-- silently changing from soft to hard or hard to soft;
-- deleting unrelated services;
-- finalizing before topology agreement is observed.
+- inventing validator identity at runtime;
+- changing committed QBFT topology.
 
 `finalize` must prove:
 
-- the service exists and is running;
+- service exists in the prepared location;
 - guard identity matches the prepared service;
-- validator address matches the prepared operation;
-- validator address is in the QBFT set;
+- validator identity matches Mother private state;
+- the service is in standby;
+- public routes are absent/disabled;
+- the validator is not in QBFT topology unless it was already present before the
+  operation and the plan explicitly classified this as service repair;
+- committed service topology has been updated.
+
+### `mother_join_topology.py`
+
+Topology merge for an existing standby service.
+
+Purpose:
+
+- take a prepared/existing service and make it part of chain topology;
+- install correct genesis/topology material;
+- start validator RPC in the correct mode;
+- update internal RPC and Hub routing;
+- enable public routes only when the prepared routing policy allows it.
+
+Stage contract:
+
+```text
+mother join-topology prep mainnet --node <service> --mode initial|soft|hard
+mother join-topology do mainnet
+mother join-topology finalize mainnet
+mother rollback mainnet
+```
+
+`prep` must prove or record:
+
+- service exists and is in standby/internal-ready state;
+- validator identity matches `/runtime/state/mother/identity.private.yaml`;
+- current observed QBFT topology;
+- current committed topology;
+- desired topology after join;
+- selected mode: `initial`, `soft`, or `hard`;
+- routing changes to be made only after topology success;
+- rollback stack for each mutation.
+
+`do` performs only the prepared topology join:
+
+- `initial`: install Mother-owned first-genesis material and start the first
+  validator;
+- `soft`: start the candidate on correct genesis, submit live QBFT admission, and
+  wait for validator-set inclusion;
+- `hard`: quiesce selected validators, write the planned topology in place, and
+  restart/verify them;
+- update internal RPC/Hub routing according to the prepared plan;
+- keep the operation open pending finalize.
+
+Forbidden:
+
+- creating or deleting Coolify services;
+- inventing genesis during service startup;
+- changing from initial/soft/hard after prep;
+- publishing public routes before topology verification;
+- considering `vote-requested` to be success.
+
+`finalize` must prove:
+
+- the joined validator is in QBFT topology;
 - all reachable validators agree on the set;
 - block height advances after the topology change;
-- public routes are enabled only if the prepared operation requested them;
+- internal routing matches committed topology intent;
+- public routes match the prepared route policy;
 - committed topology has been updated.
 
-Rollback expectation:
+### `mother_remove_topology.py`
 
-- before chain topology change is requested, remove or disable the staged service
-  according to the prepared rollback plan;
-- after a soft admission request but before admission finalizes, clear pending
-  admission markers and disable/delete the staged service as planned;
-- after admission is finalized into QBFT, automatic rollback must refuse to
-  invent an inverse operation and must require a prepared `remove-node`;
-- after a hard topology change, restore captured backups if and only if the prep
-  snapshot and do-stage backups are available.
+Topology prune for an existing service. It does not delete the service.
+
+Purpose:
+
+- remove a service's validator from QBFT topology;
+- remove or drain public/internal RPC and Hub routing for that node;
+- leave the service detached/standby so it can be inspected, repaired, rejoined,
+  or later deleted by `remove-node`.
+
+Stage contract:
+
+```text
+mother remove-topology prep mainnet --node <service> --mode soft|hard
+mother remove-topology do mainnet
+mother remove-topology finalize mainnet
+mother rollback mainnet
+```
+
+`prep` must prove or record:
+
+- target service is explicit;
+- target validator address is known;
+- current QBFT validator set;
+- survivor services and validator addresses;
+- removing the target will not remove the final validator unless a hard plan
+  explicitly defines the replacement topology;
+- selected mode: `soft` or `hard`;
+- public/internal route withdrawal plan;
+- rollback stack for each mutation.
+
+`do` performs only the prepared topology removal:
+
+1. withdraw or drain target public routes as prepared;
+2. request topology removal:
+   - `soft`: live QBFT removal vote;
+   - `hard`: offline in-place topology change;
+3. verify the target validator is absent from the QBFT set;
+4. verify survivor validators remain present;
+5. update internal RPC/Hub routing according to the prepared plan;
+6. leave the target service detached/standby.
+
+Forbidden:
+
+- deleting the service;
+- removing the final validator by accident;
+- inferring the target from ordinal or service count;
+- treating service stop/delete as validator removal;
+- hiding a hard reseal inside an ordinary soft remove.
+
+`finalize` must prove:
+
+- target validator is absent from QBFT topology;
+- survivors agree on the validator set;
+- block height advances after removal;
+- target is absent from public/internal routing;
+- target service still exists or is disabled in the prepared detached state;
+- committed topology has been updated.
 
 ### `mother_remove_node.py`
 
-Validator topology prune followed by service removal.
+Service deletion/disable only after topology removal.
 
 Purpose:
 
-- remove one explicit super-node from the chain topology;
-- keep enough survivor validators to maintain the network;
-- request the chain topology change in the operator-selected mode;
-- delete the super-node service only after the target validator is absent from
-  the finalized QBFT topology.
+- delete, disable, or archive a service that is already absent from committed
+  topology;
+- never perform QBFT membership changes;
+- never use service deletion as consensus removal.
 
 Stage contract:
 
 ```text
-mother remove-node prep ...
-mother do <network> --operation-id <id>
-mother finalize <network> --operation-id <id>
-mother rollback <network> --operation-id <id>
+mother remove-node prep mainnet --node <service>
+mother remove-node do mainnet
+mother remove-node finalize mainnet
+mother rollback mainnet
 ```
 
-Only `prep` is kind-specific. `do`, `finalize`, and `rollback` resolve the
-operation kind from Mother's current operation record.
+`prep` must prove or record:
 
-`prep` must run a topology probe and record:
+- target service is explicit;
+- target is absent from committed QBFT topology;
+- target is absent from observed QBFT topology according to reachable validators,
+  or the plan classifies the system as damaged and refuses automatic deletion;
+- target is absent from public and internal route topology;
+- target is not an FDB coordinator required by the current network plan;
+- volume/archive policy is explicit;
+- rollback stack exists for every reversible service mutation.
 
-- explicit target service name;
-- target Coolify host and service UUID;
-- target validator address;
-- current QBFT validator set;
-- survivor services and survivor validator addresses;
-- whether all reachable validators agree;
-- whether block height is advancing;
-- desired chain topology-change mode: `soft` or `hard`;
-- route policy for the target;
-- service deletion policy after finalized prune;
-- rollback model for each planned step.
-
-`do` performs only the prepared plan:
-
-1. optionally disable target public routes according to the prepared plan;
-2. request the chain topology change:
-   - `soft`: submit the live QBFT removal request;
-   - `hard`: perform the prepared offline in-place topology change;
-3. wait until the target validator is absent from the QBFT set;
-4. verify every survivor validator remains present;
-5. only then delete or disable the target super-node service as prepared.
+`do` performs only the prepared service deletion/disable/archive plan.
 
 Forbidden:
 
-- deleting the target service before the target validator is absent from QBFT;
-- removing the last validator;
-- inferring the target from highest ordinal;
-- treating service count as validator count;
-- treating service deletion as validator removal;
-- silently changing from soft to hard or hard to soft;
-- stopping survivor validators in soft mode;
-- using reseal to hide an ordinary remove operation.
+- requesting QBFT votes;
+- changing genesis or validator config;
+- removing topology;
+- deleting a service whose validator is still in QBFT topology;
+- deleting a service whose routes are still active.
 
 `finalize` must prove:
 
-- target validator is absent from the QBFT validator set;
-- survivor validators remain present;
-- all reachable validators agree on the set;
-- block height advances after removal;
-- target service route state and service deletion/disabled state match the
-  prepared plan;
-- stale removal markers are complete or inactive;
-- committed topology has been updated.
-
-Rollback expectation:
-
-- before chain topology change is requested, re-enable target public routes or
-  restore target service settings if prep changed them;
-- after a soft removal request but before removal finalizes, clear pending
-  removal markers and restore target route/service settings;
-- after target removal is finalized into QBFT, automatic rollback must refuse to
-  invent an inverse operation and must require a prepared `add-node`;
-- if service deletion has already occurred after finalized prune, rollback must
-  not pretend it can restore the validator without a `restore-service` or
-  `add-node` operation.
+- service state matches the prepared deletion/disable/archive policy;
+- no route topology points to the service;
+- committed service topology has been updated;
+- operation scopes have been released.
 
 ### Compatibility aliases
 
@@ -1087,7 +1668,7 @@ Stage contract:
 mother restore-service prep ...
 mother restore-service do --operation-id <id>
 mother restore-service finalize --operation-id <id>
-mother restore-service rollback --operation-id <id>
+mother rollback mainnet
 ```
 
 Forbidden:
@@ -1234,8 +1815,8 @@ It must work from explicit selected services:
 
 ```text
 mother reseal-qbft prep mainnet --nodes mainneta-super1,mainnetc-super1
-mother do mainnet --operation-id <id>
-mother finalize mainnet --operation-id <id>
+mother reseal-qbft do --operation-id <id>
+mother reseal-qbft finalize --operation-id <id>
 ```
 
 `prep` for reseal must capture:
@@ -1290,154 +1871,216 @@ state that `prep`/`do` captured, then restart validators in the previous mode. I
 pre-operation state was not captured, rollback must refuse to pretend it can
 restore it.
 
-## Add/remove node topology contract
+## Service and topology lifecycle contract
 
-`add-node` and `remove-node` are not merely service operations. They are staged
-topology transitions that move a node through service topology, internal runtime
-topology, QBFT consensus topology, and public route topology in a safe order.
+Mother separates service lifecycle from network topology lifecycle.
 
-Both commands must begin with a topology probe. Neither command may rely on
-service count as validator count. Neither command may use a stale lifecycle marker
-as proof that a chain topology change succeeded.
+```text
+add-node:
+  service exists, standby by default, no QBFT topology change
 
-### Add node
+join-topology:
+  existing service joins Besu/QBFT plus RPC/Hub routing
+
+remove-topology:
+  existing service leaves Besu/QBFT plus RPC/Hub routing
+
+remove-node:
+  service is deleted/disabled only after topology removal is finalized
+
+reseal-qbft:
+  hard full-set in-place topology repair for selected existing services
+```
+
+### Standby service state
+
+Standby is the default output of `add-node`. There is no `--standby` flag in the
+normal path.
+
+A standby service must have:
+
+- service exists in Coolify or the chosen service backend;
+- guard/internal diagnostics reachable;
+- reserved validator identity installed;
+- validator address matches `/runtime/state/mother/identity.private.yaml`;
+- public RPC routes absent/disabled;
+- public Hub routes absent/disabled;
+- aggregate routes do not include the service;
+- no QBFT admission/removal request active;
+- validator not added to committed topology by this command;
+- Besu either stopped or running only in an explicitly designed candidate mode
+  that cannot accidentally join the wrong genesis.
+
+### `add-node`
 
 `add-node prep` must prove or record:
 
 - no conflicting active operation owns the network, target service, target host,
   target route, or affected validator scopes;
-- the requested service name, host, and network are explicit;
-- current observed topology and committed topology have been captured;
-- existing validators agree on the current QBFT validator set unless the operator
-  explicitly chose hard mode;
-- the desired mode is recorded as `soft` or `hard`;
-- public routes for the new node will remain disabled until finalize;
-- the rollback plan is known before deployment begins.
+- requested service name, host, and network are explicit;
+- target validator identity is reserved in `/runtime/state/mother/identity.private.yaml`;
+- current observed service topology and committed service topology have been
+  captured;
+- public routes for the new node will remain disabled;
+- rollback plan is known before deployment begins.
 
 `add-node do` is ordered:
 
-1. Deploy the super-node up to internal readiness only.
-   - service exists;
-   - guard reachable;
-   - FDB/HUB local requirements satisfied;
-   - validator RPC running;
-   - validator address known;
-   - public routes disabled.
-2. Request the chain topology change according to the prepared mode.
-   - soft mode submits live QBFT admission;
-   - hard mode performs the prepared offline in-place topology change.
-3. Verify the chain topology includes the new validator.
-   - all reachable validators agree on the set;
-   - block height advances after admission/reseal;
-   - stale admission/reseal markers are not active contradictions.
-4. Keep the operation active and pending finalize.
+1. Deploy or repair the disposable super-node service shell if needed.
+2. Install reserved identity through the guard API.
+3. Bring guard/internal diagnostics up.
+4. Prove validator identity without requiring chain membership.
+5. Push route-restore rollback frames.
+6. Put the service in standby and withdraw routes through guard/routing APIs.
+7. Keep the operation active and pending finalize.
 
 `add-node finalize` must:
 
 - re-run a topology probe;
-- prove the new service still owns the prepared validator address;
-- prove the validator is in the QBFT set;
-- prove block height advances;
-- enable public routes only if requested by the prepared plan;
-- update committed topology;
+- prove the service still owns the prepared validator address;
+- prove the service is in standby;
+- prove public routes are absent/disabled;
+- update committed service topology;
 - release operation scopes.
 
-`rollback` for an active `add-node` operation must:
+`add-node` must not request chain topology changes.
 
-- if topology change was not requested, remove or disable the staged service
-  according to the prepared rollback plan;
-- if soft admission was requested but not accepted, clear pending admission
-  markers and remove/disable the staged service according to plan;
-- if hard mode wrote config, restore captured backups if available;
-- if the validator is already finalized into the QBFT set, refuse automatic
-  rollback and require `remove-node prep`.
+### `join-topology`
 
-### Remove node
-
-`remove-node prep` must prove or record:
+`join-topology prep` must prove or record:
 
 - no conflicting active operation owns the network, target service, target route,
   or affected validator scopes;
-- the target service is explicit;
-- the target service exists unless the operation is explicitly a topology-only
-  cleanup;
-- target validator address is known;
-- target validator is in the current QBFT set;
-- at least one non-target survivor validator remains;
-- every declared survivor validator maps to a known service;
-- current validators agree on the current QBFT validator set unless the operator
-  explicitly chose hard mode;
-- block height is advancing unless the operator explicitly chose hard mode;
-- the desired mode is recorded as `soft` or `hard`;
-- service deletion is planned only after validator removal is proven;
-- rollback plan is known before any route or service change begins.
+- target service exists and is internally ready;
+- target validator address matches Mother private state;
+- current committed topology and observed QBFT topology;
+- desired validator set after join;
+- mode: `initial`, `soft`, or `hard`;
+- route changes that will be applied only after topology success;
+- rollback frames for each planned mutation.
 
-`remove-node do` is ordered:
+`join-topology do` is ordered:
 
-1. Optionally disable public routes for the target if the prepared plan says so.
-2. Request the chain topology change according to the prepared mode.
-   - soft mode submits live QBFT removal;
-   - hard mode performs the prepared offline in-place topology change.
-3. Verify the chain topology no longer contains the target validator.
-   - all reachable survivor validators agree on the set;
-   - survivor validators remain present;
-   - block height advances after removal/reseal.
-4. Only after the target is absent from QBFT, delete or disable the super-node
-   service according to the prepared plan.
-5. Keep the operation active and pending finalize.
+1. Prepare the node for the selected topology mode.
+2. Apply topology change:
+   - `initial`: install Mother-owned first genesis for an empty topology;
+   - `soft`: submit live QBFT admission;
+   - `hard`: perform offline in-place topology rewrite.
+3. Verify the new validator is present in the QBFT set.
+4. Verify all reachable validators agree.
+5. Push route-restore rollback frames.
+6. Update RPC and Hub routing according to the plan as the last mutating substep.
+7. Keep the operation active and pending finalize.
 
-`remove-node finalize` must:
+`join-topology finalize` must:
 
-- re-run a topology probe;
-- prove the target validator is absent from the QBFT set;
-- prove survivor validators are present and agreed;
+- prove validator-set agreement;
 - prove block height advances;
-- prove target service state matches the prepared deletion/disabled policy;
+- prove routing state matches the prepared policy;
 - update committed topology;
 - release operation scopes.
 
-`rollback` for an active `remove-node` operation must:
+### `remove-topology`
 
-- if topology change was not requested, restore target route/service settings;
-- if soft removal was requested but not accepted, clear pending removal markers
-  and restore target route/service settings;
-- if hard mode wrote config, restore captured backups if available;
-- if the target is already finalized absent from QBFT, refuse automatic rollback
-  and require `add-node prep` or `restore-service prep` depending on whether the
-  service still exists.
+`remove-topology prep` must prove or record:
+
+- no conflicting active operation owns the network, target service, target route,
+  or affected validator scopes;
+- target service is explicit;
+- target validator address is known;
+- current QBFT validator set;
+- survivor validator set;
+- desired validator set after removal;
+- mode: `soft` or `hard`;
+- route withdrawal plan;
+- rollback frames for each planned mutation.
+
+`remove-topology do` is ordered:
+
+1. Push route-restore rollback frames.
+2. Withdraw or drain target public routes as prepared.
+3. Apply topology removal:
+   - `soft`: submit live QBFT removal;
+   - `hard`: perform offline in-place topology rewrite.
+4. Verify target validator is absent from QBFT.
+5. Verify survivors remain present and agree.
+6. Remove target from internal RPC and Hub routing.
+7. Put target service into detached/standby state through the guard API.
+8. Keep the operation active and pending finalize.
+
+`remove-topology finalize` must:
+
+- prove target validator is absent;
+- prove survivor validators remain present;
+- prove block height advances;
+- prove target is absent from route topology;
+- update committed topology;
+- release operation scopes.
+
+`remove-topology` must not delete the service.
+
+### `remove-node`
+
+`remove-node prep` must prove or record:
+
+- no conflicting active operation owns the target service;
+- target service is explicit;
+- target is absent from committed topology;
+- target is absent from observed QBFT topology or automatic deletion is refused;
+- target is absent from public and internal routing;
+- deletion/disable/archive policy is explicit;
+- rollback frames are available for reversible service mutations.
+
+`remove-node do` executes only the prepared service deletion/disable/archive plan.
+
+`remove-node finalize` must:
+
+- prove service state matches the prepared plan;
+- prove route topology still excludes the service;
+- update committed service topology;
+- release operation scopes.
+
+`remove-node` must not request chain topology changes.
 
 ### Merge and prune invariants
 
-A node is not merged when the service exists. A node is merged only when the
-service's validator address appears in the agreed QBFT validator set and finalize
-updates committed topology.
+Before merging a node into topology, Mother must know:
 
-A node is not pruned when public routes are disabled. A node is pruned only when
-the service's validator address is absent from the agreed QBFT validator set and
-finalize updates committed topology. The service may be deleted only after that
-absence has been proven during `do`.
+```text
+service identity
+reserved validator identity
+current committed topology
+current observed QBFT topology
+desired topology
+selected mode
+route policy
+rollback stack
+```
+
+Before pruning a node from topology, Mother must know:
+
+```text
+target service
+target validator address
+survivor validator addresses
+current QBFT set
+desired QBFT set
+route withdrawal plan
+selected mode
+rollback stack
+```
+
+The system must never use Coolify service count as validator count.
 
 ### Public route sequencing
 
-For add-node:
+Public routes are topology outputs, not evidence of topology safety.
 
-```text
-deploy internal service
-prove internal readiness
-change chain topology
-prove validator is in QBFT
-enable public routes during finalize if requested
-```
+- `add-node` keeps routes disabled.
+- `join-topology finalize` may enable routes if the prepared plan says so.
+- `remove-topology do` may withdraw/drain routes before validator removal.
+- `remove-node` requires routes already absent/disabled.
 
-For remove-node:
-
-```text
-optionally disable public routes
-change chain topology
-prove validator is absent from QBFT
-delete/disable service according to plan
-finalize committed topology
-```
 
 ## Diagnosis report
 
@@ -1454,8 +2097,8 @@ A Mother diagnosis report is read-only and should contain at least:
     "stage": "do-complete-pending-finalize",
     "scopes": ["network:mainnet"],
     "allowed_next_commands": [
-      "mother finalize mainnet --operation-id reseal-mainnet-001",
-      "mother rollback mainnet --operation-id reseal-mainnet-001"
+      "mother reseal-qbft finalize mainnet",
+      "mother rollback mainnet"
     ]
   },
   "services": [
@@ -1511,10 +2154,10 @@ A prepared Mother operation file should contain at least:
   "created_at": "iso-8601",
   "created_by": "operator",
   "current_pointers": [
-    "/mother-state/current/mainnet.json",
-    "/mother-state/current/scopes/network_mainnet.json",
-    "/mother-state/current/scopes/service_mainneta-super1.json",
-    "/mother-state/current/scopes/service_mainnetc-super1.json"
+    "/runtime/state/mother/current/mainnet.json",
+    "/runtime/state/mother/current/scopes/network_mainnet.json",
+    "/runtime/state/mother/current/scopes/service_mainneta-super1.json",
+    "/runtime/state/mother/current/scopes/service_mainnetc-super1.json"
   ],
   "scopes": [
     "network:mainnet",
@@ -1532,8 +2175,8 @@ A prepared Mother operation file should contain at least:
   "postconditions": [],
   "checkpoints": [],
   "allowed_next_commands": [
-    "mother do mainnet --operation-id reseal-mainnet-001",
-    "mother rollback mainnet --operation-id reseal-mainnet-001"
+    "mother reseal-qbft do mainnet",
+    "mother rollback mainnet"
   ]
 }
 ```
@@ -1544,39 +2187,21 @@ complete, and stage/status may advance, but `do` must not edit the desired state
 it was asked to perform.
 
 Mother must treat `rollback_stack` as the source of truth for rollback. A local
-control script must not ask the operator for rollback details and must not
-require a kind-specific rollback command. If a local action needs a backup file,
-previous config, old route, service UUID, validator address, marker contents, or
-any other before-state in order to undo itself, that data must be captured in
-the operation record before the forward step is considered complete.
-
-A rollback invocation resolves like this:
-
-```text
-operator command:
-  mother rollback mainnet
-
-Mother resolution:
-  1. read current-operation pointer for network:mainnet
-  2. load operation_id from that pointer
-  3. load operation.kind from the operation record
-  4. inspect completed checkpoints and rollback_stack
-  5. execute recorded rollback frames in reverse order
-  6. mark the operation rolled back or partially rolled back
-  7. clear current-operation pointers only when safe
-```
+control script must not ask the operator for rollback details. If a local action
+needs a backup file, previous config, old route, service UUID, or validator
+address in order to undo itself, that data must be captured in the operation
+record before the forward step is considered complete.
 
 ## Safety rules
 
 Mother safety rules:
 
 - Every mutating command has `prep`, `do`, and `finalize` stages.
-- Every prepared operation accepts generic Mother `rollback` until `finalize` succeeds.
+- Every prepared operation accepts `rollback` until `finalize` succeeds.
 - Mother stores the active operation ID as the current operation for every owned scope.
 - `mother diagnose` must report the current operation ID and allowed next commands.
-- Rollback defaults to the current operation; the operator must not have to describe what to undo or name the operation kind.
+- Rollback defaults to the current operation; the operator must not have to describe what to undo.
 - Mother owns and executes the rollback action stack in reverse order.
-- Local scripts expose reversible primitives; Mother chooses the rollback sequence from saved state.
 - No destructive forward step may run before its rollback frame is durable.
 - Every mutating operation declares affected scopes during `prep`.
 - A scope may have only one active non-finalized operation.
@@ -1604,65 +2229,108 @@ Mother safety rules:
 - Remove-node must not delete or recreate a service before the validator is pruned from QBFT.
 - Soft/hard topology mode is chosen during `prep` and may not change during `do`.
 - Mother must distinguish observed topology from committed topology.
+- Mother and guard mutation APIs must not be exposed through public Traefik routes.
+- Remote operator access to local-only Mother APIs must use a Coolify/Allfather
+  mediated call-runner or another explicitly trusted bootstrap transport.
+- A call-runner is disposable transport. Killing it must not corrupt Mother
+  state or be required to roll back a topology operation.
 
 ## Minimum implementation sequence
 
 Mother should be implemented in this order:
 
-1. `mother_diagnose.py` and `mother_probe_topology.py`
+1. Mother durable-state bootstrap
+   - create `/runtime/state/mother/`;
+   - create `/runtime/state/mother/identity.private.yaml`;
+   - reserve network identity, officer/admin identities, node validator keys,
+     validator addresses, first-genesis material, and route reservations;
+   - create durable locations for actions, rollback stacks, routes, guards,
+     locks, topology, and version/capability records;
+   - store the initial private identity backend as inline local private YAML;
+   - make any `*_key_ref` values internal references to records in the same
+     private-state document.
+
+2. Mother control API shell
+   - mounts `/runtime/state/mother/`;
+   - reports version, capabilities, state root, active operations, checkpoints,
+     and rollback stacks;
+   - treats the container and mounted API implementation as replaceable;
+   - refuses mutating actions if the state schema is unknown.
+
+3. Coolify-mediated local call-runner transport
+   - keeps Mother and guard APIs local/private only;
+   - prefers one-shot temporary call-runner services for remote operator calls;
+   - accepts a persistent private call-runner only as disposable transport;
+   - makes manual runner kill/restart/delete safe because authoritative state
+     remains under `/runtime/state/mother/`;
+   - uses structured local-call envelopes instead of a general remote shell.
+
+4. `mother_diagnose.py` and `mother_probe_topology.py`
    - read-only;
    - no locks;
    - reports services, guards, validators, QBFT sets, route state, lifecycle
-     markers, active operations, observed topology, and committed topology drift.
+     markers, active operations, observed topology, committed topology drift, and
+     the current operation ID.
 
-2. Mother operation ledger and scope lock model
+5. Mother operation ledger and scope lock model
    - durable operation files;
    - current-operation pointers per network and scope;
    - active operation records;
    - conflict detection;
-   - idempotency keys.
+   - idempotency keys;
+   - generic rollback resolution.
 
-3. `mother_plan.py` / `prep`
+6. `prep`
    - creates operation files;
    - declares scopes;
-   - records desired state, mutation steps, rollback steps, and postconditions.
+   - records desired state, mutation steps, rollback frames, and postconditions.
 
-4. Stage runner
+7. Stage runner
    - `do`;
    - checkpoints;
    - durable rollback frame push before destructive steps;
    - idempotent retries.
 
-5. `rollback`
+8. Generic `rollback`
    - resolves the current operation automatically;
-   - checkpoint-aware;
-   - rollback-stack-aware;
+   - uses the operation record and rollback stack as the rollback brain;
    - available until finalize;
-   - releases scopes only after rollback verification and current-operation pointer cleanup.
+   - releases scopes only after rollback verification and current-operation
+     pointer cleanup.
 
-6. `finalize`
+9. `finalize`
    - postcondition checks;
+   - committed topology updates;
    - releases scopes;
    - closes rollback window.
 
-7. `mother_reseal_qbft.py`
+10. `mother_add_node.py`
+   - standby service creation only;
+   - installs reserved identity;
+   - no QBFT topology mutation.
+
+11. `mother_join_topology.py`
+   - `initial` mode for first-node empty topology;
+   - `soft` mode for live QBFT admission;
+   - `hard` mode for offline in-place join.
+
+12. `mother_remove_topology.py`
+   - live or hard topology prune;
+   - route withdrawal;
+   - no service deletion.
+
+13. `mother_remove_node.py`
+   - service deletion/disable/archive only after topology removal.
+
+14. `mother_reseal_qbft.py`
+   - full-set hard topology repair for existing services;
    - in-place guard-mediated config repair only;
    - no Coolify service deletion or compose changes.
 
-8. `mother_add_node.py` and `mother_remove_node.py`
-   - topology-probed node merge/prune;
-   - internal service readiness before add-node chain request;
-   - chain topology prune before remove-node service deletion;
-   - soft/hard mode selected at prep.
-
-9. Optional `mother_add_validator.py` and `mother_remove_validator.py`
-   - validator-only aliases for live QBFT voting;
-   - no service lifecycle mutation;
-   - refuse drifted topology.
-
-10. `mother_restore_service.py`
+15. `mother_restore_service.py`
    - explicit service repair only;
    - no QBFT membership mutation.
+
 
 ## Current operating lesson
 
