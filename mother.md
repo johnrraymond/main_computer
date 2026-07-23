@@ -182,10 +182,17 @@ Canonical inline private identity backend:
 ```
 
 The state root is created before the Mother control surface is deployed. It is
-the durable source for identities, topology records, action journals, rollback
-stacks, route before-state snapshots, guard observations, locks, and network
+the durable source for identities, topology records, action journals, active
+rollback stacks, immutable rollback journals, route before-state snapshots,
+guard observations, locks, sealed committed network-state records, and network
 facts that must survive replacement of the Mother container or API
 implementation.
+
+The local state root is the active head copy while the operator is running a
+Mother control command. Participating machines also keep sealed replica copies of
+committed network state for crash recovery. Remote replicas may be stale or
+newer than the local head copy; the control script must run the sealed-state
+preflight before it trusts either side.
 
 The Mother container is disposable. Pushing a new Mother compose or replacing the
 mounted Mother API code must not destroy authoritative state. On startup, Mother
@@ -380,22 +387,32 @@ control surface and per-node guard endpoints. Runtime topology changes must not
 depend on replacing compose files.
 
 Compose may provision or replace the disposable service shell, but runtime
-mutations are API operations. The guard API must expose idempotent primitives for
-at least:
+mutations are API operations. The guard API must expose primitives that can
+capture and restore complete declared prestate. Prestate restoration must be
+idempotent; forward primitives should also be idempotent where practical. The
+baseline endpoint set includes:
 
 ```text
-POST /guard/v1/identity/install-reserved
-POST /guard/v1/standby/enter
-POST /guard/v1/qbft/config/install
-POST /guard/v1/qbft/config/restore
-POST /guard/v1/validator-rpc/start
-POST /guard/v1/validator-rpc/stop
+POST /guard/v1/prestate/capture
+PUT  /guard/v1/identity/state
+PUT  /guard/v1/node-runtime/state
+PUT  /guard/v1/qbft/config
+PUT  /guard/v1/validator-rpc/state
 GET  /guard/v1/topology/state
+POST /guard/v1/prestate/restore
+GET  /guard/v1/prestate/<frame-id>
+POST /guard/v1/assertions/verify
 ```
 
-Every successful mutating guard or routing API call must have a durable undo
-packet pushed onto the operation rollback stack. The rollback stack must be
-inspectable through the Mother API before, during, and after the action.
+The typed prestate contract is defined by `MOTHER-DESIGN-012`; the executable
+assertion contract is defined by `MOTHER-DESIGN-013`.
+
+Before every mutating guard or routing API call, Mother must identify the full
+mutation scope, capture the complete current prestate for that scope, and durably
+push an armed rollback frame that can restore that prestate. The frame defines a
+desired prior state and verification contract, not merely an inverse command.
+The active rollback stack and immutable rollback journal must be inspectable
+through the Mother API.
 
 `MOTHER-DESIGN-007: disposable-mother-container-durable-state-root`
 
@@ -442,10 +459,1216 @@ a structured local-call envelope such as target, method, path, body, and
 idempotency key. The runner may call only approved local/private Mother or guard
 endpoints.
 
+
+`MOTHER-DESIGN-009: active-local-head-with-sealed-network-replicas`
+
+The active Mother authority is the local head node: the machine where the
+operator is running the Mother control script. The local head owns operator
+intent, prepares operations, drives `do`/`finalize`/`rollback`, and is the only
+writer allowed to commit global topology epochs during that command.
+
+Remote Coolify hosts are not independent topology authorities. They are
+execution targets and sealed-state replicas. They may hold local provisional
+operation state for work that affects only that host, but they must not
+independently advance committed network topology.
+
+Every network has a sealed committed-state record replicated to the Coolify
+hosts named by that record. A seal records at least:
+
+```yaml
+network_key: mainnet
+topology_epoch: 42
+state_hash: "sha256:..."
+previous_state_hash: "sha256:..."
+journal_head_sequence: 142
+journal_head_hash: "sha256:..."
+active_checkpoint_id: "checkpoint-..."
+active_checkpoint_hash: "sha256:..."
+replica_hosts:
+  - coolify-a
+  - coolify-b
+  - coolify-c
+excluded_hosts: []
+sealed_at: "..."
+sealed_by: "local-head:<machine-id>"
+committed_action_id: "operation-..."
+schema_version: "mother.state.v1"
+```
+
+`replica_hosts` is the exact expected replica set for that sealed epoch. It is
+not an advisory inventory list. A host remains part of the expected replica set
+until an explicit reseal commits a new replica set that excludes it.
+
+Before any Mother command talks to or mutates a remote network, the local control
+script must run a sealed-state and journal preflight:
+
+1. load the local complete committed-state document and active journal lineage;
+2. replay the active journal lineage and prove that the reconstructed state
+   exactly matches the local committed-state document;
+3. load the expected `replica_hosts` from that reconstructed state;
+4. query every expected replica host for its journal head, active checkpoint,
+   replayed state hash, and committed-state hash;
+5. stop before normal mutation if any expected replica host is unreachable,
+   cannot replay its journal, or does not return usable committed-state metadata;
+6. require every expected replica and the local head to agree on the active
+   checkpoint, journal head sequence/hash, topology epoch, and state hash;
+7. if every expected remote agrees and the local head is stale, copy down the
+   agreed journal and committed-state document, replay locally, and verify again
+   before continuing;
+8. if journals diverge, journal replay disagrees with a committed-state document,
+   a required record is missing, equal epochs have different hashes, or live
+   facts contradict the reconstructed state, refuse normal mutation and require
+   an explicit rectification/reseal operation.
+
+Normal mutation uses full expected-replica-set agreement, not an automatic
+majority quorum. For example, if `coolify-a` and `coolify-c` agree but
+`coolify-b` is unreachable while the current state still lists all three hosts,
+Mother must not silently proceed with two of three.
+
+The operator has exactly two availability choices when an expected replica is
+unreachable:
+
+1. restore reachability to that host and rerun preflight; or
+2. explicitly reseal the network with a new replica set that excludes the
+   missing host.
+
+Resealing without a missing host is a network-visible recovery action. It must
+create a new topology epoch and state hash, record the removed host and reason,
+write the new state and journal records to every remaining expected replica, and
+mark the previous seal as superseded rather than deleting it. For example:
+
+```yaml
+network_key: mainnet
+topology_epoch: 43
+previous_state_hash: "sha256:old..."
+state_hash: "sha256:new..."
+replica_hosts:
+  - coolify-a
+  - coolify-c
+excluded_hosts:
+  - host: coolify-b
+    reason: "unreachable during operator-approved reseal"
+    excluded_at_epoch: 43
+```
+
+A host excluded by reseal cannot automatically resume replica participation when
+it becomes reachable again. Its older state and journal head are stale by
+definition. It must be refreshed from the current committed state and explicitly
+re-included through a replica-rejoin or reseal operation that creates another
+new epoch.
+
+Wall-clock modified time may be used as an operator hint, but it is not the
+authority. The authority is the replayed journal lineage, sealed epoch, state
+hash, active checkpoint, and expected replica set. `modified_at` fields should
+be recorded for diagnostics, but normal mutation must compare the cryptographic
+and sequence metadata.
+
+Local provisional work does not need to be replicated immediately. For example,
+during `add-node`, the target remote may keep local rollback frames for service
+creation, identity installation, standby setup, pending QBFT files, and internal
+health checks until the operation crosses a topology boundary. Once the operation
+changes committed topology, route membership, validator membership, replica
+membership, or another network-visible fact, Mother must append the committed
+transition to the network journal, write the resulting complete state, and push
+both to every expected replica as soon as possible.
+
+This keeps the wedged window small:
+
+```text
+local provisional host work
+  -> narrow topology commit boundary
+  -> append committed journal transition
+  -> write complete committed state
+  -> replicate and verify
+  -> publish public routes last for add/join
+```
+
+For removal, public route withdrawal may happen early for safety. Because route
+withdrawal is network-visible, the route-withdrawn transition must be appended to
+the global committed-state journal, sealed, and pushed when that boundary is
+crossed. Its prestate rollback frame and all restore attempts belong to the
+action's separate rollback stack and rollback journal, not to the global
+committed-state journal.
+
+`reseal` is an explicit recovery operation, not a normal sync. It is used when
+remote replicas disagree, an expected replica is unreachable and must be
+excluded, an excluded host must be re-included, the network is wedged, a sealed
+state cannot be proven, or the operator intentionally chooses a new committed
+state from live facts. Reseal must inspect local and remote journals and states,
+inspect live guards/topology/routes, write a new epoch and state, push the
+resulting journal/state lineage to all replicas in the new set, and preserve
+superseded conflicting history rather than silently deleting it.
+
+
+`MOTHER-DESIGN-010: replayed-journal-with-authoritative-checkpoints`
+
+`MOTHER-OPEN-004: sealed-state-format` is resolved as one complete committed-state
+document plus an append-only, hash-chained journal that is replayed during every
+network preflight.
+
+Recommended per-network durable layout:
+
+```text
+/runtime/state/mother/networks/<network>/
+  committed-state.json
+  journal/
+    metadata.json
+    head.json
+    entries/
+      000000000001.json
+      000000000002.json
+      ...
+  archive/
+    superseded-lineages/
+```
+
+Checkpoint records are immutable entries inside `journal/entries/`; they are not
+maintained in a separate mutable checkpoint store. The common journal storage,
+locking, commit, and replay rules are defined by `MOTHER-DESIGN-014`.
+
+`committed-state.json` contains the complete current network state needed by
+normal operation. It is a persisted checkpoint, not an independently trusted
+authority. The journal is the canonical history of committed network-visible
+transitions. The committed-state document is valid only when deterministic
+journal replay produces exactly the same canonical state and state hash.
+
+The journal contains committed transitions such as:
+
+- validator membership changes;
+- replica-set changes;
+- canonical Hub or RPC route changes;
+- contract deployment or governance-office changes;
+- zero-node and first-node transitions;
+- reseal, rectification, and authoritative-checkpoint events.
+
+Host-local provisional preparation, retry logs, transient health observations,
+locks, call-runner transport records, rollback frames, and rollback attempts do
+not belong in the global committed journal. Network-visible effects of an action
+are journaled globally when committed; rollback frame lifecycle is recorded in
+the action's separate immutable rollback journal.
+
+Each ordinary journal entry records at least:
+
+```yaml
+kind: main_computer.mother.journal_entry.v1
+network_key: mainnet
+sequence: 142
+action_id: "operation-..."
+operation: "add-node"
+previous_entry_hash: "sha256:..."
+previous_state_hash: "sha256:..."
+changes: []
+resulting_state_hash: "sha256:..."
+entry_hash: "sha256:..."
+committed_at: "..."
+```
+
+Every expected replica stores the complete committed-state document, journal
+metadata, the committed head, all entries retained after the replay base, and
+the checkpoint entries needed to reconstruct the active lineage. Replica
+preflight does not merely compare copied state files; each replica must open and
+replay its journal through the common journal engine and report the resulting
+hash.
+
+On every command that reads or may mutate a network, Mother must:
+
+1. read a stable committed journal head;
+2. walk backward through that committed lineage until it reaches the newest
+   valid checkpoint entry;
+3. verify the checkpoint entry, load its complete state, and verify its state
+   hash;
+4. replay every collected later entry in forward sequence order;
+5. verify sequence continuity, entry hashes, previous-entry links, and
+   previous/resulting-state hashes;
+6. reconstruct the complete current state;
+7. compare the reconstructed state with `committed-state.json`;
+8. compare the local checkpoint, journal head, replay result, and committed state
+   with every expected remote replica.
+
+If the committed-state document and journal replay disagree, normal mutation is
+blocked. The operator must select an explicit rectification path. Supported
+conceptual paths are:
+
+```text
+rebuild-committed-state-from-journal
+restore-journal-from-agreed-remote
+select-journal-lineage
+force-authoritative-checkpoint-from-live-facts
+```
+
+Mother must show the conflicting local and remote heads, reconstructed hashes,
+committed-state hashes, and relevant live facts before the operator chooses.
+Rectification must never silently pick a winner.
+
+An authoritative rectification checkpoint is the recovery mechanism for a state
+that cannot be reconciled through normal replay. It is an explicit
+operator-approved journal event containing a complete committed state and enough
+evidence to explain why the earlier lineage was superseded. It records at least:
+
+```yaml
+kind: main_computer.mother.authoritative_checkpoint.v1
+journal_id: "network:mainnet"
+network_key: mainnet
+checkpoint_id: "checkpoint-..."
+checkpoint_kind: authoritative-rectification
+sequence: 143
+previous_entry_hash: "sha256:..."
+reason: "operator-approved recovery from divergent journal lineages"
+created_by: "local-head:<machine-id>"
+created_at: "..."
+replica_hosts:
+  - coolify-a
+  - coolify-c
+supersedes:
+  journal_entries_through: 142
+  prior_lineage_heads: []
+checkpoint_state: {}
+checkpoint_state_hash: "sha256:..."
+resulting_state_hash: "sha256:..."
+previous_checkpoint_hash: "sha256:..."
+entry_hash: "sha256:..."
+```
+
+The authoritative checkpoint does not edit or erase prior journal records.
+Instead, it supersedes them for active-state reconstruction. Future replay uses
+the checkpoint's complete state as the new baseline and applies only later
+entries. Earlier journal entries remain preserved as forensic history under the
+superseded lineage, but they no longer determine active state.
+
+The active lineage after a checkpoint is therefore:
+
+```text
+authoritative checkpoint
+  -> journal entry N+1
+  -> journal entry N+2
+  -> current committed-state.json
+```
+
+The checkpoint and reconstructed state must be replicated to every host in its
+declared `replica_hosts` set. Normal mutation remains blocked until every listed
+replica reports the same checkpoint hash, journal head, replayed state hash, and
+committed-state hash.
+
+A forced checkpoint is allowed only through explicit rectification/reseal
+workflow. Ordinary `add-node`, `join-topology`, `remove-topology`, `remove-node`,
+and route reconciliation commands must never create one automatically.
+
+Conceptual rectification command forms:
+
+```text
+python tools/mother/mother.py reseal-state prep mainnet \
+  --rectification rebuild-committed-state-from-journal \
+  --reason "state file differs from valid journal"
+
+python tools/mother/mother.py reseal-state prep mainnet \
+  --rectification restore-journal-from-agreed-remote \
+  --source-host coolify-a \
+  --reason "local journal damaged"
+
+python tools/mother/mother.py reseal-state prep mainnet \
+  --rectification select-journal-lineage \
+  --source-host coolify-a \
+  --reason "remote lineages diverged"
+
+python tools/mother/mother.py reseal-state prep mainnet \
+  --rectification force-authoritative-checkpoint-from-live-facts \
+  --reason "no stored lineage matches verified live state"
+```
+
+Names may change, but the behavior must not: replay happens before trust,
+unreconcilable disagreement requires operator choice, and a forced baseline is
+recorded as a new authoritative checkpoint rather than as edits to old history.
+
+
+`MOTHER-DESIGN-011: prestate-first-rollback-with-rollback-journal`
+
+`MOTHER-OPEN-005: crash-and-ambiguous-step-recovery` is resolved by treating
+the complete prestate of each declared mutation scope as the unit of recovery.
+
+Before a mutating substep starts, Mother must:
+
+1. identify every file, process, route, topology record, or remote runtime fact
+   the substep is allowed to change;
+2. read and validate the complete current prestate for that scope;
+3. record the prestate, its canonical hash, the owned scope/generation, the
+   restore operation, and the rollback verification contract in a durable
+   rollback frame;
+4. durably arm that frame on the active rollback stack;
+5. only then dispatch the forward mutation.
+
+A rollback frame describes the desired prior state. It must not rely only on an
+inverse verb such as `start -> stop` or `add -> remove`, because an inverse verb
+may not recreate the exact previous configuration. A conceptual frame is:
+
+```yaml
+frame_id: "rollback-0003"
+operation_id: "operation-..."
+step_id: "publish-mainnet-rpc-route"
+status: armed
+scope: "route:mainnet-rpc:coolify-a"
+target_generation: 17
+prestate:
+  exists: true
+  canonical_hash: "sha256:..."
+  complete_value: {}
+restore:
+  kind: "route.restore-complete-prestate"
+  payload_ref: "rollback-prestate/rollback-0003.json"
+verification:
+  expected_prestate_hash: "sha256:..."
+```
+
+Once the frame is armed, a forward failure or lost response does not require
+Mother to infer how much of the mutation happened before rollback is possible.
+Mother restores the complete recorded prestate. Reapplying the same restore must
+be safe until the recorded prestate is verified.
+
+Rollback remains available from successful `prep` until successful `finalize`.
+`finalize` is the only operation stage that permanently closes the rollback
+window. After finalization, reversing the result requires a new prepared action
+with its own prestate and rollback stack.
+
+Rollback processes the active stack in strict LIFO order:
+
+1. peek at the top frame without removing it;
+2. mark a restore attempt in progress;
+3. apply the frame's complete prestate restore;
+4. verify the actual target state against the recorded prestate hash and
+   rollback postconditions;
+5. append the attempt and verification result to the immutable rollback journal;
+6. remove the frame from the active stack only after restoration is
+   `restored-verified`;
+7. continue to the next frame only after the current top frame has been removed.
+
+If restoration fails, is interrupted, or cannot be verified, the frame remains
+at the top of the active stack. The failed attempt is appended to the rollback
+journal, lower frames are not processed, the action remains rollback-capable,
+and rerunning rollback retries the same idempotent restore.
+
+Finalization also preserves rollback history. Before clearing the active stack,
+`finalize` must append a `frame-close-prepared` record for every unused frame to
+the rollback journal and verify that journal head is durable. It then commits
+one `action-finalized` entry in the action journal that references the exact
+rollback-journal head and closure records. Only that action-journal commit makes
+the referenced frames permanently non-executable; the stack projection is
+cleared afterward.
+
+Each action therefore has three separate histories:
+
+```text
+forward action journal
+  prepared steps, dispatches, checkpoints, and forward verification
+
+active rollback stack
+  only rollback frames that remain executable before finalize
+
+immutable rollback journal
+  frame creation, restore attempts, failed attempts, verified restorations,
+  and frames closed by finalize
+```
+
+The rollback journal is not the global committed-state journal. A successful
+rollback may produce a new network-visible committed transition, but the frame
+contents and restore-attempt history remain in the action-specific rollback
+journal.
+
+Recommended action-local durable layout:
+
+```text
+/runtime/state/mother/actions/<operation-id>/
+  action-journal/
+    metadata.json
+    head.json
+    entries/
+  rollback-journal/
+    metadata.json
+    head.json
+    entries/
+  rollback-stack.json
+  prestate/
+    <frame-id>.json
+  summary.json
+```
+
+`rollback-stack.json` and `summary.json` are replayable projections. Frame
+activation, restore attempts, verified restoration, and closure by finalize are
+committed through the action and rollback journals before those projections are
+changed.
+
+The Mother API must expose both records:
+
+```text
+GET /v1/operations/<operation-id>/rollback-stack
+GET /v1/operations/<operation-id>/rollback-journal
+```
+
+
+`MOTHER-DESIGN-012: typed-guard-prestate-contract`
+
+`MOTHER-OPEN-008: exact-guard-endpoint-schemas` is resolved as a typed,
+prestate-first guard contract.
+
+A guard mutation is never a single opaque command. It has two explicit control
+steps:
+
+```text
+capture-and-arm complete prestate
+apply typed desired-state mutation using that armed frame
+```
+
+The capture step may write Mother control metadata, but it must not change the
+live resource being protected. The apply step must refuse to begin unless the
+referenced rollback frame exists, is durable, is still active, and still matches
+the target's current generation and prestate hash.
+
+The baseline local guard surface is:
+
+```text
+POST /guard/v1/prestate/capture
+PUT  /guard/v1/identity/state
+PUT  /guard/v1/node-runtime/state
+PUT  /guard/v1/qbft/config
+PUT  /guard/v1/validator-rpc/state
+GET  /guard/v1/topology/state
+POST /guard/v1/prestate/restore
+GET  /guard/v1/prestate/<frame-id>
+```
+
+Endpoint names may gain resource-specific subpaths, but they may not lose the
+capture/apply/restore semantics.
+
+A prestate-capture request contains a common envelope:
+
+```json
+{
+  "schema": "mother.guard.prestate-capture.v1",
+  "action_id": "add-node-mainneta-super2-001",
+  "step_id": "install-reserved-identity",
+  "request_id": "request-001",
+  "idempotency_key": "idem-capture-001",
+  "network": "mainnet",
+  "target": {
+    "host": "coolify-b",
+    "cell_id": "mainneta-super2",
+    "resource": "identity"
+  },
+  "mutation_kind": "identity.install-reserved",
+  "declared_scope": [
+    "identity.files",
+    "identity.permissions",
+    "identity.validator-address",
+    "identity.secret-mounts"
+  ],
+  "desired_state_hash": "sha256:..."
+}
+```
+
+The guard must reject the request if the declared scope is incomplete for the
+requested mutation kind. A successful response returns the complete immutable
+rollback frame:
+
+```json
+{
+  "ok": true,
+  "schema": "mother.guard.prestate-capture-result.v1",
+  "action_id": "add-node-mainneta-super2-001",
+  "step_id": "install-reserved-identity",
+  "request_id": "request-001",
+  "idempotency_key": "idem-capture-001",
+  "frame_id": "rollback-0002",
+  "mutation_scope": [
+    "identity.files",
+    "identity.permissions",
+    "identity.validator-address",
+    "identity.secret-mounts"
+  ],
+  "prestate": {},
+  "prestate_hash": "sha256:...",
+  "prestate_generation": 7,
+  "status": "armed"
+}
+```
+
+The guard stores the full frame under the durable Mother state root, for
+example under `/runtime/state/mother/provisional/<action-id>/<step-id>/`, before
+returning success. The cleanup and abandonment lifecycle of that provisional
+copy remains `MOTHER-OPEN-006`.
+
+Mother then writes the same frame or a content-addressed reference to it onto the
+action's active rollback stack and verifies that append is durable before
+dispatching the forward mutation. `prep` records the planned frame scope and
+restore contract; capture turns that plan into an armed executable frame.
+
+Every typed mutation request references the armed frame:
+
+```json
+{
+  "schema": "mother.guard.identity-state.v1",
+  "action_id": "add-node-mainneta-super2-001",
+  "step_id": "install-reserved-identity",
+  "request_id": "request-002",
+  "idempotency_key": "idem-apply-002",
+  "frame_id": "rollback-0002",
+  "expected_prestate_hash": "sha256:...",
+  "expected_generation": 7,
+  "desired_state": {}
+}
+```
+
+Before applying, the guard must re-read the target and prove that its current
+generation and canonical state hash still match the armed frame. If they do not,
+the guard returns `prestate-mismatch` or `generation-mismatch` and performs no
+live mutation.
+
+A successful typed mutation response contains:
+
+```json
+{
+  "ok": true,
+  "schema": "mother.guard.mutation-result.v1",
+  "action_id": "add-node-mainneta-super2-001",
+  "step_id": "install-reserved-identity",
+  "request_id": "request-002",
+  "idempotency_key": "idem-apply-002",
+  "frame_id": "rollback-0002",
+  "mutation_scope": [
+    "identity.files",
+    "identity.permissions",
+    "identity.validator-address",
+    "identity.secret-mounts"
+  ],
+  "prestate_hash": "sha256:...",
+  "prestate_generation": 7,
+  "resulting_state": {},
+  "resulting_state_hash": "sha256:...",
+  "resulting_generation": 8,
+  "verification": {
+    "ok": true,
+    "checks": []
+  },
+  "status": "applied-verified"
+}
+```
+
+The response may summarize the prestate, but it does not replace the durable
+rollback frame. The frame remains active until rollback restores it or finalize
+closes it. Repeating a capture or apply request with the same idempotency key and
+identical request hash must return the same frame or result; reusing the key with
+different content must fail.
+
+Rollback uses:
+
+```text
+POST /guard/v1/prestate/restore
+```
+
+with the frame ID, expected current generation, and expected current ownership.
+The restore operation applies the complete recorded prestate, verifies the
+restored state hash and resource-specific postconditions, and returns
+`restored-verified`. Repeating the same restore must be safe. Mother journals
+every restore attempt and removes the frame from the active stack only after a
+durable `restored-verified` result.
+
+The guard must use structured error codes. Baseline codes are:
+
+```text
+unsupported-schema
+unsupported-capability
+scope-incomplete
+scope-busy
+prestate-mismatch
+generation-mismatch
+frame-missing
+frame-not-active
+invalid-transition
+verification-failed
+partial-apply
+restore-failed
+```
+
+The guard must never accept arbitrary shell as a substitute for a typed mutation
+contract. Resource-specific payloads remain typed, and each endpoint must define
+its complete mutation scope, canonical hashing rules, generation rules, desired
+state, verification checks, and restore checks.
+
+The route controller follows the same prestate-first pattern, but its exact
+router/service payload and reconciliation contract remain
+`MOTHER-OPEN-009`.
+
+
+`MOTHER-DESIGN-013: evidence-backed-full-guard-assertions`
+
+Guard flags are evidence-backed executable assertions. They are not writable
+booleans, cached intent, or lifecycle markers. Mother may ask a guard to verify
+an assertion, but neither Mother nor another caller may set an assertion to
+`true`.
+
+The baseline assertion surface is:
+
+```text
+POST /guard/v1/assertions/verify
+```
+
+A request names the exact assertion set and scope that must be evaluated:
+
+```json
+{
+  "schema": "mother.guard.assertion-request.v1",
+  "action_id": "add-node-mainneta-super2-001",
+  "step_id": "establish-standby-runtime",
+  "network": "mainnet",
+  "target": {
+    "host": "coolify-b",
+    "cell_id": "mainneta-super2"
+  },
+  "assertions": [
+    "identity.matches-reservation",
+    "identity.permissions-secure",
+    "runtime.is-safe-standby",
+    "routes.public-absent"
+  ]
+}
+```
+
+For every requested assertion, the guard must execute the assertion's versioned
+verifier against the underlying resources at request time. It may inspect files,
+permissions, mounts, process state, container state, ports, configuration
+hashes, runtime responses, local route definitions, and other typed evidence
+owned by that verifier. A successful request does not mean every assertion is
+true; it means the guard completed the requested evaluations and returned an
+evidence-backed result for each one.
+
+A representative result is:
+
+```json
+{
+  "schema": "mother.guard.assertion-result.v1",
+  "verified_at": "2026-07-23T21:00:00Z",
+  "scope": {
+    "network": "mainnet",
+    "host": "coolify-b",
+    "cell_id": "mainneta-super2"
+  },
+  "results": [
+    {
+      "name": "runtime.is-safe-standby",
+      "verifier": "mother.guard.runtime-is-safe-standby.v1",
+      "result": true,
+      "dependencies": {
+        "node-runtime": 12,
+        "validator-rpc": 4,
+        "routes": 19
+      },
+      "evidence": {
+        "runtime_role": "standby",
+        "validator_enabled": false,
+        "validator_process_running": false,
+        "public_rpc_route_present": false,
+        "public_hub_route_present": false
+      },
+      "evidence_hash": "sha256:..."
+    }
+  ]
+}
+```
+
+The verifier definition is part of the assertion contract. For example,
+`runtime.is-safe-standby` is true only if every required leaf condition is
+observed:
+
+```text
+runtime exists
+AND configured role is standby
+AND validator participation is disabled
+AND validator process is not active
+AND public RPC routing is absent
+AND public Hub routing is absent
+```
+
+A false result must identify the failed conditions and return the non-secret
+evidence needed to diagnose them. Evidence must never expose private key
+material or other secrets; secret-bearing resources are proven through hashes,
+ownership, permissions, references, and other safe observations.
+
+Assertions are valid only for the exact resource generations listed in their
+result. If any dependency generation changes, the earlier result is stale even
+if its recorded boolean was `true`. A journaled assertion result records what
+was observed at that time; it is not a reusable source of current truth.
+
+Composite assertions are allowed, for example:
+
+```text
+node.is-ready-standby =
+    identity.matches-reservation
+    AND identity.permissions-secure
+    AND runtime.is-safe-standby
+    AND routes.public-absent
+```
+
+A composite result must retain the results and evidence hashes of its leaf
+assertions. Mother must never receive an unexplained top-level `true`.
+
+Every prepared action step declares assertion transitions:
+
+```yaml
+requires:
+  - identity.matches-reservation
+  - routes.public-absent
+establishes:
+  - runtime.is-safe-standby
+retires:
+  - runtime.is-absent
+preserves:
+  - identity.matches-reservation
+  - routes.public-absent
+```
+
+Mother maintains an active invariant set for the action. An assertion enters
+that set only after its establishing step has been verified. It remains active
+until a later verified transition explicitly retires or supersedes it. The
+temporary interval while a mutation is applying does not advance the action to
+the next step and does not retire the old invariant set.
+
+Before every forward step, Mother must freshly verify the complete union of:
+
+```text
+mandatory control-safety assertions
+all currently active action invariants
+all invariants the next step declares it will preserve
+the next step's direct preconditions
+```
+
+This is the default and currently supported guard behavior. Mother does not
+check only the immediately preceding step. If an identity, runtime, route, lock,
+journal, rollback frame, or other earlier requirement drifted after it was first
+established, the next step must be blocked.
+
+Mandatory control-safety assertions include at least:
+
+```text
+the network/action lock is still owned
+the action and journal heads are valid
+the active rollback stack agrees with its rollback journal
+no conflicting provisional action owns an affected scope
+the referenced rollback frames are armed and active
+the required schemas and capabilities are supported
+```
+
+Before a network-visible mutation, the mandatory set also includes full expected
+replica reachability and journal/state agreement.
+
+After a typed mutation returns, Mother freshly verifies the step's complete
+postcondition set. Only then may it record the step as complete, add established
+assertions to the active set, retire superseded assertions, and consider the next
+step. A command exit code or mutation response is not proof of the resulting
+truth.
+
+Rollback uses the same assertion contract. A rollback frame declares the
+assertions that prove its complete prestate has been restored. The frame remains
+at the top of the active stack until those assertions are freshly true, the
+verification evidence is durably appended to the rollback journal, and the
+result is `restored-verified`.
+
+Finalization, reseal, authoritative checkpoint creation, and committed topology
+transitions must freshly verify their complete final assertion sets immediately
+before their journal commit points.
+
+Implementation must keep assertion-set selection separate from assertion
+execution. Action definitions calculate the complete required set; the guard
+registry resolves each assertion name to a versioned verifier; the execution
+engine evaluates the selected set and journals the evidence. This separation is
+an implementation boundary, not permission to omit active assertions from the
+currently supported behavior.
+
+
+
+`MOTHER-DESIGN-014: filesystem-journal-atomic-head-and-checkpoint-replay`
+
+`MOTHER-OPEN-010: durable-state-locking-and-atomicity` is resolved by using one
+common filesystem journal engine for network, action, and rollback history.
+Immutable journal entries and the atomically replaced committed head are
+authoritative. Complete state documents, active rollback stacks, current-action
+pointers, and summaries are replayable projections.
+
+Every Mother journal has the same physical shape:
+
+```text
+<journal-root>/
+  metadata.json
+  head.json
+  entries/
+    000000000001.json
+    000000000002.json
+    ...
+  temporary/
+  archive/
+```
+
+`metadata.json` gives the stable journal identity and kind. A representative
+document is:
+
+```json
+{
+  "schema": "mother.journal.metadata.v1",
+  "journal_id": "action:add-node-mainneta-super2-001",
+  "journal_kind": "action",
+  "state_schema": "mother.action-state.v1",
+  "created_at": "..."
+}
+```
+
+`head.json` identifies the last committed entry:
+
+```json
+{
+  "schema": "mother.journal.head.v1",
+  "journal_id": "action:add-node-mainneta-super2-001",
+  "head_sequence": 17,
+  "head_entry_hash": "sha256:...",
+  "head_state_hash": "sha256:...",
+  "committed_at": "..."
+}
+```
+
+A file in `entries/` is not committed merely because it exists. The exact
+commit point is the durable atomic replacement of `head.json` with a head that
+names that entry. Entries beyond the committed head are uncommitted orphans and
+must never be interpreted as completed action history.
+
+Every entry records enough information to verify both history and state
+transition:
+
+```json
+{
+  "schema": "mother.journal.entry.v1",
+  "journal_id": "action:add-node-mainneta-super2-001",
+  "sequence": 17,
+  "previous_entry_hash": "sha256:...",
+  "previous_state_hash": "sha256:...",
+  "event_type": "step-postconditions-verified",
+  "event": {},
+  "resulting_state_hash": "sha256:...",
+  "entry_hash": "sha256:...",
+  "created_at": "..."
+}
+```
+
+The entry hash covers the canonical entry content, including journal identity,
+sequence, previous-entry hash, previous-state hash, event type and payload, and
+resulting-state hash. Entries are never edited or replaced in place.
+
+### Checkpoint-aware replay
+
+Every checkpoint is an immutable journal entry containing a complete state for
+that journal. Checkpoints are not side files and do not bypass the journal head.
+
+A routine checkpoint has the shape:
+
+```json
+{
+  "schema": "mother.journal.entry.v1",
+  "journal_id": "action:add-node-mainneta-super2-001",
+  "sequence": 20,
+  "previous_entry_hash": "sha256:...",
+  "previous_state_hash": "sha256:...",
+  "event_type": "state-checkpoint",
+  "event": {
+    "checkpoint_kind": "routine",
+    "covers_through_sequence": 19,
+    "covers_through_entry_hash": "sha256:...",
+    "state_schema": "mother.action-state.v1",
+    "state": {},
+    "state_hash": "sha256:..."
+  },
+  "resulting_state_hash": "sha256:...",
+  "entry_hash": "sha256:...",
+  "created_at": "..."
+}
+```
+
+For a routine checkpoint, `event.state_hash`, `resulting_state_hash`, and the
+state obtained by valid replay through `covers_through_sequence` must be equal.
+A routine checkpoint summarizes valid history; it does not override it.
+
+Every newly created journal begins with an initial-state checkpoint before any
+ordinary event is committed:
+
+```text
+sequence 1: initial-state checkpoint
+sequence 2: first ordinary event
+sequence 3: second ordinary event
+```
+
+The initial checkpoint contains the journal kind's complete defined initial
+state. For example, a newly prepared action may begin with an action-state
+checkpoint containing no completed steps, no active rollback frames, and
+`finalized: false`.
+
+When opening a committed journal, Mother must:
+
+1. read a stable committed head;
+2. begin at the head entry and walk backward by sequence;
+3. validate each encountered entry hash, journal identity, sequence, and
+   previous-entry relationship;
+4. stop at the newest valid checkpoint on that committed lineage;
+5. verify the checkpoint's complete state and state hash;
+6. reverse the collected later entries into forward order;
+7. replay those entries from the checkpoint state;
+8. verify every previous-state and resulting-state hash;
+9. require the final replayed state hash to equal `head.json`.
+
+Readers must never assume that replay begins at sequence `1` or that entries
+older than the selected checkpoint remain in the active journal directory.
+This is the compatibility boundary that permits old history to be archived or
+compressed later without redesigning replay.
+
+If Mother opens a journal that has no committed checkpoint, it must not continue
+normal operation as though a checkpoint existed:
+
+- for an empty new journal, it commits the defined initial-state checkpoint;
+- for a checkpointless journal with committed entries, it acquires the
+  exclusive journal lock, validates and replays the complete retained history
+  from the journal kind's defined initial state, and appends a routine
+  checkpoint containing the resulting complete state;
+- if the initial state is not deterministic, the chain is invalid, or complete
+  replay cannot be proven, normal mutation is blocked and explicit
+  rectification is required.
+
+The routine checkpoint above is distinct from the authoritative rectification
+checkpoint defined by `MOTHER-DESIGN-010`. A routine checkpoint must equal
+valid prior replay. An authoritative rectification checkpoint is
+operator-approved, records the superseded lineage and evidence, and may establish
+a different active state after unreconcilable history. Both are immutable
+checkpoint entries and both become active only through normal head commit.
+
+No automatic checkpoint frequency, retention threshold, archive policy, or
+compression command is part of the current contract. The implementation must
+support appending and discovering checkpoints now; policy for adding later
+routine checkpoints may be introduced without changing the journal format or
+replay algorithm.
+
+### Atomic filesystem commit
+
+A mutating journal writer must hold the applicable exclusive operating-system
+lock and commit one entry in this order:
+
+```text
+1. Read and verify the current committed head.
+2. Derive and validate the next complete state.
+3. Construct the next immutable entry.
+4. Write the entry to a temporary file in the same filesystem.
+5. Flush and fsync the temporary entry.
+6. Atomically rename it to entries/<sequence>.json.
+7. Fsync the entries directory.
+8. Write the replacement head to a temporary file.
+9. Flush and fsync the replacement head.
+10. Atomically replace head.json.
+11. Fsync the journal directory.
+12. Rebuild or atomically replace derived projections.
+```
+
+Step 10 is the commit point. A crash has deterministic meaning:
+
+```text
+temporary entry exists:
+  incomplete write; never committed
+
+final entry exists but head does not name it:
+  orphan entry; never committed
+
+head names a valid entry but a projection is stale:
+  transition committed; rebuild the projection by replay
+
+head names a missing or invalid entry:
+  journal cannot be proven; block mutation and require recovery
+```
+
+A writer must never update `committed-state.json`, an active rollback stack,
+current-operation pointer, or action summary first and attempt to append its
+journal evidence afterward.
+
+Derived JSON files use the same local replacement discipline:
+
+```text
+write temporary
+flush and fsync
+atomic replace
+fsync containing directory
+```
+
+A stale or missing derived file is repairable from replay. An invalid committed
+journal head or broken committed hash chain is not silently repaired from a
+projection.
+
+### Locking model
+
+The initial implementation permits only one mutating Mother action per network
+at a time. It uses an operating-system-backed exclusive lock under:
+
+```text
+/runtime/state/mother/locks/networks/<network>.lock
+```
+
+The kernel lock is authoritative. JSON metadata written beside or inside the
+lock file is diagnostic only and may contain the process ID, action ID, owner
+identity, acquisition time, and owned scopes. File existence, age, or metadata
+alone must never be treated as proof that a lock is held, and a stale-looking
+lock must not be broken based only on wall-clock time.
+
+The network mutation lock serializes updates to the network journal and all
+action or rollback journals that can change that network. Remote guards and
+routing controllers additionally take operating-system-backed locks for the
+local resources named by a mutation scope. A guard must refuse a capture,
+mutation, or restore when an incompatible resource lock is held.
+
+`diagnose` remains read-only and does not acquire the mutation lock. A read-only
+journal open must read the head before and after replay. If the head changed, it
+discards the result and retries from the new stable head. Mutating commands
+acquire the lock before trusting replay for a write decision and verify lock
+ownership as a mandatory guard assertion before every step.
+
+### Cross-journal transitions
+
+Mother must not pretend that two independent `head.json` replacements are one
+atomic transaction. Every durable fact has exactly one owning journal and one
+commit point:
+
+```text
+network-visible committed transition:
+  owned by the network journal
+
+forward action stage, verified step, and finalization:
+  owned by the action journal
+
+rollback frame attempt and restoration evidence:
+  owned by the rollback journal
+```
+
+A committed entry may reference another journal only by stable identity,
+sequence, entry hash, and resulting-state hash. Derived operation state may
+combine several independently verified journal heads, but no fact becomes true
+merely because a projection was updated.
+
+This rule is especially important for finalization. Before finalization, Mother
+appends one or more `frame-close-prepared` records to the rollback journal for
+every still-active frame. Those records preserve the frame details and proposed
+closure reason, but do not yet make a frame non-executable. Mother then appends
+one `action-finalized` event to the action journal that references the exact
+rollback-journal head and every prepared closure record.
+
+The atomic commit of that `action-finalized` action-journal entry is the
+finalization point:
+
+```text
+prepared closure records committed, action-finalized not committed:
+  action is not finalized
+  rollback remains available
+  prepared closure records are historical evidence only
+
+action-finalized committed and references the prepared closure records:
+  action is finalized
+  referenced frames are permanently closed
+  stale active-stack/current-operation projections are rebuilt
+```
+
+This preserves both requirements: every unused frame is durably represented in
+its own rollback journal before closure, and no rollback right is lost until the
+single authoritative finalization entry commits.
+
+A later rollback chosen after an interrupted finalization preparation appends an
+event identifying the unused `frame-close-prepared` records as abandoned by that
+attempt. History is preserved; old records are never rewritten.
+
+### Rollback and finalize ordering
+
+The common journal commit point enforces the rollback rule.
+
+After a guard restores a frame's complete prestate and freshly verifies the
+required assertions, Mother must:
+
+```text
+append rollback-restored-verified
+commit the rollback-journal head
+replay/rebuild rollback-stack.json without that frame
+```
+
+If Mother crashes after the rollback-journal head commits but before the stack
+projection is replaced, startup replay proves the frame is complete and rebuilds
+the stack without it. If the head did not commit, the frame remains active and
+the idempotent complete-prestate restore may be retried.
+
+Finalization follows the cross-journal protocol above:
+
+```text
+append frame-close-prepared for each remaining executable frame
+commit the rollback-journal head
+append action-finalized referencing those exact closure records
+commit the action-journal head
+rebuild the active stack and current-operation projections
+release the network mutation lock
+```
+
+No frame becomes non-executable merely because a projection was cleared or a
+prepared closure record exists. Finalization is proven only by the committed
+`action-finalized` entry and its exact rollback-journal references.
+
+### Startup and command preflight
+
+On startup, and before any mutating command continues, Mother must:
+
+1. acquire the required operating-system lock;
+2. validate journal metadata and committed heads;
+3. discover the newest valid checkpoint for each required journal by walking
+   backward from its head;
+4. replay forward from those checkpoints;
+5. verify or rebuild committed-state, action-summary, active-stack, and
+   current-operation projections;
+6. identify temporary files and uncommitted entries beyond the head;
+7. compare local network checkpoint/head/replay facts with every expected
+   replica;
+8. compare unresolved action and rollback state with the affected guards;
+9. block mutation when a committed head, checkpoint, or required lineage cannot
+   be proven.
+
+Temporary files and orphan entries may be archived after diagnosis, but they
+must not be promoted to committed history merely because their contents look
+plausible.
+
+Replica agreement for a journal compares at least:
+
+```text
+journal ID and state schema
+selected checkpoint sequence
+selected checkpoint entry hash
+selected checkpoint state hash
+head sequence
+head entry hash
+final replayed state hash
+```
+
+Equal head sequence numbers alone do not prove agreement.
+
+This design applies equally to the global network journal, each forward action
+journal, and each rollback journal. The event/state schemas differ; the
+immutable-entry, checkpoint discovery, atomic-head commit, operating-system
+locking, and replay rules remain identical.
+
+
 ### Remaining open design nodes
 
-No remaining open design nodes are defined in this baseline. New unknowns must
-be added as explicit `MOTHER-OPEN-*` entries before code depends on them.
+The sealed-state format, crash/ambiguous-step recovery model, typed guard
+prestate contract, evidence-backed full-guard assertion contract, and durable
+filesystem journal/locking model are resolved above. The following implementation
+contracts remain open and must be resolved before code depends on them:
+
+- `MOTHER-OPEN-006: provisional-local-action-state-lifecycle`
+- `MOTHER-OPEN-007: call-runner-acceptance-and-result-contract`
+- `MOTHER-OPEN-009: route-reconcile-api-contract`
+- `MOTHER-OPEN-011: state-schema-and-capability-negotiation`
+- `MOTHER-OPEN-012: replicated-private-state-policy`
+- `MOTHER-OPEN-013: local-control-api-authorization`
+- `MOTHER-OPEN-014: governance-office-deployment-invariant`
+- `MOTHER-OPEN-015: replacement-local-head-recovery-procedure`
 
 
 ## Namespace
@@ -467,6 +1690,7 @@ tools/mother/
   reseal_qbft.py
   restore_service.py
   rollback.py
+  reseal_state.py
   common/
     coolify.py
     guards.py
@@ -475,18 +1699,41 @@ tools/mother/
     topology.py
     routing.py
     private_state.py
+    sealed_state.py
+    state_sync.py
     operations.py
+    journal.py
+    atomic_files.py
+    checkpoints.py
     locks.py
     planning.py
     reporting.py
     rollback_stack.py
+    rollback_journal.py
 ```
 
 Recommended command shape:
 
 ```text
-# Read-only.
+# Read-only. Before the command trusts live network facts, the control script
+# verifies local sealed state against remote replicas and refreshes local state
+# when remotes agree that local is stale.
 python tools/mother/mother.py diagnose mainnet
+
+# Explicit recovery when local/remote seals disagree or the network is wedged.
+python tools/mother/mother.py reseal-state prep mainnet --from-live --reason "replica mismatch"
+python tools/mother/mother.py reseal-state do mainnet
+python tools/mother/mother.py reseal-state finalize mainnet
+
+# Continue without an unreachable expected replica only through an explicit reseal.
+python tools/mother/mother.py reseal-state prep mainnet --exclude-host coolify-b --reason "host unreachable"
+python tools/mother/mother.py reseal-state do mainnet
+python tools/mother/mother.py reseal-state finalize mainnet
+
+# A recovered host is refreshed and explicitly re-included; it never self-rejoins.
+python tools/mother/mother.py reseal-state prep mainnet --include-host coolify-b --reason "host recovered"
+python tools/mother/mother.py reseal-state do mainnet
+python tools/mother/mother.py reseal-state finalize mainnet
 
 # Service lifecycle. add-node defaults to standby; no --standby flag exists.
 python tools/mother/mother.py add-node prep mainnet --node mainnetc-super1 --host coolify-c
@@ -582,10 +1829,12 @@ The Mother control container is responsible for:
   rolled back;
 - executing `do` only from a prepared operation record;
 - calling guard and routing APIs for runtime mutations;
-- pushing durable undo packets before or atomically with each successful
+- identifying each mutating substep's complete mutation scope;
+- capturing complete prestate and durably arming a rollback frame before each
   mutating substep;
 - exposing rollback for every non-finalized mutating operation;
-- exposing the current action, checkpoints, and rollback stack through the API;
+- exposing the current action, checkpoints, active rollback stack, and immutable
+  rollback journal through the API;
 - recording checkpoints during `do`;
 - verifying postconditions during `finalize`;
 - releasing operation ownership only during `finalize` or `rollback`;
@@ -605,9 +1854,11 @@ The Mother control container is not responsible for:
 
 ### Persistent operation ledger
 
-Mother must keep a durable operation ledger. This ledger can begin as files under
-a Mother-owned persistent volume and later move to FDB or another durable store,
-but the semantics must be stable.
+Mother must keep a durable operation ledger using the common filesystem journal
+engine under the Mother-owned state root. A future storage-backend migration is
+allowed only through an explicit migration that preserves journal identity,
+checkpoint, hash-chain, atomic-head, locking, and replay semantics; no current
+command may silently substitute a different authority.
 
 Suggested durable state layout:
 
@@ -621,27 +1872,41 @@ Suggested durable state layout:
   routes/
     <network>/
       <host>.json
-  rollback/
-    <operation-id>.json
-  operations/
-    mainnet/
-      network/
-        active.json
-        <operation-id>.json
-      services/
-        mainneta-super1/
-          active.json
-          <operation-id>.json
-        mainnetc-super1/
-          active.json
-          <operation-id>.json
+  networks/
+    <network>/
+      committed-state.json
+      journal/
+        metadata.json
+        head.json
+        entries/
+  actions/
+    <operation-id>/
+      action-journal/
+        metadata.json
+        head.json
+        entries/
+      rollback-journal/
+        metadata.json
+        head.json
+        entries/
+      rollback-stack.json
+      prestate/
+        <frame-id>.json
+      summary.json
+  current/
+    <network>.json
+    scopes/
   reports/
     <operation-id>/
       prep-report.json
-      do-checkpoints.jsonl
+      do-report.json
       finalize-report.json
       rollback-report.json
 ```
+
+The network, action, and rollback journals all use the same immutable-entry,
+checkpoint-aware filesystem engine. Their checkpoint state schemas differ, but
+their lock, atomic commit, head, hash-chain, and replay semantics do not.
 
 The operation ledger is the place where Mother remembers what it has been told
 will happen. The live infrastructure is not allowed to be reinterpreted as if the
@@ -650,8 +1915,11 @@ prepared instruction never existed.
 #### Current operation pointer
 
 For each owned scope, Mother must also maintain a durable current-operation
-pointer. The pointer is not advisory; it is the authority that says which
-operation is active for that scope.
+pointer. The pointer is a replayable projection used for fast lookup and
+operator visibility; the authoritative ownership decision comes from the
+committed action journal together with the currently held operating-system
+lock. If the pointer disagrees with journal replay, Mother must rebuild the
+pointer or block when the journal itself cannot be proven.
 
 At minimum, Mother should maintain:
 
@@ -674,7 +1942,7 @@ Each current-operation pointer must include:
   "kind": "reseal-qbft",
   "stage": "do-complete-pending-finalize",
   "scopes": ["network:mainnet", "service:mainneta-super1"],
-  "operation_path": "/runtime/state/mother/operations/mainnet/network/reseal-mainnet-001.json",
+  "operation_path": "/runtime/state/mother/actions/reseal-mainnet-001/summary.json",
   "allowed_next_commands": ["finalize", "rollback"]
 }
 ```
@@ -702,6 +1970,12 @@ GET  /v1/status
 GET  /v1/version
 GET  /v1/state-root
 GET  /v1/diagnose/<network>
+GET  /v1/networks/<network>/seal
+GET  /v1/networks/<network>/replicas
+POST /v1/networks/<network>/sync-preflight
+POST /v1/networks/<network>/reseal/prep
+POST /v1/networks/<network>/reseal/do
+POST /v1/networks/<network>/reseal/finalize
 GET  /v1/networks/<network>/current-operation
 GET  /v1/scopes/<scope>/current-operation
 POST /v1/operations/<kind>/prep
@@ -715,11 +1989,13 @@ GET  /v1/operations/<operation-id>
 GET  /v1/operations/<operation-id>/checkpoints
 GET  /v1/operations/<operation-id>/rollback-stack
 GET  /v1/operations/<operation-id>/rollback-stack/<frame-id>
+GET  /v1/operations/<operation-id>/rollback-journal
 GET  /v1/guards/<node>/topology-state
 ```
 
 The HTTP shape is optional; the stage semantics, state-root visibility, current
-operation visibility, and rollback-stack visibility are not optional.
+operation visibility, sealed-state visibility, replica visibility, preflight
+visibility, reseal visibility, and rollback-stack visibility are not optional.
 
 ### Remote access through Coolify call-runners
 
@@ -837,7 +2113,9 @@ This is the most important Mother boundary.
 - validate that the requested operation is coherent;
 - calculate the exact desired target state;
 - calculate the exact mutation steps;
-- calculate the rollback strategy for every step that may be performed in `do`;
+- declare the complete mutation scope, prestate capture method, restore
+  operation, and rollback verification contract for every step that may be
+  performed in `do`;
 - acquire logical ownership of every affected scope;
 - write an immutable prepared operation record;
 - print the plan, risks, affected scopes, required confirmations, and rollback
@@ -872,7 +2150,10 @@ ledger and lock records.
 - perform only the mutation steps recorded in the prepared operation;
 - perform runtime mutations through Mother, guard, and routing APIs instead of
   hidden compose replacement;
-- push the prepared undo packet before or atomically with each mutating substep;
+- capture the complete current prestate and durably arm the prepared rollback
+  frame before each mutating substep;
+- refuse the mutation if the prestate cannot be captured completely or the
+  rollback frame cannot be persisted;
 - write a checkpoint before and after every mutation step;
 - leave the operation in a state that can either be finalized or rolled back.
 
@@ -892,9 +2173,13 @@ If a step fails during `do`, Mother must leave the operation open and report the
 next allowed commands:
 
 ```text
-mother <kind> do --operation-id <id>        # retry idempotently
-mother rollback <network> [--operation-id <id>]  # roll back as far as safely possible
+mother <kind> do --operation-id <id>        # continue only from verified checkpoints
+mother rollback <network> [--operation-id <id>]  # restore the recorded prestates
 ```
+
+Forward execution does not have to infer how far an ambiguous failed mutation
+progressed before rollback is available. Once its frame is armed, rollback
+restores the complete recorded prestate for that scope.
 
 ### `finalize`
 
@@ -905,6 +2190,12 @@ mother rollback <network> [--operation-id <id>]  # roll back as far as safely po
 - run the operation's postcondition checks;
 - verify that all mutation checkpoints are complete;
 - verify that the desired state matches the actual state;
+- append a `frame-close-prepared` record for every still-active rollback frame
+  to the immutable rollback journal;
+- verify those rollback-journal records are durable;
+- commit `action-finalized` in the action journal with exact references to those
+  records;
+- clear the active rollback-stack projection only after that commit;
 - mark the operation complete;
 - release all active scope ownership;
 - make `rollback` unavailable for this operation, except as a new explicit
@@ -929,82 +2220,108 @@ mother rollback <network> [--operation-id <id>]  # undo the non-finalized operat
 - if an operation ID is provided, prove that it matches the current operation for
   the requested scope before doing anything;
 - load the same prepared operation record;
-- inspect completed checkpoints;
-- pop and execute the durable rollback action stack in reverse order;
-- run only rollback frames that Mother recorded before or during completed
-  mutation steps;
-- skip rollback actions for steps that never completed;
-- verify the rollback target state;
-- mark the operation rolled back;
+- inspect the active rollback stack and forward checkpoints;
+- peek and execute the durable rollback action stack in reverse order;
+- restore the complete recorded prestate for each top frame, whether the forward
+  mutation completed, partially completed, or returned an ambiguous result;
+- verify the exact rollback target state before removing the frame;
+- append every restore attempt and verification result to the immutable rollback
+  journal;
+- leave a failed or unverifiable frame at the top of the stack and stop before
+  processing lower frames;
+- mark the operation rolled back only after the active stack is empty;
 - release all active scope ownership and clear current-operation pointers.
 
 Rollback is not an operator-authored command list. The local scripts and guards
 must not require the operator to say what to undo. Mother owns the rollback plan,
-the rollback stack, the order of unrolling, and the verification of each undo
-step. Local control scripts may expose primitive reversible actions, but Mother
-decides which rollback action to call and with which stored payload.
+the complete recorded prestates, the active rollback stack, the order of
+unrolling, the immutable rollback journal, and verification of each restore.
+Local control scripts may expose primitive restore actions, but Mother decides
+which stored prestate to restore and with which payload.
 
 `rollback` must be conservative. If it cannot safely undo a step, it must say so
 and leave a clear manual recovery report. It must not pretend that a partial
 rollback is clean.
 
 After `finalize`, rollback is no longer a stage of the completed operation.
-Changing the result of a finalized operation requires a new `prep`.
+Unused frames have durable `frame-close-prepared` records referenced by the
+committed `action-finalized` entry and are no longer executable. Changing the
+result of a finalized operation requires a new `prep`.
 
-#### Rollback action stack
+#### Rollback action stack and rollback journal
 
-Every mutation step that can affect live state must have a corresponding
-rollback frame before it is allowed to execute. The active rollback frame list is
-durable state and must be inspectable through the Mother API.
+Every mutation step that can affect live state must declare its complete mutation
+scope and have a corresponding rollback frame armed before the mutation is
+allowed to execute. The active rollback frame list is durable state and must be
+inspectable through the Mother API.
 
-A rollback frame is a durable instruction owned by Mother, for example:
+The rollback frame stores complete prestate, not merely an inverse command:
 
 ```json
 {
-  "frame_id": "0003-disable-public-route",
+  "frame_id": "0003-publish-public-route",
   "stage_created": "do",
   "status": "armed",
-  "scope": "service:mainneta-super1",
+  "scope": "route:mainnet-rpc:coolify-a",
+  "target_generation": 17,
   "forward_action": {
-    "kind": "route.disable",
-    "target": "mainneta-super1"
+    "kind": "route.publish",
+    "target": "mainnet-rpc.greatlibrary.io"
   },
-  "rollback_action": {
-    "kind": "route.restore",
-    "target": "mainneta-super1",
-    "payload": {
-      "previous_routes": ["https://..."]
-    }
+  "prestate": {
+    "exists": true,
+    "canonical_hash": "sha256:...",
+    "payload_ref": "rollback/prestate/operation-123/0003.json"
+  },
+  "restore_action": {
+    "kind": "route.restore-complete-prestate",
+    "target": "mainnet-rpc.greatlibrary.io"
   },
   "verification": {
-    "rollback_postcondition": "routes restored to previous_routes"
+    "expected_prestate_hash": "sha256:..."
   }
 }
 ```
 
-Frames are pushed in forward execution order and popped in reverse execution
+Frames are pushed in forward execution order and restored in reverse execution
 order. This makes rollback LIFO:
 
 ```text
 forward:
-  1. disable public route
-  2. stop validator
-  3. write QBFT config
+  1. capture route prestate; publish route
+  2. capture validator runtime prestate; stop validator
+  3. capture QBFT config prestate; write QBFT config
 
 rollback:
-  1. restore previous QBFT config
-  2. restart validator in previous mode
-  3. restore public route
+  1. restore complete previous QBFT config
+  2. restore previous validator runtime state
+  3. restore complete previous route state
 ```
 
-Mother must write or arm the rollback frame before the corresponding destructive
-forward action. If a step cannot produce an adequate rollback frame, `do` must
-refuse before running that step. If a remote guard applies a local change, the
-guard response must include enough before-state or backup references for Mother
-to record the rollback frame durably.
+Mother must capture prestate and durably arm the rollback frame before dispatching
+the corresponding forward action. If a step cannot capture adequate prestate or
+persist the frame, `do` must refuse before running that step.
 
-Rollback frames are part of the operation record. They must not live only in a
-local shell script, terminal output, or transient container memory.
+Rollback must peek rather than pop. The top frame remains active while Mother
+restores and verifies its prestate. Only after exact restoration is
+`restored-verified` may Mother append the verified result to the rollback journal
+and remove that frame from the active stack.
+
+If restore fails, is interrupted, or cannot be verified, Mother appends the
+attempt to the rollback journal but leaves the frame at the top of the active
+stack. Lower frames are not processed. Re-running rollback retries the same
+idempotent restore.
+
+Finalization closes the rollback window. Before clearing the active stack,
+`finalize` appends `frame-close-prepared` records for every unused frame and
+verifies that rollback-journal head is durable. It then commits
+`action-finalized` with exact references to those records. After that single
+finalization commit, no frame from the action may be executed.
+
+Rollback frames and restore attempts are part of durable Mother state. They must
+not live only in a local shell script, terminal output, transport response, or
+transient container memory. The action-specific rollback journal is append-only
+and separate from the global committed-state journal.
 
 ## Active operation conflict rule
 
@@ -1184,20 +2501,30 @@ restore resolves the contradiction.
 
 ### Mother as topology authority
 
-Mother has two views of topology:
+Mother has three related views of topology:
 
 - **observed topology**: what probes see right now;
 - **committed topology**: what finalized Mother operations have recorded as the
-  intended state.
+  intended state;
+- **sealed replicated topology**: the committed topology epoch/hash that the
+  local head and remote replicas currently agree on.
 
-Observed topology is evidence. Committed topology is intent. Neither one may
-silently overwrite the other.
+Observed topology is evidence. Committed topology is intent. The seal is the
+replicated proof of the last committed intent. None of these may silently
+overwrite the others.
+
+Before `prep` or any mutating command trusts network facts, Mother runs the
+sealed-state preflight. If the remote replicas agree and the local head is stale,
+Mother refreshes the local state root from the agreed sealed replica. If remote
+replicas disagree or the state is wedged, normal mutation is refused until
+`reseal-state` creates a new explicit seal.
 
 `prep` compares observed topology with committed topology and records a planned
 transition. `do` executes only that planned transition. `finalize` proves the
-observed topology reached the planned state and then updates committed topology.
-`rollback` restores the prior committed intent or reports exactly why that is no
-longer possible.
+observed topology reached the planned state and then updates committed topology,
+creates the next sealed epoch/hash, and pushes that committed seal to the
+replicas. `rollback` restores the prior committed intent or reports exactly why
+that is no longer possible.
 
 Until `finalize` runs, the committed topology must not pretend the operation is
 complete. If another command is requested for an overlapping scope, Mother must
@@ -1372,6 +2699,57 @@ Purpose:
 
 `mother_plan.py` may be used internally by `prep`, but it must not mutate live
 infrastructure.
+
+### `mother_reseal_state.py`
+
+Committed-state replica recovery transaction.
+
+Purpose:
+
+- compare the active local head state with sealed committed-state replicas on
+  the remote machines;
+- recover when local state is stale but the network replicas agree;
+- create an explicit new seal when remote replicas disagree or the network is
+  wedged;
+- push the chosen committed seal to the replicas;
+- retain superseded conflicting seals for audit.
+
+Stage contract:
+
+```text
+mother reseal-state prep mainnet --from-live --reason "..."
+mother reseal-state do --operation-id <id>
+mother reseal-state finalize --operation-id <id>
+mother rollback mainnet
+```
+
+`prep` for reseal-state must capture:
+
+- local seal metadata;
+- every reachable remote seal metadata record;
+- unreachable replicas;
+- selected source of truth, if any;
+- live guard, topology, route, and service facts used to justify the reseal;
+- desired new topology epoch and state hash;
+- exact replica files to write;
+- exact superseded seal markers to write;
+- rollback behavior for replicas that have already accepted the new seal.
+
+Forbidden:
+
+- using reseal-state to silently change validator membership;
+- using reseal-state as a replacement for `join-topology` or
+  `remove-topology`;
+- deleting conflicting seal records instead of marking them superseded;
+- continuing another mutating command after a mismatch without first completing
+  or refusing reseal-state.
+
+Rollback expectation:
+
+- restore each touched replica to its captured pre-reseal seal when possible;
+- if some replicas already moved forward and cannot be restored, report the
+  exact split and leave normal mutations blocked until a new reseal-state plan
+  is prepared.
 
 ### `mother_reseal_qbft.py`
 
@@ -1685,6 +3063,62 @@ Rollback expectation:
 - never delete pre-existing volumes unless the prepared rollback plan explicitly
   proves they were created by this operation.
 
+## Sealed-state preflight and reseal
+
+The first step of any Mother command that talks to a network is sealed-state
+preflight. This preflight is local/state synchronization, not live infrastructure
+mutation.
+
+Preflight must collect each reachable replica's committed-state metadata:
+
+```text
+network_key
+topology_epoch
+state_hash
+previous_state_hash
+sealed_at
+sealed_by
+committed_action_id
+schema_version
+modified_at
+```
+
+Then it classifies the state:
+
+```text
+local-current:
+  local epoch/hash equals the agreed remote epoch/hash.
+
+local-stale-network-agrees:
+  remotes agree on a newer epoch/hash than local.
+  Mother copies the sealed state down from the network and updates local state
+  before continuing.
+
+network-replica-mismatch:
+  remotes disagree by epoch or hash.
+  Normal mutation is refused.
+
+wedged:
+  a seal is missing, equal epochs have different hashes, required operation
+  records are missing, live guard/route facts contradict the seal, or the state
+  cannot be proven.
+  Normal mutation is refused.
+```
+
+Only `local-current` and `local-stale-network-agrees` may continue into ordinary
+commands. `network-replica-mismatch` and `wedged` require `reseal-state`.
+
+`reseal-state` is the explicit recovery command for committed-state ambiguity. It
+must be planned and executed like any other Mother operation. Its plan must show
+which local/remote seals were found, which live facts were used, which state is
+being chosen as the new committed state, what superseded seals will be retained
+for audit, and which replicas will receive the new seal.
+
+Reseal must not be an automatic side effect of `diagnose`, `add-node`,
+`join-topology`, `remove-topology`, or `remove-node`. Those commands may report
+that reseal is required and print the exact reseal command, but they must not
+invent a new committed state while performing another operation.
+
 ## Lifecycle state machine
 
 The old lifecycle model was:
@@ -1766,8 +3200,11 @@ Outputs:
 - current operation state;
 - next allowed commands.
 
-`do` must be idempotent. If interrupted, rerunning `do` with the same operation ID
-must continue or safely report why it cannot continue.
+`do` must be restart-aware. If interrupted, rerunning `do` with the same
+operation ID may continue only from verified checkpoints or safely report why it
+cannot continue. The mandatory idempotency contract is restore-to-prestate:
+every armed rollback frame must be safely re-applicable until its prestate is
+verified.
 
 ### Finalize
 
@@ -1801,7 +3238,9 @@ Outputs:
 - rolled-back operation record.
 
 Rollback must be available after `prep`, during/after `do`, and after failed
-`finalize`, until the operation reaches `finalized`.
+`finalize`, until the operation reaches `finalized`. A rollback frame is removed
+from the active stack only after its prestate restoration is verified and the
+result is durably appended to the rollback journal.
 
 ## Reseal contract
 
@@ -1944,6 +3383,309 @@ A standby service must have:
 - release operation scopes.
 
 `add-node` must not request chain topology changes.
+
+#### Concrete guard-backed `add-node` example
+
+Assume Mother is preparing `mainneta-super2` on `coolify-b`. The committed QBFT
+validator set is not changed by this action.
+
+The prepared desired state is:
+
+```yaml
+service: mainneta-super2
+host: coolify-b
+network: mainnet
+runtime_role: standby
+reserved_identity: mainneta-super2
+validator_enabled: false
+validator_rpc_public: false
+hub_public: false
+qbft_membership_change: forbidden
+```
+
+The action proceeds as follows.
+
+Before every numbered step, Mother asks the relevant guards to freshly verify
+the complete active invariant set plus that step's direct preconditions. The
+action does not rely on the successful result of the immediately preceding step
+as proof that older invariants still hold.
+
+A representative invariant-set evolution is:
+
+```yaml
+before_create_service_shell:
+  active:
+    - action.lock-owned
+    - action.journal-valid
+    - rollback.stack-consistent
+    - service.prestate-captured
+    - routes.public-absent
+  direct_preconditions:
+    - target-host.reachable
+    - target-scope.uncontended
+
+before_install_identity:
+  active:
+    - action.lock-owned
+    - action.journal-valid
+    - rollback.stack-consistent
+    - service.matches-prepared-shell
+    - routes.public-absent
+  direct_preconditions:
+    - identity.rollback-frame-armed
+    - identity.reservation-exists
+
+before_establish_standby:
+  active:
+    - action.lock-owned
+    - action.journal-valid
+    - rollback.stack-consistent
+    - service.matches-prepared-shell
+    - identity.matches-reservation
+    - identity.permissions-secure
+    - routes.public-absent
+  direct_preconditions:
+    - runtime.rollback-frame-armed
+
+before_finalize:
+  active:
+    - action.lock-owned
+    - action.journal-valid
+    - rollback.stack-consistent
+    - service.matches-prepared-shell
+    - identity.matches-reservation
+    - identity.permissions-secure
+    - runtime.is-safe-standby
+    - routes.public-absent
+    - topology.validator-set-unchanged
+```
+
+Each name above resolves to a versioned executable verifier. For example,
+`identity.matches-reservation` re-reads the installed identity facts and compares
+them with the reserved identity; it does not return a boolean remembered from
+the identity-install step. If that assertion becomes false before standby setup
+or finalization, Mother blocks the next move even when the previous runtime
+assertions remain true.
+
+**1. Open and lock the action**
+
+Mother replays the active network journal, compares every expected replica,
+probes the target host, and creates:
+
+```text
+action_id: add-node-mainneta-super2-001
+stage: prepared
+owned scopes:
+  - network:mainnet
+  - host:coolify-b
+  - service:mainneta-super2
+  - identity:mainneta-super2
+rollback: available
+```
+
+The action journal, active rollback stack, and rollback journal exist before
+`do` begins.
+
+**2. Capture the service-shell prestate**
+
+Before creating or repairing the Coolify service shell, Mother's Coolify adapter
+captures the complete service prestate:
+
+```yaml
+service_exists: false
+service_uuid: null
+compose: null
+environment: null
+volumes: []
+networks: []
+route_labels: []
+```
+
+It arms `rollback-0001`. For a service that did not previously exist, the
+complete prior state is “service absent”; its restore contract removes only the
+service created and owned by this action. For a repair, the frame contains the
+complete prior service configuration instead.
+
+Mother verifies that `rollback-0001` is durable, then creates or repairs the
+service shell. It verifies the expected service UUID, mounts, private network,
+and guard reachability.
+
+**3. Capture and install the reserved identity**
+
+Mother asks the guard to capture the complete identity prestate:
+
+```http
+POST /guard/v1/prestate/capture
+```
+
+with:
+
+```json
+{
+  "schema": "mother.guard.prestate-capture.v1",
+  "action_id": "add-node-mainneta-super2-001",
+  "step_id": "install-reserved-identity",
+  "request_id": "request-003",
+  "idempotency_key": "idem-add-node-identity-capture",
+  "network": "mainnet",
+  "target": {
+    "host": "coolify-b",
+    "cell_id": "mainneta-super2",
+    "resource": "identity"
+  },
+  "mutation_kind": "identity.install-reserved",
+  "declared_scope": [
+    "identity.files",
+    "identity.permissions",
+    "identity.validator-address",
+    "identity.secret-mounts"
+  ],
+  "desired_state_hash": "sha256:..."
+}
+```
+
+Suppose the node has no prior identity. The guard persists and returns
+`rollback-0002` containing that complete absent identity state. Mother appends
+the frame to its active stack:
+
+```text
+top -> rollback-0002 install-reserved-identity
+       rollback-0001 create-service-shell
+```
+
+Only then does Mother call:
+
+```http
+PUT /guard/v1/identity/state
+```
+
+referencing `rollback-0002`, its prestate hash, and its generation. The guard
+installs the identity reserved in
+`/runtime/state/mother/identity.private.yaml`, derives the validator address,
+and verifies that it matches the prepared address.
+
+**4. Capture and establish standby runtime**
+
+Mother captures the complete node-runtime prestate and arms
+`rollback-0003`. That frame includes every runtime fact this transition may
+change, including:
+
+```text
+installed processes
+process running states
+runtime role
+validator-enabled state
+RPC binding and exposure
+Hub binding and exposure
+candidate-mode configuration
+runtime generation
+```
+
+Mother then calls:
+
+```http
+PUT /guard/v1/node-runtime/state
+```
+
+with the armed frame and the desired state:
+
+```json
+{
+  "runtime_role": "standby",
+  "validator_enabled": false,
+  "rpc_running": false,
+  "hub_running": false,
+  "public_route_eligible": false
+}
+```
+
+The guard verifies the service is internally diagnosable, cannot participate as
+a validator, and cannot be exposed through public RPC or Hub routing.
+
+The active stack is now:
+
+```text
+top -> rollback-0003 establish-standby-runtime
+       rollback-0002 install-reserved-identity
+       rollback-0001 create-service-shell
+```
+
+**5. Capture and enforce route absence**
+
+The route controller captures the complete route prestate for every route scope
+reserved for the node and arms `rollback-0004`. It then reconciles the prepared
+standby policy: node-specific RPC, Hub, and aggregate route membership must be
+absent or disabled.
+
+This step uses the same prestate-first contract, but the exact route payload is
+defined by `MOTHER-OPEN-009`.
+
+**6. Verify `do` completion**
+
+Mother requests fresh verification of the complete active assertion set and
+records the evidence returned by each verifier:
+
+```text
+service.matches-prepared-shell
+guard.is-reachable
+identity.matches-reservation
+identity.permissions-secure
+runtime.is-safe-standby
+routes.public-absent
+topology.validator-set-unchanged
+rollback.stack-consistent
+```
+
+The result of the immediately preceding route step is not enough. Every listed
+assertion must be true for its current dependency generations. The action then
+becomes `do-complete-pending-finalize`. Every rollback frame remains active and
+executable.
+
+**7. Rollback before finalize**
+
+If the operator requests rollback, Mother processes the stack in strict LIFO
+order:
+
+```text
+rollback-0004 restore complete route prestate
+rollback-0003 restore complete runtime prestate
+rollback-0002 restore complete identity prestate
+rollback-0001 restore complete service-shell prestate
+```
+
+For each frame Mother:
+
+```text
+peeks without popping
+requests complete-prestate restoration
+verifies the restored state
+appends the attempt to the rollback journal
+pops only after restored-verified
+```
+
+If restoring `rollback-0003` fails, it remains on top of the stack.
+`rollback-0002` and `rollback-0001` are not attempted. Rerunning rollback retries
+the same complete-state restore.
+
+**8. Finalize the standby service**
+
+`add-node finalize` replays state and freshly evaluates the complete final
+assertion set. It proves the service still matches the prepared shell, the
+reserved identity still matches, the runtime remains safe standby, public routes
+remain absent, the validator set remains unchanged, the rollback records remain
+consistent, and every required replica agrees. It then updates committed service
+topology and replicates the resulting committed journal/state as required.
+
+Before clearing the stack, Mother appends a `frame-close-prepared` record for
+each unused frame to the rollback journal. After those records are durable, it
+commits `action-finalized` with exact references to them. That action-journal
+commit closes rollback permanently; the stack projection is cleared afterward.
+
+Joining the new service to QBFT, starting validator RPC for chain participation,
+and publishing eligible public routes are not continuations of this rollback
+stack. They require a separate `join-topology` action with new prestate captures
+and a new rollback stack.
+
 
 ### `join-topology`
 
