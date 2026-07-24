@@ -901,7 +901,95 @@
     return {...bleed, maxBleed};
   }
 
+  function intersectPaintBox(box, boundaryBox) {
+    if (!box?.visible || !boundaryBox?.visible) return {...box, visible: false, clipped: true};
+    const left = Math.max(Number(box.x || 0), Number(boundaryBox.x || 0));
+    const top = Math.max(Number(box.y || 0), Number(boundaryBox.y || 0));
+    const right = Math.min(Number(box.right || 0), Number(boundaryBox.right || 0));
+    const bottom = Math.min(Number(box.bottom || 0), Number(boundaryBox.bottom || 0));
+    const width = Math.max(0, Math.round(right - left));
+    const height = Math.max(0, Math.round(bottom - top));
+    const visible = Boolean(box.visible && boundaryBox.visible && width > 0 && height > 0);
+    return {
+      ...box,
+      x: Math.round(left),
+      y: Math.round(top),
+      right: Math.round(right),
+      bottom: Math.round(bottom),
+      width,
+      height,
+      visible,
+      clipped: !visible ||
+        width !== Number(box.width || 0) ||
+        height !== Number(box.height || 0) ||
+        Math.round(left) !== Number(box.x || 0) ||
+        Math.round(top) !== Number(box.y || 0)
+    };
+  }
+
+  function overflowClipsPaint(style) {
+    return /hidden|clip|auto|scroll/.test(
+      `${style?.overflow || ""} ${style?.overflowX || ""} ${style?.overflowY || ""}`
+    );
+  }
+
+  function clippedPaintBox(el, rawBox, boundaryElement = null) {
+    if (!rawBox?.visible || !isElement(el)) return rawBox || {exists: false, visible: false, width: 0, height: 0};
+
+    let clipped = {...rawBox, clipped: false};
+    const explicitBoundary = isElement(boundaryElement) ? boundaryElement : null;
+    let current = el.parentElement || null;
+    const seen = new Set();
+    let reachedExplicitBoundary = false;
+
+    while (isElement(current) && !seen.has(current)) {
+      seen.add(current);
+      if (current === explicitBoundary) reachedExplicitBoundary = true;
+
+      const style = getComputedStyleSafe(current);
+      if (overflowClipsPaint(style)) {
+        clipped = intersectPaintBox(clipped, computeBox(current));
+        if (!clipped.visible) return clipped;
+      }
+
+      if (current === explicitBoundary) break;
+      current = current.parentElement || null;
+    }
+
+    // Some probes use a logical owner boundary that may not be an ancestor in
+    // browser-repaired markup. Still clip against it when supplied so the probe
+    // degrades into a bounded measurement instead of throwing or reporting an
+    // unbounded scroll/layout box.
+    if (explicitBoundary && !reachedExplicitBoundary) {
+      clipped = intersectPaintBox(clipped, computeBox(explicitBoundary));
+    }
+
+    return clipped;
+  }
+
+
+  function clippedRangeBox(el, rawBox, boundaryElement = null) {
+    // Text Range#getClientRects() returns painted fragments rather than whole
+    // element layout boxes.  Those fragments still need the same overflow and
+    // owner-boundary clipping as regular paint boxes.  Keep this as a named
+    // helper so visual-fit probes do not crash when they switch between element
+    // boxes and text-range boxes.
+    return clippedPaintBox(el, rawBox, boundaryElement);
+  }
+
   function layoutCollisionCandidateSelector(appId) {
+    if (appId === "file-explorer") {
+      return [
+        ".file-explorer-shell",
+        ".file-explorer-roots-panel",
+        ".file-explorer-main",
+        ".file-explorer-toolbar",
+        "#file-explorer-list",
+        "#file-explorer-preview",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         ".mcel-lab-blueprint-workbench",
@@ -923,6 +1011,19 @@
   }
 
   function layoutBleedDescendantSelector(appId) {
+    if (appId === "file-explorer") {
+      return [
+        ".file-explorer-roots-panel > *",
+        ".file-explorer-main > *",
+        ".file-explorer-toolbar > *",
+        ".file-explorer-root-button",
+        ".file-explorer-entry",
+        "#file-explorer-list",
+        "#file-explorer-preview",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         "button",
@@ -1038,7 +1139,10 @@
       if (!isElement(container) || seen.has(container)) return;
       seen.add(container);
       detectSiblingLayoutCollisions(container, context).forEach((collision) => collisions.push(collision));
-      if (appId === "mcel-lab" && container.classList?.contains("mcel-lab-shell-card")) {
+      if (
+        (appId === "mcel-lab" && container.classList?.contains("mcel-lab-shell-card")) ||
+        appId === "file-explorer"
+      ) {
         detectSemanticProjectionBleed(container, context).forEach((collision) => collisions.push(collision));
       }
     });
@@ -1046,6 +1150,22 @@
   }
 
   function contentFitCandidateSelector(appId) {
+    if (appId === "file-explorer") {
+      return [
+        ".file-explorer-shell",
+        ".file-explorer-roots-panel",
+        ".file-explorer-main",
+        ".file-explorer-toolbar",
+        ".file-explorer-path",
+        ".file-explorer-status",
+        ".file-explorer-root-button",
+        ".file-explorer-entry",
+        "#file-explorer-list",
+        "#file-explorer-preview",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         ".mcel-lab-blueprint-list button",
@@ -1102,6 +1222,20 @@
 
 
   function visualIntegrityOwnerSelector(appId) {
+    if (appId === "file-explorer") {
+      return [
+        "[data-mcel-visual-owner]",
+        "[data-mcel-layout-zone]",
+        ".file-explorer-shell",
+        ".file-explorer-roots-panel",
+        ".file-explorer-main",
+        ".file-explorer-toolbar",
+        ".file-explorer-root-button",
+        ".file-explorer-entry",
+        "#file-explorer-list",
+        "#file-explorer-preview"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         "[data-mcel-visual-owner]",
@@ -1119,6 +1253,19 @@
   }
 
   function visualIntegrityTextSelector(appId) {
+    if (appId === "file-explorer") {
+      return [
+        "[data-mcel-readable]",
+        ".file-explorer-roots-panel strong",
+        ".file-explorer-roots-panel span",
+        ".file-explorer-root-button",
+        ".file-explorer-status",
+        ".file-explorer-path",
+        ".file-explorer-entry-title",
+        ".file-explorer-entry-meta",
+        "#file-explorer-preview"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         ".mcel-lab-shell-card-heading .eyebrow",
@@ -1140,6 +1287,16 @@
   }
 
   function visualStackContainerSelector(appId) {
+    if (appId === "file-explorer") {
+      return [
+        ".file-explorer-shell",
+        ".file-explorer-roots-panel",
+        ".file-explorer-main",
+        ".file-explorer-toolbar",
+        ".file-explorer-roots",
+        "#file-explorer-list"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         ".mcel-lab-blueprint-workbench",
@@ -1720,6 +1877,8 @@
         detectContentFitViolations,
         detectVisualIntegrityViolations,
         collectReadableTextBoxes,
+        clippedPaintBox,
+        clippedRangeBox,
         overlapMetrics,
         computeForbiddenRegionBox,
         selectorUsesDocumentScope

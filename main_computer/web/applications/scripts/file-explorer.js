@@ -99,6 +99,41 @@
     function systemFileExplorerEntryTitle(entry = {}) {
       return String(entry.name || entry.relative_path || ".") || ".";
     }
+    function systemFileExplorerMcelSurface() {
+      return window.McelFileExplorerSurface || null;
+    }
+    function systemFileExplorerDecorateTreeHost(host) {
+      const surface = systemFileExplorerMcelSurface();
+      if (surface && typeof surface.decorateTreeHost === "function") {
+        surface.decorateTreeHost(host);
+      }
+      return host;
+    }
+    function systemFileExplorerDecorateEntryElement(element, entry = {}, index = 0) {
+      const surface = systemFileExplorerMcelSurface();
+      if (surface && typeof surface.decorateEntryElement === "function") {
+        surface.decorateEntryElement(element, entry, {
+          index,
+          rootId: systemFileExplorerRootId,
+          relativePath: systemFileExplorerRelativePath
+        });
+      }
+      return element;
+    }
+    function systemFileExplorerDecorateRootButton(button, root = {}, index = 0) {
+      const surface = systemFileExplorerMcelSurface();
+      if (surface && typeof surface.decorateRootButton === "function") {
+        surface.decorateRootButton(button, root, index);
+      }
+      return button;
+    }
+    function systemFileExplorerDecoratePreviewPanel(entry = null) {
+      const surface = systemFileExplorerMcelSurface();
+      if (surface && typeof surface.decoratePreviewPanel === "function") {
+        surface.decoratePreviewPanel(systemFileExplorerPreview, entry);
+      }
+      return systemFileExplorerPreview;
+    }
     function systemFileExplorerEntryNodeData(entry = {}, index = 0) {
       const isDirectory = entry.kind === "directory";
       const normalizedEntry = {
@@ -180,6 +215,7 @@
       host.dataset.fileExplorerWunderbaumHost = String(token);
       host.dataset.fileExplorerTreeState = "loading";
       host.setAttribute("aria-label", "Directory listing tree");
+      systemFileExplorerDecorateTreeHost(host);
       return host;
     }
     function systemFileExplorerRenderStillCurrent(token, host) {
@@ -290,11 +326,12 @@
         empty.textContent = "No files found in this folder.";
         fallback.append(empty);
       }
-      entries.forEach((entry) => {
+      entries.forEach((entry, index) => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "file-explorer-entry";
         button.dataset.fileExplorerEntryPath = systemFileExplorerEntryPath(entry);
+        systemFileExplorerDecorateEntryElement(button, entry, index);
         button.classList.toggle("active", systemFileExplorerSelectedEntry?.relative_path === entry.relative_path);
         button.innerHTML = `
           <span>
@@ -311,12 +348,13 @@
     }
     function renderSystemFileExplorerRoots() {
       systemFileExplorerRoots.textContent = "";
-      systemFileExplorerRootsData.forEach((root) => {
+      systemFileExplorerRootsData.forEach((root, index) => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "file-explorer-root-button";
         button.classList.toggle("active", root.id === systemFileExplorerRootId);
         button.textContent = `${root.label} ${root.main_computer_purview ? "• Main Computer" : ""}\n${root.path_display}`;
+        systemFileExplorerDecorateRootButton(button, root, index);
         button.addEventListener("click", () => {
           systemFileExplorerSelectLocation(root.id, "");
         });
@@ -425,6 +463,7 @@ Suggested app: ${escapeHtml(entry.suggested_app || "none")}
 
 ${extra ? escapeHtml(extra) : ""}${openWith}
 `;
+      systemFileExplorerDecoratePreviewPanel(entry);
       systemFileExplorerPreview.querySelector("[data-open-with]")?.addEventListener("click", (event) => {
         const app = event.currentTarget.dataset.openWith;
         if (app && routeableApps.has(app)) setActiveApp(app);
@@ -489,6 +528,10 @@ ${extra ? escapeHtml(extra) : ""}${openWith}
       }
     }
     function initSystemFileExplorerApp() {
+      const surface = systemFileExplorerMcelSurface();
+      if (surface && typeof surface.applyStaticSurfaceRidges === "function") {
+        surface.applyStaticSurfaceRidges(document);
+      }
       if (!systemFileExplorerInitialized) {
         systemFileExplorerInitialized = true;
         systemFileExplorerSearchRun.addEventListener("click", searchSystemFileExplorer);

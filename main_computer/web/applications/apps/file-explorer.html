@@ -1,24 +1,205 @@
-<div class="file-explorer-app" id="file-explorer-app" aria-label="File Explorer">
+<div class="file-explorer-app" id="file-explorer-app" aria-label="File Explorer"
+            data-mcel-surface-id="file-explorer.surface.primary"
+            data-mcel-surface-kind="application-surface"
+            data-mcel-surface-role="file-navigation-workbench"
+            data-mcel-surface-contract="file-explorer.contract.semantic-surface-pilot"
+            data-mcel-authoritative="true"
+            data-mcel-renderer="file-explorer.runtime-dom"
+            data-mcel-projection="html"
+            data-layout-viewport-width="1280"
+            data-layout-viewport-height="720"
+            data-layout-safe-margin="16">
             <div class="file-explorer-shell app-widget" data-widget-label="File Explorer">
-              <aside class="file-explorer-roots-panel">
-                <div>
+              <aside class="file-explorer-roots-panel"
+                data-mcel-region="file-explorer.region.roots"
+                data-mcel-region-role="filesystem-root-selector"
+                data-layout-x="24"
+                data-layout-y="72"
+                data-layout-region-width="260"
+                data-layout-region-height="600">
+                <div
+                  data-mcel-node-id="file-explorer.node.root-set"
+                  data-mcel-node-type="root_set"
+                  data-mcel-node-label="Available roots"
+                  data-mcel-channel="FILE_EXPLORER"
+                  data-mcel-signal="root_selection"
+                  data-mcel-source="file-explorer.roots-api"
+                  data-mcel-provenance="file-explorer:roots"
+                  data-mcel-symbol="⛁"
+                  data-mcel-home-region="file-explorer.region.roots"
+                  data-mcel-actual-region="file-explorer.region.roots"
+                  data-mcel-teleported="false"
+                  data-layout-anchor-x="154"
+                  data-layout-anchor-y="164"
+                  data-layout-width="200"
+                  data-layout-height="60"
+                  data-layout-z="3"
+                  data-layout-region="file-explorer.region.roots"
+                  data-layout-ports="north,south,east,west">
                   <strong>File Explorer</strong>
                   <span>Read-only system browsing for files and Main Computer assets.</span>
                 </div>
-                <div class="file-explorer-status" id="file-explorer-status">file explorer ready</div>
+                <div class="file-explorer-status" id="file-explorer-status"
+                  data-mcel-region="file-explorer.region.status"
+                  data-mcel-region-role="navigation-status"
+                  data-layout-x="48"
+                  data-layout-y="614"
+                  data-layout-region-width="212"
+                  data-layout-region-height="42">file explorer ready</div>
                 <div class="file-explorer-roots" id="file-explorer-roots" aria-label="File explorer roots"></div>
               </aside>
               <section class="file-explorer-main">
-                <div class="file-explorer-toolbar">
-                  <div class="file-explorer-path" id="file-explorer-path">/</div>
+                <div class="file-explorer-toolbar"
+                  data-mcel-region="file-explorer.region.toolbar"
+                  data-mcel-region-role="navigation-toolbar"
+                  data-layout-x="304"
+                  data-layout-y="72"
+                  data-layout-region-width="640"
+                  data-layout-region-height="96">
+                  <div class="file-explorer-path" id="file-explorer-path"
+                    data-mcel-node-id="file-explorer.node.current-directory"
+                    data-mcel-node-type="current_directory"
+                    data-mcel-node-label="Current directory"
+                    data-mcel-channel="FILE_EXPLORER"
+                    data-mcel-signal="current_path"
+                    data-mcel-source="file-explorer.list-api"
+                    data-mcel-provenance="file-explorer:path"
+                    data-mcel-symbol="⌁"
+                    data-mcel-home-region="file-explorer.region.toolbar"
+                    data-mcel-actual-region="file-explorer.region.toolbar"
+                    data-mcel-teleported="false"
+                    data-layout-anchor-x="524"
+                    data-layout-anchor-y="116"
+                    data-layout-width="360"
+                    data-layout-height="42"
+                    data-layout-z="4"
+                    data-layout-region="file-explorer.region.toolbar"
+                    data-layout-ports="north,south,east,west">/</div>
                   <input id="file-explorer-search" placeholder="Search current folder" aria-label="Search current folder">
-                  <button type="button" id="file-explorer-search-run">Search</button>
-                  <button type="button" id="file-explorer-up">Up</button>
+                  <button type="button" id="file-explorer-search-run"
+                    data-mcel-control="file-explorer.control.search"
+                    data-mcel-control-action="filter_visible_entries"
+                    data-mcel-reveals="file-explorer.node.directory-list"
+                    data-layout-anchor-x="760"
+                    data-layout-anchor-y="116"
+                    data-layout-width="160"
+                    data-layout-height="36"
+                    data-layout-z="5">Search</button>
+                  <button type="button" id="file-explorer-up"
+                    data-mcel-control="file-explorer.control.up"
+                    data-mcel-control-action="navigate_parent_directory"
+                    data-mcel-reveals="file-explorer.node.current-directory"
+                    data-layout-anchor-x="895"
+                    data-layout-anchor-y="116"
+                    data-layout-width="72"
+                    data-layout-height="36"
+                    data-layout-z="5">Up</button>
                 </div>
-                <div class="file-explorer-list file-explorer-wunderbaum wb-skeleton" id="file-explorer-list" data-file-explorer-tree aria-label="Directory listing"></div>
+                <div class="file-explorer-list file-explorer-wunderbaum wb-skeleton" id="file-explorer-list" data-file-explorer-tree aria-label="Directory listing"
+                  data-mcel-region="file-explorer.region.file-list"
+                  data-mcel-region-role="directory-entry-list"
+                  data-mcel-node-id="file-explorer.node.directory-list"
+                  data-mcel-node-type="directory_listing"
+                  data-mcel-node-label="Directory listing"
+                  data-mcel-channel="FILE_EXPLORER"
+                  data-mcel-signal="entry_collection"
+                  data-mcel-source="file-explorer.list-api"
+                  data-mcel-provenance="file-explorer:list"
+                  data-mcel-symbol="▤"
+                  data-mcel-home-region="file-explorer.region.file-list"
+                  data-mcel-actual-region="file-explorer.region.file-list"
+                  data-mcel-teleported="false"
+                  data-layout-x="304"
+                  data-layout-y="184"
+                  data-layout-region-width="640"
+                  data-layout-region-height="488"
+                  data-layout-anchor-x="624"
+                  data-layout-anchor-y="420"
+                  data-layout-width="560"
+                  data-layout-height="360"
+                  data-layout-z="4"
+                  data-layout-region="file-explorer.region.file-list"
+                  data-layout-ports="north,south,east,west"></div>
               </section>
-              <aside class="file-explorer-preview" id="file-explorer-preview" aria-label="File preview">
+              <aside class="file-explorer-preview" id="file-explorer-preview" aria-label="File preview"
+                data-mcel-region="file-explorer.region.details"
+                data-mcel-region-role="selected-entry-details"
+                data-mcel-node-id="file-explorer.node.details-panel"
+                data-mcel-node-type="details_panel"
+                data-mcel-node-label="Selected entry details"
+                data-mcel-channel="FILE_EXPLORER"
+                data-mcel-signal="entry_metadata"
+                data-mcel-source="file-explorer.preview"
+                data-mcel-provenance="file-explorer:details"
+                data-mcel-symbol="ⓘ"
+                data-mcel-home-region="file-explorer.region.details"
+                data-mcel-actual-region="file-explorer.region.details"
+                data-mcel-teleported="false"
+                data-layout-x="972"
+                data-layout-y="72"
+                data-layout-region-width="284"
+                data-layout-region-height="600"
+                data-layout-anchor-x="1114"
+                data-layout-anchor-y="380"
+                data-layout-width="240"
+                data-layout-height="360"
+                data-layout-z="4"
+                data-layout-region="file-explorer.region.details"
+                data-layout-ports="north,south,east,west">
                 Select a file or folder to preview metadata.
               </aside>
+              <i hidden
+                data-mcel-region="file-explorer.region.file-list"
+                data-mcel-region-role="directory-entry-list"
+                data-layout-x="304"
+                data-layout-y="184"
+                data-layout-region-width="640"
+                data-layout-region-height="488"></i>
+              <i hidden
+                data-mcel-region="file-explorer.region.details"
+                data-mcel-region-role="selected-entry-details"
+                data-layout-x="972"
+                data-layout-y="72"
+                data-layout-region-width="284"
+                data-layout-region-height="600"></i>
+              <i hidden
+                data-mcel-edge-id="file-explorer.edge.roots-select-current"
+                data-mcel-edge-kind="SELECTS"
+                data-mcel-from="file-explorer.node.root-set"
+                data-mcel-to="file-explorer.node.current-directory"
+                data-mcel-relation="root_selects_current_directory"
+                data-mcel-causal-link="false"
+                data-mcel-allowed-inferences="navigation,selection,metadata_lookup"
+                data-mcel-forbidden-inferences="content_mutation,filesystem_write,identity"
+                data-layout-route-kind="orthogonal"
+                data-layout-from-port="east"
+                data-layout-to-port="west"
+                data-layout-z="2"></i>
+              <i hidden
+                data-mcel-edge-id="file-explorer.edge.current-contains-list"
+                data-mcel-edge-kind="CONTAINS"
+                data-mcel-from="file-explorer.node.current-directory"
+                data-mcel-to="file-explorer.node.directory-list"
+                data-mcel-relation="directory_contains_visible_entries"
+                data-mcel-causal-link="false"
+                data-mcel-allowed-inferences="navigation,selection,metadata_lookup"
+                data-mcel-forbidden-inferences="content_mutation,filesystem_write,identity"
+                data-layout-route-kind="orthogonal"
+                data-layout-from-port="south"
+                data-layout-to-port="north"
+                data-layout-z="2"></i>
+              <i hidden
+                data-mcel-edge-id="file-explorer.edge.list-describes-details"
+                data-mcel-edge-kind="DESCRIBES"
+                data-mcel-from="file-explorer.node.directory-list"
+                data-mcel-to="file-explorer.node.details-panel"
+                data-mcel-relation="selected_entry_describes_details"
+                data-mcel-causal-link="false"
+                data-mcel-allowed-inferences="navigation,selection,metadata_lookup"
+                data-mcel-forbidden-inferences="content_mutation,filesystem_write,identity"
+                data-layout-route-kind="orthogonal"
+                data-layout-from-port="east"
+                data-layout-to-port="west"
+                data-layout-z="2"></i>
             </div>
           </div>
