@@ -52,6 +52,39 @@ def passing_diagnosis(app_id: str = "calculator") -> dict:
     }
 
 
+def passing_app_surface_conformance(app_id: str = "calculator", layer_ids: tuple[str, ...] | None = None) -> dict:
+    layers = layer_ids or (
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    )
+    return {
+        "contractVersion": "mcel.app-surface-conformance.v1",
+        "appId": app_id,
+        "status": "pass",
+        "valid": True,
+        "conformanceRequired": True,
+        "requiredLayerIds": list(layers),
+        "layers": [
+            {
+                "id": layer_id,
+                "status": "pass",
+                "valid": True,
+                "finding": f"{layer_id} passed.",
+                "detail": {},
+            }
+            for layer_id in layers
+        ],
+        "failedLayerIds": [],
+        "unavailableLayerIds": [],
+        "policyFailedLayerIds": [],
+        "policyUnavailableLayerIds": [],
+        "diagnosticCodes": [],
+        "counts": {"errors": 0, "warnings": 0, "info": 0},
+        "diagnostics": [],
+    }
+
+
 def passing_widget_payload(app_id: str = "calculator") -> dict:
     diagnosis = passing_diagnosis(app_id)
     primary = diagnosis["primarySurface"]
@@ -67,10 +100,17 @@ def passing_widget_payload(app_id: str = "calculator") -> dict:
         "counts": {"errors": 0, "warnings": 0, "ok": 18},
         "current": {"counts": {"errors": 0, "warnings": 0, "ok": 18}, "issues": []},
         "primarySurface": primary,
+        "appSurfaceConformance": passing_app_surface_conformance(app_id),
         "measurements": {
             "visualIntegrityViolations": [],
             "layoutCollisions": [],
             "contentFitViolations": [],
+            "appSurfaceConformance": {
+                "status": "pass",
+                "valid": True,
+                "failedLayerIds": [],
+                "unavailableLayerIds": [],
+            },
         },
         "issues": [],
     }
@@ -90,20 +130,28 @@ def test_parse_viewport_rejects_invalid_values(flog):
         flog.parse_viewport("200x100")
 
 
-def test_build_scenarios_uses_registry_app_contracts(flog):
+def test_build_scenarios_uses_app_surface_registry_required_policies(flog):
     scenarios = flog.build_scenarios(REPO_ROOT)
     by_id = {scenario.id: scenario for scenario in scenarios}
 
     assert set(by_id) == {
         "calculator.default-load",
         "code-editor.default-load",
+        "document.default-load",
         "file-explorer.default-load",
-        "git-tools.default-load",
-        "mcel-lab.default-load",
         "website-builder.default-load",
     }
     assert by_id["website-builder.default-load"].route == "/applications/website-builder/hub-site"
-    assert by_id["mcel-lab.default-load"].route == "/applications/mcel-lab"
+    assert by_id["document.default-load"].route == "/applications/document"
+    assert by_id["document.default-load"].maturity == "semantic-runtime"
+    assert by_id["document.default-load"].required_layer_ids == (
+        "semantic-surface",
+        "layout-grammar",
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    )
+    assert all(scenario.conformance_required for scenario in scenarios)
 
 
 def test_build_scenarios_can_filter_by_app_and_scenario(flog):
@@ -114,6 +162,15 @@ def test_build_scenarios_can_filter_by_app_and_scenario(flog):
     )
 
     assert [scenario.id for scenario in scenarios] == ["code-editor.default-load"]
+
+
+def test_build_scenarios_can_run_legacy_apps_explicitly_without_requiring_conformance(flog):
+    scenarios = flog.build_scenarios(REPO_ROOT, apps=["mcel-lab"])
+
+    assert [scenario.id for scenario in scenarios] == ["mcel-lab.default-load"]
+    assert scenarios[0].route == "/applications/mcel-lab"
+    assert scenarios[0].conformance_required is False
+    assert scenarios[0].registry_state == "legacy"
 
 
 def test_build_scenarios_rejects_unknown_scenario(flog):
@@ -161,6 +218,8 @@ def test_compact_widget_payload_keeps_user_visible_diagnostic_shape(flog):
     assert compact["schema"] == "mcel-diagnostics-counter-copy-v4"
     assert compact["appId"] == "code-editor"
     assert compact["counts"] == {"errors": 0, "warnings": 0, "ok": 18}
+    assert compact["appSurfaceConformance"]["status"] == "pass"
+    assert compact["measurements"]["appSurfaceConformance"]["status"] == "pass"
     assert "hugeDomDump" not in compact["measurements"]
 
 
@@ -211,14 +270,83 @@ def test_classify_diagnosis_fails_on_visual_integrity_violations(flog):
     assert result["visualIntegrityViolationCount"] == 1
 
 
+def test_classify_diagnosis_fails_missing_required_app_surface_conformance(flog):
+    diagnosis = passing_diagnosis("document")
+
+    result = flog.classify_diagnosis(
+        diagnosis,
+        conformance_required=True,
+        required_layer_ids=(
+            "semantic-surface",
+            "layout-grammar",
+            "runtime-ownership",
+            "runtime-visual-fit",
+            "diagnostic-no-throw",
+        ),
+    )
+
+    assert result["status"] == "fail"
+    assert any("app-surface conformance summary is missing" in item for item in result["failures"])
+
+
+def test_classify_diagnosis_fails_policy_failed_app_surface_layers(flog):
+    diagnosis = passing_diagnosis("document")
+    conformance = passing_app_surface_conformance(
+        "document",
+        (
+            "semantic-surface",
+            "layout-grammar",
+            "runtime-ownership",
+            "runtime-visual-fit",
+            "diagnostic-no-throw",
+        ),
+    )
+    conformance["status"] = "fail"
+    conformance["valid"] = False
+    conformance["layers"][1]["status"] = "fail"
+    conformance["layers"][1]["valid"] = False
+    conformance["failedLayerIds"] = ["layout-grammar"]
+    conformance["policyFailedLayerIds"] = ["layout-grammar"]
+    diagnosis["appSurfaceConformance"] = conformance
+    diagnosis["measurements"]["appSurfaceConformance"] = {
+        "status": "fail",
+        "valid": False,
+        "failedLayerIds": ["layout-grammar"],
+        "unavailableLayerIds": [],
+    }
+
+    result = flog.classify_diagnosis(
+        diagnosis,
+        conformance_required=True,
+        required_layer_ids=tuple(conformance["requiredLayerIds"]),
+    )
+
+    assert result["status"] == "fail"
+    assert "app-surface layer failed: layout-grammar" in result["failures"]
+    assert result["appSurfaceConformance"]["status"] == "fail"
+
+
+def test_classify_diagnosis_fails_on_content_fit_violations(flog):
+    diagnosis = passing_diagnosis("document")
+    diagnosis["measurements"]["contentFitViolations"] = [{"code": "header-clipped"}]
+
+    result = flog.classify_diagnosis(diagnosis)
+
+    assert result["status"] == "fail"
+    assert result["contentFitViolationCount"] == 1
+
+
 def test_compact_diagnosis_keeps_contract_evidence_without_huge_dump(flog):
     diagnosis = passing_diagnosis("website-builder")
+    diagnosis["appSurfaceConformance"] = passing_app_surface_conformance("website-builder")
     diagnosis["measurements"]["hugeDomDump"] = ["not wanted"]
 
     compact = flog.compact_diagnosis(diagnosis)
 
     assert compact["appId"] == "website-builder"
     assert compact["contractId"] == "website-builder.contract.default.app-health"
+    assert compact["appSurfaceConformance"]["status"] == "pass"
+    assert compact["measurements"]["appSurfaceConformance"]["status"] == "pass"
     assert "hugeDomDump" not in compact["measurements"]
 
 
@@ -239,6 +367,7 @@ def test_diagnostic_event_from_trial_uses_shared_event_schema(flog):
             "status": "pass",
             "counts": {"errors": 0, "warnings": 0, "infos": 18},
             "primarySurface": {"usable": True},
+            "appSurfaceConformance": passing_app_surface_conformance("calculator"),
         },
     }
 
@@ -251,15 +380,23 @@ def test_diagnostic_event_from_trial_uses_shared_event_schema(flog):
     assert event["counts"]["ok"] == 18
     assert event["rawVerdict"] == "pass"
     assert event["primarySurface"]["usable"] is True
+    assert event["appSurfaceConformance"]["status"] == "pass"
 
 
 def test_report_summary_and_markdown(flog):
     scenario = flog.scenario_for_app("calculator")
+    diagnosis = passing_diagnosis("calculator")
+    diagnosis["appSurfaceConformance"] = passing_app_surface_conformance("calculator")
     trial = {
         "scenarioId": scenario.id,
         "app": scenario.app,
         "route": scenario.route,
-        "classification": flog.classify_diagnosis(passing_diagnosis("calculator")),
+        "appSurfacePolicy": scenario.to_dict()["appSurfacePolicy"],
+        "classification": flog.classify_diagnosis(
+            diagnosis,
+            conformance_required=scenario.conformance_required,
+            required_layer_ids=scenario.required_layer_ids,
+        ),
     }
     report = flog.build_report(
         repo=REPO_ROOT,
@@ -272,8 +409,10 @@ def test_report_summary_and_markdown(flog):
     assert report["kind"] == "mcel.flog.runtime-contracts.report"
     assert report["viewport"] == {"width": 1920, "height": 1200}
     assert report["summary"]["status"] == "pass"
+    assert report["source"]["scenarioSource"] == "mcel-app-surface-registry-conformance-required-apps-with-route-overrides"
     assert report["results"][0]["scenarioId"] == "calculator.default-load"
     assert report["results"][0]["status"] == "pass"
+    assert report["results"][0]["appSurfaceConformance"]["status"] == "pass"
 
     markdown = flog.render_markdown(report)
 

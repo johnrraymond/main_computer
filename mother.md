@@ -48,26 +48,26 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-003` | Durable state and private identity survive control-container replacement | [Mother durable state and private identity](#mother-durable-state-and-private-identity) | Schema validation and replacement-start recovery test | — | Implementable |
 | `MOTHER-REQ-004` | Journals replay from a valid checkpoint to a proven head | [Checkpoint-aware replay](#checkpoint-aware-replay) | Replay corpus, corruption, and checkpoint-selection tests | — | Implementable |
 | `MOTHER-REQ-005` | Journal entries and heads have deterministic atomic commit semantics | [Atomic filesystem commit](#atomic-filesystem-commit) | Crash-point and fsync fault-injection tests | — | Implementable |
-| `MOTHER-REQ-006` | Operating-system locks and scope ownership serialize local mutation | [Locking model](#locking-model) | Concurrent-writer and stale-metadata tests | `MOTHER-OPEN-016` for distributed successor fencing | Implementable locally |
+| `MOTHER-REQ-006` | Operating-system locks, scope ownership, and full-set reservations serialize mutation | [Locking model](#locking-model) | Concurrent-writer, split-reservation, and stale-metadata tests | — | Implementable |
 | `MOTHER-REQ-007` | Cross-journal facts retain one owner and one irreversible commit point | [Cross-journal transitions](#cross-journal-transitions) | Replay proof and interrupted-finalize tests | `MOTHER-OPEN-018` for full-set acknowledgement | Implementable locally |
 | `MOTHER-REQ-008` | Distributed mutation starts only after a full-network clean-state barrier | [Full-network clean-state barrier](#full-network-clean-state-barrier) | Multi-host disagreement and unreachable-host tests | `MOTHER-OPEN-017` for prospective replicas | Implementable for established replicas |
 | `MOTHER-REQ-009` | Rollback frames are armed before mutation and removed only after verified restoration | [Distributed rollback layers](#distributed-rollback-layers) | Interrupted-step, retry, and LIFO restoration tests | — | Implementable |
 | `MOTHER-REQ-010` | RPC routing is a typed, reversible distributed resource | [Typed RPC routing resource](#typed-rpc-routing-resource) | Complete-prestate and convergence tests | — | Implementable |
 | `MOTHER-REQ-011` | Hub/FDB topology is a typed, reversible distributed resource | [Typed Hub/FDB topology resource](#typed-hubfdb-topology-resource) | Participant convergence and rollback tests | — | Implementable |
-| `MOTHER-REQ-012` | `add-node` is one staged distributed lifecycle operation | [Integrated add-node sequence](#integrated-add-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-016`, `MOTHER-OPEN-017`, `MOTHER-OPEN-018` | Blocked for production |
-| `MOTHER-REQ-013` | `remove-node` is one staged distributed lifecycle operation | [Integrated remove-node sequence](#integrated-remove-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-016`, `MOTHER-OPEN-017`, `MOTHER-OPEN-018` | Blocked for production |
-| `MOTHER-REQ-014` | QBFT membership changes use frozen participants, durable receipts, and convergence proof | [Frozen proposal and participant manifest](#frozen-proposal-and-participant-manifest) | Vote, receipt, effective-set, and block-proof tests | `MOTHER-OPEN-016` for competing successors | Implementable beneath blocked production mutation |
+| `MOTHER-REQ-012` | `add-node` is one staged distributed lifecycle operation | [Integrated add-node sequence](#integrated-add-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017`, `MOTHER-OPEN-018` | Blocked for production |
+| `MOTHER-REQ-013` | `remove-node` is one staged distributed lifecycle operation | [Integrated remove-node sequence](#integrated-remove-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017`, `MOTHER-OPEN-018` | Blocked for production |
+| `MOTHER-REQ-014` | QBFT membership changes use frozen participants, durable receipts, and convergence proof | [Frozen proposal and participant manifest](#frozen-proposal-and-participant-manifest) | Vote, receipt, effective-set, and block-proof tests | — | Implementable beneath blocked production mutation |
 | `MOTHER-REQ-015` | Schema and capability negotiation fails closed | [Startup and command preflight](#startup-and-command-preflight) | Compatibility matrix and unsupported-schema tests | — | Implementable |
 | `MOTHER-REQ-016` | Recovery transfers the complete transitive object and private-state closure | [Resolved design decisions](#resolved-design-decisions) | Closure traversal, missing-object, and hash tests | — | Implementable |
-| `MOTHER-REQ-017` | Replacement-head recovery requires unanimous compatible replica state | [Resolved design decisions](#resolved-design-decisions) | Recovery rehearsal and disagreement tests | `MOTHER-OPEN-016` for later same-head writers | Implementable through activation |
+| `MOTHER-REQ-017` | Replacement-head recovery requires unanimous compatible replica state | [Resolved design decisions](#resolved-design-decisions) | Recovery rehearsal, disagreement, and resumed-writer-fencing tests | — | Implementable through activation |
 | `MOTHER-REQ-018` | `sync-state` adopts an already-authoritative generation through a durable pointer transaction | [Control APIs](#control-apis) | Crash-before/after-pointer and stale-candidate tests | — | Implementable |
 | `MOTHER-REQ-019` | Projection repair publishes one head-fenced generation atomically | [Control APIs](#control-apis) | Concurrent-head, crash, and mixed-generation tests | — | Implementable |
 | `MOTHER-REQ-020` | Mother and guard mutation APIs remain local and use bounded reusable call-runners | [Remote access through Coolify call-runners](#remote-access-through-coolify-call-runners) | Route exposure, idempotency, and runner-crash tests | — | Implementable |
-| `MOTHER-REQ-021` | Active operations exclusively own conflicting scopes until their terminal boundary | [Active operation conflict rule](#active-operation-conflict-rule) | Conflict-matrix and terminal-release tests | `MOTHER-OPEN-016` for distributed fencing | Implementable locally |
+| `MOTHER-REQ-021` | Active operations exclusively own conflicting scopes until their terminal boundary | [Active operation conflict rule](#active-operation-conflict-rule) | Local conflict-matrix, distributed-reservation, and terminal-release tests | — | Implementable |
 | `MOTHER-REQ-022` | Network finalization closes rollback at the authoritative journal commit | [Commit and finalize boundary](#commit-and-finalize-boundary) | Pre/post-commit crash and rollback-closure tests | `MOTHER-OPEN-018` | Implementable locally |
-| `MOTHER-REQ-023` | Every full-set replica accepts at most one successor for an expected head | [Remaining open design nodes](#remaining-open-design-nodes) | Competing-writer safety proof and fault injection | `MOTHER-OPEN-016` | Blocked |
+| `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor for an expected head | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, delayed-request, crash, and cancellation tests | — | Implementable |
 | `MOTHER-REQ-024` | Zero-network and prospective replicas use an explicit enrollment transaction | [Remaining open design nodes](#remaining-open-design-nodes) | Empty-network and host-enrollment lifecycle tests | `MOTHER-OPEN-017` | Blocked |
-| `MOTHER-REQ-025` | Finalization replication has exact full-set acknowledgement and recovery transitions | [Remaining open design nodes](#remaining-open-design-nodes) | Ack-loss, retry, recovery, and split-successor tests | `MOTHER-OPEN-016`, `MOTHER-OPEN-018` | Blocked |
+| `MOTHER-REQ-025` | Finalization replication has exact full-set acknowledgement and recovery transitions | [Remaining open design nodes](#remaining-open-design-nodes) | Ack-loss, retry, recovery, and successor-certificate tests | `MOTHER-OPEN-018` | Blocked |
 
 `mother` is the replacement control surface for validator lifecycle operations that
 have outgrown `tools/allfather_control.py`. Allfather remains useful reference
@@ -593,6 +593,9 @@ journal_head_sequence: 142
 journal_head_hash: "sha256:..."
 active_checkpoint_id: "checkpoint-..."
 active_checkpoint_hash: "sha256:..."
+replica_set_hash: "sha256:..."
+active_writer_operation_id: "add-node-mainneta-super4-001"
+last_successor_certificate_hash: "sha256:..."
 pending_action_id: "add-node-mainneta-super4-001"
 pending_action_phase: "rpc-routing-verified"
 private_state_kind: "main_computer.mother.private_state.v1"
@@ -612,8 +615,14 @@ schema_version: "mother.network-state.v1"
 ```
 
 `replica_hosts` is the exact expected replica set for that sealed epoch. It is
-not an advisory inventory list. A host remains part of the expected replica set
-until an explicit reseal commits a new replica set that excludes it.
+not an advisory inventory list. Its canonically serialized host identities
+produce `replica_set_hash`; response order, discovery order, DNS order, and
+reachability order do not. A host remains part of the expected replica set until
+an explicit reseal commits a new replica set that excludes it.
+`active_writer_operation_id` is null when no distributed writer reservation is
+attached to the committed pending state. `last_successor_certificate_hash`
+identifies the exact full-set certificate that authorized the current journal
+head.
 
 Before any Mother command talks to or mutates a remote network, the local control
 script MUST run a sealed-state and journal preflight:
@@ -627,14 +636,16 @@ script MUST run a sealed-state and journal preflight:
 4. load the expected `replica_hosts` from that reconstructed state;
 5. query every expected replica host for its journal head, active checkpoint,
    replayed state hash, finalized topology epoch, pending-action metadata,
-   private-state schema/generation/hash, and private-recovery manifest hash;
+   private-state schema/generation/hash, private-recovery manifest hash, and
+   durable successor-reservation state for the exact expected head;
 6. stop before normal mutation if any expected replica host is unreachable,
    cannot replay its journal, cannot validate its private recovery material, or
    does not return usable network-state and private-state metadata;
 7. require every expected replica and the local head to agree on the active
    checkpoint, journal head sequence/hash, finalized topology epoch, pending
    action identity/phase, complete state hash, private-state schema/generation/
-   hash, and private-recovery manifest hash;
+   hash, private-recovery manifest hash, expected replica-set hash, and any
+   active writer-reservation owner or successor claim;
 8. if every expected replica agrees and the local head is stale, stop ordinary
    mutation and direct the operator to staged `sync-state`. That operation MUST
    adopt the complete frozen generation, including private-state and recovery
@@ -701,7 +712,8 @@ Every meaningful distributed transition is appended and replicated as it occurs,
 including:
 
 ```text
-pending action opened
+writer reservation attached and pending action opened
+successor certificate accepted
 participant set accepted
 distributed prestate layer armed
 validator membership verified
@@ -782,8 +794,9 @@ zero or one network-scoped pending distributed action
 pending desired topology
 currently applied and verified distributed phases
 participant and receipt references
+active writer operation and last accepted successor-certificate hash
 rollback availability and remediation status
-expected replica set
+expected replica set and canonical replica-set hash
 ```
 
 It is a persisted checkpoint, not an independently trusted authority. The
@@ -818,6 +831,13 @@ sequence: 142
 action_id: "operation-..."
 operation: "add-node"
 state_class: "pending-action"
+expected_head_id: "mother-head-..."
+expected_head_epoch: 7
+expected_journal_sequence: 141
+expected_journal_hash: "sha256:..."
+expected_replica_set_hash: "sha256:..."
+prepared_intent_hash: "sha256:..."
+successor_certificate_hash: "sha256:..."
 previous_entry_hash: "sha256:..."
 previous_state_hash: "sha256:..."
 changes: []
@@ -1738,11 +1758,19 @@ identity, acquisition time, and owned scopes. File existence, age, or metadata
 alone MUST NOT be treated as proof that a lock is held, and a stale-looking
 lock MUST NOT be broken based only on wall-clock time.
 
-The network mutation lock serializes updates to the network journal and all
-action or rollback journals that can change that network. Remote guards and
-routing controllers additionally take operating-system-backed locks for the
-local resources named by a mutation scope. A guard MUST refuse a capture,
-mutation, or restore when an incompatible resource lock is held.
+The network mutation lock serializes updates to the local network journal and all
+action or rollback journals that can change that network. It is necessary but
+not sufficient distributed fencing. An established network also uses the
+full-set successor-reservation protocol in `MOTHER-DESIGN-026`; no local kernel
+lock, operation pointer, process identity, or copied certificate authorizes a
+network transition by itself.
+
+Remote Mother replicas, guards, and routing controllers additionally take
+operating-system-backed locks for the local resources named by a mutation scope.
+A guard MUST refuse a capture, mutation, restore, or journal-affecting request
+when an incompatible resource lock is held or when the request lacks the exact
+currently valid full-set successor certificate required by
+`MOTHER-DESIGN-026`.
 
 `diagnose` remains read-only and does not acquire the mutation lock. A read-only
 journal open MUST read the head before and after replay. If the head changed, it
@@ -1831,9 +1859,9 @@ finalized:
   every expected replica has durably acknowledged the exact finalization head
 ```
 
-The exact full-set acceptance and recovery protocol for the middle state remains
-part of `MOTHER-OPEN-018` and MUST be consistent with the single-successor
-fencing contract in `MOTHER-OPEN-016`.
+The exact full-set acknowledgement and recovery protocol for the middle state
+remains part of `MOTHER-OPEN-018`. Every acknowledgement or recovery transition
+MUST use the single-successor certificate contract in `MOTHER-DESIGN-026`.
 
 A later rollback chosen before the network finalization commit appends an event
 identifying unused `frame-close-prepared` or `finalization-prepared` records as
@@ -1894,8 +1922,11 @@ On startup, and before any mutating command continues, Mother MUST:
 7. compare local network checkpoint/head/replay facts with every expected
    replica;
 8. compare unresolved action and rollback state with the affected guards;
-9. block mutation when a committed head, checkpoint, or required lineage cannot
-   be proven.
+9. reconcile durable successor reservations, cancellation tombstones, accepted
+   certificate hashes, and any partial or split acquisition across every expected
+   replica;
+10. block mutation when a committed head, checkpoint, required lineage, exact
+   reservation owner, or successor claim cannot be proven.
 
 Temporary files and orphan entries MAY be archived after diagnosis, but they
 MUST NOT be promoted to committed history merely because their contents look
@@ -1950,15 +1981,21 @@ no unresolved Mother action
 no executable rollback frame
 no provisional guard frame
 no conflicting local resource lock
-supported action, guard, route, and journal schemas
+no active successor reservation owned by another operation
+no unresolved partial or split successor-reservation acquisition
+supported action, guard, route, journal, and successor-reservation schemas
 ```
 
 The action does not begin when any expected host is unavailable or pending.
 Majority agreement is insufficient. `prep` performs a read-only barrier
-evaluation and freezes the exact participant set, replica facts, generations,
-and assertion evidence. Immediately before the first mutation, `do` acquires the
-network lock and freshly revalidates that frozen barrier. A successful `prep`
-never substitutes for the locked `do` revalidation.
+evaluation and freezes the exact participant set, canonical replica-set hash,
+head tuple, generations, prepared-intent hash, and assertion evidence.
+Immediately before the first mutation, `do` acquires the local network lock,
+freshly revalidates that frozen barrier, and obtains the full-set successor
+certificate defined by `MOTHER-DESIGN-026`. The first certified successor opens
+and fully replicates the pending action. Only then can the first live
+infrastructure mutation be dispatched. A successful `prep` never substitutes
+for the locked `do` revalidation or the distributed certificate.
 
 ### Distributed rollback layers
 
@@ -3474,11 +3511,12 @@ The replicated network state contains at least:
 
 All later mutating requests carry the current `head_id` and `head_epoch` as
 operational ownership metadata. Guards and replicas reject transitions from an
-older head epoch. This prevents a surviving pre-recovery head from continuing
-after replacement activation, but it does not by itself fence two copies of the
-same current `head_id` and `head_epoch`. Atomic same-head successor fencing
-remains `MOTHER-OPEN-016`. The Coolify API credential remains the only remote
-security boundary under the trusted-host threat model.
+older head epoch. Two copies holding the same current `head_id` and
+`head_epoch` are fenced by the full-set exact-successor protocol in
+`MOTHER-DESIGN-026`; neither can mutate unless every expected replica currently
+records the same operation owner and exact proposed successor. The Coolify API
+credential remains the only remote security boundary under the trusted-host
+threat model.
 
 If any expected replica is unreachable, reports an incompatible schema, lacks
 required private recovery material or any object in the transitive recovery
@@ -3505,29 +3543,350 @@ not a hidden topology change and not automatic action completion.
 
 
 
-### Remaining open design nodes
+### Full-set successor reservation and single-successor commit
 
-`MOTHER-OPEN-016: full-set-writer-fencing-and-single-successor-commit`
+`MOTHER-DESIGN-026: full-set-successor-reservation-and-single-successor-commit`
 
-`head_id` and `head_epoch` fence a stale replacement head, but they do not yet
-prevent two machines holding the same current authority metadata from racing two
-different successors. The remaining contract MUST require every authoritative
-transition to name at least:
+`MOTHER-OPEN-016: full-set-writer-fencing-and-single-successor-commit` is
+resolved for every established network that already has one committed
+authoritative head and one sealed expected replica set. Bootstrap authority and
+prospective-replica enrollment remain exclusively in `MOTHER-OPEN-017`.
+
+The protocol deliberately chooses safety over collision liveness. A writer does
+not discover, elect, or depend on a first lock host. It attempts the exact same
+claim on every host in the replica set frozen by `prep`. Requests MAY be
+parallel, sequential, retried, delayed, or delivered in different orders. A
+writer is authorized only after it proves the complete set. Therefore two
+writers can split reservations and wedge progress, but neither can become an
+authorized writer or mutate live infrastructure.
+
+The following invariants are normative:
 
 ```text
+No live infrastructure mutation occurs without a currently valid full-set
+successor certificate.
+
+No authoritative network-journal head replacement occurs without a currently
+valid full-set successor certificate for that exact predecessor and exact
+successor.
+
+A partial reservation set authorizes nothing.
+
+One expected replica accepts at most one operation owner for an expected head
+and at most one exact successor hash for each accepted predecessor.
+
+The reservation owner remains the same operation throughout do, remediation,
+rollback, finalization, and finalized-replication-pending.
+
+There is no quorum, automatic winner, dynamic anchor, wall-clock expiry, lock
+stealing, or fallback replica set.
+```
+
+#### Frozen reservation identity
+
+For an established network, `prep` MUST freeze at least:
+
+```text
+network_key
 expected_head_id
 expected_head_epoch
 expected_journal_sequence
 expected_journal_hash
+expected_state_hash
+expected_replica_hosts
+expected_replica_set_hash
 operation_id
-resulting_journal_hash
+prepared_intent_hash
+first_successor_sequence
+first_proposed_successor_entry_hash
+first_proposed_resulting_state_hash
 ```
 
-Every expected replica MUST atomically accept at most one successor for the named
-authority and journal head. Competing successors, split reservations, retry,
-release, and remediation behavior MUST be specified without choosing an
-automatic winner. Production network mutation MUST NOT be considered safe to
-implement until this contract is resolved.
+`expected_replica_set_hash` is calculated from a canonical serialization of the
+sealed host identities. Canonical serialization is used for equality and
+certificate ordering only. It MUST NOT be interpreted as an acquisition order or
+as authority for a first host.
+
+The proposed successor entry MUST be fully constructed before its claim is sent.
+Its entry hash binds the complete immutable transition, including its predecessor
+tuple, operation identity, prepared intent, changes, resulting state hash, and
+replica-set hash. A writer MUST NOT reuse one claim for different entry bytes,
+different resulting state, a different predecessor, or a different operation.
+
+#### Replica-local atomic reservation rule
+
+Every expected replica stores fencing metadata outside the rollback stack and
+outside replaceable container state. Conceptual local paths are:
+
+```text
+/runtime/state/mother/networks/<network>/successor-reservations/current.json
+/runtime/state/mother/networks/<network>/successor-reservations/history/<head-hash>/<operation-id>.json
+```
+
+A replica handles a claim under one operating-system-backed lock that serializes
+its network journal and successor-reservation state. A claim request contains:
+
+```text
+schema
+network_key
+replica_host
+expected_head_id
+expected_head_epoch
+expected_journal_sequence
+expected_journal_hash
+expected_state_hash
+expected_replica_set_hash
+operation_id
+prepared_intent_hash
+proposed_successor_sequence
+proposed_successor_entry_hash
+proposed_resulting_state_hash
+```
+
+The replica MUST atomically apply this state machine:
+
+```text
+local head or replica-set hash differs:
+  reject stale-head or replica-set-mismatch
+
+a cancellation tombstone exists for this operation, intent, and expected head:
+  reject reservation-cancelled
+
+no operation owns the expected head:
+  durably record this operation owner and exact successor claim
+  flush the record and parent directory
+  return the durable receipt
+
+the same operation and intent own the expected head and claim the same successor:
+  return the identical durable receipt
+
+the same operation or intent claims different successor bytes:
+  reject successor-mismatch
+
+another operation owns the expected head:
+  reject successor-already-reserved
+```
+
+A receipt records at least the complete claim fields, replica identity,
+reservation-record hash, receipt ID, and receipt hash. Time fields are diagnostic
+only. Receipt authenticity is proven by retrieving and revalidating the exact
+durable record from the named replica through the trusted Coolify-mediated local
+transport; a copied receipt or certificate is not an independently trusted bearer
+credential.
+
+A replica MUST NOT automatically expire, replace, steal, or weaken a reservation.
+A restart, process death, call-runner replacement, timeout, or lost response
+leaves the durable record authoritative.
+
+#### Full-set certificate and first mutation boundary
+
+The writer attempts the claim against every exact expected replica. It enters
+`reserving-successor` while acquisition is in progress. If any replica rejects,
+times out, is unreachable, or returns an incompatible receipt, the operation
+enters `reservation-incomplete`.
+
+A full-set successor certificate contains:
+
+```text
+certificate schema
+network and operation identity
+prepared_intent_hash
+exact expected head tuple
+exact expected replica hosts and replica-set hash
+exact proposed successor sequence, entry hash, and resulting-state hash
+one current durable receipt from every expected replica
+canonical receipt-set hash
+certificate hash
+```
+
+Mother MUST persist the certificate under the action before using it:
+
+```text
+/runtime/state/mother/actions/<operation-id>/successor-certificates/<successor-sequence>.json
+```
+
+Every receipt MUST be revalidated against its replica's current durable
+reservation record. Missing, foreign, canceled, stale, or divergent receipts
+invalidate the complete certificate.
+
+The complete certificate for `pending-action-opened` is the first authoritative
+action of `do`. Mother MUST commit and replicate that exact certified transition
+to every expected replica before dispatching any live infrastructure mutation.
+The successor reservation is not an ordinary rollback frame. The first
+rollback frame is armed only after the certified pending action is replicated
+and immediately before the first live mutating substep.
+
+Once a certified transition is committed and replicated, its certificate becomes
+the active writer-ownership proof for the resulting head. Live infrastructure
+requests use that accepted certificate to prove who owns the current head.
+A proposed journal-head replacement uses a new certificate that binds the exact
+current predecessor to the exact proposed successor.
+
+Every guard, route controller, participant Mother endpoint, and journal-replica
+write endpoint MUST reject a mutating request that does not name the applicable
+proof:
+
+```text
+live infrastructure request:
+  operation_id
+  prepared_intent_hash
+  active_writer_certificate_hash
+  current head tuple
+  expected replica-set hash
+  step identity
+
+authoritative journal write:
+  operation_id
+  prepared_intent_hash
+  successor_certificate_hash
+  expected predecessor tuple
+  proposed successor sequence, entry hash, and resulting-state hash
+  expected replica-set hash
+  transition identity
+```
+
+The receiving host MUST verify that its current durable reservation record still
+matches the operation owner, current head, and applicable accepted or proposed
+claim. Mother MUST freshly revalidate the complete replica set before each
+authoritative journal transition and before dispatching each new mutating
+substep. A stale certificate MUST NOT authorize work merely because it was
+complete earlier.
+
+#### One exact successor per journal head
+
+The operation-level owner persists across the action, but each new authoritative
+network-journal transition requires a new exact successor claim. Before replacing
+a head, Mother MUST:
+
+1. replay and verify the current expected head;
+2. construct the complete immutable proposed next entry;
+3. claim that exact successor on every expected replica under the same operation
+   owner and prepared-intent hash;
+4. persist and revalidate the full-set certificate;
+5. commit the exact certified entry locally;
+6. replicate that exact entry and head to every expected replica;
+7. verify each replica reports the certified head before attempting another
+   transition that depends on it.
+
+After an accepted transition, each replica advances its reservation record to
+the new certified head while retaining the same operation owner. A second
+writer using the same operation ID but proposing different successor bytes is
+therefore rejected exactly like a different operation. Retries with the same
+operation, intent, predecessor, and successor are idempotent.
+
+An interrupted replication leaves one certified successor and blocks further
+ordinary mutation until that same transition is reconciled. A replica MUST NOT
+accept another successor for the predecessor merely because the certified entry
+has not reached every host.
+
+#### Partial acquisition, collision, and cancellation
+
+Acquisition order is irrelevant. For example, concurrent writers can produce:
+
+```text
+coolify-a: operation X
+coolify-b: operation Y
+coolify-c: operation X
+```
+
+Neither operation has a full-set certificate, so neither can open a pending
+action, advance the journal, or mutate live infrastructure. Diagnosis MUST show
+the complete per-replica distribution, exact claim hashes, unreachable hosts,
+conflicts, and allowed next commands. Mother MUST NOT automatically choose a
+winner.
+
+The same operation MAY retry or resume acquisition using exactly the same
+operation ID, intent hash, predecessor, and proposed successor. A different
+operation MUST NOT take over any partial reservation.
+
+Explicit rollback before a live mutation performs exact reservation
+cancellation. Each replica atomically writes a durable cancellation tombstone
+binding the operation, intent, expected head, and canceled claim. A delayed or
+retried claim matching that tombstone MUST be rejected. Cancellation is
+idempotent and has no automatic timeout.
+
+The operation MUST NOT become `rolled-back`, release its scopes, or permit a new
+writer until every expected replica confirms the tombstone or an already
+committed successor is reconciled. If any replica is unreachable or ambiguous,
+the operation enters or remains `rollback-failed`, and the network remains
+blocked.
+
+If reconciliation proves that every expected replica granted the same exact
+claim, Mother reconstructs the certificate and resumes or rolls back that same
+operation; it does not classify the acquisition as safely absent. If any
+journal successor or live mutation receipt exists, simple reservation
+cancellation is forbidden. The same operation MUST use its ordinary durable
+rollback protocol, and its reservation remains held until rollback is fully
+verified and the rolled-back network transition is replicated.
+
+A cancellation attempt that is only partially acknowledged does not authorize a
+different operation. Any delayed request from the old operation remains part of
+that same blocked operation and MUST be diagnosed and reconciled; it cannot
+create a competing authorized successor.
+
+#### Reservation lifetime, release, and recovery
+
+The full-set operation reservation exists beneath the action but outside the
+ordinary rollback stack. It MUST survive writer and runner crashes and remain
+held:
+
+```text
+through do
+through remediation-required
+through every rollback attempt
+through the authoritative finalization commit
+through finalized-replication-pending
+until full rollback or full finalization acknowledgement completes
+```
+
+Finalization closes ordinary rollback at the network-journal commit but does not
+release the distributed reservation. Release occurs only when:
+
+```text
+rolled-back:
+  every expected replica has the exact fully rolled-back network head and
+  confirms durable reservation release
+
+finalized:
+  every expected replica has acknowledged the exact finalization head under
+  MOTHER-OPEN-018 and confirms durable reservation release
+```
+
+Release is durable and idempotent. Until every expected replica confirms release,
+scope ownership remains active and a new operation cannot obtain a full-set
+reservation. Released and canceled records remain as tombstoned history; they
+MUST NOT be erased or reused for a different operation.
+
+On startup and before any mutating or remediation command, Mother queries every
+expected replica and classifies the reservation distribution:
+
+```text
+no active reservation:
+  ordinary prep/do preflight can continue
+
+one exact full-set owner and claim:
+  reconstruct or verify the certificate and resume only that operation
+
+one owner with a partial claim set:
+  reservation-incomplete; retry/resume or exact cancellation only
+
+several owners split across replicas:
+  collision; no mutation; explicitly cancel or reconcile named operations
+
+journal advanced under a referenced certificate:
+  reconcile that exact successor and same operation
+
+receipt, journal, or local durable record disagreement:
+  block and require explicit reservation rectification or reseal
+```
+
+There is no automatic winner and no wall-clock expiration. A replacement Mother
+can resume the same reservation only by presenting the same operation ID,
+prepared-intent hash, and exact claimed successor and by revalidating every
+expected replica. Different authority, lineage selection, replica-set change, or
+bootstrap remains an explicit recovery/reseal or `MOTHER-OPEN-017` operation.
+
+### Remaining open design nodes
 
 `MOTHER-OPEN-017: zero-network-and-prospective-replica-bootstrap`
 
@@ -3553,8 +3912,9 @@ The minimum state distinction is fixed as
 `finalization-not-committed`, `finalized-replication-pending`, and `finalized`.
 The remaining contract MUST define the exact full-set acknowledgement,
 retry/recovery, and journal-head transition rules for
-`finalized-replication-pending`, and MUST compose with
-`MOTHER-OPEN-016` so two current writers cannot finalize different successors.
+`finalized-replication-pending`. Every such transition MUST use
+`MOTHER-DESIGN-026`, so two current writers cannot certify different finalization
+successors for one expected head.
 
 The sealed-state format, crash and ambiguous-step recovery model, typed guard
 prestate contract, evidence-backed full-guard assertion contract, durable
@@ -3565,9 +3925,11 @@ membership contract, Coolify-API-key local-control boundary, governance-office
 assertion contract, reusable bounded call-runner contract, complete private-state
 replication policy, fail-closed schema/capability contract, replacement-head
 recovery architecture, and local-generation adoption/head-fenced projection
-repair contract are otherwise design-resolved. `MOTHER-DESIGN-024` now requires
-complete transitive recovery-object closure before activation, and
-`MOTHER-DESIGN-025` defines local state adoption and projection maintenance.
+repair contract are otherwise design-resolved. `MOTHER-DESIGN-024` requires
+complete transitive recovery-object closure before activation,
+`MOTHER-DESIGN-025` defines local state adoption and projection maintenance, and
+`MOTHER-DESIGN-026` defines fail-closed full-set writer fencing and exact
+single-successor certification.
 
 Exact wire-field names, ABI adapters, schema validators, capability registries,
 and migration implementations remain implementation acceptance work. They MUST
@@ -3614,6 +3976,7 @@ tools/mother/
     atomic_files.py
     checkpoints.py
     locks.py
+    successor_reservations.py
     planning.py
     reporting.py
     rollback_stack.py
@@ -3807,6 +4170,11 @@ Suggested durable state layout:
         metadata.json
         head.json
         entries/
+      successor-reservations/
+        current.json
+        history/
+          <expected-head-hash>/
+            <operation-id>.json
   actions/
     <operation-id>/
       action-journal/
@@ -3821,6 +4189,8 @@ Suggested durable state layout:
         <step-id>/
           <frame-id>.json
       rollback-stack.json
+      successor-certificates/
+        <successor-sequence>.json
       prestate/
         <frame-id>.json
       summary.json
@@ -3906,6 +4276,10 @@ GET  /v1/state-root
 GET  /v1/diagnose/<network>
 GET  /v1/networks/<network>/seal
 GET  /v1/networks/<network>/replicas
+GET  /v1/networks/<network>/successor-reservations
+POST /v1/internal/networks/<network>/successor-reservations/claim
+POST /v1/internal/networks/<network>/successor-reservations/cancel
+GET  /v1/internal/networks/<network>/successor-reservations/<operation-id>
 POST /v1/networks/<network>/repair-projections
 POST /v1/networks/<network>/sync-state/prep
 POST /v1/networks/<network>/sync-state/do
@@ -3928,6 +4302,7 @@ POST /v1/operations/<operation-id>/rollback           # optional cross-check for
 POST /v1/operations/<operation-id>/retry-resume       # optional cross-check form
 GET  /v1/operations/<operation-id>
 GET  /v1/operations/<operation-id>/checkpoints
+GET  /v1/operations/<operation-id>/successor-certificates
 GET  /v1/operations/<operation-id>/remediation
 GET  /v1/operations/<operation-id>/provisional-frames
 GET  /v1/operations/<operation-id>/rollback-stack
@@ -4270,11 +4645,21 @@ ledger and lock records.
 
 - load the prepared operation by operation ID;
 - confirm the operation is still active for its declared scopes;
+- freshly revalidate the frozen expected head, expected replica set, and full
+  clean-state barrier;
+- acquire or resume the same durable operation reservation on every expected
+  replica and persist the exact full-set certificate;
+- commit and fully replicate the certified `pending-action-opened` successor
+  before dispatching any live infrastructure mutation;
 - refuse if the live state has drifted beyond the prepared preconditions unless
   the prepared operation explicitly declares that drift acceptable;
 - perform only the mutation steps recorded in the prepared operation;
 - perform runtime mutations through Mother, guard, and routing APIs instead of
   hidden compose replacement;
+- include the current operation owner and accepted current-head writer
+  certificate in every live mutation request;
+- obtain a new exact full-set successor certificate before every authoritative
+  network-journal head replacement;
 - capture the complete current prestate and durably commit an
   `armed-provisional` frame before each mutating substep;
 - refuse the mutation if the prestate cannot be captured completely or the
@@ -4299,7 +4684,10 @@ ledger and lock records.
 - switch from add to remove;
 - silently call another lifecycle path;
 - recapture prestate over a failed or partially applied result;
-- promote a frame while its forward step remains failed or unverified.
+- promote a frame while its forward step remains failed or unverified;
+- dispatch live mutation while reservation acquisition is partial, split,
+  canceled, stale, or otherwise lacks one current receipt from every expected
+  replica.
 
 If a step fails during `do`, Mother MUST leave its frame provisional, enter
 `remediation-required`, and report the unresolved step, participant evidence,
@@ -4332,7 +4720,9 @@ nor a recognized partial/desired state can be proven, retry MUST be refused.
 - verify those rollback-journal records are durable;
 - commit `finalization-prepared` in the action journal with exact rollback and
   pending-network-state references;
-- commit `pending-action-finalized` in the authoritative network journal,
+- construct and obtain a full-set exact-successor certificate for
+  `pending-action-finalized`;
+- commit that certified transition in the authoritative network journal,
   promoting the pending desired topology to finalized topology and clearing the
   pending action;
 - immediately close rollback and enter `finalized-replication-pending` once that
@@ -4343,8 +4733,9 @@ nor a recognized partial/desired state can be proven, retry MUST be refused.
 - append or verify the action-journal `action-finalized` mirror;
 - clear the active rollback-stack projection only after the authoritative
   network-journal finalization commit;
-- enter `finalized` and release active scope ownership only after every expected
-  replica durably acknowledges the exact finalization head.
+- enter `finalized` and release active scope and successor-reservation ownership
+  only after every expected replica durably acknowledges the exact finalization
+  head and confirms durable reservation release.
 
 A failure before the authoritative network-journal finalization commit leaves the
 operation in `finalize-failed`; rollback remains available. A failure or
@@ -4406,6 +4797,11 @@ stack item even when it has participant frames on multiple hosts.
 - prove that any supplied operation ID matches the current operation for the
   requested scope;
 - load the same prepared operation record and acquire its required locks;
+- retain and revalidate the same distributed successor-reservation owner
+  throughout rollback;
+- cancel partial pre-mutation reservations through full-set durable tombstones,
+  or use the ordinary certified rollback transitions after any successor or live
+  mutation was accepted;
 - restore any unresolved provisional layer first when rollback is requested;
 - freshly verify that provisional layer's complete prestate on every required
   participant;
@@ -4421,7 +4817,9 @@ stack item even when it has participant frames on multiple hosts.
   lower layers;
 - recompute active invariants and the safe resume point after partial rollback;
 - mark the whole operation `rolled-back` only when no provisional frame and no
-  promoted frame remain and the requested mode was `--all`;
+  promoted frame remain, the requested mode was `--all`, the rolled-back
+  network head is present on every expected replica, and every replica confirms
+  durable successor-reservation release;
 - otherwise leave the operation open in `remediation-required`.
 
 Rollback is not an operator-authored command list. Mother owns the rollback plan,
@@ -4532,10 +4930,15 @@ host:coolify-a
 service:mainneta-super1
 validator:0xb5...
 coolify-service-uuid:<uuid>
+successor-reservation:mainnet
 ```
 
-Every mutating operation declares the scopes it owns. While any of those scopes
-has an active non-finalized operation, Mother MUST reject conflicting commands.
+Every mutating operation declares the scopes it owns. An authoritative network
+mutation also owns `successor-reservation:<network>` from the first remote claim
+until full rollback or full finalized acknowledgement and durable release. While
+any of those scopes has an active non-finalized operation, or while any expected
+replica reports an unresolved reservation for the scope, Mother MUST reject
+conflicting commands.
 
 For example, if Mother has an active prepared operation:
 
@@ -4598,6 +5001,10 @@ remediation-required:
   mother rollback <network> --all
   mother rollback <network> --count <n>
   mother rollback <network> --through <layer-id>
+
+reservation-incomplete:
+  mother <kind> do <network>                       # retry/resume exact claim
+  mother rollback <network> --all                  # full-set tombstone cancellation
 
 finalized-replication-pending:
   mother diagnose <network>
@@ -4734,8 +5141,10 @@ replicas disagree, omit a pending action, or the state is wedged, normal mutatio
 is refused until remediation or `reseal-state` creates a new explicit seal.
 
 `prep` compares observed topology with finalized topology and records a planned
-transition. After the clean-state barrier, opening the distributed action creates
-and replicates `pending_action`. `do` executes only that planned transition and
+transition. After the clean-state barrier, `do` obtains the exact full-set
+successor certificate and uses its first certified transition to create and
+replicate `pending_action` on every expected replica. Only then does `do` execute
+that planned transition and
 commits every meaningful phase change to the pending state. `finalize` proves
 the observed topology reached the pending desired state and commits
 `pending-action-finalized`, which advances finalized topology and clears the
@@ -4829,6 +5238,8 @@ A Mother mutating operation uses explicit states:
 
 ```text
 prepared
+reserving-successor
+reservation-incomplete
 doing
 remediation-required
 do-complete-pending-finalize
@@ -4847,9 +5258,20 @@ Only these states accept mutating or remediation commands:
 prepared:
   do, rollback --all
 
+reserving-successor:
+  retry/resume the exact operation, intent, predecessor, and successor claim
+  rollback --all through full-set durable reservation cancellation
+  no live mutation or journal-head replacement is authorized
+
+reservation-incomplete:
+  do or retry/resume the exact existing claim
+  rollback --all through full-set durable reservation cancellation
+  no different operation, intent, predecessor, or successor is accepted
+
 doing:
-  retry/resume after interruption, rollback when a durable provisional or
-  promoted frame makes recovery safe
+  retry/resume after interruption
+  rollback under the same reservation, including a certified pending-action
+  rollback when no live frame has yet been armed
 
 remediation-required:
   retry/resume
@@ -4881,11 +5303,14 @@ rolled-back:
   no further stage commands; create a new operation for further changes
 ```
 
-A failed or unverified current step always maps to `remediation-required`; its
-frame remains provisional until it is successfully verified and promoted or its
-prestate is restored and the frame is closed. Read-only diagnosis is always
-allowed and MUST show the provisional layer, promoted stack, participant
-evidence, pop-able range, and exact allowed commands.
+A failed or split reservation acquisition maps to `reservation-incomplete`
+before any live mutation. A failed or unverified live step maps to
+`remediation-required`; its frame remains provisional until it is successfully
+verified and promoted or its prestate is restored and the frame is closed.
+Read-only diagnosis is always allowed and MUST show the per-replica reservation
+owner and claim distribution, certificate status, cancellation tombstones,
+provisional layer, promoted stack, participant evidence, pop-able range, and
+exact allowed commands.
 
 `sync-state` uses a separate normative local-adoption state machine because it
 does not create or finalize a network mutation:
@@ -5398,9 +5823,12 @@ Outputs:
 - postconditions;
 - risk report.
 
-Prep owns the affected scopes until full rollback completes or the operation
-reaches `finalized`. Scope ownership remains held throughout
-`finalized-replication-pending`.
+Prep owns the affected logical scopes until full rollback completes or the
+operation reaches `finalized`. At the beginning of `do`, an authoritative
+network mutation additionally acquires the distributed
+`successor-reservation:<network>` scope from every expected replica. That
+ownership remains held throughout `reservation-incomplete`, remediation,
+rollback, and `finalized-replication-pending`.
 
 ### Do
 
@@ -5416,8 +5844,12 @@ Outputs:
 - current operation state;
 - next allowed commands.
 
-`do` MUST be restart-aware. If interrupted, rerunning `do` with the same
-operation ID inspects the existing provisional frame and live assertions. It MAY
+`do` MUST be restart-aware. Before any live mutation it acquires or resumes the
+same full-set operation reservation and certified `pending-action-opened`
+successor. If reservation acquisition is partial, rerunning `do` with the same
+operation ID retries the exact claims and does not create a new story. After live
+work begins, rerunning `do` inspects the existing provisional frame and live
+assertions. It MAY
 promote an already-complete step, retry a recognized partial state, resume from
 the first unpromoted step, or safely report why it cannot continue. It MUST NOT
 capture a replacement prestate over the interrupted result. The mandatory
@@ -5436,8 +5868,8 @@ Outputs:
 
 - final verification report;
 - `finalized-replication-pending` or `finalized` status;
-- released scopes only after every expected replica acknowledges the exact
-  finalization head;
+- released scopes and successor reservations only after every expected replica
+  acknowledges the exact finalization head and durable reservation release;
 - finalized operation record.
 
 Finalize is the only success path that makes rollback unavailable. Once the
@@ -5463,7 +5895,11 @@ Outputs:
   completes.
 
 Rollback MUST be available after `prep`, during/after `do`, and after failed
-`finalize`, until the operation reaches `finalized`. An unresolved provisional
+`finalize`, until the operation reaches its documented irreversible commit point.
+Before live mutation, rollback cancels the exact partial/full reservation through
+durable full-set tombstones. After a network successor or live mutation exists,
+rollback retains the same operation reservation while it restores and certifies
+the rolled-back state. An unresolved provisional
 frame is restored and closed before completed layers are popped. A promoted
 rollback frame is removed from the active stack only after its prestate
 restoration is verified and the result is durably appended to the rollback
@@ -5580,7 +6016,9 @@ host proves:
 - it has no executable rollback frame;
 - it has no provisional guard frame;
 - it has no conflicting resource lock;
-- it supports the required schema and capabilities.
+- it has no unresolved successor reservation owned by another operation;
+- it supports the required schema and capabilities, including exact-successor
+  claim, receipt, cancellation, and release.
 
 Mother records the exact participant set in the action journal. The participant
 set MAY include every current node, every voting validator, every affected
@@ -5628,26 +6066,28 @@ promoted only after its complete forward poststate is freshly verified; the next
 numbered phase MUST NOT begin before promotion commits.
 
 1. Cross the distributed preparation barrier.
-2. Capture the target service prestate and create or repair the service.
-3. Capture identity prestate and install the reserved identity.
-4. Capture runtime prestate and establish a healthy private candidate.
-5. Capture validator-membership prestate for the frozen voter/observer manifest,
+2. Acquire the exact full-set operation reservation, certify and fully replicate
+   `pending-action-opened`, and retain the reservation beneath the rollback stack.
+3. Capture the target service prestate and create or repair the service.
+4. Capture identity prestate and install the reserved identity.
+5. Capture runtime prestate and establish a healthy private candidate.
+6. Capture validator-membership prestate for the frozen voter/observer manifest,
    including the before-set hash and baseline block.
-6. Admit the validator using the prepared initial mode, guard-mediated soft-vote
+7. Admit the validator using the prepared initial mode, guard-mediated soft-vote
    proposal, or hard mode.
-7. Freshly prove all required receipts, network-wide desired-set agreement, and
+8. Freshly prove all required receipts, network-wide desired-set agreement, and
    post-membership block progress.
-8. Capture complete RPC-routing prestate on every affected Coolify host.
-9. Reconcile complete host-local canonical RPC backend sets.
-10. Freshly prove route ownership, backend membership, Traefik load, and expected
+9. Capture complete RPC-routing prestate on every affected Coolify host.
+10. Reconcile complete host-local canonical RPC backend sets.
+11. Freshly prove route ownership, backend membership, Traefik load, and expected
     public chain identity.
-11. Capture complete Hub/FDB prestate on every current node, including the new
+12. Capture complete Hub/FDB prestate on every current node, including the new
     node.
-12. Reconcile complete Hub/FDB topology on every participant.
-13. Freshly prove the same topology epoch, peers, forwarding entries, and
+13. Reconcile complete Hub/FDB topology on every participant.
+14. Freshly prove the same topology epoch, peers, forwarding entries, and
     handoff targets everywhere.
-14. Replicate and verify the pending resulting state.
-15. Mark the action `do-complete-pending-finalize`.
+15. Replicate and verify the pending resulting state.
+16. Mark the action `do-complete-pending-finalize`.
 
 The active stack after a successful add is:
 
@@ -5688,23 +6128,25 @@ promoted only after its complete forward poststate is freshly verified; a failed
 phase enters remediation and blocks later phases.
 
 1. Cross the distributed preparation barrier.
-2. Freshly verify that all surviving Hub, RPC, and validator participants are
+2. Acquire the exact full-set operation reservation, certify and fully replicate
+   `pending-action-opened`, and retain the reservation beneath the rollback stack.
+3. Freshly verify that all surviving Hub, RPC, and validator participants are
    healthy enough to carry the resulting network.
-3. Capture Hub/FDB prestate on every current node.
-4. Reconcile Hub/FDB topology without the target and verify every survivor.
-5. Capture RPC-routing prestate on every affected Coolify host.
-6. Reconcile complete RPC backend sets without the target and verify surviving
+4. Capture Hub/FDB prestate on every current node.
+5. Reconcile Hub/FDB topology without the target and verify every survivor.
+6. Capture RPC-routing prestate on every affected Coolify host.
+7. Reconcile complete RPC backend sets without the target and verify surviving
    public RPC service.
-7. Capture validator-membership prestate for the frozen voter/observer manifest
+8. Capture validator-membership prestate for the frozen voter/observer manifest
    while the target remains running and reachable.
-8. Remove the validator using the prepared guard-mediated soft-vote proposal or
+9. Remove the validator using the prepared guard-mediated soft-vote proposal or
    hard mode.
-9. Freshly prove all required receipts, target absence, complete desired-set
-   agreement, and post-membership block progress.
-10. Capture target service, runtime, and identity prestate.
-11. Detach, disable, archive, or remove the target exactly as prepared.
-12. Replicate and verify the pending resulting state.
-13. Mark the action `do-complete-pending-finalize`.
+10. Freshly prove all required receipts, target absence, complete desired-set
+    agreement, and post-membership block progress.
+11. Capture target service, runtime, and identity prestate.
+12. Detach, disable, archive, or remove the target exactly as prepared.
+13. Replicate and verify the pending resulting state.
+14. Mark the action `do-complete-pending-finalize`.
 
 The active stack after a successful removal is:
 
@@ -5765,7 +6207,10 @@ Finalization MUST prove:
 - validator, RPC, and Hub/FDB states all match the prepared result;
 - all guard assertions are fresh for current generations;
 - every distributed rollback layer and participant frame is accounted for;
-- every expected replica agrees on the pending resulting state.
+- every expected replica agrees on the pending resulting state;
+- the same operation still owns every expected replica reservation;
+- one full-set certificate binds the exact current head to the exact proposed
+  `pending-action-finalized` successor.
 
 The committed network-journal `pending-action-finalized` entry is the
 irreversible boundary. After it commits, an opposite change is a new `add-node`
@@ -5899,6 +6344,16 @@ Mother safety rules:
   non-authoritative, local-only, atomic, idempotent maintenance fenced by an
   unchanged authoritative local head.
 - Every prepared operation accepts `rollback` until its documented irreversible commit point.
+- An established-network writer MUST obtain one current durable reservation receipt
+  from every exact expected replica before any live mutation or authoritative
+  network-journal successor is allowed.
+- Partial or split reservations authorize nothing, never expire automatically,
+  and MUST NOT cause Mother to select a winner.
+- Every authoritative network-journal transition MUST carry a full-set certificate
+  for its exact predecessor and exact immutable successor.
+- The distributed reservation lives outside the ordinary rollback stack and
+  remains held through remediation, rollback, and
+  `finalized-replication-pending`.
 - Mother stores the active operation ID as the current operation for every owned scope.
 - `mother diagnose` MUST report the current operation ID and allowed next commands.
 - Rollback defaults to the current operation; the operator MUST NOT have to describe what to undo.
@@ -5983,7 +6438,8 @@ Mother SHOULD be implemented in this order:
    - reserve network identity, officer/admin identities, node validator keys,
      validator addresses, first-genesis material, and route reservations;
    - create durable locations for actions, rollback stacks, routes, guards,
-     locks, topology, and version/capability records;
+     locks, successor reservations, successor certificates, topology, and
+     version/capability records;
    - store the initial private identity backend as inline local private YAML;
    - make any `*_key_ref` values internal references to records in the same
      private-state document.
@@ -5991,7 +6447,8 @@ Mother SHOULD be implemented in this order:
 2. Mother control API shell
    - mounts `/runtime/state/mother/`;
    - reports version, explicit readable/writable schemas, executable capabilities,
-     state root, active operations, checkpoints, and rollback stacks;
+     state root, active operations, checkpoints, rollback stacks, reservation
+     distributions, and successor certificates;
    - treats the container and mounted API implementation as replaceable;
    - freezes action compatibility requirements and refuses authoritative mutation
      when any required schema or capability is unknown or unsupported.
@@ -6021,6 +6478,8 @@ Mother SHOULD be implemented in this order:
    - active operation records;
    - conflict detection;
    - idempotency keys;
+   - durable per-replica operation reservations, successor claims, receipts,
+     cancellation tombstones, certificate storage, and release records;
    - generic rollback resolution.
 
 6. Local generation and projection maintenance
@@ -6041,26 +6500,45 @@ Mother SHOULD be implemented in this order:
      contracts, and postconditions;
    - does not fabricate live rollback frames before `do` captures actual prestate.
 
-8. Stage runner
+8. Full-set writer-fencing and successor-commit engine
+   - implement `MOTHER-DESIGN-026`;
+   - attempt claims against the exact sealed replica set without a discovered
+     anchor or automatic winner;
+   - atomically persist per-replica owner and exact-successor claims;
+   - assemble and revalidate full-set certificates;
+   - reject all mutation under partial, split, stale, canceled, or divergent
+     reservations;
+   - support idempotent retry, full-set cancellation tombstones, crash
+     reconstruction, and terminal release;
+   - retain reservation ownership through rollback and
+     `finalized-replication-pending`.
+
+9. Stage runner
    - `do`;
    - checkpoints;
+   - fail-closed transition through `reserving-successor` and
+     `reservation-incomplete`;
+   - full-set certification and replication of `pending-action-opened` before the
+     first live mutation;
    - durable provisional-frame arming before destructive steps;
    - full poststate verification and atomic frame promotion;
    - remediation-required reports;
    - retry/resume using the existing frame.
 
-9. Generic `rollback`
+10. Generic `rollback`
    - resolves the current operation automatically;
    - restores an unresolved provisional frame before promoted layers;
    - supports all, count, and through for a contiguous top-of-stack range;
    - uses the action/rollback journals and referenced participant receipts as
      authority; the rollback stack is a replayed operational projection;
    - available until the operation's documented irreversible commit point;
-   - releases scopes only after full rollback verification and
+   - releases scopes only after full rollback verification, exact rolled-back
+     head replication, full-set successor-reservation release, and
      current-operation pointer cleanup.
 
-10. `finalize`
+11. `finalize`
    - postcondition checks;
+   - exact-successor certification of the authoritative finalization transition;
    - cross-journal finalization preparation;
    - network-journal promotion from pending desired topology to finalized
      topology;
@@ -6070,62 +6548,61 @@ Mother SHOULD be implemented in this order:
      replica acknowledgement is missing;
    - retries or remediates full replica acknowledgement without reopening
      rollback;
-   - enters `finalized` and releases scopes only after every expected replica
-     acknowledges the exact finalization head.
+   - enters `finalized` and releases scopes and the successor reservation only
+     after every expected replica acknowledges the exact finalization head and
+     confirms durable reservation release.
 
-11. Distributed QBFT membership controller
+12. Distributed QBFT membership controller
    - frozen proposal, voter, and observer manifests;
    - guard-mediated participant vote requests and durable receipt retrieval;
    - desired validator-set and post-membership block assertions;
    - compensating membership rollback using the captured before-set;
    - no promotion from `vote-submitted` alone.
 
-12. Distributed route and Hub/FDB resource controllers
+13. Distributed route and Hub/FDB resource controllers
    - typed complete-prestate capture;
    - host-local RPC desired-state reconciliation;
    - node-local Hub/FDB desired-state reconciliation;
    - distributed rollback-layer accounting and assertions.
 
-13. `mother_add_node.py`
+14. `mother_add_node.py`
    - service and identity preparation;
    - initial, guard-mediated soft, and hard validator admission;
    - RPC reconciliation;
    - network-wide Hub/FDB reconciliation;
    - one rollback-capable action until the documented irreversible commit point.
 
-14. `mother_remove_node.py`
+15. `mother_remove_node.py`
    - network-wide Hub/FDB withdrawal;
    - RPC withdrawal;
    - guard-mediated soft and hard validator removal;
    - service detach/disable/archive/removal;
    - one rollback-capable action until the documented irreversible commit point.
 
-15. `mother_reseal_qbft.py`
+16. `mother_reseal_qbft.py`
    - full-set hard topology repair for existing services;
    - in-place guard-mediated config repair only;
    - no Coolify service deletion or compose changes.
 
-16. `mother_restore_service.py`
+17. `mother_restore_service.py`
    - explicit service repair only;
    - no QBFT membership mutation.
 
-17. Schema and capability registry
+18. Schema and capability registry
    - typed schema identifiers on every durable and wire object;
    - explicit read, write, verifier, restore, and controller capabilities;
    - frozen per-action compatibility requirements;
    - fail-closed preflight and explicit journaled migration only.
 
-18. `mother_recover_head.py`
+19. `mother_recover_head.py`
    - discovers the exact expected replica set from a recovery descriptor;
    - requires unanimous compatible replica state and one complete transitive
      recovery-object closure;
    - restores the complete local state root and private recovery bundle atomically;
    - replays journals and rebuilds all projections;
    - verifies live guard truth without silently changing recovered history;
-   - activates a new replicated head epoch only after full-set acknowledgement.
-
-19. Full-set writer-fencing and successor-commit engine
-   - implement only after `MOTHER-OPEN-016` is resolved.
+   - activates a new replicated head epoch only after full-set acknowledgement;
+   - requires every later ordinary writer to use `MOTHER-DESIGN-026`.
 
 20. Prospective replica and zero-network bootstrap
    - implement only after `MOTHER-OPEN-017` is resolved.

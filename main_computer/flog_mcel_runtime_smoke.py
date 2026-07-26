@@ -18,21 +18,22 @@ Run from the repository root after the viewport is running:
 Useful options:
 
     python main_computer/flog_mcel_runtime_smoke.py --app code-editor
-    python main_computer/flog_mcel_runtime_smoke.py --scenario mcel-lab.default-load --headed
+    python main_computer/flog_mcel_runtime_smoke.py --scenario document.default-load --headed
     python main_computer/flog_mcel_runtime_smoke.py --emit-events
     python main_computer/flog_mcel_runtime_smoke.py --viewport 1920x1200
     python main_computer/flog_mcel_runtime_smoke.py --json
 
-FLOG v1 stays intentionally small.  It proves the desktop green contract baseline:
-page loads, the diagnosis API and widget payload are available, primary surface
+FLOG v2 is registry-driven.  It proves the desktop green contract baseline for every conformance-required app:
+page loads, the app-surface registry policy is carried into the scenario, the diagnosis API and widget payload are available, primary surface
 is usable, active warnings and errors are zero, visual-integrity violations are
-absent, and verdict/counts agree.  The default viewport is an explicit desktop baseline; responsive viewport scenarios can be added separately as each app contract becomes more detailed.
+absent, required app-surface conformance layers pass, and verdict/counts agree.  The default viewport is an explicit desktop baseline; responsive viewport scenarios can be added separately as each app contract becomes more detailed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,15 +43,31 @@ from urllib.parse import urljoin
 
 
 REPORT_KIND = "mcel.flog.runtime-contracts.report"
-REPORT_SCHEMA = "mcel-runtime-flog-report-v1"
-REPORT_VERSION = "mcel-runtime-flog-v1"
+REPORT_SCHEMA = "mcel-runtime-flog-report-v2"
+REPORT_VERSION = "mcel-runtime-flog-v2"
 DEFAULT_OUTPUT_DIR = Path("runtime/reports/flog/mcel-runtime")
 DEFAULT_STARTUP_WAIT_MS = 6500
 DEFAULT_TIMEOUT_MS = 15000
 DEFAULT_VIEWPORT = {"width": 1920, "height": 1200}
 
+APP_SURFACE_REGISTRY_JS = Path("main_computer/web/applications/scripts/mcel-app-surface-registry.js")
+
+BASELINE_LAYER_IDS = (
+    "semantic-surface",
+    "layout-grammar",
+    "runtime-ownership",
+    "runtime-visual-fit",
+    "diagnostic-no-throw",
+)
+RUNTIME_LAYER_IDS = (
+    "runtime-ownership",
+    "runtime-visual-fit",
+    "diagnostic-no-throw",
+)
+
 ROUTE_OVERRIDES = {
     "calculator": "/applications/calculator",
+    "document": "/applications/document",
     "file-explorer": "/applications/file-explorer",
     "git-tools": "/applications/git-tools",
     "code-editor": "/applications/code-editor",
@@ -59,12 +76,107 @@ ROUTE_OVERRIDES = {
 }
 
 SCENARIO_INTENTS = {
-    "calculator": "Verify the calculator workspace opens with a usable primary calculation surface.",
-    "file-explorer": "Verify the file explorer opens with a usable navigation/listing surface.",
-    "git-tools": "Verify Git Tools opens with a usable repository/status work surface.",
-    "code-editor": "Verify the Code Editor authoring contract exposes one usable selected-source editor.",
+    "calculator": "Verify the calculator workspace satisfies its runtime app-surface baseline.",
+    "document": "Verify Document Editor satisfies semantic-runtime surface, layout, ownership, and visual-fit conformance.",
+    "file-explorer": "Verify File Explorer satisfies semantic-runtime surface, layout, ownership, and visual-fit conformance.",
+    "git-tools": "Verify Git Tools opens with a usable repository/status work surface when explicitly requested.",
+    "code-editor": "Verify the Code Editor host/workbench exposes one usable selected-source editor.",
     "website-builder": "Verify Website Builder exposes a usable preview/design surface for the selected site.",
-    "mcel-lab": "Verify MCEL Lab opens with a usable blueprint inspection workspace.",
+    "mcel-lab": "Verify MCEL Lab opens with a usable blueprint inspection workspace when explicitly requested.",
+}
+
+
+@dataclass(frozen=True)
+class AppSurfacePolicy:
+    app_id: str
+    label: str
+    state: str
+    conformance_required: bool
+    maturity: str
+    surface_id: str = ""
+    contract_id: str = ""
+    required_layer_ids: tuple[str, ...] = ()
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "appId": self.app_id,
+            "label": self.label,
+            "state": self.state,
+            "conformanceRequired": self.conformance_required,
+            "maturity": self.maturity,
+            "surfaceId": self.surface_id,
+            "contractId": self.contract_id,
+            "requiredLayerIds": list(self.required_layer_ids),
+            "notes": self.notes,
+        }
+
+
+FALLBACK_APP_SURFACE_POLICIES = {
+    "calculator": AppSurfacePolicy(
+        app_id="calculator",
+        label="Calculator",
+        state="surface-aware",
+        conformance_required=True,
+        maturity="runtime-baseline",
+        surface_id="calculator.surface.workspace",
+        contract_id="calculator.contract.default.app-health",
+        required_layer_ids=RUNTIME_LAYER_IDS,
+    ),
+    "code-editor": AppSurfacePolicy(
+        app_id="code-editor",
+        label="Code Editor",
+        state="surface-aware",
+        conformance_required=True,
+        maturity="host-workbench",
+        surface_id="code-editor.surface.monaco-selected-file-editor",
+        contract_id="code-editor.contract.authoring.monaco-golden-path",
+        required_layer_ids=RUNTIME_LAYER_IDS,
+    ),
+    "document": AppSurfacePolicy(
+        app_id="document",
+        label="Document Editor",
+        state="surface-aware",
+        conformance_required=True,
+        maturity="semantic-runtime",
+        surface_id="document-editor.surface.primary",
+        contract_id="document-editor.contract.default.app-health",
+        required_layer_ids=BASELINE_LAYER_IDS,
+    ),
+    "file-explorer": AppSurfacePolicy(
+        app_id="file-explorer",
+        label="File Explorer",
+        state="surface-aware",
+        conformance_required=True,
+        maturity="semantic-runtime",
+        surface_id="file-explorer.surface.primary",
+        contract_id="file-explorer.contract.default.app-health",
+        required_layer_ids=BASELINE_LAYER_IDS,
+    ),
+    "website-builder": AppSurfacePolicy(
+        app_id="website-builder",
+        label="Website Builder",
+        state="surface-aware",
+        conformance_required=True,
+        maturity="runtime-baseline",
+        surface_id="website-builder.surface.preview",
+        contract_id="website-builder.contract.default.app-health",
+        required_layer_ids=RUNTIME_LAYER_IDS,
+    ),
+    "git-tools": AppSurfacePolicy(
+        app_id="git-tools",
+        label="Git Tools",
+        state="legacy",
+        conformance_required=False,
+        maturity="legacy",
+    ),
+    "mcel-lab": AppSurfacePolicy(
+        app_id="mcel-lab",
+        label="MCEL Lab",
+        state="legacy",
+        conformance_required=False,
+        maturity="legacy",
+    ),
 }
 
 
@@ -75,6 +187,12 @@ class RuntimeScenario:
     route: str
     intent: str
     startup_wait_ms: int = DEFAULT_STARTUP_WAIT_MS
+    conformance_required: bool = False
+    registry_state: str = "unregistered"
+    maturity: str = "unregistered"
+    surface_id: str = ""
+    contract_id: str = ""
+    required_layer_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +201,14 @@ class RuntimeScenario:
             "route": self.route,
             "intent": self.intent,
             "startupWaitMs": self.startup_wait_ms,
+            "appSurfacePolicy": {
+                "conformanceRequired": self.conformance_required,
+                "registryState": self.registry_state,
+                "maturity": self.maturity,
+                "surfaceId": self.surface_id,
+                "contractId": self.contract_id,
+                "requiredLayerIds": list(self.required_layer_ids),
+            },
         }
 
 
@@ -97,7 +223,6 @@ def normalize_base_url(base_url: str) -> str:
     if not value.startswith(("http://", "https://")):
         value = "http://" + value
     return value.rstrip("/") + "/"
-
 
 
 def parse_viewport(value: str | None) -> dict[str, int]:
@@ -129,42 +254,207 @@ def app_route(app: str) -> str:
     return ROUTE_OVERRIDES.get(app, f"/applications/{app}")
 
 
-def scenario_for_app(app: str, *, startup_wait_ms: int = DEFAULT_STARTUP_WAIT_MS) -> RuntimeScenario:
+def _matching_brace_index(text: str, start: int) -> int:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'", "`"}:
+            quote = char
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise ValueError("unclosed JavaScript object literal")
+
+
+def _object_literal_for_constant(source: str, constant_name: str) -> str:
+    marker = f"const {constant_name}"
+    marker_index = source.index(marker)
+    open_index = source.index("{", marker_index)
+    close_index = _matching_brace_index(source, open_index)
+    return source[open_index + 1:close_index]
+
+
+def _read_js_string(source: str, start: int) -> tuple[str, int]:
+    quote = source[start]
+    index = start + 1
+    escaped = False
+    chars: list[str] = []
+    while index < len(source):
+        char = source[index]
+        if escaped:
+            chars.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == quote:
+            return "".join(chars), index + 1
+        else:
+            chars.append(char)
+        index += 1
+    raise ValueError("unclosed JavaScript string literal")
+
+
+def _iter_policy_blocks(object_source: str) -> list[tuple[str, str]]:
+    """Yield top-level policy entries from a simple JS object literal."""
+
+    results: list[tuple[str, str]] = []
+    index = 0
+    length = len(object_source)
+    while index < length:
+        while index < length and object_source[index] in " \t\r\n,":
+            index += 1
+        if index >= length:
+            break
+
+        if object_source[index] in {'"', "'"}:
+            key, index = _read_js_string(object_source, index)
+        else:
+            start = index
+            while index < length and (object_source[index].isalnum() or object_source[index] in "_-$"):
+                index += 1
+            key = object_source[start:index].strip()
+        if not key:
+            index += 1
+            continue
+
+        while index < length and object_source[index].isspace():
+            index += 1
+        if index >= length or object_source[index] != ":":
+            continue
+        index += 1
+        while index < length and object_source[index].isspace():
+            index += 1
+        if index >= length or object_source[index] != "{":
+            continue
+        close = _matching_brace_index(object_source, index)
+        results.append((key, object_source[index + 1:close]))
+        index = close + 1
+    return results
+
+
+def _const_array(source: str, name: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    match = re.search(rf"const\s+{re.escape(name)}\s*=\s*Object\.freeze\(\s*\[(.*?)\]\s*\)", source, re.S)
+    if not match:
+        return fallback
+    values = re.findall(r'"([^"]+)"', match.group(1))
+    return tuple(values) if values else fallback
+
+
+def _field_string(block: str, field: str, fallback: str = "") -> str:
+    match = re.search(rf"\b{re.escape(field)}\s*:\s*\"([^\"]*)\"", block)
+    return match.group(1) if match else fallback
+
+
+def _field_bool(block: str, field: str, fallback: bool = False) -> bool:
+    match = re.search(rf"\b{re.escape(field)}\s*:\s*(true|false)\b", block)
+    return (match.group(1) == "true") if match else fallback
+
+
+def _field_layers(block: str, constants: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+    match = re.search(r"\brequiredLayerIds\s*:\s*([A-Z_]+|\[[^\]]*\])", block, re.S)
+    if not match:
+        return ()
+    value = match.group(1).strip()
+    if value in constants:
+        return constants[value]
+    return tuple(re.findall(r'"([^"]+)"', value))
+
+
+def load_app_surface_policies(repo: Path | None = None) -> dict[str, AppSurfacePolicy]:
+    """Load conformance enrollment from McelAppSurfaceRegistry.
+
+    The runtime smoke is intentionally registry-driven.  The parser stays small
+    and local so ``--list-scenarios`` works even when Node is unavailable.
+    """
+
+    repo = repo or repo_root_from_script()
+    registry_path = repo / APP_SURFACE_REGISTRY_JS
+    if not registry_path.exists():
+        return dict(FALLBACK_APP_SURFACE_POLICIES)
+
+    try:
+        source = registry_path.read_text(encoding="utf-8")
+        constants = {
+            "BASELINE_LAYER_IDS": _const_array(source, "BASELINE_LAYER_IDS", BASELINE_LAYER_IDS),
+            "RUNTIME_LAYER_IDS": _const_array(source, "RUNTIME_LAYER_IDS", RUNTIME_LAYER_IDS),
+        }
+        policies: dict[str, AppSurfacePolicy] = {}
+        for constant_name, default_required in (
+            ("REQUIRED_APP_POLICIES", True),
+            ("LEGACY_APP_POLICIES", False),
+        ):
+            object_source = _object_literal_for_constant(source, constant_name)
+            for key, block in _iter_policy_blocks(object_source):
+                app_id = _field_string(block, "appId", key)
+                required = _field_bool(block, "conformanceRequired", default_required)
+                policy = AppSurfacePolicy(
+                    app_id=app_id,
+                    label=_field_string(block, "label", app_id),
+                    state=_field_string(block, "state", "surface-aware" if required else "legacy"),
+                    conformance_required=required,
+                    maturity=_field_string(block, "maturity", "runtime-baseline" if required else "legacy"),
+                    surface_id=_field_string(block, "surfaceId", ""),
+                    contract_id=_field_string(block, "contractId", ""),
+                    required_layer_ids=_field_layers(block, constants) if required else (),
+                    notes=_field_string(block, "notes", ""),
+                )
+                policies[policy.app_id] = policy
+        return policies or dict(FALLBACK_APP_SURFACE_POLICIES)
+    except Exception:
+        return dict(FALLBACK_APP_SURFACE_POLICIES)
+
+
+def unknown_policy(app: str) -> AppSurfacePolicy:
+    return AppSurfacePolicy(
+        app_id=app,
+        label=app or "Unknown app",
+        state="unregistered",
+        conformance_required=False,
+        maturity="unregistered",
+    )
+
+
+def scenario_for_app(
+    app: str,
+    *,
+    policy: AppSurfacePolicy | None = None,
+    startup_wait_ms: int = DEFAULT_STARTUP_WAIT_MS,
+) -> RuntimeScenario:
+    policy = policy or FALLBACK_APP_SURFACE_POLICIES.get(app) or unknown_policy(app)
+    intent = SCENARIO_INTENTS.get(app)
+    if not intent:
+        if policy.conformance_required:
+            layers = ", ".join(policy.required_layer_ids) or "registered runtime layers"
+            intent = f"Verify {policy.label} satisfies its registered MCEL app-surface layers: {layers}."
+        else:
+            intent = f"Verify {policy.label} opens; conformance is not required for this registry state."
     return RuntimeScenario(
         id=f"{app}.default-load",
         app=app,
         route=app_route(app),
-        intent=SCENARIO_INTENTS.get(app, f"Verify {app} opens and satisfies its MCEL runtime contract."),
+        intent=intent,
         startup_wait_ms=startup_wait_ms,
+        conformance_required=policy.conformance_required,
+        registry_state=policy.state,
+        maturity=policy.maturity,
+        surface_id=policy.surface_id,
+        contract_id=policy.contract_id,
+        required_layer_ids=tuple(policy.required_layer_ids),
     )
-
-
-def _load_registry_apps(repo: Path) -> list[str]:
-    """Return parsed MCEL app contracts when the requirements registry is available."""
-
-    try:
-        if str(repo) not in sys.path:
-            sys.path.insert(0, str(repo))
-        from tools.mcel_requirements_registry import build_registry  # type: ignore
-    except Exception:
-        return sorted(ROUTE_OVERRIDES)
-
-    try:
-        registry = build_registry(repo, strict_schema=True)
-    except TypeError:
-        try:
-            registry = build_registry(repo, strict_schema=False)
-        except Exception:
-            return sorted(ROUTE_OVERRIDES)
-    except Exception:
-        return sorted(ROUTE_OVERRIDES)
-
-    apps = [
-        block.block_id
-        for block in registry.blocks
-        if block.block_type == "mcel-app" and block.block_id
-    ]
-    return sorted(apps) if apps else sorted(ROUTE_OVERRIDES)
 
 
 def build_scenarios(
@@ -175,21 +465,32 @@ def build_scenarios(
     startup_wait_ms: int = DEFAULT_STARTUP_WAIT_MS,
 ) -> list[RuntimeScenario]:
     repo = repo or repo_root_from_script()
-    app_names = sorted(dict.fromkeys(apps or _load_registry_apps(repo)))
-    scenarios = [scenario_for_app(app, startup_wait_ms=startup_wait_ms) for app in app_names]
+    policies = load_app_surface_policies(repo)
+    if apps:
+        app_names = sorted(dict.fromkeys(apps))
+    else:
+        app_names = sorted(policy.app_id for policy in policies.values() if policy.conformance_required)
+    scenarios = [
+        scenario_for_app(
+            app,
+            policy=policies.get(app) or FALLBACK_APP_SURFACE_POLICIES.get(app) or unknown_policy(app),
+            startup_wait_ms=startup_wait_ms,
+        )
+        for app in app_names
+    ]
     if scenario_ids:
         wanted = set(scenario_ids)
         scenarios = [scenario for scenario in scenarios if scenario.id in wanted]
         missing = sorted(wanted - {scenario.id for scenario in scenarios})
         if missing:
+            available = build_scenarios(repo, apps=app_names, startup_wait_ms=startup_wait_ms)
             raise ValueError(
                 "Unknown scenario(s): "
                 + ", ".join(missing)
                 + ". Available: "
-                + ", ".join(scenario.id for scenario in build_scenarios(repo, startup_wait_ms=startup_wait_ms))
+                + ", ".join(scenario.id for scenario in available)
             )
     return scenarios
-
 
 def _summary_counts(diagnosis: dict[str, Any]) -> dict[str, int]:
     """Return critical/warning/info counts from a raw diagnosis or widget payload."""
@@ -277,22 +578,80 @@ def _is_useful_box(box: Any) -> bool:
     return float(box.get("width") or 0) > 0 and float(box.get("height") or 0) > 0
 
 
-def _visual_integrity_violations(diagnosis: dict[str, Any]) -> list[Any]:
+def _measurement_list(diagnosis: dict[str, Any], key: str) -> list[Any]:
     measurements = diagnosis.get("measurements") if isinstance(diagnosis, dict) else {}
     if not isinstance(measurements, dict):
         return []
-    violations = measurements.get("visualIntegrityViolations")
-    return violations if isinstance(violations, list) else []
+    values = measurements.get(key)
+    return values if isinstance(values, list) else []
+
+
+def _visual_integrity_violations(diagnosis: dict[str, Any]) -> list[Any]:
+    return _measurement_list(diagnosis, "visualIntegrityViolations")
+
+
+def _layout_collisions(diagnosis: dict[str, Any]) -> list[Any]:
+    return _measurement_list(diagnosis, "layoutCollisions")
+
+
+def _content_fit_violations(diagnosis: dict[str, Any]) -> list[Any]:
+    return _measurement_list(diagnosis, "contentFitViolations")
+
+
+def _app_surface_conformance_summary(diagnosis: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(diagnosis, dict):
+        return {}
+    conformance = diagnosis.get("appSurfaceConformance")
+    if isinstance(conformance, dict):
+        return conformance
+    summary = diagnosis.get("summary")
+    if isinstance(summary, dict) and isinstance(summary.get("appSurfaceConformance"), dict):
+        return summary["appSurfaceConformance"]
+    measurements = diagnosis.get("measurements")
+    if isinstance(measurements, dict) and isinstance(measurements.get("appSurfaceConformance"), dict):
+        return measurements["appSurfaceConformance"]
+    return {}
+
+
+def _layer_statuses(conformance: dict[str, Any]) -> dict[str, str]:
+    layers = conformance.get("layers")
+    if not isinstance(layers, list):
+        return {}
+    result: dict[str, str] = {}
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        layer_id = str(layer.get("id") or "").strip()
+        status = str(layer.get("status") or "").strip().lower()
+        if layer_id:
+            result[layer_id] = status
+    return result
+
+
+def _unique_messages(messages: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for message in messages:
+        if message in seen:
+            continue
+        seen.add(message)
+        result.append(message)
+    return result
 
 
 def classify_diagnosis(
     diagnosis: dict[str, Any],
     *,
     require_zero_warnings: bool = True,
+    conformance_required: bool = False,
+    required_layer_ids: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     counts = _summary_counts(diagnosis)
     primary = _primary_surface_summary(diagnosis)
     visual_integrity = _visual_integrity_violations(diagnosis)
+    layout_collisions = _layout_collisions(diagnosis)
+    content_fit = _content_fit_violations(diagnosis)
+    conformance = _app_surface_conformance_summary(diagnosis)
     verdict = str(diagnosis.get("verdict") or "unknown") if isinstance(diagnosis, dict) else "unknown"
 
     failures: list[str] = []
@@ -311,6 +670,37 @@ def classify_diagnosis(
         failures.append("expected exactly one authoritative primary surface")
     if visual_integrity:
         failures.append(f"{len(visual_integrity)} visual-integrity violation(s) are active")
+    if layout_collisions:
+        failures.append(f"{len(layout_collisions)} layout collision(s) are active")
+    if content_fit:
+        failures.append(f"{len(content_fit)} content-fit violation(s) are active")
+
+    required_layers = tuple(str(layer_id) for layer_id in (required_layer_ids or ()) if str(layer_id).strip())
+    if conformance_required and not conformance:
+        failures.append("app-surface conformance summary is missing")
+    elif conformance:
+        status = str(conformance.get("status") or conformance.get("verdict") or "").lower()
+        valid = conformance.get("valid")
+        if conformance_required and not (status == "pass" and valid is True):
+            failures.append(f"app-surface conformance status is {status or 'unknown'}")
+        failed_layers = [str(item) for item in conformance.get("policyFailedLayerIds") or conformance.get("failedLayerIds") or []]
+        unavailable_layers = [
+            str(item)
+            for item in conformance.get("policyUnavailableLayerIds") or conformance.get("unavailableLayerIds") or []
+        ]
+        for layer_id in failed_layers:
+            failures.append(f"app-surface layer failed: {layer_id}")
+        if conformance_required:
+            for layer_id in unavailable_layers:
+                failures.append(f"required app-surface layer unavailable: {layer_id}")
+
+        layer_statuses = _layer_statuses(conformance)
+        for layer_id in required_layers:
+            layer_status = layer_statuses.get(layer_id)
+            if layer_status in {"fail", "error"}:
+                failures.append(f"required app-surface layer failed: {layer_id}")
+            elif conformance_required and layer_status in {None, "", "unavailable", "partial"}:
+                failures.append(f"required app-surface layer unavailable: {layer_id}")
 
     normalized_verdict = "pass" if not failures else "fail"
     if verdict == "pass" and failures:
@@ -327,9 +717,13 @@ def classify_diagnosis(
             "infos": counts["info"],
         },
         "primarySurface": primary,
+        "appSurfaceConformance": conformance,
+        "requiredLayerIds": list(required_layers),
         "visualIntegrityViolationCount": len(visual_integrity),
-        "failures": failures,
-        "warnings": warnings,
+        "layoutCollisionCount": len(layout_collisions),
+        "contentFitViolationCount": len(content_fit),
+        "failures": _unique_messages(failures),
+        "warnings": _unique_messages(warnings),
     }
 
 
@@ -360,6 +754,9 @@ def trial_result_summary(trial: dict[str, Any], *, evidence_limit: int = 5) -> d
         "failures": classification.get("failures") or [],
         "warnings": classification.get("warnings") or [],
         "primarySurface": classification.get("primarySurface") or {},
+        "appSurfacePolicy": trial.get("appSurfacePolicy") or {},
+        "appSurfaceConformance": classification.get("appSurfaceConformance") or {},
+        "requiredLayerIds": classification.get("requiredLayerIds") or [],
         "issueEvidence": issues[:evidence_limit],
         "visualIntegrityViolations": (measurements.get("visualIntegrityViolations") or [])[:evidence_limit],
         "layoutCollisions": (measurements.get("layoutCollisions") or [])[:evidence_limit],
@@ -377,19 +774,30 @@ def compact_diagnosis(diagnosis: dict[str, Any]) -> dict[str, Any]:
     summary = diagnosis.get("summary") if isinstance(diagnosis, dict) else {}
     if not isinstance(summary, dict):
         summary = {}
+    app_surface_conformance = (
+        diagnosis.get("appSurfaceConformance")
+        or summary.get("appSurfaceConformance")
+        or measurements.get("appSurfaceConformance")
+        or {}
+    )
     return {
         "schema": diagnosis.get("schema") or diagnosis.get("REPORT_SCHEMA") or "",
         "appId": diagnosis.get("appId") or "",
         "contractId": diagnosis.get("contractId") or "",
         "mode": diagnosis.get("mode") or "",
         "verdict": diagnosis.get("verdict") or "unknown",
-        "summary": summary,
+        "summary": {
+            **summary,
+            **({"appSurfaceConformance": app_surface_conformance} if app_surface_conformance else {}),
+        },
         "primarySurface": diagnosis.get("primarySurface") or summary.get("primarySurface") or {},
+        "appSurfaceConformance": app_surface_conformance,
         "findings": findings[:25],
         "measurements": {
             "visualIntegrityViolations": measurements.get("visualIntegrityViolations") or [],
             "layoutCollisions": measurements.get("layoutCollisions") or [],
             "contentFitViolations": measurements.get("contentFitViolations") or [],
+            "appSurfaceConformance": measurements.get("appSurfaceConformance") or app_surface_conformance or {},
         },
     }
 
@@ -408,6 +816,7 @@ def compact_widget_payload(payload: dict[str, Any]) -> dict[str, Any]:
     issues = payload.get("issues")
     if not isinstance(issues, list):
         issues = current.get("issues") if isinstance(current.get("issues"), list) else []
+    app_surface_conformance = payload.get("appSurfaceConformance") or measurements.get("appSurfaceConformance") or {}
     return {
         "schema": payload.get("schema") or "mcel-diagnostics-counter-copy-v4",
         "widgetVersion": payload.get("widgetVersion") or "",
@@ -423,10 +832,12 @@ def compact_widget_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "issues": issues[:25],
         },
         "primarySurface": payload.get("primarySurface") or {},
+        "appSurfaceConformance": app_surface_conformance,
         "measurements": {
             "visualIntegrityViolations": measurements.get("visualIntegrityViolations") or [],
             "layoutCollisions": measurements.get("layoutCollisions") or [],
             "contentFitViolations": measurements.get("contentFitViolations") or [],
+            "appSurfaceConformance": measurements.get("appSurfaceConformance") or app_surface_conformance or {},
         },
         "issues": issues[:25],
     }
@@ -459,6 +870,7 @@ def diagnostic_event_from_trial(trial: dict[str, Any]) -> dict[str, Any]:
         },
         "issues": issues[:25],
         "primarySurface": classification.get("primarySurface") or evidence.get("primarySurface") or {},
+        "appSurfaceConformance": classification.get("appSurfaceConformance") or evidence.get("appSurfaceConformance") or {},
         "measurements": (evidence.get("measurements") or {}),
     }
     return event
@@ -504,6 +916,7 @@ def run_browser_scenarios(
                     "intent": scenario.intent,
                     "startedAt": started,
                     "viewport": dict(viewport),
+                    "appSurfacePolicy": scenario.to_dict().get("appSurfacePolicy", {}),
                 }
                 try:
                     page.goto(route_url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -552,6 +965,8 @@ def run_browser_scenarios(
                     trial["classification"] = classify_diagnosis(
                         classification_source,
                         require_zero_warnings=require_zero_warnings,
+                        conformance_required=scenario.conformance_required,
+                        required_layer_ids=scenario.required_layer_ids,
                     )
                     if not trial["widgetPayloadAvailable"]:
                         trial["classification"].setdefault("warnings", []).append(
@@ -631,8 +1046,8 @@ def build_report(
         "baseUrl": normalize_base_url(base_url).rstrip("/"),
         "viewport": viewport or dict(DEFAULT_VIEWPORT),
         "source": {
-            "scenarioSource": "requirements-registry-app-contracts-with-route-overrides",
-            "diagnosisSource": "window.MCELDiagnosticsCounterWidget.refresh with window.MCEL.diagnose fallback",
+            "scenarioSource": "mcel-app-surface-registry-conformance-required-apps-with-route-overrides",
+            "diagnosisSource": "window.MCELDiagnosticsCounterWidget.refresh with appSurfaceConformance and window.MCEL.diagnose fallback",
             "eventSource": "mcel-diagnostic-event-v1",
         },
         "scenarios": [scenario.to_dict() for scenario in scenarios],
@@ -657,22 +1072,25 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Scenario results",
         "",
-        "| Scenario | App | Status | Errors | Warnings | Primary usable | Notes |",
-        "|---|---:|---:|---:|---:|---:|---|",
+        "| Scenario | App | Status | Errors | Warnings | Primary usable | Conformance | Notes |",
+        "|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for trial in report.get("trials") or []:
         classification = trial.get("classification") or {}
         counts = classification.get("counts") or {}
         primary = classification.get("primarySurface") or {}
+        conformance = classification.get("appSurfaceConformance") or {}
+        conformance_status = conformance.get("status") or "missing"
         notes = "; ".join((classification.get("failures") or []) + (classification.get("warnings") or []))
         lines.append(
-            "| {scenario} | {app} | {status} | {errors} | {warnings} | {primary} | {notes} |".format(
+            "| {scenario} | {app} | {status} | {errors} | {warnings} | {primary} | {conformance} | {notes} |".format(
                 scenario=trial.get("scenarioId", ""),
                 app=trial.get("app", ""),
                 status=classification.get("status", "unknown"),
                 errors=counts.get("errors", 0),
                 warnings=counts.get("warnings", 0),
                 primary="yes" if primary.get("usable") else "no",
+                conformance=str(conformance_status).replace("|", "\\|"),
                 notes=notes.replace("|", "\\|"),
             )
         )
@@ -684,6 +1102,15 @@ def render_markdown(report: dict[str, Any]) -> str:
             lines.append(f"### {result.get('scenarioId', '')}")
             for reason in result.get("failures") or []:
                 lines.append(f"- Failure: {reason}")
+            conformance = result.get("appSurfaceConformance") or {}
+            if conformance:
+                policy_failed = conformance.get("policyFailedLayerIds") or conformance.get("failedLayerIds") or []
+                policy_unavailable = conformance.get("policyUnavailableLayerIds") or conformance.get("unavailableLayerIds") or []
+                lines.append(f"- App-surface conformance: `{conformance.get('status', 'unknown')}`")
+                if policy_failed:
+                    lines.append(f"- Failed conformance layers: `{', '.join(str(item) for item in policy_failed)}`")
+                if policy_unavailable:
+                    lines.append(f"- Unavailable conformance layers: `{', '.join(str(item) for item in policy_unavailable)}`")
             for issue in result.get("issueEvidence") or []:
                 code = issue.get("code", "") if isinstance(issue, dict) else ""
                 finding = issue.get("finding", issue) if isinstance(issue, dict) else issue
@@ -717,7 +1144,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             "- Start the viewport before running this FLOG.",
             "- The default viewport is the MCEL desktop baseline (`1920x1200`); use `--viewport WIDTHxHEIGHT` for explicit responsive probes.",
             "- The script uses the diagnostics widget payload (`MCELDiagnosticsCounterWidget.refresh`) and keeps the raw `window.MCEL.diagnose(appId)` report as fallback evidence.",
-            "- FLOG v1 verifies the default-load contract health path only; app-specific interaction scenarios should be added as specs mature.",
+            "- FLOG v2 uses `McelAppSurfaceRegistry` as the default scenario source and verifies conformance-required apps only unless `--app` is supplied.",
             "- Use `--emit-events` to post the compact FLOG result to `/api/mcel/diagnostics/events`.",
             "",
         ]
@@ -785,7 +1212,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         summary = report["summary"]
-        print("mcel-runtime-flog-v1")
+        print(REPORT_VERSION)
         print(f"base_url: {report['baseUrl']}")
         print(f"viewport: {viewport_label(report.get('viewport') or DEFAULT_VIEWPORT)}")
         print(f"status: {summary['status']}")
