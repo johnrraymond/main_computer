@@ -117,7 +117,11 @@
             "color": "#f97316",
             "z": 42,
             "role": "helm",
-            "lookaroundLayer": "cockpit-controls"
+            "lookaroundLayer": "cockpit-controls",
+            "interaction": "pilot-shuttle",
+            "interactKey": "E",
+            "pausesCombat": true,
+            "pilotStation": "helm-console"
           }
         },
         {
@@ -132,7 +136,11 @@
             "color": "#38bdf8",
             "z": 42,
             "role": "science",
-            "lookaroundLayer": "cockpit-controls"
+            "lookaroundLayer": "cockpit-controls",
+            "interaction": "pilot-shuttle",
+            "interactKey": "E",
+            "pausesCombat": true,
+            "pilotStation": "science-console"
           }
         },
         {
@@ -147,7 +155,11 @@
             "color": "#facc15",
             "z": 34,
             "role": "port-panel",
-            "lookaroundLayer": "side-controls"
+            "lookaroundLayer": "side-controls",
+            "interaction": "pilot-shuttle",
+            "interactKey": "E",
+            "pausesCombat": true,
+            "pilotStation": "port-console"
           }
         },
         {
@@ -162,7 +174,11 @@
             "color": "#fb7185",
             "z": 34,
             "role": "starboard-panel",
-            "lookaroundLayer": "side-controls"
+            "lookaroundLayer": "side-controls",
+            "interaction": "pilot-shuttle",
+            "interactKey": "E",
+            "pausesCombat": true,
+            "pilotStation": "starboard-console"
           }
         },
         {
@@ -575,7 +591,9 @@
           "movement": "bounded-first-person-walk",
           "sprint": "shift",
           "fire": "click-space-or-f",
-          "restart": "r"
+          "restart": "r",
+          "interact": "mouse-over-console-e",
+          "pilot": "console-hover-e-pauses-combat"
         },
         "movementBounds": {
           "minX": 1.1,
@@ -614,7 +632,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Click to focus • Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart",
+          "controlsHint": "Mouse over console + E pilot • Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart",
           "geometry": {
             "renderer": "raw-webgl",
             "primitive": "triangles",
@@ -845,7 +863,189 @@
               "damage": 8,
               "attackCooldownMs": 850
             }
-          }
+          },
+          "pilotStations": [
+            {
+              "id": "helm-console",
+              "objectId": "nav-console",
+              "label": "Helm Console",
+              "role": "helm",
+              "bounds": {
+                "min": [
+                  -2.82,
+                  -1.35,
+                  -5.72
+                ],
+                "max": [
+                  -0.36,
+                  0.82,
+                  -3.42
+                ]
+              },
+              "glowBounds": {
+                "min": [
+                  -2.64,
+                  0.59,
+                  -5.49
+                ],
+                "max": [
+                  -0.66,
+                  0.72,
+                  -5.08
+                ]
+              },
+              "camera": {
+                "position": [
+                  -0.92,
+                  0.82,
+                  -2.82
+                ],
+                "yaw": -10,
+                "pitch": -7
+              },
+              "exitPosition": [
+                -0.92,
+                0.75,
+                -2.48
+              ],
+              "activationRange": 3.35
+            },
+            {
+              "id": "science-console",
+              "objectId": "science-console",
+              "label": "Science Console",
+              "role": "science",
+              "bounds": {
+                "min": [
+                  0.36,
+                  -1.35,
+                  -5.72
+                ],
+                "max": [
+                  2.82,
+                  0.82,
+                  -3.42
+                ]
+              },
+              "glowBounds": {
+                "min": [
+                  0.66,
+                  0.59,
+                  -5.49
+                ],
+                "max": [
+                  2.64,
+                  0.72,
+                  -5.08
+                ]
+              },
+              "camera": {
+                "position": [
+                  0.92,
+                  0.82,
+                  -2.82
+                ],
+                "yaw": 10,
+                "pitch": -7
+              },
+              "exitPosition": [
+                0.92,
+                0.75,
+                -2.48
+              ],
+              "activationRange": 3.35
+            },
+            {
+              "id": "port-console",
+              "objectId": "port-side-console",
+              "label": "Port Systems",
+              "role": "port-panel",
+              "bounds": {
+                "min": [
+                  -4.38,
+                  -0.72,
+                  -4.12
+                ],
+                "max": [
+                  -3.48,
+                  1.22,
+                  -0.86
+                ]
+              },
+              "glowBounds": {
+                "min": [
+                  -4.23,
+                  0.91,
+                  -3.66
+                ],
+                "max": [
+                  -3.68,
+                  1.04,
+                  -1.24
+                ]
+              },
+              "camera": {
+                "position": [
+                  -3.08,
+                  0.78,
+                  -2.18
+                ],
+                "yaw": -82,
+                "pitch": -4
+              },
+              "exitPosition": [
+                -3.08,
+                0.75,
+                -2.18
+              ],
+              "activationRange": 3.1
+            },
+            {
+              "id": "starboard-console",
+              "objectId": "starboard-side-console",
+              "label": "Starboard Ops",
+              "role": "starboard-panel",
+              "bounds": {
+                "min": [
+                  3.48,
+                  -0.72,
+                  -4.12
+                ],
+                "max": [
+                  4.38,
+                  1.22,
+                  -0.86
+                ]
+              },
+              "glowBounds": {
+                "min": [
+                  3.68,
+                  0.91,
+                  -3.66
+                ],
+                "max": [
+                  4.23,
+                  1.04,
+                  -1.24
+                ]
+              },
+              "camera": {
+                "position": [
+                  3.08,
+                  0.78,
+                  -2.18
+                ],
+                "yaw": 82,
+                "pitch": -4
+              },
+              "exitPosition": [
+                3.08,
+                0.75,
+                -2.18
+              ],
+              "activationRange": 3.1
+            }
+          ]
         },
         "combatEnabled": true,
         "healthHud": true,
@@ -871,6 +1071,7 @@
     "movementBounds": "shuttle3d-collision-bounds",
     "combatEnabled": true,
     "healthHud": true,
-    "alienTransportEnabled": true
+    "alienTransportEnabled": true,
+    "consolePilotEnabled": true
   }
 }

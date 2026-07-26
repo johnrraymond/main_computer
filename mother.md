@@ -2,6 +2,19 @@
 
 Status: design baseline for the new `mother` namespace.
 
+## Normative requirement language
+
+The words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY`, whether
+capitalized or written in lowercase prose, are normative in this document:
+
+- `MUST` / `MUST NOT`: mandatory for a conforming implementation;
+- `SHOULD` / `SHOULD NOT`: required unless a documented, reviewable exception
+  justifies deviation without weakening a `MUST` requirement;
+- `MAY`: optional behavior.
+
+Descriptive examples, placeholder field names, and conceptual endpoint names are
+non-normative unless a surrounding requirement explicitly makes them mandatory.
+
 `mother` is the replacement control surface for validator lifecycle operations that
 have outgrown `tools/allfather_control.py`. Allfather remains useful reference
 material for Coolify API access, private-state loading, guard/probe mechanics,
@@ -169,6 +182,11 @@ Canonical inline private identity backend:
 /runtime/state/mother/identity.private.yaml
 ```
 
+For private-state schema version 1, that path is normative. Implementations MUST
+NOT silently substitute `/runtime/state/mother.private.yaml`, another filename,
+or another backend. Any future path or backend change requires an explicit,
+versioned migration that preserves the journal, replica, and recovery contracts.
+
 The state root is created before the Mother control surface is deployed. It is
 the durable source for identities, topology records, action journals, active
 rollback stacks, immutable rollback journals, route before-state snapshots,
@@ -202,16 +220,17 @@ control surface. Recommended local permission target is equivalent to `0600` on
 Unix-like systems. If the file is copied or backed up, that copy is also private
 state.
 
-Minimum conceptual contents:
+Minimum normative schema-version-1 contents:
 
 ```yaml
-schema: mother.private.v1
+schema_version: 1
+kind: main_computer.mother.private_state.v1
 control_surface:
   id: mother-control-001
   created_at: "..."
 networks:
   mainnet:
-    chain_id: 20260001
+    chain_id: "<expected-chain-id>"
     genesis:
       source: mother-private
       first_topology_mode: initial
@@ -219,36 +238,49 @@ networks:
         blockperiodseconds: 2
         epochlength: 30000
       alloc_accounts:
-        - ref: officer:mainnet:hub-admin
-    officers:
-      hub-admin:
+        - ref: "networks.mainnet.wallets.captain"
+    wallets:
+      deployer:
         address: "0x..."
         private_key: "0x..."
-      deployer:
+      captain:
+        address: "0x..."
+        private_key: "0x..."
+      o1:
+        address: "0x..."
+        private_key: "0x..."
+      o2:
+        address: "0x..."
+        private_key: "0x..."
+      o3:
+        address: "0x..."
+        private_key: "0x..."
+    validators:
+      mainneta-super1:
+        address: "0x..."
+        private_key: "0x..."
+      mainnetc-super1:
         address: "0x..."
         private_key: "0x..."
     nodes:
       mainneta-super1:
         host: coolify-a
-        validator:
-          address: "0x..."
-          private_key: "0x..."
-        validator_key_ref: "networks.mainnet.nodes.mainneta-super1.validator"
+        validator_ref: "networks.mainnet.validators.mainneta-super1"
         guard_route_reservation: "..."
         rpc_route_reservation: "..."
         hub_route_reservation: "..."
       mainnetc-super1:
         host: coolify-c
-        validator:
-          address: "0x..."
-          private_key: "0x..."
-        validator_key_ref: "networks.mainnet.nodes.mainnetc-super1.validator"
+        validator_ref: "networks.mainnet.validators.mainnetc-super1"
         guard_route_reservation: "..."
         rpc_route_reservation: "..."
         hub_route_reservation: "..."
 ```
 
-The exact storage format may change, but these ownership rules may not:
+The schema may evolve only through an explicit versioned migration. Within
+`schema_version: 1`, the wallet, validator, and node-reference shape above is
+normative; implementations MUST NOT introduce a second validator identity shape.
+These ownership rules also apply:
 
 1. Mother reserves validator identity before `add-node`.
 2. `add-node` installs reserved identity; it does not invent validator identity.
@@ -362,8 +394,9 @@ operator explicitly requests identity rotation.
 `MOTHER-OPEN-002: standby-hub-runtime-behavior` is resolved as internal-only,
 route-gated standby. A standby service may keep internal guard/runtime processes
 available for diagnostics and recovery, but public Traefik routes must not point
-at it. Entering standby withdraws RPC and Hub public routes and records the
-previous route state in the rollback stack before the route change is applied.
+at it. Entering standby captures the complete previous route state in an
+`armed-provisional` frame before route mutation. That frame is promoted into the
+rollback-stack projection only after route withdrawal is freshly verified.
 Leaving standby does not publish routes by itself; the enclosing `add-node` or
 `remove-node` action commits routing through its typed RPC and Hub/FDB phases.
 
@@ -508,10 +541,11 @@ active_checkpoint_id: "checkpoint-..."
 active_checkpoint_hash: "sha256:..."
 pending_action_id: "add-node-mainneta-super4-001"
 pending_action_phase: "rpc-routing-verified"
-private_state_schema: "mother.private-state.v1"
+private_state_kind: "main_computer.mother.private_state.v1"
 private_state_generation: 12
 private_state_hash: "sha256:..."
 private_recovery_manifest_hash: "sha256:..."
+recovery_closure_manifest_hash: "sha256:..."
 replica_hosts:
   - coolify-a
   - coolify-b
@@ -1721,6 +1755,28 @@ network pending-action-finalized committed, action mirror missing:
   startup appends or reconstructs the missing action-journal mirror
 ```
 
+Finalization authority and replica convergence must be reported as distinct
+states:
+
+```text
+finalization-not-committed:
+  no authoritative network-journal finalization entry exists
+  rollback remains available
+
+finalized-replication-pending:
+  the authoritative finalization entry exists
+  rollback is permanently closed
+  one or more expected replicas have not acknowledged that exact head
+  all new mutation is blocked
+
+finalized:
+  every expected replica has durably acknowledged the exact finalization head
+```
+
+The exact full-set acceptance and recovery protocol for the middle state remains
+part of `MOTHER-OPEN-018` and must be consistent with the single-successor
+fencing contract in `MOTHER-OPEN-016`.
+
 A later rollback chosen before the network finalization commit appends an event
 identifying unused `frame-close-prepared` or `finalization-prepared` records as
 abandoned by that attempt. History is preserved; old records are never
@@ -1821,7 +1877,12 @@ propagate routes after a node action.
 
 Before preparing either node action, Mother must query the union of the sealed
 `replica_hosts` set, every host carrying a current network node, and the proposed
-target host. Every required host must freshly prove:
+target host. Current replicas and current-node hosts must freshly prove the full
+state-agreement barrier below. A target host that is not yet enrolled may report
+itself as `prospective-unenrolled`; it must still prove reachability, compatible
+capabilities, no pending work, no conflicting locks, and a clean bootstrap scope,
+but it is not counted as an agreeing replica until the explicit enrollment
+contract in `MOTHER-OPEN-017` completes.
 
 ```text
 reachable
@@ -1835,8 +1896,11 @@ supported action, guard, route, and journal schemas
 ```
 
 The action does not begin when any expected host is unavailable or pending.
-Majority agreement is insufficient. The action journal records the exact
-participant set, replica facts, and assertion evidence used to cross the barrier.
+Majority agreement is insufficient. `prep` performs a read-only barrier
+evaluation and freezes the exact participant set, replica facts, generations,
+and assertion evidence. Immediately before the first mutation, `do` acquires the
+network lock and freshly revalidates that frozen barrier. A successful `prep`
+never substitutes for the locked `do` revalidation.
 
 ### Distributed rollback layers
 
@@ -1913,7 +1977,7 @@ The desired state names the complete host-local canonical RPC scope:
       "url": "http://mainnetc-super1:8545"
     }
   ],
-  "expected_chain_id": 42424240
+  "expected_chain_id": "<expected-chain-id>"
 }
 ```
 
@@ -2004,7 +2068,7 @@ the next phase may begin.
 
 The ordered mutation sequence is:
 
-1. Cross the full-network clean-state barrier and acquire the network lock.
+1. Acquire the network lock and freshly revalidate the full-network clean-state barrier frozen by `prep`.
 2. Create the action journal, rollback journal, participant manifest, and initial
    checkpoint.
 3. On the target host, capture and arm service, identity, and runtime prestates.
@@ -2064,7 +2128,7 @@ freshly verified. A failed phase remains provisional and blocks later phases.
 
 The ordered mutation sequence is:
 
-1. Cross the full-network clean-state barrier and acquire the network lock.
+1. Acquire the network lock and freshly revalidate the full-network clean-state barrier frozen by `prep`.
 2. Verify surviving Hub, RPC, and validator participants are healthy.
 3. Capture and arm the Hub/FDB prestate on every current node.
 4. Reconcile Hub/FDB topology without the target and verify every survivor.
@@ -2786,7 +2850,7 @@ A representative result is:
     "governance_binding_hash": "sha256:..."
   },
   "evidence": {
-    "chain_id": 42424240,
+    "chain_id": "<expected-chain-id>",
     "observed_block_number": 123456,
     "observed_block_hash": "0x...",
     "finality_rule": "mother.governance-finality.v1",
@@ -3039,8 +3103,8 @@ The metadata record is non-secret and includes at least:
 
 ```json
 {
-  "schema": "mother.private-state-metadata.v1",
-  "private_state_schema": "mother.private-state.v1",
+  "kind": "main_computer.mother.private_state_metadata.v1",
+  "private_state_kind": "main_computer.mother.private_state.v1",
   "generation": 12,
   "content_hash": "sha256:...",
   "previous_content_hash": "sha256:...",
@@ -3055,6 +3119,14 @@ The private-recovery manifest identifies every additional private object by
 stable path or object identity, generation, and content hash. The manifest and
 ordinary journals may contain hashes and private-state references, but they must
 not copy raw private keys or secret payloads.
+
+In addition, every declared replica maintains a non-secret
+`recovery-closure/manifest.json` whose hash is sealed in the replicated network
+state. That manifest enumerates every immutable object transitively reachable
+from the active network, action, participant, rollback, request/result, and
+private-recovery journal heads. Reachability includes objects referenced through
+other manifests or receipts; a replica is incomplete when it has the journal
+reference but not the referenced payload.
 
 Private-state replication uses the same durable participant-receipt model as
 other distributed layers:
@@ -3225,18 +3297,27 @@ staged local recovery command that reconstructs `/runtime/state/mother/` from
 one unanimous, compatible replica lineage.
 
 The replica recovery set must be sufficient to reconstruct the local Mother
-state root without the lost machine. It includes at least:
+state root and execute every still-legal remediation or rollback without the lost
+machine. Each replica therefore stores the complete transitive immutable-object
+closure reachable from the active journal heads, not merely the journals and
+their references. It includes at least:
 
 ```text
 finalized topology
 complete replicated pending distributed action state
-network, action, participant, and rollback journals
+network, action, participant, rollback, and request/result journals
 journal heads and latest valid checkpoints
 replica_hosts and replica-set transition records
-participant receipt references and non-secret evidence
+unresolved provisional-frame payloads
+promoted rollback-frame payloads
+complete public and private prestate objects
+participant receipt bodies and their durable retrieval metadata
+durable request IDs, idempotency records, and accepted/running/result state
+every content-addressed object referenced directly or transitively by a recovered journal
 identity.private.yaml
 identity.private.meta.json
 private-recovery/manifest.json and every named private recovery object
+recovery-closure/manifest.json and its sealed manifest hash
 schema and capability metadata
 current head-authority record
 ```
@@ -3261,21 +3342,25 @@ python tools/mother/mother.py recover-head finalize mainnet --reason "original l
 2. requires every expected replica to be reachable;
 3. collects journal bases and heads, checkpoint hashes, complete state hashes,
    finalized topology, pending action identity and phase, private-state
-   generation and hashes, recovery-manifest hash, compatibility reports, and
-   current head-authority metadata;
-4. verifies each retained journal chain and checkpoint relationship as far as
-   the available evidence permits;
-5. requires exact full-set agreement on one lineage and one complete recovery
-   state;
-6. freezes that candidate and its receipt hashes in a local recovery plan.
+   generation and hashes, private-recovery manifest hash, recovery-closure
+   manifest hash, compatibility reports, and current head-authority metadata;
+4. verifies each retained journal chain and checkpoint relationship and walks
+   every reference in the recovery-closure manifest;
+5. proves that every referenced immutable object exists, matches its content
+   hash, and is retrievable from every declared replica;
+6. requires exact full-set agreement on one lineage, one complete recovery state,
+   and one transitive recovery-object closure;
+7. freezes that candidate, closure root, object inventory, and receipt hashes in
+   a local recovery plan.
 
 It must not select the first host that answers, use majority quorum, prefer the
 highest generation automatically, merge divergent lineages, omit a pending
 action, or reconstruct private keys from public journals.
 
-`recover-head do` downloads the frozen recovery candidate into a staging
-directory, verifies every object and hash before publication, and atomically
-restores the local durable state root. In particular, it restores:
+`recover-head do` downloads the frozen recovery candidate and its complete
+transitive object closure into a staging directory, verifies every object,
+reference, and hash before publication, and atomically restores the local durable
+state root. In particular, it restores:
 
 ```text
 /runtime/state/mother/identity.private.yaml
@@ -3292,6 +3377,8 @@ replayed finalized topology == restored finalized topology
 replayed pending action == restored pending action
 replayed rollback state == restored action/rollback projections
 private-state bytes and manifest == agreed replica hashes
+recovered immutable-object closure == sealed recovery-closure manifest
+every still-executable rollback/request reference resolves to verified local bytes
 ```
 
 Recovery preserves an unfinished distributed action exactly as recovered. It
@@ -3327,16 +3414,17 @@ The replicated network state contains at least:
 7. only then permits ordinary mutation from the replacement local head.
 
 All later mutating requests carry the current `head_id` and `head_epoch` as
-operational ownership metadata. Guards and replicas reject stale-head
-transitions. Therefore a surviving old local state root cannot continue a
-second authoritative lineage without first reconciling to the newer replicated
-head epoch. This is an operational split-brain safeguard; the Coolify API
-credential remains the only remote security boundary under the trusted-host
-threat model.
+operational ownership metadata. Guards and replicas reject transitions from an
+older head epoch. This prevents a surviving pre-recovery head from continuing
+after replacement activation, but it does not by itself fence two copies of the
+same current `head_id` and `head_epoch`. Atomic same-head successor fencing
+remains `MOTHER-OPEN-016`. The Coolify API credential remains the only remote
+security boundary under the trusted-host threat model.
 
 If any expected replica is unreachable, reports an incompatible schema, lacks
-required private recovery material, or disagrees on lineage, checkpoint, pending
-action, private-state generation, or head authority, normal recovery activation
+required private recovery material or any object in the transitive recovery
+closure, or disagrees on lineage, checkpoint, pending action, private-state
+generation, recovery-closure root, or head authority, normal recovery activation
 stops. Mother prints the complete disagreement and requires explicit
 recovery-rectification or replica-set reseal. There is no automatic winner.
 
@@ -3360,7 +3448,54 @@ not a hidden topology change and not automatic action completion.
 
 ### Remaining open design nodes
 
-None.
+`MOTHER-OPEN-016: full-set-writer-fencing-and-single-successor-commit`
+
+`head_id` and `head_epoch` fence a stale replacement head, but they do not yet
+prevent two machines holding the same current authority metadata from racing two
+different successors. The remaining contract must require every authoritative
+transition to name at least:
+
+```text
+expected_head_id
+expected_head_epoch
+expected_journal_sequence
+expected_journal_hash
+operation_id
+resulting_journal_hash
+```
+
+Every expected replica must atomically accept at most one successor for the named
+authority and journal head. Competing successors, split reservations, retry,
+release, and remediation behavior must be specified without choosing an
+automatic winner. Production network mutation must not be considered safe to
+implement until this contract is resolved.
+
+`MOTHER-OPEN-017: zero-network-and-prospective-replica-bootstrap`
+
+The document still needs the explicit enrollment transaction for a host that is
+not yet a replica and for a network with no current validators. It must define:
+
+```text
+current_replica_hosts
+prospective_replica_hosts
+transition_participants
+desired_replica_hosts
+```
+
+and govern initial state/private-recovery transfer, first-node bootstrap, adding
+the first node on a new host, removing the last node from a host, intentional
+removal of the final validator, preservation of network identity at zero
+validators, rollback, and the exact point at which a prospective host becomes a
+required replica.
+
+`MOTHER-OPEN-018: finalization-replication-state-contract`
+
+The minimum state distinction is fixed as
+`finalization-not-committed`, `finalized-replication-pending`, and `finalized`.
+The remaining contract must define the exact full-set acknowledgement,
+retry/recovery, and journal-head transition rules for
+`finalized-replication-pending`, and must compose with
+`MOTHER-OPEN-016` so two current writers cannot finalize different successors.
 
 The sealed-state format, crash and ambiguous-step recovery model, typed guard
 prestate contract, evidence-backed full-guard assertion contract, durable
@@ -3368,9 +3503,10 @@ filesystem journal and locking model, integrated distributed route/topology
 lifecycle, provisional-frame remediation lifecycle, replicated
 pending-versus-finalized network-state model, guard-mediated reversible QBFT
 membership contract, Coolify-API-key local-control boundary, governance-office
-verifier, reusable call-runner contract, complete private-state replication
-policy, fail-closed schema/capability negotiation, and unanimous
-replacement-local-head recovery procedure are resolved above.
+assertion contract, reusable bounded call-runner contract, complete private-state
+replication policy, fail-closed schema/capability contract, and replacement-head
+recovery architecture are otherwise design-resolved. `MOTHER-DESIGN-024` now
+requires complete transitive recovery-object closure before activation.
 
 Exact wire-field names, ABI adapters, schema validators, capability registries,
 and migration implementations remain implementation acceptance work. They must
@@ -3426,9 +3562,8 @@ tools/mother/
 Recommended command shape:
 
 ```text
-# Read-only. Before the command trusts live network facts, the control script
-# verifies local sealed state against remote replicas and refreshes local state
-# when remotes agree that local is stale.
+# Read-only. Reports local/remote sealed-state differences but never refreshes,
+# adopts, or rewrites local state.
 python tools/mother/mother.py diagnose mainnet
 
 # Reconstruct a lost local Mother state root from unanimous compatible replicas.
@@ -3560,7 +3695,9 @@ The Mother control container is not responsible for:
 - rebuilding super-node images;
 - using compose replacement as the normal mechanism for runtime topology
   mutation;
-- deleting or recreating services except inside an explicit `restore-service`
+- deleting a super-node service except inside the explicitly prepared target
+  phase of `remove-node`;
+- recreating a service except inside `add-node` or an explicit `restore-service`
   operation;
 - treating service count as consensus truth.
 
@@ -3691,7 +3828,10 @@ GET  /v1/state-root
 GET  /v1/diagnose/<network>
 GET  /v1/networks/<network>/seal
 GET  /v1/networks/<network>/replicas
-POST /v1/networks/<network>/sync-preflight
+POST /v1/networks/<network>/repair-projections
+POST /v1/networks/<network>/sync-state/prep
+POST /v1/networks/<network>/sync-state/do
+POST /v1/networks/<network>/sync-state/finalize
 POST /v1/networks/<network>/reseal/prep
 POST /v1/networks/<network>/reseal/do
 POST /v1/networks/<network>/reseal/finalize
@@ -3716,6 +3856,20 @@ GET  /v1/operations/<operation-id>/rollback-stack/<frame-id>
 GET  /v1/operations/<operation-id>/rollback-journal
 GET  /v1/guards/<node>/topology-state
 ```
+
+`repair-projections` is a narrow local repair. It MAY rebuild derived local files
+from the already-authoritative local journal and checkpoint lineage, but it MUST
+NOT adopt remote state, replace private state, alter journal lineage, change head
+authority, or change finalized or pending topology.
+
+`sync-state` is a staged mutating operation. Its `prep` stage freezes the exact
+remote lineage, object closure, private-state generation, authority metadata, and
+affected local scopes to be adopted. Its `do` stage acquires ownership, verifies
+those frozen inputs again, journals the adoption, and atomically restores the
+authoritative local state. Its `finalize` stage proves replay, private-state,
+pending-action, and live-guard agreement before releasing scopes. Remote
+authoritative state MUST NOT be adopted through a one-shot preflight or diagnosis
+call.
 
 The HTTP shape is optional; the stage semantics, state-root visibility, current
 operation visibility, sealed-state visibility, replica visibility, preflight
@@ -3923,7 +4077,7 @@ nor a recognized partial/desired state can be proven, retry must be refused.
 
 `finalize` proves that the prepared operation reached its declared final state.
 
-`finalize` must:
+`finalize` MUST:
 
 - run the operation's postcondition checks;
 - verify that all mutation checkpoints are complete;
@@ -3934,19 +4088,30 @@ nor a recognized partial/desired state can be proven, retry must be refused.
 - verify those rollback-journal records are durable;
 - commit `finalization-prepared` in the action journal with exact rollback and
   pending-network-state references;
-- commit `pending-action-finalized` in the network journal, promoting the pending
-  desired topology to finalized topology and clearing the pending action;
-- replicate and verify that network-journal head on every expected replica;
-- append the action-journal `action-finalized` mirror;
-- clear the active rollback-stack projection only after the network finalization
-  commit;
-- mark the operation complete;
-- release all active scope ownership;
-- make `rollback` unavailable for this operation, except as a new explicit
-  recovery operation.
+- commit `pending-action-finalized` in the authoritative network journal,
+  promoting the pending desired topology to finalized topology and clearing the
+  pending action;
+- immediately close rollback and enter `finalized-replication-pending` once that
+  authoritative network-journal commit succeeds;
+- retain all active scope ownership and block ordinary mutation while
+  `finalized-replication-pending`;
+- replicate and verify that exact network-journal head on every expected replica;
+- append or verify the action-journal `action-finalized` mirror;
+- clear the active rollback-stack projection only after the authoritative
+  network-journal finalization commit;
+- enter `finalized` and release active scope ownership only after every expected
+  replica durably acknowledges the exact finalization head.
 
-`finalize` must not perform hidden repair. If postconditions fail, `finalize`
-must leave the operation open and report the allowed next commands:
+A failure before the authoritative network-journal finalization commit leaves the
+operation in `finalize-failed`; rollback remains available. A failure or
+interruption after that commit MUST NOT return to `finalize-failed` and MUST NOT
+offer rollback. It leaves the operation in `finalized-replication-pending`, where
+only acknowledgement retry, diagnosis, and explicit replication remediation are
+allowed.
+
+`finalize` MUST NOT perform hidden repair. If postconditions fail before the
+authoritative finalization commit, `finalize` must leave the operation open and
+report the allowed next commands:
 
 ```text
 mother <kind> do <network>                         # retry/resume
@@ -3957,7 +4122,9 @@ mother rollback <network> --through <layer-id>
 
 ### `rollback`
 
-`rollback` is valid for every prepared operation until `finalize` succeeds.
+`rollback` is valid for every prepared operation only until the authoritative
+network-journal finalization entry commits. Replica acknowledgement may still be
+pending after that boundary, but rollback is already permanently closed.
 
 Mother must first inspect both:
 
@@ -4187,6 +4354,10 @@ remediation-required:
   mother rollback <network> --all
   mother rollback <network> --count <n>
   mother rollback <network> --through <layer-id>
+
+finalized-replication-pending:
+  mother diagnose <network>
+  mother <kind> finalize <network>                  # resume acknowledgement only
 ```
 
 The operator should not need to pass `--operation-id` for these commands because
@@ -4308,7 +4479,11 @@ None may silently overwrite another.
 
 Before `prep` or any mutating command trusts network facts, Mother runs the
 sealed-state preflight. If the remote replicas agree and the local head is stale,
-Mother refreshes the local state root from the agreed sealed replica. If remote
+the command refuses mutation and directs the operator to an explicit staged
+`sync-state`, replacement-head recovery, or reseal path that journals the local
+adoption. `diagnose` only reports the mismatch and never performs that write.
+`repair-projections` is allowed only when replay of the already-authoritative
+local lineage proves that no authoritative adoption is occurring. If remote
 replicas disagree, omit a pending action, or the state is wedged, normal mutation
 is refused until remediation or `reseal-state` creates a new explicit seal.
 
@@ -4413,6 +4588,7 @@ remediation-required
 do-complete-pending-finalize
 finalizing
 finalize-failed
+finalized-replication-pending
 finalized
 rolling-back
 rollback-failed
@@ -4439,9 +4615,15 @@ do-complete-pending-finalize:
   finalize, rollback --all, rollback --count <n>, rollback --through <layer-id>
 
 finalize-failed:
+  valid only when no authoritative network-journal finalization entry exists
   finalize retry
   retry/resume when an unverified mutation is identified
   rollback choices
+
+finalized-replication-pending:
+  rollback is closed
+  acknowledgement retry, diagnosis, and explicit replication remediation only
+  all active scopes remain owned and ordinary mutation remains blocked
 
 rollback-failed:
   rollback retry, inspection, explicit rectification
@@ -4721,6 +4903,9 @@ Forbidden:
 - removing the final validator by accident;
 - inferring the target from ordinal or service count;
 - deleting the service before Hub/FDB, RPC, and validator dependencies are removed;
+- treating removal of the final validator as an ordinary removal before
+  `MOTHER-OPEN-017` defines explicit zero-validator authorization, identity
+  preservation, and recovery bootstrap.
 - hiding a hard reseal inside an ordinary soft remove;
 - beginning while any expected host has unresolved work;
 - treating partial distributed completion as success.
@@ -4900,7 +5085,9 @@ Outputs:
 - postconditions;
 - risk report.
 
-Prep owns the affected scopes until finalize or rollback.
+Prep owns the affected scopes until full rollback completes or the operation
+reaches `finalized`. Scope ownership remains held throughout
+`finalized-replication-pending`.
 
 ### Do
 
@@ -4935,10 +5122,15 @@ Inputs:
 Outputs:
 
 - final verification report;
-- released scopes;
+- `finalized-replication-pending` or `finalized` status;
+- released scopes only after every expected replica acknowledges the exact
+  finalization head;
 - finalized operation record.
 
-Finalize is the only success path that makes rollback unavailable.
+Finalize is the only success path that makes rollback unavailable. Once the
+authoritative network-journal finalization entry commits, the operation enters
+`finalized-replication-pending` until every expected replica acknowledges that
+exact head; only then is its reported state `finalized`.
 
 ### Rollback
 
@@ -5410,7 +5602,8 @@ Mother safety rules:
   or rolled back.
 - `prep` is the only stage that interprets operator intent.
 - `do` performs only the prepared operation.
-- `finalize` proves completion and releases the scope.
+- `finalize` proves completion; durable scope ownership is released only after
+  the exact finalization head is acknowledged by every expected replica.
 - `rollback` backs out a non-finalized operation or honestly reports why it
   cannot.
 - Diagnosis is always read-only.
@@ -5420,6 +5613,9 @@ Mother safety rules:
 - Reseal is not a deployment operation.
 - Only `add-node` and explicit `restore-service` may create or recreate a
   Coolify super-node service.
+- Only the explicitly prepared target phase of `remove-node` may delete a
+  Coolify super-node service, and only after its Hub/FDB, RPC, and validator
+  dependencies have been removed and freshly verified.
 - Add/remove validator phases use the frozen guard-mediated QBFT proposal and
   participant manifest or explicit hard topology mode; they are not drift repair
   operations.
@@ -5533,9 +5729,14 @@ Mother should be implemented in this order:
    - cross-journal finalization preparation;
    - network-journal promotion from pending desired topology to finalized
      topology;
-   - full replica acknowledgement;
-   - releases scopes;
-   - closes rollback window.
+   - closes the rollback window immediately at the authoritative network-journal
+     commit;
+   - enters `finalized-replication-pending` and retains scopes while any expected
+     replica acknowledgement is missing;
+   - retries or remediates full replica acknowledgement without reopening
+     rollback;
+   - enters `finalized` and releases scopes only after every expected replica
+     acknowledges the exact finalization head.
 
 10. Distributed QBFT membership controller
    - frozen proposal, voter, and observer manifests;
@@ -5581,11 +5782,21 @@ Mother should be implemented in this order:
 
 17. `mother_recover_head.py`
    - discovers the exact expected replica set from a recovery descriptor;
-   - requires unanimous compatible replica state;
+   - requires unanimous compatible replica state and one complete transitive
+     recovery-object closure;
    - restores the complete local state root and private recovery bundle atomically;
    - replays journals and rebuilds all projections;
    - verifies live guard truth without silently changing recovered history;
    - activates a new replicated head epoch only after full-set acknowledgement.
+
+18. Full-set writer-fencing and successor-commit engine
+   - implement only after `MOTHER-OPEN-016` is resolved.
+
+19. Prospective replica and zero-network bootstrap
+   - implement only after `MOTHER-OPEN-017` is resolved.
+
+20. Finalization replication-state reconciler
+   - implement only after `MOTHER-OPEN-018` is resolved.
 
 
 ## Current operating lesson

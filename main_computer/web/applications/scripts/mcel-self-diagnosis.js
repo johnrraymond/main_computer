@@ -629,6 +629,12 @@
     findings.push({severity, code, finding, evidence, recommendedNextProbe});
   }
 
+  function contentFitViolationSeverity(contract, snapshot) {
+    const appId = String(contract?.appId || snapshot?.appId || "");
+    if (appId === "document" || appId === "file-explorer") return "critical";
+    return "warning";
+  }
+
   function normalizedMode(snapshot, contract) {
     const mode = String(snapshot?.mode || "").trim();
     if (mode && mode !== "unknown") return mode;
@@ -748,7 +754,7 @@
     if (contentFitViolations.length) {
       addFinding(
         findings,
-        "warning",
+        contentFitViolationSeverity(contract, snapshot),
         "semantic-content-fit-violation",
         "Rendered semantic projections clip or overwrite their own readable content.",
         {contentFitViolations},
@@ -931,6 +937,10 @@
       const parentHeight = Number(parent.height || 0);
       const currentWidth = Number(current.width || 0);
       const parentWidth = Number(parent.width || 0);
+
+      if (String(current.display || "") === "contents" || String(parent.display || "") === "contents") {
+        continue;
+      }
 
       if (
         current.exists !== false &&
@@ -1163,16 +1173,34 @@
     return "button, select, input, textarea, output, summary, [data-mcel-layout-zone], [data-mcel-zone]";
   }
 
-  function directVisibleChildren(container) {
+  function isLayoutProbeIgnoredElement(el, appId) {
+    if (!isElement(el)) return false;
+    if (appId === "document") {
+      try {
+        if (isDocumentFloatingMenuElement(el, appId)) return true;
+        if (el.matches?.(".mc-page-overlay-layer[aria-hidden=\"true\"], .mc-page-overlay-layer[contenteditable=\"false\"], #document-mcel-surface-carriers, [data-document-mcel-carrier]")) {
+          return true;
+        }
+        if (el.closest?.("#document-mcel-surface-carriers, .mc-page-overlay-layer[aria-hidden=\"true\"], .mc-page-overlay-layer[contenteditable=\"false\"]")) {
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  function directVisibleChildren(container, context = {}) {
+    const appId = String(context.appId || "");
     return Array.from(container?.children || [])
       .filter(isElement)
+      .filter((el) => !isLayoutProbeIgnoredElement(el, appId))
       .map((el) => ({el, box: computeBox(el)}))
       .filter((entry) => entry.box.visible && entry.box.width > 8 && entry.box.height > 8);
   }
 
   function detectSiblingLayoutCollisions(container, context = {}) {
     const collisions = [];
-    const children = directVisibleChildren(container);
+    const children = directVisibleChildren(container, context);
     for (let index = 0; index < children.length; index += 1) {
       for (let otherIndex = index + 1; otherIndex < children.length; otherIndex += 1) {
         const first = children[index];
@@ -1204,10 +1232,12 @@
       .filter((el) => el !== owner && isElement(el));
     const siblingBoxes = Array.from(owner.parentElement?.children || [])
       .filter((candidate) => candidate !== owner && isElement(candidate))
+      .filter((candidate) => !isLayoutProbeIgnoredElement(candidate, context.appId))
       .map((el) => ({el, box: clippedPaintBox(el, computeBox(el), owner.parentElement?.parentElement || null)}))
       .filter((entry) => entry.box?.visible);
 
     descendants.forEach((el) => {
+      if (isLayoutProbeIgnoredElement(el, context.appId)) return;
       if (isDocumentFloatingMenuElement(el, context.appId)) return;
       const rawChildBox = computeBox(el);
       if (!rawChildBox.visible || rawChildBox.width < 8 || rawChildBox.height < 8) return;
@@ -1318,12 +1348,42 @@
     return "[data-mcel-layout-zone], [data-mcel-zone]";
   }
 
+  function contentFitPolicyFor(el) {
+    if (!isElement(el)) return "";
+    try {
+      const own = el.getAttribute?.("data-mcel-fit-policy");
+      if (own) return String(own).toLowerCase();
+      const declared = el.closest?.("[data-mcel-fit-policy]");
+      if (declared && declared !== el) return String(declared.getAttribute("data-mcel-fit-policy") || "").toLowerCase();
+    } catch {}
+    return "";
+  }
+
+  function declaredFitPolicyAllowsClip(el, styles, horizontalClipped, verticalClipped) {
+    const policy = contentFitPolicyFor(el);
+    if (!policy) return false;
+    const tokens = new Set(policy.split(/[^a-z0-9-]+/).filter(Boolean));
+    if (verticalClipped && !tokens.has("scroll")) return false;
+    if (horizontalClipped && (tokens.has("truncate") || tokens.has("ellipsis"))) {
+      const overflow = String(styles.overflowX || styles.overflow || "");
+      const textOverflow = String(styles.textOverflow || "");
+      return /hidden|clip/.test(overflow) && textOverflow === "ellipsis";
+    }
+    if (horizontalClipped && tokens.has("compact-icon")) {
+      const fontSize = parseFloat(String(styles.fontSize || "0")) || 0;
+      return fontSize === 0 && Boolean(el.getAttribute?.("aria-label"));
+    }
+    return false;
+  }
+
   function detectContentFitViolations(root, context = {}) {
     if (!isElement(root)) return [];
     const violations = [];
     const tolerance = 3;
     queryAll(contentFitCandidateSelector(context.appId), root).forEach((el) => {
       if (!isElement(el)) return;
+      if (isLayoutProbeIgnoredElement(el, context.appId)) return;
+      if (isDocumentFloatingMenuElement(el, context.appId)) return;
       const box = computeBox(el);
       if (!box.visible || box.width < 8 || box.height < 8) return;
 
@@ -1338,12 +1398,15 @@
       const scrollHeight = Number(el.scrollHeight || 0);
       const horizontalClipped = scrollWidth > clientWidth + tolerance && !allowsHorizontalScroll;
       const verticalClipped = scrollHeight > clientHeight + tolerance && !allowsVerticalScroll;
+      const fitPolicy = contentFitPolicyFor(el);
 
       if (!horizontalClipped && !verticalClipped) return;
+      if (declaredFitPolicyAllowsClip(el, styles, horizontalClipped, verticalClipped)) return;
       violations.push({
         type: "semantic-content-fit",
         appId: context.appId || "",
         selector: selectorFor(el),
+        fitPolicy,
         box: compactBox(box),
         scroll: {
           clientWidth: Math.round(clientWidth),
@@ -1600,6 +1663,7 @@
     const boxes = [];
     queryAll(visualIntegrityTextSelector(context.appId), root).forEach((el) => {
       if (!isElement(el)) return;
+      if (isLayoutProbeIgnoredElement(el, context.appId)) return;
       if (isDocumentFloatingMenuElement(el, context.appId)) return;
       const owner = closestVisualOwner(el, root, context);
       const ownerBox = computeBox(owner);
@@ -1630,7 +1694,7 @@
     const violations = [];
     queryAll(visualStackContainerSelector(context.appId), root).forEach((container) => {
       if (!isElement(container)) return;
-      const children = directVisibleChildren(container)
+      const children = directVisibleChildren(container, context)
         .filter((entry) => entry.box.width >= 8 && entry.box.height >= 8);
       for (let index = 0; index < children.length; index += 1) {
         for (let otherIndex = index + 1; otherIndex < children.length; otherIndex += 1) {

@@ -19,7 +19,12 @@ var McelDocumentEditorSurface = (() => {
   }
 
   function setAttrs(element, attrs) {
-    if (!element || !attrs || typeof element.setAttribute !== "function") return element;
+    if (!element || !attrs) return element;
+    if (typeof element.setAttribute !== "function" && typeof element.forEach === "function") {
+      element.forEach((item) => setAttrs(item, attrs));
+      return element;
+    }
+    if (typeof element.setAttribute !== "function") return element;
     Object.entries(attrs).forEach(([name, value]) => {
       if (value === undefined || value === null || value === "") return;
       element.setAttribute(name, String(value));
@@ -214,21 +219,46 @@ var McelDocumentEditorSurface = (() => {
     setAttrs(app, staticSurfaceAttrs());
     setAttrs(scope.querySelector(".document-shell"), {
       "data-mcel-visual-owner": surfaceId,
-      "data-mcel-layout-zone": surfaceId,
-      "data-mcel-readable": "true"
+      "data-mcel-layout-zone": surfaceId
     });
     setAttrs(scope.querySelector(".document-head-actions"), {
       "data-mcel-visual-owner": surfaceId
     });
     [
       ".document-library-head",
-      ".document-library-list",
       ".document-canvas",
       ".document-ai-main",
       ".document-ai-composer"
     ].forEach((selector) => setAttrs(scope.querySelector(selector), {
       "data-mcel-visual-owner": surfaceId,
       "data-mcel-readable": "true"
+    }));
+    [
+      ".document-library-head",
+      ".document-library-head strong",
+      ".document-library-head-actions"
+    ].forEach((selector) => setAttrs(scope.querySelector(selector), {
+      "data-mcel-fit-policy": "wrap"
+    }));
+    [
+      "#document-library-refresh",
+      "#document-library-close"
+    ].forEach((selector) => setAttrs(scope.querySelector(selector), {
+      "data-mcel-readable": "true",
+      "data-mcel-visual-owner": surfaceId,
+      "data-mcel-fit-policy": "compact-icon"
+    }));
+    [
+      ".document-library-item strong",
+      ".document-library-item span"
+    ].forEach((selector) => setAttrs(scope.querySelectorAll(selector), {
+      "data-mcel-fit-policy": "truncate"
+    }));
+    [
+      ".document-library-list",
+      "#document-export-menu"
+    ].forEach((selector) => setAttrs(scope.querySelector(selector), {
+      "data-mcel-visual-owner": surfaceId
     }));
 
     const regionMappings = [
@@ -256,6 +286,10 @@ var McelDocumentEditorSurface = (() => {
       ["#document-ai-anchor-summary", staticNodeRecords()[9]]
     ];
     nodeMappings.forEach(([selector, attrs]) => attrs && setAttrs(scope.querySelector(selector), attrs));
+    [
+      "#document-library-list",
+      "#document-export-menu"
+    ].forEach((selector) => scope.querySelector(selector)?.removeAttribute("data-mcel-readable"));
 
     const carrier = ensureSemanticCarrier(app);
     staticNodeRecords().slice(6, 9).forEach((attrs, index) => writeCarrierRecord(carrier, attrs, index, "node"));
