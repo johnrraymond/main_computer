@@ -593,7 +593,8 @@
           "fire": "click-space-or-f",
           "restart": "r",
           "interact": "mouse-over-console-e",
-          "pilot": "console-hover-e-flies-to-mother-ship-docking-cutscene"
+          "pilot": "console-hover-e-flies-to-mother-ship-docking-cutscene-then-shuttle-bay-walk",
+          "postDocking": "first-person-shuttle-bay-control"
         },
         "movementBounds": {
           "minX": 1.1,

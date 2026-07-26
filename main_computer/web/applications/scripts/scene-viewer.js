@@ -2736,6 +2736,7 @@
           this.combatPauseStartedAtMs = null;
           this.lastPilotUiAt = -Infinity;
           this.onPilotChanged = null;
+          this.onBayControlStarted = null;
           this.playerHealth = this.combat.player.startingHealth;
           this.aliens = [];
           this.transportSequence = 0;
@@ -2965,7 +2966,8 @@
             dockingCutsceneElapsedMs: 0,
             dockingCutscenePhase: "approach",
             dockingCutsceneComplete: false,
-            playerExitedToBay: false
+            playerExitedToBay: false,
+            bayPlayerControlActive: false
           };
         }
 
@@ -2989,6 +2991,66 @@
 
         isShuttleBaySceneActive() {
           return Boolean(this.flight?.playerExitedToBay);
+        }
+
+        isShuttleBayPlayerControlActive() {
+          return Boolean(this.flight?.bayPlayerControlActive);
+        }
+
+        shuttleBayPlayerSpawn() {
+          return {
+            position: [0.24, 0.78, 3.92],
+            yaw: 180,
+            pitch: -5
+          };
+        }
+
+        shuttleBayMovementConfig() {
+          return {
+            ...this.movement,
+            bounds: {
+              minX: -4.72,
+              maxX: 4.72,
+              minZ: -4.62,
+              maxZ: 5.12
+            },
+            colliders: [
+              {
+                id: "docked-shuttle-hull",
+                minX: -1.36,
+                maxX: 1.36,
+                minZ: -1.42,
+                maxZ: 1.44
+              }
+            ]
+          };
+        }
+
+        enterShuttleBayPlayerControl(force = false) {
+          const flight = this.flight;
+          if (!flight?.playerExitedToBay) return false;
+          if (flight.bayPlayerControlActive && !force) return false;
+          const spawn = this.shuttleBayPlayerSpawn();
+          flight.bayPlayerControlActive = true;
+          this.pilot.active = false;
+          this.pilot.station = null;
+          this.pilot.throttle = 0;
+          this.pilot.impulse = 0;
+          this.combatPauseStartedAtMs = null;
+          this.clearMovementKeys();
+          this.camera = spawn.position.slice();
+          this.setLook(spawn.yaw, spawn.pitch);
+          if (typeof this.onCameraMoved === "function") this.onCameraMoved(this.camera.slice());
+          if (typeof this.onBayControlStarted === "function") {
+            this.onBayControlStarted({
+              position: this.camera.slice(),
+              yaw: spawn.yaw,
+              pitch: spawn.pitch
+            });
+          }
+          this.emitPilotState(true);
+          this.emitCombatState(true);
+          return true;
         }
 
         isDockingSceneActive() {
@@ -3037,6 +3099,7 @@
           flight.dockingCutscenePhase = "hangar-approach";
           flight.dockingCutsceneComplete = false;
           flight.playerExitedToBay = false;
+          flight.bayPlayerControlActive = false;
           this.pilot.throttle = 0;
           this.pilot.impulse = 0;
           this.clearMovementKeys();
@@ -3064,7 +3127,7 @@
             this.pilot.station = null;
             this.pilot.throttle = 0;
             this.pilot.impulse = 0;
-            this.clearMovementKeys();
+            this.enterShuttleBayPlayerControl(true);
           }
           this.emitPilotState();
           this.emitCombatState();
@@ -3120,6 +3183,7 @@
             dockingCutscenePhase: cutscene.phase,
             dockingCutsceneProgress: Number(cutscene.progress.toFixed(3)),
             playerExitedToBay: cutscene.playerExitedToBay,
+            shuttleBayControlActive: this.isShuttleBayPlayerControlActive(),
             shuttleBayLabel: cutscene.bayLabel
           };
         }
@@ -3400,7 +3464,7 @@
             builder.beam([-1.7, 0.8, 5.92], [-0.75, shuttleY + 0.26, shuttleZ + 0.78], 0.026, amber);
             builder.beam([1.7, 0.8, 5.92], [0.75, shuttleY + 0.26, shuttleZ + 0.78], 0.026, amber);
           }
-          if (exit > 0.01 || snapshot.playerExitedToBay) {
+          if ((exit > 0.01 || snapshot.playerExitedToBay) && !this.isShuttleBayPlayerControlActive()) {
             const walkZ = shuttleZ + 1.35 + exit * 2.15;
             const walkX = -0.16 + exit * 0.38;
             this.appendCutsceneCadet(builder, [walkX, -1.06, walkZ], progress * 9);
@@ -3895,7 +3959,8 @@
         }
 
         canOccupy(x, z) {
-          const {bounds, radius, colliders} = this.movement;
+          const movement = this.isShuttleBaySceneActive() ? this.shuttleBayMovementConfig() : this.movement;
+          const {bounds, radius, colliders} = movement;
           if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
           const blockedByFixture = colliders.some((collider) => (
             x > collider.minX - radius
@@ -3904,6 +3969,7 @@
             && z < collider.maxZ + radius
           ));
           if (blockedByFixture) return false;
+          if (this.isShuttleBaySceneActive()) return true;
           return !this.aliens.some((alien) => (
             alien.state === "active"
             && Math.hypot(x - alien.position[0], z - alien.position[2]) < radius + this.combat.alien.radius
@@ -3911,7 +3977,7 @@
         }
 
         moveCamera(deltaX, deltaZ) {
-          if (this.isDockingSceneActive() || this.pilot.active || !this.movement.enabled || this.gameOver) return;
+          if (this.isDockingCutsceneActive() || this.pilot.active || !this.movement.enabled || this.gameOver) return;
           const nextX = this.camera[0] + deltaX;
           const nextZ = this.camera[2] + deltaZ;
           let changed = false;
@@ -3933,7 +3999,7 @@
             this.updateDockingCutscene(deltaSeconds);
             return;
           }
-          if (this.isShuttleBaySceneActive()) return;
+          if (this.isShuttleBaySceneActive() && !this.isShuttleBayPlayerControlActive()) return;
           if (this.pilot.active) {
             this.updatePilot(deltaSeconds);
             return;
@@ -3977,14 +4043,16 @@
           this.gl.bufferData(this.gl.ARRAY_BUFFER, this.dynamicGeometry, this.gl.DYNAMIC_DRAW);
           this.resize();
           const gl = this.gl;
-          const dockingSceneActive = this.isDockingSceneActive();
+          const dockingCutsceneActive = this.isDockingCutsceneActive();
+          const shuttleBaySceneActive = this.isShuttleBaySceneActive();
+          const cinematicSceneActive = dockingCutsceneActive || shuttleBaySceneActive;
           const direction = this.cameraDirection();
           const target = [
             this.camera[0] + direction[0],
             this.camera[1] + direction[1],
             this.camera[2] + direction[2]
           ];
-          const cameraView = dockingSceneActive
+          const cameraView = dockingCutsceneActive
             ? this.dockingCutsceneCamera(frameTime)
             : {eye: this.camera, target};
           const farPlane = Math.max(140, this.starfield.radius + this.starfield.maximumSize + 8);
@@ -4003,7 +4071,7 @@
           gl.uniform3fv(this.locations.camera, new Float32Array(cameraView.eye));
           gl.uniform1f(this.locations.time, frameTime / 1000);
 
-          if (!dockingSceneActive) {
+          if (!cinematicSceneActive) {
             this.bindGeometryBuffer(this.buffer);
             gl.uniform3f(this.locations.offset, 0, 0, 0);
             gl.drawArrays(gl.TRIANGLES, 0, this.worldVertexCount);
@@ -4015,7 +4083,7 @@
             gl.drawArrays(gl.TRIANGLES, 0, this.dynamicVertexCount);
           }
 
-          if (!dockingSceneActive) {
+          if (!cinematicSceneActive) {
             this.bindGeometryBuffer(this.starBuffer);
             gl.uniform3fv(this.locations.offset, new Float32Array(this.camera));
             gl.drawArrays(gl.TRIANGLES, 0, this.starVertexCount);
@@ -4342,7 +4410,8 @@
             const combat = renderer.combatSnapshot();
             const pilot = renderer.pilotSnapshot();
             const pilotText = pilot.active ? ` • piloting ${pilot.stationLabel}` : "";
-            status.textContent = `${renderer.worldVertexCount.toLocaleString()} fixed vertices • ${renderer.starfield.count} sphere stars • ${combat.alive} boarders${pilotText} • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)}`;
+            const bayText = pilot.shuttleBayControlActive ? ` • ${pilot.shuttleBayLabel}` : "";
+            status.textContent = `${renderer.worldVertexCount.toLocaleString()} fixed vertices • ${renderer.starfield.count} sphere stars • ${combat.alive} boarders${pilotText}${bayText} • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)}`;
             canvas.dataset.cameraX = camera[0].toFixed(3);
             canvas.dataset.cameraZ = camera[2].toFixed(3);
           };
@@ -4385,19 +4454,21 @@
             canvas.dataset.activePilotStation = pilot.stationId;
             canvas.dataset.flightDocked = pilot.flightDocked ? "true" : "false";
             canvas.dataset.dockingCutscene = pilot.dockingCutsceneActive ? "active" : (pilot.playerExitedToBay ? "complete" : "inactive");
+            canvas.dataset.shuttleBayControl = pilot.shuttleBayControlActive ? "active" : "inactive";
             shell.dataset.pilotMode = pilot.active ? "active" : "inactive";
             shell.dataset.hoveredPilotStation = pilot.hoverId;
             shell.dataset.flightDocked = pilot.flightDocked ? "true" : "false";
             shell.dataset.dockingCutscene = pilot.dockingCutsceneActive ? "active" : (pilot.playerExitedToBay ? "complete" : "inactive");
+            shell.dataset.shuttleBayControl = pilot.shuttleBayControlActive ? "active" : "inactive";
             if (pilot.dockingCutsceneActive) {
               const progress = Math.round(pilot.dockingCutsceneProgress * 100);
               pilotLine.textContent = `DOCKING CUTSCENE • ${pilot.dockingCutscenePhase.replace(/-/g, " ").toUpperCase()} • ${progress}%`;
               pilotPrompt.hidden = false;
               pilotPrompt.textContent = `Autopilot docking with ${pilot.targetLabel}: shuttle entering bay, landing, and cadet exiting`;
             } else if (pilot.playerExitedToBay) {
-              pilotLine.textContent = `ARRIVED: ${pilot.shuttleBayLabel} • BOARDERS PAUSED`;
+              pilotLine.textContent = `ARRIVED: ${pilot.shuttleBayLabel} • PLAYER CONTROL RESTORED`;
               pilotPrompt.hidden = false;
-              pilotPrompt.textContent = `Cutscene complete — the player has exited into the ${pilot.shuttleBayLabel}`;
+              pilotPrompt.textContent = `W/A/S/D to walk the ${pilot.shuttleBayLabel} • drag or arrows to look • boarders remain paused`;
             } else if (pilot.active) {
               const range = pilot.flightDocked ? `DOCKED WITH ${pilot.targetLabel}` : `RANGE ${pilot.flightDistance.toFixed(1)} TO ${pilot.targetLabel}`;
               pilotLine.textContent = `PILOTING ${pilot.stationLabel} • ${range} • SPEED ${pilot.flightSpeed.toFixed(1)} • E EXIT`;
@@ -4415,6 +4486,10 @@
               pilotPrompt.textContent = "Mouse over a console and press E";
             }
             updateMovementStatus(renderer.camera);
+          };
+          renderer.onBayControlStarted = (bay) => {
+            setShuttle3dLook(container, bay.yaw, bay.pitch, config);
+            updateMovementStatus(bay.position || renderer.camera);
           };
           renderer.onCameraMoved = updateMovementStatus;
           renderer.onCombatChanged = updateCombatHud;
