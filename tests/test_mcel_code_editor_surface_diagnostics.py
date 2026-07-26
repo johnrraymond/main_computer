@@ -165,6 +165,36 @@ def test_healthy_code_editor_report_builds_extractable_surface_pathway() -> None
     assert payload["hasLayoutFingerprint"] is True
 
 
+
+def test_code_editor_surface_pathway_ignores_hidden_zero_sized_optional_context() -> None:
+    payload = run_node_json(load_api_script(
+        HEALTHY_REPORT_JS
+        + """
+        const report = JSON.parse(JSON.stringify(healthyReport));
+        report.measurements.optionalRegions["code-editor.region.inspector"] = {
+          exists: true,
+          visible: false,
+          selector: ".code-studio-inspector",
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0
+        };
+        const result = surfaceApi.evaluateCodeEditorSurfacePathway(report);
+        process.stdout.write(JSON.stringify({
+          status: result.status,
+          valid: result.valid,
+          codes: result.diagnostics.map((item) => item.code),
+          regionIds: result.layoutGrammar.regions.map((region) => region.id).sort()
+        }));
+        """
+    ))
+
+    assert payload["status"] == "pass"
+    assert payload["valid"] is True
+    assert payload["codes"] == []
+    assert "code-editor.region.inspector" not in payload["regionIds"]
+
 def test_code_editor_surface_pathway_fails_specific_predicate_for_invisible_editor() -> None:
     payload = run_node_json(load_api_script(
         HEALTHY_REPORT_JS

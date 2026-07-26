@@ -4,6 +4,13 @@
   const VERSION = "mcel-self-diagnosis-v2";
   const REPORT_SCHEMA = "mcel-self-diagnosis-report-v2";
 
+  const surfaceFitApi = (() => {
+    if (typeof McelSurfaceFitContract !== "undefined") return McelSurfaceFitContract;
+    if (typeof window !== "undefined" && window.McelSurfaceFitContract) return window.McelSurfaceFitContract;
+    if (typeof window !== "undefined" && window.MCEL?.surfaceFitContract) return window.MCEL.surfaceFitContract;
+    return null;
+  })();
+
   const APP_MODE_DEFAULTS = Object.freeze({
     "code-editor": "authoring",
     calculator: "default",
@@ -48,7 +55,7 @@
         label: "Monaco selected-file editor",
         hostSelector: "#code-studio-runtime-monaco",
         editorSelector: ".monaco-editor",
-        minWidth: 520,
+        minWidth: 360,
         minHeight: 320
       },
       requiredRegions: [
@@ -339,13 +346,27 @@
     const api = getAppSurfaceConformance();
     if (!api || typeof api.evaluateAppSurfaceConformance !== "function") return report;
 
+    const policy = (() => {
+      try {
+        if (typeof api.registryPolicyFor === "function") return api.registryPolicyFor(report.appId);
+      } catch {}
+      return null;
+    })();
+    const requiredLayerIds = Array.isArray(policy?.requiredLayerIds) ? policy.requiredLayerIds : [];
+    const requiresStaticSurface = requiredLayerIds.includes("semantic-surface") || requiredLayerIds.includes("layout-grammar");
+    const expectedSurfaceId = report.summary?.primarySurface?.expected || policy?.surfaceId || snapshot?.semanticSurfaceId || "";
+    const snapshotSurfaceId = snapshot?.semanticSurfaceId || "";
+    const snapshotSurfaceMatches = snapshotSurfaceId && expectedSurfaceId && snapshotSurfaceId === expectedSurfaceId;
+    const surfaceHtml = (snapshotSurfaceMatches || requiresStaticSurface) ? (snapshot?.semanticSurfaceHtml || "") : "";
+
     let summary = null;
     try {
       summary = api.evaluateAppSurfaceConformance({
         appId: report.appId,
         report,
-        surfaceId: snapshot?.semanticSurfaceId || report.summary?.primarySurface?.expected || "",
-        surfaceHtml: snapshot?.semanticSurfaceHtml || ""
+        registryPolicy: policy || undefined,
+        surfaceId: expectedSurfaceId || snapshotSurfaceId || "",
+        surfaceHtml
       }, options.appSurfaceConformanceOptions || {});
     } catch (error) {
       summary = {
@@ -1348,22 +1369,51 @@
     return "[data-mcel-layout-zone], [data-mcel-zone]";
   }
 
+  function contentFitPolicyInfoFor(el) {
+    if (surfaceFitApi && typeof surfaceFitApi.policyForElement === "function") {
+      try {
+        return surfaceFitApi.policyForElement(el);
+      } catch {}
+    }
+    const policy = (() => {
+      if (!isElement(el)) return "";
+      try {
+        const own = el.getAttribute?.("data-mcel-fit-policy");
+        if (own) return String(own).toLowerCase();
+        const declared = el.closest?.("[data-mcel-fit-policy]");
+        if (declared && declared !== el) return String(declared.getAttribute("data-mcel-fit-policy") || "").toLowerCase();
+      } catch {}
+      return "";
+    })();
+    const tokens = policy.split(/[^a-z0-9-]+/).filter(Boolean);
+    return {policy, tokens, knownTokens: tokens, unknownTokens: [], valid: Boolean(policy), source: policy ? "fallback" : "none"};
+  }
+
   function contentFitPolicyFor(el) {
-    if (!isElement(el)) return "";
-    try {
-      const own = el.getAttribute?.("data-mcel-fit-policy");
-      if (own) return String(own).toLowerCase();
-      const declared = el.closest?.("[data-mcel-fit-policy]");
-      if (declared && declared !== el) return String(declared.getAttribute("data-mcel-fit-policy") || "").toLowerCase();
-    } catch {}
-    return "";
+    const info = contentFitPolicyInfoFor(el);
+    return String(info?.policy || "");
   }
 
   function declaredFitPolicyAllowsClip(el, styles, horizontalClipped, verticalClipped) {
-    const policy = contentFitPolicyFor(el);
+    const policyInfo = contentFitPolicyInfoFor(el);
+    if (surfaceFitApi && typeof surfaceFitApi.allowsContentOverflow === "function") {
+      try {
+        return surfaceFitApi.allowsContentOverflow(el, {styles, horizontalClipped, verticalClipped, policyInfo});
+      } catch {}
+    }
+    const policy = String(policyInfo?.policy || "");
     if (!policy) return false;
     const tokens = new Set(policy.split(/[^a-z0-9-]+/).filter(Boolean));
+    if (tokens.has("decorative") || tokens.has("overlay") || tokens.has("ignore-hidden") || tokens.has("collapse-optional")) return true;
     if (verticalClipped && !tokens.has("scroll")) return false;
+    if (verticalClipped && tokens.has("scroll")) {
+      const overflow = String(styles.overflowY || styles.overflow || "");
+      if (!/auto|scroll/.test(overflow)) return false;
+    }
+    if (horizontalClipped && tokens.has("scroll")) {
+      const overflow = String(styles.overflowX || styles.overflow || "");
+      return /auto|scroll/.test(overflow);
+    }
     if (horizontalClipped && (tokens.has("truncate") || tokens.has("ellipsis"))) {
       const overflow = String(styles.overflowX || styles.overflow || "");
       const textOverflow = String(styles.textOverflow || "");
@@ -1374,6 +1424,20 @@
       return fontSize === 0 && Boolean(el.getAttribute?.("aria-label"));
     }
     return false;
+  }
+
+
+
+  function summarizeSurfaceFitContract() {
+    if (!surfaceFitApi) {
+      return {available: false, contractVersion: "", policies: []};
+    }
+    const definitions = surfaceFitApi.POLICY_DEFINITIONS || {};
+    return {
+      available: true,
+      contractVersion: String(surfaceFitApi.contractVersion || ""),
+      policies: Object.keys(definitions).sort()
+    };
   }
 
   function detectContentFitViolations(root, context = {}) {
@@ -1398,7 +1462,8 @@
       const scrollHeight = Number(el.scrollHeight || 0);
       const horizontalClipped = scrollWidth > clientWidth + tolerance && !allowsHorizontalScroll;
       const verticalClipped = scrollHeight > clientHeight + tolerance && !allowsVerticalScroll;
-      const fitPolicy = contentFitPolicyFor(el);
+      const fitPolicyInfo = contentFitPolicyInfoFor(el);
+      const fitPolicy = String(fitPolicyInfo?.policy || "");
 
       if (!horizontalClipped && !verticalClipped) return;
       if (declaredFitPolicyAllowsClip(el, styles, horizontalClipped, verticalClipped)) return;
@@ -1407,6 +1472,9 @@
         appId: context.appId || "",
         selector: selectorFor(el),
         fitPolicy,
+        fitPolicySource: String(fitPolicyInfo?.source || "none"),
+        fitPolicyKnownTokens: Array.isArray(fitPolicyInfo?.knownTokens) ? fitPolicyInfo.knownTokens : [],
+        fitPolicyUnknownTokens: Array.isArray(fitPolicyInfo?.unknownTokens) ? fitPolicyInfo.unknownTokens : [],
         box: compactBox(box),
         scroll: {
           clientWidth: Math.round(clientWidth),
@@ -1871,6 +1939,7 @@
       layoutCollisions: detectLayoutCollisions(root || doc, {appId, mode: rootMode, contract}),
       contentFitViolations: detectContentFitViolations(root || doc, {appId, mode: rootMode, contract}),
       visualIntegrityViolations: detectVisualIntegrityViolations(root || doc, {appId, mode: rootMode, contract}),
+      fitContract: summarizeSurfaceFitContract(),
       contract
     };
   }
@@ -2017,6 +2086,7 @@
     report.measurements.panes = snapshot.panes;
     report.measurements.layoutCollisions = snapshot.layoutCollisions;
     report.measurements.contentFitViolations = snapshot.contentFitViolations;
+    report.measurements.fitContract = snapshot.fitContract;
     report = applyOverlayFindings(report, snapshot);
     report = attachMcelSurfacePathway(report, snapshot, options);
     report = attachAppSurfaceConformance(report, snapshot, options);

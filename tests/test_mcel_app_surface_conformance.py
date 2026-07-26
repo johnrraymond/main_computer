@@ -208,6 +208,70 @@ def test_file_explorer_static_surface_and_runtime_report_pass_conformance() -> N
     }
 
 
+
+def test_runtime_baseline_policy_does_not_fail_on_unavailable_static_layers() -> None:
+    report = {
+        "appId": "code-editor",
+        "verdict": "pass",
+        "summary": {
+            "primarySurface": {
+                "expected": "code-editor.surface.monaco-selected-file-editor",
+                "usable": True,
+                "exactlyOneAuthoritativeSurface": True,
+                "host": {"exists": True, "visible": True, "selector": "#code-studio-runtime-monaco", "width": 424, "height": 602},
+                "editor": {"exists": True, "visible": True, "selector": ".monaco-editor", "width": 424, "height": 602},
+            }
+        },
+        "measurements": {
+            "visualIntegrityViolations": [],
+            "layoutCollisions": [],
+            "contentFitViolations": [],
+            "fitContract": {"available": True},
+        },
+        "findings": [],
+    }
+    script = load_conformance_stack(
+        f"""
+        const result = conformance.evaluateAppSurfaceConformance({{
+          appId: "code-editor",
+          surfaceId: "code-editor.surface.monaco-selected-file-editor",
+          surfaceHtml: "",
+          registryPolicy: {{
+            appId: "code-editor",
+            label: "Code Editor",
+            state: "surface-aware",
+            conformanceRequired: true,
+            maturity: "host-workbench",
+            surfaceId: "code-editor.surface.monaco-selected-file-editor",
+            requiredLayerIds: ["runtime-ownership", "runtime-visual-fit", "diagnostic-no-throw"]
+          }},
+          report: {json.dumps(report)}
+        }});
+        process.stdout.write(JSON.stringify({{
+          status: result.status,
+          valid: result.valid,
+          surfaceId: result.surfaceId,
+          failedLayerIds: result.failedLayerIds,
+          unavailableLayerIds: result.unavailableLayerIds,
+          policyFailedLayerIds: result.policyFailedLayerIds,
+          policyUnavailableLayerIds: result.policyUnavailableLayerIds,
+          layerStatus: Object.fromEntries(result.layers.map((layer) => [layer.id, layer.status]))
+        }}));
+        """
+    )
+    data = run_node_json(script)
+
+    assert data["status"] == "pass"
+    assert data["valid"] is True
+    assert data["surfaceId"] == "code-editor.surface.monaco-selected-file-editor"
+    assert data["policyFailedLayerIds"] == []
+    assert data["policyUnavailableLayerIds"] == []
+    assert data["layerStatus"]["runtime-ownership"] == "pass"
+    assert data["layerStatus"]["runtime-visual-fit"] == "pass"
+    assert data["layerStatus"]["diagnostic-no-throw"] == "pass"
+    assert data["layerStatus"]["semantic-surface"] == "unavailable"
+    assert data["layerStatus"]["layout-grammar"] == "unavailable"
+
 def test_conformance_marks_diagnosis_threw_as_failed_no_throw_layer() -> None:
     script = load_conformance_stack(
         """

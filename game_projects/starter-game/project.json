@@ -593,7 +593,7 @@
           "fire": "click-space-or-f",
           "restart": "r",
           "interact": "mouse-over-console-e",
-          "pilot": "console-hover-e-pauses-combat"
+          "pilot": "console-hover-e-flies-to-mother-ship-docking-cutscene"
         },
         "movementBounds": {
           "minX": 1.1,
@@ -632,7 +632,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Mouse over console + E pilot • Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart",
+          "controlsHint": "Mouse over console + E pilot • W/S throttle flies to Mother Ship • docking triggers shuttle-bay cutscene • Click/Space/F fire outside pilot",
           "geometry": {
             "renderer": "raw-webgl",
             "primitive": "triangles",
@@ -1045,7 +1045,30 @@
               ],
               "activationRange": 3.1
             }
-          ]
+          ],
+          "flight": {
+            "enabled": true,
+            "targetLabel": "Mother Ship",
+            "startDistance": 36.5,
+            "dockingDistance": 11.5,
+            "maxForwardSpeed": 12.5,
+            "maxReverseSpeed": 4.5,
+            "acceleration": 2.8,
+            "lateralSpeed": 4.2,
+            "verticalSpeed": 2.6,
+            "lateralLimit": 6.5,
+            "verticalLimit": 2.2,
+            "targetPosition": [
+              0.85,
+              1.0,
+              -36.5
+            ],
+            "cutscene": {
+              "enabled": true,
+              "durationMs": 9600,
+              "bayLabel": "Mother Ship Shuttle Bay"
+            }
+          }
         },
         "combatEnabled": true,
         "healthHud": true,

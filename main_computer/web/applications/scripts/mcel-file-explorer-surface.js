@@ -12,6 +12,13 @@ var McelFileExplorerSurface = (() => {
     return null;
   })();
 
+  const fitContractApi = (() => {
+    if (typeof McelSurfaceFitContract !== "undefined") return McelSurfaceFitContract;
+    if (typeof window !== "undefined" && window.McelSurfaceFitContract) return window.McelSurfaceFitContract;
+    if (typeof window !== "undefined" && window.MCEL?.surfaceFitContract) return window.MCEL.surfaceFitContract;
+    return null;
+  })();
+
   function safeString(value) {
     if (value === undefined || value === null) return "";
     return String(value);
@@ -36,6 +43,20 @@ var McelFileExplorerSurface = (() => {
       element.setAttribute(name, String(value));
     });
     return element;
+  }
+
+  function applyFitPolicy(element, policy, options = {}) {
+    if (fitContractApi && typeof fitContractApi.applyFitPolicy === "function") {
+      try {
+        return fitContractApi.applyFitPolicy(element, policy, options);
+      } catch {}
+    }
+    const attrs = {"data-mcel-fit-policy": policy};
+    if (options.readable) attrs["data-mcel-readable"] = "true";
+    if (options.visualOwner) attrs["data-mcel-visual-owner"] = options.visualOwner;
+    if (options.fitRole) attrs["data-mcel-fit-role"] = options.fitRole;
+    if (options.required !== undefined) attrs["data-mcel-fit-required"] = options.required ? "true" : "false";
+    return setAttrs(element, attrs);
   }
 
   function staticSurfaceAttrs() {
@@ -179,7 +200,7 @@ var McelFileExplorerSurface = (() => {
 
   function decorateRootButton(button, root = {}, index = 0) {
     const id = rootNodeId(root, index);
-    return setAttrs(button, {
+    const decorated = setAttrs(button, {
       ...nodeAttrs(
         id,
         "filesystem_root",
@@ -198,6 +219,12 @@ var McelFileExplorerSurface = (() => {
       "data-mcel-visual-owner": "file-explorer.root-button",
       "data-mcel-readable": "true"
     });
+    return applyFitPolicy(decorated, "wrap", {
+      readable: true,
+      visualOwner: "file-explorer.root-button",
+      fitRole: "file-explorer-root-label",
+      required: true
+    });
   }
 
   function decorateEntryElement(element, entry = {}, options = {}) {
@@ -205,7 +232,7 @@ var McelFileExplorerSurface = (() => {
     const kind = safeString(entry.kind || "file").toLowerCase() === "directory" ? "folder_item" : "file_item";
     const symbol = kind === "folder_item" ? "▸" : "•";
     const y = Math.min(650, 230 + (index * 28));
-    return setAttrs(element, {
+    const decorated = setAttrs(element, {
       ...nodeAttrs(
         entryNodeId(entry, index),
         kind,
@@ -223,6 +250,12 @@ var McelFileExplorerSurface = (() => {
       ),
       "data-mcel-visual-owner": "file-explorer.entry",
       "data-mcel-readable": "true"
+    });
+    return applyFitPolicy(decorated, "truncate", {
+      readable: true,
+      visualOwner: "file-explorer.entry",
+      fitRole: "file-explorer-entry-label",
+      required: true
     });
   }
 
@@ -283,6 +316,20 @@ var McelFileExplorerSurface = (() => {
       ["#file-explorer-up", staticControlRecords()[1]]
     ];
     mappings.forEach(([selector, attrs]) => setAttrs(scope.querySelector(selector), attrs));
+    applyFitPolicy(scope.querySelector("#file-explorer-path"), "wrap", {
+      readable: true,
+      visualOwner: "file-explorer.current-path",
+      fitRole: "file-explorer-current-path",
+      required: true
+    });
+    applyFitPolicy(scope.querySelector(".file-explorer-roots-panel"), "scroll", {
+      fitRole: "file-explorer-roots-scroll",
+      required: true
+    });
+    applyFitPolicy(scope.querySelector("#file-explorer-list"), "scroll", {
+      fitRole: "file-explorer-list-scroll",
+      required: true
+    });
     decoratePreviewPanel(scope.querySelector("#file-explorer-preview"));
     return app;
   }

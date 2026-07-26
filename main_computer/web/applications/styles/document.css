@@ -1434,3 +1434,70 @@
       font-size: 12px;
       font-weight: 700;
     }
+
+    /* Patch 22a: keep the document editor readable after the shared fit-contract
+       tightened diagnostics.  The workbench stays three-lane, but the page
+       auto-fits and the left rail compresses without turning into vertical text. */
+    .document-canvas[data-document-auto-fit="true"] {
+      justify-items: safe center;
+    }
+    .document-canvas[data-document-auto-fit="true"] .mc-page {
+      margin-inline: auto;
+    }
+    @container document-editor-app (max-width: 1180px) {
+      .document-shell {
+        --document-nav-lane: clamp(104px, 12cqi, 168px);
+        --document-companion-lane: clamp(216px, 23cqi, 276px);
+        grid-template-columns:
+          minmax(96px, var(--document-nav-lane))
+          minmax(0, 1fr)
+          minmax(208px, var(--document-companion-lane));
+      }
+      .document-library-item strong {
+        writing-mode: horizontal-tb;
+        text-orientation: mixed;
+        white-space: nowrap;
+        max-height: none;
+      }
+    }
+    @container document-editor-app (max-width: 900px) {
+      .document-shell {
+        --document-nav-lane: clamp(96px, 12cqi, 132px);
+        --document-companion-lane: clamp(204px, 25cqi, 248px);
+        grid-template-columns:
+          minmax(88px, var(--document-nav-lane))
+          minmax(0, 1fr)
+          minmax(196px, var(--document-companion-lane));
+      }
+      .document-library-item span {
+        display: none;
+      }
+      .document-library-item strong {
+        writing-mode: horizontal-tb;
+        text-orientation: mixed;
+        white-space: nowrap;
+        max-height: none;
+      }
+      .document-ai-chip-row {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
+
+
+    /* Patch 22b: keep the center page readable when the document app is opened
+       after load or squeezed by the right rail.  Auto-fit is driven by
+       document-layout.js; these rules make the fit mode visually bounded. */
+    .document-canvas[data-document-auto-fit="true"] {
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
+    }
+    .document-canvas[data-document-auto-fit="true"] .mc-page {
+      max-width: 100%;
+      box-sizing: border-box;
+    }
+    @container document-editor-app (max-width: 900px) {
+      .document-canvas {
+        padding-inline: 10px;
+      }
+    }

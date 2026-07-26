@@ -203,7 +203,7 @@ var McelCodeEditorSurfaceDiagnostics = (() => {
       {id: "code-editor.region.root", role: "application-root", x: root.x, y: root.y, width: root.width || viewportFor(input).width, height: root.height || viewportFor(input).height},
       {id: "code-editor.region.editor-group", role: "primary-editor-group", x: editor.x, y: editor.y, width: editor.width, height: editor.height}
     ];
-    if (context.exists) {
+    if (context.exists && context.visible && context.width > 0 && context.height > 0) {
       regions.push({
         id: "code-editor.region.inspector",
         role: "supporting-context-feedback",

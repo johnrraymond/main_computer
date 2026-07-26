@@ -2328,6 +2328,35 @@
   animation: shuttle-pilot-prompt 880ms ease-in-out infinite alternate;
 }
 
+.scene-shuttle3d[data-flight-docked="true"] .scene-shuttle3d-pilot-line,
+.scene-shuttle3d[data-flight-docked="true"] .scene-shuttle3d-pilot-prompt {
+  color: #dcfce7;
+  border-color: rgba(134, 239, 172, 0.68);
+  box-shadow:
+    0 0 26px rgba(34, 197, 94, 0.24),
+    0 12px 34px rgba(0, 0, 0, 0.34);
+}
+
+.scene-shuttle3d[data-docking-cutscene="active"] .scene-shuttle3d-pilot-line,
+.scene-shuttle3d[data-docking-cutscene="active"] .scene-shuttle3d-pilot-prompt {
+  color: #fef3c7;
+  border-color: rgba(251, 191, 36, 0.74);
+  background: linear-gradient(135deg, rgba(69, 26, 3, 0.92), rgba(15, 23, 42, 0.9));
+  box-shadow:
+    0 0 30px rgba(251, 191, 36, 0.26),
+    0 12px 34px rgba(0, 0, 0, 0.36);
+}
+
+.scene-shuttle3d[data-docking-cutscene="complete"] .scene-shuttle3d-pilot-line,
+.scene-shuttle3d[data-docking-cutscene="complete"] .scene-shuttle3d-pilot-prompt {
+  color: #bbf7d0;
+  border-color: rgba(74, 222, 128, 0.78);
+  background: linear-gradient(135deg, rgba(20, 83, 45, 0.9), rgba(15, 23, 42, 0.9));
+  box-shadow:
+    0 0 32px rgba(34, 197, 94, 0.3),
+    0 12px 34px rgba(0, 0, 0, 0.36);
+}
+
 .scene-shuttle3d-crosshair {
   position: absolute;
   left: 50%;

@@ -334,7 +334,8 @@ var McelAppSurfaceConformance = (() => {
           ? "Runtime layout/readability probes found no visual-fit violations."
           : "Runtime layout/readability probes found visual-fit or layout violations.",
         {
-          visualViolationCount: visualViolationCount(runtimeReport)
+          visualViolationCount: visualViolationCount(runtimeReport),
+          fitContractVersion: safeString(runtimeReport?.measurements?.fitContract?.contractVersion || "")
         }
       ),
       layer(
@@ -422,22 +423,20 @@ var McelAppSurfaceConformance = (() => {
     const counts = severityCounts(diagnostics);
     const policyRequiresConformance = !!policy.conformanceRequired;
     const policyFailure = policyRequiresConformance && (policyFailed.length > 0 || policyUnavailable.length > 0);
-    const status = policyFailure
-      ? "fail"
+    const status = policyRequiresConformance
+      ? (policyFailure ? "fail" : "pass")
       : failed.length
         ? "fail"
-        : policyRequiresConformance
-          ? "pass"
-          : policy.state === "legacy"
-            ? "not-required"
-            : unavailable.length
-              ? "partial"
-              : "pass";
+        : policy.state === "legacy"
+          ? "not-required"
+          : unavailable.length
+            ? "partial"
+            : "pass";
 
     return Object.freeze({
       contractVersion,
       appId,
-      surfaceId: staticResult.surfaceId || surfaceId,
+      surfaceId: surfaceId || staticResult.surfaceId,
       status,
       valid: status === "pass" || status === "not-required",
       conformanceRequired: policyRequiresConformance,

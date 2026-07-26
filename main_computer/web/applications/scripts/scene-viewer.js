@@ -586,7 +586,7 @@
                               "fire": "click-space-or-f",
                               "restart": "r",
                               "interact": "mouse-over-console-e",
-                              "pilot": "console-hover-e-pauses-combat"
+                              "pilot": "console-hover-e-flies-to-mother-ship"
                     },
                     "movementBounds": {
                               "minX": 1.1,
@@ -624,8 +624,26 @@
                               "starfield": "viewport-starfield",
                               "motherShip": "mother-ship",
                               "motherShipLabel": "Mother Ship",
+                              "flight": {
+                                        "enabled": true,
+                                        "targetLabel": "Mother Ship",
+                                        "startDistance": 36.5,
+                                        "dockingDistance": 11.5,
+                                        "maxForwardSpeed": 12.5,
+                                        "maxReverseSpeed": 4.5,
+                                        "acceleration": 2.8,
+                                        "lateralSpeed": 4.2,
+                                        "verticalSpeed": 2.6,
+                                        "lateralLimit": 6.5,
+                                        "verticalLimit": 2.2,
+                                        "targetPosition": [
+                                                  0.85,
+                                                  1.0,
+                                                  -36.5
+                                        ]
+                              },
                               "playerAnchor": "hero-sprite",
-                              "controlsHint": "Mouse over console + E pilot • Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart",
+                              "controlsHint": "Mouse over console + E pilot • W/S throttle flies to Mother Ship • docking triggers shuttle-bay cutscene • Click/Space/F fire outside pilot",
                               "geometry": {
                                         "renderer": "raw-webgl",
                                         "primitive": "triangles",
@@ -2407,6 +2425,44 @@
           });
       }
 
+
+      function shuttle3dFlightConfig(scene) {
+        const supplied = scene?.metadata?.shuttle3d?.flight;
+        const flight = supplied && typeof supplied === "object" ? supplied : {};
+        const shuttle = scene?.metadata?.shuttle3d && typeof scene.metadata.shuttle3d === "object" ? scene.metadata.shuttle3d : {};
+        const cutscene = flight.cutscene && typeof flight.cutscene === "object" ? flight.cutscene : {};
+        const number = (value, fallback, minimum, maximum) => {
+          const parsed = Number(value);
+          if (!Number.isFinite(parsed)) return fallback;
+          return Math.min(maximum, Math.max(minimum, parsed));
+        };
+        const startDistance = number(flight.startDistance, 36.5, 12, 240);
+        const dockingDistance = Math.min(
+          startDistance - 0.75,
+          number(flight.dockingDistance, 11.5, 7.5, Math.max(8, startDistance - 0.75))
+        );
+        const targetPosition = shuttle3dVector3(flight.targetPosition, [0.85, 1.0, -startDistance]);
+        return {
+          enabled: flight.enabled !== false,
+          targetLabel: String(flight.targetLabel || shuttle.motherShipLabel || "Mother Ship"),
+          startDistance,
+          dockingDistance,
+          targetPosition: [targetPosition[0], targetPosition[1], -startDistance],
+          maxForwardSpeed: number(flight.maxForwardSpeed, 12.5, 1, 60),
+          maxReverseSpeed: number(flight.maxReverseSpeed, 4.5, 0.5, 30),
+          acceleration: number(flight.acceleration, 2.8, 0.2, 16),
+          lateralSpeed: number(flight.lateralSpeed, 4.2, 0.25, 24),
+          verticalSpeed: number(flight.verticalSpeed, 2.6, 0.25, 18),
+          lateralLimit: number(flight.lateralLimit, 6.5, 0.5, 28),
+          verticalLimit: number(flight.verticalLimit, 2.2, 0.25, 12),
+          cutscene: {
+            enabled: cutscene.enabled !== false,
+            durationMs: number(cutscene.durationMs, 9600, 3000, 30000),
+            bayLabel: String(cutscene.bayLabel || "Mother Ship Shuttle Bay")
+          }
+        };
+      }
+
       function shuttle3dRayIntersectsBounds(origin, direction, bounds) {
         let near = -Infinity;
         let far = Infinity;
@@ -2664,6 +2720,8 @@
           this.compile();
           this.starfield = shuttle3dStarfieldConfig(scene);
           this.combat = shuttle3dCombatConfig(scene);
+          this.flightConfig = shuttle3dFlightConfig(scene);
+          this.flight = this.createFlightState();
           this.pilotStations = shuttle3dPilotStationsConfig(scene);
           this.hoveredPilotStation = null;
           this.pilot = {
@@ -2854,60 +2912,7 @@
             builder.box([x - 0.11, -1.38, -2.25], [x + 0.11, -1.05, -1.9], trim);
           });
 
-          const shipHull = builder.color("#aebdca");
-          const shipDark = builder.color("#66798e");
-          const shipGlow = builder.color("#4da6ff", true);
-          builder.ellipsoid([0.85, 1.0, -36.5], [3.35, 0.48, 1.75], 18, 8, shipHull);
-          builder.ellipsoid([0.85, 0.08, -35.2], [1.15, 0.62, 1.65], 14, 7, shipDark);
-          builder.box([0.55, 0.35, -36.0], [1.15, 0.9, -34.7], shipHull);
-          builder.box([-2.25, -0.5, -35.2], [-1.78, -0.12, -31.7], shipDark);
-          builder.box([3.48, -0.5, -35.2], [3.95, -0.12, -31.7], shipDark);
-          builder.box([-2.3, -0.46, -32.0], [-1.73, -0.14, -31.55], shipGlow);
-          builder.box([3.43, -0.46, -32.0], [4.0, -0.14, -31.55], shipGlow);
-          builder.box([-1.88, -0.34, -34.7], [3.58, -0.22, -34.45], shipHull);
-
-          const alienHull = builder.color("#4d7c0f");
-          const alienDark = builder.color("#18240f");
-          const alienGlow = builder.color("#ef4444", true);
-          const alienShip = this.combat.alienShip;
-          const [alienX, alienY, alienZ] = alienShip.position;
-          const [alienScaleX, alienScaleY, alienScaleZ] = alienShip.scale;
-          builder.ellipsoid(
-            [alienX, alienY, alienZ],
-            [alienScaleX * 0.32, alienScaleY * 0.85, alienScaleZ],
-            16,
-            8,
-            alienDark
-          );
-          builder.ellipsoid(
-            [alienX - alienScaleX * 0.58, alienY, alienZ + alienScaleZ * 0.12],
-            [alienScaleX * 0.55, alienScaleY * 0.3, alienScaleZ * 0.58],
-            14,
-            6,
-            alienHull
-          );
-          builder.ellipsoid(
-            [alienX + alienScaleX * 0.58, alienY, alienZ + alienScaleZ * 0.12],
-            [alienScaleX * 0.55, alienScaleY * 0.3, alienScaleZ * 0.58],
-            14,
-            6,
-            alienHull
-          );
-          builder.box(
-            [alienX - alienScaleX * 0.12, alienY - alienScaleY * 0.22, alienZ - alienScaleZ * 0.96],
-            [alienX + alienScaleX * 0.12, alienY + alienScaleY * 0.22, alienZ - alienScaleZ * 0.72],
-            alienGlow
-          );
-          builder.box(
-            [alienX - alienScaleX * 0.85, alienY - alienScaleY * 0.12, alienZ + alienScaleZ * 0.46],
-            [alienX - alienScaleX * 0.54, alienY + alienScaleY * 0.12, alienZ + alienScaleZ * 0.66],
-            alienGlow
-          );
-          builder.box(
-            [alienX + alienScaleX * 0.54, alienY - alienScaleY * 0.12, alienZ + alienScaleZ * 0.46],
-            [alienX + alienScaleX * 0.85, alienY + alienScaleY * 0.12, alienZ + alienScaleZ * 0.66],
-            alienGlow
-          );
+          // Exterior ships are appended dynamically so console piloting can fly the shuttle toward the mother ship.
 
           return builder.toFloat32Array();
         }
@@ -2947,22 +2952,175 @@
           return builder.toFloat32Array();
         }
 
+        createFlightState() {
+          const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+          return {
+            distance: config.startDistance,
+            forwardSpeed: 0,
+            lateralOffset: 0,
+            verticalOffset: 0,
+            docked: false,
+            dockingCutsceneActive: false,
+            dockingCutsceneStartedAtMs: 0,
+            dockingCutsceneElapsedMs: 0,
+            dockingCutscenePhase: "approach",
+            dockingCutsceneComplete: false,
+            playerExitedToBay: false
+          };
+        }
+
+        resetFlightState() {
+          this.flight = this.createFlightState();
+          if (this.pilot) {
+            this.pilot.active = false;
+            this.pilot.station = null;
+            this.pilot.throttle = 0;
+            this.pilot.impulse = 0;
+            this.pilot.roll = 0;
+          }
+          this.combatPauseStartedAtMs = null;
+          this.clearMovementKeys();
+          this.emitPilotState?.(true);
+        }
+
+        isDockingCutsceneActive() {
+          return Boolean(this.flight?.dockingCutsceneActive);
+        }
+
+        isShuttleBaySceneActive() {
+          return Boolean(this.flight?.playerExitedToBay);
+        }
+
+        isDockingSceneActive() {
+          return this.isDockingCutsceneActive() || this.isShuttleBaySceneActive();
+        }
+
+        isBoardingPaused() {
+          return Boolean(this.pilot?.active || this.isDockingSceneActive());
+        }
+
+        dockingCutsceneSnapshot(nowMs = this.lastFrameTime ?? performance.now()) {
+          const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+          const flight = this.flight || this.createFlightState();
+          const duration = Math.max(1, config.cutscene?.durationMs || 9600);
+          const elapsed = flight.dockingCutsceneActive
+            ? Math.max(0, (Number.isFinite(nowMs) ? nowMs : performance.now()) - flight.dockingCutsceneStartedAtMs)
+            : flight.dockingCutsceneElapsedMs;
+          const progress = Math.max(0, Math.min(1, elapsed / duration));
+          let phase = flight.dockingCutscenePhase || "approach";
+          if (flight.playerExitedToBay) phase = "arrived";
+          else if (progress >= 0.72) phase = "player-exit";
+          else if (progress >= 0.42) phase = "bay-landing";
+          else phase = "hangar-approach";
+          return {
+            active: Boolean(flight.dockingCutsceneActive),
+            complete: Boolean(flight.dockingCutsceneComplete),
+            playerExitedToBay: Boolean(flight.playerExitedToBay),
+            progress,
+            elapsed,
+            duration,
+            phase,
+            bayLabel: config.cutscene?.bayLabel || "Mother Ship Shuttle Bay"
+          };
+        }
+
+        startDockingCutscene(nowMs = performance.now()) {
+          const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+          const flight = this.flight;
+          if (!config.cutscene?.enabled || !flight || flight.dockingCutsceneActive || flight.dockingCutsceneComplete) return false;
+          flight.docked = true;
+          flight.forwardSpeed = 0;
+          flight.distance = config.dockingDistance;
+          flight.dockingCutsceneActive = true;
+          flight.dockingCutsceneStartedAtMs = Number.isFinite(nowMs) ? nowMs : performance.now();
+          flight.dockingCutsceneElapsedMs = 0;
+          flight.dockingCutscenePhase = "hangar-approach";
+          flight.dockingCutsceneComplete = false;
+          flight.playerExitedToBay = false;
+          this.pilot.throttle = 0;
+          this.pilot.impulse = 0;
+          this.clearMovementKeys();
+          this.emitPilotState(true);
+          this.emitCombatState(true);
+          return true;
+        }
+
+        updateDockingCutscene(deltaSeconds, nowMs = this.lastFrameTime ?? performance.now()) {
+          const flight = this.flight;
+          if (!flight?.dockingCutsceneActive) return;
+          const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+          const snapshot = this.dockingCutsceneSnapshot(nowMs);
+          flight.dockingCutsceneElapsedMs = snapshot.elapsed;
+          flight.dockingCutscenePhase = snapshot.phase;
+          if (snapshot.progress >= 1) {
+            flight.dockingCutsceneActive = false;
+            flight.dockingCutsceneComplete = true;
+            flight.playerExitedToBay = true;
+            flight.dockingCutsceneElapsedMs = snapshot.duration;
+            flight.dockingCutscenePhase = "arrived";
+            flight.forwardSpeed = 0;
+            flight.distance = config.dockingDistance;
+            this.pilot.active = false;
+            this.pilot.station = null;
+            this.pilot.throttle = 0;
+            this.pilot.impulse = 0;
+            this.clearMovementKeys();
+          }
+          this.emitPilotState();
+          this.emitCombatState();
+        }
+
+        dockingCutsceneCamera(nowMs = this.lastFrameTime ?? performance.now()) {
+          const snapshot = this.dockingCutsceneSnapshot(nowMs);
+          const p = snapshot.progress;
+          const ease = (value) => value * value * (3 - 2 * value);
+          if (snapshot.playerExitedToBay) {
+            return {
+              eye: [0, 1.55, 7.15],
+              target: [0, 0.08, 1.15]
+            };
+          }
+          const settle = ease(Math.max(0, Math.min(1, (p - 0.42) / 0.3)));
+          const exit = ease(Math.max(0, Math.min(1, (p - 0.72) / 0.28)));
+          return {
+            eye: [0, 2.75 - settle * 0.88, 9.35 - exit * 1.42],
+            target: [0, 0.1 + settle * 0.35, 0.85 + exit * 1.25]
+          };
+        }
+
 
         pilotSnapshot() {
           const station = this.pilot.station || this.hoveredPilotStation;
+          const flight = this.flight || this.createFlightState();
+          const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+          const totalApproach = Math.max(0.1, config.startDistance - config.dockingDistance);
+          const progress = Math.max(0, Math.min(1, (config.startDistance - flight.distance) / totalApproach));
+          const cutscene = this.dockingCutsceneSnapshot();
           return {
             enabled: this.pilotStations.length > 0,
             active: this.pilot.active,
-            paused: this.pilot.active,
+            paused: this.isBoardingPaused(),
             stationId: this.pilot.station?.id || "",
             stationLabel: this.pilot.station?.label || "",
             hoverId: this.hoveredPilotStation?.id || "",
             hoverLabel: this.hoveredPilotStation?.label || "",
-            targetLabel: station?.label || "",
+            role: station?.role || "",
             throttle: Number(this.pilot.throttle.toFixed(2)),
             heading: Number(this.pilot.heading.toFixed(1)),
             pitch: Number(this.pilot.pitch.toFixed(1)),
-            impulse: Number(this.pilot.impulse.toFixed(2))
+            impulse: Number(this.pilot.impulse.toFixed(2)),
+            flightEnabled: Boolean(config.enabled),
+            targetLabel: config.targetLabel,
+            flightDistance: Number(flight.distance.toFixed(1)),
+            flightSpeed: Number(flight.forwardSpeed.toFixed(1)),
+            flightProgress: Number(progress.toFixed(3)),
+            flightDocked: Boolean(flight.docked),
+            dockingCutsceneActive: cutscene.active,
+            dockingCutsceneComplete: cutscene.complete,
+            dockingCutscenePhase: cutscene.phase,
+            dockingCutsceneProgress: Number(cutscene.progress.toFixed(3)),
+            playerExitedToBay: cutscene.playerExitedToBay,
+            shuttleBayLabel: cutscene.bayLabel
           };
         }
 
@@ -3017,6 +3175,7 @@
         }
 
         setPilotMode(active, stationOrId = null, nowMs = performance.now()) {
+          if (this.isDockingSceneActive()) return false;
           if (active) {
             const station = this.stationById(stationOrId) || this.hoveredPilotStation;
             if (!station || this.gameOver) return false;
@@ -3068,6 +3227,16 @@
         }
 
         updatePilot(deltaSeconds) {
+          if (this.isDockingCutsceneActive()) {
+            this.updateDockingCutscene(deltaSeconds);
+            return;
+          }
+          if (this.isShuttleBaySceneActive()) {
+            this.pilot.throttle = 0;
+            this.pilot.impulse = 0;
+            this.emitPilotState();
+            return;
+          }
           if (!this.pilot.active || deltaSeconds <= 0) return;
           let throttleInput = 0;
           let yawInput = 0;
@@ -3080,12 +3249,166 @@
           if (this.movementKeys.has("ArrowDown")) pitchInput -= 1;
           const throttleRate = this.movementKeys.has("ShiftLeft") || this.movementKeys.has("ShiftRight") ? 1.9 : 1.15;
           this.pilot.throttle = Math.max(-0.35, Math.min(1, this.pilot.throttle + throttleInput * throttleRate * Math.min(0.08, deltaSeconds)));
-          if (!throttleInput) this.pilot.throttle *= Math.max(0, 1 - deltaSeconds * 0.65);
+          if (!throttleInput) this.pilot.throttle *= Math.max(0, 1 - deltaSeconds * 0.35);
           this.pilot.heading = normalizeShuttle3dYaw(this.pilot.heading + yawInput * 42 * Math.min(0.08, deltaSeconds));
           this.pilot.pitch = Math.max(-18, Math.min(18, this.pilot.pitch + pitchInput * 24 * Math.min(0.08, deltaSeconds)));
           this.pilot.roll = Math.max(-16, Math.min(16, yawInput * -10 + this.pilot.roll * 0.86));
+          this.updatePilotFlight(deltaSeconds, yawInput, pitchInput);
           this.pilot.impulse = Math.max(0, Math.min(1, Math.abs(this.pilot.throttle)));
           this.emitPilotState();
+        }
+
+        updatePilotFlight(deltaSeconds, yawInput = 0, pitchInput = 0) {
+          const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+          const flight = this.flight;
+          if (!config.enabled || !flight || deltaSeconds <= 0) return;
+          if (flight.docked) {
+            flight.forwardSpeed = 0;
+            if (flight.dockingCutsceneActive || flight.playerExitedToBay) {
+              this.updateDockingCutscene(deltaSeconds);
+              return;
+            }
+            if (this.pilot.throttle < -0.05 && !flight.dockingCutsceneComplete) {
+              flight.docked = false;
+            } else {
+              this.pilot.throttle = 0;
+              this.pilot.impulse = 0;
+              flight.distance = config.dockingDistance;
+              if (!flight.dockingCutsceneComplete) this.startDockingCutscene(this.lastFrameTime ?? performance.now());
+              return;
+            }
+          }
+
+          const desiredSpeed = this.pilot.throttle >= 0
+            ? this.pilot.throttle * config.maxForwardSpeed
+            : this.pilot.throttle * config.maxReverseSpeed;
+          const velocityBlend = Math.min(1, config.acceleration * deltaSeconds);
+          flight.forwardSpeed += (desiredSpeed - flight.forwardSpeed) * velocityBlend;
+          flight.distance = Math.max(
+            config.dockingDistance,
+            Math.min(config.startDistance, flight.distance - flight.forwardSpeed * deltaSeconds)
+          );
+
+          flight.lateralOffset = Math.max(
+            -config.lateralLimit,
+            Math.min(config.lateralLimit, flight.lateralOffset + yawInput * config.lateralSpeed * deltaSeconds)
+          );
+          flight.verticalOffset = Math.max(
+            -config.verticalLimit,
+            Math.min(config.verticalLimit, flight.verticalOffset + pitchInput * config.verticalSpeed * deltaSeconds)
+          );
+          const settle = Math.max(0, 1 - deltaSeconds * 0.35);
+          if (!yawInput) flight.lateralOffset *= settle;
+          if (!pitchInput) flight.verticalOffset *= settle;
+
+          if (flight.distance <= config.dockingDistance + 0.02 && flight.forwardSpeed >= -0.05) {
+            flight.distance = config.dockingDistance;
+            flight.forwardSpeed = 0;
+            flight.docked = true;
+            this.pilot.throttle = 0;
+            this.startDockingCutscene(this.lastFrameTime ?? performance.now());
+          }
+        }
+
+
+        appendCutsceneShuttle(builder, center, scale = 1, rampProgress = 0) {
+          const hull = builder.color("#d8e2ea");
+          const trim = builder.color("#334155");
+          const glass = builder.color("#38bdf8", true);
+          const impulse = builder.color("#67e8f9", true);
+          const ramp = builder.color("#94a3b8");
+          const [x, y, z] = center;
+          const sx = scale;
+          const box = (min, max, color) => builder.box(
+            [x + min[0] * sx, y + min[1] * sx, z + min[2] * sx],
+            [x + max[0] * sx, y + max[1] * sx, z + max[2] * sx],
+            color
+          );
+          builder.ellipsoid([x, y + 0.2 * sx, z], [1.2 * sx, 0.38 * sx, 1.65 * sx], 16, 8, hull);
+          box([-1.05, -0.18, -1.34], [1.05, 0.18, -0.92], trim);
+          box([-0.52, 0.32, -0.72], [0.52, 0.58, -0.18], glass);
+          box([-1.12, -0.18, 0.58], [-0.82, 0.14, 1.3], trim);
+          box([0.82, -0.18, 0.58], [1.12, 0.14, 1.3], trim);
+          box([-0.18, -0.04, 1.42], [0.18, 0.18, 1.72], impulse);
+          if (rampProgress > 0.01) {
+            const length = 0.72 + rampProgress * 0.9;
+            box([-0.42, -0.34 - rampProgress * 0.2, 1.45], [0.42, -0.24, 1.45 + length], ramp);
+            builder.beam([x - 0.42 * sx, y - 0.18 * sx, z + 1.36 * sx], [x - 0.42 * sx, y - (0.34 + rampProgress * 0.2) * sx, z + (1.45 + length) * sx], 0.018 * sx, glass);
+            builder.beam([x + 0.42 * sx, y - 0.18 * sx, z + 1.36 * sx], [x + 0.42 * sx, y - (0.34 + rampProgress * 0.2) * sx, z + (1.45 + length) * sx], 0.018 * sx, glass);
+          }
+        }
+
+        appendCutsceneCadet(builder, center, stride = 0) {
+          const suit = builder.color("#1e3a8a");
+          const suitLight = builder.color("#60a5fa", true);
+          const helmet = builder.color("#dbeafe");
+          const visor = builder.color("#38bdf8", true);
+          const [x, y, z] = center;
+          const legSwing = Math.sin(stride * Math.PI * 2) * 0.11;
+          builder.ellipsoid([x, y + 0.58, z], [0.19, 0.34, 0.15], 10, 6, suit);
+          builder.ellipsoid([x, y + 0.98, z], [0.18, 0.18, 0.16], 10, 6, helmet);
+          builder.box([x - 0.1, y + 0.94, z - 0.17], [x + 0.1, y + 1.02, z - 0.13], visor);
+          builder.beam([x - 0.14, y + 0.36, z], [x - 0.34, y + 0.13, z + legSwing], 0.055, suit);
+          builder.beam([x + 0.14, y + 0.36, z], [x + 0.34, y + 0.13, z - legSwing], 0.055, suit);
+          builder.beam([x - 0.2, y + 0.72, z], [x - 0.38, y + 0.5, z - legSwing], 0.045, suit);
+          builder.beam([x + 0.2, y + 0.72, z], [x + 0.38, y + 0.5, z + legSwing], 0.045, suit);
+          builder.box([x - 0.08, y + 0.55, z - 0.17], [x + 0.08, y + 0.66, z - 0.13], suitLight);
+        }
+
+        appendDockingCutscene(builder, nowMs = 0) {
+          const snapshot = this.dockingCutsceneSnapshot(nowMs);
+          const progress = snapshot.progress;
+          const ease = (value) => value * value * (3 - 2 * value);
+          const approach = ease(Math.max(0, Math.min(1, progress / 0.42)));
+          const land = ease(Math.max(0, Math.min(1, (progress - 0.38) / 0.24)));
+          const ramp = ease(Math.max(0, Math.min(1, (progress - 0.58) / 0.18)));
+          const exit = ease(Math.max(0, Math.min(1, (progress - 0.66) / 0.3)));
+          const deck = builder.color("#1e293b");
+          const deckDark = builder.color("#0f172a");
+          const wall = builder.color("#334155");
+          const rail = builder.color("#64748b");
+          const light = builder.color("#67e8f9", true);
+          const green = builder.color("#86efac", true);
+          const amber = builder.color("#fbbf24", true);
+          const door = builder.color("#475569");
+          const openAmount = ease(Math.max(0, Math.min(1, progress / 0.18)));
+          const bayZ = 0.25;
+          builder.box([-5.2, -1.2, -5.25], [5.2, -1.12, 6.2], deck);
+          builder.box([-5.35, -1.2, -5.25], [-5.05, 2.85, 6.2], wall);
+          builder.box([5.05, -1.2, -5.25], [5.35, 2.85, 6.2], wall);
+          builder.box([-5.35, 2.72, -5.25], [5.35, 3.02, 6.2], deckDark);
+          builder.box([-5.2, -1.18, -5.25], [5.2, 2.85, -4.95], wall);
+          builder.box([-5.25, -1.05, 5.55], [-1.65 - openAmount * 1.1, 2.6, 5.92], door);
+          builder.box([1.65 + openAmount * 1.1, -1.05, 5.55], [5.25, 2.6, 5.92], door);
+          builder.box([-1.65, 2.35, 5.55], [1.65, 2.6, 5.92], door);
+          builder.box([-4.45, -1.08, -2.95], [4.45, -1.0, -2.68], rail);
+          builder.box([-4.45, -1.08, 2.92], [4.45, -1.0, 3.18], rail);
+          [-3.7, -1.85, 0, 1.85, 3.7].forEach((x) => {
+            builder.beam([x, 2.56, -4.75], [x, 2.56, 5.28], 0.018, light);
+            builder.box([x - 0.16, 2.5, -4.86], [x + 0.16, 2.66, -4.64], light);
+            builder.box([x - 0.16, 2.5, 4.92], [x + 0.16, 2.66, 5.14], light);
+          });
+          builder.beam([-4.65, 0.18, -2.82], [-1.32, 0.18, -0.42], 0.026, green);
+          builder.beam([4.65, 0.18, -2.82], [1.32, 0.18, -0.42], 0.026, green);
+          builder.beam([-4.65, 0.18, 3.08], [-1.32, 0.18, 0.88], 0.026, green);
+          builder.beam([4.65, 0.18, 3.08], [1.32, 0.18, 0.88], 0.026, green);
+          const shuttleZ = 5.75 - approach * 4.85 - land * 0.45;
+          const shuttleY = 0.72 - land * 0.58;
+          const shuttleScale = 0.82 + approach * 0.12;
+          this.appendCutsceneShuttle(builder, [0, shuttleY, shuttleZ], shuttleScale, ramp);
+          if (progress < 0.48) {
+            builder.beam([-1.7, 0.8, 5.92], [-0.75, shuttleY + 0.26, shuttleZ + 0.78], 0.026, amber);
+            builder.beam([1.7, 0.8, 5.92], [0.75, shuttleY + 0.26, shuttleZ + 0.78], 0.026, amber);
+          }
+          if (exit > 0.01 || snapshot.playerExitedToBay) {
+            const walkZ = shuttleZ + 1.35 + exit * 2.15;
+            const walkX = -0.16 + exit * 0.38;
+            this.appendCutsceneCadet(builder, [walkX, -1.06, walkZ], progress * 9);
+          }
+          if (snapshot.playerExitedToBay) {
+            builder.box([-1.85, -1.08, 3.62], [1.85, -0.92, 3.84], green);
+            builder.beam([-1.9, 0.05, 3.72], [1.9, 0.05, 3.72], 0.032, green);
+          }
         }
 
         appendPilotStationHighlights(builder, nowMs) {
@@ -3144,6 +3467,115 @@
           return {forward, right, up};
         }
 
+        appendMotherShip(builder, center, scale = 1, docked = false) {
+          const shipHull = builder.color("#aebdca");
+          const shipDark = builder.color("#66798e");
+          const shipGlow = builder.color(docked ? "#86efac" : "#4da6ff", true);
+          const p = (dx, dy, dz) => [
+            center[0] + dx * scale,
+            center[1] + dy * scale,
+            center[2] + dz * scale
+          ];
+          const box = (min, max, color) => builder.box(p(min[0], min[1], min[2]), p(max[0], max[1], max[2]), color);
+
+          builder.ellipsoid(p(0, 0, 0), [3.35 * scale, 0.48 * scale, 1.75 * scale], 18, 8, shipHull);
+          builder.ellipsoid(p(0, -0.92, 1.3), [1.15 * scale, 0.62 * scale, 1.65 * scale], 14, 7, shipDark);
+          box([-0.3, -0.65, 0.5], [0.3, -0.1, 1.8], shipHull);
+          box([-3.1, -1.5, 1.3], [-2.63, -1.12, 4.8], shipDark);
+          box([2.63, -1.5, 1.3], [3.1, -1.12, 4.8], shipDark);
+          box([-3.15, -1.46, 4.5], [-2.58, -1.14, 4.95], shipGlow);
+          box([2.58, -1.46, 4.5], [3.15, -1.14, 4.95], shipGlow);
+          box([-2.73, -1.34, 1.8], [2.73, -1.22, 2.05], shipHull);
+          if (docked) {
+            const dockGlow = builder.color("#86efac", true);
+            builder.beam([-2.15, 0.82, -7.05], p(-1.45, -0.28, 4.1), 0.028, dockGlow);
+            builder.beam([2.15, 0.82, -7.05], p(1.45, -0.28, 4.1), 0.028, dockGlow);
+            builder.box([-2.78, 0.12, -7.04], [2.78, 0.2, -6.94], dockGlow);
+          }
+        }
+
+        appendAlienRaider(builder, center, scaleVector) {
+          const alienHull = builder.color("#4d7c0f");
+          const alienDark = builder.color("#18240f");
+          const alienGlow = builder.color("#ef4444", true);
+          const [alienX, alienY, alienZ] = center;
+          const [alienScaleX, alienScaleY, alienScaleZ] = scaleVector;
+          builder.ellipsoid(
+            [alienX, alienY, alienZ],
+            [alienScaleX * 0.32, alienScaleY * 0.85, alienScaleZ],
+            16,
+            8,
+            alienDark
+          );
+          builder.ellipsoid(
+            [alienX - alienScaleX * 0.58, alienY, alienZ + alienScaleZ * 0.12],
+            [alienScaleX * 0.55, alienScaleY * 0.3, alienScaleZ * 0.58],
+            14,
+            6,
+            alienHull
+          );
+          builder.ellipsoid(
+            [alienX + alienScaleX * 0.58, alienY, alienZ + alienScaleZ * 0.12],
+            [alienScaleX * 0.55, alienScaleY * 0.3, alienScaleZ * 0.58],
+            14,
+            6,
+            alienHull
+          );
+          builder.box(
+            [alienX - alienScaleX * 0.12, alienY - alienScaleY * 0.22, alienZ - alienScaleZ * 0.96],
+            [alienX + alienScaleX * 0.12, alienY + alienScaleY * 0.22, alienZ - alienScaleZ * 0.72],
+            alienGlow
+          );
+          builder.box(
+            [alienX - alienScaleX * 0.85, alienY - alienScaleY * 0.12, alienZ + alienScaleZ * 0.46],
+            [alienX - alienScaleX * 0.54, alienY + alienScaleY * 0.12, alienZ + alienScaleZ * 0.66],
+            alienGlow
+          );
+          builder.box(
+            [alienX + alienScaleX * 0.54, alienY - alienScaleY * 0.12, alienZ + alienScaleZ * 0.46],
+            [alienX + alienScaleX * 0.85, alienY + alienScaleY * 0.12, alienZ + alienScaleZ * 0.66],
+            alienGlow
+          );
+        }
+
+        appendFlightScene(builder, nowMs = 0) {
+          if (this.isDockingSceneActive()) {
+            this.appendDockingCutscene(builder, nowMs);
+            return;
+          }
+          const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+          const flight = this.flight || this.createFlightState();
+          const totalApproach = Math.max(0.1, config.startDistance - config.dockingDistance);
+          const progress = Math.max(0, Math.min(1, (config.startDistance - flight.distance) / totalApproach));
+          const approachScale = 1 + progress * 0.16;
+          const impulseJitter = this.pilot.active && this.pilot.impulse > 0.02
+            ? Math.sin(nowMs / 220) * this.pilot.impulse * 0.05
+            : 0;
+          const motherCenter = [
+            config.targetPosition[0] + flight.lateralOffset,
+            config.targetPosition[1] + flight.verticalOffset + impulseJitter,
+            -flight.distance
+          ];
+          this.appendMotherShip(builder, motherCenter, approachScale, flight.docked);
+
+          const alienShip = this.combat.alienShip;
+          const alienDistance = Math.max(flight.distance + 15.5, 31.5);
+          this.appendAlienRaider(builder, [
+            alienShip.position[0] - flight.lateralOffset * 0.18,
+            alienShip.position[1] + flight.verticalOffset * 0.12,
+            -alienDistance
+          ], alienShip.scale);
+
+          if (this.pilot.active && this.pilot.impulse > 0.04 && !flight.docked) {
+            const trailGlow = builder.color("#67e8f9", true);
+            const trailLength = 1.6 + this.pilot.impulse * 3.2;
+            [-2.25, 0, 2.25].forEach((x, index) => {
+              const y = index === 1 ? 0.38 : 0.72;
+              builder.beam([x, y, -7.02], [x - flight.lateralOffset * 0.05, y + flight.verticalOffset * 0.03, -7.02 - trailLength], 0.018, trailGlow);
+            });
+          }
+        }
+
         appendPhaserViewModel(builder) {
           if (this.pilot.active || !this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return;
           const {forward, right, up} = this.cameraBasis();
@@ -3177,6 +3609,10 @@
           const alienEyes = builder.color("#ef4444", true);
           const healthBack = builder.color("#111827");
           const healthFill = builder.color("#84cc16", true);
+          this.appendFlightScene(builder, nowMs);
+          if (this.isDockingSceneActive()) {
+            return builder.toFloat32Array();
+          }
           this.appendPilotStationHighlights(builder, nowMs);
           this.appendPilotViewModel(builder);
           this.appendPhaserViewModel(builder);
@@ -3235,9 +3671,9 @@
             transporting: this.aliens.filter((alien) => alien.state === "transporting").length,
             kills: this.kills,
             gameOver: this.gameOver,
-            paused: this.pilot.active,
+            paused: this.isBoardingPaused(),
             pilotStation: this.pilot.station?.label || "",
-            phaserReady: !this.gameOver && !this.pilot.active && cooldownRemainingMs <= 0,
+            phaserReady: !this.gameOver && !this.isBoardingPaused() && cooldownRemainingMs <= 0,
             cooldownRemainingMs: Math.ceil(cooldownRemainingMs)
           };
         }
@@ -3290,7 +3726,7 @@
 
         updateCombat(nowMs, deltaSeconds) {
           if (!this.combat.enabled) return;
-          if (this.pilot.active) {
+          if (this.isBoardingPaused()) {
             this.emitCombatState();
             return;
           }
@@ -3344,7 +3780,7 @@
         }
 
         firePhaser(nowMs = performance.now()) {
-          if (this.pilot.active || !this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return false;
+          if (this.isBoardingPaused() || !this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return false;
           this.combatClockMs = Math.max(this.combatClockMs, nowMs);
           if (nowMs - this.lastPhaserShotAt < this.combat.phaser.cooldownMs) return false;
           this.lastPhaserShotAt = nowMs;
@@ -3413,6 +3849,7 @@
           this.combatClockMs = nowMs;
           this.nextTransportAtMs = nowMs + Math.min(900, this.combat.transport.initialDelayMs);
           this.clearMovementKeys();
+          this.resetFlightState();
           this.emitCombatState(true);
         }
 
@@ -3474,7 +3911,7 @@
         }
 
         moveCamera(deltaX, deltaZ) {
-          if (this.pilot.active || !this.movement.enabled || this.gameOver) return;
+          if (this.isDockingSceneActive() || this.pilot.active || !this.movement.enabled || this.gameOver) return;
           const nextX = this.camera[0] + deltaX;
           const nextZ = this.camera[2] + deltaZ;
           let changed = false;
@@ -3492,6 +3929,11 @@
         }
 
         updateMovement(deltaSeconds) {
+          if (this.isDockingCutsceneActive()) {
+            this.updateDockingCutscene(deltaSeconds);
+            return;
+          }
+          if (this.isShuttleBaySceneActive()) return;
           if (this.pilot.active) {
             this.updatePilot(deltaSeconds);
             return;
@@ -3535,15 +3977,19 @@
           this.gl.bufferData(this.gl.ARRAY_BUFFER, this.dynamicGeometry, this.gl.DYNAMIC_DRAW);
           this.resize();
           const gl = this.gl;
+          const dockingSceneActive = this.isDockingSceneActive();
           const direction = this.cameraDirection();
           const target = [
             this.camera[0] + direction[0],
             this.camera[1] + direction[1],
             this.camera[2] + direction[2]
           ];
+          const cameraView = dockingSceneActive
+            ? this.dockingCutsceneCamera(frameTime)
+            : {eye: this.camera, target};
           const farPlane = Math.max(140, this.starfield.radius + this.starfield.maximumSize + 8);
           const projection = shuttle3dPerspectiveMatrix(66 * Math.PI / 180, this.aspect || 16 / 9, 0.08, farPlane);
-          const view = shuttle3dLookAtMatrix(this.camera, target, [0, 1, 0]);
+          const view = shuttle3dLookAtMatrix(cameraView.eye, cameraView.target, [0, 1, 0]);
 
           gl.clearColor(0.002, 0.006, 0.02, 1);
           gl.clearDepth(1);
@@ -3554,12 +4000,14 @@
           gl.useProgram(this.program);
           gl.uniformMatrix4fv(this.locations.projection, false, projection);
           gl.uniformMatrix4fv(this.locations.view, false, view);
-          gl.uniform3fv(this.locations.camera, new Float32Array(this.camera));
+          gl.uniform3fv(this.locations.camera, new Float32Array(cameraView.eye));
           gl.uniform1f(this.locations.time, frameTime / 1000);
 
-          this.bindGeometryBuffer(this.buffer);
-          gl.uniform3f(this.locations.offset, 0, 0, 0);
-          gl.drawArrays(gl.TRIANGLES, 0, this.worldVertexCount);
+          if (!dockingSceneActive) {
+            this.bindGeometryBuffer(this.buffer);
+            gl.uniform3f(this.locations.offset, 0, 0, 0);
+            gl.drawArrays(gl.TRIANGLES, 0, this.worldVertexCount);
+          }
 
           if (this.dynamicVertexCount) {
             this.bindGeometryBuffer(this.dynamicBuffer);
@@ -3567,9 +4015,11 @@
             gl.drawArrays(gl.TRIANGLES, 0, this.dynamicVertexCount);
           }
 
-          this.bindGeometryBuffer(this.starBuffer);
-          gl.uniform3fv(this.locations.offset, new Float32Array(this.camera));
-          gl.drawArrays(gl.TRIANGLES, 0, this.starVertexCount);
+          if (!dockingSceneActive) {
+            this.bindGeometryBuffer(this.starBuffer);
+            gl.uniform3fv(this.locations.offset, new Float32Array(this.camera));
+            gl.drawArrays(gl.TRIANGLES, 0, this.starVertexCount);
+          }
           this.animationFrame = requestAnimationFrame(this.draw);
         }
 
@@ -3696,7 +4146,7 @@
           const shuttle = renderer();
           if (event.code === "KeyE") {
             event.preventDefault();
-            if (event.repeat) return;
+            if (event.repeat || shuttle?.isDockingSceneActive?.()) return;
             if (shuttle?.pilot?.active) {
               shuttle.setPilotMode(false, null, performance.now());
               const current = container.__mainComputerShuttle3dLook || {yaw: config.yaw, pitch: config.pitch};
@@ -3863,7 +4313,7 @@
 
         const hint = document.createElement("div");
         hint.className = "scene-shuttle3d-look-hint";
-        hint.textContent = shuttle.controlsHint || "Mouse over console + E pilot • Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart";
+        hint.textContent = shuttle.controlsHint || "Mouse over console + E pilot • W/S throttle flies to Mother Ship • docking triggers shuttle-bay cutscene • Click/Space/F fire outside pilot";
 
         const status = document.createElement("div");
         status.className = "scene-shuttle3d-mesh-status";
@@ -3933,12 +4383,28 @@
             canvas.dataset.pilotMode = pilot.active ? "active" : "inactive";
             canvas.dataset.hoveredPilotStation = pilot.hoverId;
             canvas.dataset.activePilotStation = pilot.stationId;
+            canvas.dataset.flightDocked = pilot.flightDocked ? "true" : "false";
+            canvas.dataset.dockingCutscene = pilot.dockingCutsceneActive ? "active" : (pilot.playerExitedToBay ? "complete" : "inactive");
             shell.dataset.pilotMode = pilot.active ? "active" : "inactive";
             shell.dataset.hoveredPilotStation = pilot.hoverId;
-            if (pilot.active) {
-              pilotLine.textContent = `PILOTING ${pilot.stationLabel} • THROTTLE ${(pilot.throttle * 100).toFixed(0)}% • HEADING ${pilot.heading.toFixed(0)}° • E EXIT`;
+            shell.dataset.flightDocked = pilot.flightDocked ? "true" : "false";
+            shell.dataset.dockingCutscene = pilot.dockingCutsceneActive ? "active" : (pilot.playerExitedToBay ? "complete" : "inactive");
+            if (pilot.dockingCutsceneActive) {
+              const progress = Math.round(pilot.dockingCutsceneProgress * 100);
+              pilotLine.textContent = `DOCKING CUTSCENE • ${pilot.dockingCutscenePhase.replace(/-/g, " ").toUpperCase()} • ${progress}%`;
               pilotPrompt.hidden = false;
-              pilotPrompt.textContent = "SHUTTLE PILOTING ACTIVE — W/S THROTTLE • A/D STEER • E EXIT";
+              pilotPrompt.textContent = `Autopilot docking with ${pilot.targetLabel}: shuttle entering bay, landing, and cadet exiting`;
+            } else if (pilot.playerExitedToBay) {
+              pilotLine.textContent = `ARRIVED: ${pilot.shuttleBayLabel} • BOARDERS PAUSED`;
+              pilotPrompt.hidden = false;
+              pilotPrompt.textContent = `Cutscene complete — the player has exited into the ${pilot.shuttleBayLabel}`;
+            } else if (pilot.active) {
+              const range = pilot.flightDocked ? `DOCKED WITH ${pilot.targetLabel}` : `RANGE ${pilot.flightDistance.toFixed(1)} TO ${pilot.targetLabel}`;
+              pilotLine.textContent = `PILOTING ${pilot.stationLabel} • ${range} • SPEED ${pilot.flightSpeed.toFixed(1)} • E EXIT`;
+              pilotPrompt.hidden = false;
+              pilotPrompt.textContent = pilot.flightDocked
+                ? `Docked with ${pilot.targetLabel} — docking cutscene starting`
+                : `W/S throttle flies to ${pilot.targetLabel} • A/D steer • E exit`;
             } else if (pilot.hoverId) {
               pilotLine.textContent = `READY: ${pilot.hoverLabel} • PRESS E TO PILOT`;
               pilotPrompt.hidden = false;

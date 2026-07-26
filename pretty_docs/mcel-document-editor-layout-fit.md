@@ -89,3 +89,18 @@ micro fit: the readable/control content inside each region still has a declared 
 ```
 
 For semantic-runtime apps, content-fit violations are now hard runtime visual-fit failures. A semantic surface should not show a green top-level diagnostic result while required readable/control content is visibly clipped.
+
+## Patch 22a correction
+
+The fit-policy contract made the Document Editor diagnostics stricter, which was correct, but the workbench still needed a comfort pass.  The three-lane layout now keeps the right AI rail on the right, keeps the left Pretty Docs rail as the shrink-first lane, and auto-fits the document page down inside the remaining center lane instead of leaving the page clipped or awkwardly scrolled at normal constrained widths.
+
+The page fit is runtime-sized from the canvas width.  It only scales downward from the requested zoom and records the state with `data-document-auto-fit`, so the layout remains measurable by MCEL visual-fit probes.
+
+## Patch 22b visibility-aware page auto-fit
+
+The Document Editor page fit refresh now observes the canvas, object stage,
+shell, and app visibility state.  This prevents the page from keeping a stale
+zoom when the app is opened after initial load or when the right rail constrains
+the center lane.  The right AI rail remains on the right, the Pretty Docs rail
+remains shrink-first, and the page can fit down to a smaller bounded zoom before
+horizontal clipping is allowed.

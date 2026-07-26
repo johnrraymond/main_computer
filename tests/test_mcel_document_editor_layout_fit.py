@@ -10,7 +10,9 @@ DOCUMENT_CSS = WEB / "styles" / "document.css"
 COUNTER_CSS = WEB / "styles" / "mcel-diagnostics-counter-widget.css"
 COUNTER_JS = WEB / "scripts" / "mcel-diagnostics-counter-widget.js"
 SURFACE_JS = WEB / "scripts" / "mcel-document-editor-surface.js"
+DOCUMENT_LAYOUT_JS = WEB / "scripts" / "document-layout.js"
 SELF_DIAGNOSIS_JS = WEB / "scripts" / "mcel-self-diagnosis.js"
+LAYOUT_JS = WEB / "scripts" / "document-layout.js"
 DOC = ROOT / "pretty_docs" / "mcel-document-editor-layout-fit.md"
 
 
@@ -42,6 +44,11 @@ def test_document_editor_layout_keeps_ai_rail_right_and_shrinks_library() -> Non
     assert 'minmax(56px, var(--document-nav-lane))' in css
     assert 'minmax(208px, var(--document-companion-lane))' in css
     assert "box-sizing: border-box;" in css
+    assert "Patch 22b: keep the center page readable" in css
+    assert "overflow-x: hidden;" in css
+    assert '.document-canvas[data-document-auto-fit="true"]' in css
+    assert 'minmax(96px, var(--document-nav-lane))' in css
+    assert 'minmax(208px, var(--document-companion-lane))' in css
     assert ".document-library-item *" in css
     assert "max-width: 100%;" in css
     assert '.document-library-item span {\n      min-width: 0;' in css
@@ -56,6 +63,7 @@ def test_document_editor_layout_keeps_ai_rail_right_and_shrinks_library() -> Non
 
 def test_document_editor_overbudget_layout_preserves_three_lane_workbench() -> None:
     css = DOCUMENT_CSS.read_text(encoding="utf-8")
+    layout_js = LAYOUT_JS.read_text(encoding="utf-8")
 
     assert ".document-shell" in css
     assert 'grid-template-areas:\n          "menu menu menu"\n          "toolbar toolbar toolbar"\n          "navigation primary companion"\n          "status status status";' in css
@@ -63,7 +71,23 @@ def test_document_editor_overbudget_layout_preserves_three_lane_workbench() -> N
     assert "max-width: 100%;" in css
     assert ".document-canvas {\n        max-width: 100%;" in css
     assert ".document-app.document-ai-open .document-ai-pane" not in css
+    assert "documentEffectiveLayoutZoom" in layout_js
+    assert "ResizeObserver" in layout_js
+    assert 'documentCanvas?.setAttribute("data-document-auto-fit"' in layout_js
+    assert "DOCUMENT_AUTO_FIT_MIN_ZOOM" in layout_js
 
+
+
+def test_document_page_auto_fit_refreshes_after_visibility_and_container_changes() -> None:
+    layout = DOCUMENT_LAYOUT_JS.read_text(encoding="utf-8")
+
+    assert "DOCUMENT_AUTO_FIT_MIN_ZOOM = 0.45" in layout
+    assert "DOCUMENT_AUTO_FIT_GUTTER = 40" in layout
+    assert "documentLayoutVisibilityObserver" in layout
+    assert "MutationObserver" in layout
+    assert "documentObjectStage" in layout
+    assert "documentLayoutFitObserver.observe(el)" in layout
+    assert "setTimeout(() => scheduleDocumentLayoutFitRefresh(), 240)" in layout
 
 def test_document_editor_visual_fit_diagnostics_cover_document_regions() -> None:
     diagnosis = SELF_DIAGNOSIS_JS.read_text(encoding="utf-8")
@@ -121,9 +145,9 @@ def test_document_editor_surface_marks_runtime_readable_candidates_without_menu_
     assert '"data-mcel-visual-owner": surfaceId' in surface
     assert '#document-export-menu' in surface
     assert 'removeAttribute("data-mcel-readable")' in surface
-    assert '"data-mcel-fit-policy": "wrap"' in surface
-    assert '"data-mcel-fit-policy": "compact-icon"' in surface
-    assert '"data-mcel-fit-policy": "truncate"' in surface
+    assert 'applyFitPolicy(scope.querySelector(selector), "wrap"' in surface
+    assert 'applyFitPolicy(scope.querySelector(selector), "compact-icon"' in surface
+    assert 'applyFitPolicy(scope.querySelectorAll(selector), "truncate"' in surface
     assert '".document-head-actions",\n      ".document-library-head"' not in surface
 
 

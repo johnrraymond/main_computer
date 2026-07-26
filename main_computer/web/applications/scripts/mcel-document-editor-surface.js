@@ -13,6 +13,13 @@ var McelDocumentEditorSurface = (() => {
     return null;
   })();
 
+  const fitContractApi = (() => {
+    if (typeof McelSurfaceFitContract !== "undefined") return McelSurfaceFitContract;
+    if (typeof window !== "undefined" && window.McelSurfaceFitContract) return window.McelSurfaceFitContract;
+    if (typeof window !== "undefined" && window.MCEL?.surfaceFitContract) return window.MCEL.surfaceFitContract;
+    return null;
+  })();
+
   function safeString(value) {
     if (value === undefined || value === null) return "";
     return String(value);
@@ -30,6 +37,20 @@ var McelDocumentEditorSurface = (() => {
       element.setAttribute(name, String(value));
     });
     return element;
+  }
+
+  function applyFitPolicy(element, policy, options = {}) {
+    if (fitContractApi && typeof fitContractApi.applyFitPolicy === "function") {
+      try {
+        return fitContractApi.applyFitPolicy(element, policy, options);
+      } catch {}
+    }
+    const attrs = {"data-mcel-fit-policy": policy};
+    if (options.readable) attrs["data-mcel-readable"] = "true";
+    if (options.visualOwner) attrs["data-mcel-visual-owner"] = options.visualOwner;
+    if (options.fitRole) attrs["data-mcel-fit-role"] = options.fitRole;
+    if (options.required !== undefined) attrs["data-mcel-fit-required"] = options.required ? "true" : "false";
+    return setAttrs(element, attrs);
   }
 
   function staticSurfaceAttrs() {
@@ -237,22 +258,25 @@ var McelDocumentEditorSurface = (() => {
       ".document-library-head",
       ".document-library-head strong",
       ".document-library-head-actions"
-    ].forEach((selector) => setAttrs(scope.querySelector(selector), {
-      "data-mcel-fit-policy": "wrap"
+    ].forEach((selector) => applyFitPolicy(scope.querySelector(selector), "wrap", {
+      fitRole: "document-library-header",
+      required: true
     }));
     [
       "#document-library-refresh",
       "#document-library-close"
-    ].forEach((selector) => setAttrs(scope.querySelector(selector), {
-      "data-mcel-readable": "true",
-      "data-mcel-visual-owner": surfaceId,
-      "data-mcel-fit-policy": "compact-icon"
+    ].forEach((selector) => applyFitPolicy(scope.querySelector(selector), "compact-icon", {
+      readable: true,
+      visualOwner: surfaceId,
+      fitRole: "document-library-header-control",
+      required: true
     }));
     [
       ".document-library-item strong",
       ".document-library-item span"
-    ].forEach((selector) => setAttrs(scope.querySelectorAll(selector), {
-      "data-mcel-fit-policy": "truncate"
+    ].forEach((selector) => applyFitPolicy(scope.querySelectorAll(selector), "truncate", {
+      fitRole: "document-library-item-label",
+      required: true
     }));
     [
       ".document-library-list",

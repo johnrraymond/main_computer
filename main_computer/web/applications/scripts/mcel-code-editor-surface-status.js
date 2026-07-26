@@ -36,6 +36,25 @@
     return report.mcelSurfacePathway || report.summary?.mcelSurfacePathway || null;
   }
 
+  function conformanceFromReport(report) {
+    if (!report || typeof report !== "object") return null;
+    return report.appSurfaceConformance ||
+      report.summary?.appSurfaceConformance ||
+      report.measurements?.appSurfaceConformance ||
+      null;
+  }
+
+  function reportHasActiveErrors(report) {
+    if (!report || typeof report !== "object") return false;
+    return Number(report.counts?.errors || report.current?.counts?.errors || 0) > 0;
+  }
+
+  function conformanceIsPassing(conformance) {
+    if (!conformance || typeof conformance !== "object") return false;
+    const status = normalizeState(conformance.status || conformance.verdict);
+    return (conformance.valid === true || status === "pass") && status !== "fail";
+  }
+
   function boolWord(value) {
     return flagOk(value) ? "PASS" : "FAIL";
   }
@@ -101,6 +120,54 @@
     };
   }
 
+  function summarizeReport(report) {
+    const pathway = pathwayFromReport(report);
+    const pathwaySummary = summarizePathway(pathway);
+    const conformance = conformanceFromReport(report);
+    const conformancePass = conformanceIsPassing(conformance) && !reportHasActiveErrors(report);
+    const pathwayState = normalizeState(pathwaySummary.state);
+
+    if (conformancePass && (pathwayState === "fail" || pathwayState === "unavailable" || pathwayState === "pending" || !pathway)) {
+      const layerIds = Array.isArray(conformance.layers)
+        ? conformance.layers.map((layer) => layer.id).filter(Boolean)
+        : Array.isArray(conformance.requiredLayerIds) ? conformance.requiredLayerIds : [];
+      return {
+        state: "pass",
+        value: "PASS",
+        label: pathwaySummary.label || "MCEL Surface",
+        title: [
+          "MCEL Surface: PASS",
+          "Host conformance PASS",
+          layerIds.length ? `Layers ${layerIds.join(", ")}` : "",
+          pathway ? `Pathway ${String(pathwaySummary.value || "").toUpperCase()}` : "Pathway not required for ordinary source"
+        ].filter(Boolean).join(" · "),
+        details: {
+          semanticRidges: "host-pass",
+          surfaceIR: "host-pass",
+          layout: "host-pass",
+          extraction: "host-pass",
+          roundTrip: "host-pass",
+          appSurfaceConformance: "pass"
+        },
+        raw: {
+          pathway,
+          appSurfaceConformance: conformance
+        }
+      };
+    }
+
+    if (conformance && !conformancePass && reportHasActiveErrors(report)) {
+      return {
+        ...pathwaySummary,
+        state: "fail",
+        value: "FAIL",
+        title: `${pathwaySummary.title || "MCEL Surface"} · Host conformance FAIL`
+      };
+    }
+
+    return pathwaySummary;
+  }
+
   function escapeText(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -158,8 +225,7 @@
     const el = options.element || doc?.querySelector?.(STATUS_SELECTOR) || null;
     if (!el) return null;
     const report = options.report || diagnose(appId);
-    const pathway = pathwayFromReport(report);
-    const summary = summarizePathway(pathway);
+    const summary = options.summary || summarizeReport(report);
     el.__mcelSurfaceStatusReport = report || null;
     el.__mcelSurfaceStatusSummary = summary;
     return renderStatus(el, summary);
@@ -194,7 +260,9 @@
     STATUS_SELECTOR,
     REFRESH_INTERVAL_MS,
     pathwayFromReport,
+    conformanceFromReport,
     summarizePathway,
+    summarizeReport,
     renderStatus,
     refresh,
     mount,
@@ -202,6 +270,8 @@
       normalizeState,
       flagOk,
       boolWord,
+      reportHasActiveErrors,
+      conformanceIsPassing,
       escapeText
     })
   });

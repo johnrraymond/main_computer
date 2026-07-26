@@ -70,6 +70,8 @@ def test_code_editor_contains_visible_mcel_surface_status_chip() -> None:
     assert "mcel-code-editor-surface-status-v1" in source
     assert "McelCodeEditorSurfaceStatus" in source
     assert "summarizePathway" in source
+    assert "summarizeReport" in source
+    assert "conformanceFromReport" in source
     assert "renderStatus" in source
 
     assert "SemanticSurfaceIR" in doc
@@ -131,6 +133,39 @@ def test_surface_status_summarizes_failed_pathway_predicate() -> None:
     assert payload["details"]["semanticRidges"] == "pass"
     assert payload["details"]["layout"] == "fail"
     assert payload["details"]["roundTrip"] == "fail"
+
+
+def test_surface_status_prefers_passing_host_conformance_over_unavailable_pathway_for_plain_source() -> None:
+    payload = run_node_json(load_status_api_script(
+        """
+        const summary = api.summarizeReport({
+          appId: "code-editor",
+          counts: {errors: 0, warnings: 0, ok: 25},
+          mcelSurfacePathway: {
+            status: "unavailable",
+            valid: false,
+            roundTripStatus: "unavailable",
+            counts: {errors: 0, warnings: 1, ok: 0}
+          },
+          appSurfaceConformance: {
+            status: "pass",
+            valid: true,
+            layers: [
+              {id: "runtime-ownership", status: "pass", valid: true},
+              {id: "runtime-visual-fit", status: "pass", valid: true},
+              {id: "diagnostic-no-throw", status: "pass", valid: true}
+            ],
+            failedLayerIds: []
+          }
+        });
+        process.stdout.write(JSON.stringify(summary));
+        """
+    ))
+
+    assert payload["state"] == "pass"
+    assert payload["value"] == "PASS"
+    assert payload["details"]["appSurfaceConformance"] == "pass"
+    assert "Host conformance PASS" in payload["title"]
 
 
 def test_surface_status_render_updates_visible_chip_markup() -> None:
