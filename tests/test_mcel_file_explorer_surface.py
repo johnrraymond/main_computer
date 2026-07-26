@@ -172,7 +172,8 @@ def test_file_explorer_runtime_helpers_decorate_dynamic_entries() -> None:
         """
         const attrs = {};
         const element = {
-          setAttribute(name, value) { attrs[name] = String(value); }
+          setAttribute(name, value) { attrs[name] = String(value); },
+          removeAttribute(name) { delete attrs[name]; }
         };
         surface.decorateEntryElement(element, {
           kind: "directory",
@@ -182,7 +183,8 @@ def test_file_explorer_runtime_helpers_decorate_dynamic_entries() -> None:
         }, {index: 2, rootId: "workspace"});
         const rootAttrs = {};
         const rootButton = {
-          setAttribute(name, value) { rootAttrs[name] = String(value); }
+          setAttribute(name, value) { rootAttrs[name] = String(value); },
+          removeAttribute(name) { delete rootAttrs[name]; }
         };
         surface.decorateRootButton(rootButton, {
           id: "workspace",
@@ -194,6 +196,7 @@ def test_file_explorer_runtime_helpers_decorate_dynamic_entries() -> None:
           entryType: attrs["data-mcel-node-type"],
           entryRegion: attrs["data-mcel-home-region"],
           entrySource: attrs["data-mcel-source"],
+          entryY: attrs["data-layout-anchor-y"],
           rootId: rootAttrs["data-mcel-node-id"],
           rootType: rootAttrs["data-mcel-node-type"]
         }));
@@ -206,9 +209,89 @@ def test_file_explorer_runtime_helpers_decorate_dynamic_entries() -> None:
         "entryType": "folder_item",
         "entryRegion": "file-explorer.region.file-list",
         "entrySource": "file-explorer.list-api",
+        "entryY": "278",
         "rootId": "file-explorer.node.root.workspace",
         "rootType": "filesystem_root",
     }
+
+
+def test_file_explorer_overflow_entries_do_not_pollute_layout_grammar() -> None:
+    script = load_surface_stack(
+        """
+        const attrs = {
+          "data-mcel-node-id": "stale",
+          "data-layout-anchor-y": "650"
+        };
+        const element = {
+          setAttribute(name, value) { attrs[name] = String(value); },
+          removeAttribute(name) { delete attrs[name]; }
+        };
+        surface.decorateEntryElement(element, {
+          kind: "file",
+          name: "overflow.txt",
+          relative_path: "overflow.txt"
+        }, {index: 18, rootId: "workspace"});
+        process.stdout.write(JSON.stringify(attrs));
+        """
+    )
+    data = run_node_json(script)
+
+    assert data["data-mcel-overflow-entry"] == "true"
+    assert data["data-mcel-readable"] == "true"
+    assert data["data-mcel-fit-policy"] == "truncate"
+    assert "data-mcel-node-id" not in data
+    assert "data-layout-anchor-y" not in data
+
+
+def test_file_explorer_runtime_entries_extract_without_scroll_collision() -> None:
+    script = load_surface_stack(
+        """
+        const rootRecords = surface.buildStaticSurfaceRidgeRecords();
+        const attrsForEntry = (index) => {
+          const attrs = {};
+          const element = {
+            setAttribute(name, value) { attrs[name] = String(value); },
+            removeAttribute(name) { delete attrs[name]; }
+          };
+          surface.decorateEntryElement(element, {
+            kind: index % 2 ? "file" : "directory",
+            name: `entry-${index}`,
+            relative_path: `entry-${index}`
+          }, {index, rootId: "workspace"});
+          return attrs;
+        };
+        const records = rootRecords.concat(Array.from({length: 24}, (_, index) => attrsForEntry(index)).filter((attrs) => attrs["data-mcel-node-id"]));
+        const irResult = sandbox.McelSemanticSurfaceIR.buildSurfaceIRFromRidges(records, {requireSurface: true});
+        const regionRecords = records
+          .filter((record) => record["data-mcel-region"])
+          .map((record) => ({
+            id: record["data-mcel-region"],
+            role: record["data-mcel-region-role"],
+            x: Number(record["data-layout-x"]),
+            y: Number(record["data-layout-y"]),
+            width: Number(record["data-layout-region-width"]),
+            height: Number(record["data-layout-region-height"])
+          }));
+        const nodePorts = Object.fromEntries(records
+          .filter((record) => record["data-mcel-node-id"])
+          .map((record) => [record["data-mcel-node-id"], ["north", "south", "east", "west"]]));
+        const layoutResult = sandbox.McelSharedLayoutGrammar.buildSharedLayoutGrammar(irResult.ir, {
+          viewport: {width: 1280, height: 720, safeMargin: 16},
+          regions: regionRecords,
+          nodePorts
+        });
+        process.stdout.write(JSON.stringify({
+          nodeCount: irResult.ir.graph.nodes.length,
+          layoutValid: layoutResult.valid,
+          diagnostics: layoutResult.diagnostics.map((item) => item.code)
+        }));
+        """
+    )
+    data = run_node_json(script)
+
+    assert data["nodeCount"] == 20
+    assert data["layoutValid"] is True
+    assert data["diagnostics"] == []
 
 
 def test_file_explorer_runtime_script_consumes_surface_helpers_defensively() -> None:

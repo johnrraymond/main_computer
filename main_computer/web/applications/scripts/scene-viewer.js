@@ -3056,15 +3056,24 @@
           this.setLook(spawn.yaw, spawn.pitch);
           if (typeof this.onCameraMoved === "function") this.onCameraMoved(this.camera.slice());
           if (typeof this.onBayControlStarted === "function") {
-            this.onBayControlStarted({
-              position: this.camera.slice(),
-              yaw: spawn.yaw,
-              pitch: spawn.pitch
-            });
+            try {
+              this.onBayControlStarted({
+                position: this.camera.slice(),
+                yaw: spawn.yaw,
+                pitch: spawn.pitch
+              });
+            } catch (error) {
+              console.error("Shuttle bay control handoff callback failed", error);
+            }
           }
           this.emitPilotState(true);
           this.emitCombatState(true);
           return true;
+        }
+
+        forceShuttleBayControl() {
+          if (!this.flight) this.flight = this.createFlightState();
+          return this.enterShuttleBayPlayerControl(true);
         }
 
         isDockingSceneActive() {
@@ -4281,6 +4290,11 @@
             }
             return;
           }
+          if (event.code === "KeyT") {
+            event.preventDefault();
+            if (!event.repeat) shuttle?.forceShuttleBayControl?.();
+            return;
+          }
           if (shuttle?.pilot?.active) {
             if (pilotCodes.has(event.code)) {
               event.preventDefault();
@@ -4441,7 +4455,23 @@
         status.className = "scene-shuttle3d-mesh-status";
         status.textContent = "Building shuttle combat vertices…";
 
-        shell.append(canvas, hud, crosshair, pilotPrompt, damageFlash, gameOver, hint, status);
+        const twiddleSystem = document.createElement("div");
+        twiddleSystem.className = "scene-shuttle3d-twiddle-system";
+        twiddleSystem.setAttribute("role", "region");
+        twiddleSystem.setAttribute("aria-label", "Shuttle bay twiddle system");
+        const twiddleTitle = document.createElement("strong");
+        twiddleTitle.textContent = "Shuttle Bay Twiddle System";
+        const twiddleStatus = document.createElement("span");
+        twiddleStatus.className = "scene-shuttle3d-twiddle-status";
+        twiddleStatus.textContent = "Awaiting docking handoff.";
+        const twiddleButton = document.createElement("button");
+        twiddleButton.type = "button";
+        twiddleButton.className = "scene-shuttle3d-twiddle-button";
+        twiddleButton.textContent = "Twiddle: Give Player Control";
+        twiddleButton.title = "Force first-person control in the mother ship shuttle bay.";
+        twiddleSystem.append(twiddleTitle, twiddleStatus, twiddleButton);
+
+        shell.append(canvas, hud, crosshair, pilotPrompt, damageFlash, gameOver, hint, status, twiddleSystem);
         container.append(shell);
         bindShuttle3dLookaround(container, scene);
 
@@ -4460,6 +4490,30 @@
           canvas.dataset.alienShip = renderer.combat.alienShip.id;
           let lastHealth = renderer.combat.player.startingHealth;
           let damageTimer = 0;
+          const updateTwiddleSystem = (pilot = renderer.pilotSnapshot()) => {
+            const progress = Math.round((pilot.dockingCutsceneProgress || 0) * 100);
+            const phase = (pilot.dockingCutscenePhase || "idle").replace(/-/g, " ").toUpperCase();
+            twiddleSystem.dataset.cutscene = pilot.dockingCutsceneActive ? "active" : (pilot.playerExitedToBay ? "complete" : "inactive");
+            twiddleSystem.dataset.playerControl = pilot.shuttleBayControlActive ? "active" : "inactive";
+            twiddleSystem.hidden = !(pilot.dockingCutsceneActive || pilot.playerExitedToBay || pilot.flightDocked);
+            if (pilot.shuttleBayControlActive) {
+              twiddleStatus.textContent = `Control restored in ${pilot.shuttleBayLabel}.`;
+              twiddleButton.disabled = true;
+            } else if (pilot.dockingCutsceneActive) {
+              twiddleStatus.textContent = `Docking ${phase} • ${progress}% • press T if handoff sticks.`;
+              twiddleButton.disabled = false;
+            } else if (pilot.playerExitedToBay || pilot.flightDocked) {
+              twiddleStatus.textContent = `Docking handoff pending • press T to restore player control.`;
+              twiddleButton.disabled = false;
+            } else {
+              twiddleStatus.textContent = "Awaiting docking handoff.";
+              twiddleButton.disabled = false;
+            }
+          };
+          twiddleButton.addEventListener("click", () => {
+            renderer.forceShuttleBayControl?.();
+            updateTwiddleSystem(renderer.pilotSnapshot());
+          });
           const updateMovementStatus = (camera) => {
             const combat = renderer.combatSnapshot();
             const pilot = renderer.pilotSnapshot();
@@ -4516,6 +4570,7 @@
             shell.dataset.dockingCutscene = pilot.dockingCutsceneActive ? "active" : (pilot.playerExitedToBay ? "finished" : "inactive");
             shell.dataset.shuttleBayScene = pilot.playerExitedToBay ? "active" : "inactive";
             shell.dataset.shuttleBayControl = pilot.shuttleBayControlActive ? "active" : "inactive";
+            updateTwiddleSystem(pilot);
             if (pilot.dockingCutsceneActive) {
               const progress = Math.round(pilot.dockingCutsceneProgress * 100);
               pilotLine.textContent = `DOCKING CUTSCENE • ${pilot.dockingCutscenePhase.replace(/-/g, " ").toUpperCase()} • ${progress}%`;
@@ -4544,7 +4599,8 @@
             updateMovementStatus(renderer.camera);
           };
           renderer.onBayControlStarted = (bay) => {
-            setShuttle3dLook(container, bay.yaw, bay.pitch, config);
+            const bayLookConfig = shuttle3dCameraConfig(scene);
+            setShuttle3dLook(container, bay.yaw, bay.pitch, bayLookConfig);
             updateMovementStatus(bay.position || renderer.camera);
           };
           renderer.onCameraMoved = updateMovementStatus;

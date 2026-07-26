@@ -308,9 +308,12 @@ def test_self_diagnosis_attaches_app_surface_conformance_without_replacing_findi
     source = SELF_DIAGNOSIS_JS.read_text(encoding="utf-8")
 
     assert "function getAppSurfaceConformance" in source
+    assert "function getAppSurfaceRegistryPolicy" in source
+    assert "function harmonizeContractWithAppSurfacePolicy" in source
     assert "function attachAppSurfaceConformance" in source
     assert "semanticSurfaceHtml" in source
     assert "semanticSurfaceId" in source
+    assert "const expectedSurfaceId = (requiresStaticSurface && policySurfaceId)" in source
     assert "report = attachAppSurfaceConformance(report, snapshot, options);" in source
     assert "appSurfaceConformance" in source
     assert "buildReportBuckets(report)" in source

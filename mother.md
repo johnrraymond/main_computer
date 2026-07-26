@@ -65,7 +65,7 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-020` | Mother and guard mutation APIs remain local and use bounded reusable call-runners | [Remote access through Coolify call-runners](#remote-access-through-coolify-call-runners) | Route exposure, idempotency, and runner-crash tests | — | Implementable |
 | `MOTHER-REQ-021` | Active operations exclusively own conflicting scopes until their terminal boundary | [Active operation conflict rule](#active-operation-conflict-rule) | Local conflict-matrix, distributed-reservation, and terminal-release tests | — | Implementable |
 | `MOTHER-REQ-022` | Network finalization closes rollback at the authoritative journal commit | [Commit and finalize boundary](#commit-and-finalize-boundary) | Pre/post-commit crash and rollback-closure tests | `MOTHER-OPEN-018` | Implementable locally |
-| `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor for an expected head | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, delayed-request, crash, and cancellation tests | — | Implementable |
+| `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor per predecessor and retains one operation owner through rollover, two-phase cancellation, and terminal release | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, forged-certificate, rollover, exhaustive apply/cancel interleaving, cancellation, release, and crash tests | — | Implementable |
 | `MOTHER-REQ-024` | Zero-network and prospective replicas use an explicit enrollment transaction | [Remaining open design nodes](#remaining-open-design-nodes) | Empty-network and host-enrollment lifecycle tests | `MOTHER-OPEN-017` | Blocked |
 | `MOTHER-REQ-025` | Finalization replication has exact full-set acknowledgement and recovery transitions | [Remaining open design nodes](#remaining-open-design-nodes) | Ack-loss, retry, recovery, and successor-certificate tests | `MOTHER-OPEN-018` | Blocked |
 
@@ -619,10 +619,14 @@ not an advisory inventory list. Its canonically serialized host identities
 produce `replica_set_hash`; response order, discovery order, DNS order, and
 reachability order do not. A host remains part of the expected replica set until
 an explicit reseal commits a new replica set that excludes it.
-`active_writer_operation_id` is null when no distributed writer reservation is
-attached to the committed pending state. `last_successor_certificate_hash`
-identifies the exact full-set certificate that authorized the current journal
-head.
+`active_writer_operation_id` names the operation that owns the distributed
+successor reservation. It becomes non-null when the first certified successor is
+accepted and remains non-null throughout `do`, remediation, rollback,
+finalization, and `finalized-replication-pending`, even when `pending_action_id`
+has already been cleared. It becomes null only after the exact terminal head is
+proven and every expected replica has durably released that operation's
+reservation. `last_successor_certificate_hash` identifies the exact full-set
+certificate that authorized the current journal head.
 
 Before any Mother command talks to or mutates a remote network, the local control
 script MUST run a sealed-state and journal preflight:
@@ -1922,9 +1926,9 @@ On startup, and before any mutating command continues, Mother MUST:
 7. compare local network checkpoint/head/replay facts with every expected
    replica;
 8. compare unresolved action and rollback state with the affected guards;
-9. reconcile durable successor reservations, cancellation tombstones, accepted
-   certificate hashes, and any partial or split acquisition across every expected
-   replica;
+9. reconcile durable successor reservations, cancellation prepare/commit/abort
+   records, cancellation tombstones, accepted certificate hashes, and any partial
+   or split acquisition across every expected replica;
 10. block mutation when a committed head, checkpoint, required lineage, exact
    reservation owner, or successor claim cannot be proven.
 
@@ -3620,8 +3624,52 @@ outside replaceable container state. Conceptual local paths are:
 
 ```text
 /runtime/state/mother/networks/<network>/successor-reservations/current.json
+/runtime/state/mother/networks/<network>/successor-reservations/accepted-certificates/<certificate-hash>.json
+/runtime/state/mother/networks/<network>/successor-reservations/cancellation-prepares/<cancel-attempt-id>/<operation-id>/<predecessor-hash>.json
+/runtime/state/mother/networks/<network>/successor-reservations/cancellation-commits/<cancel-attempt-id>/<operation-id>/<predecessor-hash>.json
+/runtime/state/mother/networks/<network>/successor-reservations/cancellation-aborts/<cancel-attempt-id>/<operation-id>/<predecessor-hash>.json
+/runtime/state/mother/networks/<network>/successor-reservations/cancellations/<operation-id>/<predecessor-hash>.json
+/runtime/state/mother/networks/<network>/successor-reservations/releases/<operation-id>/<terminal-head-hash>.json
 /runtime/state/mother/networks/<network>/successor-reservations/history/<head-hash>/<operation-id>.json
 ```
+
+The normative logical shape of `current.json` is:
+
+```text
+schema
+network_key
+owner_operation_id
+prepared_intent_hash
+expected_replica_set_hash
+current_predecessor:
+  head_id
+  head_epoch
+  journal_sequence
+  journal_hash
+  state_hash
+claimed_successor: null or:
+  successor_sequence
+  successor_entry_hash
+  resulting_state_hash
+  local_receipt_id
+  local_receipt_hash
+last_accepted_certificate_hash: null or sha256
+cancellation_prepare: null or:
+  cancel_attempt_id
+  operation_id
+  predecessor_hash
+  claimed_successor_hash: null or sha256
+  prepare_record_hash
+mutation_evidence_present: true or false
+```
+
+`claimed_successor: null` is a meaningful owned state. It means the operation
+still owns the network but has not yet claimed a successor of
+`current_predecessor`. Clearing a claim MUST NOT clear the operation owner.
+`cancellation_prepare` is also authoritative replica-local state. When present
+for the owner and predecessor, it freezes that exact claim against certificate
+acceptance without clearing ownership or writing an irreversible cancellation
+tombstone.
 
 A replica handles a claim under one operating-system-backed lock that serializes
 its network journal and successor-reservation state. A claim request contains:
@@ -3643,27 +3691,42 @@ proposed_successor_entry_hash
 proposed_resulting_state_hash
 ```
 
-The replica MUST atomically apply this state machine:
+The replica MUST atomically apply this claim state machine:
 
 ```text
-local head or replica-set hash differs:
+local head or replica-set hash differs from the request, or an existing owner
+has a current_predecessor different from the local head:
   reject stale-head or replica-set-mismatch
 
-a cancellation tombstone exists for this operation, intent, and expected head:
+a cancellation tombstone exists for this operation, intent, and predecessor:
   reject reservation-cancelled
 
-no operation owns the expected head:
-  durably record this operation owner and exact successor claim
+a matching cancellation-prepare record is active for this operation and
+predecessor:
+  reject cancellation-prepared
+
+no operation owns the current predecessor:
+  durably record this operation owner
+  set current_predecessor to the exact local head
+  record the exact claimed successor and local receipt
   flush the record and parent directory
   return the durable receipt
 
-the same operation and intent own the expected head and claim the same successor:
+the same operation and intent own the current predecessor
+and claimed_successor is null:
+  record the exact claimed successor and local receipt
+  flush the record and parent directory
+  return the durable receipt
+
+the same operation and intent own the current predecessor
+and claim the identical successor:
   return the identical durable receipt
 
-the same operation or intent claims different successor bytes:
+the same operation and intent own the current predecessor
+and claim different successor bytes:
   reject successor-mismatch
 
-another operation owns the expected head:
+another operation owns the current predecessor:
   reject successor-already-reserved
 ```
 
@@ -3705,9 +3768,64 @@ Mother MUST persist the certificate under the action before using it:
 /runtime/state/mother/actions/<operation-id>/successor-certificates/<successor-sequence>.json
 ```
 
-Every receipt MUST be revalidated against its replica's current durable
-reservation record. Missing, foreign, canceled, stale, or divergent receipts
-invalidate the complete certificate.
+Before accepting a certificate, every journal replica MUST independently cause a
+fresh retrieval of the current durable reservation record from every named
+replica through the trusted replica-query transport and MUST validate the entire
+receipt set, canonical receipt-set hash, predecessor, successor, operation,
+intent, and replica-set hash. The controlling Mother MAY orchestrate transport,
+but a certificate document, receipt copy, or assertion labeled “full set” is not
+acceptance authority. An accepting replica MUST reject the request unless it can
+freshly validate every expected replica itself. Missing, foreign, canceled,
+stale, divergent, or unreachable receipt sources invalidate the complete
+certificate.
+
+The `apply-certified-successor` operation runs under the same replica-local
+journal/reservation lock. After full-set validation it MUST atomically validate
+the local claim and durably record certificate acceptance before replacing the
+journal head:
+
+```text
+local head is not the certificate predecessor:
+  if local head is the exact certificate successor:
+    reconcile rollover idempotently
+  otherwise reject stale-head
+
+a matching cancellation-prepare or cancellation-commit record exists:
+  reject cancellation-prepared or reservation-cancelled
+
+local owner, intent, replica set, or claimed successor differs:
+  reject certificate-not-locally-reserved
+
+identical accepted-certificate record exists:
+  resume or return the same application result
+
+certificate is complete and the local claim matches:
+  write and fsync accepted-certificates/<certificate-hash>.json
+  fsync the accepted-certificates directory
+  append and commit only the exact certified journal successor
+  perform successor-claim rollover
+```
+
+Certificate acceptance and cancellation preparation contend on the same
+replica-local journal/reservation lock. For one operation, predecessor, and
+claim, the only permitted first transition is:
+
+```text
+claim-active -> accepted-certificate
+or
+claim-active -> cancellation-prepared
+```
+
+The two transitions MUST NOT both commit at one replica. Fresh full-set receipt
+retrieval does not reserve the later decision: immediately before persisting
+certificate acceptance, the accepting replica MUST recheck under the lock that
+no matching cancellation prepare or commit exists.
+
+A crash after accepted-certificate persistence but before the journal-head switch
+MUST retry only that exact certified successor. A crash after the journal-head
+switch but before `current.json` rollover MUST reconstruct rollover from the
+committed head and accepted-certificate record. Neither state permits
+cancellation or a different successor.
 
 The complete certificate for `pending-action-opened` is the first authoritative
 action of `do`. Mother MUST commit and replicate that exact certified transition
@@ -3768,18 +3886,40 @@ a head, Mother MUST:
 7. verify each replica reports the certified head before attempting another
    transition that depends on it.
 
-After an accepted transition, each replica advances its reservation record to
-the new certified head while retaining the same operation owner. A second
-writer using the same operation ID but proposing different successor bytes is
-therefore rejected exactly like a different operation. Retries with the same
-operation, intent, predecessor, and successor are idempotent.
+After an accepted transition, each replica MUST perform this durable rollover
+under the journal/reservation lock:
+
+```text
+archive the predecessor, claimed successor, local receipt, and accepted
+certificate under history
+
+retain owner_operation_id and prepared_intent_hash unchanged
+
+set current_predecessor to the exact newly committed head
+
+set claimed_successor to null
+
+set last_accepted_certificate_hash to the accepted certificate hash
+
+set mutation_evidence_present to true once pending-action-opened, a live mutation
+receipt, or any later action transition exists
+
+flush current.json and its parent directory
+```
+
+The explicit `claimed_successor: null` rollover state permits the same operation
+to claim exactly one successor of the new predecessor. It does not release
+ownership. A second writer using the same operation ID but proposing different
+successor bytes for the same predecessor is rejected exactly like a different
+operation. Retries with the same operation, intent, predecessor, and successor
+are idempotent.
 
 An interrupted replication leaves one certified successor and blocks further
 ordinary mutation until that same transition is reconciled. A replica MUST NOT
 accept another successor for the predecessor merely because the certified entry
 has not reached every host.
 
-#### Partial acquisition, collision, and cancellation
+#### Partial acquisition, collision, and two-phase cancellation
 
 Acquisition order is irrelevant. For example, concurrent writers can produce:
 
@@ -3799,30 +3939,216 @@ The same operation MAY retry or resume acquisition using exactly the same
 operation ID, intent hash, predecessor, and proposed successor. A different
 operation MUST NOT take over any partial reservation.
 
-Explicit rollback before a live mutation performs exact reservation
-cancellation. Each replica atomically writes a durable cancellation tombstone
-binding the operation, intent, expected head, and canceled claim. A delayed or
-retried claim matching that tombstone MUST be rejected. Cancellation is
-idempotent and has no automatic timeout.
+Explicit rollback before certificate acceptance or live mutation uses a
+distributed two-phase cancellation transaction. One-phase tombstone creation is
+forbidden because `apply-certified-successor` can race with cancellation on a
+different replica. A cancellation attempt binds:
 
-The operation MUST NOT become `rolled-back`, release its scopes, or permit a new
-writer until every expected replica confirms the tombstone or an already
-committed successor is reconciled. If any replica is unreachable or ambiguous,
-the operation enters or remains `rollback-failed`, and the network remains
-blocked.
+```text
+cancel_attempt_id
+network_key
+operation_id
+prepared_intent_hash
+exact predecessor tuple and hash
+exact claimed-successor hash or null
+expected replica set and replica-set hash
+```
+
+The reservation-cancellation phases are:
+
+```text
+cancel-prepare
+cancel-prepared-full-set
+cancel-commit
+cancel-committed
+cancel-abort
+cancel-aborted
+```
+
+These are reservation-cancellation substates. The top-level Mother operation
+remains `rolling-back` or `rollback-failed` while cancellation is incomplete;
+the substate identifies the only permitted reservation transition.
+
+A partial `cancel-prepare` is a reversible freeze. It MUST NOT create a
+cancellation tombstone, clear an owner, clear a claim, release a scope, or
+authorize another operation.
+
+Each replica applies `cancel-prepare` under the same journal/reservation lock used
+by claim and certificate acceptance:
+
+```text
+an identical committed cancellation tombstone already exists:
+  return idempotent cancel-committed
+
+an identical active cancellation-prepare record exists:
+  return the identical durable prepare acknowledgement
+
+a matching cancellation-abort record exists:
+  reject cancellation-aborted
+
+an accepted certificate, committed successor, live mutation receipt, or other
+mutation evidence exists for the named operation and predecessor:
+  reject cancellation-requires-certified-rollback
+  return the exact durable evidence reference
+
+the named operation owns the unchanged predecessor and no such evidence exists:
+  write and fsync the cancellation-prepare record
+  set current.json.cancellation_prepare to that exact record
+  retain owner, predecessor, and claimed_successor unchanged
+  reject later claim changes and certificate acceptance for that exact claim
+  return the durable prepare acknowledgement
+
+another operation owns the local head, or no operation owns it, and no accepted
+certificate or mutation evidence exists for the named canceled operation:
+  write and fsync an external cancellation-prepare record for only the named
+  operation, predecessor, and claim
+  do not modify the current owner or claim
+  reject delayed claims or certificate application for only the prepared
+  cancellation target
+  return the durable prepare acknowledgement
+```
+
+A prepare acknowledgement records the full cancellation binding, the local
+owner and claim disposition, local head, absence or presence of accepted
+certificate evidence, prepare-record hash, acknowledgement ID, and
+acknowledgement hash. Mother obtains `cancel-prepared-full-set` only after every
+exact expected replica returns a matching prepare acknowledgement and none
+reports accepted-certificate, committed-successor, mutation, or ambiguous
+evidence.
+
+Mother MUST persist the canonical full-set cancellation-prepare certificate
+before commit:
+
+```text
+/runtime/state/mother/actions/<operation-id>/successor-cancellations/<cancel-attempt-id>/prepare-certificate.json
+```
+
+The certificate contains the exact replica set, every current durable prepare
+acknowledgement, their canonical set hash, and the complete cancellation binding.
+Before accepting `cancel-commit`, every replica MUST independently retrieve and
+validate the current prepare record from every named replica. An assembled
+document labeled “full set” is not acceptance authority.
+
+After a valid full-set prepare certificate exists, cancellation is commit-only.
+Every expected replica is already freezing the exact claim, so no new
+certificate acceptance can begin. Each replica applies `cancel-commit` under the
+journal/reservation lock:
+
+```text
+an identical cancellation-commit record and tombstone already exist:
+  return idempotent success
+
+a cancellation-abort record exists for this attempt:
+  reject cancellation-aborted
+
+the full-set prepare certificate cannot be independently validated, or the local
+prepare record is missing or differs:
+  reject cancellation-not-fully-prepared
+
+accepted-certificate, committed-successor, or mutation evidence appeared despite
+the prepare:
+  reject cancellation-state-corrupt
+  keep the operation fenced for explicit recovery
+
+the named operation is the current owner:
+  archive its exact owner, predecessor, claim, receipt, and prepare state
+  write and fsync the cancellation-commit record and irreversible tombstone
+  clear only that operation's owner, predecessor, claim, and cancellation_prepare
+  fsync current.json and all affected parent directories
+  return success
+
+another operation owns the current head, or no operation owns it:
+  write and fsync the cancellation-commit record and irreversible tombstone for
+  only the named canceled operation, predecessor, and claim
+  clear only its external prepare record
+  do not disturb the current owner or claim
+  return success
+```
+
+A partial `cancel-commit` is reconciled only by completing the same commit from
+the durable full-set prepare certificate. It MUST NOT be aborted. Delayed claim
+or certificate-application requests are rejected by either the still-active
+prepare freeze or the committed tombstone.
+
+If any replica reports an accepted certificate, committed successor, or
+certificate-application ambiguity during `cancel-prepare`, a full-set prepare
+certificate cannot exist. Cancellation MUST abort. Every prepared replica
+independently retrieves and validates that exact accepted-certificate or
+committed-successor evidence, then applies `cancel-abort` under the lock:
+
+```text
+a matching cancellation-commit or tombstone exists:
+  reject cancellation-already-committed
+
+no matching prepare exists:
+  return idempotent cancel-aborted or not-prepared
+
+the accepted-certificate or successor evidence cannot be independently verified:
+  reject cancellation-abort-evidence-invalid
+
+the evidence is valid:
+  write and fsync the cancellation-abort record
+  clear only the matching cancellation_prepare or external prepare freeze
+  restore the exact prior owner and claim unchanged when that operation owns them
+  do not write a cancellation tombstone
+  return success
+```
+
+After abort, Mother resumes only the exact already-certified successor. A partial
+prepare with no accepted-certificate evidence remains
+`cancellation-incomplete`; the same cancellation attempt MAY resume prepare, but
+it MUST NOT expire automatically, clear itself, or authorize another writer.
+
+The recognized cross-replica race is therefore deterministic:
+
+```text
+one or more replicas accepted the certificate before preparing cancellation:
+  cancellation cannot obtain a full-set prepare certificate
+  abort every prepared cancellation freeze
+  finish the exact certified successor
+
+every replica prepared cancellation before accepting the certificate:
+  certificate application is rejected everywhere
+  commit the exact cancellation from the full-set prepare certificate
+```
+
+The operation MUST NOT become `rolled-back`, release scopes, or permit a new
+writer until every expected replica confirms the exact cancellation commit or an
+already accepted certified successor is reconciled. If any replica is
+unreachable or ambiguous, the operation remains blocked and diagnosis MUST
+report the exact prepare, accept, commit, or abort evidence required for the next
+step.
 
 If reconciliation proves that every expected replica granted the same exact
-claim, Mother reconstructs the certificate and resumes or rolls back that same
-operation; it does not classify the acquisition as safely absent. If any
-journal successor or live mutation receipt exists, simple reservation
-cancellation is forbidden. The same operation MUST use its ordinary durable
-rollback protocol, and its reservation remains held until rollback is fully
-verified and the rolled-back network transition is replicated.
+claim, Mother reconstructs the successor certificate and resumes or rolls back
+that same operation; it does not classify the acquisition as safely absent. If
+any journal successor or live mutation receipt exists, cancellation is
+forbidden. The same operation MUST use its ordinary durable rollback protocol,
+and its reservation remains held until rollback is fully verified and the
+rolled-back network transition is replicated.
 
-A cancellation attempt that is only partially acknowledged does not authorize a
-different operation. Any delayed request from the old operation remains part of
-that same blocked operation and MUST be diagnosed and reconciled; it cannot
-create a competing authorized successor.
+Implementations MUST exhaustively test `apply-certified-successor` against
+`cancel-prepare`, `cancel-commit`, and `cancel-abort` across at least these
+boundaries:
+
+```text
+before and after local certificate-acceptance persistence
+before and after journal-entry persistence
+before and after atomic journal-head replacement
+before and after successor rollover
+before and after local cancellation-prepare persistence
+before and after the final full-set prepare acknowledgement
+before and after cancellation-commit persistence
+partial prepare, partial commit, duplicate request, lost response, and restart
+accepted certificate on one replica with cancellation prepared on others
+delayed apply after prepare or commit
+delayed cancel-commit after abort
+```
+
+Each interleaving MUST end in exactly one recoverable outcome: finish the exact
+certified successor, or finish the exact full-set cancellation. No test may
+permit both, discard both without durable evidence, or require undefined
+reservation rectification.
 
 #### Reservation lifetime, release, and recovery
 
@@ -3852,10 +4178,45 @@ finalized:
   MOTHER-OPEN-018 and confirms durable reservation release
 ```
 
-Release is durable and idempotent. Until every expected replica confirms release,
-scope ownership remains active and a new operation cannot obtain a full-set
-reservation. Released and canceled records remain as tombstoned history; they
-MUST NOT be erased or reused for a different operation.
+Each replica applies terminal `release` under the journal/reservation lock:
+
+```text
+an identical release record already exists:
+  return idempotent success without disturbing any later owner
+
+the named operation is not the current owner:
+  reject owner-mismatch unless its identical durable release record exists
+
+the local head is not the exact certified terminal head:
+  reject terminal-head-mismatch
+
+the replicated outcome is not finalized or fully rolled back:
+  reject terminal-outcome-not-proven
+
+claimed_successor is not null or an accepted successor remains unresolved:
+  reject unresolved-successor-claim
+
+all terminal conditions pass:
+  archive the owner, predecessor, accepted-certificate, and claim history
+  write and fsync the durable release record
+  clear the named owner and claim from current.json
+  fsync current.json and both parent directories
+  return success
+```
+
+Release is durable and idempotent. The durable release record is written before
+the `current.json` replacement that clears the owner. A crash between those
+writes leaves the old owner fenced; startup MUST verify the exact release record
+and terminal head, then finish clearing only that owner. `active_writer_operation_id`
+and scope ownership MUST remain active until every expected replica confirms the
+exact release record. Clearing `pending_action_id` does not release writer
+ownership.
+A replica that already released the old owner MAY temporarily receive a partial
+claim from a later operation, but that later operation authorizes nothing unless
+it obtains its own complete full-set certificate; an idempotent retry of the old
+release MUST NOT disturb the later owner. Released and canceled records remain
+as tombstoned history and MUST NOT be erased or reused for a different
+operation.
 
 On startup and before any mutating or remediation command, Mother queries every
 expected replica and classifies the reservation distribution:
@@ -3864,20 +4225,43 @@ expected replica and classifies the reservation distribution:
 no active reservation:
   ordinary prep/do preflight can continue
 
-one exact full-set owner and claim:
+one exact full-set owner with claimed_successor null:
+  resume only that operation; claim its next successor or perform terminal release
+
+one exact full-set owner and identical current claim:
   reconstruct or verify the certificate and resume only that operation
 
 one owner with a partial claim set:
-  reservation-incomplete; retry/resume or exact cancellation only
+  reservation-incomplete; retry/resume or start the exact two-phase cancellation
 
 several owners split across replicas:
-  collision; no mutation; explicitly cancel or reconcile named operations
+  collision; no mutation; start or resume the exact named two-phase cancellations
 
-journal advanced under a referenced certificate:
-  reconcile that exact successor and same operation
+partial cancellation prepare with no accepted-certificate evidence:
+  cancellation-incomplete; resume only the same cancel_attempt_id
 
-receipt, journal, or local durable record disagreement:
-  block and require explicit reservation rectification or reseal
+accepted certificate on any replica with cancellation prepared elsewhere:
+  independently verify the accepted-certificate evidence
+  cancel-abort every matching prepare freeze
+  retry only the exact certified successor
+
+full-set cancellation-prepare certificate with no commit or a partial commit:
+  finish only the exact cancel-commit
+  do not abort or accept the canceled successor
+
+accepted certificate with predecessor still active:
+  retry only the exact certified successor
+
+journal advanced under a referenced certificate or rollover is incomplete:
+  reconcile that exact successor, advance current_predecessor, clear the claim,
+  and retain the same operation owner
+
+partial terminal release:
+  keep scopes and active_writer_operation_id owned; retry the exact release
+
+unrecognized receipt, journal, certificate, cancellation-decision, release, or
+local durable record corruption:
+  block and require explicit recovery or reseal
 ```
 
 There is no automatic winner and no wall-clock expiration. A replacement Mother
@@ -3928,8 +4312,9 @@ recovery architecture, and local-generation adoption/head-fenced projection
 repair contract are otherwise design-resolved. `MOTHER-DESIGN-024` requires
 complete transitive recovery-object closure before activation,
 `MOTHER-DESIGN-025` defines local state adoption and projection maintenance, and
-`MOTHER-DESIGN-026` defines fail-closed full-set writer fencing and exact
-single-successor certification.
+`MOTHER-DESIGN-026` defines fail-closed full-set writer fencing, exact
+single-successor certification, successor rollover, two-phase cancellation, and
+terminal release.
 
 Exact wire-field names, ABI adapters, schema validators, capability registries,
 and migration implementations remain implementation acceptance work. They MUST
@@ -4172,6 +4557,14 @@ Suggested durable state layout:
         entries/
       successor-reservations/
         current.json
+        accepted-certificates/
+          <certificate-hash>.json
+        cancellations/
+          <operation-id>/
+            <expected-head-hash>.json
+        releases/
+          <operation-id>/
+            <terminal-head-hash>.json
         history/
           <expected-head-hash>/
             <operation-id>.json
@@ -4278,7 +4671,11 @@ GET  /v1/networks/<network>/seal
 GET  /v1/networks/<network>/replicas
 GET  /v1/networks/<network>/successor-reservations
 POST /v1/internal/networks/<network>/successor-reservations/claim
-POST /v1/internal/networks/<network>/successor-reservations/cancel
+POST /v1/internal/networks/<network>/successor-reservations/apply-certified-successor
+POST /v1/internal/networks/<network>/successor-reservations/cancel-prepare
+POST /v1/internal/networks/<network>/successor-reservations/cancel-commit
+POST /v1/internal/networks/<network>/successor-reservations/cancel-abort
+POST /v1/internal/networks/<network>/successor-reservations/release
 GET  /v1/internal/networks/<network>/successor-reservations/<operation-id>
 POST /v1/networks/<network>/repair-projections
 POST /v1/networks/<network>/sync-state/prep
@@ -4310,6 +4707,28 @@ GET  /v1/operations/<operation-id>/rollback-stack/<frame-id>
 GET  /v1/operations/<operation-id>/rollback-journal
 GET  /v1/guards/<node>/topology-state
 ```
+
+The internal successor-reservation endpoints have fixed roles:
+
+- `claim` applies the replica-local claim state machine and returns or replays the
+  durable local receipt;
+- `apply-certified-successor` independently validates the complete fresh receipt
+  set, atomically excludes matching cancellation preparation, durably records
+  certificate acceptance, commits only the exact successor, and advances
+  `current_predecessor` while retaining the operation owner;
+- `cancel-prepare` durably freezes the exact operation, predecessor, and claim
+  without clearing ownership or writing an irreversible tombstone;
+- `cancel-commit` independently validates the complete full-set prepare
+  certificate, writes the irreversible tombstone, and clears only the canceled
+  owner or external claim fence;
+- `cancel-abort` independently validates accepted-certificate or
+  committed-successor evidence, removes only the matching prepare freeze, and
+  restores the exact claim so that successor application can finish;
+- `release` is available only for an exact fully replicated terminal head and
+  applies the exact terminal-release transition;
+- `GET` returns the owner, predecessor, nullable successor claim, accepted
+  certificate, cancellation prepare/commit/abort state, release state, and
+  crash-reconciliation evidence required by diagnosis.
 
 `repair-projections` is non-authoritative, local-only, atomic, idempotent
 maintenance and is explicitly exempt from the general `prep`/`do`/`finalize`
@@ -4799,7 +5218,7 @@ stack item even when it has participant frames on multiple hosts.
 - load the same prepared operation record and acquire its required locks;
 - retain and revalidate the same distributed successor-reservation owner
   throughout rollback;
-- cancel partial pre-mutation reservations through full-set durable tombstones,
+- cancel partial pre-mutation reservations through full-set two-phase cancellation,
   or use the ordinary certified rollback transitions after any successor or live
   mutation was accepted;
 - restore any unresolved provisional layer first when rollback is requested;
@@ -5260,12 +5679,12 @@ prepared:
 
 reserving-successor:
   retry/resume the exact operation, intent, predecessor, and successor claim
-  rollback --all through full-set durable reservation cancellation
+  rollback --all through full-set two-phase reservation cancellation
   no live mutation or journal-head replacement is authorized
 
 reservation-incomplete:
   do or retry/resume the exact existing claim
-  rollback --all through full-set durable reservation cancellation
+  rollback --all through full-set two-phase reservation cancellation
   no different operation, intent, predecessor, or successor is accepted
 
 doing:
@@ -5294,7 +5713,9 @@ finalized-replication-pending:
   all active scopes remain owned and ordinary mutation remains blocked
 
 rollback-failed:
-  rollback retry, inspection, explicit rectification
+  rollback retry, including the exact cancel-prepare, cancel-commit, or
+  cancel-abort reconciliation selected by durable evidence
+  inspection and explicit rectification for unrecognized corruption
 
 finalized:
   no further stage commands; create a new operation for further changes
@@ -5308,9 +5729,9 @@ before any live mutation. A failed or unverified live step maps to
 `remediation-required`; its frame remains provisional until it is successfully
 verified and promoted or its prestate is restored and the frame is closed.
 Read-only diagnosis is always allowed and MUST show the per-replica reservation
-owner and claim distribution, certificate status, cancellation tombstones,
-provisional layer, promoted stack, participant evidence, pop-able range, and
-exact allowed commands.
+owner and claim distribution, certificate status, cancellation prepare,
+commit, abort, and tombstone state, provisional layer, promoted stack,
+participant evidence, pop-able range, and exact allowed commands.
 
 `sync-state` uses a separate normative local-adoption state machine because it
 does not create or finalize a network mutation:
@@ -5896,10 +6317,12 @@ Outputs:
 
 Rollback MUST be available after `prep`, during/after `do`, and after failed
 `finalize`, until the operation reaches its documented irreversible commit point.
-Before live mutation, rollback cancels the exact partial/full reservation through
-durable full-set tombstones. After a network successor or live mutation exists,
-rollback retains the same operation reservation while it restores and certifies
-the rolled-back state. An unresolved provisional
+Before live mutation, rollback cancels the exact partial or full reservation
+through the full-set `cancel-prepare` and `cancel-commit` protocol. A replica
+that reports accepted-certificate evidence forces `cancel-abort` and completion
+of that exact successor instead. After a network successor or live mutation
+exists, rollback retains the same operation reservation while it restores and
+certifies the rolled-back state. An unresolved provisional
 frame is restored and closed before completed layers are popped. A promoted
 rollback frame is removed from the active stack only after its prestate
 restoration is verified and the result is durably appended to the rollback
@@ -6479,7 +6902,8 @@ Mother SHOULD be implemented in this order:
    - conflict detection;
    - idempotency keys;
    - durable per-replica operation reservations, successor claims, receipts,
-     cancellation tombstones, certificate storage, and release records;
+     cancellation prepare/commit/abort records, cancellation tombstones,
+     certificate storage, and release records;
    - generic rollback resolution.
 
 6. Local generation and projection maintenance
@@ -6505,13 +6929,23 @@ Mother SHOULD be implemented in this order:
    - attempt claims against the exact sealed replica set without a discovered
      anchor or automatic winner;
    - atomically persist per-replica owner and exact-successor claims;
-   - assemble and revalidate full-set certificates;
+   - make every accepting journal replica freshly retrieve and validate the
+     complete receipt set rather than trusting an assembled certificate label;
+   - durably accept and apply only the exact certified successor;
+   - roll `current_predecessor` forward after commit, clear
+     `claimed_successor`, and retain the same operation owner;
    - reject all mutation under partial, split, stale, canceled, or divergent
      reservations;
-   - support idempotent retry, full-set cancellation tombstones, crash
-     reconstruction, and terminal release;
-   - retain reservation ownership through rollback and
-     `finalized-replication-pending`.
+   - implement replica-local atomic exclusion between certificate acceptance and
+     cancellation preparation;
+   - implement full-set two-phase cancellation with independently validated
+     prepare certificates, deterministic abort to an already accepted successor,
+     commit-only recovery after full preparation, idempotent tombstones, and
+     exhaustive apply/cancel interleaving tests;
+   - implement certified-rollback refusal, terminal release, and crash
+     reconstruction;
+   - retain reservation ownership and `active_writer_operation_id` through
+     rollback and `finalized-replication-pending` until full-set release.
 
 9. Stage runner
    - `do`;

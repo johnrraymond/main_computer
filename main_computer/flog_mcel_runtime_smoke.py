@@ -628,6 +628,104 @@ def _layer_statuses(conformance: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _conformance_layer_ids(conformance: dict[str, Any], policy_key: str, fallback_key: str) -> list[str]:
+    """Return policy-scoped layer ids when the payload exposes them.
+
+    Runtime-baseline and host-workbench apps intentionally leave static
+    semantic/layout layers failed or unavailable while still passing their
+    registry policy.  An empty policy list is therefore meaningful and must not
+    fall back to the broad failed/unavailable layer list.
+    """
+
+    if policy_key in conformance:
+        return _string_list(conformance.get(policy_key))
+    return _string_list(conformance.get(fallback_key))
+
+
+def _conformance_policy_scope(
+    conformance: dict[str, Any],
+    required_layer_ids: tuple[str, ...] | list[str] | None,
+) -> dict[str, Any]:
+    """Summarize app-surface conformance through the registry policy lens.
+
+    Raw conformance payloads can include static layer failures that are useful
+    evidence but are not part of the app's current registry policy.  For
+    example, a runtime-baseline app may pass runtime ownership/fit while static
+    semantic extraction is unavailable.  This summary keeps those facts visible
+    without making the report look contradictory.
+    """
+
+    required_layers = _unique_messages(
+        [str(layer_id) for layer_id in (required_layer_ids or ()) if str(layer_id).strip()]
+    )
+    if not isinstance(conformance, dict) or not conformance:
+        return {
+            "status": "missing",
+            "requiredLayerIds": required_layers,
+            "requiredLayerStatuses": {},
+            "failedLayerIds": [],
+            "unavailableLayerIds": [],
+            "nonRequiredFailedLayerIds": [],
+            "nonRequiredUnavailableLayerIds": [],
+        }
+
+    layer_statuses = _layer_statuses(conformance)
+    all_failed = _string_list(conformance.get("failedLayerIds"))
+    all_unavailable = _string_list(conformance.get("unavailableLayerIds"))
+    policy_failed = _conformance_layer_ids(conformance, "policyFailedLayerIds", "failedLayerIds")
+    policy_unavailable = _conformance_layer_ids(
+        conformance,
+        "policyUnavailableLayerIds",
+        "unavailableLayerIds",
+    )
+
+    required_failed: list[str] = []
+    required_unavailable: list[str] = []
+    required_statuses: dict[str, str] = {}
+    for layer_id in required_layers:
+        layer_status = layer_statuses.get(layer_id)
+        required_statuses[layer_id] = layer_status or "missing"
+        if layer_status in {"fail", "error"}:
+            required_failed.append(layer_id)
+        elif layer_status in {None, "", "unavailable", "partial"}:
+            required_unavailable.append(layer_id)
+
+    policy_failed = _unique_messages(policy_failed + required_failed)
+    policy_unavailable = _unique_messages(policy_unavailable + required_unavailable)
+    policy_layer_set = set(required_layers) | set(policy_failed) | set(policy_unavailable)
+
+    non_required_failed = [
+        layer_id for layer_id in all_failed if layer_id not in policy_layer_set
+    ]
+    non_required_unavailable = [
+        layer_id for layer_id in all_unavailable if layer_id not in policy_layer_set
+    ]
+
+    status = str(conformance.get("status") or conformance.get("verdict") or "").lower()
+    valid = conformance.get("valid")
+    policy_status = "pass"
+    if policy_failed or policy_unavailable or status != "pass" or valid is not True:
+        policy_status = "fail"
+
+    return {
+        "status": policy_status,
+        "rawStatus": status or "unknown",
+        "rawValid": valid,
+        "requiredLayerIds": required_layers,
+        "requiredLayerStatuses": required_statuses,
+        "failedLayerIds": policy_failed,
+        "unavailableLayerIds": policy_unavailable,
+        "nonRequiredFailedLayerIds": _unique_messages(non_required_failed),
+        "nonRequiredUnavailableLayerIds": _unique_messages(non_required_unavailable),
+    }
+
+
 def _unique_messages(messages: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -676,6 +774,7 @@ def classify_diagnosis(
         failures.append(f"{len(content_fit)} content-fit violation(s) are active")
 
     required_layers = tuple(str(layer_id) for layer_id in (required_layer_ids or ()) if str(layer_id).strip())
+    policy_scope = _conformance_policy_scope(conformance, required_layers)
     if conformance_required and not conformance:
         failures.append("app-surface conformance summary is missing")
     elif conformance:
@@ -683,11 +782,8 @@ def classify_diagnosis(
         valid = conformance.get("valid")
         if conformance_required and not (status == "pass" and valid is True):
             failures.append(f"app-surface conformance status is {status or 'unknown'}")
-        failed_layers = [str(item) for item in conformance.get("policyFailedLayerIds") or conformance.get("failedLayerIds") or []]
-        unavailable_layers = [
-            str(item)
-            for item in conformance.get("policyUnavailableLayerIds") or conformance.get("unavailableLayerIds") or []
-        ]
+        failed_layers = _conformance_layer_ids(conformance, "policyFailedLayerIds", "failedLayerIds")
+        unavailable_layers = _conformance_layer_ids(conformance, "policyUnavailableLayerIds", "unavailableLayerIds")
         for layer_id in failed_layers:
             failures.append(f"app-surface layer failed: {layer_id}")
         if conformance_required:
@@ -718,6 +814,7 @@ def classify_diagnosis(
         },
         "primarySurface": primary,
         "appSurfaceConformance": conformance,
+        "appSurfacePolicyScope": policy_scope,
         "requiredLayerIds": list(required_layers),
         "visualIntegrityViolationCount": len(visual_integrity),
         "layoutCollisionCount": len(layout_collisions),
@@ -756,6 +853,7 @@ def trial_result_summary(trial: dict[str, Any], *, evidence_limit: int = 5) -> d
         "primarySurface": classification.get("primarySurface") or {},
         "appSurfacePolicy": trial.get("appSurfacePolicy") or {},
         "appSurfaceConformance": classification.get("appSurfaceConformance") or {},
+        "appSurfacePolicyScope": classification.get("appSurfacePolicyScope") or {},
         "requiredLayerIds": classification.get("requiredLayerIds") or [],
         "issueEvidence": issues[:evidence_limit],
         "visualIntegrityViolations": (measurements.get("visualIntegrityViolations") or [])[:evidence_limit],
@@ -852,6 +950,11 @@ def diagnostic_event_from_trial(trial: dict[str, Any]) -> dict[str, Any]:
     issues = evidence.get("issues") or evidence.get("findings") or []
     if not isinstance(issues, list):
         issues = []
+    event_conformance = classification.get("appSurfaceConformance") or evidence.get("appSurfaceConformance") or {}
+    event_policy_scope = classification.get("appSurfacePolicyScope") or _conformance_policy_scope(
+        event_conformance,
+        classification.get("requiredLayerIds") or [],
+    )
     event = {
         "schema": "mcel-diagnostic-event-v1",
         "source": "mcel-runtime-flog",
@@ -870,7 +973,8 @@ def diagnostic_event_from_trial(trial: dict[str, Any]) -> dict[str, Any]:
         },
         "issues": issues[:25],
         "primarySurface": classification.get("primarySurface") or evidence.get("primarySurface") or {},
-        "appSurfaceConformance": classification.get("appSurfaceConformance") or evidence.get("appSurfaceConformance") or {},
+        "appSurfaceConformance": event_conformance,
+        "appSurfacePolicyScope": event_policy_scope,
         "measurements": (evidence.get("measurements") or {}),
     }
     return event
@@ -1072,18 +1176,27 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Scenario results",
         "",
-        "| Scenario | App | Status | Errors | Warnings | Primary usable | Conformance | Notes |",
-        "|---|---:|---:|---:|---:|---:|---:|---|",
+        "| Scenario | App | Status | Errors | Warnings | Primary usable | Conformance | Policy scope | Notes |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for trial in report.get("trials") or []:
         classification = trial.get("classification") or {}
         counts = classification.get("counts") or {}
         primary = classification.get("primarySurface") or {}
         conformance = classification.get("appSurfaceConformance") or {}
+        policy_scope = classification.get("appSurfacePolicyScope") or {}
         conformance_status = conformance.get("status") or "missing"
-        notes = "; ".join((classification.get("failures") or []) + (classification.get("warnings") or []))
+        policy_status = policy_scope.get("status") or "missing"
+        note_items = list((classification.get("failures") or []) + (classification.get("warnings") or []))
+        non_required_failed = policy_scope.get("nonRequiredFailedLayerIds") or []
+        non_required_unavailable = policy_scope.get("nonRequiredUnavailableLayerIds") or []
+        if non_required_failed:
+            note_items.append("non-required failed layers: " + ", ".join(str(item) for item in non_required_failed))
+        if non_required_unavailable:
+            note_items.append("non-required unavailable layers: " + ", ".join(str(item) for item in non_required_unavailable))
+        notes = "; ".join(note_items)
         lines.append(
-            "| {scenario} | {app} | {status} | {errors} | {warnings} | {primary} | {conformance} | {notes} |".format(
+            "| {scenario} | {app} | {status} | {errors} | {warnings} | {primary} | {conformance} | {policy} | {notes} |".format(
                 scenario=trial.get("scenarioId", ""),
                 app=trial.get("app", ""),
                 status=classification.get("status", "unknown"),
@@ -1091,6 +1204,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                 warnings=counts.get("warnings", 0),
                 primary="yes" if primary.get("usable") else "no",
                 conformance=str(conformance_status).replace("|", "\\|"),
+                policy=str(policy_status).replace("|", "\\|"),
                 notes=notes.replace("|", "\\|"),
             )
         )

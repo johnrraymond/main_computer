@@ -5,6 +5,9 @@ var McelFileExplorerSurface = (() => {
   const surfaceId = "file-explorer.surface.primary";
   const surfaceContract = "file-explorer.contract.semantic-surface-pilot";
   const channel = "FILE_EXPLORER";
+  const maxLayoutEntryNodes = 16;
+  const firstEntryAnchorY = 222;
+  const entryAnchorStepY = 28;
 
   const extractorsApi = (() => {
     if (typeof McelSurfaceExtractors !== "undefined") return McelSurfaceExtractors;
@@ -44,6 +47,33 @@ var McelFileExplorerSurface = (() => {
     });
     return element;
   }
+
+  function removeAttrs(element, names) {
+    if (!element || typeof element.removeAttribute !== "function") return element;
+    (names || []).forEach((name) => element.removeAttribute(name));
+    return element;
+  }
+
+  const dynamicEntryNodeAttrs = Object.freeze([
+    "data-mcel-node-id",
+    "data-mcel-node-type",
+    "data-mcel-node-label",
+    "data-mcel-channel",
+    "data-mcel-signal",
+    "data-mcel-source",
+    "data-mcel-provenance",
+    "data-mcel-symbol",
+    "data-mcel-home-region",
+    "data-mcel-actual-region",
+    "data-mcel-teleported",
+    "data-layout-anchor-x",
+    "data-layout-anchor-y",
+    "data-layout-width",
+    "data-layout-height",
+    "data-layout-z",
+    "data-layout-region",
+    "data-layout-ports"
+  ]);
 
   function applyFitPolicy(element, policy, options = {}) {
     if (fitContractApi && typeof fitContractApi.applyFitPolicy === "function") {
@@ -157,7 +187,7 @@ var McelFileExplorerSurface = (() => {
     return Object.freeze([
       nodeAttrs("file-explorer.node.root-set", "root_set", "Available roots", "file-explorer.roots-api", "file-explorer:roots", "⛁", "file-explorer.region.roots", 154, 164, 200, 60, 3, "root_selection"),
       nodeAttrs("file-explorer.node.current-directory", "current_directory", "Current directory", "file-explorer.list-api", "file-explorer:path", "⌁", "file-explorer.region.toolbar", 524, 116, 360, 42, 4, "current_path"),
-      nodeAttrs("file-explorer.node.directory-list", "directory_listing", "Directory listing", "file-explorer.list-api", "file-explorer:list", "▤", "file-explorer.region.file-list", 624, 420, 560, 360, 4, "entry_collection"),
+      nodeAttrs("file-explorer.node.directory-list", "directory_listing", "Directory listing", "file-explorer.list-api", "file-explorer:list", "▤", "file-explorer.region.file-list", 624, 196, 560, 16, 4, "entry_collection"),
       nodeAttrs("file-explorer.node.details-panel", "details_panel", "Selected entry details", "file-explorer.preview", "file-explorer:details", "ⓘ", "file-explorer.region.details", 1114, 380, 240, 360, 4, "entry_metadata")
     ]);
   }
@@ -231,8 +261,21 @@ var McelFileExplorerSurface = (() => {
     const index = Number.isFinite(options.index) ? options.index : Number(options.index || 0);
     const kind = safeString(entry.kind || "file").toLowerCase() === "directory" ? "folder_item" : "file_item";
     const symbol = kind === "folder_item" ? "▸" : "•";
-    const y = Math.min(650, 230 + (index * 28));
-    const decorated = setAttrs(element, {
+    if (index >= maxLayoutEntryNodes) {
+      const overflowDecorated = setAttrs(removeAttrs(element, dynamicEntryNodeAttrs), {
+        "data-mcel-visual-owner": "file-explorer.entry",
+        "data-mcel-readable": "true",
+        "data-mcel-overflow-entry": "true"
+      });
+      return applyFitPolicy(overflowDecorated, "truncate", {
+        readable: true,
+        visualOwner: "file-explorer.entry",
+        fitRole: "file-explorer-entry-label",
+        required: true
+      });
+    }
+    const y = firstEntryAnchorY + (index * entryAnchorStepY);
+    const decorated = setAttrs(removeAttrs(element, dynamicEntryNodeAttrs), {
       ...nodeAttrs(
         entryNodeId(entry, index),
         kind,

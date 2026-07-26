@@ -145,8 +145,8 @@
       intent: "Expose a usable file browsing surface.",
       derivedFromBlockTypes: ["mcel-runtime-check"],
       primarySurface: {
-        id: "file-explorer.surface.main",
-        label: "File Explorer main browsing surface",
+        id: "file-explorer.surface.primary",
+        label: "File Explorer primary browsing surface",
         hostSelector: ".file-explorer-main",
         editorSelector: ".file-explorer-main",
         minWidth: 420,
@@ -283,6 +283,46 @@
     return globalThis.McelAppSurfaceConformance || globalThis.window?.McelAppSurfaceConformance || null;
   }
 
+  function getAppSurfaceRegistry() {
+    return globalThis.McelAppSurfaceRegistry ||
+      globalThis.window?.McelAppSurfaceRegistry ||
+      globalThis.window?.MCEL?.appSurfaceRegistry ||
+      null;
+  }
+
+  function getAppSurfaceRegistryPolicy(appId) {
+    const safeAppId = String(appId || "");
+    const conformance = getAppSurfaceConformance();
+    try {
+      if (conformance && typeof conformance.registryPolicyFor === "function") {
+        const policy = conformance.registryPolicyFor(safeAppId);
+        if (policy) return policy;
+      }
+    } catch {}
+    const registry = getAppSurfaceRegistry();
+    try {
+      if (registry && typeof registry.getAppPolicy === "function") {
+        const policy = registry.getAppPolicy(safeAppId);
+        if (policy) return policy;
+      }
+    } catch {}
+    return null;
+  }
+
+  function harmonizeContractWithAppSurfacePolicy(contract) {
+    if (!contract || typeof contract !== "object") return contract;
+    const policy = getAppSurfaceRegistryPolicy(contract.appId);
+    const surfaceId = String(policy?.surfaceId || "");
+    if (!surfaceId || !contract.primarySurface) return contract;
+    return {
+      ...contract,
+      primarySurface: {
+        ...contract.primarySurface,
+        id: surfaceId
+      }
+    };
+  }
+
   function unavailableSurfacePathwaySummary(reason) {
     return {
       contractVersion: "mcel.code-editor-surface-diagnostics.v1",
@@ -354,7 +394,11 @@
     })();
     const requiredLayerIds = Array.isArray(policy?.requiredLayerIds) ? policy.requiredLayerIds : [];
     const requiresStaticSurface = requiredLayerIds.includes("semantic-surface") || requiredLayerIds.includes("layout-grammar");
-    const expectedSurfaceId = report.summary?.primarySurface?.expected || policy?.surfaceId || snapshot?.semanticSurfaceId || "";
+    const policySurfaceId = String(policy?.surfaceId || "");
+    const runtimeExpectedSurfaceId = String(report.summary?.primarySurface?.expected || "");
+    const expectedSurfaceId = (requiresStaticSurface && policySurfaceId)
+      ? policySurfaceId
+      : (runtimeExpectedSurfaceId || policySurfaceId || snapshot?.semanticSurfaceId || "");
     const snapshotSurfaceId = snapshot?.semanticSurfaceId || "";
     const snapshotSurfaceMatches = snapshotSurfaceId && expectedSurfaceId && snapshotSurfaceId === expectedSurfaceId;
     const surfaceHtml = (snapshotSurfaceMatches || requiresStaticSurface) ? (snapshot?.semanticSurfaceHtml || "") : "";
@@ -429,10 +473,10 @@
   function resolveDiagnosisContract(appId = "code-editor", options = {}) {
     const fallback = fallbackContractFor(appId);
     const requestedMode = String(options.mode || fallback?.mode || APP_MODE_DEFAULTS[appId] || "default");
-    if (options.contract) return normalizeDiagnosisContract(options.contract, fallback || CODE_EDITOR_AUTHORING_CONTRACT);
+    if (options.contract) return harmonizeContractWithAppSurfacePolicy(normalizeDiagnosisContract(options.contract, fallback || CODE_EDITOR_AUTHORING_CONTRACT));
     const registryContract = getRegistryDiagnosisContract(appId, requestedMode);
-    if (registryContract) return normalizeDiagnosisContract(registryContract, fallback || registryContract);
-    return fallback ? normalizeDiagnosisContract(fallback, fallback) : null;
+    if (registryContract) return harmonizeContractWithAppSurfacePolicy(normalizeDiagnosisContract(registryContract, fallback || registryContract));
+    return fallback ? harmonizeContractWithAppSurfacePolicy(normalizeDiagnosisContract(fallback, fallback)) : null;
   }
 
   function deepFreeze(value) {

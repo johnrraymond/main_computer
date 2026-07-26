@@ -634,6 +634,17 @@
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
           "controlsHint": "Mouse over console + E pilot • W/S throttle flies to Mother Ship • docking triggers shuttle-bay cutscene • Click/Space/F fire outside pilot",
+          "systems": {
+            "shuttleBayTwiddle": {
+              "enabled": true,
+              "label": "Shuttle Bay Twiddle System",
+              "statusLabel": "Docking Handoff",
+              "forceLabel": "Twiddle: Give Player Control",
+              "shortcut": "T",
+              "handoffGraceMs": 240,
+              "stuckTimeoutMs": 1500
+            }
+          },
           "geometry": {
             "renderer": "raw-webgl",
             "primitive": "triangles",

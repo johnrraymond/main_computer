@@ -326,6 +326,93 @@ def test_classify_diagnosis_fails_policy_failed_app_surface_layers(flog):
     assert result["appSurfaceConformance"]["status"] == "fail"
 
 
+def test_classify_diagnosis_respects_runtime_baseline_policy_scope(flog):
+    diagnosis = passing_diagnosis("code-editor")
+    conformance = passing_app_surface_conformance("code-editor")
+    conformance["layers"] = [
+        {
+            "id": "semantic-surface",
+            "status": "unavailable",
+            "valid": False,
+            "finding": "Static semantic extraction is not required for this host-workbench smoke.",
+            "detail": {},
+        },
+        {
+            "id": "layout-grammar",
+            "status": "unavailable",
+            "valid": False,
+            "finding": "Static layout extraction is not required for this host-workbench smoke.",
+            "detail": {},
+        },
+        *conformance["layers"],
+    ]
+    conformance["unavailableLayerIds"] = ["semantic-surface", "layout-grammar"]
+    conformance["policyUnavailableLayerIds"] = []
+    diagnosis["appSurfaceConformance"] = conformance
+
+    result = flog.classify_diagnosis(
+        diagnosis,
+        conformance_required=True,
+        required_layer_ids=(
+            "runtime-ownership",
+            "runtime-visual-fit",
+            "diagnostic-no-throw",
+        ),
+    )
+
+    assert result["status"] == "pass"
+    assert result["failures"] == []
+    assert result["appSurfacePolicyScope"]["status"] == "pass"
+    assert result["appSurfacePolicyScope"]["nonRequiredUnavailableLayerIds"] == [
+        "semantic-surface",
+        "layout-grammar",
+    ]
+
+
+def test_classify_diagnosis_does_not_promote_non_policy_static_failures(flog):
+    diagnosis = passing_diagnosis("website-builder")
+    conformance = passing_app_surface_conformance("website-builder")
+    conformance["layers"] = [
+        {
+            "id": "semantic-surface",
+            "status": "fail",
+            "valid": False,
+            "finding": "Static semantic extraction is not required for this runtime-baseline smoke.",
+            "detail": {},
+        },
+        {
+            "id": "layout-grammar",
+            "status": "fail",
+            "valid": False,
+            "finding": "Static layout extraction is not required for this runtime-baseline smoke.",
+            "detail": {},
+        },
+        *conformance["layers"],
+    ]
+    conformance["failedLayerIds"] = ["semantic-surface", "layout-grammar"]
+    conformance["policyFailedLayerIds"] = []
+    diagnosis["appSurfaceConformance"] = conformance
+
+    result = flog.classify_diagnosis(
+        diagnosis,
+        conformance_required=True,
+        required_layer_ids=(
+            "runtime-ownership",
+            "runtime-visual-fit",
+            "diagnostic-no-throw",
+        ),
+    )
+
+    assert result["status"] == "pass"
+    assert result["failures"] == []
+    assert result["appSurfacePolicyScope"]["status"] == "pass"
+    assert result["appSurfacePolicyScope"]["failedLayerIds"] == []
+    assert result["appSurfacePolicyScope"]["nonRequiredFailedLayerIds"] == [
+        "semantic-surface",
+        "layout-grammar",
+    ]
+
+
 def test_classify_diagnosis_fails_on_content_fit_violations(flog):
     diagnosis = passing_diagnosis("document")
     diagnosis["measurements"]["contentFitViolations"] = [{"code": "header-clipped"}]
@@ -381,6 +468,7 @@ def test_diagnostic_event_from_trial_uses_shared_event_schema(flog):
     assert event["rawVerdict"] == "pass"
     assert event["primarySurface"]["usable"] is True
     assert event["appSurfaceConformance"]["status"] == "pass"
+    assert event["appSurfacePolicyScope"]["status"] == "pass"
 
 
 def test_report_summary_and_markdown(flog):
@@ -413,6 +501,7 @@ def test_report_summary_and_markdown(flog):
     assert report["results"][0]["scenarioId"] == "calculator.default-load"
     assert report["results"][0]["status"] == "pass"
     assert report["results"][0]["appSurfaceConformance"]["status"] == "pass"
+    assert report["results"][0]["appSurfacePolicyScope"]["status"] == "pass"
 
     markdown = flog.render_markdown(report)
 
@@ -420,6 +509,64 @@ def test_report_summary_and_markdown(flog):
     assert "calculator.default-load" in markdown
     assert "1920x1200" in markdown
     assert "window.MCEL.diagnose" in markdown
+
+
+def test_report_marks_non_required_layer_noise_without_failing_policy(flog):
+    scenario = flog.scenario_for_app("website-builder")
+    diagnosis = passing_diagnosis("website-builder")
+    conformance = passing_app_surface_conformance("website-builder")
+    conformance["layers"] = [
+        {
+            "id": "semantic-surface",
+            "status": "fail",
+            "valid": False,
+            "finding": "Website Builder static extraction is not required for runtime-baseline.",
+            "detail": {},
+        },
+        {
+            "id": "layout-grammar",
+            "status": "fail",
+            "valid": False,
+            "finding": "Website Builder static layout is not required for runtime-baseline.",
+            "detail": {},
+        },
+        *conformance["layers"],
+    ]
+    conformance["failedLayerIds"] = ["semantic-surface", "layout-grammar"]
+    conformance["policyFailedLayerIds"] = []
+    diagnosis["appSurfaceConformance"] = conformance
+    classification = flog.classify_diagnosis(
+        diagnosis,
+        conformance_required=scenario.conformance_required,
+        required_layer_ids=scenario.required_layer_ids,
+    )
+    trial = {
+        "scenarioId": scenario.id,
+        "app": scenario.app,
+        "route": scenario.route,
+        "appSurfacePolicy": scenario.to_dict()["appSurfacePolicy"],
+        "diagnosis": flog.compact_diagnosis(diagnosis),
+        "classification": classification,
+    }
+    report = flog.build_report(
+        repo=REPO_ROOT,
+        base_url="http://127.0.0.1:8765",
+        scenarios=[scenario],
+        trials=[trial],
+        viewport={"width": 1920, "height": 1200},
+    )
+
+    result = report["results"][0]
+    assert result["status"] == "pass"
+    assert result["appSurfacePolicyScope"]["status"] == "pass"
+    assert result["appSurfacePolicyScope"]["nonRequiredFailedLayerIds"] == [
+        "semantic-surface",
+        "layout-grammar",
+    ]
+
+    markdown = flog.render_markdown(report)
+    assert "| website-builder.default-load | website-builder | pass" in markdown
+    assert "non-required failed layers: semantic-surface, layout-grammar" in markdown
 
 
 def test_report_results_surface_failed_visual_evidence(flog):

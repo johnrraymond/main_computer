@@ -1544,6 +1544,68 @@
   letter-spacing: 0.025em;
 }
 
+.scene-shuttle3d-twiddle-system {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(300px, calc(100% - 28px));
+  padding: 10px 12px;
+  border: 1px solid rgba(134, 239, 172, 0.5);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(6, 78, 59, 0.88), rgba(15, 23, 42, 0.88));
+  color: #dcfce7;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow:
+    0 0 24px rgba(34, 197, 94, 0.24),
+    0 12px 30px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(8px);
+}
+
+.scene-shuttle3d-twiddle-system[hidden] {
+  display: none;
+}
+
+.scene-shuttle3d-twiddle-system strong {
+  color: #fef08a;
+  font-size: 0.76rem;
+}
+
+.scene-shuttle3d-twiddle-status {
+  color: #bbf7d0;
+  line-height: 1.35;
+}
+
+.scene-shuttle3d-twiddle-button {
+  align-self: flex-start;
+  border: 1px solid rgba(250, 204, 21, 0.72);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(113, 63, 18, 0.86);
+  color: #fef9c3;
+  font: inherit;
+  cursor: pointer;
+  box-shadow: 0 0 14px rgba(250, 204, 21, 0.22);
+}
+
+.scene-shuttle3d-twiddle-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.scene-shuttle3d-twiddle-button:not(:disabled):hover,
+.scene-shuttle3d-twiddle-button:not(:disabled):focus-visible {
+  background: rgba(133, 77, 14, 0.94);
+  outline: 2px solid rgba(250, 204, 21, 0.72);
+  outline-offset: 2px;
+}
+
 .scene-shuttle3d-renderer-error {
   position: absolute;
   inset: 50% auto auto 50%;
