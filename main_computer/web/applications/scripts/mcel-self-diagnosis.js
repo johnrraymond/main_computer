@@ -7,6 +7,7 @@
   const APP_MODE_DEFAULTS = Object.freeze({
     "code-editor": "authoring",
     calculator: "default",
+    document: "default",
     "file-explorer": "default",
     "git-tools": "default",
     "website-builder": "default",
@@ -95,6 +96,37 @@
         {id: "calculator.region.shell", selector: ".calculator-shell", label: "Calculator shell"},
         {id: "calculator.region.workspace", selector: ".calculator-workspace", label: "Calculator workspace"},
         {id: "calculator.region.display", selector: "#calculator-display", label: "Calculator display"}
+      ],
+      forbiddenRegions: [],
+      lifecycleAssertions: []
+    },
+    document: {
+      contractId: "document-editor.contract.default.app-health",
+      appId: "document",
+      mode: "default",
+      intent: "Expose a usable document authoring surface with library, page, editable content, status, and optional companion context.",
+      derivedFromBlockTypes: ["mcel-runtime-check", "mcel-semantic-surface", "mcel-shared-layout-grammar"],
+      primarySurface: {
+        id: "document-editor.surface.primary",
+        label: "Document authoring surface",
+        hostSelector: "#document-object-stage",
+        editorSelector: "#document-editor",
+        minWidth: 420,
+        minHeight: 320
+      },
+      requiredRegions: [
+        {id: "document-editor.region.root", selector: "#document-app", label: "Document Editor app root"},
+        {id: "document-editor.region.workspace", selector: ".document-workspace", label: "Document workspace"},
+        {id: "document-editor.region.menu", selector: ".document-head", label: "Document menu"},
+        {id: "document-editor.region.toolbar", selector: "#document-toolbar", label: "Document toolbar"},
+        {id: "document-editor.region.primary", selector: "#document-object-stage", label: "Document primary authoring stage"},
+        {id: "document-editor.region.content", selector: "#document-editor", label: "Editable document content"},
+        {id: "document-editor.region.status", selector: ".document-top-status", label: "Document status strip"}
+      ],
+      optionalRegions: [
+        {id: "document-editor.region.navigation", selector: "#document-library", label: "Pretty Docs navigation", role: "document-library-navigation"},
+        {id: "document-editor.region.companion", selector: "#document-ai-pane", label: "Document AI companion", role: "document-ai-companion"},
+        {id: "document-editor.region.advanced", selector: "#document-plugin-rail", label: "Document plugin rail", role: "document-plugin-rail"}
       ],
       forbiddenRegions: [],
       lifecycleAssertions: []
@@ -240,6 +272,10 @@
     return globalThis.McelCodeEditorSurfaceDiagnostics || globalThis.window?.McelCodeEditorSurfaceDiagnostics || null;
   }
 
+  function getAppSurfaceConformance() {
+    return globalThis.McelAppSurfaceConformance || globalThis.window?.McelAppSurfaceConformance || null;
+  }
+
   function unavailableSurfacePathwaySummary(reason) {
     return {
       contractVersion: "mcel.code-editor-surface-diagnostics.v1",
@@ -294,6 +330,60 @@
     report.summary = {
       ...(report.summary || {}),
       mcelSurfacePathway: summary
+    };
+    return report;
+  }
+
+  function attachAppSurfaceConformance(report, snapshot, options = {}) {
+    if (!report || typeof report !== "object") return report;
+    const api = getAppSurfaceConformance();
+    if (!api || typeof api.evaluateAppSurfaceConformance !== "function") return report;
+
+    let summary = null;
+    try {
+      summary = api.evaluateAppSurfaceConformance({
+        appId: report.appId,
+        report,
+        surfaceId: snapshot?.semanticSurfaceId || report.summary?.primarySurface?.expected || "",
+        surfaceHtml: snapshot?.semanticSurfaceHtml || ""
+      }, options.appSurfaceConformanceOptions || {});
+    } catch (error) {
+      summary = {
+        contractVersion: "mcel.app-surface-conformance.v1",
+        appId: report.appId || "",
+        surfaceId: snapshot?.semanticSurfaceId || "",
+        status: "fail",
+        valid: false,
+        layers: [],
+        failedLayerIds: ["diagnostic-no-throw"],
+        unavailableLayerIds: [],
+        diagnosticCodes: ["app-surface-conformance-threw"],
+        counts: {errors: 1, warnings: 0, info: 0},
+        diagnostics: [
+          {
+            code: "app-surface-conformance-threw",
+            severity: "error",
+            finding: String(error?.message || error || "App surface conformance baseline failed."),
+            detail: {appId: report.appId || ""}
+          }
+        ]
+      };
+    }
+
+    report.appSurfaceConformance = summary;
+    report.summary = {
+      ...(report.summary || {}),
+      appSurfaceConformance: summary
+    };
+    report.measurements = {
+      ...(report.measurements || {}),
+      appSurfaceConformance: {
+        status: summary?.status || "unavailable",
+        valid: !!summary?.valid,
+        layerIds: Array.isArray(summary?.layers) ? summary.layers.map((layer) => layer.id) : [],
+        failedLayerIds: Array.isArray(summary?.failedLayerIds) ? summary.failedLayerIds : [],
+        unavailableLayerIds: Array.isArray(summary?.unavailableLayerIds) ? summary.unavailableLayerIds : []
+      }
     };
     return report;
   }
@@ -990,6 +1080,20 @@
         "[data-mcel-zone]"
       ].join(", ");
     }
+    if (appId === "document") {
+      return [
+        ".document-shell",
+        ".document-workspace",
+        ".document-head",
+        ".document-toolbar",
+        ".document-top-status",
+        ".document-object-stage",
+        ".document-canvas",
+        ".document-ai-pane",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         ".mcel-lab-blueprint-workbench",
@@ -1020,6 +1124,23 @@
         ".file-explorer-entry",
         "#file-explorer-list",
         "#file-explorer-preview",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]"
+      ].join(", ");
+    }
+    if (appId === "document") {
+      return [
+        ".document-head > *",
+        ".document-toolbar > *",
+        ".document-top-status > *",
+        ".document-object-stage > *",
+        ".document-canvas > *",
+        ".document-ai-pane > *",
+        "button",
+        "select",
+        "input",
+        "textarea",
+        "summary",
         "[data-mcel-layout-zone]",
         "[data-mcel-zone]"
       ].join(", ");
@@ -1266,6 +1387,20 @@
         "#file-explorer-preview"
       ].join(", ");
     }
+    if (appId === "document") {
+      return [
+        "[data-mcel-readable]",
+        ".document-current-path",
+        ".document-status",
+        ".document-library-status",
+        ".document-draft-controls span",
+        ".document-toolbar button",
+        ".document-head-actions button",
+        ".document-ai-anchor-summary",
+        ".document-ai-preview",
+        "#document-editor"
+      ].join(", ");
+    }
     if (appId === "mcel-lab") {
       return [
         ".mcel-lab-shell-card-heading .eyebrow",
@@ -1295,6 +1430,17 @@
         ".file-explorer-toolbar",
         ".file-explorer-roots",
         "#file-explorer-list"
+      ].join(", ");
+    }
+    if (appId === "document") {
+      return [
+        ".document-shell",
+        ".document-workspace",
+        ".document-head",
+        ".document-toolbar",
+        ".document-object-stage",
+        ".document-canvas",
+        ".document-ai-pane"
       ].join(", ");
     }
     if (appId === "mcel-lab") {
@@ -1532,6 +1678,9 @@
       "default";
 
     const scope = root || doc;
+    const semanticSurface = root?.getAttribute?.("data-mcel-surface-id")
+      ? root
+      : query('[data-mcel-authoritative="true"][data-mcel-surface-id]', scope) || query("[data-mcel-surface-id]", scope);
     const requiredRegions = {};
     for (const region of contract.requiredRegions) {
       requiredRegions[region.id] = computeBox(query(region.selector, scope));
@@ -1593,6 +1742,8 @@
         devicePixelRatio: numberOrZero(globalThis.devicePixelRatio || 1)
       },
       root: computeBox(root),
+      semanticSurfaceId: semanticSurface?.getAttribute?.("data-mcel-surface-id") || "",
+      semanticSurfaceHtml: semanticSurface?.outerHTML || "",
       requiredRegions,
       optionalRegions,
       surfaces: {
@@ -1760,6 +1911,7 @@
     report.measurements.contentFitViolations = snapshot.contentFitViolations;
     report = applyOverlayFindings(report, snapshot);
     report = attachMcelSurfacePathway(report, snapshot, options);
+    report = attachAppSurfaceConformance(report, snapshot, options);
     report.buckets = buildReportBuckets(report);
 
     lastReport = report;
@@ -1871,6 +2023,7 @@
         surfaceOwnershipProbe,
         getCodeEditorSurfaceDiagnostics,
         attachMcelSurfacePathway,
+        attachAppSurfaceConformance,
         buildReportBuckets,
         detectOverlays,
         detectLayoutCollisions,

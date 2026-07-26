@@ -111,6 +111,37 @@
     return doc?.querySelector(config.root) || null;
   }
 
+  function conformanceApi() {
+    const global = typeof window !== "undefined" ? window : globalThis;
+    return global.McelAppSurfaceConformance || global.MCEL?.appSurfaceConformance || null;
+  }
+
+  function attachConformanceFallback(report) {
+    const api = conformanceApi();
+    if (!report || !api || typeof api.evaluateAppSurfaceConformance !== "function") return report;
+    try {
+      const summary = api.evaluateAppSurfaceConformance({
+        appId: report.appId,
+        report
+      });
+      report.appSurfaceConformance = summary;
+      report.summary = {
+        ...(report.summary || {}),
+        appSurfaceConformance: summary
+      };
+      report.measurements = {
+        ...(report.measurements || {}),
+        appSurfaceConformance: {
+          status: summary?.status || "unavailable",
+          valid: !!summary?.valid,
+          failedLayerIds: Array.isArray(summary?.failedLayerIds) ? summary.failedLayerIds : [],
+          unavailableLayerIds: Array.isArray(summary?.unavailableLayerIds) ? summary.unavailableLayerIds : []
+        }
+      };
+    } catch {}
+    return report;
+  }
+
   function isAppVisible(doc, appId) {
     const root = appRoot(doc, appId);
     return isVisibleElement(root);
@@ -412,7 +443,8 @@
       "visualIntegrityViolations",
       "layoutCollisions",
       "overlays",
-      "forbiddenRegions"
+      "forbiddenRegions",
+      "appSurfaceConformance"
     ]) {
       if (Object.prototype.hasOwnProperty.call(measurements, key)) {
         result[key] = measurements[key];
@@ -444,6 +476,7 @@
       history: compactIssueHistory(history),
       buckets: compactBuckets(report, history),
       primarySurface: report?.summary?.primarySurface || null,
+      appSurfaceConformance: report?.summary?.appSurfaceConformance || report?.appSurfaceConformance || null,
       measurements: compactMeasurements(report),
       issues: currentIssues
     };
@@ -676,6 +709,7 @@
         ],
         measurements: {}
       };
+      report = attachConformanceFallback(report);
     }
 
     const history = widget.__mcelDiagnosticsIssueHistory || createIssueHistory(report?.timestamp || new Date().toISOString());
