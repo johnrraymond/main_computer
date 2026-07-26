@@ -75,6 +75,7 @@
 }
 
 .mcel-diagnostics-counter[data-mcel-diagnostics-counter="calculator"],
+.mcel-diagnostics-counter[data-mcel-diagnostics-counter="document"],
 .mcel-diagnostics-counter[data-mcel-diagnostics-counter="file-explorer"],
 .mcel-diagnostics-counter[data-mcel-diagnostics-counter="git-tools"],
 .mcel-diagnostics-counter[data-mcel-diagnostics-counter="website-builder"] {
@@ -83,6 +84,7 @@
 }
 
 #calculator-app .calculator-mode-switch .mcel-diagnostics-counter,
+#document-app .document-head-actions .mcel-diagnostics-counter,
 #file-explorer-app .file-explorer-toolbar .mcel-diagnostics-counter,
 #git-tools-app .git-tools-feedback-resolution .mcel-diagnostics-counter,
 #website-builder-app .website-builder-actions .mcel-diagnostics-counter,
@@ -97,4 +99,8 @@
 #git-tools-app .git-tools-feedback-resolution .mcel-diagnostics-counter {
   margin-inline-start: 6px;
   font-size: 0.78rem;
+}
+
+#document-app .document-head-actions .mcel-diagnostics-counter {
+  order: -1;
 }

@@ -116,7 +116,7 @@
       },
       requiredRegions: [
         {id: "document-editor.region.root", selector: "#document-app", label: "Document Editor app root"},
-        {id: "document-editor.region.workspace", selector: ".document-workspace", label: "Document workspace"},
+        {id: "document-editor.region.workspace", selector: ".document-shell", label: "Document workspace shell"},
         {id: "document-editor.region.menu", selector: ".document-head", label: "Document menu"},
         {id: "document-editor.region.toolbar", selector: "#document-toolbar", label: "Document toolbar"},
         {id: "document-editor.region.primary", selector: "#document-object-stage", label: "Document primary authoring stage"},
@@ -1083,7 +1083,6 @@
     if (appId === "document") {
       return [
         ".document-shell",
-        ".document-workspace",
         ".document-head",
         ".document-toolbar",
         ".document-top-status",
@@ -1130,17 +1129,16 @@
     }
     if (appId === "document") {
       return [
-        ".document-head > *",
+        ".document-head > .document-identity",
+        ".document-head > .document-head-actions",
         ".document-toolbar > *",
         ".document-top-status > *",
+        ".document-library > *",
+        ".document-library-item",
         ".document-object-stage > *",
-        ".document-canvas > *",
+        ".document-canvas > .mc-page",
         ".document-ai-pane > *",
-        "button",
-        "select",
-        "input",
-        "textarea",
-        "summary",
+        "#document-editor",
         "[data-mcel-layout-zone]",
         "[data-mcel-zone]"
       ].join(", ");
@@ -1210,6 +1208,7 @@
       .filter((entry) => entry.box?.visible);
 
     descendants.forEach((el) => {
+      if (isDocumentFloatingMenuElement(el, context.appId)) return;
       const rawChildBox = computeBox(el);
       if (!rawChildBox.visible || rawChildBox.width < 8 || rawChildBox.height < 8) return;
 
@@ -1262,6 +1261,7 @@
       detectSiblingLayoutCollisions(container, context).forEach((collision) => collisions.push(collision));
       if (
         (appId === "mcel-lab" && container.classList?.contains("mcel-lab-shell-card")) ||
+        appId === "document" ||
         appId === "file-explorer"
       ) {
         detectSemanticProjectionBleed(container, context).forEach((collision) => collisions.push(collision));
@@ -1283,6 +1283,25 @@
         ".file-explorer-entry",
         "#file-explorer-list",
         "#file-explorer-preview",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]"
+      ].join(", ");
+    }
+    if (appId === "document") {
+      return [
+        ".document-shell",
+        ".document-head",
+        ".document-toolbar",
+        ".document-top-status",
+        ".document-library",
+        ".document-library-item",
+        ".document-object-stage",
+        ".document-canvas",
+        ".document-ai-pane",
+        ".document-ai-anchor-summary",
+        ".document-ai-preview",
+        "#document-editor",
+        "[data-mcel-readable]",
         "[data-mcel-layout-zone]",
         "[data-mcel-zone]"
       ].join(", ");
@@ -1342,6 +1361,15 @@
   }
 
 
+  function isDocumentFloatingMenuElement(el, appId) {
+    if (appId !== "document" || !isElement(el)) return false;
+    try {
+      return Boolean(el.closest?.(".document-menu-popover-body, .document-debug-tools-body"));
+    } catch {
+      return false;
+    }
+  }
+
   function visualIntegrityOwnerSelector(appId) {
     if (appId === "file-explorer") {
       return [
@@ -1355,6 +1383,22 @@
         ".file-explorer-entry",
         "#file-explorer-list",
         "#file-explorer-preview"
+      ].join(", ");
+    }
+    if (appId === "document") {
+      return [
+        "[data-mcel-visual-owner]",
+        "[data-mcel-layout-zone]",
+        "[data-mcel-zone]",
+        ".document-shell",
+        ".document-head",
+        ".document-toolbar",
+        ".document-top-status",
+        ".document-library",
+        ".document-object-stage",
+        ".document-canvas",
+        ".document-ai-pane",
+        "#document-editor"
       ].join(", ");
     }
     if (appId === "mcel-lab") {
@@ -1435,7 +1479,6 @@
     if (appId === "document") {
       return [
         ".document-shell",
-        ".document-workspace",
         ".document-head",
         ".document-toolbar",
         ".document-object-stage",
@@ -1557,6 +1600,7 @@
     const boxes = [];
     queryAll(visualIntegrityTextSelector(context.appId), root).forEach((el) => {
       if (!isElement(el)) return;
+      if (isDocumentFloatingMenuElement(el, context.appId)) return;
       const owner = closestVisualOwner(el, root, context);
       const ownerBox = computeBox(owner);
       if (!ownerBox.visible) return;

@@ -19,10 +19,12 @@ def test_document_editor_binds_product_layout_to_mcel_zones() -> None:
 def test_document_editor_uses_three_lane_workbench_grid_on_desktop() -> None:
     assert "grid-template-areas:" in DOCUMENT_CSS
     assert '"navigation primary companion"' in DOCUMENT_CSS
-    assert "--document-nav-lane: clamp(210px, 15vw, 260px)" in DOCUMENT_CSS
-    assert "--document-companion-lane: clamp(280px, 19vw, 340px)" in DOCUMENT_CSS
-    assert "--document-page-lane-min: min(100%, 864px)" in DOCUMENT_CSS
+    assert "--document-nav-lane: clamp(168px, 14vw, 260px)" in DOCUMENT_CSS
+    assert "--document-companion-lane: clamp(272px, 19vw, 340px)" in DOCUMENT_CSS
+    assert "--document-page-lane-min: 0px" in DOCUMENT_CSS
     assert "minmax(var(--document-page-lane-min), 1fr)" in DOCUMENT_CSS
+    assert "@container document-editor-app (max-width: 1180px)" in DOCUMENT_CSS
+    assert '"primary"' in DOCUMENT_CSS
     assert ".document-workspace {" in DOCUMENT_CSS
     assert "display: contents;" in DOCUMENT_CSS
     assert ".document-ai-pane {" in DOCUMENT_CSS
@@ -64,7 +66,8 @@ def test_document_editor_primary_page_lane_protects_against_side_panel_clipping(
     assert "scrollbar-gutter: stable both-edges;" in DOCUMENT_CSS
     assert "min-width: 0;\n      min-height: 0;\n      overflow: auto;" in DOCUMENT_CSS
     assert "@media (max-width: 1380px)" in DOCUMENT_CSS
-    assert '"companion companion"' in DOCUMENT_CSS
+    assert '"navigation primary companion"' in DOCUMENT_CSS
+    assert '"companion companion"' not in DOCUMENT_CSS
 
 def test_document_editor_has_no_visible_mwsl_pollution() -> None:
     assert "mwsl-workbench-card" not in DOCUMENT_HTML

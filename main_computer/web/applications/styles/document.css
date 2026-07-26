@@ -1,9 +1,12 @@
     .document-app {
       display: none;
       height: 100%;
+      min-width: 0;
       min-height: 320px;
       padding: 10px;
       align-items: stretch;
+      overflow: hidden;
+      container: document-editor-app / inline-size;
     }
     .document-shell {
       position: relative;
@@ -11,13 +14,13 @@
       min-width: 0;
       min-height: 0;
       display: grid;
-      --document-nav-lane: clamp(210px, 15vw, 260px);
-      --document-companion-lane: clamp(280px, 19vw, 340px);
-      --document-page-lane-min: min(100%, 864px);
+      --document-nav-lane: clamp(168px, 14vw, 260px);
+      --document-companion-lane: clamp(272px, 19vw, 340px);
+      --document-page-lane-min: 0px;
       grid-template-columns:
-        minmax(190px, var(--document-nav-lane))
+        minmax(112px, var(--document-nav-lane))
         minmax(var(--document-page-lane-min), 1fr)
-        minmax(260px, var(--document-companion-lane));
+        minmax(240px, var(--document-companion-lane));
       grid-template-rows: auto auto minmax(0, 1fr) auto;
       grid-template-areas:
         "menu menu menu"
@@ -35,7 +38,7 @@
     .document-app:not(.document-library-open) .document-shell {
       grid-template-columns:
         minmax(var(--document-page-lane-min), 1fr)
-        minmax(260px, var(--document-companion-lane));
+        minmax(240px, var(--document-companion-lane));
       grid-template-areas:
         "menu menu"
         "toolbar toolbar"
@@ -44,7 +47,7 @@
     }
     .document-app:not(.document-ai-open) .document-shell {
       grid-template-columns:
-        minmax(190px, var(--document-nav-lane))
+        minmax(112px, var(--document-nav-lane))
         minmax(var(--document-page-lane-min), 1fr);
       grid-template-areas:
         "menu menu"
@@ -442,11 +445,14 @@
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      min-width: 0;
     }
     .document-library-head-actions {
       display: flex;
       align-items: center;
       gap: 6px;
+      min-width: 0;
+      flex-shrink: 1;
     }
     .document-library-head strong {
       color: var(--gold);
@@ -467,6 +473,7 @@
     }
     .document-library-item {
       width: 100%;
+      min-width: 0;
       display: grid;
       gap: 4px;
       text-align: left;
@@ -475,18 +482,35 @@
       padding: 9px;
       background: #10110d;
       color: var(--ink);
+      overflow: hidden;
     }
     .document-library-item.active {
       border-color: var(--sky);
       box-shadow: inset 4px 0 0 var(--sky);
     }
     .document-library-item strong {
+      min-width: 0;
       color: var(--ink);
       font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .document-library-item span {
+      min-width: 0;
       color: var(--muted);
       font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .document-library-item strong,
+    .document-ai-head strong,
+    .document-ai-chip-row button,
+    .document-ai-actions button,
+    .document-toolbar button,
+    .document-toolbar select {
+      min-width: 0;
       overflow-wrap: anywhere;
     }
     .document-object-stage {
@@ -972,60 +996,116 @@
       color: var(--mint);
       background: rgba(90, 214, 151, 0.08);
     }
-    @media (min-width: 901px) {
-      .document-ai-scrim,
-      .document-library-scrim {
-        display: none !important;
-      }
-    }
-    @media (max-width: 1380px) {
-      .document-shell,
-      .document-app:not(.document-library-open) .document-shell,
-      .document-app:not(.document-ai-open) .document-shell {
-        grid-template-columns: minmax(200px, 260px) minmax(var(--document-page-lane-min), 1fr);
+    @container document-editor-app (max-width: 1380px) {
+      .document-shell {
+        --document-nav-lane: clamp(128px, 13cqi, 220px);
+        --document-companion-lane: clamp(260px, 24cqi, 320px);
+        grid-template-columns:
+          minmax(88px, var(--document-nav-lane))
+          minmax(0, 1fr)
+          minmax(232px, var(--document-companion-lane));
         grid-template-areas:
-          "menu menu"
-          "toolbar toolbar"
-          "navigation primary"
-          "companion companion"
-          "status status";
+          "menu menu menu"
+          "toolbar toolbar toolbar"
+          "navigation primary companion"
+          "status status status";
       }
       .document-app:not(.document-library-open) .document-shell {
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr) minmax(232px, var(--document-companion-lane));
         grid-template-areas:
-          "menu"
-          "toolbar"
-          "primary"
-          "companion"
-          "status";
+          "menu menu"
+          "toolbar toolbar"
+          "primary companion"
+          "status status";
       }
       .document-app:not(.document-ai-open) .document-shell {
-        grid-template-columns: minmax(200px, 260px) minmax(var(--document-page-lane-min), 1fr);
+        grid-template-columns: minmax(88px, var(--document-nav-lane)) minmax(0, 1fr);
         grid-template-areas:
           "menu menu"
           "toolbar toolbar"
           "navigation primary"
           "status status";
+      }
+      .document-library {
+        padding-inline: clamp(6px, 0.8cqi, 10px);
       }
       .document-ai-pane {
         min-height: 320px;
       }
     }
-    @media (max-width: 900px) {
+    @container document-editor-app (max-width: 1180px) {
+      .document-shell {
+        --document-nav-lane: clamp(72px, 11cqi, 168px);
+        --document-companion-lane: clamp(224px, 25cqi, 292px);
+        grid-template-columns:
+          minmax(56px, var(--document-nav-lane))
+          minmax(0, 1fr)
+          minmax(208px, var(--document-companion-lane));
+        grid-template-areas:
+          "menu menu menu"
+          "toolbar toolbar toolbar"
+          "navigation primary companion"
+          "status status status";
+      }
+      .document-app:not(.document-library-open) .document-shell {
+        grid-template-columns: minmax(0, 1fr) minmax(208px, var(--document-companion-lane));
+        grid-template-areas:
+          "menu menu"
+          "toolbar toolbar"
+          "primary companion"
+          "status status";
+      }
+      .document-app:not(.document-ai-open) .document-shell {
+        grid-template-columns: minmax(56px, var(--document-nav-lane)) minmax(0, 1fr);
+        grid-template-areas:
+          "menu menu"
+          "toolbar toolbar"
+          "navigation primary"
+          "status status";
+      }
+      .document-library,
+      .document-ai-pane,
+      .document-object-stage {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .document-canvas {
+        max-width: 100%;
+      }
+    }
+    @container document-editor-app (max-width: 900px) {
       .document-app {
         padding: 8px;
       }
-      .document-shell,
-      .document-app:not(.document-library-open) .document-shell,
-      .document-app:not(.document-ai-open) .document-shell,
-      .document-app:not(.document-library-open):not(.document-ai-open) .document-shell {
-        grid-template-columns: minmax(0, 1fr);
+      .document-shell {
+        --document-nav-lane: clamp(48px, 10cqi, 96px);
+        --document-companion-lane: clamp(188px, 30cqi, 240px);
+        grid-template-columns:
+          minmax(44px, var(--document-nav-lane))
+          minmax(0, 1fr)
+          minmax(176px, var(--document-companion-lane));
         grid-template-areas:
-          "menu"
-          "toolbar"
-          "primary"
-          "status";
+          "menu menu menu"
+          "toolbar toolbar toolbar"
+          "navigation primary companion"
+          "status status status";
         overflow: hidden;
+      }
+      .document-app:not(.document-library-open) .document-shell {
+        grid-template-columns: minmax(0, 1fr) minmax(176px, var(--document-companion-lane));
+        grid-template-areas:
+          "menu menu"
+          "toolbar toolbar"
+          "primary companion"
+          "status status";
+      }
+      .document-app:not(.document-ai-open) .document-shell {
+        grid-template-columns: minmax(44px, var(--document-nav-lane)) minmax(0, 1fr);
+        grid-template-areas:
+          "menu menu"
+          "toolbar toolbar"
+          "navigation primary"
+          "status status";
       }
       .document-head,
       .document-top-status {
@@ -1041,26 +1121,161 @@
       .document-draft-controls {
         flex-wrap: wrap;
       }
-      .document-library,
-      .document-ai-pane {
-        position: fixed;
-        z-index: 110;
-        top: 76px;
-        bottom: 10px;
-        left: 10px;
-        right: 10px;
-        width: auto;
-        max-width: none;
-        min-height: 0;
-        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.78);
+      .document-library {
+        padding-inline: 5px;
       }
-      .document-app:not(.document-library-open) .document-library,
-      .document-app:not(.document-ai-open) .document-ai-pane {
+      .document-library-head strong,
+      .document-library-status,
+      .document-library-head-actions,
+      .document-library-empty,
+      .document-library-item span {
         display: none;
       }
-      .document-app.document-library-open .document-library,
-      .document-app.document-ai-open .document-ai-pane {
+      .document-library-item {
+        padding: 7px 5px;
+      }
+      .document-library-item strong {
+        font-size: 11px;
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        white-space: normal;
+        max-height: 140px;
+      }
+      .document-ai-pane {
+        padding-inline: 8px;
+      }
+    }
+
+    @media (min-width: 901px) {
+      .document-ai-scrim,
+      .document-library-scrim {
+        display: none !important;
+      }
+    }
+    @media (max-width: 1380px) {
+      .document-shell {
+        --document-nav-lane: clamp(128px, 13vw, 220px);
+        --document-companion-lane: clamp(260px, 24vw, 320px);
+        grid-template-columns:
+          minmax(88px, var(--document-nav-lane))
+          minmax(var(--document-page-lane-min), 1fr)
+          minmax(232px, var(--document-companion-lane));
+        grid-template-areas:
+          "menu menu menu"
+          "toolbar toolbar toolbar"
+          "navigation primary companion"
+          "status status status";
+      }
+      .document-app:not(.document-library-open) .document-shell {
+        grid-template-columns: minmax(var(--document-page-lane-min), 1fr) minmax(232px, var(--document-companion-lane));
+        grid-template-areas:
+          "menu menu"
+          "toolbar toolbar"
+          "primary companion"
+          "status status";
+      }
+      .document-app:not(.document-ai-open) .document-shell {
+        grid-template-columns: minmax(88px, var(--document-nav-lane)) minmax(var(--document-page-lane-min), 1fr);
+        grid-template-areas:
+          "menu menu"
+          "toolbar toolbar"
+          "navigation primary"
+          "status status";
+      }
+      .document-ai-pane {
+        min-height: 320px;
+      }
+    }
+    @media (max-width: 1180px) {
+      .document-shell {
+        --document-nav-lane: clamp(72px, 11vw, 168px);
+        --document-companion-lane: clamp(224px, 25vw, 292px);
+        grid-template-columns:
+          minmax(56px, var(--document-nav-lane))
+          minmax(var(--document-page-lane-min), 1fr)
+          minmax(208px, var(--document-companion-lane));
+        grid-template-areas:
+          "menu menu menu"
+          "toolbar toolbar toolbar"
+          "navigation primary companion"
+          "status status status";
+      }
+      .document-app:not(.document-library-open) .document-shell {
+        grid-template-columns: minmax(var(--document-page-lane-min), 1fr) minmax(208px, var(--document-companion-lane));
+      }
+      .document-app:not(.document-ai-open) .document-shell {
+        grid-template-columns: minmax(56px, var(--document-nav-lane)) minmax(var(--document-page-lane-min), 1fr);
+      }
+      .document-library,
+      .document-ai-pane,
+      .document-object-stage {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .document-canvas {
+        max-width: 100%;
+      }
+    }
+    @media (max-width: 900px) {
+      .document-app {
+        padding: 8px;
+      }
+      .document-shell {
+        --document-nav-lane: clamp(48px, 10vw, 96px);
+        --document-companion-lane: clamp(188px, 30vw, 240px);
+        grid-template-columns:
+          minmax(44px, var(--document-nav-lane))
+          minmax(var(--document-page-lane-min), 1fr)
+          minmax(176px, var(--document-companion-lane));
+        grid-template-areas:
+          "menu menu menu"
+          "toolbar toolbar toolbar"
+          "navigation primary companion"
+          "status status status";
+        overflow: hidden;
+      }
+      .document-app:not(.document-library-open) .document-shell {
+        grid-template-columns: minmax(var(--document-page-lane-min), 1fr) minmax(176px, var(--document-companion-lane));
+      }
+      .document-app:not(.document-ai-open) .document-shell {
+        grid-template-columns: minmax(44px, var(--document-nav-lane)) minmax(var(--document-page-lane-min), 1fr);
+      }
+      .document-head,
+      .document-top-status {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .document-current-path {
+        max-width: 100%;
+      }
+      .document-top-status {
         display: grid;
+      }
+      .document-draft-controls {
+        flex-wrap: wrap;
+      }
+      .document-library {
+        padding-inline: 5px;
+      }
+      .document-library-head strong,
+      .document-library-status,
+      .document-library-head-actions,
+      .document-library-empty,
+      .document-library-item span {
+        display: none;
+      }
+      .document-library-item {
+        padding: 7px 5px;
+      }
+      .document-library-item strong {
+        font-size: 11px;
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        white-space: normal;
+        max-height: 140px;
+      }
+      .document-ai-pane {
+        padding-inline: 8px;
       }
     }
     @media (max-width: 680px) {

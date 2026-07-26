@@ -27,6 +27,16 @@
         "#calculator-app .calculator-shell"
       ]
     },
+    document: {
+      root: "#document-app",
+      placeholder: "#document-diagnostics-counter",
+      id: "document-diagnostics-counter",
+      anchors: [
+        "#document-app .document-head-actions",
+        "#document-app .document-head",
+        "#document-app .document-shell"
+      ]
+    },
     "file-explorer": {
       root: "#file-explorer-app",
       placeholder: "#file-explorer-diagnostics-counter",

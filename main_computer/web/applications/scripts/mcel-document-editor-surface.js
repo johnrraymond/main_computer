@@ -212,6 +212,25 @@ var McelDocumentEditorSurface = (() => {
     if (!app) return null;
 
     setAttrs(app, staticSurfaceAttrs());
+    setAttrs(scope.querySelector(".document-shell"), {
+      "data-mcel-visual-owner": surfaceId,
+      "data-mcel-layout-zone": surfaceId,
+      "data-mcel-readable": "true"
+    });
+    setAttrs(scope.querySelector(".document-head-actions"), {
+      "data-mcel-visual-owner": surfaceId
+    });
+    [
+      ".document-library-head",
+      ".document-library-list",
+      ".document-canvas",
+      ".document-ai-main",
+      ".document-ai-composer"
+    ].forEach((selector) => setAttrs(scope.querySelector(selector), {
+      "data-mcel-visual-owner": surfaceId,
+      "data-mcel-readable": "true"
+    }));
+
     const regionMappings = [
       ["#document-library", staticRegionRecords()[0]],
       [".document-head", staticRegionRecords()[1]],

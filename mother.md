@@ -432,28 +432,38 @@ public Traefik routes. Public routes are for user-facing Hub/RPC traffic, not fo
 runtime mutation endpoints.
 
 Remote operator access to Mother is mediated by Coolify/Allfather bootstrap
-access. The Coolify API is used to place a small call-runner on the target
-Coolify host. The runner executes a structured local HTTP call into the Mother
-API, records or prints the result, and then exits or waits for another request.
+access. The Coolify API is used to create or invoke one stable private
+call-runner service on each target Coolify host. The service identity is reused
+for sequential operator requests so ordinary operation does not accumulate one
+temporary service per call.
 
-Preferred transport is Option A: a one-shot temporary call-runner service per
-operator call. The operator creates or updates the service through Coolify,
-passes a request envelope, starts it, reads the result from logs or durable
-Mother state, and deletes or lets the temporary service stop.
+The runner executes a structured local HTTP call into the Mother or guard API,
+records transport evidence, and returns to an idle or stopped reusable state
+after a terminal request. The initial concurrency limit is one active request
+per runner service. A second request must wait or fail with `runner-busy`; it
+must not create another ordinary runner service on the same host.
 
-Accepted fallback is Option B: a persistent private call-runner service. A
-persistent runner is allowed only if it is disposable. It may be stopped,
-restarted, deleted, or manually killed without corrupting Mother state. It must
-not own authoritative topology, identity, operation, rollback, route, or lock
-state. Killing the runner may lose an in-flight transport response, but it must
-not erase a Mother operation once Mother has accepted it; the operator must be
-able to recover by reading Mother status, operation records, and idempotency
-results from `/runtime/state/mother/`.
+The runner is reusable transport but never operation authority. It may be
+stopped, restarted, manually killed, quarantined, or explicitly replaced without
+corrupting Mother state. It must not own authoritative topology, identity,
+operation, rollback, route, request-result, or lock state. Killing the runner
+may lose an in-flight transport response, but it must not erase a request or
+Mother operation once the target local API has durably accepted it. The operator
+must be able to recover by reading durable request status, Mother operation
+records, participant receipts, and idempotency results from
+`/runtime/state/mother/`.
+
+A crash, timeout, lost response, or ambiguous result must not automatically
+delete the runner service. The existing service and its Coolify logs remain
+available for inspection. After the request is reconciled, the same service is
+restarted or reset and reused. A replacement runner may be created only after
+the existing service is explicitly quarantined or removed; replacement is not
+the normal per-request path.
 
 The runner must not be treated as a general public shell. Its normal contract is
-a structured local-call envelope such as target, method, path, body, and
-idempotency key. The runner may call only approved local/private Mother or guard
-endpoints.
+a structured local-call envelope containing at least request identity, target,
+method, path, body, and idempotency key. The runner may call only approved
+local/private Mother or guard endpoints.
 
 The Coolify API credential is the authorization boundary for placing and
 executing that runner. Once the Coolify-authorized runner is executing on the
@@ -498,6 +508,10 @@ active_checkpoint_id: "checkpoint-..."
 active_checkpoint_hash: "sha256:..."
 pending_action_id: "add-node-mainneta-super4-001"
 pending_action_phase: "rpc-routing-verified"
+private_state_schema: "mother.private-state.v1"
+private_state_generation: 12
+private_state_hash: "sha256:..."
+private_recovery_manifest_hash: "sha256:..."
 replica_hosts:
   - coolify-a
   - coolify-b
@@ -520,22 +534,29 @@ script must run a sealed-state and journal preflight:
 2. replay the active journal lineage and prove that the reconstructed state,
    including finalized topology and any pending distributed action, exactly
    matches the local network-state document;
-3. load the expected `replica_hosts` from that reconstructed state;
-4. query every expected replica host for its journal head, active checkpoint,
-   replayed state hash, finalized topology epoch, and pending-action metadata;
-5. stop before normal mutation if any expected replica host is unreachable,
-   cannot replay its journal, or does not return usable network-state metadata;
-6. require every expected replica and the local head to agree on the active
+3. load and validate the local private-state document, private-state metadata,
+   and private-recovery manifest referenced by the reconstructed network state;
+4. load the expected `replica_hosts` from that reconstructed state;
+5. query every expected replica host for its journal head, active checkpoint,
+   replayed state hash, finalized topology epoch, pending-action metadata,
+   private-state schema/generation/hash, and private-recovery manifest hash;
+6. stop before normal mutation if any expected replica host is unreachable,
+   cannot replay its journal, cannot validate its private recovery material, or
+   does not return usable network-state and private-state metadata;
+7. require every expected replica and the local head to agree on the active
    checkpoint, journal head sequence/hash, finalized topology epoch, pending
-   action identity/phase, and complete state hash;
-7. if every expected remote agrees and the local head is stale, copy down the
-   agreed journal and complete network-state document, replay locally, and verify
-   again before continuing;
-8. if journals diverge, journal replay disagrees with a network-state document,
+   action identity/phase, complete state hash, private-state schema/generation/
+   hash, and private-recovery manifest hash;
+8. if every expected remote agrees and the local head is stale, the ordinary
+   state-sync path may copy down the agreed public journal and complete
+   network-state document, replay locally, and verify again. It must not silently
+   overwrite local private state; private-state recovery requires an explicit
+   recovery or rectification action;
+9. if journals diverge, journal replay disagrees with a network-state document,
    a required record is missing, equal finalized epochs have different complete
-   state hashes, pending-action metadata differs, or live facts contradict the
-   reconstructed state, refuse normal mutation and require remediation or an
-   explicit rectification/reseal operation.
+   state hashes, private-state metadata differs, pending-action metadata differs,
+   or live facts contradict the reconstructed state, refuse normal mutation and
+   require remediation or an explicit rectification/reseal operation.
 
 Normal mutation uses full expected-replica-set agreement, not an automatic
 majority quorum. For example, if `coolify-a` and `coolify-c` agree but
@@ -551,7 +572,8 @@ unreachable:
 
 Resealing without a missing host is a network-visible recovery action. It must
 create a new topology epoch and state hash, record the removed host and reason,
-write the new state and journal records to every remaining expected replica, and
+write the new state, journal records, and current private-recovery bundle to
+every remaining expected replica, require matching non-secret hash receipts, and
 mark the previous seal as superseded rather than deleting it. For example:
 
 ```yaml
@@ -570,7 +592,8 @@ excluded_hosts:
 
 A host excluded by reseal cannot automatically resume replica participation when
 it becomes reachable again. Its older state and journal head are stale by
-definition. It must be refreshed from the current committed state and explicitly
+definition. It must be refreshed from the current committed state, current
+private-state generation, and complete private-recovery bundle, then explicitly
 re-included through a replica-rejoin or reseal operation that creates another
 new epoch.
 
@@ -2836,22 +2859,523 @@ unsupported reader, or unverifiable finality rule permits diagnosis but blocks
 mutation. This is the same fail-closed compatibility behavior used by every
 other guard assertion; it is not a remaining architectural question.
 
+
+`MOTHER-DESIGN-021: reusable-bounded-call-runner-with-durable-acceptance`
+
+`MOTHER-OPEN-007: call-runner-acceptance-and-result-contract` is resolved by
+separating the reusable host transport from durable request and operation state.
+
+Each Coolify host has at most one ordinary Mother call-runner service:
+
+```text
+runner service identity:
+  stable and host-scoped
+  reused across requests
+  one active request at a time by default
+
+request identity:
+  unique per operator call
+  durable independently of the runner
+  correlated by request_id, request_hash, and idempotency_key
+```
+
+The ordinary service name should be deterministic, such as
+`mother-call-runner`. The control script must discover and reuse that service
+before creating anything. A second ordinary runner must not be created merely
+because the first runner is stopped, crashed, timed out, or awaiting
+reconciliation. A replacement may be created only after the existing runner is
+explicitly quarantined or removed.
+
+The baseline runner state model is:
+
+```text
+idle-or-stopped
+  -> starting
+  -> executing
+  -> idle-or-stopped
+
+starting | executing
+  -> crashed
+  -> reconciliation-required
+  -> idle-or-stopped
+```
+
+`crashed` and `reconciliation-required` are retained states, not cleanup
+triggers. The service, container history, and Coolify logs remain available
+until the associated request has been reconciled. No crash, timeout, lost
+response, nonzero exit, or ambiguous result automatically deletes the runner
+service.
+
+Every request envelope must contain at least:
+
+```json
+{
+  "request_id": "call-...",
+  "idempotency_key": "idem-...",
+  "target": "mother",
+  "method": "POST",
+  "path": "/v1/operations/add-node/prep",
+  "body": {},
+  "request_hash": "sha256:..."
+}
+```
+
+`request_hash` covers the normalized target, method, path, and body. Reuse of an
+idempotency key with the same request hash returns the existing durable request
+or operation record. Reuse of that key with a different request hash fails with
+`idempotency-conflict`.
+
+The target Mother or guard API, not the runner, owns acceptance. Before
+returning `accepted`, the target must durably record:
+
+```text
+request_id
+idempotency_key
+request_hash
+target and scope
+accepted_at
+accepted status
+operation_id or participant receipt identity, when applicable
+durable status lookup location
+```
+
+The baseline durable request states are:
+
+```text
+accepted
+running
+succeeded
+failed
+remediation-required
+rejected
+```
+
+A successful transport response should include:
+
+```json
+{
+  "request_id": "call-...",
+  "request_hash": "sha256:...",
+  "status": "accepted",
+  "operation_id": "operation-...",
+  "status_path": "/v1/requests/call-..."
+}
+```
+
+The runner's stdout, Coolify logs, container state, and exit code are transport
+evidence only. They do not establish whether a request was accepted, completed,
+failed, or rolled back.
+
+Crash and retry behavior is deterministic:
+
+```text
+no durable request record exists:
+  retry the same request_id and idempotency_key
+
+durable accepted or running record exists:
+  query status and resume observation
+  do not submit a different intent
+
+durable terminal record exists:
+  return the existing result
+
+runner state is ambiguous:
+  retain the runner and logs
+  reconcile the durable request record
+  restart and reuse the same service afterward
+```
+
+Deleting or replacing the runner must never delete its durable request record,
+operation journal, participant receipts, rollback state, or result. Conversely,
+completing a request does not require deleting the runner. The service returns
+to an idle or stopped reusable state and handles later requests sequentially.
+
+The operator interface may expose explicit runner administration such as:
+
+```text
+runner inspect
+runner restart
+runner reconcile
+runner quarantine
+runner delete
+```
+
+Those commands manage transport only. They must not silently retry, abandon,
+finalize, or roll back a Mother operation.
+
+This resolves the acceptance, result-recovery, crash-retention, and service
+reuse questions for the call-runner. Exact Coolify resource identifiers and
+wire-field naming are implementation acceptance details, provided the durable
+acceptance boundary, idempotency behavior, one-runner-per-host limit, and
+no-automatic-cleanup-on-ambiguity rules are preserved.
+
+
+
+`MOTHER-DESIGN-022: complete-private-state-on-every-declared-replica`
+
+`MOTHER-OPEN-012: replicated-private-state-policy` is resolved by making every
+host explicitly listed in `replica_hosts` a complete private recovery replica.
+
+For the first implementation, every declared replica stores an exact durable
+copy of:
+
+```text
+/runtime/state/mother/identity.private.yaml
+/runtime/state/mother/identity.private.meta.json
+/runtime/state/mother/private-recovery/manifest.json
+```
+
+and every private recovery object named by the manifest. The recovery set
+includes any private prestate snapshot or private artifact required to recover a
+currently pending reversible action. It does not include the operator-side
+Coolify API credential.
+
+The first implementation replicates the complete private identity document. It
+does not create per-network, per-host, or public-only redacted copies. A host
+listed as a replica is intentionally trusted with all private identity and
+recovery material needed to reconstruct and operate Mother.
+
+The metadata record is non-secret and includes at least:
+
+```json
+{
+  "schema": "mother.private-state-metadata.v1",
+  "private_state_schema": "mother.private-state.v1",
+  "generation": 12,
+  "content_hash": "sha256:...",
+  "previous_content_hash": "sha256:...",
+  "recovery_manifest_hash": "sha256:...",
+  "updated_at": "...",
+  "updated_by_action_id": "operation-..."
+}
+```
+
+`content_hash` covers the exact durable bytes of `identity.private.yaml`.
+The private-recovery manifest identifies every additional private object by
+stable path or object identity, generation, and content hash. The manifest and
+ordinary journals may contain hashes and private-state references, but they must
+not copy raw private keys or secret payloads.
+
+Private-state replication uses the same durable participant-receipt model as
+other distributed layers:
+
+```text
+local head:
+  atomically writes and validates the new private state
+  records the new generation and hashes
+  sends the complete private recovery bundle to every expected replica
+
+each replica:
+  writes every private object outside disposable container storage
+  validates the private-state schema
+  verifies recorded addresses can be derived from the replicated keys
+  verifies every manifest object and content hash
+  durably records a participant receipt containing only non-secret evidence
+
+local action journal:
+  commits references to every required participant receipt
+
+replicated network journal:
+  commits the private-state generation, hashes, and distributed receipt set
+```
+
+A private-state generation is not considered fully replicated until every host
+in the exact expected replica set has returned a durable matching receipt.
+Normal mutation, finalization, reseal, and authoritative checkpoint creation are
+blocked while any expected replica is unreachable, missing private recovery
+material, or reporting a different schema, generation, content hash, or manifest
+hash.
+
+A new host must receive and validate the complete current private-recovery bundle
+before a reseal or replica-set transition may make it a required replica. A host
+removed from `replica_hosts` stops receiving later generations but cannot be
+assumed to have erased material that was previously replicated to it. If a host
+is excluded because its trust is revoked or compromise is suspected, removal
+from the replica set is not sufficient remediation; the affected identities
+must be rotated through a separate explicit action.
+
+Private-state disagreement has no automatic winner. Mother must not silently
+copy a local file over agreeing replicas, select a remote copy merely because it
+is newer, or reconstruct private keys from public journals. Diagnosis may report
+all generations, hashes, manifests, and receipt evidence, but adoption of a
+different private-state lineage requires explicit recovery or rectification.
+The replacement-local-head procedure is defined by
+`MOTHER-DESIGN-024`.
+
+Under the trusted-host threat model in `MOTHER-DESIGN-019`, Mother does not add a
+second application-level encryption or local authorization layer around replica
+copies. Private files must still stay on private durable host storage, must not
+be exposed through public routes, logs, reports, ordinary journal entries, or
+command output, and must be transferred only through the Coolify-authorized
+private execution path.
+
+
+`MOTHER-DESIGN-023: fail-closed-schema-and-capability-negotiation`
+
+`MOTHER-OPEN-011: state-schema-and-capability-negotiation` is resolved by
+requiring every state reader, journal replayer, recovery path, and mutating
+participant to prove that it understands the exact schemas and capabilities
+required by the operation before it may alter authoritative state.
+
+Every versioned object must identify its schema explicitly. This includes at
+least:
+
+```text
+network committed state and pending distributed state
+network, action, participant, and rollback journal entries
+journal checkpoints and journal heads
+private-state metadata and recovery manifests
+prepared operations and rollback frames
+guard requests, receipts, assertions, and restore results
+RPC-routing and Hub/FDB desired-state resources
+QBFT membership proposals, votes, and observation evidence
+head-authority and replacement-head recovery records
+```
+
+Every Mother process, guard, route/FDB controller, call-runner target API, and
+replica exposes a non-secret compatibility report containing:
+
+```json
+{
+  "schema": "mother.compatibility-report.v1",
+  "component": "mother-guard",
+  "component_version": "1.0.0",
+  "readable_schemas": [
+    "mother.network-state.v1",
+    "mother.rollback-frame.v1"
+  ],
+  "writable_schemas": [
+    "mother.guard.participant-receipt.v1"
+  ],
+  "capabilities": {
+    "mother.guard.prestate.capture.v1": true,
+    "mother.guard.prestate.restore.v1": true,
+    "mother.guard.assertions.verify.v1": true,
+    "mother.guard.qbft-membership.vote.v1": true
+  }
+}
+```
+
+The exact field names may change, but the compatibility report must distinguish
+read support, write support, and executable capabilities. Merely reporting a
+component version is not proof that an operation is compatible.
+
+`prep` freezes the complete compatibility requirements for the planned action:
+
+```text
+schemas that must be read
+schemas that will be written
+guard and controller capabilities that will be invoked
+assertion verifier versions that must be available
+rollback and recovery capabilities required if the action later fails
+```
+
+Before `do`, retry/resume, rollback, finalize, reseal, authoritative checkpoint
+creation, private-state adoption, or replacement-head activation, Mother
+collects fresh compatibility reports from every required participant and proves
+that each frozen requirement is satisfied.
+
+The fail-closed rule is:
+
+```text
+all required schemas and capabilities are explicitly supported:
+  inspection and the requested transition are allowed
+
+a required schema or capability is unknown, absent, ambiguous, or unsupported:
+  read-only inspection and export of raw evidence are allowed where safely possible
+  authoritative mutation is refused
+  rollback/finalize/reseal/recovery activation is refused until a compatible
+  implementation or an explicit migration is supplied
+```
+
+A component must not guess at unknown fields, silently discard fields it does
+not understand, downgrade state, reinterpret an older action under a newer
+contract, or invoke a nearby capability as a substitute. Optional capabilities
+that are not required by the frozen operation do not block that operation.
+
+Mixed component versions are allowed only when every participant explicitly
+supports the exact schemas and capabilities used by the operation. Matching
+version strings are not required; proven compatibility is required.
+
+Schema migration is an explicit, journaled operation. It must:
+
+```text
+preserve the original bytes and hashes for audit
+declare source and destination schemas
+run a deterministic validator
+produce a complete migrated checkpoint or state object
+replicate and verify the result on the full expected replica set
+remain rollback-capable until finalize
+```
+
+No migration may occur as an implicit side effect of startup, diagnosis, replay,
+or recovery.
+
+A replacement Mother may download and inspect replica state even when it cannot
+yet activate it, but it must not become the active head until it proves that it
+can read, replay, restore, and write every schema and capability required by the
+recovered finalized topology and any pending action.
+
+
+`MOTHER-DESIGN-024: unanimous-replica-recovery-of-a-replacement-local-head`
+
+`MOTHER-OPEN-015: replacement-local-head-recovery-procedure` is resolved by
+treating every declared replica as a complete recovery authority and providing a
+staged local recovery command that reconstructs `/runtime/state/mother/` from
+one unanimous, compatible replica lineage.
+
+The replica recovery set must be sufficient to reconstruct the local Mother
+state root without the lost machine. It includes at least:
+
+```text
+finalized topology
+complete replicated pending distributed action state
+network, action, participant, and rollback journals
+journal heads and latest valid checkpoints
+replica_hosts and replica-set transition records
+participant receipt references and non-secret evidence
+identity.private.yaml
+identity.private.meta.json
+private-recovery/manifest.json and every named private recovery object
+schema and capability metadata
+current head-authority record
+```
+
+The operator supplies the Coolify API credential separately. It is not recovered
+from replicas. To locate the replica set, the operator supplies a small
+non-secret recovery descriptor or equivalent command arguments containing the
+network identity and expected Coolify host references.
+
+The recommended command surface is:
+
+```text
+python tools/mother/mother.py recover-head prep mainnet --descriptor mother-recovery-mainnet.json
+python tools/mother/mother.py recover-head do mainnet
+python tools/mother/mother.py recover-head finalize mainnet --reason "original local head lost"
+```
+
+`recover-head prep` is read-only against authoritative state. It:
+
+1. contacts every host listed by the recovery descriptor and discovers the
+   sealed expected replica set;
+2. requires every expected replica to be reachable;
+3. collects journal bases and heads, checkpoint hashes, complete state hashes,
+   finalized topology, pending action identity and phase, private-state
+   generation and hashes, recovery-manifest hash, compatibility reports, and
+   current head-authority metadata;
+4. verifies each retained journal chain and checkpoint relationship as far as
+   the available evidence permits;
+5. requires exact full-set agreement on one lineage and one complete recovery
+   state;
+6. freezes that candidate and its receipt hashes in a local recovery plan.
+
+It must not select the first host that answers, use majority quorum, prefer the
+highest generation automatically, merge divergent lineages, omit a pending
+action, or reconstruct private keys from public journals.
+
+`recover-head do` downloads the frozen recovery candidate into a staging
+directory, verifies every object and hash before publication, and atomically
+restores the local durable state root. In particular, it restores:
+
+```text
+/runtime/state/mother/identity.private.yaml
+/runtime/state/mother/identity.private.meta.json
+/runtime/state/mother/private-recovery/
+```
+
+without printing secret contents. It then walks backward from each committed
+journal head to the newest valid checkpoint, replays forward, rebuilds every
+derived projection, and proves:
+
+```text
+replayed finalized topology == restored finalized topology
+replayed pending action == restored pending action
+replayed rollback state == restored action/rollback projections
+private-state bytes and manifest == agreed replica hashes
+```
+
+Recovery preserves an unfinished distributed action exactly as recovered. It
+does not silently retry, finalize, abandon, or roll back that action.
+
+Before activation, Mother queries the live guards and controllers and runs the
+full required assertion set for the recovered state. Live evidence may identify
+drift or place the pending action into remediation-required, but it must not
+silently rewrite the recovered journal lineage.
+
+Head authority is a replicated operational generation, not a secret credential.
+The replicated network state contains at least:
+
+```json
+{
+  "schema": "mother.head-authority.v1",
+  "head_id": "mother-head-...",
+  "head_epoch": 7,
+  "previous_head_id": "mother-head-...",
+  "activated_by_recovery_id": "recovery-...",
+  "activated_at": "..."
+}
+```
+
+`recover-head finalize` is the activation boundary. It:
+
+1. proves the restored local state and every expected replica still agree;
+2. proves all required schemas and capabilities are supported;
+3. proves the live guard assertions required for activation;
+4. creates a new `head_id` and increments `head_epoch`;
+5. appends and replicates one `replacement-head-activated` transition;
+6. requires durable acknowledgement from every expected replica;
+7. only then permits ordinary mutation from the replacement local head.
+
+All later mutating requests carry the current `head_id` and `head_epoch` as
+operational ownership metadata. Guards and replicas reject stale-head
+transitions. Therefore a surviving old local state root cannot continue a
+second authoritative lineage without first reconciling to the newer replicated
+head epoch. This is an operational split-brain safeguard; the Coolify API
+credential remains the only remote security boundary under the trusted-host
+threat model.
+
+If any expected replica is unreachable, reports an incompatible schema, lacks
+required private recovery material, or disagrees on lineage, checkpoint, pending
+action, private-state generation, or head authority, normal recovery activation
+stops. Mother prints the complete disagreement and requires explicit
+recovery-rectification or replica-set reseal. There is no automatic winner.
+
+After activation, the replacement Mother resumes the recovered operating state:
+
+```text
+no pending action:
+  ordinary prep may begin after normal preflight
+
+pending action ready-to-finalize:
+  operator may finalize or roll back
+
+pending action remediation-required:
+  operator may inspect, retry/resume, or roll back the allowed stack range
+```
+
+Replacement-head recovery is therefore reconstruction and authority transfer,
+not a hidden topology change and not automatic action completion.
+
+
+
 ### Remaining open design nodes
 
-The sealed-state format, crash/ambiguous-step recovery model, typed guard
+None.
+
+The sealed-state format, crash and ambiguous-step recovery model, typed guard
 prestate contract, evidence-backed full-guard assertion contract, durable
-filesystem journal/locking model, integrated distributed route/topology
+filesystem journal and locking model, integrated distributed route/topology
 lifecycle, provisional-frame remediation lifecycle, replicated
 pending-versus-finalized network-state model, guard-mediated reversible QBFT
-membership contract, Coolify-API-key local-control boundary, and
-evidence-backed governance-office verifier are resolved above. The following
-implementation contracts remain open and must be resolved before code depends
-on them:
+membership contract, Coolify-API-key local-control boundary, governance-office
+verifier, reusable call-runner contract, complete private-state replication
+policy, fail-closed schema/capability negotiation, and unanimous
+replacement-local-head recovery procedure are resolved above.
 
-- `MOTHER-OPEN-007: call-runner-acceptance-and-result-contract`
-- `MOTHER-OPEN-011: state-schema-and-capability-negotiation`
-- `MOTHER-OPEN-012: replicated-private-state-policy`
-- `MOTHER-OPEN-015: replacement-local-head-recovery-procedure`
+Exact wire-field names, ABI adapters, schema validators, capability registries,
+and migration implementations remain implementation acceptance work. They must
+preserve the resolved contracts and must not invent a different authority,
+quorum, or recovery model.
 
 
 ## Namespace
@@ -2872,6 +3396,7 @@ tools/mother/
   restore_service.py
   rollback.py
   reseal_state.py
+  recover_head.py
   common/
     coolify.py
     guards.py
@@ -2883,6 +3408,9 @@ tools/mother/
     hub_fdb.py
     private_state.py
     sealed_state.py
+    compatibility.py
+    capabilities.py
+    recovery.py
     state_sync.py
     operations.py
     journal.py
@@ -2902,6 +3430,11 @@ Recommended command shape:
 # verifies local sealed state against remote replicas and refreshes local state
 # when remotes agree that local is stale.
 python tools/mother/mother.py diagnose mainnet
+
+# Reconstruct a lost local Mother state root from unanimous compatible replicas.
+python tools/mother/mother.py recover-head prep mainnet --descriptor mother-recovery-mainnet.json
+python tools/mother/mother.py recover-head do mainnet
+python tools/mother/mother.py recover-head finalize mainnet --reason "original local head lost"
 
 # Explicit recovery when local/remote seals disagree or the network is wedged.
 python tools/mother/mother.py reseal-state prep mainnet --from-live --reason "replica mismatch"
@@ -3044,6 +3577,10 @@ Suggested durable state layout:
 ```text
 /runtime/state/mother/
   identity.private.yaml
+  identity.private.meta.json
+  private-recovery/
+    manifest.json
+    objects/
   topology.yaml
   version.json
   locks/
@@ -3160,6 +3697,7 @@ POST /v1/networks/<network>/reseal/do
 POST /v1/networks/<network>/reseal/finalize
 GET  /v1/networks/<network>/current-operation
 GET  /v1/scopes/<scope>/current-operation
+GET  /v1/requests/<request-id>
 POST /v1/operations/<kind>/prep
 POST /v1/current/<network>/do
 POST /v1/current/<network>/finalize
@@ -3186,39 +3724,39 @@ visibility, reseal visibility, and rollback-stack visibility are not optional.
 ### Remote access through Coolify call-runners
 
 The Mother API is the control surface, but it is not a public internet API. A
-remote operator reaches it by asking the existing Coolify/Allfather bootstrap
-channel to start a small local call-runner on the target host.
-
-The preferred mode is a one-shot runner:
+remote operator reaches it through the existing Coolify/Allfather bootstrap
+channel and one stable reusable private call-runner service on the target host.
 
 ```text
 operator
   -> Coolify API
-  -> create/update/start temporary call-runner service
+  -> locate the host's stable mother-call-runner service
+  -> create it only when the host does not yet have one
+  -> place the next structured request envelope
+  -> start, restart, or signal the existing runner
   -> runner calls http://mother-control:<port>/v1/... or http://127.0.0.1:<port>/v1/...
-  -> runner writes stdout/log result and, when available, a durable result record
-  -> runner exits and may be deleted
+  -> target local API durably accepts or rejects the request
+  -> runner records transport evidence
+  -> service remains available and is reused for the next request
 ```
 
-The accepted fallback is a persistent private runner:
+The runner service is bounded to one active request by default. Its durable
+service identity is host-scoped; individual requests are not represented by
+separate Coolify services. Completed requests return the service to an idle or
+stopped reusable state.
 
-```text
-operator
-  -> Coolify API
-  -> update request envelope for mother-call-runner
-  -> restart or signal runner
-  -> runner performs one local Mother/guard API call
-  -> runner records result
-```
+The runner is transport only. It is safe to manually stop, kill, restart,
+quarantine, or explicitly replace it. It must not hold authoritative Mother
+state, active operation state, rollback frames, locks, identity material, route
+snapshots, or authoritative request results. Those records live under
+`/runtime/state/mother/` and inside the target local API state model.
 
-A persistent runner is convenience transport only. It is safe to manually stop,
-kill, recreate, or remove it. It must not hold authoritative Mother state, active
-operation state, rollback frames, locks, identity material, or route snapshots.
-Those records live under `/runtime/state/mother/` and inside the Mother API
-state model. If the runner is killed after Mother accepts a request, the
-operation remains recoverable through Mother's idempotency key, current-operation
-pointer, operation record, checkpoints, and rollback stack. If the runner is
-killed before Mother accepts the request, no Mother mutation has occurred.
+If the runner dies before durable target acceptance, the operator may retry the
+same request and idempotency key. If it dies after acceptance, the operator must
+query the durable request or operation status rather than blindly submit a new
+intent. A crash, timeout, lost response, or ambiguous result does not trigger
+automatic service deletion. The same runner remains for logs and reconciliation,
+then is restarted and reused after the request is resolved.
 
 The call-runner request must be structured. It should not expose arbitrary shell
 as the normal operator interface. A baseline request envelope is:
@@ -3226,24 +3764,27 @@ as the normal operator interface. A baseline request envelope is:
 ```json
 {
   "request_id": "call-...",
+  "idempotency_key": "idem-...",
   "target": "mother",
   "method": "POST",
   "path": "/v1/operations/rpc-propagate/prep",
-  "idempotency_key": "idem-...",
   "body": {
     "network": "mainnet"
-  }
+  },
+  "request_hash": "sha256:..."
 }
 ```
 
 The runner must restrict `target` to approved local/private services, restrict
-paths to Mother or guard API prefixes, and write enough result metadata for the
-operator to distinguish transport failure from a Mother API rejection.
+paths to Mother or guard API prefixes, and preserve enough transport metadata
+for the operator to distinguish transport failure from target rejection. The
+target's durable request record, not the runner output, is authoritative after
+acceptance.
 
-All mutation requests must include an idempotency key. Repeating the same request
-with the same idempotency key must return the same operation record or continue
-the same operation. Repeating a request with a different intent for an occupied
-scope must fail with a conflict.
+All mutation requests must include an idempotency key and normalized request
+hash. Repeating the same request with the same key and hash must return the same
+request or operation record or continue observing the same operation. Reusing
+the key with a different request hash must fail with `idempotency-conflict`.
 
 ### Mother API implementation updates
 
@@ -4897,11 +5438,20 @@ Mother safety rules:
   removal and service deletion.
 - Soft/hard topology mode is chosen during `prep` and may not change during `do`.
 - Mother must distinguish observed topology, finalized topology, and replicated pending distributed state.
+- Unknown or unsupported required schemas/capabilities permit diagnosis and export
+  but block mutation, rollback, finalize, reseal, migration, and replacement-head
+  activation until compatibility is proven.
+- Replacement-head recovery requires exact full-set replica agreement and restores
+  the complete private state, journals, checkpoints, pending action, rollback
+  rights, and head-authority metadata before activation.
 - Mother and guard mutation APIs must not be exposed through public Traefik routes.
 - Remote operator access to local-only Mother APIs must use a Coolify/Allfather
   mediated call-runner or another explicitly trusted bootstrap transport.
-- A call-runner is disposable transport. Killing it must not corrupt Mother
+- A call-runner is reusable transport and never operation authority. Killing,
+  restarting, quarantining, or explicitly replacing it must not corrupt Mother
   state or be required to roll back a distributed node operation.
+- A crashed, timed-out, or ambiguous runner is retained for inspection and is
+  not automatically deleted; the same host runner is reused after reconciliation.
 
 ## Minimum implementation sequence
 
@@ -4920,17 +5470,22 @@ Mother should be implemented in this order:
 
 2. Mother control API shell
    - mounts `/runtime/state/mother/`;
-   - reports version, capabilities, state root, active operations, checkpoints,
-     and rollback stacks;
+   - reports version, explicit readable/writable schemas, executable capabilities,
+     state root, active operations, checkpoints, and rollback stacks;
    - treats the container and mounted API implementation as replaceable;
-   - refuses mutating actions if the state schema is unknown.
+   - freezes action compatibility requirements and refuses authoritative mutation
+     when any required schema or capability is unknown or unsupported.
 
 3. Coolify-mediated local call-runner transport
    - keeps Mother and guard APIs local/private only;
-   - prefers one-shot temporary call-runner services for remote operator calls;
-   - accepts a persistent private call-runner only as disposable transport;
-   - makes manual runner kill/restart/delete safe because authoritative state
-     remains under `/runtime/state/mother/`;
+   - creates at most one ordinary stable reusable runner service per Coolify host;
+   - limits each runner to one active request by default;
+   - reuses the same service after successful requests and reconciled crashes;
+   - never automatically deletes a crashed, timed-out, or ambiguous runner;
+   - makes manual runner kill/restart/quarantine/delete safe because authoritative
+     request and operation state remains under `/runtime/state/mother/`;
+   - creates a replacement only after explicit quarantine or removal of the
+     existing host runner;
    - uses structured local-call envelopes instead of a general remote shell.
 
 4. `mother_diagnose.py` and `mother_probe_topology.py`
@@ -4967,8 +5522,8 @@ Mother should be implemented in this order:
    - resolves the current operation automatically;
    - restores an unresolved provisional frame before promoted layers;
    - supports all, count, and through for a contiguous top-of-stack range;
-   - uses the operation record, participant frames, and rollback stack as the
-     rollback brain;
+   - uses the action/rollback journals and referenced participant receipts as
+     authority; the rollback stack is a replayed operational projection;
    - available until finalize;
    - releases scopes only after full rollback verification and
      current-operation pointer cleanup.
@@ -5017,6 +5572,20 @@ Mother should be implemented in this order:
 15. `mother_restore_service.py`
    - explicit service repair only;
    - no QBFT membership mutation.
+
+16. Schema and capability registry
+   - typed schema identifiers on every durable and wire object;
+   - explicit read, write, verifier, restore, and controller capabilities;
+   - frozen per-action compatibility requirements;
+   - fail-closed preflight and explicit journaled migration only.
+
+17. `mother_recover_head.py`
+   - discovers the exact expected replica set from a recovery descriptor;
+   - requires unanimous compatible replica state;
+   - restores the complete local state root and private recovery bundle atomically;
+   - replays journals and rebuilds all projections;
+   - verifies live guard truth without silently changing recovered history;
+   - activates a new replicated head epoch only after full-set acknowledgement.
 
 
 ## Current operating lesson
