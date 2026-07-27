@@ -592,9 +592,10 @@
           "sprint": "shift",
           "fire": "click-space-or-f",
           "restart": "r",
-          "interact": "mouse-over-console-e",
+          "interact": "mouse-over-console-e-and-ship-interactions",
           "pilot": "console-hover-e-flies-to-mother-ship-docking-cutscene-then-shuttle-bay-walk",
-          "postDocking": "first-person-shuttle-bay-control"
+          "postDocking": "first-person-shuttle-bay-control",
+          "shipInterior": "post-docking-walkable-mother-ship-decks"
         },
         "movementBounds": {
           "minX": 1.1,
@@ -633,7 +634,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Mouse over console + E pilot \u2022 W/S throttle flies to Mother Ship \u2022 docking triggers shuttle-bay cutscene \u2022 Click/Space/F fire outside pilot",
+          "controlsHint": "Mouse over console + E pilot \u2022 W/S throttle flies to Mother Ship \u2022 after docking use W/A/S/D to explore ship decks \u2022 E operates ship doors and terminals",
           "systems": {
             "shuttleBayTwiddle": {
               "enabled": true,
@@ -1093,24 +1094,42 @@
               "security.checkpoint": "Security Checkpoint",
               "corridor.main": "Main Corridor Hub",
               "engineering.access": "Engineering Access",
-              "medbay.stub": "Medbay Door",
-              "science.ops.stub": "Science/Ops Door",
-              "bridge.locked": "Bridge Access"
+              "medbay.stub": "Medbay Triage",
+              "science.ops.stub": "Science/Ops Lab",
+              "bridge.locked": "Bridge Command Door"
             },
             "objectives": {
               "objective.bay-ops": {
-                "label": "Find Bay Operations and unlock the inner door.",
+                "label": "Use the starboard interior access and bring Bay Operations online.",
                 "location": "bay.shuttle"
               },
               "objective.enter-corridor": {
                 "label": "Enter the main corridor.",
                 "location": "bay.ops"
+              },
+              "objective.restore-power": {
+                "label": "Reach Engineering Access and restore main power.",
+                "location": "corridor.main"
+              },
+              "objective.survey-departments": {
+                "label": "Survey medbay and science while the bridge unlocks.",
+                "location": "engineering.access"
+              },
+              "objective.bridge-access": {
+                "label": "Return to the bridge command door.",
+                "location": "corridor.main"
               }
             },
             "doors": {
+              "door.bay-access": {
+                "label": "Starboard Interior Access",
+                "from": "bay.shuttle",
+                "to": "bay.ops",
+                "state": "open"
+              },
               "door.bay-inner": {
                 "label": "Inner Shuttle Bay Door",
-                "from": "bay.shuttle",
+                "from": "bay.ops",
                 "to": "security.checkpoint",
                 "state": "locked"
               },
@@ -1130,13 +1149,13 @@
                 "label": "Medbay Door",
                 "from": "corridor.main",
                 "to": "medbay.stub",
-                "state": "locked"
+                "state": "closed"
               },
               "door.science": {
                 "label": "Science/Ops Door",
                 "from": "corridor.main",
                 "to": "science.ops.stub",
-                "state": "locked"
+                "state": "closed"
               },
               "door.bridge": {
                 "label": "Bridge Command Door",
@@ -1149,6 +1168,11 @@
               "terminal.bay-ops": {
                 "label": "Bay Operations Terminal",
                 "location": "bay.ops",
+                "state": "offline"
+              },
+              "terminal.engineering-power": {
+                "label": "Engineering Power Console",
+                "location": "engineering.access",
                 "state": "offline"
               }
             },
