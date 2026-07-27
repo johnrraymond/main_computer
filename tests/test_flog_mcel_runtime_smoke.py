@@ -117,6 +117,76 @@ def passing_widget_payload(app_id: str = "calculator") -> dict:
 
 
 
+def passing_app_truth(app_id: str = "calculator") -> dict:
+    return {
+        "schema": "mcel-app-truth-snapshot-v1",
+        "contractVersion": "mcel.app-truth-gate.v1",
+        "appId": app_id,
+        "generatedAt": "2026-07-27T11:00:00.000Z",
+        "overallStatus": "runtime-proven",
+        "requirements": {
+            "present": True,
+            "schemaValid": True,
+            "contractComplete": True,
+            "acceptanceContractCount": 1,
+        },
+        "adapter": {
+            "registered": True,
+            "runtimeCoreReady": True,
+            "fullApplicationSemanticReady": False,
+        },
+        "surface": {
+            "registered": True,
+            "conformanceRequired": True,
+        },
+        "evidence": {
+            "runtime": {
+                "present": True,
+                "fresh": True,
+                "diagnosisCompleted": True,
+                "policyPassed": True,
+            },
+            "acceptance": {
+                "present": False,
+                "passed": False,
+            },
+        },
+        "claims": {
+            "specified": True,
+            "implementationPresent": True,
+            "partiallyImplemented": True,
+            "runtimeSurfaceProven": True,
+            "acceptanceProven": False,
+            "semanticRuntimeProven": False,
+            "verificationComplete": False,
+        },
+        "findings": [
+            {
+                "code": "acceptance-test-missing",
+                "severity": "warning",
+                "blocking": False,
+                "message": "Acceptance evidence is missing.",
+                "detail": {"appId": app_id},
+            }
+        ],
+        "findingCodes": ["acceptance-test-missing"],
+    }
+
+
+def passing_app_truth_snapshot(app_id: str = "calculator") -> dict:
+    app_truth = passing_app_truth(app_id)
+    return {
+        "schema": "mcel-app-truth-snapshot-v1",
+        "contractVersion": "mcel.app-truth-gate.v1",
+        "generatedAt": "2026-07-27T11:00:00.000Z",
+        "appCount": 1,
+        "appIds": [app_id],
+        "statusCounts": {"runtime-proven": 1},
+        "findingCounts": {"acceptance-test-missing": 1},
+        "apps": [app_truth],
+    }
+
+
 def test_parse_viewport_defaults_to_desktop_baseline(flog):
     assert flog.parse_viewport("") == {"width": 1920, "height": 1200}
     assert flog.parse_viewport("desktop") == {"width": 1920, "height": 1200}
@@ -456,6 +526,7 @@ def test_diagnostic_event_from_trial_uses_shared_event_schema(flog):
             "primarySurface": {"usable": True},
             "appSurfaceConformance": passing_app_surface_conformance("calculator"),
         },
+        "appTruth": passing_app_truth("calculator"),
     }
 
     event = flog.diagnostic_event_from_trial(trial)
@@ -469,6 +540,8 @@ def test_diagnostic_event_from_trial_uses_shared_event_schema(flog):
     assert event["primarySurface"]["usable"] is True
     assert event["appSurfaceConformance"]["status"] == "pass"
     assert event["appSurfacePolicyScope"]["status"] == "pass"
+    assert event["appTruth"]["overallStatus"] == "runtime-proven"
+    assert event["appTruth"]["claims"]["semanticRuntimeProven"] is False
 
 
 def test_report_summary_and_markdown(flog):
@@ -612,3 +685,104 @@ def test_report_results_surface_failed_visual_evidence(flog):
     assert "Failed scenario evidence" in markdown
     assert "visual-integrity-violation" in markdown
     assert "details.mcel-lab-work-context" in markdown
+
+
+def test_app_truth_runtime_evidence_from_trial_preserves_timestamp_and_policy(flog):
+    scenario = flog.scenario_for_app("calculator")
+    trial = {
+        "scenarioId": scenario.id,
+        "app": scenario.app,
+        "route": scenario.route,
+        "finishedAt": "2026-07-27T11:00:00+00:00",
+        "classification": {
+            "status": "pass",
+            "counts": {"errors": 0, "warnings": 0, "infos": 18},
+            "primarySurface": {"usable": True},
+            "appSurfaceConformance": passing_app_surface_conformance("calculator"),
+            "appSurfacePolicyScope": {
+                "status": "pass",
+                "failedLayerIds": [],
+                "unavailableLayerIds": [],
+            },
+            "requiredLayerIds": [
+                "runtime-ownership",
+                "runtime-visual-fit",
+                "diagnostic-no-throw",
+            ],
+            "failures": [],
+            "warnings": [],
+        },
+    }
+
+    evidence = flog.app_truth_runtime_evidence_from_trial(trial)
+
+    assert evidence["appId"] == "calculator"
+    assert evidence["app"] == "calculator"
+    assert evidence["finishedAt"] == "2026-07-27T11:00:00+00:00"
+    assert evidence["generatedAt"] == "2026-07-27T11:00:00+00:00"
+    assert evidence["appSurfacePolicyScope"]["status"] == "pass"
+
+
+def test_report_attaches_gate_truth_without_changing_surface_verdict(flog):
+    scenario = flog.scenario_for_app("calculator")
+    app_truth = passing_app_truth("calculator")
+    truth_snapshot = passing_app_truth_snapshot("calculator")
+    trial = {
+        "scenarioId": scenario.id,
+        "app": scenario.app,
+        "route": scenario.route,
+        "finishedAt": "2026-07-27T11:00:00+00:00",
+        "appSurfacePolicy": scenario.to_dict()["appSurfacePolicy"],
+        "classification": {
+            "status": "pass",
+            "counts": {"errors": 0, "warnings": 0, "infos": 18},
+            "primarySurface": {"usable": True},
+            "appSurfaceConformance": passing_app_surface_conformance("calculator"),
+            "appSurfacePolicyScope": {"status": "pass"},
+            "requiredLayerIds": list(scenario.required_layer_ids),
+            "failures": [],
+            "warnings": [],
+        },
+        "appTruthAvailable": True,
+        "appTruth": app_truth,
+        "appTruthSnapshot": truth_snapshot,
+    }
+
+    report = flog.build_report(
+        repo=REPO_ROOT,
+        base_url="http://127.0.0.1:8765",
+        scenarios=[scenario],
+        trials=[trial],
+        viewport={"width": 1920, "height": 1200},
+    )
+
+    assert report["summary"]["status"] == "pass"
+    assert report["summary"]["truthStatusCounts"] == {"runtime-proven": 1}
+    assert report["summary"]["runtimeSurfaceProvenCount"] == 1
+    assert report["summary"]["semanticRuntimeProvenCount"] == 0
+    assert report["summary"]["truthFindingCounts"] == {"acceptance-test-missing": 1}
+    assert report["results"][0]["appTruth"]["overallStatus"] == "runtime-proven"
+    assert report["appTruthSnapshot"] == truth_snapshot
+    assert report["source"]["truthSource"] == (
+        "window.McelAppTruthGate evaluateAppTruth/buildTruthSnapshot"
+    )
+
+    markdown = flog.render_markdown(report)
+    assert "## App truth" in markdown
+    assert "| calculator | runtime-proven | yes | no | no | acceptance-test-missing |" in markdown
+    assert "Truth findings do not rewrite the FLOG surface verdict" in markdown
+    assert "truth gate keeps requirements, adapter, acceptance, and semantic readiness" in markdown
+
+
+def test_latest_app_truth_snapshot_uses_last_gate_built_snapshot(flog):
+    first = passing_app_truth_snapshot("calculator")
+    second = passing_app_truth_snapshot("code-editor")
+    trials = [
+        {"appTruthSnapshot": first},
+        {"appTruthSnapshot": {}},
+        {"appTruthSnapshot": second},
+    ]
+
+    assert flog.latest_app_truth_snapshot(trials) == second
+    assert flog.latest_app_truth_snapshot([{"appTruthSnapshot": {}}]) == {}
+

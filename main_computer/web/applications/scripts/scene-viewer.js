@@ -2491,7 +2491,8 @@
           "engineering.access": "Engineering Access",
           "medbay.stub": "Medbay Triage",
           "science.ops.stub": "Science/Ops Lab",
-          "bridge.locked": "Bridge Command Door"
+          "bridge.access": "Bridge Access",
+          "bridge.deck": "Bridge Deck"
         };
         const defaultObjectives = {
           "objective.bay-ops": {
@@ -2507,12 +2508,16 @@
             location: "corridor.main"
           },
           "objective.survey-departments": {
-            label: "Survey medbay and science while the bridge unlocks.",
+            label: "Survey medbay and science, then proceed to the bridge.",
             location: "engineering.access"
           },
           "objective.bridge-access": {
-            label: "Return to the bridge command door.",
+            label: "Proceed to the bridge and identify the enemy ship on the viewscreen.",
             location: "corridor.main"
+          },
+          "objective.bridge-screen": {
+            label: "Use the bridge viewscreen to track the enemy ship.",
+            location: "bridge.deck"
           }
         };
         const defaultDoors = {
@@ -2526,37 +2531,37 @@
             label: "Inner Shuttle Bay Door",
             from: "bay.ops",
             to: "security.checkpoint",
-            state: "locked"
+            state: "open"
           },
           "door.security-hub": {
             label: "Security Checkpoint Door",
             from: "security.checkpoint",
             to: "corridor.main",
-            state: "closed"
+            state: "open"
           },
           "door.engineering-access": {
             label: "Engineering Access Door",
             from: "corridor.main",
             to: "engineering.access",
-            state: "closed"
+            state: "open"
           },
           "door.medbay": {
             label: "Medbay Door",
             from: "corridor.main",
             to: "medbay.stub",
-            state: "closed"
+            state: "open"
           },
           "door.science": {
             label: "Science/Ops Door",
             from: "corridor.main",
             to: "science.ops.stub",
-            state: "closed"
+            state: "open"
           },
           "door.bridge": {
             label: "Bridge Command Door",
             from: "corridor.main",
-            to: "bridge.locked",
-            state: "locked"
+            to: "bridge.deck",
+            state: "open"
           }
         };
         const defaultTerminals = {
@@ -2569,6 +2574,11 @@
             label: "Engineering Power Console",
             location: "engineering.access",
             state: "offline"
+          },
+          "terminal.bridge-viewscreen": {
+            label: "Bridge Viewscreen",
+            location: "bridge.deck",
+            state: "online"
           }
         };
         const locations = stringMap(interior.locations, defaultLocations);
@@ -3107,13 +3117,18 @@
 
         createShipState() {
           const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
+          const doors = JSON.parse(JSON.stringify(config.doors || {}));
+          Object.values(doors).forEach((door) => {
+            if (!door || typeof door !== "object") return;
+            if (String(door.state || "").toLowerCase() === "locked") door.state = "open";
+          });
           return {
             enabled: Boolean(config.enabled),
             location: config.initialLocation,
             power: config.power,
             security: config.security,
             objectiveId: config.initialObjective,
-            doors: JSON.parse(JSON.stringify(config.doors || {})),
+            doors,
             terminals: JSON.parse(JSON.stringify(config.terminals || {})),
             flags: JSON.parse(JSON.stringify(config.flags || {})),
             lastInteractionStatus: ""
@@ -3246,7 +3261,8 @@
             {id: "engineering.access", minX: 2.0, maxX: 9.8, minZ: -24.25, maxZ: -17.15},
             {id: "medbay.stub", minX: -9.8, maxX: -2.0, minZ: -24.25, maxZ: -17.15},
             {id: "science.ops.stub", minX: -9.8, maxX: -2.0, minZ: -31.5, maxZ: -24.0},
-            {id: "bridge.locked", minX: -2.9, maxX: 2.9, minZ: -31.5, maxZ: -25.45}
+            {id: "bridge.access", minX: -2.9, maxX: 2.9, minZ: -32.25, maxZ: -25.45},
+            {id: "bridge.deck", minX: -4.65, maxX: 4.65, minZ: -39.35, maxZ: -31.25}
           ];
         }
 
@@ -3257,7 +3273,9 @@
         }
 
         shipDoorState(doorId) {
-          return String(this.shipState?.doors?.[doorId]?.state || this.interiorConfig?.doors?.[doorId]?.state || "closed");
+          const rawState = this.shipState?.doors?.[doorId]?.state || this.interiorConfig?.doors?.[doorId]?.state || "open";
+          const state = String(rawState || "open").toLowerCase();
+          return state === "locked" ? "open" : state;
         }
 
         shipDoorIsOpen(doorId) {
@@ -3265,14 +3283,8 @@
         }
 
         shipDoorAllowsPosition(x, z) {
-          if (!this.isShuttleBaySceneActive()) return true;
-          if (z < -4.72 && z > -8.82 && !this.shipDoorIsOpen("door.bay-access")) return false;
-          if (z < -8.82 && !this.shipDoorIsOpen("door.bay-inner")) return false;
-          if (z < -13.36 && !this.shipDoorIsOpen("door.security-hub")) return false;
-          if (x > 2.04 && z < -17.16 && z > -24.26 && !this.shipDoorIsOpen("door.engineering-access")) return false;
-          if (x < -2.04 && z < -17.16 && z > -24.26 && !this.shipDoorIsOpen("door.medbay")) return false;
-          if (x < -2.04 && z < -24.06 && !this.shipDoorIsOpen("door.science")) return false;
-          if (Math.abs(x) < 2.95 && z < -25.46 && !this.shipDoorIsOpen("door.bridge")) return false;
+          // Door state is informational only: the mother-ship route no longer uses locked-door gating.
+          // Geometry bounds still keep the player inside modeled rooms and corridors.
           return true;
         }
 
@@ -3283,7 +3295,8 @@
           if (x > 1.95 && z > -24.35 && z < -17.05) return "engineering.access";
           if (x < -1.95 && z > -24.35 && z < -17.05) return "medbay.stub";
           if (x < -1.95 && z <= -24.0) return "science.ops.stub";
-          if (Math.abs(x) <= 3.05 && z <= -25.35) return "bridge.locked";
+          if (Math.abs(x) <= 4.75 && z <= -31.35) return "bridge.deck";
+          if (Math.abs(x) <= 3.05 && z <= -25.35) return "bridge.access";
           return "corridor.main";
         }
 
@@ -3302,7 +3315,8 @@
           if (!this.shipState) this.shipState = this.createShipState();
           const door = this.shipState.doors?.[doorId];
           if (!door) return false;
-          door.state = String(state || "closed");
+          const nextState = String(state || "open").toLowerCase();
+          door.state = nextState === "locked" ? "open" : nextState;
           this.emitShipState(true);
           return true;
         }
@@ -3326,29 +3340,26 @@
           if (!this.isShuttleBaySceneActive() || !this.isShuttleBayPlayerControlActive()) return false;
           const nextLocation = this.shipLocationForPosition(this.camera[0], this.camera[2]);
           const changed = this.setShipLocation(nextLocation, force);
-          if (nextLocation === "corridor.main" && this.shipDoorIsOpen("door.security-hub")) {
+          if (nextLocation === "corridor.main") {
             this.setShipObjective("objective.restore-power");
-          } else if (
-            (nextLocation === "medbay.stub" || nextLocation === "science.ops.stub")
-            && this.shipDoorIsOpen("door.engineering-access")
-          ) {
+          } else if (nextLocation === "medbay.stub" || nextLocation === "science.ops.stub") {
             this.setShipObjective("objective.survey-departments");
+          } else if (nextLocation === "bridge.access") {
+            this.setShipObjective("objective.bridge-access");
+          } else if (nextLocation === "bridge.deck") {
+            this.setShipObjective("objective.bridge-screen");
           }
           return changed;
         }
 
         enterBayOpsAccess() {
           if (!this.isShuttleBayPlayerControlActive()) return false;
-          if (!this.shipDoorIsOpen("door.bay-access")) {
-            this.setShipInteractionStatus("Starboard interior access is sealed.");
-            return false;
-          }
           this.clearMovementKeys();
           this.camera = [2.55, 0.9, -5.78];
           this.setLook(28, -3);
           this.setShipLocation("bay.ops", true);
           this.setShipObjective("objective.bay-ops", true);
-          this.setShipInteractionStatus("Entered the lit Bay Operations vestibule. Use the Bay Operations Terminal to open the inner door.");
+          this.setShipInteractionStatus("Entered the lit Bay Operations vestibule. The route ahead is open.");
           if (typeof this.onCameraMoved === "function") this.onCameraMoved(this.camera.slice());
           this.emitShipState(true);
           return true;
@@ -3427,6 +3438,14 @@
               location: "corridor.main",
               position: [0.0, -25.72],
               range: 1.95
+            },
+            {
+              id: "terminal.bridge-viewscreen",
+              kind: "terminal",
+              label: "Bridge Viewscreen",
+              location: "bridge.deck",
+              position: [0.0, -37.15],
+              range: 2.45
             }
           ];
         }
@@ -3453,8 +3472,7 @@
           if (!target) return "";
           if (target.kind === "access") return `Press E to enter through ${target.label}.`;
           if (target.kind === "terminal") return `Press E to use ${target.label}.`;
-          const state = this.shipDoorState(target.id).toUpperCase();
-          return `Press E to operate ${target.label} (${state}).`;
+          return `Press E to inspect ${target.label}.`;
         }
 
         interactWithShip() {
@@ -3470,7 +3488,7 @@
               this.setShipDoorState("door.bay-inner", "open");
               this.setShipObjective("objective.enter-corridor");
               if (this.shipState?.flags) this.shipState.flags.bayOpsTerminalUsed = true;
-              this.setShipInteractionStatus("Bay Operations online. Inner shuttle bay door opened.");
+              this.setShipInteractionStatus("Bay Operations online. Route to Security Checkpoint is available.");
               return true;
             }
             if (target.id === "terminal.engineering-power") {
@@ -3480,43 +3498,24 @@
               this.setShipDoorState("door.bridge", "open");
               this.setShipObjective("objective.bridge-access");
               if (this.shipState?.flags) this.shipState.flags.engineeringPowerRestored = true;
-              this.setShipInteractionStatus("Engineering restored main power. Bridge command door unlocked.");
+              this.setShipInteractionStatus("Engineering restored main power. Bridge route confirmed open.");
+              return true;
+            }
+            if (target.id === "terminal.bridge-viewscreen") {
+              this.setShipTerminalState("terminal.bridge-viewscreen", "online");
+              this.setShipObjective("objective.bridge-screen");
+              if (this.shipState?.flags) this.shipState.flags.enemyShipOnBridgeViewscreen = true;
+              this.setShipInteractionStatus("Bridge viewscreen has the enemy ship on tactical display.");
               return true;
             }
           }
 
           if (target.kind === "door") {
-            const state = this.shipDoorState(target.id);
-            if (target.id === "door.bay-inner" && state !== "open") {
-              const bayOpsOnline = this.shipState?.terminals?.["terminal.bay-ops"]?.state === "online";
-              if (bayOpsOnline) {
-                this.setShipDoorState(target.id, "open");
-                this.setShipObjective("objective.enter-corridor");
-                this.setShipInteractionStatus("Inner shuttle bay door opened.");
-              } else {
-                this.setShipInteractionStatus("Inner shuttle bay door is locked. Use Bay Operations first.");
-              }
-              return true;
-            }
-            if (target.id === "door.bridge" && state !== "open") {
-              const engineeringOnline = this.shipState?.terminals?.["terminal.engineering-power"]?.state === "online";
-              if (engineeringOnline) {
-                this.setShipDoorState(target.id, "open");
-                this.setShipObjective("objective.bridge-access");
-                this.setShipInteractionStatus("Bridge command door opened.");
-              } else {
-                this.setShipInteractionStatus("Bridge command door is locked until Engineering restores power.");
-              }
-              return true;
-            }
-            if (state !== "open") {
-              this.setShipDoorState(target.id, "open");
-              if (target.id === "door.security-hub") this.setShipObjective("objective.restore-power");
-              if (target.id === "door.engineering-access") this.setShipObjective("objective.survey-departments");
-              this.setShipInteractionStatus(`${target.label} opened.`);
-              return true;
-            }
-            this.setShipInteractionStatus(`${target.label} is already open.`);
+            if (this.shipDoorState(target.id) !== "open") this.setShipDoorState(target.id, "open");
+            if (target.id === "door.bay-inner" || target.id === "door.security-hub") this.setShipObjective("objective.restore-power");
+            if (target.id === "door.engineering-access" || target.id === "door.medbay" || target.id === "door.science") this.setShipObjective("objective.survey-departments");
+            if (target.id === "door.bridge") this.setShipObjective("objective.bridge-screen");
+            this.setShipInteractionStatus(`${target.label} route is open. No door lock is required.`);
             return true;
           }
           return false;
@@ -4013,13 +4012,14 @@
           const amber = builder.color("#fbbf24", true);
           const red = builder.color("#ef4444", true);
           const blue = builder.color("#38bdf8", true);
+          const screenGlow = builder.color("#0ea5e9", true);
           const med = builder.color("#fca5a5", true);
           const sci = builder.color("#a78bfa", true);
           const terminal = builder.color("#0f766e");
           const doorMaterial = builder.color("#475569");
           const openDoor = builder.color("#22c55e", true);
           const closedDoor = builder.color("#f59e0b", true);
-          const lockedDoor = builder.color("#ef4444", true);
+          const attentionDoor = builder.color("#f59e0b", true);
           const pulse = 0.55 + 0.45 * Math.sin((nowMs || 0) / 320);
 
           const roomShell = (minX, maxX, minZ, maxZ, accent = light) => {
@@ -4034,7 +4034,7 @@
           const doorStateColor = (doorId) => {
             const state = this.shipDoorState(doorId);
             if (state === "open") return openDoor;
-            if (state === "locked") return lockedDoor;
+            if (state === "closed") return attentionDoor;
             return closedDoor;
           };
           const doorPanel = (doorId, centerX, centerZ, width, vertical = false) => {
@@ -4184,15 +4184,41 @@
           builder.beam([-8.45, 0.62, -28.95], [-3.55, 0.62, -28.95], 0.025, sci);
           mapMarker(-6.28, -26.25, sci);
 
-          // Bridge command door and forward command vestibule.
-          roomShell(-2.95, 2.95, -31.5, -25.35, amber);
-          wallX(-2.95, -31.5, -25.35);
-          wallX(2.95, -31.5, -25.35);
-          wallZ(-31.5, -2.95, 2.95);
+          // Bridge command door, command vestibule, and bridge deck.
+          roomShell(-2.95, 2.95, -32.25, -25.35, amber);
+          wallX(-2.95, -32.25, -25.35);
+          wallX(2.95, -32.25, -25.35);
+          // Leave the forward bridge throat open so the vestibule visibly connects to the bridge deck.
+          wallZ(-32.25, -2.95, -1.12);
+          wallZ(-32.25, 1.12, 2.95);
           doorPanel("door.bridge", 0, -25.72, 2.5, false);
           builder.consoleWedge(0, -29.25, 1.8, 0.9, -1.08, -0.32, 0.26, builder.color("#1e3a8a"));
-          builder.beam([-1.2, 0.62, -29.68], [1.2, 0.62, -29.68], 0.028, this.shipDoorIsOpen("door.bridge") ? green : red);
-          mapMarker(0, -25.72, this.shipDoorIsOpen("door.bridge") ? green : red);
+          builder.beam([-1.2, 0.62, -29.68], [1.2, 0.62, -29.68], 0.028, green);
+          builder.box([-0.78, -1.052, -31.98], [0.78, -0.93, -31.65], green);
+          builder.beam([-1.04, 0.1, -31.88], [1.04, 0.1, -31.88], 0.024, light);
+          mapMarker(0, -25.72, green);
+
+          // Bridge deck with forward viewscreen showing the enemy ship.
+          roomShell(-4.8, 4.8, -39.5, -31.25, screenGlow);
+          wallX(-4.8, -39.5, -31.25);
+          wallX(4.8, -39.5, -31.25);
+          wallZ(-31.25, -4.8, -1.12);
+          wallZ(-31.25, 1.12, 4.8);
+          wallZ(-39.5, -4.8, 4.8);
+          builder.beam([-1.08, 0.35, -31.48], [1.08, 0.35, -31.48], 0.026, green);
+          builder.box([-2.35, -1.06, -34.15], [-1.22, -0.5, -33.3], builder.color("#1e3a8a"));
+          builder.box([1.22, -1.06, -34.15], [2.35, -0.5, -33.3], builder.color("#1e3a8a"));
+          builder.consoleWedge(-2.85, -36.7, 1.25, 0.82, -1.08, -0.32, 0.22, builder.color("#0f766e"));
+          builder.consoleWedge(2.85, -36.7, 1.25, 0.82, -1.08, -0.32, 0.22, builder.color("#0f766e"));
+          builder.consoleWedge(0, -35.1, 1.65, 0.9, -1.08, -0.32, 0.24, builder.color("#1e3a8a"));
+          builder.ellipsoid([0, -0.55, -36.22], [0.42, 0.38, 0.42], 12, 6, builder.color("#475569"));
+          builder.box([-0.36, -1.05, -35.9], [0.36, -0.58, -35.48], builder.color("#64748b"));
+          builder.beam([-3.95, -0.78, -33.2], [-1.1, -0.78, -37.2], 0.024, blue);
+          builder.beam([3.95, -0.78, -33.2], [1.1, -0.78, -37.2], 0.024, blue);
+          builder.beam([-3.7, 2.3, -32.0], [3.7, 2.3, -32.0], 0.018, light);
+          builder.beam([-3.7, 2.3, -38.9], [3.7, 2.3, -38.9], 0.018, light);
+          this.appendBridgeViewscreenEnemy(builder, nowMs);
+          mapMarker(0, -37.15, red);
         }
 
         appendPilotStationHighlights(builder, nowMs) {
@@ -4249,6 +4275,45 @@
           const right = shuttle3dNormalizeVector(shuttle3dCross(forward, [0, 1, 0]));
           const up = shuttle3dNormalizeVector(shuttle3dCross(right, forward));
           return {forward, right, up};
+        }
+
+        appendBridgeViewscreenEnemy(builder, nowMs = 0) {
+          const screenGlass = builder.color("#06111f");
+          const screenGlow = builder.color("#38bdf8", true);
+          const tacticalGrid = builder.color("#0ea5e9", true);
+          const hostileHull = builder.color("#365314");
+          const hostileDark = builder.color("#111827");
+          const hostileAlert = builder.color("#ef4444", true);
+          const signal = builder.color("#fbbf24", true);
+          const scanPulse = 0.5 + 0.5 * Math.sin((nowMs || 0) / 460);
+          const z = -39.12;
+
+          // Bridge viewscreen surface mounted on the forward bulkhead.
+          builder.box([-3.45, 0.18, z - 0.04], [3.45, 2.28, z + 0.04], screenGlass);
+          builder.beam([-3.3, 0.34, z + 0.08], [3.3, 0.34, z + 0.08], 0.022, tacticalGrid);
+          builder.beam([-3.3, 2.1, z + 0.08], [3.3, 2.1, z + 0.08], 0.022, tacticalGrid);
+          builder.beam([-3.24, 0.42, z + 0.08], [-3.24, 2.0, z + 0.08], 0.018, screenGlow);
+          builder.beam([3.24, 0.42, z + 0.08], [3.24, 2.0, z + 0.08], 0.018, screenGlow);
+          [-2.1, 0, 2.1].forEach((x) => {
+            builder.beam([x, 0.42, z + 0.07], [x, 2.02, z + 0.07], 0.006, tacticalGrid);
+          });
+          [0.82, 1.28, 1.74].forEach((y) => {
+            builder.beam([-3.1, y, z + 0.07], [3.1, y, z + 0.07], 0.006, tacticalGrid);
+          });
+
+          // Enemy raider tactical image on the viewscreen.
+          builder.ellipsoid([0, 1.28, z + 0.16], [0.2, 0.42, 0.05], 14, 6, hostileDark);
+          builder.ellipsoid([-0.48, 1.28, z + 0.17], [0.5, 0.16, 0.05], 14, 5, hostileHull);
+          builder.ellipsoid([0.48, 1.28, z + 0.17], [0.5, 0.16, 0.05], 14, 5, hostileHull);
+          builder.box([-0.12, 1.12, z + 0.23], [0.12, 1.44, z + 0.29], hostileAlert);
+          builder.box([-0.88, 1.2, z + 0.21], [-0.58, 1.36, z + 0.28], hostileAlert);
+          builder.box([0.58, 1.2, z + 0.21], [0.88, 1.36, z + 0.28], hostileAlert);
+          builder.beam([-1.46, 0.68, z + 0.12], [1.46, 1.88, z + 0.12], 0.014 + scanPulse * 0.008, signal);
+          builder.beam([-1.46, 1.88, z + 0.12], [1.46, 0.68, z + 0.12], 0.014 + scanPulse * 0.008, signal);
+          builder.beam([-2.75, 0.6, z + 0.13], [-1.38, 0.6, z + 0.13], 0.016, hostileAlert);
+          builder.beam([1.38, 0.6, z + 0.13], [2.75, 0.6, z + 0.13], 0.016, hostileAlert);
+          builder.beam([-2.75, 1.96, z + 0.13], [-1.38, 1.96, z + 0.13], 0.016, hostileAlert);
+          builder.beam([1.38, 1.96, z + 0.13], [2.75, 1.96, z + 0.13], 0.016, hostileAlert);
         }
 
         appendMotherShip(builder, center, scale = 1, docked = false) {

@@ -855,11 +855,33 @@ def trial_result_summary(trial: dict[str, Any], *, evidence_limit: int = 5) -> d
         "appSurfaceConformance": classification.get("appSurfaceConformance") or {},
         "appSurfacePolicyScope": classification.get("appSurfacePolicyScope") or {},
         "requiredLayerIds": classification.get("requiredLayerIds") or [],
+        "appTruth": trial.get("appTruth") if isinstance(trial.get("appTruth"), dict) else {},
+        "appTruthAvailable": trial.get("appTruthAvailable") is True,
         "issueEvidence": issues[:evidence_limit],
         "visualIntegrityViolations": (measurements.get("visualIntegrityViolations") or [])[:evidence_limit],
         "layoutCollisions": (measurements.get("layoutCollisions") or [])[:evidence_limit],
         "contentFitViolations": (measurements.get("contentFitViolations") or [])[:evidence_limit],
     }
+
+
+def app_truth_runtime_evidence_from_trial(trial: dict[str, Any]) -> dict[str, Any]:
+    """Return the compact runtime-evidence shape consumed by McelAppTruthGate."""
+
+    result = trial_result_summary(trial)
+    result["appId"] = result.get("app") or ""
+    result["finishedAt"] = trial.get("finishedAt") or ""
+    result["generatedAt"] = trial.get("finishedAt") or trial.get("startedAt") or ""
+    return result
+
+
+def latest_app_truth_snapshot(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the most complete gate-built snapshot captured during this run."""
+
+    for trial in reversed(trials):
+        snapshot = trial.get("appTruthSnapshot")
+        if isinstance(snapshot, dict) and snapshot.get("schema"):
+            return snapshot
+    return {}
 
 
 def compact_diagnosis(diagnosis: dict[str, Any]) -> dict[str, Any]:
@@ -975,6 +997,7 @@ def diagnostic_event_from_trial(trial: dict[str, Any]) -> dict[str, Any]:
         "primarySurface": classification.get("primarySurface") or evidence.get("primarySurface") or {},
         "appSurfaceConformance": event_conformance,
         "appSurfacePolicyScope": event_policy_scope,
+        "appTruth": trial.get("appTruth") if isinstance(trial.get("appTruth"), dict) else {},
         "measurements": (evidence.get("measurements") or {}),
     }
     return event
@@ -1035,8 +1058,12 @@ def run_browser_scenarios(
                     )
                     if scenario.startup_wait_ms > 0:
                         page.wait_for_timeout(scenario.startup_wait_ms)
+                    prior_truth_evidence = [
+                        app_truth_runtime_evidence_from_trial(evidence_trial)
+                        for evidence_trial in trials
+                    ]
                     result = page.evaluate(
-                        """(appId) => {
+                        """({appId, priorEvidence}) => {
                           const widgetApi = window.MCELDiagnosticsCounterWidget || null;
                           const raw = window.MCEL.diagnose(appId, {silent: true});
                           let payload = null;
@@ -1048,14 +1075,62 @@ def run_browser_scenarios(
                               payload = priv.compactPayload(status.report, status.counts, status.history);
                             }
                           }
+
+                          const conformance =
+                            payload?.appSurfaceConformance ||
+                            raw?.appSurfaceConformance ||
+                            raw?.summary?.appSurfaceConformance ||
+                            raw?.measurements?.appSurfaceConformance ||
+                            null;
+                          const currentEvidence = {
+                            appId,
+                            status: payload?.verdict || raw?.verdict || conformance?.status || "unknown",
+                            timestamp: payload?.timestamp || new Date().toISOString(),
+                            widgetPayload: payload || null,
+                            diagnosis: raw || {},
+                            appSurfaceConformance: conformance || null
+                          };
+                          const runtimeEvidence = [
+                            ...(Array.isArray(priorEvidence) ? priorEvidence : []),
+                            currentEvidence
+                          ];
+                          const truthGate =
+                            window.McelAppTruthGate ||
+                            window.MCEL?.appTruthGate ||
+                            null;
+                          let appTruth = null;
+                          let appTruthSnapshot = null;
+                          let appTruthError = "";
+                          if (
+                            truthGate &&
+                            typeof truthGate.evaluateAppTruth === "function" &&
+                            typeof truthGate.buildTruthSnapshot === "function"
+                          ) {
+                            try {
+                              appTruth = truthGate.evaluateAppTruth(appId, {runtimeEvidence});
+                              appTruthSnapshot = truthGate.buildTruthSnapshot({runtimeEvidence});
+                            } catch (error) {
+                              appTruthError = String(error?.message || error || "truth-gate evaluation failed");
+                            }
+                          } else {
+                            appTruthError = "McelAppTruthGate is unavailable";
+                          }
+
                           return JSON.parse(JSON.stringify({
                             diagnosis: raw || {},
                             widgetPayload: payload || null,
                             widgetStatusAvailable: Boolean(status),
-                            widgetPayloadAvailable: Boolean(payload)
+                            widgetPayloadAvailable: Boolean(payload),
+                            appTruthAvailable: Boolean(appTruth),
+                            appTruth: appTruth || null,
+                            appTruthSnapshot: appTruthSnapshot || null,
+                            appTruthError
                           }));
                         }""",
-                        scenario.app,
+                        {
+                            "appId": scenario.app,
+                            "priorEvidence": prior_truth_evidence,
+                        },
                     )
                     raw_diagnosis = result.get("diagnosis") if isinstance(result, dict) and isinstance(result.get("diagnosis"), dict) else {}
                     widget_payload = result.get("widgetPayload") if isinstance(result, dict) and isinstance(result.get("widgetPayload"), dict) else {}
@@ -1064,6 +1139,18 @@ def run_browser_scenarios(
                     trial["widgetPayload"] = compact_widget_payload(widget_payload) if widget_payload else {}
                     trial["widgetStatusAvailable"] = bool(result.get("widgetStatusAvailable")) if isinstance(result, dict) else False
                     trial["widgetPayloadAvailable"] = bool(result.get("widgetPayloadAvailable")) if isinstance(result, dict) else False
+                    trial["appTruthAvailable"] = bool(result.get("appTruthAvailable")) if isinstance(result, dict) else False
+                    trial["appTruth"] = (
+                        result.get("appTruth")
+                        if isinstance(result, dict) and isinstance(result.get("appTruth"), dict)
+                        else {}
+                    )
+                    trial["appTruthSnapshot"] = (
+                        result.get("appTruthSnapshot")
+                        if isinstance(result, dict) and isinstance(result.get("appTruthSnapshot"), dict)
+                        else {}
+                    )
+                    trial["appTruthError"] = str(result.get("appTruthError") or "") if isinstance(result, dict) else ""
 
                     classification_source = trial["widgetPayload"] or trial["diagnosis"]
                     trial["classification"] = classify_diagnosis(
@@ -1075,6 +1162,11 @@ def run_browser_scenarios(
                     if not trial["widgetPayloadAvailable"]:
                         trial["classification"].setdefault("warnings", []).append(
                             "diagnostics widget payload was unavailable; classified raw MCEL diagnosis fallback"
+                        )
+                    if not trial["appTruthAvailable"]:
+                        truth_error = trial.get("appTruthError") or "truth-gate result was unavailable"
+                        trial["classification"].setdefault("warnings", []).append(
+                            f"MCEL app truth was not attached: {truth_error}"
                         )
                     if emit_events:
                         event = diagnostic_event_from_trial({**trial, "finishedAt": datetime.now(timezone.utc).isoformat()})
@@ -1113,6 +1205,10 @@ def run_browser_scenarios(
 
 def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
     status_counts: dict[str, int] = {}
+    truth_status_counts: dict[str, int] = {}
+    truth_finding_counts: dict[str, int] = {}
+    runtime_surface_proven = 0
+    semantic_runtime_proven = 0
     apps: dict[str, dict[str, Any]] = {}
     for trial in trials:
         classification = trial.get("classification") or {}
@@ -1125,10 +1221,25 @@ def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
             app_item["failures"] += 1
         app_item["warnings"] += len(classification.get("warnings") or [])
 
+        app_truth = trial.get("appTruth") if isinstance(trial.get("appTruth"), dict) else {}
+        if app_truth:
+            truth_status = str(app_truth.get("overallStatus") or "unknown")
+            truth_status_counts[truth_status] = truth_status_counts.get(truth_status, 0) + 1
+            claims = app_truth.get("claims") if isinstance(app_truth.get("claims"), dict) else {}
+            runtime_surface_proven += 1 if claims.get("runtimeSurfaceProven") is True else 0
+            semantic_runtime_proven += 1 if claims.get("semanticRuntimeProven") is True else 0
+            for code in app_truth.get("findingCodes") or []:
+                code_text = str(code)
+                truth_finding_counts[code_text] = truth_finding_counts.get(code_text, 0) + 1
+
     return {
         "status": "pass" if status_counts.get("fail", 0) == 0 else "fail",
         "scenarioCount": len(trials),
         "statusCounts": dict(sorted(status_counts.items())),
+        "truthStatusCounts": dict(sorted(truth_status_counts.items())),
+        "truthFindingCounts": dict(sorted(truth_finding_counts.items())),
+        "runtimeSurfaceProvenCount": runtime_surface_proven,
+        "semanticRuntimeProvenCount": semantic_runtime_proven,
         "apps": dict(sorted(apps.items())),
     }
 
@@ -1152,12 +1263,17 @@ def build_report(
         "source": {
             "scenarioSource": "mcel-app-surface-registry-conformance-required-apps-with-route-overrides",
             "diagnosisSource": "window.MCELDiagnosticsCounterWidget.refresh with appSurfaceConformance and window.MCEL.diagnose fallback",
+            "truthSource": "window.McelAppTruthGate evaluateAppTruth/buildTruthSnapshot",
             "eventSource": "mcel-diagnostic-event-v1",
         },
         "scenarios": [scenario.to_dict() for scenario in scenarios],
         "summary": summarize_trials(trials),
         "results": [trial_result_summary(trial) for trial in trials],
-        "trials": trials,
+        "appTruthSnapshot": latest_app_truth_snapshot(trials),
+        "trials": [
+            {key: value for key, value in trial.items() if key != "appTruthSnapshot"}
+            for trial in trials
+        ],
     }
 
 
@@ -1209,6 +1325,37 @@ def render_markdown(report: dict[str, Any]) -> str:
             )
         )
 
+    truth_results = [
+        result for result in report.get("results") or []
+        if isinstance(result.get("appTruth"), dict) and result.get("appTruth")
+    ]
+    if truth_results:
+        lines.extend(
+            [
+                "",
+                "## App truth",
+                "",
+                "FLOG runtime status remains the surface-smoke verdict. The truth gate keeps requirements, adapter, acceptance, and semantic readiness as separate claims.",
+                "",
+                "| App | Overall truth | Surface runtime proven | Acceptance proven | Semantic runtime proven | Findings |",
+                "|---|---:|---:|---:|---:|---|",
+            ]
+        )
+        for result in truth_results:
+            app_truth = result.get("appTruth") or {}
+            claims = app_truth.get("claims") if isinstance(app_truth.get("claims"), dict) else {}
+            finding_codes = app_truth.get("findingCodes") or []
+            lines.append(
+                "| {app} | {overall} | {surface} | {acceptance} | {semantic} | {findings} |".format(
+                    app=result.get("app") or app_truth.get("appId") or "",
+                    overall=str(app_truth.get("overallStatus") or "unknown").replace("|", "\\|"),
+                    surface="yes" if claims.get("runtimeSurfaceProven") is True else "no",
+                    acceptance="yes" if claims.get("acceptanceProven") is True else "no",
+                    semantic="yes" if claims.get("semanticRuntimeProven") is True else "no",
+                    findings=", ".join(str(code) for code in finding_codes).replace("|", "\\|") or "none",
+                )
+            )
+
     failed_results = [result for result in report.get("results") or [] if result.get("status") == "fail"]
     if failed_results:
         lines.extend(["", "## Failed scenario evidence", ""])
@@ -1259,7 +1406,8 @@ def render_markdown(report: dict[str, Any]) -> str:
             "- The default viewport is the MCEL desktop baseline (`1920x1200`); use `--viewport WIDTHxHEIGHT` for explicit responsive probes.",
             "- The script uses the diagnostics widget payload (`MCELDiagnosticsCounterWidget.refresh`) and keeps the raw `window.MCEL.diagnose(appId)` report as fallback evidence.",
             "- FLOG v2 uses `McelAppSurfaceRegistry` as the default scenario source and verifies conformance-required apps only unless `--app` is supplied.",
-            "- Use `--emit-events` to post the compact FLOG result to `/api/mcel/diagnostics/events`.",
+            "- Each browser scenario asks `McelAppTruthGate` to attach app truth and a gate-built repository snapshot. Truth findings do not rewrite the FLOG surface verdict.",
+            "- Use `--emit-events` to post the compact FLOG result, including attached app truth when available, to `/api/mcel/diagnostics/events`.",
             "",
         ]
     )
@@ -1332,6 +1480,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"status: {summary['status']}")
         print(f"scenarios: {summary['scenarioCount']}")
         print(f"status_counts: {summary['statusCounts']}")
+        print(f"truth_status_counts: {summary.get('truthStatusCounts', {})}")
+        print(f"semantic_runtime_proven: {summary.get('semanticRuntimeProvenCount', 0)}")
         print(f"json: {paths['json']}")
         print(f"markdown: {paths['markdown']}")
         for trial in trials:

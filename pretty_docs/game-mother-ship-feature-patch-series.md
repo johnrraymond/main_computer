@@ -1,5 +1,7 @@
 # Mother Ship Feature Patch Series
 
+> **Door rule:** Mother-ship doors are never progression locks. Doors may have labels, status lights, terminals, or story prompts, but the player route remains open.
+
 Contract: `game.mother-ship-feature-patch-series.v1`
 
 This document breaks the mother-ship expansion into a practical sequence of implementation patches. Each patch should be built from the latest uploaded snapshot, packaged as replacement files for `new_patch.py`, and kept small enough that runtime defects can be isolated quickly.
@@ -30,8 +32,8 @@ The next patches should not rework that path unless a defect blocks progression.
 | 4 | Reusable Door/Terminal System | Doors and terminals share one consistent hover/E-key interaction path. |
 | 5 | Engineering Access + Emergency Power | The player restores partial ship power from Engineering Access. |
 | 6 | Ship Signage + Objective Guidance | The ship becomes readable through signs, HUD location, and objective prompts. |
-| 7 | Medbay and Science/Ops Stubs | Side destinations exist with simple interactions and locked future depth. |
-| 8 | Bridge Gate + Command Lockout | The player can reach the bridge door and learn why command is still locked. |
+| 7 | Medbay and Science/Ops Stubs | Side destinations exist with simple interactions and future depth. |
+| 8 | Bridge Route + Command Context | The player can reach the bridge door and learn why command is still available. |
 | 9 | Threat Return in Controlled Spaces | Boarders or hazards can return outside the shuttle bay without breaking exploration. |
 | 10 | Ship State Persistence Hooks | Door, terminal, power, and objective state can be serialized for later editor/save work. |
 | 11 | Renderer Decomposition | Mother-ship helpers move out of the fragile monolithic scene path where safe. |
@@ -72,7 +74,7 @@ Expected changes:
 - draw a Bay Operations alcove in the shuttle bay;
 - add a Bay Ops terminal interaction target;
 - add the inner bay door as a visible stateful object;
-- pressing E at the terminal unlocks or opens the inner door;
+- pressing E at the terminal activates or opens the inner door;
 - objective changes from `Use Bay Operations` to `Enter Main Corridor`.
 
 Primary files:
@@ -83,7 +85,7 @@ Primary files:
 Acceptance checks:
 - hovering the terminal shows an E-key prompt;
 - pressing E changes door state;
-- collision blocks the player before unlock and allows passage after open;
+- collision keeps players in modeled halls while door status remains non-blocking;
 - boarders remain paused in the bay.
 
 ## Patch 3: Security Checkpoint + Corridor Hub
@@ -127,7 +129,7 @@ Primary files:
 Acceptance checks:
 - shuttle consoles still enter pilot mode;
 - Bay Ops terminal still opens the inner door;
-- locked doors show reasons;
+- status-only doors show reasons;
 - E-key never triggers a shuttle console after the player has left the shuttle.
 
 ## Patch 5: Engineering Access + Emergency Power
@@ -150,7 +152,7 @@ Acceptance checks:
 - the Engineering Access area is reachable from the hub;
 - pressing E at the console changes power to `partial`;
 - HUD confirms partial power;
-- Bridge remains locked but the bridge lock reason changes after power is restored.
+- Bridge route remains visible but the bridge status reason changes after power is restored.
 
 ## Patch 6: Ship Signage + Objective Guidance
 
@@ -160,7 +162,7 @@ Purpose:
 Expected changes:
 - add text/sign blocks or HUD labels for each major destination;
 - add objective hints when the player enters each region;
-- add locked-door explanations for future areas;
+- add available-door explanations for future areas;
 - include short “return to shuttle bay” guidance.
 
 Primary files:
@@ -170,7 +172,7 @@ Primary files:
 
 Acceptance checks:
 - the player can identify each branch in the hub;
-- all locked doors explain their lock state;
+- all status-only doors explain their door state;
 - current objective changes when the player completes Bay Ops and Engineering tasks.
 
 ## Patch 7: Medbay and Science/Ops Stubs
@@ -180,7 +182,7 @@ Purpose:
 
 Expected changes:
 - add visible medbay and science/ops entrances off the hub;
-- allow short entry vestibules or locked doors with clear explanations;
+- allow short entry vestibules or status-only doors with clear explanations;
 - add one safe interaction per side destination, such as a medbay status panel or science sensor note.
 
 Primary files:
@@ -192,15 +194,15 @@ Acceptance checks:
 - the player can inspect at least one object in each branch;
 - no branch traps the player.
 
-## Patch 8: Bridge Gate + Command Lockout
+## Patch 8: Bridge Route + Command Context
 
 Purpose:
 - set the next story target while keeping the bridge interior for a later feature.
 
 Expected changes:
 - add the bridge access door beyond the corridor hub;
-- add a command lockout prompt;
-- make the lock reason depend on prior objectives, such as power restored but command authorization missing;
+- add a command context prompt;
+- make the status reason depend on prior objectives, such as power restored but command authorization missing;
 - add a clear “next patch” hook.
 
 Primary files:
@@ -209,7 +211,7 @@ Primary files:
 
 Acceptance checks:
 - the bridge door is reachable;
-- pressing E explains why it is locked;
+- pressing E explains the route status;
 - after restoring partial power, the explanation changes;
 - the player is directed toward a future command authorization objective.
 
@@ -278,7 +280,7 @@ Acceptance checks:
 ## Patch 12: Playable Slice Polish
 
 Purpose:
-- lock down the first full mother-ship slice as a stable demo.
+- stabilize the first full mother-ship slice as a stable demo.
 
 Expected changes:
 - tune movement bounds, camera height, prompts, and objective text;
@@ -292,7 +294,7 @@ Primary files:
 - game tests and docs.
 
 Acceptance checks:
-- a fresh player can complete: dock → exit shuttle → open bay door → reach hub → restore partial power → inspect bridge lock;
+- a fresh player can complete: dock → exit shuttle → open bay door → reach hub → restore partial power → inspect bridge access;
 - no hidden browser-console helper is needed;
 - `node --check`, targeted game tests, and `new_patch.py --dry-run` pass.
 
@@ -308,7 +310,7 @@ Build the next implementation patches in this order:
 5. Engineering Access + Emergency Power
 6. Ship Signage + Objective Guidance
 7. Medbay and Science/Ops Stubs
-8. Bridge Gate + Command Lockout
+8. Bridge Route + Command Context
 9. Threat Return in Controlled Spaces
 10. Ship State Persistence Hooks
 11. Renderer Decomposition
@@ -373,10 +375,10 @@ Purpose:
 
 Acceptance checks:
 - signs clearly point to Shuttle Bay, Engineering, Medbay, Science/Ops, and Bridge;
-- the Bridge direction is visible but locked;
+- the Bridge direction is visible and reachable;
 - Engineering is clearly the active route.
 
-### Bridge Route Patch BR-3: Engineering unlocks bridge
+### Bridge Route Patch BR-3: Engineering activates bridge
 
 Purpose:
 - make Engineering Access the required action that enables bridge access.
@@ -384,7 +386,7 @@ Purpose:
 Acceptance checks:
 - Engineering Power Console changes ship power state;
 - objective updates to return to the Bridge Command Door;
-- Bridge Command Door state changes from locked to open/available.
+- Bridge Command Door state changes from available to open/available.
 
 ### Bridge Route Patch BR-4: Bridge access vestibule
 
@@ -392,7 +394,7 @@ Purpose:
 - replace the current bridge placeholder with a real approach room.
 
 Acceptance checks:
-- `bridge.locked` remains compatible or aliases to `bridge.access`;
+- `bridge.access` remains compatible or aliases to `bridge.access`;
 - the player can stand in a modeled vestibule outside the bridge;
 - bridge prompts do not appear from the hub unless the player is near the door.
 

@@ -185,3 +185,88 @@ Patch 25a does not:
 - alter application user interfaces.
 
 Those are consumer/integration concerns for later patches.
+
+## Patch 25b consumers
+
+Patch 25b keeps the truth gate as the only aggregation authority and adds two consumers.
+
+### FLOG integration
+
+The registry-driven runtime FLOG runner asks the browser-loaded `McelAppTruthGate` to evaluate each scenario after diagnostics are captured.
+
+Each trial and compact result may now include:
+
+```text
+appTruthAvailable
+appTruth
+```
+
+The report also includes the latest gate-built:
+
+```text
+appTruthSnapshot
+```
+
+The snapshot is produced by `McelAppTruthGate.buildTruthSnapshot`, not reconstructed by Python. It therefore preserves the same findings and no-overclaim rules as the browser API.
+
+FLOG's existing `summary.status` remains the runtime surface-smoke verdict. Truth-gate findings are attached as broader MCEL evidence and do not silently convert missing requirements, adapter, or acceptance proof into a failed browser scenario.
+
+The Markdown report includes an **App truth** table that separates:
+
+- overall truth status;
+- runtime-surface proof;
+- acceptance proof;
+- full semantic-runtime proof;
+- finding codes.
+
+Diagnostic events include the scenario's attached `appTruth` object when available.
+
+### MCEL Lab integration
+
+MCEL Lab renders a selected-app **App truth** card. It shows the joined state without replacing the blueprint, mount, registry, or diagnostic authorities.
+
+The card reports:
+
+```text
+requirements
+adapter
+runtime surface
+acceptance
+semantic runtime
+```
+
+Truth-gate findings are copied into the Lab findings list with their original finding codes and messages. Lab does not invent equivalent local findings.
+
+When no supplied report exists, Lab may capture a current silent MCEL diagnosis and supply it to the truth gate as live runtime evidence. This is labeled as live diagnosis, not FLOG evidence.
+
+A consumer API allows a complete FLOG report or acceptance result to be supplied explicitly:
+
+```javascript
+McelLabAppTruthConsumer.setRuntimeEvidence(flogReport);
+McelLabAppTruthConsumer.setAcceptanceEvidence(acceptanceReport);
+McelLabAppTruthConsumer.refresh();
+McelLabAppTruthConsumer.clearEvidence();
+McelLabAppTruthConsumer.selectedAppTruth();
+```
+
+The same API is available at:
+
+```javascript
+window.MCEL.labAppTruthConsumer
+```
+
+Blueprint aliases may differ from app-surface IDs. The Lab consumer evaluates the blueprint ID and declared aliases, then displays which registered truth ID was selected. It does not merge facts from unrelated IDs or alter any registry.
+
+## Consumer guarantees
+
+Patch 25b adds these guarantees:
+
+- consumers retain the complete truth component states;
+- FLOG runtime pass/fail remains separate from broader truth status;
+- MCEL Lab labels the evidence source;
+- missing acceptance evidence remains missing;
+- a mounted preview is not treated as runtime proof;
+- a green surface does not become full semantic readiness;
+- truth findings retain their original code and message;
+- consumers do not create a second registry or recompute truth findings.
+

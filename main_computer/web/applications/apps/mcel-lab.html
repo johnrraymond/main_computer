@@ -352,6 +352,37 @@
         </section>
       </section>
 
+      <section
+        id="mcel-blueprint-app-truth-card"
+        class="mcel-lab-shell-card mcel-lab-app-truth-card"
+        data-mcel-zone="evidence"
+        data-mcel-layout-zone="evidence"
+        data-mcel-element="element.inspection.app-truth"
+        data-mcel-app-truth-status="pending"
+        aria-label="Selected app truth"
+      >
+        <div class="mcel-lab-shell-card-heading">
+          <div>
+            <p class="eyebrow">App truth</p>
+            <h4>Registry and evidence gate</h4>
+          </div>
+          <output id="mcel-blueprint-app-truth-status">Truth pending</output>
+        </div>
+        <p id="mcel-blueprint-app-truth-source" class="mcel-lab-muted-note">
+          Select an app to join requirements, adapter, surface, runtime, and acceptance facts.
+        </p>
+        <dl id="mcel-blueprint-app-truth-facts" class="mcel-lab-blueprint-facts">
+          <div><dt>Requirements</dt><dd data-mcel-app-truth-fact="requirements">pending</dd></div>
+          <div><dt>Adapter</dt><dd data-mcel-app-truth-fact="adapter">pending</dd></div>
+          <div><dt>Runtime surface</dt><dd data-mcel-app-truth-fact="runtime">pending</dd></div>
+          <div><dt>Acceptance</dt><dd data-mcel-app-truth-fact="acceptance">pending</dd></div>
+          <div><dt>Semantic runtime</dt><dd data-mcel-app-truth-fact="semantic">pending</dd></div>
+        </dl>
+        <ul id="mcel-blueprint-app-truth-findings" class="mcel-lab-findings">
+          <li>Truth-gate findings appear here without replacing their source registries.</li>
+        </ul>
+      </section>
+
       <details
         class="mcel-lab-shell-card mcel-lab-rail-disclosure mcel-lab-mount-evidence-card"
         data-mcel-zone="evidence"

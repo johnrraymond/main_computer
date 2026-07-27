@@ -21,7 +21,7 @@ The shuttle bay sits aft. The bridge sits forward. Engineering is deeper and low
 ## First-deck overview
 
 ```text
-                    [ BRIDGE - locked first ]
+                    [ BRIDGE - planned forward ]
                            |
                     [ Command Access Door ]
                            |
@@ -82,8 +82,8 @@ Props:
 - optional wall label: `BAY OPS`
 
 Terminal behavior:
-- if security is in quarantine, the terminal explains the lock;
-- once used, it can unlock the inner bay door for the first slice.
+- if security is in quarantine, the terminal explains the route status;
+- once used, it can activate the inner bay door for the first slice.
 
 ### Security Checkpoint
 
@@ -93,7 +93,7 @@ Props:
 - security arch;
 - wall scanner;
 - caution stripes;
-- one locked side panel for future security mechanics.
+- one available side panel for future security mechanics.
 
 Gameplay:
 - first pass can be purely visual;
@@ -110,7 +110,7 @@ Required landmarks:
 - aft sign: `SHUTTLE BAY`;
 - lower or side sign: `ENGINEERING`.
 
-First pass should make Engineering Access reachable and make the bridge door visible but locked.
+First pass should make Engineering Access reachable and make the bridge door visible and reachable.
 
 ### Engineering Access
 
@@ -126,18 +126,18 @@ Gameplay:
 - player interacts with the power console;
 - ship power changes from `emergency` to `partial`;
 - HUD/objective updates;
-- bridge remains locked until later milestones.
+- bridge remains available before later milestones.
 
 ## Door plan
 
-| Door ID | Connects | Initial state | Unlock condition |
+| Door ID | Connects | Initial state | Activate condition |
 | --- | --- | --- | --- |
-| `door.bay-inner` | Shuttle Bay → Security Checkpoint | locked | use Bay Operations terminal |
+| `door.bay-inner` | Shuttle Bay → Security Checkpoint | available | use Bay Operations terminal |
 | `door.security-hub` | Security Checkpoint → Main Corridor Hub | open | none after bay door opens |
-| `door.engineering-access` | Hub → Engineering Access | open or weakly locked | optional terminal prompt |
-| `door.medbay` | Hub → Medbay | locked visible stub | future health objective |
-| `door.science` | Hub → Science/Ops Lab | locked visible stub | future science objective |
-| `door.bridge` | Hub → Bridge | locked | future command access objective |
+| `door.engineering-access` | Hub → Engineering Access | open or available | optional terminal prompt |
+| `door.medbay` | Hub → Medbay | visible stub | future health objective |
+| `door.science` | Hub → Science/Ops Lab | visible stub | future science objective |
+| `door.bridge` | Hub → Bridge | available | future command access objective |
 
 ## Collision and movement expectations
 

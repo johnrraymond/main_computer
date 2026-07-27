@@ -1096,7 +1096,8 @@
               "engineering.access": "Engineering Access",
               "medbay.stub": "Medbay Triage",
               "science.ops.stub": "Science/Ops Lab",
-              "bridge.locked": "Bridge Command Door"
+              "bridge.access": "Bridge Access",
+              "bridge.deck": "Bridge Deck"
             },
             "objectives": {
               "objective.bay-ops": {
@@ -1112,12 +1113,16 @@
                 "location": "corridor.main"
               },
               "objective.survey-departments": {
-                "label": "Survey medbay and science while the bridge unlocks.",
+                "label": "Survey medbay and science, then proceed to the bridge.",
                 "location": "engineering.access"
               },
               "objective.bridge-access": {
-                "label": "Return to the bridge command door.",
+                "label": "Proceed to the bridge and identify the enemy ship on the viewscreen.",
                 "location": "corridor.main"
+              },
+              "objective.bridge-screen": {
+                "label": "Use the bridge viewscreen to track the enemy ship.",
+                "location": "bridge.deck"
               }
             },
             "doors": {
@@ -1131,37 +1136,37 @@
                 "label": "Inner Shuttle Bay Door",
                 "from": "bay.ops",
                 "to": "security.checkpoint",
-                "state": "locked"
+                "state": "open"
               },
               "door.security-hub": {
                 "label": "Security Checkpoint Door",
                 "from": "security.checkpoint",
                 "to": "corridor.main",
-                "state": "closed"
+                "state": "open"
               },
               "door.engineering-access": {
                 "label": "Engineering Access Door",
                 "from": "corridor.main",
                 "to": "engineering.access",
-                "state": "closed"
+                "state": "open"
               },
               "door.medbay": {
                 "label": "Medbay Door",
                 "from": "corridor.main",
                 "to": "medbay.stub",
-                "state": "closed"
+                "state": "open"
               },
               "door.science": {
                 "label": "Science/Ops Door",
                 "from": "corridor.main",
                 "to": "science.ops.stub",
-                "state": "closed"
+                "state": "open"
               },
               "door.bridge": {
                 "label": "Bridge Command Door",
                 "from": "corridor.main",
-                "to": "bridge.locked",
-                "state": "locked"
+                "to": "bridge.deck",
+                "state": "open"
               }
             },
             "terminals": {
@@ -1174,6 +1179,11 @@
                 "label": "Engineering Power Console",
                 "location": "engineering.access",
                 "state": "offline"
+              },
+              "terminal.bridge-viewscreen": {
+                "label": "Bridge Viewscreen",
+                "location": "bridge.deck",
+                "state": "online"
               }
             },
             "flags": {

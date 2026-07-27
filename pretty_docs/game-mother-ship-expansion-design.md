@@ -1,5 +1,7 @@
 # Mother Ship Expansion Design
 
+> **Door rule:** Mother-ship doors are never progression locks. Doors may have labels, status lights, terminals, or story prompts, but the player route remains open.
+
 Contract: `game.mother-ship-expansion-design.v1`
 
 This document defines the design target for expanding the current **Shuttle Boarding Defense** game after the shuttle docks with the mother ship. It is intentionally a design document, not implementation proof. Current implemented scope ends at shuttle docking, shuttle-bay arrival, and first-person handoff.
@@ -16,7 +18,7 @@ Can the player leave the shuttle bay, walk through the ship, understand where to
 
 ## Player fantasy
 
-The player is a cadet who survived boarding attackers, flew the shuttle home, and now enters a larger ship that is damaged, partially locked down, and still under threat. The mother ship is not just scenery. It should be a place the player can learn, repair, defend, and eventually command.
+The player is a cadet who survived boarding attackers, flew the shuttle home, and now enters a larger ship that is damaged, partially available down, and still under threat. The mother ship is not just scenery. It should be a place the player can learn, repair, defend, and eventually command.
 
 ## Core loop after docking
 
@@ -26,7 +28,7 @@ Arrive in shuttle bay
 → find the next accessible compartment
 → inspect terminals, doors, and signs
 → solve local ship-system problems
-→ unlock new compartments
+→ activate new compartments
 → recover ship status
 → advance toward bridge/engineering objectives
 ```
@@ -41,7 +43,7 @@ Every area needs a clear role, visual identity, and navigational cue. The player
 
 ### 2. Doors are gameplay boundaries
 
-Doors should not be decorative only. A door can be open, locked, damaged, powered off, sealed by security, or waiting on a nearby terminal. Door state should communicate why the player cannot pass.
+Doors should not be decorative only. A door can be open, available, damaged, powered off, sealed by security, or waiting on a nearby terminal. Door state should communicate why the player cannot pass.
 
 ### 3. Systems are local first, global later
 
@@ -64,7 +66,7 @@ The player exits the shuttle into the Mother Ship Shuttle Bay. The nearby bay co
 ```text
 Docking complete.
 Bay pressure stable.
-Inner corridor door locked by security quarantine.
+Inner corridor door available through security quarantine.
 Manual override available at Bay Operations.
 ```
 
@@ -81,11 +83,11 @@ The player reaches a corridor hub where several paths are visible but not all ar
 Player goals:
 - restore partial power in engineering;
 - use medbay to recover health or scan status;
-- clear one blocked corridor.
+- clear one bavailable corridor.
 
 ### Act 3: Command access
 
-The bridge is visible as a destination but initially locked. The player must restore enough ship systems to gain access.
+The bridge is visible as a destination and remains reachable as the ship is expanded. The player must restore enough ship systems to gain access.
 
 Player goals:
 - collect or authorize command access;
@@ -114,7 +116,7 @@ Use a small stable vocabulary before adding more mechanics:
 | --- | --- | --- |
 | Inspect | Mouse over + E | Show object status or label |
 | Use terminal | Mouse over terminal + E | Open a small in-game system panel or trigger local action |
-| Open door | Mouse over door + E | Open if allowed; otherwise show lock reason |
+| Open door | Mouse over door + E | Open if allowed; otherwise show status reason |
 | Force control twiddle | T or visible button | Restore first-person player control in test/debug builds |
 | Fire phaser | Click/Space/F | Disabled in safe ship spaces until combat returns |
 
@@ -129,7 +131,7 @@ securityState: "quarantine" | "limited" | "cleared"
 docked: true | false
 bayPlayerControlActive: true | false
 activeObjectiveId: string
-unlockedDoors: string[]
+availableDoors: string[]
 completedObjectives: string[]
 ```
 
@@ -141,7 +143,7 @@ The renderer can keep these in its own runtime state first, then promote them to
    Player exits the shuttle into the shuttle bay.
 
 2. **Bay Door Override**  
-   Player uses the Bay Operations terminal to unlock the interior door.
+   Player uses the Bay Operations terminal to activate the interior door.
 
 3. **Enter Main Corridor**  
    Player walks out of the bay and sees directional signs.
@@ -157,11 +159,11 @@ The renderer can keep these in its own runtime state first, then promote them to
 | Element | Visual cue |
 | --- | --- |
 | Walkable floor | broad cool-gray panels with low edge strips |
-| Locked door | amber/red side lights and readable label |
+| Status-only door | amber/red side lights and readable label |
 | Open door | brighter cyan/green frame light |
 | Usable terminal | cyan screen glow, hover outline, prompt text |
 | Critical console | stronger pulsing edge light |
-| Blocked path | visible obstruction plus reason in HUD |
+| Bavailable path | visible obstruction plus reason in HUD |
 | Safe area | stable lighting and no combat warning |
 | Hazard area | flicker, sparks, alarm strip, fog or vapor |
 

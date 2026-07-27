@@ -29,6 +29,7 @@
         window.McelLabScm &&
         window.McelElementsCore &&
         window.McelAppBlueprintsCore &&
+        window.McelAppTruthGate &&
         window.McelElementAcidTest &&
         window.TaskManagerMcel &&
         window.McelSupercut &&
@@ -115,6 +116,15 @@
       if (!shellState.annotationStoragePaths || typeof shellState.annotationStoragePaths !== "object") {
         shellState.annotationStoragePaths = {};
       }
+      if (!Object.prototype.hasOwnProperty.call(shellState, "appTruthRuntimeEvidence")) {
+        shellState.appTruthRuntimeEvidence = null;
+      }
+      if (!Object.prototype.hasOwnProperty.call(shellState, "appTruthAcceptanceEvidence")) {
+        shellState.appTruthAcceptanceEvidence = null;
+      }
+      if (!shellState.appTruthByBlueprint || typeof shellState.appTruthByBlueprint !== "object") {
+        shellState.appTruthByBlueprint = {};
+      }
 
       return shellState;
     }
@@ -148,6 +158,276 @@
         listNode.appendChild(item);
       });
     }
+
+
+    function mcelBlueprintTruthCandidateIds(blueprint) {
+      const values = [
+        blueprint?.appId,
+        ...(Array.isArray(blueprint?.aliases) ? blueprint.aliases : [])
+      ];
+      return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+    }
+
+    function mcelBlueprintTruthLiveRuntimeEvidence(appId) {
+      const diagnose = window.MCEL?.diagnose;
+      if (typeof diagnose !== "function") return null;
+      try {
+        const diagnosis = diagnose(appId, {silent: true}) || {};
+        const conformance =
+          diagnosis.appSurfaceConformance ||
+          diagnosis.summary?.appSurfaceConformance ||
+          diagnosis.measurements?.appSurfaceConformance ||
+          null;
+        const status = String(
+          diagnosis.verdict ||
+          conformance?.status ||
+          ""
+        ).trim().toLowerCase();
+        if (!status && !conformance && !diagnosis.schema) return null;
+        return {
+          appId,
+          status: status || "unknown",
+          timestamp: new Date().toISOString(),
+          diagnosis,
+          appSurfaceConformance: conformance
+        };
+      } catch (error) {
+        return {
+          appId,
+          status: "fail",
+          timestamp: new Date().toISOString(),
+          diagnosisThrew: true,
+          failures: [{
+            code: "diagnosis-threw",
+            message: String(error?.message || error || "diagnosis failed")
+          }]
+        };
+      }
+    }
+
+    function mcelBlueprintTruthCandidateScore(truth, candidateId, blueprint) {
+      if (!truth) return -1;
+      let score = 0;
+      if (truth.evidence?.runtime?.present) score += 16;
+      if (truth.surface?.registered) score += 8;
+      if (truth.requirements?.present) score += 4;
+      if (truth.adapter?.registered) score += 2;
+      if (candidateId === blueprint?.appId) score += 1;
+      return score;
+    }
+
+    function mcelBlueprintShellEvaluateAppTruth(blueprint) {
+      const gate = window.McelAppTruthGate || window.MCEL?.appTruthGate;
+      if (!gate || typeof gate.evaluateAppTruth !== "function" || !blueprint) {
+        return {
+          available: false,
+          truthAppId: blueprint?.appId || "",
+          truth: null,
+          evidenceSource: "truth gate unavailable",
+          error: "McelAppTruthGate is unavailable"
+        };
+      }
+
+      const shellState = mcelBlueprintShellState();
+      const externalRuntimeEvidence = shellState.appTruthRuntimeEvidence;
+      const acceptanceEvidence = shellState.appTruthAcceptanceEvidence;
+      const evaluations = mcelBlueprintTruthCandidateIds(blueprint).map((candidateId) => {
+        try {
+          const truth = gate.evaluateAppTruth(candidateId, {
+            runtimeEvidence: externalRuntimeEvidence,
+            acceptanceEvidence
+          });
+          return {
+            candidateId,
+            truth,
+            score: mcelBlueprintTruthCandidateScore(truth, candidateId, blueprint),
+            evidenceSource: externalRuntimeEvidence
+              ? "supplied FLOG/runtime evidence"
+              : "registry facts only"
+          };
+        } catch (error) {
+          return {
+            candidateId,
+            truth: null,
+            score: -1,
+            evidenceSource: "truth evaluation failed",
+            error: String(error?.message || error || "truth evaluation failed")
+          };
+        }
+      });
+
+      let selected = evaluations.sort((left, right) =>
+        right.score - left.score ||
+        String(left.candidateId).localeCompare(String(right.candidateId))
+      )[0] || null;
+
+      if (selected?.truth && !externalRuntimeEvidence) {
+        const liveRuntimeEvidence = mcelBlueprintTruthLiveRuntimeEvidence(selected.candidateId);
+        if (liveRuntimeEvidence) {
+          try {
+            const truth = gate.evaluateAppTruth(selected.candidateId, {
+              runtimeEvidence: liveRuntimeEvidence,
+              acceptanceEvidence
+            });
+            selected = {
+              ...selected,
+              truth,
+              score: mcelBlueprintTruthCandidateScore(truth, selected.candidateId, blueprint),
+              evidenceSource: "live MCEL diagnosis"
+            };
+          } catch (error) {
+            selected = {
+              ...selected,
+              error: String(error?.message || error || "live truth evaluation failed")
+            };
+          }
+        }
+      }
+
+      const result = selected?.truth
+        ? {
+            available: true,
+            truthAppId: selected.candidateId,
+            truth: selected.truth,
+            evidenceSource: selected.evidenceSource,
+            error: selected.error || ""
+          }
+        : {
+            available: false,
+            truthAppId: selected?.candidateId || blueprint.appId,
+            truth: null,
+            evidenceSource: selected?.evidenceSource || "truth unavailable",
+            error: selected?.error || "No app truth result was produced"
+          };
+      shellState.appTruthByBlueprint[blueprint.appId] = result;
+      return result;
+    }
+
+    function mcelBlueprintTruthRequirementLabel(truth) {
+      if (!truth?.requirements?.present) return "missing";
+      if (!truth.requirements.schemaValid) return "schema invalid";
+      return truth.requirements.contractComplete ? "complete" : "incomplete";
+    }
+
+    function mcelBlueprintTruthAdapterLabel(truth) {
+      if (!truth?.adapter?.registered) return "missing";
+      if (truth.adapter.fullApplicationSemanticReady) return "full semantic ready";
+      if (truth.adapter.runtimeCoreReady) return "runtime core only";
+      return "registered, incomplete";
+    }
+
+    function mcelBlueprintTruthRuntimeLabel(truth) {
+      const runtime = truth?.evidence?.runtime;
+      if (truth?.claims?.runtimeSurfaceProven) return "proven";
+      if (!runtime?.present) return truth?.surface?.conformanceRequired ? "evidence missing" : "not required";
+      if (runtime.freshness === "stale") return "stale evidence";
+      if (!runtime.policyPassed) return "policy not proven";
+      return runtime.status || "evidence incomplete";
+    }
+
+    function mcelBlueprintTruthAcceptanceLabel(truth) {
+      const required = Number(truth?.requirements?.acceptanceContractCount || 0) > 0;
+      if (!required) return "not required";
+      if (truth?.claims?.acceptanceProven) return "proven";
+      return truth?.evidence?.acceptance?.present ? "not passing" : "evidence missing";
+    }
+
+    function mcelBlueprintShellRenderAppTruth(blueprint) {
+      const card = document.getElementById("mcel-blueprint-app-truth-card");
+      const status = document.getElementById("mcel-blueprint-app-truth-status");
+      const source = document.getElementById("mcel-blueprint-app-truth-source");
+      const findings = document.getElementById("mcel-blueprint-app-truth-findings");
+      const factNodes = Array.from(document.querySelectorAll("[data-mcel-app-truth-fact]"));
+      const setFact = (name, value) => {
+        factNodes
+          .filter((node) => node.dataset.mcelAppTruthFact === name)
+          .forEach((node) => {
+            node.textContent = value;
+          });
+      };
+
+      const result = mcelBlueprintShellEvaluateAppTruth(blueprint);
+      if (!result.available || !result.truth) {
+        if (card) card.dataset.mcelAppTruthStatus = "unavailable";
+        if (status) status.textContent = "Truth unavailable";
+        if (source) source.textContent = result.error || "No truth-gate result is available.";
+        setFact("requirements", "unknown");
+        setFact("adapter", "unknown");
+        setFact("runtime", "unknown");
+        setFact("acceptance", "unknown");
+        setFact("semantic", "not proven");
+        mcelBlueprintShellPopulateList(findings, [result.error || "Truth-gate evaluation is unavailable."]);
+        return result;
+      }
+
+      const truth = result.truth;
+      if (card) {
+        card.dataset.mcelAppTruthStatus = truth.overallStatus || "unknown";
+        card.dataset.mcelAppTruthAppId = truth.appId || result.truthAppId;
+        card.dataset.mcelSemanticRuntimeProven = String(truth.claims?.semanticRuntimeProven === true);
+      }
+      if (status) status.textContent = truth.overallStatus || "unknown";
+      if (source) {
+        const aliasNote = result.truthAppId !== blueprint.appId
+          ? ` Truth ID ${result.truthAppId} is the registered alias for blueprint ${blueprint.appId}.`
+          : "";
+        source.textContent = `${result.evidenceSource}.${aliasNote}`;
+      }
+      setFact("requirements", mcelBlueprintTruthRequirementLabel(truth));
+      setFact("adapter", mcelBlueprintTruthAdapterLabel(truth));
+      setFact("runtime", mcelBlueprintTruthRuntimeLabel(truth));
+      setFact("acceptance", mcelBlueprintTruthAcceptanceLabel(truth));
+      setFact("semantic", truth.claims?.semanticRuntimeProven ? "proven" : "not proven");
+
+      const truthMessages = (truth.findings || []).map((item) =>
+        `[${item.code}] ${item.message}`
+      );
+      mcelBlueprintShellPopulateList(
+        findings,
+        truthMessages.length ? truthMessages : ["No truth-gate findings for the selected app."]
+      );
+      return result;
+    }
+
+    function installMcelLabAppTruthConsumer() {
+      if (window.McelLabAppTruthConsumer) return window.McelLabAppTruthConsumer;
+      const api = Object.freeze({
+        setRuntimeEvidence(runtimeEvidence) {
+          const shellState = mcelBlueprintShellState();
+          shellState.appTruthRuntimeEvidence = runtimeEvidence || null;
+          renderMcelBlueprintShell({appId: shellState.appId});
+          return shellState.appTruthByBlueprint?.[shellState.appId] || null;
+        },
+        setAcceptanceEvidence(acceptanceEvidence) {
+          const shellState = mcelBlueprintShellState();
+          shellState.appTruthAcceptanceEvidence = acceptanceEvidence || null;
+          renderMcelBlueprintShell({appId: shellState.appId});
+          return shellState.appTruthByBlueprint?.[shellState.appId] || null;
+        },
+        clearEvidence() {
+          const shellState = mcelBlueprintShellState();
+          shellState.appTruthRuntimeEvidence = null;
+          shellState.appTruthAcceptanceEvidence = null;
+          renderMcelBlueprintShell({appId: shellState.appId});
+          return shellState.appTruthByBlueprint?.[shellState.appId] || null;
+        },
+        refresh() {
+          const shellState = mcelBlueprintShellState();
+          renderMcelBlueprintShell({appId: shellState.appId});
+          return shellState.appTruthByBlueprint?.[shellState.appId] || null;
+        },
+        selectedAppTruth() {
+          const shellState = mcelBlueprintShellState();
+          const blueprint = mcelBlueprintShellSelectedBlueprint(shellState.appId);
+          return mcelBlueprintShellEvaluateAppTruth(blueprint);
+        }
+      });
+      window.McelLabAppTruthConsumer = api;
+      window.MCEL = Object.assign({}, window.MCEL || {}, {labAppTruthConsumer: api});
+      return api;
+    }
+
+    installMcelLabAppTruthConsumer();
 
     function mcelBlueprintShellSelectedBlueprint(appId) {
       const api = window.McelAppBlueprintsCore;
@@ -2620,11 +2900,15 @@
       if (currentObject) currentObject.textContent = blueprint.dominantObject || "App";
       mcelBlueprintShellRenderDetailStack(detailStack, blueprint, aspect, api);
       mcelBlueprintShellRenderMountReport(blueprint);
+      const appTruthResult = mcelBlueprintShellRenderAppTruth(blueprint);
 
       mcelBlueprintShellApplyInspectMode(blueprint);
 
       const selectedRecord = mcelBlueprintShellSelectedElementFor(blueprint);
-      mcelBlueprintShellPopulateList(findings, mountReport ? [
+      const truthFindingMessages = (appTruthResult?.truth?.findings || []).map((item) =>
+        `[truth:${item.code}] ${item.message}`
+      );
+      const blueprintFindingMessages = mountReport ? [
         `${blueprint.label || blueprint.appId} uses the shared ${aspects.length}-aspect model with ${mcelBlueprintShellFormPrimitives(blueprint).length} semantic form primitives.`,
         selectedRecord
           ? `Selected ${selectedRecord.selector} in ${selectedRecord.layoutZone || selectedRecord.role}.`
@@ -2632,7 +2916,11 @@
         `Mount evidence captured ${mountReport.dataMcelAttributes?.length || 0} MCEL attribute groups, ${(mountReport.layoutZones || []).length} layout zone groups, and ${mountReport.boundingBoxes?.length || 0} bounding boxes.`
       ] : [
         `${blueprint.label || blueprint.appId} uses the shared ${aspects.length}-aspect model with ${mcelBlueprintShellFormPrimitives(blueprint).length} semantic form primitives.`,
-        "Runtime evidence is pending until the selected app is mounted."
+        "Mounted DOM evidence is pending; app truth remains separate from mount status."
+      ];
+      mcelBlueprintShellPopulateList(findings, [
+        ...truthFindingMessages,
+        ...blueprintFindingMessages
       ]);
 
       if (validityStatus) {

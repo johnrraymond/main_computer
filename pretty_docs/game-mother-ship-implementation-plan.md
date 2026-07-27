@@ -102,12 +102,12 @@ Tasks:
 - add door interaction target for the inner bay door;
 - implement hover label and E-key use;
 - add door state to runtime state;
-- unlock/open the inner door when the terminal is used.
+- activate/open the inner door when the terminal is used.
 
 Acceptance:
 - hovering terminal shows a prompt;
 - pressing E on terminal changes door state;
-- the player can pass through the inner door only after unlock/open;
+- the player can pass through the inner door only after activate/open;
 - HUD objective updates from `Use Bay Operations` to `Enter Main Corridor`.
 
 ## Milestone 3: Corridor hub and location system
@@ -151,13 +151,13 @@ Purpose:
 
 Tasks:
 - add bridge access door/sign;
-- show lock reason;
-- add objective to review command lockout;
+- show status reason;
+- add objective to review command context;
 - leave bridge interior for a later milestone.
 
 Acceptance:
 - player can find the bridge door;
-- pressing E explains why it is locked;
+- pressing E explains the route status;
 - no dead-end feels like a broken wall.
 
 ## Testing plan
@@ -196,10 +196,10 @@ If known unrelated atlas fixture failures appear, deselect only those tests and 
 Add assertions that:
 - mother-ship interior metadata is emitted in project JSON;
 - the scene runtime includes region, door, terminal, and objective defaults;
-- the Bay Operations terminal unlocks the bay inner door;
+- the Bay Operations terminal activates the bay inner door;
 - post-docking control can be forced by the in-game twiddle system;
 - the cutscene cannot remain active after bay player control starts;
-- bridge door lock reason appears in renderer output or runtime state.
+- bridge door status reason appears in renderer output or runtime state.
 
 ## Risk notes
 

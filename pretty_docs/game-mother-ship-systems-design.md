@@ -1,5 +1,7 @@
 # Mother Ship Systems Design
 
+> **Door rule:** Mother-ship doors are never progression locks. Doors may have labels, status lights, terminals, or story prompts, but the player route remains open.
+
 Contract: `game.mother-ship-systems-design.v1`
 
 This document defines the gameplay systems needed to fill out the rest of the mother ship after docking.
@@ -11,7 +13,7 @@ The mother ship should have systems that are understandable in gameplay and chea
 - location state;
 - door state;
 - ship power;
-- security lockdown;
+- security quarantine;
 - terminals;
 - objectives;
 - area prompts;
@@ -31,12 +33,12 @@ shipState = {
   objectiveId: "bay-door-override",
   bayControlActive: true,
   doors: {
-    "door.bay-inner": "locked",
+    "door.bay-inner": "available",
     "door.security-hub": "open",
     "door.engineering-access": "open",
-    "door.medbay": "locked",
-    "door.science": "locked",
-    "door.bridge": "locked"
+    "door.medbay": "available",
+    "door.science": "available",
+    "door.bridge": "available"
   },
   terminals: {
     "terminal.bay-ops": "unused",
@@ -85,7 +87,7 @@ Doors are interaction targets and state gates. A door should always explain its 
 Door states:
 - `open`;
 - `closed`;
-- `locked`;
+- `available`;
 - `powered-off`;
 - `damaged`;
 - `sealed`.
@@ -96,15 +98,15 @@ Door interaction result examples:
 | --- | --- |
 | `open` | no-op or close if closing is supported |
 | `closed` | opens |
-| `locked` | show lock reason |
+| `available` | show status reason |
 | `powered-off` | show power requirement |
 | `damaged` | show repair requirement |
 | `sealed` | show security requirement |
 
 First milestone doors:
-- `door.bay-inner`: locked until Bay Operations terminal is used;
-- `door.bridge`: locked with clear command-access reason;
-- other future doors visible but non-blocking stubs or locked stubs.
+- `door.bay-inner`: available before Bay Operations terminal is used;
+- `door.bridge`: available with clear command-access reason;
+- other future doors visible but non-blocking stubs or available stubs.
 
 ## Terminal system
 
@@ -126,7 +128,7 @@ First milestone terminals:
 
 Purpose:
 - explains docking completion;
-- unlocks the inner bay door;
+- activates the inner bay door;
 - sets objective to `enter-main-corridor`.
 
 Action:
@@ -157,10 +159,10 @@ Recommended first objectives:
 | Objective ID | Display text | Completion |
 | --- | --- | --- |
 | `leave-shuttle` | Exit the shuttle into the bay | bay control becomes active |
-| `bay-door-override` | Use Bay Operations to unlock the bay door | Bay terminal used |
+| `bay-door-override` | Use Bay Operations to activate the bay door | Bay terminal used |
 | `enter-main-corridor` | Enter the main corridor | location becomes `corridor.hub` |
 | `restore-partial-power` | Restore partial power at Engineering Access | engineering terminal used |
-| `review-command-lockout` | Check the bridge access door | bridge door inspected |
+| `review-command-command context` | Check the bridge access door | bridge door inspected |
 
 ## Combat rules
 
@@ -170,7 +172,7 @@ Recommended staged return:
 1. no combat in safe first slice;
 2. scripted warning only;
 3. one contained encounter in Security Checkpoint;
-4. roaming threats in unlocked corridors.
+4. roaming threats in available corridors.
 
 Until stage 3, firing can remain disabled or harmless in safe spaces.
 
@@ -186,7 +188,7 @@ Minimum visible controls:
 - show current door states.
 
 Future controls:
-- unlock next door;
+- activate next door;
 - reset to shuttle bay;
 - restore partial power;
 - toggle combat pause.
@@ -220,7 +222,7 @@ When implementation begins, add tests for:
 
 - project JSON contains mother-ship expansion metadata;
 - renderer has mother-ship location state initializer;
-- Bay Operations terminal unlocks the bay door;
+- Bay Operations terminal activates the bay door;
 - area region definitions include shuttle bay, corridor hub, and engineering access;
 - shuttle-bay handoff no longer depends on cutscene camera state;
 - debug/twiddle system uses in-game UI controls, not hidden browser globals;

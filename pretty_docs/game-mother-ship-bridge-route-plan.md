@@ -1,5 +1,7 @@
 # Mother Ship Bridge Route Plan
 
+> **Door rule:** Mother-ship doors are never progression locks. Doors may have labels, status lights, terminals, or story prompts, but the player route remains open.
+
 Contract: `game.mother-ship-bridge-route-plan.v1`
 
 This document plans the rest of the mother-ship deck needed for a clear playable route from post-docking shuttle-bay control to the bridge.
@@ -38,9 +40,9 @@ The current renderer already has a useful interior state scaffold:
 | `engineering.access` | Engineering Access | Required power objective |
 | `medbay.stub` | Medbay Triage | Side destination / future support room |
 | `science.ops.stub` | Science/Ops Lab | Side destination / future authorization room |
-| `bridge.locked` | Bridge Command Door | Current bridge approach placeholder |
+| `bridge.access` | Bridge Command Door | Current bridge approach placeholder |
 
-The next implementation should not replace that model. It should extend it so `bridge.locked` becomes a bridge approach area and a new final bridge room exists.
+The next implementation should not replace that model. It should extend it so `bridge.access` becomes a bridge approach area and a new final bridge room exists.
 
 ## Bridge-route zones
 
@@ -68,7 +70,7 @@ Purpose:
 Must include:
 - Bay Operations terminal on the starboard wall;
 - visible inner shuttle bay door ahead;
-- status lights that switch from locked/offline to open/online.
+- status lights that switch from available/offline to open/online.
 
 Progression:
 - `terminal.bay-ops = online`;
@@ -115,7 +117,7 @@ Must include:
 - distinct colors for branches.
 
 Progression:
-- forward bridge route should be visibly present but locked until Engineering is online;
+- forward bridge route should be visibly present but available before Engineering is online;
 - the active objective should point to Engineering before the bridge opens.
 
 Acceptance:
@@ -126,7 +128,7 @@ Acceptance:
 ### 5. Engineering Access
 
 Purpose:
-- provide the required bridge unlock objective.
+- provide the required bridge activate objective.
 
 Must include:
 - engineering door from the hub;
@@ -137,7 +139,7 @@ Must include:
 
 Progression:
 - using `terminal.engineering-power` changes power from `emergency` to `online` or `partial`;
-- bridge route changes from locked to available;
+- bridge route changes from available to available;
 - objective becomes `Return to the Bridge Command Door`.
 
 Acceptance:
@@ -168,10 +170,10 @@ Bridge-route rule:
 ### 7. Bridge Access Vestibule
 
 Purpose:
-- replace the current `bridge.locked` placeholder with a real space outside the bridge.
+- replace the current `bridge.access` placeholder with a real space outside the bridge.
 
 Recommended runtime rename path:
-- keep `bridge.locked` as an alias for compatibility;
+- keep `bridge.access` as an alias for compatibility;
 - introduce `bridge.access` as the clearer new ID;
 - update location labels to show `Bridge Access Vestibule`;
 - keep `door.bridge` as the door from the forward trunk into this vestibule.
@@ -179,8 +181,8 @@ Recommended runtime rename path:
 Must include:
 - heavy command door;
 - small access vestibule;
-- command lockout terminal or wall panel;
-- view into the bridge once unlocked, if possible.
+- command context terminal or wall panel;
+- view into the bridge once available, if possible.
 
 Progression options:
 - simple route: Engineering power opens `door.bridge`;
@@ -225,7 +227,7 @@ bridge.access       x -3.20.. 3.20, z -33.20..-25.45
 bridge.deck         x -6.40.. 6.40, z -42.00..-33.20
 ```
 
-The first implementation should add `bridge.deck` as a room forward of the current bridge access zone. That avoids overloading `bridge.locked` as both the locked door and the final bridge.
+The first implementation should add `bridge.deck` as a room forward of the current bridge access zone. That avoids overloading `bridge.access` as both the status-only door and the final bridge.
 
 ## Objective chain
 
@@ -243,14 +245,14 @@ Recommended objective IDs:
 
 ## Door and terminal state plan
 
-| ID | Initial state | Unlock condition | Result |
+| ID | Initial state | Activate condition | Result |
 | --- | --- | --- | --- |
 | `door.bay-access` | `open` | none | lets player enter Bay Ops |
-| `door.bay-inner` | `locked` | `terminal.bay-ops = online` | opens route to Security |
+| `door.bay-inner` | `available` | `terminal.bay-ops = online` | opens route to Security |
 | `door.security-hub` | `closed` | E-key at checkpoint | opens route to Hub |
 | `door.engineering-access` | `closed` | E-key at Hub | opens Engineering |
-| `terminal.engineering-power` | `offline` | E-key at Engineering console | power online and bridge unlock |
-| `door.bridge` | `locked` | Engineering power online | opens bridge access |
+| `terminal.engineering-power` | `offline` | E-key at Engineering console | power online and bridge activate |
+| `door.bridge` | `available` | Engineering power online | opens bridge access |
 | `door.bridge-inner` | `closed` or omitted in first pass | optional command panel | opens final bridge room |
 | `terminal.bridge-command` | `offline` | player reaches Bridge Deck | completes bridge-arrival slice |
 
@@ -276,17 +278,17 @@ Player-facing result:
 
 Acceptance:
 - hub branch floors/walls are visible;
-- bridge door is visible but locked;
+- bridge door is visible and reachable;
 - objective points to Engineering.
 
 ### Patch BR-3: Engineering power objective
 
 Player-facing result:
-- player can enter Engineering Access, use the power console, and unlock the bridge route.
+- player can enter Engineering Access, use the power console, and activate the bridge route.
 
 Acceptance:
 - pressing E at Engineering changes power and objective;
-- bridge door prompt changes from locked to open/available.
+- bridge door prompt changes from available to open/available.
 
 ### Patch BR-4: Bridge access vestibule
 
@@ -294,7 +296,7 @@ Player-facing result:
 - player can walk from the hub to a modeled bridge approach instead of a placeholder.
 
 Acceptance:
-- `bridge.access`/`bridge.locked` has visible geometry;
+- `bridge.access`/`bridge.access` has visible geometry;
 - bridge access uses correct HUD location and prompt;
 - no movement bounds let the player leave the model.
 
@@ -325,7 +327,7 @@ Add or update tests to check literal behavior in `scene-viewer.js`:
 - the relevant door/terminal ID exists;
 - prompt text is location-gated;
 - movement bounds include the new room;
-- door gating blocks locked spaces and allows unlocked spaces;
+- door state never blocks traversal; geometry bounds keep players inside modeled spaces;
 - objective text points to the next step;
 - `node --check` passes.
 
@@ -336,5 +338,5 @@ Avoid these failure modes:
 - do not allow movement into a region before its geometry is drawn;
 - do not show door prompts from the wrong location;
 - do not make the player hunt for an invisible E-key target;
-- do not unlock the bridge without a visible objective explaining why;
-- do not collapse the bridge into the existing locked-door placeholder.
+- do not activate the bridge without a visible objective explaining why;
+- do not collapse the bridge into the existing available-door placeholder.
