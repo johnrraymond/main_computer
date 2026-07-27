@@ -333,3 +333,84 @@ When a known unrelated test is deselected, record the exact deselection and reas
 ## Packaging rule
 
 Each implementation patch should be a replacement-file artifact that assumes the latest uploaded snapshot as its source state. Raw snapshot mode does not infer deletions from omitted files, so deletion semantics must be explicit if a future patch removes a file.
+
+
+## Bridge-route implementation addendum
+
+For bridge-reaching work, use the focused route document:
+
+```text
+pretty_docs/game-mother-ship-bridge-route-plan.md
+```
+
+That route turns the broad patch series into this concrete player path:
+
+```text
+bay.shuttle
+→ bay.ops
+→ security.checkpoint
+→ corridor.main
+→ engineering.access
+→ corridor.main
+→ bridge.access
+→ bridge.deck
+```
+
+### Bridge Route Patch BR-1: Security-to-hub visibility
+
+Purpose:
+- make the corridor beyond Bay Operations visibly connect to Security Checkpoint and the Main Corridor Hub.
+
+Acceptance checks:
+- the player never walks into a black void;
+- every walkable position has modeled floor, walls, and ceiling framing;
+- prompts only appear in the correct location.
+
+### Bridge Route Patch BR-2: Hub signage and branches
+
+Purpose:
+- make the Main Corridor Hub readable before adding more objectives.
+
+Acceptance checks:
+- signs clearly point to Shuttle Bay, Engineering, Medbay, Science/Ops, and Bridge;
+- the Bridge direction is visible but locked;
+- Engineering is clearly the active route.
+
+### Bridge Route Patch BR-3: Engineering unlocks bridge
+
+Purpose:
+- make Engineering Access the required action that enables bridge access.
+
+Acceptance checks:
+- Engineering Power Console changes ship power state;
+- objective updates to return to the Bridge Command Door;
+- Bridge Command Door state changes from locked to open/available.
+
+### Bridge Route Patch BR-4: Bridge access vestibule
+
+Purpose:
+- replace the current bridge placeholder with a real approach room.
+
+Acceptance checks:
+- `bridge.locked` remains compatible or aliases to `bridge.access`;
+- the player can stand in a modeled vestibule outside the bridge;
+- bridge prompts do not appear from the hub unless the player is near the door.
+
+### Bridge Route Patch BR-5: Bridge deck
+
+Purpose:
+- create the final walkable bridge destination.
+
+Acceptance checks:
+- `bridge.deck` exists as a new region;
+- entering it updates the HUD to `Bridge Deck`;
+- a Bridge Command Console interaction completes or advances the objective.
+
+### Bridge Route Patch BR-6: Side-room polish
+
+Purpose:
+- make Medbay and Science/Ops feel intentional without blocking the bridge route.
+
+Acceptance checks:
+- both side rooms have basic modeling and one simple interaction;
+- route-to-bridge completion still works if the player ignores side rooms unless a later objective explicitly requires them.
