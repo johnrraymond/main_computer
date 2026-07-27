@@ -9,9 +9,10 @@
       "acceptanceContractId": "file-explorer.acceptance.read-only-browse-preview",
       "runner": "pytest",
       "selectors": [
-        "tests/test_viewport_file_explorer.py"
+        "tests/test_viewport_file_explorer.py",
+        "tests/test_mcel_file_explorer_semantic_adapter.py"
       ],
-      "notes": "Covers trusted roots, bounded list/read/search, path rejection, classification, and read-only mounted browsing."
+      "notes": "Covers trusted roots, bounded list/read/search, path rejection, classification, read-only mounted browsing, and full semantic-adapter intent/recovery proof."
     },
     {
       "id": "file-explorer.binding.acceptance.layout-navigation-list-preview",

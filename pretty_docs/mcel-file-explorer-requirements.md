@@ -4,16 +4,25 @@
 
 This is the documentation-first requirements contract for the File Explorer app.
 
-The current implementation already has a File Explorer route, root discovery, read-only directory listing, bounded search, metadata/file preview, mounted-Windows path support, a Wunderbaum tree presentation with fallback list rendering, a File Explorer MCEL domain pack, and a planner entry that marks File Explorer as domain-ready. It does **not** yet have a dedicated File Explorer semantic adapter registered with the MCEL domain-adapter registry.
+The current implementation has a File Explorer route, root discovery, read-only directory listing, bounded search, metadata/file preview, mounted-Windows path support, a Wunderbaum tree presentation with fallback list rendering, a File Explorer MCEL domain pack, and a dedicated `FileExplorerSemanticAdapter` registered with the MCEL domain-adapter registry. The adapter executes the current bounded read-only intent set through the existing File Explorer API, emits receipts and evidence, classifies failures, and keeps mutation intents prohibited.
 
 So this document must be read as:
 
 ```text
-current: domain-ready read-only File Explorer planner + domain pack
-planned: full File Explorer semantic runtime for bounded read-only browsing, preview, search, file classification, and safe handoff
+current: full bounded read-only File Explorer semantic runtime for roots, navigation, listing, search, preview, classification, receipts, and recovery
+planned: governed cross-app handoff after a target-app handoff contract exists
 ```
 
 The purpose of this document is to make File Explorer requirements stable enough that MCEL Lab can later parse them, compare them with the live app, generate finding candidates, and drive code/test updates without relying on loose prose. File Explorer should be the small reference app for **navigation + list + preview** layout because its core workflows are useful, visible, and intentionally non-mutating.
+
+### Semantic adapter scope
+
+`FileExplorerSemanticAdapter` declares the current scope as `bounded-read-only-file-explorer-v1`.
+
+The scope includes executable roots, root selection, directory listing, parent navigation, bounded search, bounded preview, and entry classification. It also includes structured receipts, evidence mapping, failure classification, and recovery guidance. Delete, move/rename, and arbitrary file-command intents are explicitly prohibited.
+
+`openInOwningApp` remains a planned handoff boundary and is excluded from the current full-readiness derivation. Excluding that future intent does not authorize an implicit handoff: the current adapter cannot open another app, write a file, or create a revision. A later patch must add a separate governed handoff contract before that intent can enter the current semantic-runtime scope.
+
 
 ## Roadmap use case: inspect a project file safely
 
@@ -113,15 +122,15 @@ acceptance:
 id: file-explorer
 title: File Explorer
 status: specified
-current_runtime_status: domain-ready-read-only-planner-plus-domain-pack
-current_semantic_runtime_scope: none
+current_runtime_status: full-bounded-read-only-semantic-runtime
+current_semantic_runtime_scope: bounded-read-only-file-explorer-v1
 target_runtime_status: full-read-only-semantic-runtime
 dominant_object: FileEntry
 primary_user_goal: >
   Browse trusted roots, inspect directory contents, search within a bounded
-  scope, preview readable files, classify entries, and hand off chosen files to
-  the right Main Computer app without hidden filesystem, Git, remote, or command
-  side effects.
+  scope, preview readable files, classify entries, and identify the appropriate
+  owning app without hidden filesystem, Git, remote, command, or automatic
+  cross-app side effects.
 current_sources:
   - main_computer/web/applications/apps/file-explorer.html
   - main_computer/web/applications/scripts/file-explorer.js
@@ -129,12 +138,13 @@ current_sources:
   - main_computer/viewport_routes_file_explorer.py
   - main_computer/web/applications/scripts/mcel-specimen-planner.js
   - main_computer/web/applications/scripts/mcel-supercut-packs-planner-domains.js
-planned_adapter:
+current_adapter:
   - main_computer/web/applications/scripts/file-explorer-semantic-adapter.js
 verification:
   - tests/test_viewport_file_explorer.py
   - tests/test_viewport_applications_static_core.py
   - tests/test_mcel_documentation.py
+  - tests/test_mcel_file_explorer_semantic_adapter.py
 ```
 
 ## Semantic app form
@@ -623,7 +633,7 @@ id: file-explorer.intent.inspect-roots
 app: file-explorer
 status: specified
 intent: inspectRoots
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 trigger: app load or refresh roots
@@ -645,7 +655,7 @@ id: file-explorer.intent.select-root
 app: file-explorer
 status: specified
 intent: selectRoot
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 trigger: user selects a root
@@ -666,7 +676,7 @@ id: file-explorer.intent.list-directory
 app: file-explorer
 status: specified
 intent: listDirectory
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 trigger: root selection, folder open, or refresh
@@ -692,7 +702,7 @@ id: file-explorer.intent.navigate-up
 app: file-explorer
 status: specified
 intent: navigateUp
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 trigger: user clicks Up
@@ -712,7 +722,7 @@ id: file-explorer.intent.search-current-folder
 app: file-explorer
 status: specified
 intent: searchCurrentFolder
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 trigger: user enters a query and clicks Search or presses Enter
@@ -738,7 +748,7 @@ id: file-explorer.intent.preview-entry
 app: file-explorer
 status: specified
 intent: previewEntry
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 trigger: user selects a file or folder
@@ -766,7 +776,7 @@ id: file-explorer.intent.classify-entry
 app: file-explorer
 status: specified
 intent: classifyEntry
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 trigger: list/search/preview entry creation
@@ -788,7 +798,7 @@ id: file-explorer.intent.open-in-owning-app
 app: file-explorer
 status: planned
 intent: openInOwningApp
-current_adapter_status: not-registered
+current_adapter_status: preflight-only
 target_adapter_status: preflight-only
 adapter_boundary: handoff-adapter-boundary
 risk: local-state

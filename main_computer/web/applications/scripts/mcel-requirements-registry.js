@@ -34,7 +34,7 @@
     },
     "file-explorer": {
       "app": "file-explorer",
-      "current_runtime_status": "domain-ready-read-only-planner-plus-domain-pack",
+      "current_runtime_status": "full-bounded-read-only-semantic-runtime",
       "declared_form_primitive_count": 6,
       "mutation_intent_count": 3,
       "prohibited_intent_count": 3,
@@ -563,7 +563,8 @@
     },
     "file-explorer": {
       "adapter_status_counts": {
-        "current_adapter_status:not-registered": 8,
+        "current_adapter_status:executable": 7,
+        "current_adapter_status:preflight-only": 1,
         "current_adapter_status:prohibited": 3,
         "target_adapter_status:executable": 7,
         "target_adapter_status:preflight-only": 1,
@@ -582,7 +583,7 @@
         "mcel-use-case": 2
       },
       "contract_complete": true,
-      "current_runtime_status": "domain-ready-read-only-planner-plus-domain-pack",
+      "current_runtime_status": "full-bounded-read-only-semantic-runtime",
       "dominant_object": "FileEntry",
       "first_regions": [
         {
@@ -732,7 +733,7 @@
       "mutation_intent_count": 3,
       "open_finding_count": 3,
       "planned_or_open_count": 41,
-      "primary_user_goal": "Browse trusted roots, inspect directory contents, search within a bounded scope, preview readable files, classify entries, and hand off chosen files to the right Main Computer app without hidden filesystem, Git, remote, or command side effects.",
+      "primary_user_goal": "Browse trusted roots, inspect directory contents, search within a bounded scope, preview readable files, classify entries, and identify the appropriate owning app without hidden filesystem, Git, remote, command, or automatic cross-app side effects.",
       "prohibited_intent_count": 3,
       "region_count": 7,
       "runtime_check_count": 3,
@@ -763,9 +764,9 @@
         }
       ],
       "source": {
-        "end_line": 138,
+        "end_line": 148,
         "file": "pretty_docs/mcel-file-explorer-requirements.md",
-        "start_line": 112
+        "start_line": 121
       },
       "status": "specified",
       "status_counts": {
@@ -2015,7 +2016,8 @@
     },
     {
       "adapter_status_counts": {
-        "current_adapter_status:not-registered": 8,
+        "current_adapter_status:executable": 7,
+        "current_adapter_status:preflight-only": 1,
         "current_adapter_status:prohibited": 3,
         "target_adapter_status:executable": 7,
         "target_adapter_status:preflight-only": 1,
@@ -2034,7 +2036,7 @@
         "mcel-use-case": 2
       },
       "contract_complete": true,
-      "current_runtime_status": "domain-ready-read-only-planner-plus-domain-pack",
+      "current_runtime_status": "full-bounded-read-only-semantic-runtime",
       "dominant_object": "FileEntry",
       "first_regions": [
         {
@@ -2184,7 +2186,7 @@
       "mutation_intent_count": 3,
       "open_finding_count": 3,
       "planned_or_open_count": 41,
-      "primary_user_goal": "Browse trusted roots, inspect directory contents, search within a bounded scope, preview readable files, classify entries, and hand off chosen files to the right Main Computer app without hidden filesystem, Git, remote, or command side effects.",
+      "primary_user_goal": "Browse trusted roots, inspect directory contents, search within a bounded scope, preview readable files, classify entries, and identify the appropriate owning app without hidden filesystem, Git, remote, command, or automatic cross-app side effects.",
       "prohibited_intent_count": 3,
       "region_count": 7,
       "runtime_check_count": 3,
@@ -2215,9 +2217,9 @@
         }
       ],
       "source": {
-        "end_line": 138,
+        "end_line": 148,
         "file": "pretty_docs/mcel-file-explorer-requirements.md",
-        "start_line": 112
+        "start_line": 121
       },
       "status": "specified",
       "status_counts": {
@@ -3698,9 +3700,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 1059,
+                "end_line": 1069,
                 "file": "pretty_docs/mcel-file-explorer-requirements.md",
-                "start_line": 1036
+                "start_line": 1046
               },
               "source_binding": "file-explorer.binding.viewport-file-explorer",
               "status": "specified",
@@ -3739,9 +3741,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 1006,
+                "end_line": 1016,
                 "file": "pretty_docs/mcel-file-explorer-requirements.md",
-                "start_line": 984
+                "start_line": 994
               },
               "source_binding": "file-explorer.binding.viewport-file-explorer",
               "status": "specified",
@@ -3809,9 +3811,9 @@
               ],
               "severity": "critical",
               "source": {
-                "end_line": 1034,
+                "end_line": 1044,
                 "file": "pretty_docs/mcel-file-explorer-requirements.md",
-                "start_line": 1008
+                "start_line": 1018
               },
               "source_binding": "file-explorer.binding.viewport-file-explorer",
               "status": "specified",
@@ -4626,7 +4628,7 @@
     "error_count": 0,
     "pretty_docs_root": "pretty_docs",
     "registry_version": "mcel-requirements-registry-v1",
-    "repo_root": "<repo-root>",
+    "repo_root": "/mnt/data/work_patch29/main_computer_test",
     "strict_schema_ready": true,
     "total_blocks": 303,
     "valid": true,

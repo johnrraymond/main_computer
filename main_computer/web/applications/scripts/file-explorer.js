@@ -9,6 +9,10 @@
     let systemFileExplorerRenderToken = 0;
 
     async function systemFileExplorerApi(path, payload = {}) {
+      const semanticAdapter = window.FileExplorerSemanticAdapter;
+      if (semanticAdapter && typeof semanticAdapter.requestEndpoint === "function") {
+        return semanticAdapter.requestEndpoint(path, payload);
+      }
       const response = await fetch(path, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
