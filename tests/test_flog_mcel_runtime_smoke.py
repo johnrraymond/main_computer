@@ -758,6 +758,13 @@ def test_report_attaches_gate_truth_without_changing_surface_verdict(flog):
 
     assert report["summary"]["status"] == "pass"
     assert report["summary"]["truthStatusCounts"] == {"runtime-proven": 1}
+    assert report["repositoryProvenance"]["schema"] == "mcel-repository-provenance-v2"
+    assert report["repositoryProvenance"]["algorithm"] == "sha256-source-path-content-v2"
+    assert report["repositoryProvenance"]["fingerprint"]
+    assert report["repositoryProvenance"]["selectionMethod"] in {
+        "git-tracked-and-unignored",
+        "snapshot-source-roots",
+    }
     assert report["summary"]["runtimeSurfaceProvenCount"] == 1
     assert report["summary"]["semanticRuntimeProvenCount"] == 0
     assert report["summary"]["truthFindingCounts"] == {"acceptance-test-missing": 1}
@@ -768,6 +775,8 @@ def test_report_attaches_gate_truth_without_changing_surface_verdict(flog):
     )
 
     markdown = flog.render_markdown(report)
+    assert "Repository fingerprint scope:" in markdown
+    assert "Repository selection method:" in markdown
     assert "## App truth" in markdown
     assert "| calculator | runtime-proven | yes | no | no | acceptance-test-missing |" in markdown
     assert "Truth findings do not rewrite the FLOG surface verdict" in markdown

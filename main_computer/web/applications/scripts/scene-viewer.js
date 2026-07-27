@@ -2472,11 +2472,13 @@
             : JSON.parse(JSON.stringify(fallback))
         );
         const stringMap = (value, fallback = {}) => {
-          const source = value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+          const supplied = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+          const source = {...fallback, ...supplied};
           return Object.fromEntries(Object.entries(source).map(([key, entry]) => [String(key), String(entry)]));
         };
         const objectMap = (value, fallback = {}) => {
-          const source = value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+          const supplied = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+          const source = {...fallback, ...supplied};
           return Object.fromEntries(
             Object.entries(source)
               .filter(([key]) => String(key).trim())
@@ -2517,6 +2519,18 @@
           },
           "objective.bridge-screen": {
             label: "Use the bridge viewscreen to track the enemy ship.",
+            location: "bridge.deck"
+          },
+          "objective.enemy-track": {
+            label: "Enemy ship tracked on the bridge tactical display.",
+            location: "bridge.deck"
+          },
+          "objective.enemy-attack": {
+            label: "Use the bridge tactical console to fire on the enemy ship.",
+            location: "bridge.deck"
+          },
+          "objective.enemy-disabled": {
+            label: "Enemy raider disabled. Hold the bridge and await next orders.",
             location: "bridge.deck"
           }
         };
@@ -2578,7 +2592,12 @@
           "terminal.bridge-viewscreen": {
             label: "Bridge Viewscreen",
             location: "bridge.deck",
-            state: "online"
+            state: "standby"
+          },
+          "terminal.bridge-tactical": {
+            label: "Bridge Tactical Console",
+            location: "bridge.deck",
+            state: "ready"
           }
         };
         const locations = stringMap(interior.locations, defaultLocations);
@@ -2597,7 +2616,13 @@
           terminals: objectMap(interior.terminals, defaultTerminals),
           flags: cloneObject(interior.flags, {
             bayControlActive: true,
-            boardersPausedAfterDocking: true
+            boardersPausedAfterDocking: true,
+            bridgeViewscreenTrackingActive: false,
+            bridgeTacticalArmed: false,
+            bridgeTacticalShotsFired: 0,
+            bridgeTacticalLastFireAtMs: 0,
+            enemyShipHullPercent: 100,
+            enemyShipDisabled: false
           })
         };
       }
@@ -3122,6 +3147,13 @@
             if (!door || typeof door !== "object") return;
             if (String(door.state || "").toLowerCase() === "locked") door.state = "open";
           });
+          const flags = JSON.parse(JSON.stringify(config.flags || {}));
+          if (!Number.isFinite(Number(flags.enemyShipHullPercent))) flags.enemyShipHullPercent = 100;
+          flags.enemyShipHullPercent = Math.max(0, Math.min(100, Number(flags.enemyShipHullPercent)));
+          if (!Number.isFinite(Number(flags.bridgeTacticalShotsFired))) flags.bridgeTacticalShotsFired = 0;
+          if (!Number.isFinite(Number(flags.bridgeTacticalLastFireAtMs))) flags.bridgeTacticalLastFireAtMs = 0;
+          if (typeof flags.bridgeTacticalArmed !== "boolean") flags.bridgeTacticalArmed = false;
+          if (typeof flags.enemyShipDisabled !== "boolean") flags.enemyShipDisabled = flags.enemyShipHullPercent <= 0;
           return {
             enabled: Boolean(config.enabled),
             location: config.initialLocation,
@@ -3130,7 +3162,7 @@
             objectiveId: config.initialObjective,
             doors,
             terminals: JSON.parse(JSON.stringify(config.terminals || {})),
-            flags: JSON.parse(JSON.stringify(config.flags || {})),
+            flags,
             lastInteractionStatus: ""
           };
         }
@@ -3233,10 +3265,13 @@
         shuttleBayMovementConfig() {
           return {
             ...this.movement,
+            // Keep global mother-ship movement bounds aligned with every
+            // walkable region; the bridge deck extends to z -39.35 and the
+            // bridge viewscreen terminal lives inside that space.
             bounds: {
               minX: -9.8,
               maxX: 9.8,
-              minZ: -31.5,
+              minZ: -39.65,
               maxZ: 5.12
             },
             colliders: [
@@ -3285,6 +3320,64 @@
         shipDoorAllowsPosition(x, z) {
           // Door state is informational only: the mother-ship route no longer uses locked-door gating.
           // Geometry bounds still keep the player inside modeled rooms and corridors.
+          return true;
+        }
+
+        bridgeViewscreenTrackingActive() {
+          const state = String(this.shipState?.terminals?.["terminal.bridge-viewscreen"]?.state || "").toLowerCase();
+          return state === "tracking" || Boolean(this.shipState?.flags?.bridgeViewscreenTrackingActive);
+        }
+
+        enemyShipHullPercent() {
+          const value = Number(this.shipState?.flags?.enemyShipHullPercent);
+          if (!Number.isFinite(value)) return 100;
+          return Math.max(0, Math.min(100, value));
+        }
+
+        enemyShipDisabled() {
+          return this.enemyShipHullPercent() <= 0 || Boolean(this.shipState?.flags?.enemyShipDisabled);
+        }
+
+        bridgeTacticalShotAgeMs(nowMs = this.lastFrameTime ?? performance.now()) {
+          const firedAt = Number(this.shipState?.flags?.bridgeTacticalLastFireAtMs || 0);
+          if (!firedAt) return Infinity;
+          return Math.max(0, (Number.isFinite(nowMs) ? nowMs : performance.now()) - firedAt);
+        }
+
+        fireBridgeTacticalConsole() {
+          if (!this.shipState) this.shipState = this.createShipState();
+          const flags = this.shipState.flags || (this.shipState.flags = {});
+          const nowMs = Math.round(this.lastFrameTime || performance.now() || 0);
+          this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
+          this.setShipTerminalState("terminal.bridge-tactical", "firing");
+          flags.bridgeViewscreenTrackingActive = true;
+          flags.enemyShipOnBridgeViewscreen = true;
+          flags.bridgeTacticalArmed = true;
+          flags.bridgeTacticalShotsFired = Math.max(0, Number(flags.bridgeTacticalShotsFired) || 0) + 1;
+          flags.bridgeTacticalLastFireAtMs = nowMs;
+          const currentHull = this.enemyShipHullPercent();
+          if (currentHull <= 0 || flags.enemyShipDisabled) {
+            flags.enemyShipHullPercent = 0;
+            flags.enemyShipDisabled = true;
+            this.setShipTerminalState("terminal.bridge-tactical", "disabled-target");
+            this.setShipObjective("objective.enemy-disabled", true);
+            this.setShipInteractionStatus("Bridge tactical console reports the enemy raider is already disabled.");
+            this.emitShipState(true);
+            return true;
+          }
+          const nextHull = Math.max(0, currentHull - 35);
+          flags.enemyShipHullPercent = nextHull;
+          if (nextHull <= 0) {
+            flags.enemyShipDisabled = true;
+            this.setShipTerminalState("terminal.bridge-tactical", "disabled-target");
+            this.setShipObjective("objective.enemy-disabled", true);
+            this.setShipInteractionStatus("Bridge tactical console fired final volley. Enemy raider disabled.");
+          } else {
+            flags.enemyShipDisabled = false;
+            this.setShipObjective("objective.enemy-attack", true);
+            this.setShipInteractionStatus(`Bridge tactical console fired. Enemy raider hull ${Math.round(nextHull)}%.`);
+          }
+          this.emitShipState(true);
           return true;
         }
 
@@ -3347,7 +3440,13 @@
           } else if (nextLocation === "bridge.access") {
             this.setShipObjective("objective.bridge-access");
           } else if (nextLocation === "bridge.deck") {
-            this.setShipObjective("objective.bridge-screen");
+            this.setShipObjective(
+              this.enemyShipDisabled()
+                ? "objective.enemy-disabled"
+                : this.bridgeViewscreenTrackingActive()
+                  ? "objective.enemy-attack"
+                  : "objective.bridge-screen"
+            );
           }
           return changed;
         }
@@ -3440,6 +3539,14 @@
               range: 1.95
             },
             {
+              id: "terminal.bridge-tactical",
+              kind: "terminal",
+              label: "Bridge Tactical Console",
+              location: "bridge.deck",
+              position: [2.85, -36.7],
+              range: 1.85
+            },
+            {
               id: "terminal.bridge-viewscreen",
               kind: "terminal",
               label: "Bridge Viewscreen",
@@ -3502,11 +3609,19 @@
               return true;
             }
             if (target.id === "terminal.bridge-viewscreen") {
-              this.setShipTerminalState("terminal.bridge-viewscreen", "online");
-              this.setShipObjective("objective.bridge-screen");
-              if (this.shipState?.flags) this.shipState.flags.enemyShipOnBridgeViewscreen = true;
-              this.setShipInteractionStatus("Bridge viewscreen has the enemy ship on tactical display.");
+              this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
+              this.setShipObjective(this.enemyShipDisabled() ? "objective.enemy-disabled" : "objective.enemy-attack", true);
+              if (this.shipState?.flags) {
+                this.shipState.flags.enemyShipOnBridgeViewscreen = true;
+                this.shipState.flags.bridgeViewscreenTrackingActive = true;
+                this.shipState.flags.bridgeViewscreenInteractedAtMs = Math.round(this.lastFrameTime || 0);
+              }
+              this.setShipInteractionStatus("Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.");
+              this.emitShipState(true);
               return true;
+            }
+            if (target.id === "terminal.bridge-tactical") {
+              return this.fireBridgeTacticalConsole();
             }
           }
 
@@ -4051,7 +4166,8 @@
             }
           };
           const terminalBlock = (terminalId, centerX, centerZ, color = blue) => {
-            const online = this.shipState?.terminals?.[terminalId]?.state === "online";
+            const state = String(this.shipState?.terminals?.[terminalId]?.state || "").toLowerCase();
+            const online = state === "online" || state === "tracking";
             const glow = online ? green : color;
             builder.consoleWedge(centerX, centerZ, 1.0, 0.72, -1.08, -0.36, 0.18, terminal);
             builder.box([centerX - 0.36, 0.16, centerZ - 0.32], [centerX + 0.36, 0.5, centerZ + 0.1], glow);
@@ -4209,7 +4325,11 @@
           builder.box([-2.35, -1.06, -34.15], [-1.22, -0.5, -33.3], builder.color("#1e3a8a"));
           builder.box([1.22, -1.06, -34.15], [2.35, -0.5, -33.3], builder.color("#1e3a8a"));
           builder.consoleWedge(-2.85, -36.7, 1.25, 0.82, -1.08, -0.32, 0.22, builder.color("#0f766e"));
-          builder.consoleWedge(2.85, -36.7, 1.25, 0.82, -1.08, -0.32, 0.22, builder.color("#0f766e"));
+          // Starboard bridge tactical console: E-key fires on the enemy ship shown on the viewscreen.
+          const tacticalConsoleGlow = builder.color(this.enemyShipDisabled() ? "#86efac" : "#f97316", true);
+          builder.consoleWedge(2.85, -36.7, 1.25, 0.82, -1.08, -0.32, 0.22, builder.color("#7c2d12"));
+          builder.beam([2.24, -0.48, -36.98], [3.46, -0.48, -36.98], 0.026, tacticalConsoleGlow);
+          builder.box([2.54, -0.7, -36.92], [3.16, -0.62, -36.66], tacticalConsoleGlow);
           builder.consoleWedge(0, -35.1, 1.65, 0.9, -1.08, -0.32, 0.24, builder.color("#1e3a8a"));
           builder.ellipsoid([0, -0.55, -36.22], [0.42, 0.38, 0.42], 12, 6, builder.color("#475569"));
           builder.box([-0.36, -1.05, -35.9], [0.36, -0.58, -35.48], builder.color("#64748b"));
@@ -4281,11 +4401,20 @@
           const screenGlass = builder.color("#06111f");
           const screenGlow = builder.color("#38bdf8", true);
           const tacticalGrid = builder.color("#0ea5e9", true);
-          const hostileHull = builder.color("#365314");
-          const hostileDark = builder.color("#111827");
-          const hostileAlert = builder.color("#ef4444", true);
-          const signal = builder.color("#fbbf24", true);
+          const hullPercent = this.enemyShipHullPercent();
+          const disabled = this.enemyShipDisabled();
+          const shotAgeMs = this.bridgeTacticalShotAgeMs(nowMs);
+          const tacticalFiring = shotAgeMs < 850;
+          const hostileHull = builder.color(disabled ? "#334155" : hullPercent < 45 ? "#854d0e" : "#365314");
+          const hostileDark = builder.color(disabled ? "#0f172a" : "#111827");
+          const hostileAlert = builder.color(disabled ? "#64748b" : "#ef4444", true);
+          const signal = builder.color(disabled ? "#86efac" : "#fbbf24", true);
+          const weaponGlow = builder.color("#f97316", true);
+          const hitGlow = builder.color("#fef3c7", true);
+          const tracking = this.bridgeViewscreenTrackingActive();
+          const lockGlow = builder.color(disabled ? "#86efac" : tracking ? "#86efac" : "#fbbf24", true);
           const scanPulse = 0.5 + 0.5 * Math.sin((nowMs || 0) / 460);
+          const lockPulse = 0.5 + 0.5 * Math.sin((nowMs || 0) / 170);
           const z = -39.12;
 
           // Bridge viewscreen surface mounted on the forward bulkhead.
@@ -4314,6 +4443,34 @@
           builder.beam([1.38, 0.6, z + 0.13], [2.75, 0.6, z + 0.13], 0.016, hostileAlert);
           builder.beam([-2.75, 1.96, z + 0.13], [-1.38, 1.96, z + 0.13], 0.016, hostileAlert);
           builder.beam([1.38, 1.96, z + 0.13], [2.75, 1.96, z + 0.13], 0.016, hostileAlert);
+          if (tacticalFiring) {
+            const impact = 1 - Math.min(1, shotAgeMs / 850);
+            builder.beam([2.86, 0.58, z + 0.22], [0.42, 1.2, z + 0.34], 0.018 + impact * 0.028, weaponGlow);
+            builder.beam([2.66, 0.72, z + 0.22], [-0.34, 1.36, z + 0.34], 0.014 + impact * 0.022, weaponGlow);
+            builder.box([-0.26, 1.1, z + 0.33], [0.26, 1.48, z + 0.42], hitGlow);
+          }
+          const hullBarWidth = 2.4 * Math.max(0, Math.min(1, hullPercent / 100));
+          builder.box([-1.2, 0.18, z + 0.18], [-1.2 + hullBarWidth, 0.25, z + 0.25], disabled ? lockGlow : hostileAlert);
+          if (disabled) {
+            builder.beam([-1.6, 1.28, z + 0.34], [1.6, 1.28, z + 0.34], 0.028, lockGlow);
+            builder.beam([0, 0.7, z + 0.34], [0, 1.86, z + 0.34], 0.028, lockGlow);
+          }
+
+          if (tracking) {
+            const thickness = 0.018 + lockPulse * 0.014;
+            builder.beam([-1.12, 0.86, z + 0.18], [-0.54, 0.86, z + 0.18], thickness, lockGlow);
+            builder.beam([0.54, 0.86, z + 0.18], [1.12, 0.86, z + 0.18], thickness, lockGlow);
+            builder.beam([-1.12, 1.7, z + 0.18], [-0.54, 1.7, z + 0.18], thickness, lockGlow);
+            builder.beam([0.54, 1.7, z + 0.18], [1.12, 1.7, z + 0.18], thickness, lockGlow);
+            builder.beam([-1.12, 0.86, z + 0.18], [-1.12, 1.24, z + 0.18], thickness, lockGlow);
+            builder.beam([1.12, 0.86, z + 0.18], [1.12, 1.24, z + 0.18], thickness, lockGlow);
+            builder.beam([-1.12, 1.34, z + 0.18], [-1.12, 1.7, z + 0.18], thickness, lockGlow);
+            builder.beam([1.12, 1.34, z + 0.18], [1.12, 1.7, z + 0.18], thickness, lockGlow);
+            builder.beam([-2.95, 0.48, z + 0.16], [2.95, 0.48, z + 0.16], 0.014, lockGlow);
+            builder.beam([-2.95, 2.08, z + 0.16], [2.95, 2.08, z + 0.16], 0.014, lockGlow);
+          } else {
+            builder.beam([-2.85 + scanPulse * 5.7, 0.48, z + 0.16], [-2.85 + scanPulse * 5.7, 2.08, z + 0.16], 0.012, signal);
+          }
         }
 
         appendMotherShip(builder, center, scale = 1, docked = false) {

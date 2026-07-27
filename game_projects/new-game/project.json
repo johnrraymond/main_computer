@@ -1123,6 +1123,18 @@
               "objective.bridge-screen": {
                 "label": "Use the bridge viewscreen to track the enemy ship.",
                 "location": "bridge.deck"
+              },
+              "objective.enemy-track": {
+                "label": "Enemy ship tracked on the bridge tactical display.",
+                "location": "bridge.deck"
+              },
+              "objective.enemy-attack": {
+                "label": "Use the bridge tactical console to fire on the enemy ship.",
+                "location": "bridge.deck"
+              },
+              "objective.enemy-disabled": {
+                "label": "Enemy raider disabled. Hold the bridge and await next orders.",
+                "location": "bridge.deck"
               }
             },
             "doors": {
@@ -1183,12 +1195,23 @@
               "terminal.bridge-viewscreen": {
                 "label": "Bridge Viewscreen",
                 "location": "bridge.deck",
-                "state": "online"
+                "state": "standby"
+              },
+              "terminal.bridge-tactical": {
+                "label": "Bridge Tactical Console",
+                "location": "bridge.deck",
+                "state": "ready"
               }
             },
             "flags": {
               "bayControlActive": true,
-              "boardersPausedAfterDocking": true
+              "boardersPausedAfterDocking": true,
+              "bridgeViewscreenTrackingActive": false,
+              "bridgeTacticalArmed": false,
+              "bridgeTacticalShotsFired": 0,
+              "bridgeTacticalLastFireAtMs": 0,
+              "enemyShipHullPercent": 100,
+              "enemyShipDisabled": false
             }
           }
         },

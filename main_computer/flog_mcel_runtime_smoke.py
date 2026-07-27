@@ -41,6 +41,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
+try:
+    from .mcel_evidence_provenance import build_repository_provenance
+except ImportError:
+    try:
+        from main_computer.mcel_evidence_provenance import build_repository_provenance
+    except ImportError:  # Direct script execution from the repository root.
+        from mcel_evidence_provenance import build_repository_provenance
+
 
 REPORT_KIND = "mcel.flog.runtime-contracts.report"
 REPORT_SCHEMA = "mcel-runtime-flog-report-v2"
@@ -1258,6 +1266,7 @@ def build_report(
         "version": REPORT_VERSION,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "repoRoot": str(repo),
+        "repositoryProvenance": build_repository_provenance(repo),
         "baseUrl": normalize_base_url(base_url).rstrip("/"),
         "viewport": viewport or dict(DEFAULT_VIEWPORT),
         "source": {
@@ -1285,6 +1294,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Schema: `{report.get('schema', '')}`",
         f"- Version: `{report.get('version', '')}`",
         f"- Generated: `{report.get('generatedAt', '')}`",
+        f"- Repository fingerprint: `{(report.get('repositoryProvenance') or {}).get('fingerprint', '')}`",
+        f"- Repository fingerprint scope: `{(report.get('repositoryProvenance') or {}).get('scope', '')}`",
+        f"- Repository selection method: `{(report.get('repositoryProvenance') or {}).get('selectionMethod', '')}`",
         f"- Base URL: `{report.get('baseUrl', '')}`",
         f"- Viewport: `{viewport_label(report.get('viewport') or DEFAULT_VIEWPORT)}`",
         f"- Status: **{summary.get('status', 'unknown')}**",

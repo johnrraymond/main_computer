@@ -1,0 +1,144 @@
+{
+  "schema": "mcel-acceptance-bindings-v1",
+  "version": "mcel-acceptance-bindings-v1",
+  "description": "Executable pytest bindings for currently enforceable MCEL acceptance contracts. Requirements documents remain the contract authority.",
+  "bindings": [
+    {
+      "id": "file-explorer.binding.acceptance.read-only-browse-preview",
+      "appId": "file-explorer",
+      "acceptanceContractId": "file-explorer.acceptance.read-only-browse-preview",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_viewport_file_explorer.py"
+      ],
+      "notes": "Covers trusted roots, bounded list/read/search, path rejection, classification, and read-only mounted browsing."
+    },
+    {
+      "id": "file-explorer.binding.acceptance.layout-navigation-list-preview",
+      "appId": "file-explorer",
+      "acceptanceContractId": "file-explorer.acceptance.layout-navigation-list-preview",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_file_explorer_surface.py",
+        "tests/test_mcel_file_explorer_layout_fit.py"
+      ],
+      "notes": "Covers semantic regions, static layout grammar, dynamic row containment, and readable fit."
+    },
+    {
+      "id": "file-explorer.binding.acceptance.mounted-paths",
+      "appId": "file-explorer",
+      "acceptanceContractId": "file-explorer.acceptance.mounted-paths",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_viewport_file_explorer.py"
+      ],
+      "notes": "Covers disabled-by-default path mounts, configured drive browsing, aliases, root boundaries, and read-only behavior."
+    },
+    {
+      "id": "git-tools.binding.acceptance.semantic-readiness",
+      "appId": "git-tools",
+      "acceptanceContractId": "git-tools.acceptance.semantic-readiness",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_git_tools_semantic_adapter.py"
+      ],
+      "notes": "Covers adapter readiness, intent classification, governed execution, receipts, and no mutation fallback."
+    },
+    {
+      "id": "git-tools.binding.acceptance.governed-push",
+      "appId": "git-tools",
+      "acceptanceContractId": "git-tools.acceptance.governed-push",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_git_tools_semantic_adapter.py"
+      ],
+      "notes": "Covers confirmation, stale-state revalidation, decline behavior, backend call boundaries, and push receipts."
+    },
+    {
+      "id": "git-tools.binding.acceptance.project-publishing",
+      "appId": "git-tools",
+      "acceptanceContractId": "git-tools.acceptance.project-publishing",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_git_tools_project_workflow.py",
+        "tests/test_git_tools_project_panel.py"
+      ],
+      "notes": "Covers project-level workflow ownership, publishing actions, and project panel compatibility boundaries."
+    },
+    {
+      "id": "git-tools.binding.acceptance.file-triage",
+      "appId": "git-tools",
+      "acceptanceContractId": "git-tools.acceptance.file-triage",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_git_tools.py::GitToolsServiceTests::test_read_gitignore_file_returns_line_elements_for_ui_workbench",
+        "tests/test_git_tools.py::GitToolsServiceTests::test_secrets_filter_draft_scan_uses_left_choices_without_saving",
+        "tests/test_git_tools.py::GitToolsServiceTests::test_patch_inventory_preview_and_dry_run_manifest",
+        "tests/test_git_tools.py::GitToolsServiceTests::test_archive_files_status_splits_staged_unstaged_and_untracked_groups",
+        "tests/test_git_tools.py::GitToolsServiceTests::test_archive_files_preserves_selected_status_groups_on_archive_branch_and_removes_them",
+        "tests/test_git_tools_gitignore_workbench.py"
+      ],
+      "notes": "Covers file status grouping, selected-project mutation boundaries, ignore workbench behavior, and secret/filter evidence."
+    },
+    {
+      "id": "git-tools.binding.acceptance.recovery",
+      "appId": "git-tools",
+      "acceptanceContractId": "git-tools.acceptance.recovery",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_git_tools_semantic_adapter.py"
+      ],
+      "notes": "Covers failed refresh receipts, recovery classification, retry guidance, and prohibited-action alternatives."
+    },
+    {
+      "id": "calculator.binding.acceptance.no-hidden-mutation",
+      "appId": "calculator",
+      "acceptanceContractId": "calculator.acceptance.no-hidden-mutation",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_calculator_acceptance.py"
+      ],
+      "notes": "Covers local arithmetic/graph boundaries, explicit model and Mathics routes, and absence of file, Git, revision, checkpoint, or terminal mutation paths."
+    },
+    {
+      "id": "website-builder.binding.acceptance.website-project-model",
+      "appId": "website-builder",
+      "acceptanceContractId": "website-builder.acceptance.website-project-model",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_website_builder_acceptance.py::test_website_project_model_exposes_saved_sites_and_artifacts"
+      ],
+      "notes": "Covers saved hub-site/johnrraymond identities, required project artifacts, and selected-site UI state."
+    },
+    {
+      "id": "website-builder.binding.acceptance.save-preview-publish-separated",
+      "appId": "website-builder",
+      "acceptanceContractId": "website-builder.acceptance.save-preview-publish-separated",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_website_builder_acceptance.py::test_website_builder_save_preview_publish_actions_are_separate"
+      ],
+      "notes": "Covers distinct save, preview, publish, and Git handoff boundaries without executing unrelated Website Builder tests."
+    },
+    {
+      "id": "website-builder.binding.acceptance.publish-lanes-separated",
+      "appId": "website-builder",
+      "acceptanceContractId": "website-builder.acceptance.publish-lanes-separated",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_website_builder_acceptance.py::test_website_builder_publish_lanes_and_verification_are_separate"
+      ],
+      "notes": "Covers separately labeled local/dev/remote lanes, accepted remote target evidence, visit controls, and success-only verification updates."
+    },
+    {
+      "id": "website-builder.binding.acceptance.blog-runtime-evidence",
+      "appId": "website-builder",
+      "acceptanceContractId": "website-builder.acceptance.blog-runtime-evidence",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_website_builder_blog_install_wizard.py"
+      ],
+      "notes": "Covers dependency order, Directus/SQLite choices, generated runtime controls, persisted install intent, and deploy preflight evidence."
+    }
+  ]
+}

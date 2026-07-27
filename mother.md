@@ -47,9 +47,9 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-002` | Read-only discovery does not mutate authority or infrastructure | [Design goals](#design-goals) | Read-only integration and side-effect inspection | — | Implementable |
 | `MOTHER-REQ-003` | Durable state and private identity survive control-container replacement | [Mother durable state and private identity](#mother-durable-state-and-private-identity) | Schema validation and replacement-start recovery test | — | Implementable |
 | `MOTHER-REQ-004` | Journals replay from a valid checkpoint to a proven head | [Checkpoint-aware replay](#checkpoint-aware-replay) | Replay corpus, corruption, and checkpoint-selection tests | — | Implementable |
-| `MOTHER-REQ-005` | Journal entries and heads have deterministic atomic commit semantics | [Atomic filesystem commit](#atomic-filesystem-commit) | Crash-point and fsync fault-injection tests | — | Implementable |
+| `MOTHER-REQ-005` | Journal entries, network authorization bundles, and active heads have deterministic atomic commit semantics | [Atomic filesystem commit](#atomic-filesystem-commit) | Entry/bundle hash-order, crash-point, orphan-evidence, and fsync fault-injection tests | — | Implementable |
 | `MOTHER-REQ-006` | Operating-system locks, scope ownership, and full-set reservations serialize mutation | [Locking model](#locking-model) | Concurrent-writer, split-reservation, and stale-metadata tests | — | Implementable |
-| `MOTHER-REQ-007` | Cross-journal facts retain one owner and one irreversible commit point | [Cross-journal transitions](#cross-journal-transitions) | Replay proof and interrupted-finalize tests | — | Implementable |
+| `MOTHER-REQ-007` | Cross-journal facts retain one owner and finalization uses one acyclic authorization bundle and one irreversible commit point | [Cross-journal transitions](#cross-journal-transitions) | Dependency-graph, replay-proof, and interrupted-finalize tests | — | Implementable |
 | `MOTHER-REQ-008` | Distributed mutation starts only after the correct current-replica barrier and any prospective-host readiness barrier | [Full-network clean-state barrier](#full-network-clean-state-barrier) | Established, enrollment, bootstrap, disagreement, and unreachable-host tests | — | Implementable |
 | `MOTHER-REQ-009` | Rollback frames are armed before mutation and removed only after verified restoration | [Distributed rollback layers](#distributed-rollback-layers) | Interrupted-step, retry, and LIFO restoration tests | — | Implementable |
 | `MOTHER-REQ-010` | RPC routing is a typed, reversible distributed resource | [Typed RPC routing resource](#typed-rpc-routing-resource) | Complete-prestate and convergence tests | — | Implementable |
@@ -64,10 +64,11 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-019` | Projection repair publishes one head-fenced generation atomically | [Control APIs](#control-apis) | Concurrent-head, crash, and mixed-generation tests | — | Implementable |
 | `MOTHER-REQ-020` | Mother and guard mutation APIs remain local and use bounded reusable call-runners | [Remote access through Coolify call-runners](#remote-access-through-coolify-call-runners) | Route exposure, idempotency, and runner-crash tests | — | Implementable |
 | `MOTHER-REQ-021` | Active operations exclusively own conflicting scopes until their terminal boundary | [Active operation conflict rule](#active-operation-conflict-rule) | Local conflict-matrix, distributed-reservation, and terminal-release tests | — | Implementable |
-| `MOTHER-REQ-022` | Network finalization closes rollback at the atomic active-local-head commit of the exact certified finalization successor | [Commit and finalize boundary](#commit-and-finalize-boundary) | Pre/post-local-head-commit crash and rollback-closure tests | — | Implementable |
-| `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor per predecessor and retains monotonic accepted-or-committed evidence through rollover, two-phase cancellation, and terminal release | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, forged-certificate, monotonic-retry, rollover, exhaustive apply/cancel interleaving, cancellation, release, and crash tests | — | Implementable |
-| `MOTHER-REQ-024` | Replica membership, prospective enrollment, zero-validator continuity, and first network birth use explicit authority boundaries | [Replica enrollment, de-enrollment, zero-validator continuity, and network birth](#replica-enrollment-de-enrollment-zero-validator-continuity-and-network-birth) | Enrollment, retirement, zero-validator, bootstrap retry/tombstone, pointer-only commit, secret-exposure, and crash-boundary tests | — | Implementable |
-| `MOTHER-REQ-025` | Finalization commits one exact certified terminal head locally, resynchronizes sealed replicas, acknowledges outside the journal, and releases ownership only from full-set proof | [Finalization resynchronization and full-set acknowledgement](#finalization-resynchronization-and-full-set-acknowledgement) | Local-head crash-boundary, monotonic replica retry, closure transfer, acknowledgement, partial-release, and exclusion-reseal tests | — | Implementable |
+| `MOTHER-REQ-022` | Network finalization closes rollback at the atomic active-local-head commit of the exact finalization entry/authorization-bundle pair | [Commit and finalize boundary](#commit-and-finalize-boundary) | Pre/post-pair-pointer crash, orphan-entry/bundle, and rollback-closure tests | — | Implementable |
+| `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor per predecessor entry/bundle pair and retains monotonic certificate and authorization evidence through rollover, two-phase cancellation, and terminal release | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, forged-certificate/bundle, monotonic-retry, rollover, exhaustive apply/cancel interleaving, cancellation, release, and crash tests | — | Implementable |
+| `MOTHER-REQ-024` | Replica membership, prospective enrollment, zero-validator continuity, and first network birth use explicit authority boundaries and the common entry/bundle commit model | [Replica enrollment, de-enrollment, zero-validator continuity, and network birth](#replica-enrollment-de-enrollment-zero-validator-continuity-and-network-birth) | Enrollment, retirement, zero-validator, bootstrap bundle, retry/tombstone, pointer-only commit, secret-exposure, and crash-boundary tests | — | Implementable |
+| `MOTHER-REQ-025` | Finalization commits one exact terminal entry/authorization-bundle head locally, resynchronizes sealed replicas, acknowledges outside the journal, and releases ownership only from full-set proof | [Finalization resynchronization and full-set acknowledgement](#finalization-resynchronization-and-full-set-acknowledgement) | Local pair-pointer crash-boundary, monotonic replica retry, closure transfer, acknowledgement, partial-release, and unreachable-participant block tests | — | Implementable |
+| `MOTHER-REQ-026` | Authority-restoring reseal is safety-first: reachable divergent replicas require full base-authority proposal and completed-certificate acceptance, while unreachable base-authority replicas block exclusion and reseal | [Authority-restoring reseal and rectification](#authority-restoring-reseal-and-rectification) | Divergent-lineage, common-base, one-proposal, cancellation, checkpoint, pointer-commit, and unreachable-block tests | `MOTHER-REQ-023`, `MOTHER-REQ-024`, `MOTHER-REQ-025` | Specified |
 
 `mother` is the replacement control surface for validator lifecycle operations that
 have outgrown `tools/allfather_control.py`. Allfather remains useful reference
@@ -597,11 +598,11 @@ state_hash: "sha256:..."
 previous_state_hash: "sha256:..."
 journal_head_sequence: 142
 journal_head_hash: "sha256:..."
+journal_head_authorization_bundle_hash: "sha256:..."
 active_checkpoint_id: "checkpoint-..."
 active_checkpoint_hash: "sha256:..."
 replica_set_hash: "sha256:..."
 active_writer_operation_id: "add-node-mainneta-super4-001"
-last_successor_certificate_hash: "sha256:..."
 pending_action_id: "add-node-mainneta-super4-001"
 pending_action_phase: "rpc-routing-verified"
 private_state_kind: "main_computer.mother.private_state.v1"
@@ -630,7 +631,13 @@ inventory list. Its canonically serialized host identities produce
 `replica_set_hash`; response order, discovery order, DNS order, and reachability
 order do not. Removing a host's last validator node does not remove the host from
 this set. A host leaves only through an explicit membership-changing
-finalization, de-enrollment reseal, or finalization-completion exclusion reseal.
+finalization. When authority divergence is already being repaired, a
+safety-first authority-reseal in `MOTHER-DESIGN-029` MAY also record a reachable
+host's removal, but only when every base-authority replica is reachable, every
+base-authority replica accepts the exact reset proposal and completed
+authority-reseal certificate, and the membership change composes with
+`MOTHER-DESIGN-028`. An unreachable host cannot be removed
+by the remaining hosts under the current authority model.
 
 `pending_membership_transition`, when present, freezes the prepared and effective
 membership sets in `MOTHER-DESIGN-028`. Before local finalization,
@@ -645,10 +652,13 @@ remains blocked until transition acknowledgement and terminal completion.
 successor reservation. It becomes non-null when the first certified successor is
 accepted and remains non-null throughout `do`, remediation, rollback,
 finalization, and `finalized-replication-pending`, even when `pending_action_id`
-has already been cleared. It becomes null only after the exact terminal head is
-proven and every expected replica has durably released that operation's
-reservation. `last_successor_certificate_hash` identifies the exact full-set
-certificate that authorized the current journal head.
+has already been cleared. It becomes null only after the exact terminal
+entry/authorization-bundle head pair is proven and every expected replica has
+durably released that operation's reservation. `journal_head_authorization_bundle_hash` identifies the immutable
+authorization bundle atomically committed with the current journal head.
+`last_successor_certificate_hash` MAY be exposed as derived operational metadata
+from that bundle, but it MUST NOT be part of canonical network state or the
+successor's `resulting_state_hash`.
 
 Before any Mother command talks to or mutates a remote network, the local control
 script MUST run a sealed-state and journal preflight:
@@ -660,16 +670,17 @@ script MUST run a sealed-state and journal preflight:
 3. load and validate the local private-state document, private-state metadata,
    and private-recovery manifest referenced by the reconstructed network state;
 4. load the current `replica_hosts` and any frozen pending membership-transition sets;
-5. query every current expected replica host for its journal head, active checkpoint,
-   replayed state hash, finalized topology epoch, pending-action metadata,
+5. query every current expected replica host for its journal entry/bundle head,
+   active checkpoint, replayed state hash, finalized topology epoch,
+   pending-action metadata,
    private-state schema/generation/hash, private-recovery manifest hash, and
    durable successor-reservation state for the exact expected head;
 6. stop before normal mutation if any expected replica host is unreachable,
    cannot replay its journal, cannot validate its private recovery material, or
    does not return usable network-state and private-state metadata;
 7. require every current expected replica and the local head to agree on the active
-   checkpoint, journal head sequence/hash, finalized topology epoch, pending
-   action identity/phase, complete state hash, private-state schema/generation/
+   checkpoint, journal head sequence/entry hash/authorization-bundle hash,
+   finalized topology epoch, pending action identity/phase, complete state hash, private-state schema/generation/
    hash, private-recovery manifest hash, expected replica-set hash, and any
    active writer-reservation owner or successor claim; when enrollment is pending, separately require every prospective host to prove its exact staging generation, enrollment lock, and readiness receipt without counting it as predecessor authority;
 8. if every current expected replica agrees and the local head is stale, stop ordinary
@@ -688,24 +699,29 @@ majority quorum. For example, if `coolify-a` and `coolify-c` agree but
 `coolify-b` is unreachable while the current state still lists all three hosts,
 Mother MUST NOT silently proceed with two of three.
 
-When a current expected replica is unreachable, the operator has exactly two
-availability choices:
-
-1. restore reachability to that host and rerun preflight; or
-2. explicitly reseal the network with a new replica set that excludes the
-   missing host.
+When a current expected replica is unreachable, the only safety-first
+availability choice is to restore reachability to that host and rerun preflight.
+The remaining hosts MUST NOT exclude it, choose a different authority lineage, or
+create an authority-restoring reseal without it. A suspected compromised current
+replica is still an authority participant until it can be reached and made to
+accept a safe removal transition, or until a separately specified external
+fencing authority is added to the design; this document deliberately defines no
+such external authority.
 
 Before local membership finalization, an unreachable prospective host is not an
 authoritative replica exclusion: restore and resume the same enrollment, or roll
 it back and retain the unchanged current replica set. After local finalization,
-failure to restore a newly committed replica uses the post-commit exclusion
-reseal.
+failure to restore a newly committed replica leaves finalization completion
+blocked until the participant returns and completes forward.
 
-Resealing without a missing host is a network-visible recovery action. It MUST
-create a new topology epoch and state hash, record the removed host and reason,
-write the new state, journal records, and current private-recovery bundle to
-every remaining expected replica, require matching non-secret hash receipts, and
-mark the previous seal as superseded rather than deleting it. For example:
+Resealing with every base-authority replica reachable is a network-visible
+recovery action. It MUST follow `MOTHER-DESIGN-029`, create a new topology epoch
+and state hash, bind the selected authoritative checkpoint, bind the complete
+superseded network-head set, bind the unresolved-obligation and
+obligation-disposition roots, write the new state, journal records, and current
+private-recovery bundle to every desired replica, require full base-authority proposal acceptance and completed-certificate
+acceptance before the authorization bundle exists, and preserve superseded
+conflicting history rather than deleting it. For example:
 
 ```yaml
 network_key: mainnet
@@ -717,15 +733,19 @@ replica_hosts:
   - coolify-c
 excluded_hosts:
   - host: coolify-b
-    reason: "unreachable during operator-approved reseal"
+    reason: "reachable participant accepted authority-reseal removal"
     excluded_at_epoch: 43
 ```
 
-A host excluded by reseal cannot automatically resume replica participation when
-it becomes reachable again. Its older state and journal head are stale by
-definition. It MUST be refreshed from the current committed state, current
-private-state generation, and complete private-recovery bundle, then explicitly
-re-included through a replica-rejoin or reseal operation that creates another
+The canonical resealed state MUST NOT store the authority-reseal certificate
+hash. The active entry/bundle head points to the authorization bundle, and that
+bundle names the completed authority-reseal certificate.
+
+A host excluded by a valid authority-reseal cannot automatically resume replica
+participation later. Its older state and journal head are stale by definition. It
+MUST be refreshed from the current committed state, current private-state
+generation, and complete private-recovery bundle, then explicitly re-included
+through a replica-rejoin or membership-changing operation that creates another
 new epoch.
 
 Wall-clock modified time MAY be used as an operator hint, but it is not the
@@ -781,13 +801,15 @@ topology until `finalize`. Its complete prestate and restore attempts remain in
 the action-specific rollback journals, referenced by the pending network state.
 
 `reseal` is an explicit recovery operation, not a normal sync. It is used when
-remote replicas disagree, an expected replica is unreachable and MUST be
-excluded, an excluded host MUST be re-included, the network is wedged, a sealed
-state cannot be proven, or the operator intentionally chooses a new committed
-state from live facts. Reseal MUST inspect local and remote journals and states,
+all base-authority replicas are reachable but valid network heads diverge, the
+network is wedged with a provable common authority base, or a sealed state cannot
+be proven from one lineage alone under the authority-restoring contract in
+`MOTHER-DESIGN-029`. Reseal MUST inspect local and remote journals and states,
 inspect live guards/topology/routes, write a new epoch and state, push the
-resulting journal/state lineage to all replicas in the new set, and preserve
-superseded conflicting history rather than silently deleting it.
+resulting journal/state lineage to all desired replicas, preserve superseded
+network-head history rather than silently deleting it, and preserve or carry
+forward unresolved operational obligations through explicit disposition records.
+If any base-authority replica is unreachable, authority reseal is blocked.
 
 
 `MOTHER-DESIGN-010: replayed-journal-with-authoritative-checkpoints`
@@ -809,6 +831,8 @@ Recommended per-network durable layout:
       000000000001.json
       000000000002.json
       ...
+    authorizations/
+      sha256-<authorization-bundle-hash>.json
   archive/
     superseded-lineages/
 ```
@@ -828,7 +852,7 @@ zero or one network-scoped pending distributed action
 pending desired topology
 currently applied and verified distributed phases
 participant and receipt references
-active writer operation and last accepted successor-certificate hash
+active writer operation and active-head authorization-bundle hash
 rollback availability and remediation status
 prepared-current, prepared-prospective, transition, desired, retiring, and
 effective successor-authority replica sets and their canonical hashes, plus the
@@ -872,17 +896,16 @@ expected_head_id: "mother-head-..."
 expected_head_epoch: 7
 expected_journal_sequence: 141
 expected_journal_hash: "sha256:..."
+expected_authorization_bundle_hash: "sha256:..."
 expected_replica_set_hash: "sha256:..."  # exact successor-authority set
 prepared_current_replica_set_hash: "sha256:..."
 successor_authority_replica_set_hash: "sha256:..."
 desired_replica_set_hash: "sha256:..."  # membership-changing successors
 expected_enrollment_receipt_contract_hash: "sha256:..."
 actual_enrollment_readiness_root: "sha256:..."  # null before accepted readiness
-transition_acceptance_set_root: "sha256:..."  # membership-dependent successor
-transition_decision_record_hash: "sha256:..."  # exact D028 local decision
 prepared_intent_hash: "sha256:..."
-successor_certificate_hash: "sha256:..."
 previous_entry_hash: "sha256:..."
+previous_authorization_bundle_hash: "sha256:..."
 previous_state_hash: "sha256:..."
 changes: []
 resulting_state_hash: "sha256:..."
@@ -890,9 +913,67 @@ entry_hash: "sha256:..."
 committed_at: "..."
 ```
 
+The immutable successor entry contains only facts known before claims are
+issued. It MUST NOT contain its own successor certificate hash, a transition
+acceptance-set root, or a transition-decision-record hash. Those values are
+created only after the entry hash exists and therefore belong to a separate
+immutable authorization bundle.
+
+A representative network authorization bundle is:
+
+```yaml
+kind: main_computer.mother.network_authorization_bundle.v1
+network_key: mainnet
+operation_id: "operation-..."
+predecessor_entry_hash: "sha256:..."
+predecessor_authorization_bundle_hash: "sha256:..."
+successor_entry_hash: "sha256:..."
+successor_resulting_state_hash: "sha256:..."
+certificate_kind: "d026-successor"  # or bootstrap-birth or authority-reseal
+successor_certificate_hash: "sha256:..."
+authority_reseal_certificate_acceptance_set_root: null  # sha256 when D029 applies
+transition_acceptance_set_root: null  # sha256 when D028 applies
+transition_decision_record_hash: null  # sha256 when D028 applies
+authorization_bundle_hash: "sha256:..."
+```
+
+`authorization_bundle_hash` is computed over the canonical bundle payload with
+the `authorization_bundle_hash` field omitted. The stored field is a derived
+self-check and MUST NOT participate in its own digest. The bundle is immutable,
+content-addressed, and stored under `journal/authorizations/`. For the bootstrap
+first head, `certificate_kind` is `bootstrap-birth` and
+`successor_certificate_hash` names the exact full-set bootstrap certificate. For
+a safety-first authority-restoring checkpoint in `MOTHER-DESIGN-029`,
+`certificate_kind` is `authority-reseal`, `successor_certificate_hash` names the
+completed full base-authority reseal certificate, and
+`authority_reseal_certificate_acceptance_set_root` names the canonical full-set
+durable acceptance of that completed certificate.
+
+The active network-journal pointer binds both `head_entry_hash` and
+`authorization_bundle_hash`. The next predecessor tuple, every reservation
+claim, and every later certificate MUST bind both hashes. A network replay MUST
+walk and verify entry/bundle pairs: the current pointer names the current pair,
+each bundle names its entry, and each entry names both the previous entry hash
+and previous authorization-bundle hash. This preserves exact-successor fencing
+without making post-hash authorization evidence part of the successor bytes or
+its resulting-state hash.
+
+An authorization bundle is not a bearer assertion. Every recipient MUST
+independently validate the full-set successor, bootstrap, or authority-reseal
+certificate named by its `certificate_kind`. When D029 applies, it MUST also
+freshly retrieve and validate the complete authority-reseal
+certificate-acceptance set through the trusted replica-query transport. When D028
+applies, it MUST also freshly retrieve and validate the complete
+transition-acceptance set and the exact durable local transition-decision record
+through their trusted transports.
+The recipient MUST reject a missing, non-canonical, stale, self-referential, or
+conflicting bundle and MUST reject a second bundle hash for an already accepted
+successor entry.
+
 Every expected replica stores the complete network-state document, journal
-metadata, the committed head, all entries retained after the replay base, and
-the checkpoint entries needed to reconstruct the active lineage. Replica
+metadata, the committed entry/authorization-bundle head, all entries and network
+authorization bundles retained after the replay base, and the checkpoint entries
+needed to reconstruct the active lineage. Replica
 preflight does not merely compare copied state files; each replica MUST open and
 replay its journal through the common journal engine and report the resulting
 hash.
@@ -900,17 +981,18 @@ hash.
 On every command that reads a network, including one that can mutate it, Mother
 MUST:
 
-1. read a stable committed journal head;
-2. walk backward through that committed lineage until it reaches the newest
-   valid checkpoint entry;
-3. verify the checkpoint entry, load its complete state, and verify its state
+1. read a stable committed entry/authorization-bundle head;
+2. load and validate the authorization bundle named by that head;
+3. walk backward through the committed entry/bundle lineage until it reaches the
+   newest valid checkpoint entry;
+4. verify the checkpoint entry, load its complete state, and verify its state
    hash;
-4. replay every collected later entry in forward sequence order;
-5. verify sequence continuity, entry hashes, previous-entry links, and
-   previous/resulting-state hashes;
-6. reconstruct the complete current state;
-7. compare the reconstructed state with `committed-state.json`;
-8. compare the local checkpoint, journal head, replay result, and complete
+5. replay every collected later entry in forward sequence order;
+6. verify sequence continuity, entry hashes, bundle hashes, previous-entry and
+   previous-bundle links, and previous/resulting-state hashes;
+7. reconstruct the complete current state;
+8. compare the reconstructed state with `committed-state.json`;
+9. compare the local checkpoint, entry/bundle head, replay result, and complete
    network state with every expected remote replica.
 
 If the `committed-state.json` network-state projection and journal replay disagree, normal mutation is
@@ -921,7 +1003,7 @@ conceptual paths are:
 rebuild-committed-state-from-journal
 restore-journal-from-agreed-remote
 select-journal-lineage
-force-authoritative-checkpoint-from-live-facts
+select-checkpoint-verified-against-live-facts
 ```
 
 Mother MUST show the conflicting local and remote heads, reconstructed hashes,
@@ -941,6 +1023,7 @@ checkpoint_id: "checkpoint-..."
 checkpoint_kind: authoritative-rectification
 sequence: 143
 previous_entry_hash: "sha256:..."
+previous_authorization_bundle_hash: "sha256:..."
 reason: "operator-approved recovery from divergent journal lineages"
 created_by: "local-head:<machine-id>"
 created_at: "..."
@@ -972,14 +1055,17 @@ authoritative checkpoint
   -> current committed-state.json
 ```
 
+For a network journal, an authoritative rectification checkpoint is executable
+only as the exact authority-reseal successor defined by `MOTHER-DESIGN-029`.
 The checkpoint and reconstructed state MUST be replicated to every host in its
-declared `replica_hosts` set. Normal mutation remains blocked until every listed
-replica reports the same checkpoint hash, journal head, replayed state hash, and
+declared desired replica set after the atomic local entry/bundle commit. Normal
+mutation remains blocked until every required participant reports the same
+checkpoint hash, entry/authorization-bundle head, replayed state hash, and
 committed-state hash.
 
-A forced checkpoint is allowed only through explicit rectification/reseal
-workflow. Ordinary `add-node`, `remove-node`, and route reconciliation commands
-MUST NOT create one automatically.
+A forced network checkpoint is allowed only through explicit
+authority-restoring reseal workflow. Ordinary `add-node`, `remove-node`, and
+route reconciliation commands MUST NOT create one automatically.
 
 Conceptual rectification command forms:
 
@@ -999,13 +1085,16 @@ python tools/mother/mother.py reseal-state prep mainnet \
   --reason "remote lineages diverged"
 
 python tools/mother/mother.py reseal-state prep mainnet \
-  --rectification force-authoritative-checkpoint-from-live-facts \
-  --reason "no stored lineage matches verified live state"
+  --rectification select-checkpoint-verified-against-live-facts \
+  --select-predecessor-head <entry-hash>:<bundle-hash> \
+  --reason "selected lineage matches verified live diagnostics"
 ```
 
 Names MAY change, but the behavior MUST NOT: replay happens before trust,
-unreconcilable disagreement requires operator choice, and a forced baseline is
-recorded as a new authoritative checkpoint rather than as edits to old history.
+unreconcilable disagreement requires operator choice, and live facts MAY verify
+or diagnose the selected state but MUST NOT become the source of authority. The
+selected baseline is recorded as a new authoritative checkpoint rather than as
+edits to old history.
 
 
 `MOTHER-DESIGN-011: prestate-first-rollback-with-rollback-journal`
@@ -1573,8 +1662,8 @@ currently supported behavior.
 
 `MOTHER-OPEN-010: durable-state-locking-and-atomicity` is resolved by using one
 common filesystem journal engine for network, action, and rollback history.
-Immutable journal entries and the atomically replaced committed head are
-authoritative. Complete state documents, active rollback stacks, current-action
+Immutable journal entries, required network authorization bundles, and the
+atomically replaced committed head are authoritative. Complete state documents, active rollback stacks, current-action
 pointers, and summaries are replayable projections.
 
 Every Mother journal has the same physical shape:
@@ -1587,6 +1676,8 @@ Every Mother journal has the same physical shape:
     000000000001.json
     000000000002.json
     ...
+  authorizations/              # network journals; empty for action/rollback
+    sha256-<authorization-bundle-hash>.json
   temporary/
   archive/
 ```
@@ -1608,19 +1699,24 @@ document is:
 
 ```json
 {
-  "schema": "mother.journal.head.v1",
+  "schema": "mother.journal.head.v2",
   "journal_id": "action:add-node-mainneta-super2-001",
   "head_sequence": 17,
   "head_entry_hash": "sha256:...",
   "head_state_hash": "sha256:...",
+  "authorization_bundle_hash": null,
   "committed_at": "..."
 }
 ```
 
 A file in `entries/` is not committed merely because it exists. The exact
 commit point is the durable atomic replacement of `head.json` with a head that
-names that entry. Entries beyond the committed head are uncommitted orphans and
-MUST NOT be interpreted as completed action history.
+names that entry. For action and rollback journals,
+`authorization_bundle_hash` is null. For every authoritative network-journal
+successor, including the bootstrap first head, it is non-null and the same
+atomic pointer binds both the journal entry and its immutable authorization
+bundle. An entry or bundle not jointly named by the active pointer is orphaned
+evidence and MUST NOT be interpreted as committed network authority.
 
 Every entry records enough information to verify both history and state
 transition:
@@ -1691,18 +1787,30 @@ state. For example, a newly prepared action MAY begin with an action-state
 checkpoint containing no completed steps, no active rollback frames, and
 `finalized: false`.
 
+For true network bootstrap, this rule is integrated with
+`MOTHER-DESIGN-028`: the birth-plus-pending-action first head is also the
+sequence-1 initial checkpoint. That entry uses
+`checkpoint_kind: initial-network-birth`, contains the complete born-network
+pending-action state, has `previous_entry_hash: null`, has
+`previous_authorization_bundle_hash: null`, and is atomically committed with a
+non-null `bootstrap-birth` authorization bundle. The first later non-bootstrap
+network event is sequence 2.
+
 When opening a committed journal, Mother MUST:
 
 1. read a stable committed head;
 2. begin at the head entry and walk backward by sequence;
-3. validate each encountered entry hash, journal identity, sequence, and
-   previous-entry relationship;
-4. stop at the newest valid checkpoint on that committed lineage;
-5. verify the checkpoint's complete state and state hash;
-6. reverse the collected later entries into forward order;
-7. replay those entries from the checkpoint state;
-8. verify every previous-state and resulting-state hash;
-9. require the final replayed state hash to equal `head.json`.
+3. for a network journal, load the authorization bundle named by the head,
+   verify that it names the entry, and walk backward through both the
+   previous-entry and previous-authorization-bundle links;
+4. validate each encountered entry hash, authorization-bundle hash when
+   applicable, journal identity, sequence, and predecessor relationship;
+5. stop at the newest valid checkpoint on that committed lineage;
+6. verify the checkpoint's complete state and state hash;
+7. reverse the collected later entries into forward order;
+8. replay those entries from the checkpoint state;
+9. verify every previous-state and resulting-state hash;
+10. require the final replayed state hash to equal `head.json`.
 
 Readers MUST NOT assume that replay begins at sequence `1` or that entries
 older than the selected checkpoint remain in the active journal directory.
@@ -1742,31 +1850,39 @@ lock and commit one entry in this order:
 ```text
 1. Read and verify the current committed head.
 2. Derive and validate the next complete state.
-3. Construct the next immutable entry.
-4. Write the entry to a temporary file in the same filesystem.
-5. Flush and fsync the temporary entry.
-6. Atomically rename it to entries/<sequence>.json.
-7. Fsync the entries directory.
-8. Write the replacement head to a temporary file.
-9. Flush and fsync the replacement head.
-10. Atomically replace head.json.
-11. Fsync the journal directory.
-12. Rebuild or atomically replace derived projections.
+3. Construct and hash the next immutable entry using only pre-claim facts.
+4. For an authorized network successor, obtain the exact certificate and any
+   required D028 acceptance/decision evidence, then construct and hash the
+   immutable authorization bundle; for action or rollback journals use null.
+5. Write the entry to a temporary file in the same filesystem.
+6. Flush and fsync the temporary entry.
+7. Atomically rename it to entries/<sequence>.json.
+8. Fsync the entries directory.
+9. When non-null, write, flush, fsync, and content-address the authorization
+   bundle under authorizations/<authorization-bundle-hash>.json.
+10. Fsync the authorizations directory.
+11. Write one replacement head to a temporary file binding the entry hash,
+    resulting-state hash, and authorization-bundle hash.
+12. Flush and fsync the replacement head.
+13. Atomically replace head.json.
+14. Fsync the journal directory.
+15. Rebuild or atomically replace derived projections.
 ```
 
-Step 10 is the commit point. A crash has deterministic meaning:
+Step 13 is the sole commit point. A crash has deterministic meaning:
 
 ```text
-temporary entry exists:
+temporary entry or authorization bundle exists:
   incomplete write; never committed
 
-final entry exists but head does not name it:
-  orphan entry; never committed
+final entry or authorization bundle exists but the active head does not bind
+that exact pair:
+  orphan evidence; never committed
 
-head names a valid entry but a projection is stale:
+head names a valid entry/bundle pair but a projection is stale:
   transition committed; rebuild the projection by replay
 
-head names a missing or invalid entry:
+head names a missing, invalid, or mismatched entry/bundle pair:
   journal cannot be proven; block mutation and require recovery
 ```
 
@@ -1851,25 +1967,33 @@ uses a three-journal protocol:
    every still-active promoted frame.
 2. Mother commits `finalization-prepared` to the action journal, referencing the
    exact rollback-journal head, closure records, desired finalized topology,
-   frozen transition participants, current pending network-journal head,
-   finalization transition intent, and expected resulting-state hash.
-3. Mother obtains the full-set successor certificate, obtains every applicable
-   prospective/bootstrap transition acceptance, persists the canonical
-   `transition_acceptance_set_root`, and durably chooses the exact D028
-   `commit-in-progress` decision when membership changes or birth applies.
-4. Mother commits a `finalization-certified` action-journal record that binds the
-   certificate hash, exact `finalization-prepared` entry, proposed successor,
-   transition-acceptance-set root, and transition-decision-record hash.
-5. Mother freshly validates the complete certificate and bound evidence and
-   atomically commits `pending-action-finalized` to the active local
-   network-journal head, referencing the exact action-journal and
-   rollback-journal evidence.
-6. Only after that local-head commit does Mother replicate the exact committed
-   entry and referenced immutable closure to the frozen transition participants.
+   frozen transition participants, current pending network-journal
+   entry/authorization-bundle head, finalization transition intent, and expected
+   resulting-state hash.
+3. Mother constructs and hashes the immutable `pending-action-finalized`
+   successor using only facts already known before successor claims.
+4. Mother obtains the full-set successor certificate for that exact entry hash,
+   obtains every applicable prospective/bootstrap transition acceptance,
+   persists the canonical `transition_acceptance_set_root`, and durably chooses
+   the exact D028 `commit-in-progress` decision when membership changes or birth
+   applies.
+5. Mother constructs and persists the immutable authorization bundle that binds
+   the successor entry hash, certificate hash, acceptance-set root, and
+   transition-decision-record hash.
+6. Mother commits a `finalization-certified` action-journal record that binds the
+   exact `finalization-prepared` entry, successor entry hash, authorization
+   bundle hash, and every hash contained by that bundle.
+7. Mother freshly validates the complete entry/bundle pair and atomically commits
+   one active-local-head pointer that binds both the
+   `pending-action-finalized` entry hash and its authorization-bundle hash.
+8. Only after that local-head commit does Mother replicate the exact committed
+   entry, authorization bundle, and referenced immutable closure to the frozen
+   transition participants.
 
-The atomic active-local-head commit of the exact full-set-certified
-`pending-action-finalized` successor establishes the irreversible boundary for
-the network-scoped action. The certificate authorizes that one successor; it
+The atomic active-local-head commit of the exact entry/authorization-bundle
+pair for the full-set-certified `pending-action-finalized` successor establishes
+the irreversible boundary for the network-scoped action. The certificate
+authorizes that one successor; it
 does not make a remote sealed-state replica an independent topology authority.
 In one replay transition the certified successor:
 
@@ -1896,8 +2020,9 @@ names the predecessor:
   rollback remains available after certified cancellation
   preparation records remain historical evidence
 
-the active local head names the exact certified pending-action-finalized
-successor, even when the action mirror or remote replication is incomplete:
+the active local head names the exact `pending-action-finalized` entry and
+authorization-bundle pair, even when the action mirror or remote replication is
+incomplete:
   action is authoritatively finalized
   rollback is closed permanently
   operation is finalized-replication-pending
@@ -1914,11 +2039,11 @@ reported as distinct states:
 
 ```text
 finalization-not-committed:
-  active local head still names the exact predecessor
+  active local head still names the exact predecessor entry/authorization-bundle pair
   rollback remains available after the prepared attempt is canceled
 
 finalized-replication-pending:
-  active local head names the exact certified finalization head
+  active local head names the exact finalization entry/authorization-bundle pair
   rollback is permanently closed
   one or more frozen participants have not acknowledged that exact head, or
   terminal reservation release is not yet proven everywhere
@@ -1941,29 +2066,34 @@ authoritative local-head commit.
 On startup, and before any mutating command continues, Mother MUST:
 
 1. acquire the required operating-system lock;
-2. validate journal metadata and committed heads;
+2. validate journal metadata and committed heads, including every required
+   network authorization bundle;
 3. discover the newest valid checkpoint for each required journal by walking
-   backward from its head;
+   backward from its entry/bundle head when it is a network journal;
 4. replay forward from those checkpoints;
 5. verify or rebuild committed-state, action-summary, active-stack, and
    current-operation projections;
-6. identify temporary files and uncommitted entries beyond the head;
+6. identify temporary files and uncommitted entries or authorization bundles
+   beyond the head;
 7. compare local network checkpoint/head/replay facts with every expected
    replica;
 8. compare unresolved action and rollback state with the affected guards;
 9. reconcile durable successor reservations, cancellation prepare/commit/abort
-   records, cancellation tombstones, accepted certificate hashes, finalization
+   records, cancellation tombstones, accepted certificate and authorization-bundle
+   hashes, finalization
    participant status, acknowledgements, release records, and any partial or
    split acquisition across every expected replica;
 10. classify an interrupted finalization from the durable active-local-head
-    pointer: predecessor means not committed, the exact certified successor means
-    `finalized-replication-pending`, and an unreadable or unprovable local head
-    requires `recover-head` or explicit reseal;
+    pointer: the predecessor entry/bundle pair means not committed, the exact
+    successor entry/bundle pair means `finalized-replication-pending`, and an
+    unreadable or unprovable local head requires `recover-head` or explicit
+    reseal;
 11. block mutation when a committed local head, checkpoint, required lineage,
     exact reservation owner, successor claim, finalization acknowledgement, or
     release state cannot be proven.
 
-Temporary files and orphan entries MAY be archived after diagnosis, but they
+Temporary files and orphan entries or authorization bundles MAY be archived
+after diagnosis, but they
 MUST NOT be promoted to committed history merely because their contents look
 plausible.
 
@@ -1976,6 +2106,7 @@ selected checkpoint entry hash
 selected checkpoint state hash
 head sequence
 head entry hash
+head authorization-bundle hash when the journal is a network journal
 final replayed state hash
 ```
 
@@ -2025,7 +2156,8 @@ The action does not begin when any expected host is unavailable or pending.
 Majority agreement is insufficient. `prep` performs a read-only barrier
 evaluation and freezes the exact current, prospective, transition, desired, and
 retiring replica sets required by the operation, their canonical hashes,
-head tuple, generations, prepared-intent hash, and assertion evidence.
+entry/authorization-bundle head tuple, generations, prepared-intent hash, and
+assertion evidence.
 Immediately before the first mutation, `do` acquires the local network lock,
 freshly revalidates that frozen barrier, and obtains the full-set successor
 certificate defined by `MOTHER-DESIGN-026`. The first certified successor opens
@@ -3270,8 +3402,9 @@ NOT copy raw private keys or secret payloads.
 In addition, every declared replica maintains a non-secret
 `recovery-closure/manifest.json` whose hash is sealed in the replicated network
 state. That manifest enumerates every immutable object transitively reachable
-from the active network, action, participant, rollback, request/result, and
-private-recovery journal heads. Reachability includes objects referenced through
+from the active network entry/authorization-bundle head, action,
+participant, rollback, request/result, and private-recovery journal heads.
+Reachability includes objects referenced through
 other manifests or receipts; a replica is incomplete when it has the journal
 reference but not the referenced payload.
 
@@ -3300,13 +3433,12 @@ replicated network journal:
 
 A private-state generation is not considered fully replicated until every host
 in the exact expected replica set has returned a durable matching receipt.
-Normal mutation, pre-commit finalization, ordinary reseal, and authoritative
-checkpoint creation are blocked while any expected replica is unreachable,
-missing private recovery material, or reporting a different schema, generation,
-content hash, or manifest hash. The sole documented exception is the
-post-commit finalization-completion exclusion reseal in `MOTHER-DESIGN-027`,
-which starts from an already-authoritative exact finalization head, never reopens
-rollback, and creates a new head epoch over the retained participant set.
+Normal mutation, pre-commit finalization, ordinary reseal,
+authority-restoring reseal, and authoritative checkpoint creation are blocked
+while any expected base-authority replica is unreachable, missing private
+recovery material, or reporting a different schema, generation, content hash, or
+manifest hash. There is no unavailable-participant exclusion exception under the
+safety-first authority model.
 
 A new host MUST receive and validate the complete current private-recovery bundle
 before a reseal or replica-set transition MAY make it a required replica. A host
@@ -3345,6 +3477,7 @@ least:
 ```text
 network committed state and pending distributed state
 network, action, participant, and rollback journal entries
+network authorization bundles
 journal checkpoints and journal heads
 private-state metadata and recovery manifests
 prepared operations and rollback frames
@@ -3449,13 +3582,15 @@ one unanimous, compatible replica lineage.
 The replica recovery set MUST be sufficient to reconstruct the local Mother
 state root and execute every still-legal remediation or rollback without the lost
 machine. Each replica therefore stores the complete transitive immutable-object
-closure reachable from the active journal heads, not merely the journals and
-their references. It includes at least:
+closure reachable from the active network entry/authorization-bundle head and
+all other active journal heads, not merely the journals and their references. It
+includes at least:
 
 ```text
 finalized topology
 complete replicated pending distributed action state
 network, action, participant, rollback, and request/result journals
+network authorization bundles
 journal heads and latest valid checkpoints
 replica_hosts and replica-set transition records
 unresolved provisional-frame payloads
@@ -3490,12 +3625,14 @@ python tools/mother/mother.py recover-head finalize mainnet --reason "original l
 1. contacts every host listed by the recovery descriptor and discovers the
    sealed expected replica set;
 2. requires every expected replica to be reachable;
-3. collects journal bases and heads, checkpoint hashes, complete state hashes,
-   finalized topology, pending action identity and phase, private-state
+3. collects journal bases and heads, network authorization-bundle hashes,
+   checkpoint hashes, complete state hashes, finalized topology, pending action
+   identity and phase, private-state
    generation and hashes, private-recovery manifest hash, recovery-closure
    manifest hash, compatibility reports, and current head-authority metadata;
-4. verifies each retained journal chain and checkpoint relationship and walks
-   every reference in the recovery-closure manifest;
+4. verifies each retained journal chain, every network entry/bundle
+   relationship, and each checkpoint relationship, and walks every reference in
+   the recovery-closure manifest;
 5. proves that every referenced immutable object exists, matches its content
    hash, and is retrievable from every declared replica;
 6. requires exact full-set agreement on one lineage, one complete recovery state,
@@ -3519,8 +3656,9 @@ state root. In particular, it restores:
 ```
 
 without printing secret contents. It then walks backward from each committed
-journal head to the newest valid checkpoint, replays forward, rebuilds every
-derived projection, and proves:
+journal head—following entry/bundle pairs for network journals—to the newest
+valid checkpoint, replays forward, rebuilds every derived projection, and
+proves:
 
 ```text
 replayed finalized topology == restored finalized topology
@@ -3576,8 +3714,9 @@ If any expected replica is unreachable, reports an incompatible schema, lacks
 required private recovery material or any object in the transitive recovery
 closure, or disagrees on lineage, checkpoint, pending action, private-state
 generation, recovery-closure root, or head authority, normal recovery activation
-stops. Mother prints the complete disagreement and requires explicit
-recovery-rectification or replica-set reseal. There is no automatic winner.
+stops. Mother prints the complete disagreement. Reachable lineage divergence is
+routed to `MOTHER-DESIGN-029` authority-reseal; an unreachable expected replica
+blocks recovery activation and reseal. There is no automatic winner.
 
 After activation, the replacement Mother resumes the recovered operating state:
 
@@ -3613,7 +3752,8 @@ prepared current/prospective sets separately under `MOTHER-DESIGN-028`.
 
 The protocol deliberately chooses safety over collision liveness. A writer does
 not discover, elect, or depend on a first lock host. It attempts the exact same
-ordinary claim on every current replica frozen by `prep`. Requests MAY be
+ordinary claim on every effective `successor_authority_replica_hosts`
+participant for the committed predecessor. Requests MAY be
 parallel, sequential, retried, delayed, or delivered in different orders. A
 writer is authorized only after it proves the complete set. Therefore two
 writers can split reservations and wedge progress, but neither can become an
@@ -3625,14 +3765,21 @@ The following invariants are normative:
 No live infrastructure mutation occurs without a currently valid full-set
 successor certificate.
 
-No authoritative network-journal head replacement occurs without a currently
-valid full-set successor certificate for that exact predecessor and exact
-successor.
+No ordinary authoritative network-journal head replacement occurs without a
+currently valid full-set successor certificate for that exact predecessor and
+exact successor, a canonical immutable authorization bundle for that certificate,
+and one atomic pointer binding the exact entry/bundle pair. Bootstrap birth and
+authority-restoring reseal use their dedicated certificate kinds but the same
+post-certificate authorization-bundle and atomic entry/bundle pointer model.
 
 A partial reservation set authorizes nothing.
 
 One expected replica accepts at most one operation owner for an expected head
 and at most one exact successor hash for each accepted predecessor.
+
+One exact successor entry and certificate accept at most one canonical
+authorization-bundle hash. A replica MUST reject a different bundle for an
+already accepted successor even when the entry bytes are identical.
 
 The reservation owner remains the same operation throughout do, remediation,
 rollback, finalization, and finalized-replication-pending.
@@ -3651,6 +3798,7 @@ expected_head_id
 expected_head_epoch
 expected_journal_sequence
 expected_journal_hash
+expected_authorization_bundle_hash
 expected_state_hash
 prepared_current_replica_hosts
 prepared_current_replica_set_hash
@@ -3681,10 +3829,13 @@ ownership, successor authority is the desired initial replica set recorded by
 that birth head. The prepared current set remains empty as historical prestate;
 it MUST NOT be reused as a vacuous authority set for later successors.
 
-The proposed successor entry MUST be fully constructed before its claim is sent.
-Its entry hash binds the complete immutable transition, including its predecessor
-tuple, operation identity, prepared intent, changes, resulting state hash, and
-replica-set hash. A writer MUST NOT reuse one claim for different entry bytes,
+The proposed successor entry MUST be fully constructed and hashed before its
+claim is sent. It contains only pre-claim facts and binds the complete immutable
+transition, including its predecessor entry and authorization-bundle hashes,
+operation identity, prepared intent, changes, resulting-state hash, and
+replica-set hash. It MUST NOT contain its own successor-certificate hash,
+transition-acceptance root, transition-decision hash, or authorization-bundle
+hash. A writer MUST NOT reuse one claim for different entry bytes,
 different resulting state, a different predecessor, a different operation, or
 a different desired replica-set hash. For an established membership-changing
 successor, the prepared current replicas issue predecessor claims. For a
@@ -3727,6 +3878,7 @@ current_predecessor:
   head_epoch
   journal_sequence
   journal_hash
+  authorization_bundle_hash
   state_hash
 claimed_successor: null or:
   successor_sequence
@@ -3735,6 +3887,7 @@ claimed_successor: null or:
   local_receipt_id
   local_receipt_hash
 last_accepted_certificate_hash: null or sha256
+last_accepted_authorization_bundle_hash: null or sha256
 cancellation_prepare: null or:
   cancel_attempt_id
   operation_id
@@ -3763,6 +3916,7 @@ expected_head_id
 expected_head_epoch
 expected_journal_sequence
 expected_journal_hash
+expected_authorization_bundle_hash
 expected_state_hash
 expected_replica_set_hash  # exact successor-authority set
 prepared_current_replica_set_hash
@@ -3843,7 +3997,7 @@ A full-set successor certificate contains:
 certificate schema
 network and operation identity
 prepared_intent_hash
-exact expected head tuple
+exact expected head tuple, including predecessor authorization-bundle hash
 prepared current replica hosts and set hash
 exact successor-authority replica hosts and set hash
 desired replica-set hash
@@ -3872,8 +4026,9 @@ active-claim evidence:
 
 accepted-or-committed evidence:
   the participant retains the immutable original claim and receipt in history,
-  records acceptance of this exact certificate, and reports either application
-  in progress or the exact certified successor as its committed/current head
+  records acceptance of this exact certificate and authorization bundle, and
+  reports either application in progress or the exact authorized successor
+  entry/bundle pair as its committed/current head
 ```
 
 Advancing from the active predecessor claim to accepted or committed successor
@@ -3881,7 +4036,8 @@ evidence MUST NOT make the same certificate invalid for a lagging participant.
 The immutable claim, receipt, accepted-certificate record, and committed-head
 evidence MUST remain independently addressable after rollover. Every accepting
 replica MUST validate the complete successor-authority set, canonical receipt-set
-hash, predecessor, successor, operation, intent, prepared-current,
+hash, predecessor entry and authorization-bundle hashes, successor, operation,
+intent, prepared-current,
 successor-authority, and desired replica-set hashes, expected receipt-contract
 hash, actual readiness-receipt root, and certificate hash against one of those
 two states for every authority participant.
@@ -3892,13 +4048,14 @@ Missing, foreign, canceled, stale, divergent, unreachable, or non-monotonic
 participant evidence invalidates the complete certificate.
 
 The `apply-certified-successor` operation runs under the same replica-local
-journal/reservation lock. After full-set validation it MUST atomically validate
-the local claim and durably record certificate acceptance before replacing the
-journal head:
+journal/reservation lock. Its request carries the exact successor entry and
+immutable authorization bundle. After full-set validation it MUST atomically
+validate the local claim and durably record certificate acceptance before
+replacing the journal head:
 
 ```text
-local head is not the certificate predecessor:
-  if local head is the exact certificate successor:
+local head is not the certificate predecessor entry/authorization-bundle pair:
+  if local head is the exact certificate successor entry/authorization-bundle pair:
     reconcile rollover idempotently
   otherwise reject stale-head
 
@@ -3908,13 +4065,23 @@ a matching cancellation-prepare or cancellation-commit record exists:
 local owner, intent, current/desired replica sets, readiness root, or claimed successor differs:
   reject certificate-not-locally-reserved
 
-identical accepted-certificate record exists:
+authorization bundle does not name the exact successor entry, predecessor pair,
+certificate, and applicable D028 evidence:
+  reject authorization-bundle-mismatch
+
+identical accepted-certificate and authorization-bundle records exist:
   resume or return the same application result
 
-certificate is complete and the local claim matches:
+the certificate or successor was already accepted with a different
+authorization-bundle hash:
+  reject authorization-bundle-conflict
+
+certificate and authorization bundle are complete and the local claim matches:
   write and fsync accepted-certificates/<certificate-hash>.json
-  fsync the accepted-certificates directory
-  append and commit only the exact certified journal successor
+  persist and fsync authorizations/<authorization-bundle-hash>.json
+  fsync both parent directories
+  append the exact certified journal successor
+  atomically replace one head pointer binding the successor entry and bundle
   perform successor-claim rollover
 ```
 
@@ -3933,10 +4100,11 @@ retrieval does not reserve the later decision: immediately before persisting
 certificate acceptance, the accepting replica MUST recheck under the lock that
 no matching cancellation prepare or commit exists.
 
-A crash after accepted-certificate persistence but before the journal-head switch
-MUST retry only that exact certified successor. A crash after the journal-head
-switch but before `current.json` rollover MUST reconstruct rollover from the
-committed head and accepted-certificate record. Neither state permits
+A crash after accepted-certificate or authorization-bundle persistence but
+before the journal-head switch MUST retry only that exact entry/bundle pair. A
+crash after the journal-head switch but before `current.json` rollover MUST
+reconstruct rollover from the committed head, authorization bundle, and
+accepted-certificate record. Neither state permits
 cancellation or a different successor.
 
 For an established membership-changing operation, `do` first stages every
@@ -3944,8 +4112,9 @@ prospective host, records the immutable readiness receipts, computes the canonic
 actual readiness root, and commits `enrollment-readiness-accepted` to the action
 journal. The complete successor-authority certificate for
 `pending-action-opened` is the first authoritative network-journal transition of
-`do`. Mother MUST commit and replicate that exact certified transition to every
-successor-authority replica before dispatching live infrastructure mutation.
+`do`. Mother MUST commit and replicate that exact certified entry/authorization-bundle
+pair to every successor-authority replica before dispatching live infrastructure
+mutation.
 For a prospective target, the exact pending-action generation, accepted actual
 readiness root, receipt, and readiness-fencing state MUST also remain present
 under its enrollment lock before host-local mutation.
@@ -3953,11 +4122,12 @@ The successor reservation is not an ordinary rollback frame. The first
 rollback frame is armed only after the certified pending action is replicated
 and immediately before the first live mutating substep.
 
-Once a certified transition is committed and replicated, its certificate becomes
-the active writer-ownership proof for the resulting head. Live infrastructure
-requests use that accepted certificate to prove who owns the current head.
-A proposed journal-head replacement uses a new certificate that binds the exact
-current predecessor to the exact proposed successor.
+Once an authorized transition is committed and replicated, its authorization
+bundle identifies the accepted successor certificate that proves writer
+ownership for the resulting head. Live infrastructure requests use that
+certificate and the active head's bundle hash to prove who owns the current
+head. A proposed journal-head replacement uses a new certificate that binds the
+exact current predecessor entry/bundle pair to the exact proposed successor.
 
 Every guard, route controller, participant Mother endpoint, and journal-replica
 write endpoint MUST reject a mutating request that does not name the applicable
@@ -3968,7 +4138,7 @@ live infrastructure request:
   operation_id
   prepared_intent_hash
   active_writer_certificate_hash
-  current head tuple
+  current entry/authorization-bundle head tuple
   prepared-current, successor-authority, and desired replica-set hashes
   expected receipt-contract hash and actual readiness root when membership changes
   step identity
@@ -3977,7 +4147,8 @@ authoritative journal write:
   operation_id
   prepared_intent_hash
   successor_certificate_hash
-  expected predecessor tuple
+  authorization_bundle_hash
+  expected predecessor entry/authorization-bundle tuple
   proposed successor sequence, entry hash, and resulting-state hash
   prepared-current, successor-authority, and desired replica-set hashes
   expected receipt-contract hash and actual readiness root when membership changes
@@ -4002,15 +4173,18 @@ The operation-level owner persists across the action, but each new authoritative
 network-journal transition requires a new exact successor claim. Before replacing
 a head, Mother MUST:
 
-1. replay and verify the current expected head;
-2. construct the complete immutable proposed next entry;
+1. replay and verify the current expected entry/authorization-bundle pair;
+2. construct and hash the complete immutable proposed next entry using only
+   pre-claim facts;
 3. claim that exact successor on every effective successor-authority replica
    under the same operation owner and prepared-intent hash;
 4. persist and revalidate the full-set certificate;
-5. commit the exact certified entry locally;
-6. replicate that exact entry and head to every expected replica;
-7. verify each replica reports the certified head before attempting another
-   transition that depends on it.
+5. collect any required D028 transition acceptances and durable local decision;
+6. construct, hash, persist, and revalidate the immutable authorization bundle;
+7. commit one local head pointer binding the exact entry and bundle;
+8. replicate that exact entry, bundle, and head to every expected replica;
+9. verify each replica reports the authorized head pair before attempting
+   another transition that depends on it.
 
 After an accepted transition, each replica MUST perform this durable rollover
 under the journal/reservation lock:
@@ -4021,11 +4195,12 @@ certificate under history
 
 retain owner_operation_id and prepared_intent_hash unchanged
 
-set current_predecessor to the exact newly committed head
+set current_predecessor to the exact newly committed entry/authorization-bundle pair
 
 set claimed_successor to null
 
 set last_accepted_certificate_hash to the accepted certificate hash
+set last_accepted_authorization_bundle_hash to the authorization-bundle hash
 
 set mutation_evidence_present to true once pending-action-opened, a live mutation
 receipt, or any later action transition exists
@@ -4075,7 +4250,7 @@ cancel_attempt_id
 network_key
 operation_id
 prepared_intent_hash
-exact predecessor tuple and hash
+exact predecessor entry/authorization-bundle tuple and hash
 exact claimed-successor hash or null
 expected replica set and replica-set hash
 ```
@@ -4249,7 +4424,7 @@ The recognized cross-replica race is therefore deterministic:
 one or more replicas accepted the certificate before preparing cancellation:
   cancellation cannot obtain a full-set prepare certificate
   abort every prepared cancellation freeze
-  finish the exact certified successor
+  finish the exact certified entry/authorization-bundle pair
 
 every replica prepared cancellation before accepting the certificate:
   certificate application is rejected everywhere
@@ -4304,16 +4479,16 @@ held:
 through do
 through remediation-required
 through every rollback attempt
-through the atomic active-local-head commit of the exact certified
-finalization successor
+through the atomic active-local-head commit of the exact finalization
+entry/authorization-bundle pair
 through finalized-replication-pending
 until full rollback or full finalization acknowledgement and terminal release
 complete
 ```
 
 Finalization closes ordinary rollback at the atomic active-local-head commit
-of the exact certified finalization successor but does not release the
-distributed reservation. Release occurs only when:
+of the exact finalization entry/authorization-bundle pair but does not release
+the distributed reservation. Release occurs only when:
 
 ```text
 rolled-back:
@@ -4334,7 +4509,7 @@ an identical release record already exists:
 the named operation is not the current owner:
   reject owner-mismatch unless its identical durable release record exists
 
-the local head is not the exact certified terminal head:
+the local head is not the exact terminal entry/authorization-bundle pair:
   reject terminal-head-mismatch
 
 terminal proof is neither the exact fully rolled-back head nor the exact
@@ -4346,7 +4521,8 @@ claimed_successor is not null or an accepted successor remains unresolved:
   reject unresolved-successor-claim
 
 all terminal conditions pass:
-  archive the owner, predecessor, accepted-certificate, and claim history
+  archive the owner, predecessor, accepted-certificate, authorization-bundle,
+  and claim history
   write and fsync the durable release record
   clear the named owner and claim from current.json
   fsync current.json and both parent directories
@@ -4392,14 +4568,14 @@ partial cancellation prepare with no accepted-certificate evidence:
 accepted certificate on any replica with cancellation prepared elsewhere:
   independently verify the accepted-certificate evidence
   cancel-abort every matching prepare freeze
-  retry only the exact certified successor
+  retry only the exact certified entry/authorization-bundle pair
 
 full-set cancellation-prepare certificate with no commit or a partial commit:
   finish only the exact cancel-commit
   do not abort or accept the canceled successor
 
 accepted certificate with predecessor still active:
-  retry only the exact certified successor
+  retry only the exact certified entry/authorization-bundle pair
 
 journal advanced under a referenced certificate or rollover is incomplete:
   reconcile that exact successor, advance current_predecessor, clear the claim,
@@ -4408,16 +4584,26 @@ journal advanced under a referenced certificate or rollover is incomplete:
 partial terminal release:
   keep scopes and active_writer_operation_id owned; retry the exact release
 
-unrecognized receipt, journal, certificate, cancellation-decision, release, or
-local durable record corruption:
+unrecognized receipt, journal, certificate, authorization bundle,
+cancellation-decision, release, or local durable record corruption:
   block and require explicit recovery or reseal
 ```
 
 There is no automatic winner and no wall-clock expiration. A replacement Mother
 can resume the same reservation only by presenting the same operation ID,
 prepared-intent hash, and exact claimed successor and by revalidating every
-expected replica. Different authority or lineage selection remains an explicit recovery/reseal operation. Replica-set change and true network birth follow `MOTHER-DESIGN-028` and MUST NOT be synthesized by ordinary reservation recovery.
+expected replica. Different authority or lineage selection remains an explicit
+`MOTHER-DESIGN-029` authority-reseal operation. Replica-set change and true
+network birth follow `MOTHER-DESIGN-028` and MUST NOT be synthesized by ordinary
+reservation recovery.
 
+Conformance tests MUST cover the acyclic construction order, rejection of a
+successor entry that embeds its own certificate or later authorization evidence,
+bundle self-hash exclusion, predecessor entry/bundle binding, orphaned entry,
+orphaned bundle, mismatched entry/bundle pointer, crash before and after bundle
+fsync, crash before and after the atomic pair pointer, monotonic remote
+application after another replica has rolled forward, and replay of the complete
+entry/bundle chain.
 
 ### Finalization resynchronization and full-set acknowledgement
 
@@ -4452,8 +4638,9 @@ Finalization acknowledgements and their full-set certificate remain outside the
 network journal and do not create another journal successor.
 
 Scopes and operation ownership remain held until acknowledgement and terminal
-reservation release are proven for the required participant set, or an explicit
-post-commit exclusion reseal supersedes that set.
+reservation release are proven for the required participant set. Under the
+safety-first authority model, an unreachable required participant blocks terminal
+release rather than being excluded by the remaining participants.
 ```
 
 #### Frozen transition participants
@@ -4489,7 +4676,7 @@ The action-journal `finalization-prepared` record MUST bind at least:
 ```text
 operation_id
 prepared_intent_hash
-exact pending network-journal head
+exact pending network-journal entry/authorization-bundle head
 prepared_current_replica_hosts and prepared_current_replica_set_hash
 prepared_prospective_replica_hosts and prepared_prospective_replica_set_hash
 successor_authority_replica_hosts and successor_authority_replica_set_hash
@@ -4508,17 +4695,21 @@ expected finalized topology hash
 ```
 
 The exact proposed successor references the immutable
-`finalization-prepared` entry. After the full-set successor certificate exists,
-Mother MUST first obtain every applicable prospective/bootstrap transition
-acceptance, persist the canonical `transition_acceptance_set_root`, and, when
-D028 applies, persist the exact `commit-in-progress` transition-decision record
-under the local journal lock. Mother then MUST append and durably commit
-`finalization-certified` to the action journal, binding the certificate hash,
-exact successor identity, frozen participant hash, `finalization-prepared`
-entry hash, exact `transition_acceptance_set_root`, and exact
-`transition_decision_record_hash` before applying the successor anywhere. When
-D028 does not apply, both fields MUST contain canonical `not-applicable`
-sentinel hashes rather than being omitted. That record is durable orchestration
+`finalization-prepared` entry and contains only facts available before claiming.
+After its full-set successor certificate exists, Mother MUST obtain every
+applicable prospective/bootstrap transition acceptance, persist the canonical
+`transition_acceptance_set_root`, and, when D028 applies, persist the exact
+`commit-in-progress` transition-decision record under the local journal lock.
+
+Mother then constructs the immutable authorization bundle for that successor.
+The bundle binds the successor entry hash, successor-certificate hash, exact
+`transition_acceptance_set_root`, and exact
+`transition_decision_record_hash`. When D028 does not apply, the two D028 fields
+are canonical null values. Mother MUST append and durably commit
+`finalization-certified` to the action journal, binding the exact successor
+entry, frozen participant hash, `finalization-prepared` entry hash,
+authorization-bundle hash, and every evidence hash carried by the bundle before
+committing the active network head. That record is durable orchestration
 evidence, not a second topology authority.
 
 A retry MUST use the same frozen participants and exact successor bytes. A
@@ -4528,26 +4719,26 @@ explicit recovery or reseal operation and MUST NOT be hidden inside `finalize`.
 #### Irreversible local-head boundary and replica lag
 
 After `finalization-certified` is durable, the active local head MUST freshly
-validate the complete effective successor-authority certificate, the exact
-predecessor, every prepared and effective membership-set hash, the expected
-receipt-contract hash, the actual readiness-receipt root, the exact
-`transition_acceptance_set_root`, every required prospective/bootstrap
-transition-certificate acceptance, the exact durable D028
-`commit-in-progress` decision and its `transition_decision_record_hash`, and the
-exact proposed successor bytes. It then
-commits the finalization transition under the ordinary atomic filesystem
-journal contract:
+validate the complete effective successor-authority certificate, exact
+predecessor entry/bundle pair, every prepared and effective membership-set hash,
+the expected receipt-contract hash, the actual readiness-receipt root, every
+required prospective/bootstrap transition-certificate acceptance, the exact
+durable D028 `commit-in-progress` decision when applicable, the exact proposed
+successor bytes, and the immutable authorization bundle that binds all
+post-entry authorization evidence. It then commits the finalization transition
+under the ordinary atomic filesystem journal contract:
 
 ```text
 persist and fsync the exact pending-action-finalized entry
-verify its entry hash and resulting-state hash
-atomically replace the active local network-journal head
+persist and fsync its exact authorization bundle
+verify the entry hash, resulting-state hash, and authorization-bundle hash
+atomically replace one active local network-journal head that binds both hashes
 fsync the head and containing directory metadata
 ```
 
 Remote finalization replication MUST NOT begin before that local head replacement
-commits. The instant the durable active-local-head pointer names the exact
-certified successor, Mother MUST:
+commits. The instant the durable active-local-head pointer names the exact successor
+entry and authorization bundle, Mother MUST:
 
 ```text
 close rollback permanently
@@ -4555,7 +4746,8 @@ enter finalized-replication-pending
 retain all operation scopes
 retain the full-set successor-reservation owner
 block ordinary mutation
-record the exact authoritative local finalization head and certificate
+record the exact authoritative local finalization head, authorization bundle,
+and certificate
 ```
 
 The local filesystem commit point is deterministic. A remote participant's
@@ -4565,21 +4757,22 @@ create, replace, or precede topology authority.
 Recovery MUST classify the local authority state as follows:
 
 ```text
-active local head still names the exact predecessor:
+active local head still names the exact predecessor entry/authorization-bundle pair:
   the finalization transition did not commit
   rollback remains available after certified cancellation of the prepared claim
   Mother MAY instead retry the same exact local successor commit
 
-active local head names the exact certified pending-action-finalized successor:
+active local head names the exact pending-action-finalized entry and
+authorization-bundle pair:
   rollback is permanently closed
   enter or remain finalized-replication-pending
   resynchronize every lagging frozen participant forward
 
 active local head or required local durable lineage is unreadable, corrupt, or
 cannot be proven:
-  block ordinary finalize, rollback, reseal-from-live, and mutation
+  block ordinary finalize, rollback, live-facts authority shortcuts, and mutation
   use recover-head or an explicit authority-restoring reseal
-  do not infer authority from a remote response, quorum, or newest timestamp
+  do not infer authority from a remote response, quorum, live facts, or newest timestamp
 ```
 
 A timeout, lost response, process crash, or transport failure while pushing the
@@ -4594,10 +4787,11 @@ Rerunning `mother <kind> finalize <network>` for
 
 1. load and replay the authoritative active local finalization head;
 2. load the immutable `finalization-prepared` and `finalization-certified`
-   records and exact successor certificate referenced by that head;
-3. prove that the local head is the exact certified
-   `pending-action-finalized` successor and that its resulting-state hash and
-   complete recovery-closure root match;
+   records, exact successor certificate, and authorization bundle referenced by
+   that head;
+3. prove that the local head is the exact `pending-action-finalized`
+   entry/authorization-bundle pair and that its resulting-state hash, bundle
+   evidence, and complete recovery-closure root match;
 4. query every frozen participant for its role, journal head, replayed state
    hash, acknowledgement, and terminal state; for successor-authority replicas
    retrieve certificate/claim/rollover evidence, for prospective hosts retrieve
@@ -4610,8 +4804,9 @@ Rerunning `mother <kind> finalize <network>` for
    `MOTHER-DESIGN-028`;
 7. transfer every missing immutable object required to replay the exact local
    head;
-8. apply the exact certified successor to lagging authority replicas and install
-   the exact committed final head into each prospective enrollment generation;
+8. apply the exact certified entry/authorization-bundle pair to lagging
+   authority replicas and install the exact committed final head pair into each
+   prospective enrollment generation;
 9. replay and verify every participant;
 10. verify authority-replica rollover retains the owner with a null claim,
     prospective hosts retain accepted enrollment evidence pending activation,
@@ -4634,7 +4829,7 @@ journal at a conceptual path such as:
 ```
 
 A participant MUST NOT acknowledge until it has persisted and fsynced the exact
-terminal head, replayed it, verified the resulting-state hash and immutable
+terminal entry/authorization-bundle head pair, replayed it, verified the resulting-state hash and immutable
 recovery closure, and satisfied its role-specific condition:
 
 ```text
@@ -4667,6 +4862,7 @@ participant identity
 transition_participants_hash
 terminal head_id and head_epoch
 terminal journal sequence and entry hash
+terminal authorization-bundle hash
 terminal resulting-state hash
 finalization successor-certificate hash
 recovery-closure root
@@ -4694,15 +4890,16 @@ certificate outside the network journal, for example:
 ```
 
 The certificate contains the frozen participant set and hash, exact terminal
-head, exact finalization successor-certificate hash, every acknowledgement and
+entry/authorization-bundle head pair, exact finalization successor-certificate
+hash, every acknowledgement and
 its hash, the canonical acknowledgement-set hash, and the full-set certificate
 hash.
 
 The acknowledgement certificate MUST NOT be appended as a network-journal
 entry. A journal entry asserting that every participant acknowledged the
 previous head would create a new head that itself required acknowledgement. The
-authoritative topology remains the original certified
-`pending-action-finalized` entry.
+authoritative topology remains the original
+`pending-action-finalized` entry/authorization-bundle pair.
 
 #### Terminal release after acknowledgement
 
@@ -4712,20 +4909,21 @@ idempotent role-specific transition:
 
 ```text
 current replica retained:
-  verify exact head, certificate, rollover, owner, and null claim
+  verify exact entry/bundle head pair, certificate, rollover, owner, and null claim
   release the operation reservation and remain active
 
 current replica retiring:
-  verify the same evidence
+  verify the same entry/bundle evidence
   release the reservation and write replica-retired
 
 bootstrap-promoted replica:
-  verify exact head, bootstrap certificate, birth-head application,
+  verify exact entry/bundle head pair, bootstrap certificate, birth-head application,
   ownership rollover, ordinary owner, and null claim
   release the ordinary operation reservation and remain active
 
 prospective replica:
-  verify exact head, readiness receipt, staged generation, enrollment lock, and
+  verify exact entry/bundle head pair, readiness receipt, staged generation,
+  enrollment lock, and
   accepted transition-certificate record
   write replica-activated and replace the lock with ordinary replica state
 ```
@@ -4764,44 +4962,29 @@ operational evidence outside the network journal. Their completion changes
 operation, reservation, and membership lifecycle state; it does not create a
 new topology head.
 
-#### Unavailable-participant exclusion reseal
+#### Unavailable participant under safety-first authority
 
-If the active local head committed the exact certified finalization successor and
-a frozen participant cannot be restored, the operation remains
-`finalized-replication-pending` until the operator either restores that
-participant or invokes the explicit finalization-completion exclusion reseal.
+If the active local head committed the exact finalization
+entry/authorization-bundle pair and a frozen participant cannot be restored, the
+operation remains `finalized-replication-pending`. The committed finalization
+head remains authoritative, rollback remains permanently closed, and the exact
+terminal transition is retried when the participant becomes reachable.
 
-That reseal MUST:
+The remaining participants MUST NOT exclude an unavailable required participant,
+create a new release set, or treat terminal completion as proven without that
+participant. A host that never returns cannot be excluded under the current
+authority model. A suspected compromised participant has the same authority
+status: without a separately specified external fencing authority, the network
+blocks rather than pretending the remaining hosts can safely remove it.
 
-1. start only from the already-authoritative exact finalization head and
-   certificate;
-2. preserve permanent rollback closure;
-3. preserve the excluded participant's journal, reservation, acknowledgement,
-   and failure history as superseded evidence;
-4. exclude only explicitly named unavailable participants;
-5. increment `head_epoch` and create a new head authority and sealed replica-set
-   hash over the retained participants;
-6. mark every excluded participant stale, excluded, and prohibited from
-   self-rejoining;
-7. copy and verify the complete finalization lineage, private-state generation,
-   and transitive recovery-object closure on every retained participant;
-8. durably acknowledge the new seal on every retained participant;
-9. release the old operation reservation on the retained participants under the
-   explicit reseal proof;
-10. leave the excluded participant's old reservation harmless because its older
-    head epoch and replica-set hash are no longer accepted by the retained set.
-
-After every retained participant durably acknowledges the new seal and returns
-the required release record, the retained set becomes the terminal release set
-for this operation. Mother MAY then enter `finalized`, clear the operation
-scopes, and preserve the excluded participant as stale historical evidence.
-
-This is the sole exception to the ordinary requirement that every expected
-replica be reachable for reseal. It is a post-commit recovery transition, not a
-way to choose a different final topology, reopen rollback, discard the certified
-head, or silently weaken a pre-commit participant set. If the active local
-head does not name the exact certified finalization successor, this escape path
-MUST NOT be used.
+Once the participant returns, it MUST recover, verify the authoritative
+finalization entry/bundle head, apply any missing immutable recovery objects, and
+complete the required acknowledgement, activation, retirement, or release step.
+After it is reachable and participating, an ordinary D026+D028
+membership-changing transition MAY remove it. If reachable authority divergence
+is also being rectified, a `MOTHER-DESIGN-029` authority-reseal MAY include the
+removal only by composing with D028. Neither path MAY choose a different final
+topology or discard the certified finalization head.
 
 #### Required finalization tests
 
@@ -4824,13 +5007,14 @@ forged or stale full-set acknowledgement certificate
 crash before and after each terminal release
 partial release with a later retry
 unavailable participant before the local finalization commit
-unavailable participant after the authoritative local commit
+unavailable participant after the authoritative local commit leaves finalized-replication-pending
+returned participant completes forward after delayed finalization replication
 prospective host acknowledged but not yet activated
 retiring host acknowledged but not yet retired
 membership-changing finalization with prepared-current-only predecessor certification
 birth-operation finalization with bootstrap-promoted successor authority
-exclusion reseal preserving rollback closure and incrementing head_epoch
-delayed old-epoch mutation after exclusion reseal
+ordinary reachable participant removal through D026+D028; D029+D028 only during authority divergence
+delayed old-epoch mutation after authority-reseal
 ```
 
 Each test MUST preserve one exact finalization successor, permanent rollback
@@ -4990,7 +5174,7 @@ transition_participants_hash
 desired_replica_set_hash
 expected_enrollment_receipt_contract_hash
 staged_generation_id and manifest hash
-journal head tuple and replayed state hash
+journal entry/authorization-bundle head tuple and replayed state hash
 private-state generation and hash
 recovery-closure manifest hash
 enrollment_lock_id
@@ -5051,8 +5235,10 @@ prospective or bootstrap host freshly proves
 `transition-certificate-accepted`. Acceptance does not authorize that host to
 write topology or issue predecessor claims. Mother persists a canonical
 full-set readiness-acceptance record that binds every acceptance and its hash.
-The canonical hash of that record is `transition_acceptance_set_root` and every
-membership-dependent successor MUST bind it.
+The canonical hash of that record is `transition_acceptance_set_root`. Every
+membership-dependent successor's authorization bundle MUST bind it; the
+immutable successor entry itself MUST NOT, because the root is created only
+after the successor certificate exists.
 
 Remote acceptance alone does not make a later local commit race-safe. The active
 local head therefore maintains one durable transition-decision record outside
@@ -5085,12 +5271,12 @@ recovery MUST classify the outcome only from the authoritative active-local-head
 pointer:
 
 ```text
-active local head names the exact predecessor:
+active local head names the exact predecessor entry/authorization-bundle pair:
   the successor is not authoritative
   under the same local lock, retry the exact commit or atomically replace
   commit-in-progress with cancellation-authorized
 
-active local head names the exact successor:
+active local head names the exact successor entry/authorization-bundle pair:
   the successor is authoritative
   cancellation is forbidden
   complete forward
@@ -5152,18 +5338,23 @@ effective-authority successor certificate, especially
 
 #### Membership finalization and terminal activation
 
-The exact `pending-action-finalized` successor MUST include all prepared and
-effective membership sets, the expected receipt-contract hash, actual readiness
-root, `transition_acceptance_set_root`, `transition_decision_record_hash`, and
-role map, and write `replica_hosts = desired_replica_hosts`. Before the
-active local head commits it, every applicable prospective or bootstrap-promoted
-participant MUST durably accept that exact transition certificate. The local
-head MUST then persist and revalidate the exact D028 `commit-in-progress`
-decision before committing under `MOTHER-DESIGN-027`; that atomic replacement is the
-only membership authority boundary.
+The exact `pending-action-finalized` successor MUST include only pre-claim
+membership facts: all prepared and effective membership sets, the expected
+receipt-contract hash, accepted actual readiness root, role map, and
+`replica_hosts = desired_replica_hosts`. It MUST NOT contain the later-created
+successor-certificate hash, transition-acceptance-set root, or
+transition-decision-record hash.
 
-Mother then pushes the exact committed head and closure to every transition
-participant. The full-set acknowledgement certificate authorizes idempotent
+Before the active local head commits it, every applicable prospective or
+bootstrap-promoted participant MUST durably accept that exact transition
+certificate. The local head MUST then persist and revalidate the exact D028
+`commit-in-progress` decision, construct the immutable authorization bundle
+binding the certificate, acceptance-set root, and decision-record hash, and
+commit the successor entry/bundle pair under `MOTHER-DESIGN-027`; that atomic
+pointer replacement is the only membership authority boundary.
+
+Mother then pushes the exact committed entry/authorization-bundle head pair
+and closure to every transition participant. The full-set acknowledgement certificate authorizes idempotent
 terminal transitions:
 
 ```text
@@ -5192,10 +5383,13 @@ Partial activation, retirement, or release leaves
 host MUST NOT infer operational membership merely because the desired set names
 it before global completion.
 
-If a transition participant cannot complete after local finalization, the
-explicit finalization-completion exclusion reseal starts from that exact head,
-never reopens rollback, increments `head_epoch`, and records the host stale and
-excluded.
+If a transition participant cannot complete after local finalization,
+`finalized-replication-pending` remains in force until that participant returns
+and completes forward. After it returns and participates, an ordinary D026+D028
+membership-changing transition MAY remove it from the replica set. If reachable
+authority divergence is also being rectified, a `MOTHER-DESIGN-029`
+authority-reseal MAY include the removal only by composing with D028. The
+remaining participants alone MUST NOT exclude it.
 
 #### Replica removal is separate from node removal
 
@@ -5206,10 +5400,12 @@ current predecessor authority and transition participant until it acknowledges
 the final head, releases its reservation, and records retirement. It MUST NOT
 automatically rejoin later.
 
-An unreachable host uses the documented exclusion-reseal path. If a host is
-compromised or no longer trusted after receiving private material, every
-affected identity or secret whose confidentiality cannot be proven MUST be
-rotated; de-enrollment cannot erase previously copied bytes.
+An unreachable host blocks authority-changing removal under the safety-first
+model. If a host is compromised or no longer trusted after receiving private
+material, every affected identity or secret whose confidentiality cannot be
+proven MUST be rotated; de-enrollment cannot erase previously copied bytes, and
+removal still requires the host to be reachable or a future external fencing
+authority not defined by this document.
 
 #### Zero-validator continuity and reactivation
 
@@ -5256,6 +5452,7 @@ initial recovery-closure root
 desired initial replica set and hash
 synthetic predecessor network-unborn:<network_birth_id>
 exact first journal entry and resulting state hash
+previous authorization-bundle hash: null
 prepared_current_replica_hosts: []
 prepared_prospective_replica_hosts: desired initial replica hosts
 transition_participants: desired initial replica hosts
@@ -5292,11 +5489,13 @@ a competing cancellation prepare is mutually exclusive.
 
 The active local head MUST NOT commit until all acceptance records are freshly
 proven and the exact bootstrap `commit-in-progress` decision is durably
-persisted under the local journal lock. It then atomically commits the exact
-first journal head. It is a
-birth-plus-pending-action transition that establishes the network identity,
-genesis, initial replica set, and active operation; it does not silently
-finalize node lifecycle.
+persisted under the local journal lock. Mother then constructs the bootstrap
+authorization bundle binding the exact first-entry hash, full-set bootstrap
+certificate hash, transition-acceptance-set root, and transition-decision-record
+hash. It atomically commits one first-head pointer binding both the exact first
+journal entry and that bundle. This birth-plus-pending-action transition
+establishes the network identity, genesis, initial replica set, and active
+operation; it does not silently finalize node lifecycle.
 
 ```text
 before first local-head commit:
@@ -5311,13 +5510,13 @@ after first local-head commit:
   the node operation remains rollback-capable until ordinary finalization
 ```
 
-Remote application of the first head MUST follow the local commit and complete
-on every initial host before any live validator, routing, Hub/FDB, or service
+Remote application of the first entry/authorization-bundle head pair MUST
+follow the local commit and complete on every initial host before any live validator, routing, Hub/FDB, or service
 mutation. Each host rolls its bootstrap reservation and accepted birth
 certificate into the ordinary D026 operation owner for the committed first head.
 Mother then durably records `bootstrap-authority-rolled-over`, binding the
-bootstrap certificate, applied birth head, every host rollover record, and the
-canonical successor-authority set/hash.
+bootstrap certificate, applied birth entry/bundle head pair, every host
+rollover record, and the canonical successor-authority set/hash.
 
 The immutable prepared bootstrap prestate continues to show
 `prepared_current_replica_hosts: []` and
@@ -5342,7 +5541,10 @@ and leaves the prepared current replica set unchanged. Enrollment or bootstrap
 locks are released only through the exact full-set two-phase readiness
 cancellation contract; a one-phase rollback MUST NOT clear accepted transition
 evidence. After local membership finalization, enrollment rollback is closed;
-recovery drives participants forward or uses post-commit exclusion reseal.
+recovery drives participants forward. Removal after recovery normally uses an
+ordinary D026+D028 membership-changing transition. If reachable authority divergence is also being
+rectified, D029 MAY include the removal only when every base-authority replica is
+reachable and the operation composes with D028.
 
 Rollback cannot prove a remote host forgot private material. Loss of trust after
 private-state transfer requires explicit identity rotation.
@@ -5362,6 +5564,7 @@ Conceptual durable paths include:
 /runtime/state/mother/network-birth/<network-birth-id>/cancellation-prepares/
 /runtime/state/mother/network-birth/<network-birth-id>/cancellation-commits/
 /runtime/state/mother/network-birth/<network-birth-id>/cancellation-aborts/
+/runtime/state/mother/networks/<network>/journal/authorizations/<authorization-bundle-hash>.json
 ```
 
 Conceptual APIs include:
@@ -5405,19 +5608,843 @@ interleaving, crashes before and after local commit-in-progress and
 cancellation-authorized persistence, delayed one-phase release rejection,
 partial readiness cancellation,
 partial activation and retirement, last-node removal retaining replica
-membership, explicit retirement, unreachable and compromised exclusion,
+membership, explicit retirement, unreachable and compromised removal blocking,
 unauthorized and authorized final-validator removal, zero-validator reactivation
 without genesis change, rejection of `initial` for a born network, competing
 bootstrap splits, bootstrap accept-versus-cancel interleavings, failure and
 crashes around first-head commit, first-head replication and ownership rollover,
 later D026 successor and finalization certificates using the promoted authority
 set, pointer-only local commit classification with orphaned-entry rejection,
-binding of transition-acceptance and transition-decision hashes in
-`finalization-certified`, rollback after birth preserving identity, retry after
+binding of transition-acceptance and transition-decision hashes in the
+authorization bundle and `finalization-certified`, acyclic first-birth bundle
+construction, rollback after birth preserving identity, retry after
 full-set certified birth cancellation, permanent rejection of delayed requests
 for canceled birth generations, prohibition of a second generation after
 committed birth, and the identity-rotation warning after untrusted private-state
 exposure.
+
+### Authority-restoring reseal and rectification
+
+`MOTHER-DESIGN-029: safety-first-authority-restoring-reseal-and-rectification`
+
+Authority-restoring reseal is the only recovery path that can replace a
+network-journal head when ordinary D026 exact-predecessor authority cannot be
+used because replicas expose divergent or corrupt network lineages. It is not
+quorum, not operator election, not unreachable-host exclusion, and not a
+live-facts shortcut. It restores one authority epoch only when every participant
+in the proven base-authority replica set is reachable, every participant enters
+the same durable authority fence as ordinary D026 successor work, every
+participant accepts one exact reset proposal, and every participant later accepts
+the completed authority-reseal certificate.
+
+D029 is reserved for authority divergence or authority restoration. Ordinary
+non-divergent membership changes continue to use D026 successor authority
+composed with D028 membership-transition authority. A D029 operation that also
+changes membership MUST compose with D028; D029 supplies the base-authority reset
+certificate and its full certificate-acceptance set, while D028 supplies the
+prospective/retiring participant fencing, transition decision, acknowledgement,
+activation, retirement, and release contract.
+
+The following invariants are normative:
+
+```text
+Authority-reseal uses certificate_kind authority-reseal.
+
+Authority-reseal is blocked if any base-authority replica is unreachable.
+
+Authority-reseal is blocked if no newest common valid authority base can be
+proven.
+
+Divergent branch membership claims do not add or remove reseal authority.
+
+D029 proposal acceptance is a durable network-generation-wide authority fence.
+It contends in the same replica-local journal/reservation/finalization lock plane
+as D026 successor claim, D026 successor-certificate application, ordinary
+entry/bundle head replacement, reservation mutation, cancellation prepare, and
+obligation mutation.
+
+A partial D029 authority fence authorizes nothing but MAY block ordinary progress
+until it is canceled or completed under the safety-first recovery rules.
+
+A base-authority replica with an active D029 fence MUST reject ordinary D026
+successor claims, ordinary D026 certificate applications, ordinary journal-head
+replacement, conflicting reservation changes, conflicting obligation changes,
+and unrelated D029 proposals until the fenced reseal is terminally canceled or
+its exact entry/bundle pointer commits. For membership-changing D029+D028,
+terminal cancellation means that both the D029 cancellation protocol and the
+D028 full-set cancellation protocol are terminal.
+
+A conflicting D029 proposal is rejected regardless of the authority-generation
+tuple it claims. The local network authority fence is unique per network while it
+is active.
+
+A completed authority-reseal certificate authorizes no local pointer commit until
+every base-authority replica has durably accepted that completed certificate
+under the same lock plane used by D026 and D029 cancellation prepare. In
+membership-changing D029+D028, the completed-certificate acceptance step occurs
+only after D028 transition acceptances and the local D028 commit-in-progress
+decision exist, and each completed-certificate acceptance binds those exact D028
+roots.
+
+Prepared authority-reseal intent is constructed before the checkpoint successor
+entry. The successor entry binds prepared_intent_hash.
+
+The authority-reset proposal is constructed after the checkpoint successor entry
+exists. The proposal binds prepared_intent_hash and the exact successor entry
+hash.
+
+The successor entry MUST NOT bind the proposal hash, certificate hash,
+certificate-acceptance-set root, transition-acceptance root, transition-decision
+hash, authorization-bundle hash, or any other future object.
+
+Canonical checkpoint state MUST NOT contain authority-reseal certificate hashes
+or authority-reseal certificate-acceptance-set roots. The certificate and its
+acceptance set are discoverable from the committed active head's authorization
+bundle.
+
+For pure D029, the authorization bundle is created only after the
+authority-reseal certificate exists and every base-authority replica has accepted
+that completed certificate. For membership-changing D029+D028, D028 transition
+acceptance and the D028 transition decision are completed before base-authority
+replicas accept the completed D029 certificate; each completed-certificate
+acceptance binds those exact D028 roots. Then one atomic active-local-head
+pointer binds the exact entry/bundle pair.
+
+If completed-certificate acceptance loses to cancellation at any base-authority
+replica, the authority-reseal head MUST NOT commit.
+
+After the pointer commit, rollback to a superseded divergent network head is
+prohibited. Non-network-head operational obligations are not superseded by this
+rule and remain governed by their explicit obligation dispositions.
+```
+
+Whenever a D029 schema displays an object's own hash, that self-hash field is
+derived metadata and is omitted from that object's canonical digest bytes.
+Validators MUST recompute the digest over the canonical bytes that exclude the
+displayed self-hash field before accepting the object. This rule applies to the
+authority-reseal certificate hash, proposal-acceptance record hash,
+certificate-acceptance record hash, cancellation record hash, and any equivalent
+displayed self-hash.
+
+#### Base-authority set
+
+The base-authority set is the replica set recorded by the newest common, valid
+entry/authorization-bundle authority from which every reported valid network
+lineage descends. Later divergent entries MAY claim different membership sets,
+but those branch-local claims do not grant or remove authority for the reseal
+decision. If Mother cannot prove one newest common valid authority base and its
+exact replica-set hash, authority-reseal is blocked.
+
+The D029 authority-generation tuple is:
+
+```text
+common-base head_id
+common-base head_epoch
+common-base entry hash
+common-base authorization-bundle hash
+common-base replica-set hash
+```
+
+The D029 authority-generation tuple identifies the authority base being repaired;
+it does not scope away conflicts with other active D029 proposals. A replica MUST
+reject any second active D029 fence for the same network, even if that second
+proposal claims a different authority-generation tuple.
+
+Every base-authority replica MUST be reachable and schema-compatible. Every
+base-authority replica MUST validate the common authority base, report its
+current network-head pointer status, disclose any invalid or unreadable pointer
+evidence it possesses, retrieve the complete prepared intent, exact successor
+entry bytes, observed-head report evidence, valid-head evidence, invalid-head
+evidence, superseded-head evidence, unresolved-obligation evidence,
+obligation-disposition evidence, recovery-closure evidence, selected checkpoint
+state hash, proposal state, certificate state, D026 claim/reservation state, and
+cancellation state before accepting or rejecting the proposal or completed
+certificate.
+
+A base-authority replica whose reported suffix is corrupt, hash-invalid,
+missing, or unparseable MAY participate only when it can validate the common
+authority base, preserve and disclose the invalid evidence, validate the complete
+D029 proposal and checkpoint successor, and durably accept the reset proposal and
+completed certificate. The selected predecessor MUST be replay-valid and descend
+from the common authority base. It MAY be the common authority base itself when
+every reported current suffix is invalid, missing, or unparseable. If no
+replay-valid predecessor can be proven, authority-reseal is blocked.
+
+#### Observed reports, valid heads, superseded heads, and obligations
+
+A network-head tuple is an active network-journal pointer tuple consisting of at
+least:
+
+```text
+head_entry_hash
+head_authorization_bundle_hash
+head_id
+head_epoch
+head_sequence
+head_resulting_state_hash
+```
+
+A `pending-action-finalized` entry/bundle tuple is still a network head when it
+is the current head of a displaced divergent network lineage. Action-journal
+heads, rollback-journal heads, acknowledgement records, release records, writer
+reservations, cancellation records, local operation markers, and other
+operational obligations are not network heads.
+
+The observed-head-report set contains exactly one canonical report from every
+base-authority replica during the recovery collection window. Each report binds
+at least:
+
+```text
+report schema and contract version
+network identity
+D029 authority-generation tuple
+replica identity
+reported_head_status: valid | invalid | missing | unparseable
+reported_head_tuple: network-head tuple | null
+raw_pointer_evidence_hash: sha256 | null
+last_replay_valid_head_tuple: network-head tuple | null
+invalid_suffix_evidence_root: sha256 | null
+validated common-base proof
+local D026 successor-claim and certificate-application state
+local reservation state
+local cancellation/proposal/certificate state
+local unresolved-obligation state
+report hash
+```
+
+`reported_head_tuple` is non-null only when the active pointer can be parsed as a
+network-head tuple. `raw_pointer_evidence_hash` preserves the unreadable or
+unparseable pointer bytes when the pointer is missing, corrupt, or not parseable
+as a canonical tuple. `last_replay_valid_head_tuple` records the newest
+replay-valid head known to that replica, or null when the common authority base
+is the only replay-valid head it can prove. `invalid_suffix_evidence_root` covers
+the immutable objects and bytes needed to diagnose the invalid suffix.
+
+The valid-network-head set contains every reported current network-head tuple
+whose `reported_head_status` is `valid` and that replays and validates from the
+common authority base. The invalid-head-evidence set contains every reported
+head, missing pointer, unparseable pointer, or suffix that cannot be replayed or
+validated, together with the immutable evidence needed to preserve and later
+diagnose that condition.
+
+The selected predecessor network head MUST be replay-valid and descend from the
+common authority base. It is normally one member of the valid-network-head set.
+When every reported current suffix is invalid, missing, or unparseable, the
+selected predecessor MAY be the common authority base itself. If the selected
+predecessor is not replay-valid, authority-reseal is blocked.
+
+The superseded-head set is exactly:
+
+```text
+valid current network-head set
+minus selected predecessor network head when the selected predecessor is present
+in that set
+```
+
+The superseded-head-set root proves only which divergent valid current network
+heads were displaced. It MUST NOT be used to extinguish action-journal heads,
+rollback-journal heads, acknowledgement records, release records, writer
+reservations, cancellation records, finalization obligations, rollback rights, or
+any other non-network-head operational obligation.
+
+D029 MUST separately analyze every non-network-head operational obligation that
+survives recovery collection. The unresolved-obligation-set root covers every
+such obligation that is relevant to safe authority restoration, including
+pending actions, writer reservations, cancellation states, rollback rights,
+action-journal heads, rollback-journal heads, acknowledgement records, release
+records, finalization obligations, and private-state recovery obligations.
+
+The obligation-disposition root covers a canonical map with one record per
+unresolved obligation:
+
+```text
+obligation_id
+obligation_kind
+source journal/head references
+current status
+selected disposition: preserved | remediation-required
+resulting authoritative reference
+evidence root
+```
+
+`preserved` is valid only when the obligation remains compatible with the
+selected predecessor network head and the new authority epoch. For example, a
+writer reservation or rollback right bound to a displaced predecessor cannot
+remain actively usable unchanged; it MUST be explicitly fenced and carried as
+`remediation-required`, or D029 MUST block.
+
+The recovery-closure root proves that the complete immutable object closure
+needed to verify and execute every obligation disposition remains available and
+hash-valid. It does not define the semantic disposition of an obligation; that
+meaning belongs only to the obligation-disposition map.
+
+If safe disposition cannot be proven for every unresolved obligation, if the
+required recovery closure cannot be retrieved and hash-validated, or if invalid
+pointer/suffix evidence cannot be preserved for every invalid, missing, or
+unparseable report, the authority-reseal certificate MUST NOT be issued and the
+checkpoint MUST NOT be committed.
+
+#### Prepared authority-reseal intent
+
+The prepared authority-reseal intent is the first canonical object in the D029
+construction. It is built after recovery collection and obligation analysis, and
+before the checkpoint successor entry is constructed. It binds at least:
+
+```text
+intent schema and contract version
+network identity
+operation_id
+D029 authority-generation tuple
+common-base entry hash
+common-base authorization-bundle hash
+common-base state hash
+common-base replica hosts and set hash
+observed-head-report-set root
+valid-network-head-set root
+invalid-head-evidence-set root
+selected predecessor network-head tuple
+selected authoritative checkpoint ID and hash
+selected complete state hash
+superseded-head-set root
+unresolved-obligation-set root
+obligation-disposition root
+recovery-closure root
+base-authority replica hosts and set hash
+desired replica hosts and set hash
+frozen current, prospective, desired, retiring, and transition replica-set roots
+prospective-readiness root when D028 membership transition applies
+excluded reachable hosts, if any
+captured D026 successor-claim and certificate-application state root
+captured reservation state root
+captured cancellation state root
+captured obligation state root
+new head_id
+new_head_epoch equal to highest valid observed lineage epoch plus one
+successor_sequence equal to selected predecessor head_sequence plus one
+authority-reseal contract hash
+authorization-bundle schema or contract hash
+operator reason and immutable evidence root
+```
+
+The prepared intent MUST NOT bind the successor entry hash, authority-reset
+proposal hash, authority-reseal certificate hash, authority-reseal
+certificate-acceptance-set root, transition-acceptance root, transition-decision
+hash, authorization-bundle hash, or any other object that can exist only after
+the intent is hashed.
+
+#### Reseal successor checkpoint
+
+The authority-reseal successor entry is an authoritative checkpoint entry. It is
+constructed completely after the prepared intent exists and before the
+authority-reset proposal exists. It contains one selected complete state. It
+points to the selected predecessor network head's entry and authorization bundle
+as its predecessor lineage, while also binding the canonical
+superseded-head-set root so replay and forensics can prove which observed valid
+network heads were intentionally superseded.
+
+The entry contains at least:
+
+```text
+event_type: state-checkpoint
+checkpoint_kind: authoritative-reseal
+sequence: selected predecessor head_sequence + 1
+previous_entry_hash: selected predecessor network head entry hash
+previous_authorization_bundle_hash: selected predecessor network head authorization-bundle hash
+previous_state_hash: selected predecessor network head resulting-state hash
+complete checkpoint state
+checkpoint_state_hash
+resulting_state_hash equal to checkpoint_state_hash
+common-base entry and authorization-bundle hashes
+observed-head-report-set root
+valid-network-head-set root
+invalid-head-evidence-set root
+superseded-head-set root
+unresolved-obligation-set root
+obligation-disposition root
+recovery-closure root
+base-authority replica-set hash
+desired replica-set hash
+new head_id
+new_head_epoch equal to highest valid observed lineage epoch plus one
+prepared_intent_hash
+```
+
+The entry MUST NOT contain the authority-reset proposal hash, future
+authority-reseal certificate hash, authority-reseal certificate-acceptance-set
+root, transition-acceptance root, transition-decision hash,
+authorization-bundle hash, or any D028 post-entry evidence root. Those
+post-entry facts belong only in the immutable authorization bundle. Canonical
+checkpoint state MUST NOT contain an `authority_reseal_certificate_hash` field,
+an `authority_reseal_certificate_acceptance_set_root` field, or any equivalent
+future-certificate back-reference; implementations MAY expose the committed
+certificate hash and certificate-acceptance-set root only as derived metadata
+from the active head's authorization bundle.
+
+#### Authority-reset proposal
+
+The authority-reset proposal is constructed after the exact checkpoint successor
+entry hash exists and before proposal acceptance begins. It binds at least:
+
+```text
+proposal schema and contract version
+network identity
+operation_id
+prepared_intent_hash
+exact checkpoint successor entry hash
+exact checkpoint successor resulting-state hash
+D029 authority-generation tuple
+common-base entry hash
+common-base authorization-bundle hash
+common-base state hash
+common-base replica hosts and set hash
+observed-head-report-set root
+valid-network-head-set root
+invalid-head-evidence-set root
+selected predecessor network-head tuple
+selected authoritative checkpoint ID and hash
+selected complete state hash
+superseded-head-set root
+unresolved-obligation-set root
+obligation-disposition root
+recovery-closure root
+base-authority replica hosts and set hash
+desired replica hosts and set hash
+frozen current, prospective, desired, retiring, and transition replica-set roots
+prospective-readiness root when D028 membership transition applies
+excluded reachable hosts, if any
+captured D026 successor-claim and certificate-application state root
+captured reservation state root
+captured cancellation state root
+captured obligation state root
+new head_id
+new_head_epoch equal to highest valid observed lineage epoch plus one
+successor_sequence equal to selected predecessor head_sequence plus one
+authority-reseal contract hash
+authorization-bundle schema or contract hash
+operator reason and immutable evidence root
+```
+
+The proposal MUST NOT bind the future `authorization_bundle_hash`,
+`successor_certificate_hash`, authority-reseal certificate hash,
+authority-reseal certificate-acceptance-set root, transition-acceptance root,
+transition-decision hash, or any other value that can exist only after replicas
+have accepted the proposal or completed certificate.
+
+#### Durable D029 fence, proposal acceptance, certificate acceptance, and cancellation
+
+Each base-authority replica MAY accept at most one exact authority-reset proposal
+while its D029 authority fence for the network is active. Proposal acceptance is
+durable, idempotent for identical bytes, and has no wall-clock expiry.
+
+At proposal acceptance, each base-authority replica MUST atomically perform the
+following work under the same replica-local journal/reservation/finalization lock
+used by D026 successor claims, D026 successor-certificate application, ordinary
+entry/bundle head replacement, D026/D028 cancellation prepare, reservation
+mutation, and obligation mutation:
+
+```text
+revalidate that the current entry/bundle head still matches the replica's
+  observed-head report, or that the report's invalid/missing/unparseable
+  evidence still describes the current unreadable pointer
+revalidate that local D026 successor-claim and certificate-application state
+  still matches the prepared intent and proposal
+revalidate that reservation state still matches the prepared intent and proposal
+revalidate that cancellation state still matches the prepared intent and proposal
+revalidate that unresolved obligations still match the prepared intent and
+  proposal
+reject any conflicting ordinary D026 claim, D026 certificate application,
+  ordinary head replacement, reservation mutation, obligation mutation, or
+  cancellation state change
+reject any active unrelated D029 fence for the same network, regardless of the
+  authority-generation tuple claimed by that other fence
+persist the exact D029 network authority fence and exact proposal acceptance
+```
+
+After a replica persists the D029 authority fence, ordinary D026 progress and
+unrelated head changes are blocked at that replica until the exact D029 operation
+is either fully canceled or the exact entry/bundle head pointer commits. A
+partial D029 fence MAY therefore block progress. This is the deliberate
+safety-first behavior and is handled by the D029 cancellation and recovery
+contract rather than by allowing an ordinary successor to race the reseal.
+
+A replica that already accepted one proposal MUST reject a different proposal for
+the same network unless the first proposal is canceled through the full-set
+certified cancellation machinery. This rejection applies even when the second
+proposal claims a different D029 authority-generation tuple.
+
+The full-set authority-reseal certificate is constructed only after every
+base-authority replica has accepted the exact proposal and thereby installed the
+same D029 network authority fence. That certificate authorizes no local head
+commit by itself.
+
+For pure D029, after the certificate exists, every base-authority replica MUST
+durably accept that completed certificate under the same D026/D029 lock plane
+used by `cancel-prepare`. For membership-changing D029+D028, Mother MUST first
+obtain the D028 transition acceptances for that exact D029 certificate, persist
+the canonical D028 transition-acceptance root, and persist the local D028
+commit-in-progress transition decision. Only then MAY each base-authority replica
+durably accept the completed D029 certificate, and each membership-mode D029
+completed-certificate acceptance MUST bind the exact D028 transition-acceptance
+root and D028 transition-decision-record hash. Only the canonical full
+authority-reseal-certificate-acceptance-set root permits the authorization bundle
+to be constructed and the local head pointer to commit.
+
+An authority-reseal certificate acceptance record binds at least:
+
+```text
+certificate-acceptance schema and contract version
+network identity
+operation_id
+D029 authority-generation tuple
+replica identity
+prepared_intent_hash
+authority-reset proposal hash
+authority-reseal certificate hash
+exact checkpoint successor entry hash
+exact checkpoint successor resulting-state hash
+observed-head-report-set root
+valid-network-head-set root
+invalid-head-evidence-set root
+superseded-head-set root
+unresolved-obligation-set root
+obligation-disposition root
+recovery-closure root
+active D029 network authority fence proof
+local cancellation state proof
+D028 transition_acceptance_set_root, null for pure D029
+D028 transition_decision_record_hash, null for pure D029
+certificate-acceptance record hash
+```
+
+Before writing that record, the replica MUST recheck under the same lock that no
+matching cancellation prepare or cancellation commit exists, that the D029
+network authority fence still names the exact proposal and successor, that no
+ordinary D026 head/certificate/reservation/obligation mutation has won, and, for
+membership-changing D029+D028, that the exact D028 transition-acceptance root and
+D028 transition-decision-record hash named by the certificate-acceptance request
+are already durable. If certificate acceptance loses to cancellation at any
+base-authority replica, Mother MUST NOT construct the authorization bundle and
+MUST NOT commit the local head.
+
+Authority-reseal reuses the D026 two-phase cancellation model, but the
+cancellation competes with the D029 network authority fence and the completed
+certificate acceptance under the same lock plane:
+
+```text
+before full-set proposal acceptance:
+  partial proposal acceptance authorizes nothing
+  a different proposal requires full-set certified cancellation first
+
+after any proposal acceptance and before full-set completed-certificate
+acceptance:
+  D029 cancellation prepare, completed-certificate acceptance, ordinary D026
+  claim/certificate application, ordinary head replacement, reservation mutation,
+  and obligation mutation contend on the same lock plane
+  ordinary D026 and unrelated mutation are rejected while the D029 fence remains
+  active
+  cancellation MAY win only by collecting cancellation prepare from every
+  base-authority replica before any completed-certificate acceptance exists
+
+full-set cancellation-prepare certificate:
+  exists only when every base-authority replica prepared cancellation for the
+  exact D029 fence and no base-authority replica reports completed-certificate
+  acceptance for that exact certificate
+  cannot be constructed if any base-authority replica proves completed-certificate
+  acceptance
+
+if any replica has accepted the completed authority-reseal certificate:
+  cancellation-prepare cannot certify
+  partial cancellation prepares MUST be aborted using the verified
+  accepted-certificate evidence
+  recovery MUST complete the exact accepted certificate forward
+
+membership-changing D029+D028 cancellation:
+  before any D029 completed-certificate acceptance, D029 cancellation MAY win
+  only by collecting a full-set D029 cancellation-prepare certificate proving
+  that no base-authority replica accepted the completed D029 certificate
+  the active D029 authority fence MUST remain installed
+  the local D028 commit-in-progress decision MUST be converted to
+  cancellation-authorized using that exact D029 cancellation-prepare certificate
+  the complete D028 full-set cancellation protocol MUST finish, including
+  terminal cancellation of every transition acceptance and readiness lock
+  only after full-set D028 cancellation is proven MAY D029 cancellation commit
+  tombstone the proposal, certificate attempt, completed-certificate-acceptance
+  attempt, and D029 authority fence
+  no D026 successor, unrelated D029 proposal, operation-scope release, or
+  network-scope release MAY begin before both cancellation protocols are terminal
+
+after pure-D029 cancellation commit:
+  the proposal, certificate attempt, completed-certificate-acceptance attempt,
+  and D029 authority fence are tombstoned everywhere
+  another proposal MAY begin under a new operation identity
+
+after membership-changing D029+D028 cancellation commit:
+  the proposal, certificate attempt, completed-certificate-acceptance attempt,
+  and D029 authority fence are tombstoned everywhere only after the D028
+  full-set cancellation protocol is terminal
+  another proposal MAY begin only after both D028 and D029 cancellation are
+  terminal
+
+after full-set completed-certificate acceptance:
+  cancellation is fenced everywhere
+  recovery completes the exact entry/bundle pointer commit forward
+```
+
+Partial or split proposal acceptance authorizes no head replacement, no
+replica-set change, and no live infrastructure mutation. Partial or split
+completed-certificate acceptance authorizes no local pointer commit.
+
+#### Membership-changing composition with D028
+
+When desired membership differs from the base/current membership, or when
+`--include-host` or `--exclude-host` is part of the prepared operation, D029 MUST
+compose with D028 instead of bypassing it. The construction order is:
+
+```text
+freeze base/current, prospective, desired, retiring, and transition replica sets
+stage prospective hosts and replicate private/recovery closure
+collect and commit the prospective-readiness root
+construct prepared authority-reseal intent
+construct exact checkpoint successor entry binding prepared_intent_hash
+construct authority-reset proposal binding intent hash and entry hash
+obtain full-set base-authority authority-reseal proposal acceptances, each of
+  which installs the D029 network authority fence under the D026 lock plane
+construct the authority-reseal certificate
+obtain required D028 transition-certificate acceptances for that exact D029
+  certificate
+commit the D028 transition-acceptance-set root
+persist the local D028 commit-in-progress transition decision
+obtain full-set base-authority completed-certificate acceptances, each binding
+  the exact D028 transition-acceptance-set root and D028
+  transition-decision-record hash
+commit the authority-reseal-certificate-acceptance-set root
+construct authorization bundle with certificate_kind authority-reseal, the D029
+certificate-acceptance root, and D028 roots
+atomically commit the entry/bundle head pointer
+drive retained, prospective, and retiring participants through acknowledgement,
+activation, retirement, and release
+```
+
+For a membership-changing authority-reseal, the authorization bundle MUST bind
+the completed authority-reseal certificate, the full D029
+certificate-acceptance-set root, and the required D028 transition-acceptance and
+transition-decision roots. The D029 certificate-acceptance records in this mode
+MUST also bind the same D028 transition-acceptance-set root and D028
+transition-decision-record hash, so D029 cannot become commit-forward before
+D028 participants are fenced. Prospective hosts MUST NOT gain membership merely
+because a D029 checkpoint names them. Retiring hosts MUST NOT be treated as
+released merely because a D029 checkpoint excludes them. Acknowledgement,
+activation, retirement, and release remain D028 obligations.
+
+When D029 does not change membership, the D028 transition roots in the
+authorization bundle are null. A pure D029 operation has no separate local
+authority-reseal commit-in-progress decision; full completed-certificate
+acceptance by every base-authority replica is the commit fence before the
+authorization bundle and active head pointer are written. Ordinary non-divergent
+membership changes MUST remain on the D026+D028 path and MUST NOT be upgraded to
+D029 merely to avoid the ordinary transition protocol.
+
+#### Certificate, bundle, and commit order
+
+The pure D029 construction order is:
+
+```text
+prepared authority-reseal intent
+-> checkpoint successor entry binding prepared_intent_hash
+-> authority-reset proposal binding prepared_intent_hash and successor entry hash
+-> full-set durable authority-reset proposal acceptances, each installing the
+   D029 network authority fence under the D026 lock plane
+-> authority-reseal certificate
+-> full-set durable completed-certificate acceptances by base-authority replicas
+-> authority-reseal-certificate-acceptance-set root
+-> authorization bundle with certificate_kind authority-reseal
+-> atomic active-local-head pointer binding the exact entry/bundle pair
+```
+
+The membership-changing D029+D028 construction order is:
+
+```text
+prepared authority-reseal intent
+-> checkpoint successor entry binding prepared_intent_hash
+-> authority-reset proposal binding prepared_intent_hash and successor entry hash
+-> full-set durable authority-reset proposal acceptances, each installing the
+   D029 network authority fence under the D026 lock plane
+-> authority-reseal certificate
+-> D028 transition acceptances for that exact D029 certificate
+-> D028 transition-acceptance-set root
+-> durable local D028 commit-in-progress transition decision
+-> full-set durable completed-certificate acceptances by base-authority replicas,
+   each binding the D028 transition-acceptance-set root and D028
+   transition-decision-record hash
+-> authority-reseal-certificate-acceptance-set root
+-> authorization bundle with certificate_kind authority-reseal and D029+D028 roots
+-> atomic active-local-head pointer binding the exact entry/bundle pair
+```
+
+The authority-reseal certificate contains every base-authority proposal
+acceptance, the canonical proposal-acceptance-set root, the exact proposal hash,
+the exact successor entry hash, the exact successor resulting-state hash, the
+D029 authority-generation tuple, the common-base entry/authorization-bundle
+tuple, the base-authority set hash, the active D029 network authority fence root,
+and the certificate hash. The displayed certificate hash is derived metadata and
+is omitted from the certificate's canonical digest bytes.
+
+The authorization bundle MUST bind the exact successor entry hash, successor
+resulting-state hash, completed authority-reseal certificate hash, full
+authority-reseal-certificate-acceptance-set root, and any required D028
+transition-acceptance and transition-decision roots. In membership-changing
+D029+D028, the completed-certificate acceptances MUST themselves bind the same
+D028 transition-acceptance and transition-decision roots before the bundle is
+constructed. The D029 certificate-acceptance-set root is distinct from the D028
+prospective-participant transition-acceptance root.
+
+Before the atomic entry/bundle pointer commit, the old authority remains active
+only for operations that do not conflict with the D029 authority fence. Ordinary
+D026 head changes, ordinary D026 certificate applications, conflicting
+reservation mutation, conflicting obligation mutation, and unrelated D029
+proposals remain blocked while the D029 fence is active. The reseal MAY be
+canceled only through full-set certified cancellation. After the pointer commit,
+the new head_id and `new_head_epoch` are authoritative. Rollback to a superseded
+divergent network head is prohibited. Replication, acknowledgement, projection
+rebuild, remediation-required obligation handling, and release MUST complete
+forward; an interrupted post-commit reseal is recovery work, not authority
+ambiguity.
+
+Applying the exact committed D029 entry/bundle pointer MUST atomically replace
+the active D029 fence with immutable committed-fence history. Operation-scope and
+network-scope release MUST wait until every required replica proves that fence
+rollover.
+
+Replay MAY stop at the authority-reseal checkpoint as the new active baseline.
+Superseded network lineages remain immutable forensic evidence and MUST NOT be
+deleted or rewritten. Invalid-head evidence remains immutable forensic evidence
+and MUST NOT be deleted or rewritten. Non-network-head operational obligations
+remain governed by their obligation-disposition records and MUST NOT be treated
+as superseded lineage heads.
+
+#### Recovery routing
+
+Mother MUST route recovery conditions as follows:
+
+```text
+all replicas agree; local state stale:
+  sync-state
+
+local head lost; replicas unanimously agree:
+  recover-head
+
+all base-authority replicas reachable but divergent:
+  authority-reseal
+
+all base-authority replicas reachable and one or more reported suffixes are
+corrupt, missing, unparseable, or hash-invalid:
+  authority-reseal only when a common authority base and replay-valid selected
+  predecessor can be proven; otherwise block
+
+any base-authority replica unreachable:
+  block
+
+no provable common authority base:
+  block
+
+no replay-valid selected predecessor network head or common-base predecessor:
+  block
+
+journal agrees; only projections differ:
+  repair-projections
+```
+
+A reachable host MAY be removed by authority-reseal only when it is in the
+base-authority set, participates in the unanimous authority-reset proposal
+acceptance and completed-certificate acceptance, the operation composes with
+D028 when membership changes, and the exact successor checkpoint records its
+removal. Ordinary non-divergent reachable-host removal uses D026+D028. A host
+that never returns cannot be excluded under this authority model. Suspected
+compromise has the same authority consequence: without an external fencing
+authority not defined here, the network blocks and any exposed identities or
+secrets require separate rotation.
+
+#### Required tests
+
+Implementations MUST test at least:
+
+```text
+newest common authority base selection
+rejection when no common authority base is provable
+rejection when any base-authority replica is unreachable
+rejection of divergent branch membership claims as reseal authority
+reported_head_status valid, invalid, missing, and unparseable forms
+reported_head_tuple nullable when raw pointer evidence is invalid or missing
+raw_pointer_evidence_hash preservation for unreadable pointers
+last_replay_valid_head_tuple and invalid_suffix_evidence_root validation
+observed-head-report-set root containing one report from every base-authority replica
+valid-network-head-set root containing every replay-valid reported current network head
+invalid-head-evidence-set root containing every invalid, missing, or unparseable reported head or suffix
+corrupt suffix participant allowed only after validating common base and preserving evidence
+selection of the common authority base when all reported current suffixes are invalid
+rejection when no replay-valid selected predecessor exists
+superseded-head-set root equal to valid current network heads minus selected predecessor when present
+pending-action-finalized network head included when it is a displaced current head
+non-network operational obligations excluded from superseded-head-set
+unresolved-obligation-set root completeness
+obligation-disposition-root compatibility checks
+rejection when safe obligation disposition cannot be proven
+rejection when recovery closure is missing or hash-invalid
+prepared intent constructed before checkpoint successor entry
+checkpoint successor containing prepared_intent_hash, not proposal hash
+rejection of checkpoint state containing authority_reseal_certificate_hash
+rejection of checkpoint state containing authority_reseal_certificate_acceptance_set_root
+new_head_epoch equal to highest observed valid lineage epoch plus one
+successor_sequence equal to selected predecessor head_sequence plus one
+object self-hash fields omitted from canonical digest bytes
+D029 proposal acceptance taking the same lock plane as D026 claim and certificate application
+D029 proposal acceptance revalidating current head, report, reservations, cancellation state, obligations, and D026 state
+D029 proposal acceptance rejecting ordinary D026 claims, D026 certificate applications, ordinary head changes, reservations, obligation changes, and unrelated D029 fences
+rejection of conflicting D029 proposals regardless of claimed authority-generation tuple
+partial D029 fence blocking ordinary progress without authorizing a head replacement
+one-proposal-per-network D029 fence enforcement
+proposal acceptance and cancellation contending on one durable D026/D029 lock plane
+completed-certificate acceptance and cancellation contending on one durable D026/D029 lock plane
+partial and split proposal acceptance authorizing nothing
+partial and split completed-certificate acceptance authorizing no local pointer commit
+full-set cancellation-prepare certificate impossible after any completed-certificate acceptance
+partial cancellation prepare aborted when accepted-certificate evidence exists
+D026-style full-set cancellation before completed-certificate acceptance
+pure D029 with no local authority-reseal commit-in-progress decision
+D029+D028 using the existing D028 commit-in-progress transition decision
+membership-changing D029 obtaining D028 transition acceptances before D029 completed-certificate acceptances
+membership-changing D029 completed-certificate acceptances binding D028 transition-acceptance-set root and transition-decision-record hash
+rejection when D029 completed-certificate acceptance would commit-forward before D028 prospective participants are fenced
+rejection of local pointer commit without full D029 certificate-acceptance-set root
+rejection when completed-certificate acceptance loses to cancellation anywhere
+rejection of a proposal that binds the future authorization-bundle hash
+rejection of a proposal that binds any future certificate or D028 post-entry root
+checkpoint successor containing complete selected state
+authorization bundle created only after completed-certificate acceptance
+authorization bundle binding D029 certificate-acceptance-set root separately from D028 roots
+D028 prospective-host readiness and transition evidence for membership-changing reseal
+membership-changing D029 cancellation retaining the active D029 fence while D028 cancellation completes
+rejection of new D026 or unrelated D029 work while D029 cancellation is prepared but D028 decision is not converted
+rejection of new D026 or unrelated D029 work while D028 cancellation is partially applied
+rejection of new D026 or unrelated D029 work after D028 cancellation completes but before D029 cancellation commits
+rejection of D029 fence release before terminal D028 full-set cancellation is proven
+rejection of D028 cancellation-authorized conversion after any D029 completed-certificate acceptance exists
+committed D029 pointer atomically rolling active D029 fence into immutable committed-fence history
+release blocked until every required replica proves D029 fence rollover
+ordinary reachable participant removal through D026+D028
+D029+D028 reachable participant removal only during authority-divergence repair
+crash before and after proposal-fence persistence
+crash before and after proposal-certificate persistence
+crash before and after completed-certificate-acceptance persistence
+crash before and after D028 transition-decision persistence when membership changes
+crash before and after authorization-bundle fsync
+crash before and after atomic entry/bundle pointer commit
+post-commit recovery completing forward without rollback to a divergent network head
+unreachable participant exclusion blocked indefinitely
+projection-only damage routed to repair-projections rather than reseal
+```
+
+
 
 ### Remaining open design nodes
 
@@ -5490,24 +6517,24 @@ python tools/mother/mother.py recover-head do mainnet
 python tools/mother/mother.py recover-head finalize mainnet --reason "original local head lost"
 
 # Explicit recovery when local/remote seals disagree or the network is wedged.
-python tools/mother/mother.py reseal-state prep mainnet --from-live --reason "replica mismatch"
+python tools/mother/mother.py reseal-state prep mainnet --select-predecessor-head <entry-hash>:<bundle-hash> --reason "replica mismatch"
 python tools/mother/mother.py reseal-state do mainnet
 python tools/mother/mother.py reseal-state finalize mainnet
 
-# Continue without an unreachable expected replica only through an explicit reseal.
-python tools/mother/mother.py reseal-state prep mainnet --exclude-host coolify-b --reason "host unreachable"
+# An unreachable expected replica blocks authority-reseal until it returns.
+python tools/mother/mother.py diagnose mainnet --show-blocking-replica coolify-b
+
+# After an authoritative finalization commit, an unavailable participant completes forward when it returns.
+python tools/mother/mother.py sync-state prep mainnet --from-authoritative-head <head-hash> --host coolify-b
+python tools/mother/mother.py sync-state do mainnet
+python tools/mother/mother.py sync-state finalize mainnet
+
+# During authority-divergence repair, a reachable recovered or replacement host is staged as prospective and explicitly included; it never self-rejoins.
+python tools/mother/mother.py reseal-state prep mainnet --select-predecessor-head <entry-hash>:<bundle-hash> --include-host coolify-d --reason "host recovered during authority-divergence repair"
 python tools/mother/mother.py reseal-state do mainnet
 python tools/mother/mother.py reseal-state finalize mainnet
 
-# After an authoritative finalization commit, exclusion MUST start from that exact head.
-python tools/mother/mother.py reseal-state prep mainnet --from-finalization-head <head-hash> --exclude-host coolify-b --reason "unrecoverable during finalization completion"
-python tools/mother/mother.py reseal-state do mainnet
-python tools/mother/mother.py reseal-state finalize mainnet
-
-# A recovered or new host is staged as prospective and explicitly included; it never self-rejoins.
-python tools/mother/mother.py reseal-state prep mainnet --include-host coolify-b --reason "host recovered"
-python tools/mother/mother.py reseal-state do mainnet
-python tools/mother/mother.py reseal-state finalize mainnet
+# Ordinary non-divergent host inclusion remains a D026+D028 membership transition, not D029 authority-reseal.
 
 # Complete distributed node lifecycle. A new host is enrolled inside the same action.
 python tools/mother/mother.py add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
@@ -5675,6 +6702,8 @@ Suggested durable state layout:
         metadata.json
         head.json
         entries/
+        authorizations/
+          <authorization-bundle-hash>.json
       successor-reservations/
         current.json
         accepted-certificates/
@@ -5809,6 +6838,7 @@ POST /v1/internal/network-birth/cancellation/abort
 GET  /v1/internal/network-birth/<network-birth-id>/status
 POST /v1/internal/networks/<network>/successor-reservations/claim
 POST /v1/internal/networks/<network>/successor-reservations/apply-certified-successor
+GET  /v1/internal/networks/<network>/journal/authorizations/<bundle-hash>
 POST /v1/internal/networks/<network>/successor-reservations/cancel-prepare
 POST /v1/internal/networks/<network>/successor-reservations/cancel-commit
 POST /v1/internal/networks/<network>/successor-reservations/cancel-abort
@@ -5840,6 +6870,7 @@ POST /v1/operations/<operation-id>/retry-resume       # optional cross-check for
 GET  /v1/operations/<operation-id>
 GET  /v1/operations/<operation-id>/checkpoints
 GET  /v1/operations/<operation-id>/successor-certificates
+GET  /v1/operations/<operation-id>/authorization-bundles
 GET  /v1/operations/<operation-id>/finalization-acknowledgements
 GET  /v1/operations/<operation-id>/finalization-ack-certificate
 GET  /v1/operations/<operation-id>/remediation
@@ -5854,14 +6885,15 @@ The internal successor-reservation endpoints have fixed roles:
 
 - `claim` applies the replica-local claim state machine and returns or replays the
   durable local receipt;
-- `apply-certified-successor` independently validates the complete fresh receipt
-  set, atomically excludes matching cancellation preparation, durably records
-  certificate acceptance, commits only the exact successor, and advances
-  `current_predecessor` while retaining the operation owner; for a
-  `pending-action-finalized` successor, the request MUST additionally bind the
-  exact already-committed active-local-head tuple and `finalization-certified`
-  record, and the replica MUST reject application when that local authority proof
-  is absent or mismatched;
+- `apply-certified-successor` independently validates the complete fresh
+  receipt set, exact successor entry, and immutable authorization bundle;
+  atomically excludes matching cancellation preparation; durably records
+  certificate and bundle acceptance; commits only one head pointer binding that
+  exact pair; and advances `current_predecessor` while retaining the operation
+  owner. For a `pending-action-finalized` successor, the request MUST
+  additionally bind the exact already-committed active-local-head entry/bundle
+  tuple and `finalization-certified` record, and the replica MUST reject
+  application when that local authority proof is absent or mismatched;
 - `cancel-prepare` durably freezes the exact operation, predecessor, and claim
   without clearing ownership or writing an irreversible tombstone;
 - `cancel-commit` independently validates the complete full-set prepare
@@ -5871,14 +6903,15 @@ The internal successor-reservation endpoints have fixed roles:
   committed-successor evidence, removes only the matching prepare freeze, and
   restores the exact claim so that successor application can finish;
 - `release` for a rolled-back outcome is available only for an exact fully
-  replicated terminal head; `release` for a finalized outcome additionally
+  replicated terminal entry/authorization-bundle head pair; `release` for a finalized outcome additionally
   requires independently validated full-set acknowledgement under
   `MOTHER-DESIGN-027`;
 - reservation `GET` returns the owner, predecessor, nullable successor claim,
   accepted certificate, cancellation prepare/commit/abort state, release state,
   and crash-reconciliation evidence required by diagnosis;
-- finalization `status` returns the authoritative active-local-head tuple plus
-  each replica's exact head, accepted-certificate, rollover, acknowledgement, and
+- finalization `status` returns the authoritative active-local-head
+  entry/bundle tuple plus each replica's exact head pair, accepted-certificate,
+  rollover, acknowledgement, and
   release state required to distinguish local non-commit, committed replica lag,
   and completion;
 - finalization `acknowledge` writes or replays the immutable local
@@ -5911,7 +6944,8 @@ operation contract. It MUST refuse to run while the network's local-adoption
 scope is owned by `sync-state`, `recover-head`, or reseal work. It MUST:
 
 1. capture the exact authoritative local journal-head tuple, including journal
-   identity, sequence, entry hash, state hash, `head_id`, and `head_epoch`;
+   identity, sequence, entry hash, authorization-bundle hash, state hash,
+   `head_id`, and `head_epoch`;
 2. replay exactly that pinned lineage and build one complete immutable projection
    generation under a temporary generation directory;
 3. write and verify a projection-generation manifest that names every projection
@@ -5985,12 +7019,13 @@ under the Mother state root remains mandatory.
 `sync-state prep` MUST:
 
 1. acquire the local-adoption scope;
-2. pin the exact current local generation pointer and complete local head tuple;
+2. pin the exact current local generation pointer and complete local
+   entry/authorization-bundle head tuple;
 3. require unanimous agreement from every expected replica on one remote
    candidate;
-4. freeze that candidate's journal identity, sequence, entry hash, state hash,
-   recovery-closure root, private-state generation and hashes, pending action,
-   `head_id`, and `head_epoch`;
+4. freeze that candidate's journal identity, sequence, entry hash,
+   authorization-bundle hash, state hash, recovery-closure root, private-state
+   generation and hashes, pending action, `head_id`, and `head_epoch`;
 5. create a durable adoption plan without changing the active local pointer;
 6. enter `sync-prepared`.
 
@@ -6012,15 +7047,17 @@ local-adoption scope.
 - the active local generation pointer still names the exact prestate pinned by
   `prep`;
 - every expected replica still agrees on the exact frozen candidate;
-- the candidate still has the same journal identity, sequence, hash, recovery
-  closure, private-state generation, `head_id`, and `head_epoch`;
+- the candidate still has the same journal identity, sequence, entry hash,
+  authorization-bundle hash, recovery closure, private-state generation,
+  `head_id`, and `head_epoch`;
 - the complete immutable staged generation still replays and verifies exactly;
 - every staged object and metadata file is durably persisted;
 - the local-adoption scope is still owned by this exact operation.
 
 Before switching the pointer, finalize MUST durably commit an
 `activation-prepared` record that identifies the old pointer, candidate pointer,
-complete staged-generation manifest hash, and frozen remote head tuple. It then
+complete staged-generation manifest hash, and frozen remote
+entry/authorization-bundle head tuple. It then
 MUST atomically replace the local active-generation pointer with the staged
 candidate and flush the pointer plus its parent-directory metadata. That pointer
 switch is the irreversible `sync-state` commit point.
@@ -6254,8 +7291,9 @@ ledger and lock records.
   birth instead obtains and fully accepts the bootstrap certificate from every
   desired initial host for the first head, then rolls those hosts into ordinary
   D026 ownership for later successors;
-- commit and fully replicate the certified `pending-action-opened` successor or
-  birth-plus-pending-action head before dispatching live infrastructure mutation;
+- commit and fully replicate the certified `pending-action-opened`
+  entry/authorization-bundle pair or birth-plus-pending-action head pair before
+  dispatching live infrastructure mutation;
 - refuse if the live state has drifted beyond the prepared preconditions unless
   the prepared operation explicitly declares that drift acceptable;
 - perform only the mutation steps recorded in the prepared operation;
@@ -6330,33 +7368,40 @@ nor a recognized partial/desired state can be proven, retry MUST be refused.
 - commit `finalization-prepared` in the action journal with exact rollback,
   pending-network-state, frozen-participant, immutable-closure,
   finalization-transition-intent, and expected-resulting-state references;
-- construct and obtain an effective successor-authority full-set
-  exact-successor certificate for `pending-action-finalized`, binding
-  prepared-current, effective-authority, and desired replica-set hashes plus the
-  expected receipt-contract hash and accepted actual readiness root;
+- construct and hash the immutable `pending-action-finalized` successor using
+  only pre-claim facts;
+- obtain an effective successor-authority full-set exact-successor certificate
+  for that entry hash, binding prepared-current, effective-authority, and
+  desired replica-set hashes plus the expected receipt-contract hash and
+  accepted actual readiness root;
 - obtain durable acceptance of that exact finalization certificate from every
   applicable prospective or bootstrap participant before the local commit;
 - persist the canonical `transition_acceptance_set_root` and, when D028 applies,
   the exact `commit-in-progress` transition-decision record under the local
   journal lock;
+- construct and persist the immutable authorization bundle binding the successor
+  entry hash, certificate hash, acceptance-set root, and decision-record hash;
 - commit `finalization-certified` in the action journal with the exact
   certificate, successor, prepared-finalization, frozen-participant,
-  `transition_acceptance_set_root`, and `transition_decision_record_hash`;
-- freshly validate the complete certificate, local predecessor, frozen
-  participant hash, acceptance-set root, decision-record hash, exact successor
-  bytes, and expected resulting-state hash;
-- atomically commit only that certified successor to the active local
-  network-journal head under the filesystem journal contract;
+  authorization-bundle hash, and every evidence hash in that bundle;
+- freshly validate the complete certificate, local predecessor entry/bundle
+  pair, frozen participant hash, acceptance-set root, decision-record hash,
+  exact successor bytes, authorization bundle, and expected resulting-state
+  hash;
+- atomically commit one active local network-journal head binding that exact
+  successor entry and authorization bundle under the filesystem journal
+  contract;
 - treat that active-local-head replacement as the irreversible authority
   boundary, immediately close rollback, and enter
   `finalized-replication-pending`;
 - begin remote replication only after the local commit, applying the exact
-  authoritative local transition to every frozen transition participant through
+  authoritative local entry/authorization-bundle pair to every frozen transition
+  participant through
   ordinary successor application for effective authority replicas, staged-head
   installation for prospective replicas, and bootstrap-promoted rollover evidence
   for birth participants;
 - on exact retry, replay the authoritative local head and resynchronize every
-  lagging participant to that same certified finalization head;
+  lagging participant to that same finalization entry/authorization-bundle pair;
 - transfer and verify every immutable object required to replay that head;
 - append or verify the action-journal `action-finalized` mirror;
 - clear the active rollback-stack projection only after the active local head
@@ -6368,23 +7413,26 @@ nor a recognized partial/desired state can be proven, retry MUST be refused.
 - retain all active scope ownership and block ordinary mutation while
   acknowledgement or reservation release remains incomplete;
 - require each release recipient to independently validate the full-set
-  acknowledgement certificate and exact local terminal head;
+  acknowledgement certificate and exact local terminal
+  entry/authorization-bundle head pair;
 - enter `finalized` and release active scope and successor-reservation ownership
   only after every required participant's exact durable release record is
   freshly proven.
 
-If the active local head still names the exact predecessor, Mother MAY retry the
-same exact local finalization successor or cancel the prepared successor through
+If the active local head still names the exact predecessor
+entry/authorization-bundle pair, Mother MAY retry the same exact local
+finalization successor or cancel the prepared successor through
 `MOTHER-DESIGN-026`, enter `finalize-failed`, and keep rollback available. Remote
 finalization replication MUST NOT have begun in that state.
 
-If the active local head names the exact certified finalization successor, the
+If the active local head names the exact finalization
+entry/authorization-bundle pair, the
 operation MUST NOT return to `finalize-failed` and MUST NOT offer rollback. A
 timeout, lost response, or interruption while replicating that committed head is
 `finalized-replication-pending`, not uncertainty about topology authority. The
 operation remains pending until resynchronization, acknowledgement, and release
-complete or the explicit post-commit exclusion reseal in `MOTHER-DESIGN-027`
-supersedes an unavailable participant.
+complete under `MOTHER-DESIGN-027`. An unavailable participant leaves the
+operation blocked until it returns and completes forward.
 
 If the active local state root or local journal head is unreadable, corrupt, or
 cannot be proven after a crash, ordinary finalize retry MUST block and direct the
@@ -6553,10 +7601,11 @@ restore.
 Finalization closes the rollback window. It is forbidden while any provisional
 frame remains. Before clearing the promoted stack, `finalize` appends
 `frame-close-prepared` records for every unused promoted frame and verifies the
-rollback-journal head is durable. It then commits `finalization-prepared` in the
-action journal and `pending-action-finalized` in the network journal with exact
-cross-journal references. After that network finalization commit, frames from the action MUST NOT be
-executed.
+rollback-journal head is durable. It then commits `finalization-prepared` in
+the action journal and atomically commits the `pending-action-finalized`
+entry/authorization-bundle head pair in the network journal with exact
+cross-journal references. After that network finalization commit, frames from
+the action MUST NOT be executed.
 
 Rollback frames, promotion events, and restore attempts are durable Mother
 state. They MUST NOT live only in a local shell script, terminal output,
@@ -6944,16 +7993,17 @@ do-complete-pending-finalize:
   finalize, rollback --all, rollback --count <n>, rollback --through <layer-id>
 
 finalizing:
-  active local head still names the predecessor:
+  active local head still names the predecessor entry/authorization-bundle pair:
     exact finalize retry, or certified cancellation followed by rollback
-  active local head names the exact certified successor:
+  active local head names the exact successor entry/authorization-bundle pair:
     reconcile to finalized-replication-pending
   active local head cannot be proven:
     recover-head or explicit authority-restoring reseal only
 
 finalize-failed:
-  valid only when the active local head still names the exact predecessor and any
-  prepared successor attempt has been durably canceled
+  valid only when the active local head still names the exact predecessor
+  entry/authorization-bundle pair and any prepared successor attempt has been
+  durably canceled
   finalize retry
   retry/resume when an unverified mutation is identified
   rollback choices
@@ -6961,9 +8011,10 @@ finalize-failed:
 finalized-replication-pending:
   rollback is closed
   exact finalize retry/resynchronization, acknowledgement retry, diagnosis,
-  terminal release retry, and explicit finalization-completion exclusion reseal
-  only
+  and terminal release retry only
   all active scopes remain owned and ordinary mutation remains blocked
+  unavailable required participants keep the operation in this state until they
+  return and complete forward
 
 rollback-failed:
   rollback retry, including the exact cancel-prepare, cancel-commit, or
@@ -7052,7 +8103,9 @@ network-born-pending-action:
 ```
 
 Before the relevant local commit, enrollment or bootstrap can roll back. After
-that commit it can only complete forward or use explicit exclusion reseal.
+that commit it can only complete forward. Reachable participant removal after
+forward completion is a separate unanimous authority-reseal; unavailable
+participants block rather than being excluded by the remaining hosts.
 
 `sync-state` uses a separate normative local-adoption state machine because it
 does not create or finalize a network mutation:
@@ -7174,17 +8227,21 @@ Purpose:
 - compare the active local head state with sealed complete-state replicas on
   the remote machines;
 - recover when local state is stale but the network replicas agree;
-- create an explicit new seal when remote replicas disagree or the network is
-  wedged;
-- explicitly enroll or retire hosts when `--include-host` or `--exclude-host` is
-  prepared;
+- create an explicit new seal when all base-authority replicas are reachable but
+  remote replicas disagree, report corrupt or hash-invalid suffixes, or the
+  network is wedged;
+- keep ordinary non-divergent host enrollment and retirement on D026+D028;
+- combine reachable-host enrollment or retirement with an authority-divergence
+  reseal only when `--include-host` or `--exclude-host` is prepared, every
+  base-authority replica accepts the exact authority-reseal proposal and
+  completed certificate, and the membership change composes with D028;
 - push the chosen complete network-state seal to all transition participants;
 - retain superseded conflicting seals for audit.
 
 Stage contract:
 
 ```text
-mother reseal-state prep mainnet --from-live --reason "..."
+mother reseal-state prep mainnet --select-predecessor-head <entry-hash>:<bundle-hash> --reason "..."
 mother reseal-state do --operation-id <id>
 mother reseal-state finalize --operation-id <id>
 mother rollback mainnet
@@ -7194,16 +8251,22 @@ mother rollback mainnet
 
 - local seal metadata;
 - every reachable remote seal metadata record;
-- unreachable replicas;
-- selected source of truth, if any;
-- live guard, topology, route, and service facts used to justify the reseal;
+- unreachable replicas, which block authority-reseal when they are part of the
+  base-authority set;
+- selected valid predecessor/checkpoint, if any;
+- live guard, topology, route, and service facts used only as diagnostic or verification evidence, not as authority;
 - desired new topology epoch and state hash;
 - frozen current, prospective, transition, desired, and retiring replica sets
   and hashes;
 - enrollment readiness or retirement evidence required by the plan;
 - exact replica files to write;
-- exact superseded seal markers to write;
-- rollback behavior for replicas that have already accepted the new seal.
+- observed-head-report, valid-network-head, invalid-head-evidence, and
+  superseded-head roots;
+- unresolved-obligation, obligation-disposition, and recovery-closure roots;
+- authority-reseal proposal-acceptance and completed-certificate-acceptance
+  roots;
+- rollback behavior for replicas that have already accepted the completed
+  authority-reseal certificate or the new entry/bundle head.
 
 Forbidden:
 
@@ -7216,10 +8279,10 @@ Forbidden:
 
 Rollback expectation:
 
-- restore each touched replica to its captured pre-reseal seal when possible;
-- if some replicas already moved forward and cannot be restored, report the
-  exact split and leave normal mutations blocked until a new reseal-state plan
-  is prepared.
+- before the atomic entry/bundle pointer commit, use the D026-style full-set
+  certified cancellation machinery reused by `MOTHER-DESIGN-029`;
+- after the atomic entry/bundle pointer commit, rollback to a divergent lineage
+  is prohibited and recovery completes forward.
 
 ### `mother_reseal_qbft.py`
 
@@ -7314,17 +8377,20 @@ mother rollback mainnet
 4. obtain durable transition-certificate acceptance from every applicable
    prospective or bootstrap host;
 5. persist and revalidate the exact D028 `commit-in-progress` decision;
-6. atomically commit and replicate the dependent active-local-head transition;
-   for true birth also complete bootstrap ownership rollover before continuing;
-7. only after that authority transition is proven, capture target service,
+6. construct and persist the immutable authorization bundle for the exact
+   successor entry, certificate, acceptance root, and decision record;
+7. atomically commit and replicate the dependent active-local-head
+   entry/authorization-bundle pair; for true birth also complete bootstrap
+   ownership rollover before continuing;
+8. only after that authority transition is proven, capture target service,
    identity, and runtime prestates and begin live infrastructure mutation;
-8. create or repair the service and establish a healthy private candidate;
-9. capture validator-membership prestates when validators exist;
-10. perform initial bootstrap, reactivation, soft-vote, or hard change and verify
+9. create or repair the service and establish a healthy private candidate;
+10. capture validator-membership prestates when validators exist;
+11. perform initial bootstrap, reactivation, soft-vote, or hard change and verify
     the applicable desired-set and block assertions;
-11. capture and reconcile RPC routing on every affected host;
-12. capture and reconcile Hub/FDB topology on every affected node;
-13. run full guard and membership verification and leave the action pending
+12. capture and reconcile RPC routing on every affected host;
+13. capture and reconcile Hub/FDB topology on every affected node;
+14. run full guard and membership verification and leave the action pending
     finalize.
 
 Forbidden:
@@ -7341,7 +8407,8 @@ Forbidden:
 
 - service and identity match the prepared target;
 - any prospective host has the exact staged generation, readiness receipt, and
-  enrollment lock frozen by `prep`;
+  enrollment lock acquired during `do` and frozen by the accepted readiness
+  record;
 - all validators report the desired effective validator set;
 - block production progresses;
 - each affected RPC host matches the desired owned route graph;
@@ -7511,11 +8578,13 @@ Ordinary commands MUST NOT continue unless the classification is
 mutation. `network-replica-mismatch` and `wedged` require explicit recovery or
 `reseal-state`.
 
-`reseal-state` is the explicit recovery command for committed-state ambiguity. It
-MUST be planned and executed like any other Mother operation. Its plan MUST show
-which local/remote seals were found, which live facts were used, which state is
-being chosen as the new committed state, what superseded seals will be retained
-for audit, and which replicas will receive the new seal.
+`reseal-state` is the explicit recovery command for committed-state ambiguity
+when every base-authority replica is reachable and a common authority base can
+be proven. It MUST be planned and executed like any other Mother operation. Its
+plan MUST show which local/remote seals were found, which live facts were used,
+which state is being chosen as the new committed state, what superseded seals
+will be retained for audit, which replicas will receive the new seal, and which
+D029 authority-reset proposal every base-authority replica accepted.
 
 Reseal MUST NOT be an automatic side effect of `diagnose`, `add-node`, or
 `remove-node`. Those commands MAY report that reseal is required and print the
@@ -7806,11 +8875,11 @@ fail unless every prepared current replica host proves:
 
 Every prospective host MUST separately pass the read-only
 prospective-admission preflight during `prep` and is not counted as an agreeing
-predecessor replica. During `do`, Mother MUST stage each prospective host,
-collect and journal the actual readiness root, obtain the effective-authority
-certificate, obtain prospective transition acceptance, persist
-`commit-in-progress`, and commit and replicate the dependent local head before
-live mutation begins. Mother records the exact current, prospective, transition,
+predecessor replica. During `do`, Mother MUST stage each prospective host, collect and journal the
+actual readiness root, obtain the effective-authority certificate, obtain
+prospective transition acceptance, persist `commit-in-progress`, construct the
+immutable authorization bundle, and commit and replicate the dependent local
+entry/authorization-bundle head pair before live mutation begins. Mother records the exact current, prospective, transition,
 desired, and retiring sets. The execution participant set also includes every
 current node, voter, affected host, and target required for work or
 acknowledgement and MUST NOT silently drop any participant after `prep`.
@@ -7867,24 +8936,27 @@ numbered phase MUST NOT begin before promotion commits.
 4. Obtain durable transition-certificate acceptance from every applicable
    prospective or bootstrap host.
 5. Persist and revalidate the exact D028 `commit-in-progress` decision.
-6. Atomically commit and replicate the dependent active-local-head transition;
-   for true birth, also roll bootstrap ownership into ordinary D026 ownership.
-7. Only after that authority transition is proven, capture the target service
+6. Construct and persist the immutable authorization bundle for the exact
+   successor entry and all post-entry authorization evidence.
+7. Atomically commit and replicate the dependent active-local-head
+   entry/authorization-bundle pair; for true birth, also roll bootstrap ownership
+   into ordinary D026 ownership.
+8. Only after that authority transition is proven, capture the target service
    prestate and begin live infrastructure mutation by creating or repairing the
    service.
-8. Capture identity prestate and install the reserved identity.
-9. Capture runtime prestate and establish a healthy private candidate.
-10. Capture validator-membership prestate when validators exist.
-11. Admit the validator using initial bootstrap, reactivation, soft-vote, or hard mode.
-12. Prove receipts, desired-set agreement, and applicable block progress.
-13. Capture complete RPC-routing prestate.
-14. Reconcile canonical RPC backend sets.
-15. Prove route ownership, backend membership, Traefik load, and chain identity.
-16. Capture complete Hub/FDB prestate.
-17. Reconcile complete Hub/FDB topology.
-18. Prove topology agreement everywhere.
-19. Replicate and verify pending network and enrollment state.
-20. Mark the action `do-complete-pending-finalize`.
+9. Capture identity prestate and install the reserved identity.
+10. Capture runtime prestate and establish a healthy private candidate.
+11. Capture validator-membership prestate when validators exist.
+12. Admit the validator using initial bootstrap, reactivation, soft-vote, or hard mode.
+13. Prove receipts, desired-set agreement, and applicable block progress.
+14. Capture complete RPC-routing prestate.
+15. Reconcile canonical RPC backend sets.
+16. Prove route ownership, backend membership, Traefik load, and chain identity.
+17. Capture complete Hub/FDB prestate.
+18. Reconcile complete Hub/FDB topology.
+19. Prove topology agreement everywhere.
+20. Replicate and verify pending network and enrollment state.
+21. Mark the action `do-complete-pending-finalize`.
 
 The active stack after a successful add is:
 
@@ -8031,8 +9103,8 @@ The atomic active-local-head commit of that exact certified
 replication MUST NOT begin before it. After the local commit, an opposite change
 is a new `add-node` or `remove-node` action with new prestates and a new rollback
 stack. A missing participant after that boundary is handled only by
-resynchronization or the explicit exclusion-reseal path in
-`MOTHER-DESIGN-027`; it does not reopen rollback.
+resynchronization when it returns; it does not reopen rollback and it does not
+authorize exclusion by the remaining participants.
 
 ### Repair-only route reconciliation
 
@@ -8097,8 +9169,9 @@ sets, enrollment/bootstrap progress, frozen finalization participants, exact
 per-participant finalization head and
 certificate state, acknowledgement/release progress, and active operation
 constraints. The diagnosis report is the normal way for an operator to learn
-which operation Mother currently owns and which exact finalize, resynchronization,
-exclusion-reseal, or rollback command is allowed next.
+which operation Mother currently owns and which exact finalize,
+resynchronization, authority-reseal, wait-for-participant, or rollback command is
+allowed next.
 
 ## Operation file
 
@@ -8300,8 +9373,8 @@ Mother SHOULD be implemented in this order:
    - reserve network identity, officer/admin identities, node validator keys,
      validator addresses, first-genesis material, and route reservations;
    - create durable locations for actions, rollback stacks, routes, guards,
-     locks, successor reservations, successor certificates, finalization
-     acknowledgements, full-set acknowledgement certificates, topology, and
+     locks, successor reservations, successor certificates, network authorization
+     bundles, finalization acknowledgements, full-set acknowledgement certificates, topology, and
      version/capability records;
    - store the initial private identity backend as inline local private YAML;
    - make any `*_key_ref` values internal references to records in the same
@@ -8310,9 +9383,8 @@ Mother SHOULD be implemented in this order:
 2. Mother control API shell
    - mounts `/runtime/state/mother/`;
    - reports version, explicit readable/writable schemas, executable capabilities,
-     state root, active operations, checkpoints, rollback stacks, reservation
-     distributions, successor certificates, replica-membership and enrollment
-     state, network-birth state, finalization participant status,
+     state root, active operations, checkpoints, rollback stacks, reservation distributions, successor certificates, authorization bundles,
+     replica-membership and enrollment state, network-birth state, finalization participant status,
      acknowledgements, and terminal progress;
    - treats the container and mounted API implementation as replaceable;
    - freezes action compatibility requirements and refuses authoritative mutation
@@ -8381,7 +9453,10 @@ Mother SHOULD be implemented in this order:
      certificate;
    - retain immutable claim, receipt, accepted-certificate, prepare, commit, and
      tombstone evidence after active pointers roll forward;
-   - durably accept and apply only the exact certified successor;
+   - construct immutable authorization bundles only after successor
+     certification and any D028 acceptance/decision evidence;
+   - durably accept and apply only the exact certified
+     entry/authorization-bundle pair through one atomic pointer replacement;
    - roll `current_predecessor` forward after commit, clear
      `claimed_successor`, and retain the same operation owner;
    - reject all mutation under partial, split, stale, canceled, or divergent
@@ -8427,9 +9502,11 @@ Mother SHOULD be implemented in this order:
    - freeze prepared-current, prepared-prospective, transition, desired, retiring,
      and effective successor-authority sets during `prep`;
    - perform postcondition checks and cross-journal finalization preparation;
-   - exact-successor certification of the authoritative finalization transition;
+   - construct the finalization successor from pre-claim facts, obtain its
+     exact-successor certificate and D028 evidence, then build the immutable
+     authorization bundle;
    - network-journal promotion from pending desired topology to finalized
-     topology through one atomic active-local-head commit;
+     topology through one atomic active-local-head entry/bundle commit;
    - close the rollback window at that exact local commit;
    - classify interrupted local commit from the durable local head pointer and
      route unreadable or unprovable local authority to `recover-head` or reseal;
@@ -8445,8 +9522,8 @@ Mother SHOULD be implemented in this order:
      incomplete;
    - enter `finalized` only after every required release, activation, or
      retirement record is freshly proven;
-   - support the explicit post-commit exclusion reseal without reopening
-     rollback or choosing a different final topology.
+   - keep `finalized-replication-pending` blocked while a required participant is
+     unreachable, then drive that participant forward when it returns.
 
 12. Distributed QBFT membership controller
    - frozen proposal, voter, and observer manifests;
@@ -8526,15 +9603,18 @@ Mother SHOULD be implemented in this order:
      ownership rollover into ordinary D026 authority, certified-cancellation
      archival with retry under a new birth generation, permanent prohibition
      after committed birth, and crash/split/interleaving tests;
-   - preserve the active-local-head pointer as the only commit signal and bind
-     the transition-acceptance root and decision-record hash into finalization;
+   - preserve the active-local-head pointer as the only commit signal;
+     construct successors only from pre-claim facts; place certificate,
+     transition-acceptance, and decision-record hashes in the immutable
+     authorization bundle; and bind the entry/bundle pair in one pointer
+     replacement;
    - require identity rotation when private material reached an untrusted host.
 
 21. Finalization replication-state reconciler
    - implement the exact-status inspection, certified-head resynchronization,
      immutable-object transfer, replay verification, durable acknowledgement,
-     full-set acknowledgement-certificate, terminal-release, and post-commit
-     exclusion-reseal paths in `MOTHER-DESIGN-027`;
+     full-set acknowledgement-certificate, terminal-release, and
+     unreachable-participant block paths in `MOTHER-DESIGN-027`;
    - add crash and interleaving tests at every certificate, head, acknowledgement,
      and release durability boundary.
 

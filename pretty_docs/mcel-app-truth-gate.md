@@ -270,3 +270,36 @@ Patch 25b adds these guarantees:
 - truth findings retain their original code and message;
 - consumers do not create a second registry or recompute truth findings.
 
+## Patch 26 repository audit consumer
+
+`main_computer/mcel_truth_audit.py` is the repository/CI consumer of the same
+truth authority. It loads the registries and `McelAppTruthGate` under Node,
+supplies optional FLOG and acceptance evidence, and writes
+`mcel-repository-truth-audit-v1`.
+
+The audit retains the complete `mcel-app-truth-snapshot-v1` as
+`truthSnapshot`. It does not reproduce truth-gate findings in Python.
+
+Default CI enforcement is intentionally narrow:
+
+```bash
+python main_computer/mcel_truth_audit.py --check
+```
+
+It fails only on truth-gate findings carrying `blocking: true` or on audit
+integrity failures. Legacy enrollment gaps, missing evidence, and stale
+evidence remain visible but non-blocking by default.
+
+Release workflows may explicitly require current proof:
+
+```bash
+python main_computer/mcel_truth_audit.py \
+  --check \
+  --require-fresh-runtime \
+  --require-acceptance
+```
+
+Promotion readiness is advisory. The audit reports the evidence needed for
+`legacy → runtime-baseline` and `runtime-baseline → semantic-runtime`, but only
+an explicit registry patch may change an app's declared maturity.
+
