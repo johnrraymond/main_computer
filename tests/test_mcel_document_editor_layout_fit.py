@@ -180,3 +180,25 @@ def test_document_editor_layout_fit_documentation_exists() -> None:
     assert "diagnostics counter" in text
     assert "runtime visual-fit" in text
     assert "right rail" in text
+
+
+def test_patch24a_layout_spec_assigns_outline_modal_and_docked_companion() -> None:
+    text = " ".join(DOC.read_text(encoding="utf-8").split())
+
+    required_phrases = [
+        "left Document Outline | editable document page | right Document AI dock",
+        "The Pretty Docs file list is no longer a persistent lane",
+        "heading hierarchy of the loaded document",
+        "MUST NOT fall back to displaying the Pretty Docs file list",
+        "The center lane remains the primary width owner",
+        "companion expanded/docked transition",
+        "docked -> compact right-side affordance",
+        "Docking preserves thread, draft, result, and selection context",
+        "The companion must not auto-dock during a running request",
+        "The file picker is a temporary overlay, not a fourth persistent lane",
+        "pass through save/discard/cancel",
+        "dynamic outline/file rows do not pollute static layout collision evidence",
+        "Patch 24a is specification and contract-test work only",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text

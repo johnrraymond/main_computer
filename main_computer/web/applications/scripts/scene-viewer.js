@@ -2463,6 +2463,113 @@
         };
       }
 
+      function shuttle3dMotherShipInteriorConfig(scene) {
+        const supplied = scene?.metadata?.shuttle3d?.motherShipInterior;
+        const interior = supplied && typeof supplied === "object" ? supplied : {};
+        const cloneObject = (value, fallback = {}) => (
+          value && typeof value === "object" && !Array.isArray(value)
+            ? JSON.parse(JSON.stringify(value))
+            : JSON.parse(JSON.stringify(fallback))
+        );
+        const stringMap = (value, fallback = {}) => {
+          const source = value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+          return Object.fromEntries(Object.entries(source).map(([key, entry]) => [String(key), String(entry)]));
+        };
+        const objectMap = (value, fallback = {}) => {
+          const source = value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+          return Object.fromEntries(
+            Object.entries(source)
+              .filter(([key]) => String(key).trim())
+              .map(([key, entry]) => [String(key), cloneObject(entry)])
+          );
+        };
+        const defaultLocations = {
+          "bay.shuttle": "Mother Ship Shuttle Bay",
+          "bay.ops": "Bay Operations",
+          "security.checkpoint": "Security Checkpoint",
+          "corridor.main": "Main Corridor Hub",
+          "engineering.access": "Engineering Access",
+          "medbay.stub": "Medbay Door",
+          "science.ops.stub": "Science/Ops Door",
+          "bridge.locked": "Bridge Access"
+        };
+        const defaultObjectives = {
+          "objective.bay-ops": {
+            label: "Find Bay Operations and unlock the inner door.",
+            location: "bay.shuttle"
+          },
+          "objective.enter-corridor": {
+            label: "Enter the main corridor.",
+            location: "bay.ops"
+          }
+        };
+        const defaultDoors = {
+          "door.bay-inner": {
+            label: "Inner Shuttle Bay Door",
+            from: "bay.shuttle",
+            to: "security.checkpoint",
+            state: "locked"
+          },
+          "door.security-hub": {
+            label: "Security Checkpoint Door",
+            from: "security.checkpoint",
+            to: "corridor.main",
+            state: "closed"
+          },
+          "door.engineering-access": {
+            label: "Engineering Access Door",
+            from: "corridor.main",
+            to: "engineering.access",
+            state: "closed"
+          },
+          "door.medbay": {
+            label: "Medbay Door",
+            from: "corridor.main",
+            to: "medbay.stub",
+            state: "locked"
+          },
+          "door.science": {
+            label: "Science/Ops Door",
+            from: "corridor.main",
+            to: "science.ops.stub",
+            state: "locked"
+          },
+          "door.bridge": {
+            label: "Bridge Command Door",
+            from: "corridor.main",
+            to: "bridge.locked",
+            state: "locked"
+          }
+        };
+        const defaultTerminals = {
+          "terminal.bay-ops": {
+            label: "Bay Operations Terminal",
+            location: "bay.ops",
+            state: "offline"
+          }
+        };
+        const locations = stringMap(interior.locations, defaultLocations);
+        const objectives = objectMap(interior.objectives, defaultObjectives);
+        const initialLocation = String(interior.initialLocation || interior.location || "bay.shuttle");
+        const initialObjective = String(interior.initialObjective || interior.objectiveId || "objective.bay-ops");
+        return {
+          enabled: interior.enabled !== false,
+          initialLocation: locations[initialLocation] ? initialLocation : "bay.shuttle",
+          initialObjective: objectives[initialObjective] ? initialObjective : "objective.bay-ops",
+          power: String(interior.power || "emergency"),
+          security: String(interior.security || "quarantine"),
+          locations,
+          objectives,
+          doors: objectMap(interior.doors, defaultDoors),
+          terminals: objectMap(interior.terminals, defaultTerminals),
+          flags: cloneObject(interior.flags, {
+            bayControlActive: true,
+            boardersPausedAfterDocking: true
+          })
+        };
+      }
+
+
       function shuttle3dRayIntersectsBounds(origin, direction, bounds) {
         let near = -Infinity;
         let far = Infinity;
@@ -2721,7 +2828,9 @@
           this.starfield = shuttle3dStarfieldConfig(scene);
           this.combat = shuttle3dCombatConfig(scene);
           this.flightConfig = shuttle3dFlightConfig(scene);
+          this.interiorConfig = shuttle3dMotherShipInteriorConfig(scene);
           this.flight = this.createFlightState();
+          this.shipState = this.createShipState();
           this.pilotStations = shuttle3dPilotStationsConfig(scene);
           this.hoveredPilotStation = null;
           this.pilot = {
@@ -2735,8 +2844,10 @@
           };
           this.combatPauseStartedAtMs = null;
           this.lastPilotUiAt = -Infinity;
+          this.lastShipUiAt = -Infinity;
           this.onPilotChanged = null;
           this.onBayControlStarted = null;
+          this.onShipStateChanged = null;
           this.playerHealth = this.combat.player.startingHealth;
           this.aliens = [];
           this.transportSequence = 0;
@@ -2971,8 +3082,74 @@
           };
         }
 
+        createShipState() {
+          const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
+          return {
+            enabled: Boolean(config.enabled),
+            location: config.initialLocation,
+            power: config.power,
+            security: config.security,
+            objectiveId: config.initialObjective,
+            doors: JSON.parse(JSON.stringify(config.doors || {})),
+            terminals: JSON.parse(JSON.stringify(config.terminals || {})),
+            flags: JSON.parse(JSON.stringify(config.flags || {}))
+          };
+        }
+
+        shipLocationLabel(locationId = this.shipState?.location) {
+          const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
+          const id = String(locationId || config.initialLocation || "bay.shuttle");
+          return String(config.locations?.[id] || id);
+        }
+
+        shipObjectiveLabel(objectiveId = this.shipState?.objectiveId) {
+          const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
+          const id = String(objectiveId || config.initialObjective || "objective.bay-ops");
+          const objective = config.objectives?.[id];
+          if (objective && typeof objective === "object") return String(objective.label || id);
+          return String(objective || id);
+        }
+
+        shipStateSnapshot() {
+          if (!this.shipState) this.shipState = this.createShipState();
+          const state = this.shipState;
+          return {
+            enabled: Boolean(state.enabled),
+            location: state.location,
+            locationLabel: this.shipLocationLabel(state.location),
+            power: state.power,
+            security: state.security,
+            objectiveId: state.objectiveId,
+            objectiveLabel: this.shipObjectiveLabel(state.objectiveId),
+            doors: JSON.parse(JSON.stringify(state.doors || {})),
+            terminals: JSON.parse(JSON.stringify(state.terminals || {})),
+            flags: JSON.parse(JSON.stringify(state.flags || {})),
+            shuttleBayControlActive: this.isShuttleBayPlayerControlActive()
+          };
+        }
+
+        emitShipState(force = false) {
+          if (typeof this.onShipStateChanged !== "function") return;
+          const clock = this.lastFrameTime ?? 0;
+          if (!force && clock - this.lastShipUiAt < 120) return;
+          this.lastShipUiAt = clock;
+          this.onShipStateChanged(this.shipStateSnapshot());
+        }
+
+        setShipLocation(locationId, force = false) {
+          if (!this.shipState) this.shipState = this.createShipState();
+          const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
+          const nextLocation = String(locationId || config.initialLocation || "bay.shuttle");
+          if (!config.locations?.[nextLocation]) return false;
+          if (this.shipState.location === nextLocation && !force) return true;
+          this.shipState.location = nextLocation;
+          this.emitShipState(true);
+          return true;
+        }
+
         resetFlightState() {
           this.flight = this.createFlightState();
+          this.shipState = this.createShipState();
           if (this.pilot) {
             this.pilot.active = false;
             this.pilot.station = null;
@@ -2983,6 +3160,7 @@
           this.combatPauseStartedAtMs = null;
           this.clearMovementKeys();
           this.emitPilotState?.(true);
+          this.emitShipState?.(true);
         }
 
         isDockingCutsceneActive() {
@@ -3052,6 +3230,11 @@
           this.pilot.impulse = 0;
           this.combatPauseStartedAtMs = null;
           this.clearMovementKeys();
+          this.setShipLocation("bay.shuttle", true);
+          if (this.shipState?.flags) {
+            this.shipState.flags.bayControlActive = true;
+            this.shipState.flags.boardersPausedAfterDocking = true;
+          }
           this.camera = spawn.position.slice();
           this.setLook(spawn.yaw, spawn.pitch);
           if (typeof this.onCameraMoved === "function") this.onCameraMoved(this.camera.slice());
@@ -3068,6 +3251,7 @@
           }
           this.emitPilotState(true);
           this.emitCombatState(true);
+          this.emitShipState(true);
           return true;
         }
 
@@ -4417,7 +4601,11 @@
         const pilotLine = document.createElement("div");
         pilotLine.className = "scene-shuttle3d-pilot-line";
         pilotLine.textContent = "CONSOLE PILOT: MOUSE OVER A CONSOLE + E";
-        hud.append(healthPanel, combatLine, phaserLine, pilotLine);
+        const shipLine = document.createElement("div");
+        shipLine.className = "scene-shuttle3d-ship-line";
+        shipLine.textContent = "SHIP: SHUTTLE IN FLIGHT";
+        shipLine.hidden = true;
+        hud.append(healthPanel, combatLine, phaserLine, pilotLine, shipLine);
 
         const crosshair = document.createElement("div");
         crosshair.className = "scene-shuttle3d-crosshair";
@@ -4556,6 +4744,19 @@
             lastHealth = combat.health;
             updateMovementStatus(renderer.camera);
           };
+          const updateShipHud = (ship) => {
+            const visible = Boolean(ship?.enabled && renderer.pilotSnapshot().playerExitedToBay);
+            shipLine.hidden = !visible;
+            if (!visible) return;
+            const location = String(ship.locationLabel || ship.location || "Mother Ship");
+            const objective = String(ship.objectiveLabel || ship.objectiveId || "Awaiting objective");
+            shipLine.textContent = `SHIP ${location} • ${String(ship.power || "unknown").toUpperCase()} POWER • ${String(ship.security || "unknown").toUpperCase()} • OBJECTIVE: ${objective}`;
+            canvas.dataset.shipLocation = String(ship.location || "");
+            canvas.dataset.shipObjective = String(ship.objectiveId || "");
+            shell.dataset.shipLocation = String(ship.location || "");
+            shell.dataset.shipObjective = String(ship.objectiveId || "");
+          };
+
           const updatePilotHud = (pilot) => {
             canvas.dataset.pilotMode = pilot.active ? "active" : "inactive";
             canvas.dataset.hoveredPilotStation = pilot.hoverId;
@@ -4606,9 +4807,11 @@
           renderer.onCameraMoved = updateMovementStatus;
           renderer.onCombatChanged = updateCombatHud;
           renderer.onPilotChanged = updatePilotHud;
+          renderer.onShipStateChanged = updateShipHud;
           updateMovementStatus(renderer.camera);
           renderer.emitPilotState(true);
           renderer.emitCombatState(true);
+          renderer.emitShipState(true);
         } catch (error) {
           shell.dataset.rendererError = "true";
           status.textContent = "WebGL shuttle renderer unavailable";

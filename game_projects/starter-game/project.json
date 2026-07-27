@@ -633,7 +633,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Mouse over console + E pilot • W/S throttle flies to Mother Ship • docking triggers shuttle-bay cutscene • Click/Space/F fire outside pilot",
+          "controlsHint": "Mouse over console + E pilot \u2022 W/S throttle flies to Mother Ship \u2022 docking triggers shuttle-bay cutscene \u2022 Click/Space/F fire outside pilot",
           "systems": {
             "shuttleBayTwiddle": {
               "enabled": true,
@@ -1079,6 +1079,82 @@
               "enabled": true,
               "durationMs": 9600,
               "bayLabel": "Mother Ship Shuttle Bay"
+            }
+          },
+          "motherShipInterior": {
+            "enabled": true,
+            "initialLocation": "bay.shuttle",
+            "initialObjective": "objective.bay-ops",
+            "power": "emergency",
+            "security": "quarantine",
+            "locations": {
+              "bay.shuttle": "Mother Ship Shuttle Bay",
+              "bay.ops": "Bay Operations",
+              "security.checkpoint": "Security Checkpoint",
+              "corridor.main": "Main Corridor Hub",
+              "engineering.access": "Engineering Access",
+              "medbay.stub": "Medbay Door",
+              "science.ops.stub": "Science/Ops Door",
+              "bridge.locked": "Bridge Access"
+            },
+            "objectives": {
+              "objective.bay-ops": {
+                "label": "Find Bay Operations and unlock the inner door.",
+                "location": "bay.shuttle"
+              },
+              "objective.enter-corridor": {
+                "label": "Enter the main corridor.",
+                "location": "bay.ops"
+              }
+            },
+            "doors": {
+              "door.bay-inner": {
+                "label": "Inner Shuttle Bay Door",
+                "from": "bay.shuttle",
+                "to": "security.checkpoint",
+                "state": "locked"
+              },
+              "door.security-hub": {
+                "label": "Security Checkpoint Door",
+                "from": "security.checkpoint",
+                "to": "corridor.main",
+                "state": "closed"
+              },
+              "door.engineering-access": {
+                "label": "Engineering Access Door",
+                "from": "corridor.main",
+                "to": "engineering.access",
+                "state": "closed"
+              },
+              "door.medbay": {
+                "label": "Medbay Door",
+                "from": "corridor.main",
+                "to": "medbay.stub",
+                "state": "locked"
+              },
+              "door.science": {
+                "label": "Science/Ops Door",
+                "from": "corridor.main",
+                "to": "science.ops.stub",
+                "state": "locked"
+              },
+              "door.bridge": {
+                "label": "Bridge Command Door",
+                "from": "corridor.main",
+                "to": "bridge.locked",
+                "state": "locked"
+              }
+            },
+            "terminals": {
+              "terminal.bay-ops": {
+                "label": "Bay Operations Terminal",
+                "location": "bay.ops",
+                "state": "offline"
+              }
+            },
+            "flags": {
+              "bayControlActive": true,
+              "boardersPausedAfterDocking": true
             }
           }
         },

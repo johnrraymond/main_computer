@@ -49,13 +49,13 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-004` | Journals replay from a valid checkpoint to a proven head | [Checkpoint-aware replay](#checkpoint-aware-replay) | Replay corpus, corruption, and checkpoint-selection tests | — | Implementable |
 | `MOTHER-REQ-005` | Journal entries and heads have deterministic atomic commit semantics | [Atomic filesystem commit](#atomic-filesystem-commit) | Crash-point and fsync fault-injection tests | — | Implementable |
 | `MOTHER-REQ-006` | Operating-system locks, scope ownership, and full-set reservations serialize mutation | [Locking model](#locking-model) | Concurrent-writer, split-reservation, and stale-metadata tests | — | Implementable |
-| `MOTHER-REQ-007` | Cross-journal facts retain one owner and one irreversible commit point | [Cross-journal transitions](#cross-journal-transitions) | Replay proof and interrupted-finalize tests | `MOTHER-OPEN-018` for full-set acknowledgement | Implementable locally |
+| `MOTHER-REQ-007` | Cross-journal facts retain one owner and one irreversible commit point | [Cross-journal transitions](#cross-journal-transitions) | Replay proof and interrupted-finalize tests | — | Implementable |
 | `MOTHER-REQ-008` | Distributed mutation starts only after a full-network clean-state barrier | [Full-network clean-state barrier](#full-network-clean-state-barrier) | Multi-host disagreement and unreachable-host tests | `MOTHER-OPEN-017` for prospective replicas | Implementable for established replicas |
 | `MOTHER-REQ-009` | Rollback frames are armed before mutation and removed only after verified restoration | [Distributed rollback layers](#distributed-rollback-layers) | Interrupted-step, retry, and LIFO restoration tests | — | Implementable |
 | `MOTHER-REQ-010` | RPC routing is a typed, reversible distributed resource | [Typed RPC routing resource](#typed-rpc-routing-resource) | Complete-prestate and convergence tests | — | Implementable |
 | `MOTHER-REQ-011` | Hub/FDB topology is a typed, reversible distributed resource | [Typed Hub/FDB topology resource](#typed-hubfdb-topology-resource) | Participant convergence and rollback tests | — | Implementable |
-| `MOTHER-REQ-012` | `add-node` is one staged distributed lifecycle operation | [Integrated add-node sequence](#integrated-add-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017`, `MOTHER-OPEN-018` | Blocked for production |
-| `MOTHER-REQ-013` | `remove-node` is one staged distributed lifecycle operation | [Integrated remove-node sequence](#integrated-remove-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017`, `MOTHER-OPEN-018` | Blocked for production |
+| `MOTHER-REQ-012` | `add-node` is one staged distributed lifecycle operation | [Integrated add-node sequence](#integrated-add-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017` | Blocked for production |
+| `MOTHER-REQ-013` | `remove-node` is one staged distributed lifecycle operation | [Integrated remove-node sequence](#integrated-remove-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017` | Blocked for production |
 | `MOTHER-REQ-014` | QBFT membership changes use frozen participants, durable receipts, and convergence proof | [Frozen proposal and participant manifest](#frozen-proposal-and-participant-manifest) | Vote, receipt, effective-set, and block-proof tests | — | Implementable beneath blocked production mutation |
 | `MOTHER-REQ-015` | Schema and capability negotiation fails closed | [Startup and command preflight](#startup-and-command-preflight) | Compatibility matrix and unsupported-schema tests | — | Implementable |
 | `MOTHER-REQ-016` | Recovery transfers the complete transitive object and private-state closure | [Resolved design decisions](#resolved-design-decisions) | Closure traversal, missing-object, and hash tests | — | Implementable |
@@ -64,10 +64,10 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-019` | Projection repair publishes one head-fenced generation atomically | [Control APIs](#control-apis) | Concurrent-head, crash, and mixed-generation tests | — | Implementable |
 | `MOTHER-REQ-020` | Mother and guard mutation APIs remain local and use bounded reusable call-runners | [Remote access through Coolify call-runners](#remote-access-through-coolify-call-runners) | Route exposure, idempotency, and runner-crash tests | — | Implementable |
 | `MOTHER-REQ-021` | Active operations exclusively own conflicting scopes until their terminal boundary | [Active operation conflict rule](#active-operation-conflict-rule) | Local conflict-matrix, distributed-reservation, and terminal-release tests | — | Implementable |
-| `MOTHER-REQ-022` | Network finalization closes rollback at the authoritative journal commit | [Commit and finalize boundary](#commit-and-finalize-boundary) | Pre/post-commit crash and rollback-closure tests | `MOTHER-OPEN-018` | Implementable locally |
-| `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor per predecessor and retains one operation owner through rollover, two-phase cancellation, and terminal release | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, forged-certificate, rollover, exhaustive apply/cancel interleaving, cancellation, release, and crash tests | — | Implementable |
+| `MOTHER-REQ-022` | Network finalization closes rollback at the first durable commit of the exact certified finalization successor | [Commit and finalize boundary](#commit-and-finalize-boundary) | Pre/post-commit crash, ambiguity, and rollback-closure tests | — | Implementable |
+| `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor per predecessor and retains monotonic accepted-or-committed evidence through rollover, two-phase cancellation, and terminal release | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, forged-certificate, monotonic-retry, rollover, exhaustive apply/cancel interleaving, cancellation, release, and crash tests | — | Implementable |
 | `MOTHER-REQ-024` | Zero-network and prospective replicas use an explicit enrollment transaction | [Remaining open design nodes](#remaining-open-design-nodes) | Empty-network and host-enrollment lifecycle tests | `MOTHER-OPEN-017` | Blocked |
-| `MOTHER-REQ-025` | Finalization replication has exact full-set acknowledgement and recovery transitions | [Remaining open design nodes](#remaining-open-design-nodes) | Ack-loss, retry, recovery, and successor-certificate tests | `MOTHER-OPEN-018` | Blocked |
+| `MOTHER-REQ-025` | Finalization resynchronizes one exact certified terminal head, acknowledges it outside the journal, and releases ownership only from full-set proof | [Finalization resynchronization and full-set acknowledgement](#finalization-resynchronization-and-full-set-acknowledgement) | Commit-ambiguity, monotonic retry, closure transfer, acknowledgement, partial-release, and exclusion-reseal tests | — | Implementable |
 
 `mother` is the replacement control surface for validator lifecycle operations that
 have outgrown `tools/allfather_control.py`. Allfather remains useful reference
@@ -1810,13 +1810,21 @@ uses a three-journal protocol:
 1. Mother appends `frame-close-prepared` records to the rollback journal for
    every still-active promoted frame.
 2. Mother commits `finalization-prepared` to the action journal, referencing the
-   exact rollback-journal head, closure records, desired finalized topology, and
-   current pending network-journal head.
-3. Mother commits `pending-action-finalized` to the network journal, referencing
-   that exact action-journal entry and rollback-journal evidence.
+   exact rollback-journal head, closure records, desired finalized topology,
+   frozen transition participants, current pending network-journal head,
+   finalization transition intent, and expected resulting-state hash.
+3. Mother obtains the full-set successor certificate and commits a
+   `finalization-certified` action-journal record that binds the certificate hash
+   to that exact `finalization-prepared` entry and proposed successor.
+4. Mother applies `pending-action-finalized` to the network journal under that
+   certificate, referencing the exact action-journal and rollback-journal
+   evidence.
 
-The atomic network-journal commit of `pending-action-finalized` is the
-irreversible boundary for a network-scoped action. In one replay transition it:
+The first frozen transition participant that durably commits the exact
+full-set-certified `pending-action-finalized` successor establishes the
+irreversible boundary for the network-scoped action. Authority comes from the
+certificate and exact successor bytes, not from which participant commits first.
+In one replay transition that certified successor:
 
 ```text
 sets finalized_topology to the pending desired topology
@@ -1834,38 +1842,57 @@ a second finalization authority.
 Crash interpretation is deterministic:
 
 ```text
-closure/finalization-prepared records committed, network finalize not committed:
+closure/finalization-prepared records committed and every frozen participant
+proves that no finalization certificate was accepted or committed:
   action is not finalized
+  the exact prepared finalization attempt can be canceled
   rollback remains available
   preparation records remain historical evidence
 
-network pending-action-finalized committed, action mirror missing:
-  action is finalized
-  rollback is closed
-  startup appends or reconstructs the missing action-journal mirror
+a finalization application response is missing or ambiguous and complete
+participant status cannot yet be proven:
+  operation is finalization-commit-ambiguous
+  only exact status inspection and exact finalization retry are permitted
+  no commit or non-commit outcome is inferred from timeout
+
+any frozen participant committed the exact certified pending-action-finalized
+successor, even when the action mirror or other replica commits are missing:
+  action is authoritatively finalized
+  rollback is closed permanently
+  operation is finalized-replication-pending
+  startup reconstructs the action mirror and resynchronizes lagging participants
 ```
 
-Finalization authority and replica convergence MUST be reported as distinct
-states:
+Finalization authority, commit ambiguity, replica convergence, and reservation
+release MUST be reported as distinct states:
 
 ```text
 finalization-not-committed:
-  no authoritative network-journal finalization entry exists
-  rollback remains available
+  every frozen participant proves that it has neither accepted nor committed the
+  exact finalization successor
+  rollback remains available after the prepared attempt is canceled
+
+finalization-commit-ambiguous:
+  a finalization request or response was interrupted
+  complete exact status is not yet known
+  only exact inspection and retry of the same certified successor are permitted
 
 finalized-replication-pending:
-  the authoritative finalization entry exists
+  at least one frozen participant committed the exact certified finalization head
   rollback is permanently closed
-  one or more expected replicas have not acknowledged that exact head
-  all new mutation is blocked
+  one or more frozen participants have not acknowledged that exact head, or
+  terminal reservation release is not yet proven everywhere
+  all new ordinary mutation is blocked
 
 finalized:
-  every expected replica has durably acknowledged the exact finalization head
+  every frozen participant durably acknowledged the exact finalization head
+  and every required terminal release record is proven
 ```
 
-The exact full-set acknowledgement and recovery protocol for the middle state
-remains part of `MOTHER-OPEN-018`. Every acknowledgement or recovery transition
-MUST use the single-successor certificate contract in `MOTHER-DESIGN-026`.
+The exact acknowledgement, resynchronization, ambiguous-outcome, and release
+protocol is defined by `MOTHER-DESIGN-027`. Every finalization-head application
+MUST use the monotonic single-successor certificate contract in
+`MOTHER-DESIGN-026`.
 
 A later rollback chosen before the network finalization commit appends an event
 identifying unused `frame-close-prepared` or `finalization-prepared` records as
@@ -1895,21 +1922,31 @@ Finalization follows the cross-journal protocol above:
 ```text
 append frame-close-prepared for each remaining executable frame
 commit the rollback-journal head
-append finalization-prepared with exact closure and pending-state references
+append finalization-prepared with exact closure, frozen transition participants,
+and pending-state references
 commit the action-journal head
-append pending-action-finalized to the network journal
-commit and replicate the network-journal head
-append the action-finalized mirror referencing the network entry
+construct the exact pending-action-finalized successor
+obtain its full-set successor certificate
+append and commit finalization-certified with the exact certificate hash
+apply that exact successor to the frozen transition participants
+treat the first durable participant head commit as the irreversible boundary
+resynchronize every lagging participant to that exact certified head
+append or reconstruct the action-finalized mirror referencing the network entry
+collect replay-verified durable acknowledgements outside the network journal
+construct the full-set acknowledgement certificate outside the network journal
+release the operation reservation on every frozen participant from that proof
 rebuild active-stack, current-operation, and network-state projections
-release the network mutation lock
+release process locks while retaining durable scope ownership until full release
 ```
 
 No frame becomes non-executable merely because a projection was cleared or a
 prepared closure record exists. For a network-scoped action, finalization is
-proven by the committed `pending-action-finalized` network-journal entry and its
-exact cross-journal references. If replication acknowledgements are interrupted
-after the local network commit, the action is finalized but normal mutation
-remains blocked until every expected replica is brought to that committed head.
+proven when any frozen participant durably commits the exact
+`pending-action-finalized` successor and its exact cross-journal references under
+the full-set successor certificate. If application, acknowledgement, or release
+is interrupted, the operation remains blocked in
+`finalization-commit-ambiguous` or `finalized-replication-pending` as defined by
+`MOTHER-DESIGN-027`; rollback is never reopened after the first exact commit.
 
 ### Startup and command preflight
 
@@ -1927,10 +1964,15 @@ On startup, and before any mutating command continues, Mother MUST:
    replica;
 8. compare unresolved action and rollback state with the affected guards;
 9. reconcile durable successor reservations, cancellation prepare/commit/abort
-   records, cancellation tombstones, accepted certificate hashes, and any partial
-   or split acquisition across every expected replica;
-10. block mutation when a committed head, checkpoint, required lineage, exact
-   reservation owner, or successor claim cannot be proven.
+   records, cancellation tombstones, accepted certificate hashes, finalization
+   participant status, acknowledgements, release records, and any partial or
+   split acquisition across every expected replica;
+10. classify any interrupted finalization as non-committed,
+    finalization-commit-ambiguous, or finalized-replication-pending only from
+    exact frozen-participant evidence;
+11. block mutation when a committed head, checkpoint, required lineage, exact
+   reservation owner, successor claim, finalization acknowledgement, or release
+   state cannot be proven.
 
 Temporary files and orphan entries MAY be archived after diagnosis, but they
 MUST NOT be promoted to committed history merely because their contents look
@@ -2280,13 +2322,14 @@ all participant rollback frames are present and consistent
 all replicas agree on the pending resulting state
 ```
 
-Only the committed network-journal `pending-action-finalized` entry closes the
-complete distributed rollback stack. Network-visible phase events are appended
-and replicated as pending-action transitions when they occur; finalization
-promotes the pending desired topology to finalized topology and closes the
-pending action according to the cross-journal protocol. A command after
-finalization is a new action with new prestates; it cannot reopen the old
-rollback layers.
+Only the first durable commit by any frozen transition participant of the
+exact full-set-certified network-journal `pending-action-finalized` successor
+closes the complete distributed rollback stack. Network-visible phase events are
+appended and replicated as pending-action transitions when they occur;
+finalization promotes the pending desired topology to finalized topology and
+closes the pending action according to the cross-journal protocol. Which
+participant commits first is irrelevant. A command after finalization is a new
+action with new prestates; it cannot reopen the old rollback layers.
 
 `rpc-propagate` MAY remain as an explicit repair/reconciliation command, but
 normal add/remove correctness MUST NOT depend on the operator remembering to
@@ -3253,10 +3296,13 @@ replicated network journal:
 
 A private-state generation is not considered fully replicated until every host
 in the exact expected replica set has returned a durable matching receipt.
-Normal mutation, finalization, reseal, and authoritative checkpoint creation are
-blocked while any expected replica is unreachable, missing private recovery
-material, or reporting a different schema, generation, content hash, or manifest
-hash.
+Normal mutation, pre-commit finalization, ordinary reseal, and authoritative
+checkpoint creation are blocked while any expected replica is unreachable,
+missing private recovery material, or reporting a different schema, generation,
+content hash, or manifest hash. The sole documented exception is the
+post-commit finalization-completion exclusion reseal in `MOTHER-DESIGN-027`,
+which starts from an already-authoritative exact finalization head, never reopens
+rollback, and creates a new head epoch over the retained participant set.
 
 A new host MUST receive and validate the complete current private-recovery bundle
 before a reseal or replica-set transition MAY make it a required replica. A host
@@ -3769,15 +3815,33 @@ Mother MUST persist the certificate under the action before using it:
 ```
 
 Before accepting a certificate, every journal replica MUST independently cause a
-fresh retrieval of the current durable reservation record from every named
-replica through the trusted replica-query transport and MUST validate the entire
-receipt set, canonical receipt-set hash, predecessor, successor, operation,
-intent, and replica-set hash. The controlling Mother MAY orchestrate transport,
-but a certificate document, receipt copy, or assertion labeled “full set” is not
-acceptance authority. An accepting replica MUST reject the request unless it can
-freshly validate every expected replica itself. Missing, foreign, canceled,
-stale, divergent, or unreachable receipt sources invalidate the complete
-certificate.
+fresh retrieval of monotonic reservation evidence from every named replica
+through the trusted replica-query transport. For each participant, either of the
+following exact states satisfies validation:
+
+```text
+active-claim evidence:
+  the participant still records the certificate predecessor, same operation and
+  intent, exact claimed successor, replica-set hash, and original durable receipt
+
+accepted-or-committed evidence:
+  the participant retains the immutable original claim and receipt in history,
+  records acceptance of this exact certificate, and reports either application
+  in progress or the exact certified successor as its committed/current head
+```
+
+Advancing from the active predecessor claim to accepted or committed successor
+evidence MUST NOT make the same certificate invalid for a lagging participant.
+The immutable claim, receipt, accepted-certificate record, and committed-head
+evidence MUST remain independently addressable after rollover. Every accepting
+replica MUST validate the complete participant set, canonical receipt-set hash,
+predecessor, successor, operation, intent, replica-set hash, and certificate
+hash against one of those two states for every participant.
+
+The controlling Mother MAY orchestrate transport, but a certificate document,
+receipt copy, or assertion labeled “full set” is not acceptance authority.
+Missing, foreign, canceled, stale, divergent, unreachable, or non-monotonic
+participant evidence invalidates the complete certificate.
 
 The `apply-certified-successor` operation runs under the same replica-local
 journal/reservation lock. After full-set validation it MUST atomically validate
@@ -3863,12 +3927,12 @@ authoritative journal write:
   transition identity
 ```
 
-The receiving host MUST verify that its current durable reservation record still
-matches the operation owner, current head, and applicable accepted or proposed
-claim. Mother MUST freshly revalidate the complete replica set before each
-authoritative journal transition and before dispatching each new mutating
-substep. A stale certificate MUST NOT authorize work merely because it was
-complete earlier.
+The receiving host MUST verify that its current durable reservation state or
+immutable rollover history still proves the operation owner, current head, and
+applicable accepted or proposed claim. Mother MUST freshly revalidate the
+complete replica set before each authoritative journal transition and before
+dispatching each new mutating substep. A stale certificate MUST NOT authorize
+work merely because it was complete earlier.
 
 #### One exact successor per journal head
 
@@ -4023,10 +4087,24 @@ before commit:
 /runtime/state/mother/actions/<operation-id>/successor-cancellations/<cancel-attempt-id>/prepare-certificate.json
 ```
 
-The certificate contains the exact replica set, every current durable prepare
+The certificate contains the exact replica set, every durable prepare
 acknowledgement, their canonical set hash, and the complete cancellation binding.
-Before accepting `cancel-commit`, every replica MUST independently retrieve and
-validate the current prepare record from every named replica. An assembled
+Before accepting or resuming `cancel-commit`, every replica MUST independently
+retrieve monotonic cancellation evidence from every named replica. A participant
+satisfies validation when it reports either:
+
+```text
+the exact active cancellation prepare and immutable prepare acknowledgement
+or
+the exact committed cancellation, tombstone, and retained immutable prepare
+record under the same full-set prepare certificate
+```
+
+Committing cancellation MUST NOT make the prepare evidence disappear or
+invalidate the same `cancel-commit` on a lagging participant. The immutable
+prepare record remains stored after commit and MAY be archived or marked
+committed, but it MUST remain independently addressable by attempt, operation,
+predecessor, prepare-record hash, and prepare-certificate hash. An assembled
 document labeled “full set” is not acceptance authority.
 
 After a valid full-set prepare certificate exists, cancellation is commit-only.
@@ -4042,7 +4120,8 @@ a cancellation-abort record exists for this attempt:
   reject cancellation-aborted
 
 the full-set prepare certificate cannot be independently validated, or the local
-prepare record is missing or differs:
+state is neither the exact active prepare nor the exact already committed
+cancellation under that certificate:
   reject cancellation-not-fully-prepared
 
 accepted-certificate, committed-successor, or mutation evidence appeared despite
@@ -4051,16 +4130,19 @@ the prepare:
   keep the operation fenced for explicit recovery
 
 the named operation is the current owner:
-  archive its exact owner, predecessor, claim, receipt, and prepare state
+  archive its exact owner, predecessor, claim, and receipt
+  retain the immutable prepare record and mark it committed under this certificate
   write and fsync the cancellation-commit record and irreversible tombstone
-  clear only that operation's owner, predecessor, claim, and cancellation_prepare
+  clear only that operation's owner, predecessor, claim, and active
+  cancellation_prepare pointer
   fsync current.json and all affected parent directories
   return success
 
 another operation owns the current head, or no operation owns it:
+  retain the immutable external prepare record and mark it committed
   write and fsync the cancellation-commit record and irreversible tombstone for
   only the named canceled operation, predecessor, and claim
-  clear only its external prepare record
+  clear only its active external prepare pointer
   do not disturb the current owner or claim
   return success
 ```
@@ -4146,9 +4228,9 @@ delayed cancel-commit after abort
 ```
 
 Each interleaving MUST end in exactly one recoverable outcome: finish the exact
-certified successor, or finish the exact full-set cancellation. No test may
-permit both, discard both without durable evidence, or require undefined
-reservation rectification.
+certified successor, or finish the exact full-set cancellation. Each interleaving
+MUST NOT permit both outcomes, discard both outcomes without durable evidence,
+or require undefined reservation rectification.
 
 #### Reservation lifetime, release, and recovery
 
@@ -4160,13 +4242,16 @@ held:
 through do
 through remediation-required
 through every rollback attempt
-through the authoritative finalization commit
+through the first durable participant commit of the exact certified
+finalization successor
 through finalized-replication-pending
-until full rollback or full finalization acknowledgement completes
+until full rollback or full finalization acknowledgement and terminal release
+complete
 ```
 
-Finalization closes ordinary rollback at the network-journal commit but does not
-release the distributed reservation. Release occurs only when:
+Finalization closes ordinary rollback at the first durable participant commit
+of the exact certified finalization successor but does not release the
+distributed reservation. Release occurs only when:
 
 ```text
 rolled-back:
@@ -4174,8 +4259,8 @@ rolled-back:
   confirms durable reservation release
 
 finalized:
-  every expected replica has acknowledged the exact finalization head under
-  MOTHER-OPEN-018 and confirms durable reservation release
+  every frozen transition participant has acknowledged the exact finalization
+  head under MOTHER-DESIGN-027 and confirms durable reservation release
 ```
 
 Each replica applies terminal `release` under the journal/reservation lock:
@@ -4190,7 +4275,9 @@ the named operation is not the current owner:
 the local head is not the exact certified terminal head:
   reject terminal-head-mismatch
 
-the replicated outcome is not finalized or fully rolled back:
+terminal proof is neither the exact fully rolled-back head nor the exact
+authoritatively finalized head with an independently validated full-set
+acknowledgement certificate:
   reject terminal-outcome-not-proven
 
 claimed_successor is not null or an accepted successor remains unresolved:
@@ -4208,8 +4295,8 @@ Release is durable and idempotent. The durable release record is written before
 the `current.json` replacement that clears the owner. A crash between those
 writes leaves the old owner fenced; startup MUST verify the exact release record
 and terminal head, then finish clearing only that owner. `active_writer_operation_id`
-and scope ownership MUST remain active until every expected replica confirms the
-exact release record. Clearing `pending_action_id` does not release writer
+and scope ownership MUST remain active until every required release participant
+confirms the exact release record. Clearing `pending_action_id` does not release writer
 ownership.
 A replica that already released the old owner MAY temporarily receive a partial
 claim from a later operation, but that later operation authorizes nothing unless
@@ -4270,6 +4357,352 @@ prepared-intent hash, and exact claimed successor and by revalidating every
 expected replica. Different authority, lineage selection, replica-set change, or
 bootstrap remains an explicit recovery/reseal or `MOTHER-OPEN-017` operation.
 
+
+### Finalization resynchronization and full-set acknowledgement
+
+`MOTHER-DESIGN-027: certified-finalization-resynchronization-and-full-set-acknowledgement`
+
+`MOTHER-OPEN-018: finalization-replication-state-contract` is resolved for
+established networks. The protocol completes one already-certified
+`pending-action-finalized` successor across the exact participants frozen by the
+operation. It is not an election, quorum, or replacement for `sync-state`.
+
+The following invariants are normative:
+
+```text
+The transition participant set is frozen before finalization and is never
+recalculated from the newly finalized topology.
+
+The first durable commit of the exact full-set-certified finalization successor
+by any frozen participant is the irreversible authority boundary.
+
+No participant is privileged. Authority comes from the exact successor
+certificate, not from commit order or coordinator identity.
+
+Once any participant commits that exact successor, rollback is permanently
+closed and every lagging participant is driven forward to the same head.
+
+Finalization acknowledgements and their full-set certificate remain outside the
+network journal and do not create another journal successor.
+
+Scopes and operation ownership remain held until acknowledgement and terminal
+reservation release are proven for the required participant set, or an explicit
+post-commit exclusion reseal supersedes that set.
+```
+
+#### Frozen transition participants
+
+For an established network, operation `prep` MUST freeze:
+
+```text
+transition_participants
+transition_participants_hash
+```
+
+`transition_participants` is exactly the sealed `replica_hosts` set and
+`transition_participants_hash` is its canonical hash at the operation's prepared
+prestate. The set MUST NOT be recomputed from the desired topology, the
+post-finalization topology, discovery results, reachability, response order, or
+a later seal. `MOTHER-OPEN-017` defines how a prospective host can become part of
+a future transition participant set.
+
+The action-journal `finalization-prepared` record MUST bind at least:
+
+```text
+operation_id
+prepared_intent_hash
+exact pending network-journal head
+transition_participants
+transition_participants_hash
+expected pending-action-finalized successor sequence
+finalization transition intent hash
+exact resulting state hash
+rollback closure references
+complete immutable recovery-object closure root
+expected finalized topology hash
+```
+
+The exact proposed successor references the immutable
+`finalization-prepared` entry. After the full-set successor certificate exists,
+Mother MUST append and durably commit `finalization-certified` to the action
+journal, binding the certificate hash, exact successor identity, frozen
+participant hash, and `finalization-prepared` entry hash before applying the
+successor anywhere. That record is durable orchestration evidence, not a second
+topology authority.
+
+A retry MUST use the same frozen participants and exact successor bytes. A
+different participant set, successor, resulting state, or lineage requires an
+explicit recovery or reseal operation and MUST NOT be hidden inside `finalize`.
+
+#### Irreversible boundary and ambiguous outcomes
+
+Each participant applies the certified finalization successor through
+`MOTHER-DESIGN-026`. The first participant that durably persists the exact
+journal entry and atomically replaces its journal head with that successor makes
+the finalization head authoritative for the operation.
+
+At that instant Mother MUST:
+
+```text
+close rollback permanently
+enter finalized-replication-pending
+retain all operation scopes
+retain the full-set successor-reservation owner
+block ordinary mutation
+record the exact authoritative finalization head and certificate
+```
+
+The participant that commits first has no special authority after the commit.
+Any participant's independently verified exact committed head proves the same
+authority boundary.
+
+A timeout, lost response, process crash, or transport failure during finalization
+application MUST enter `finalization-commit-ambiguous` unless the exact commit
+outcome is already proven. In that state, only exact participant-status
+inspection and retry/resynchronization of the same prepared finalization are
+permitted.
+
+Recovery MUST classify the frozen set as follows:
+
+```text
+one or more participants report the exact committed finalization head:
+  rollback is permanently closed
+  enter or remain finalized-replication-pending
+  resynchronize every lagging participant forward
+
+no participant reports the committed head, but one or more participants retain
+accepted-certificate evidence for the exact finalization successor:
+  do not cancel or choose rollback
+  retry only that exact certified successor until commit status is proven
+
+every participant proves that it has neither accepted nor committed the exact
+finalization successor:
+  cancel the exact prepared successor claim through MOTHER-DESIGN-026
+  mark the finalization attempt abandoned
+  return to finalize-failed
+  rollback remains available
+
+one or more participants cannot be queried or return ambiguous/corrupt evidence:
+  remain finalization-commit-ambiguous
+  block rollback, different finalization, reseal-from-live, and ordinary mutation
+  do not infer commit or non-commit
+```
+
+The first two cases are monotonic. Once exact accepted or committed evidence
+exists, a later retry MUST NOT reinterpret that progress as absence merely
+because the participant rolled its active claim forward.
+
+#### Exact finalize retry and resynchronization
+
+Rerunning `mother <kind> finalize <network>` for
+`finalization-commit-ambiguous` or `finalized-replication-pending` MUST:
+
+1. load the immutable `finalization-prepared` record and exact successor
+   certificate;
+2. query every frozen participant for its journal head, replayed state hash,
+   accepted-certificate record, immutable predecessor claim/receipt history,
+   successor-rollover state, acknowledgement, and release state;
+3. identify only the exact certified `pending-action-finalized` successor; it
+   MUST NOT elect a different head or use majority choice;
+4. independently validate every participant using the monotonic
+   active-claim-or-accepted/committed rule in `MOTHER-DESIGN-026`;
+5. transfer every missing immutable journal entry, checkpoint, private-state
+   object, rollback/action reference, and transitive recovery object required to
+   replay that exact head;
+6. apply the exact certified successor to every lagging participant;
+7. replay each participant through the resulting head and verify its complete
+   resulting-state hash and recovery-closure root;
+8. verify successor rollover retains the same operation owner with
+   `claimed_successor: null`;
+9. collect or refresh durable acknowledgement only after all local durability and
+   replay conditions pass.
+
+This procedure is not `sync-state`. `sync-state` adopts a generation only after
+the existing replicas already agree unanimously. Finalization retry resolves a
+temporary disagreement by completing one already-authoritative certified
+successor.
+
+#### Durable participant acknowledgement
+
+Each frozen participant stores an immutable acknowledgement outside the network
+journal at a conceptual path such as:
+
+```text
+/runtime/state/mother/networks/<network>/finalization-acknowledgements/<operation-id>/<participant-id>.json
+```
+
+A participant MUST NOT acknowledge until it has:
+
+```text
+persisted and fsynced the exact successor certificate
+persisted and fsynced the exact journal entry
+atomically replaced and durably flushed the journal-head pointer
+fsynced all relevant parent-directory metadata
+replayed successfully through the exact terminal head
+verified the complete resulting-state hash
+verified every referenced immutable object and transitive recovery-closure object
+completed successor rollover
+retained owner_operation_id for the operation
+recorded claimed_successor as null
+```
+
+The acknowledgement binds at least:
+
+```text
+schema
+network_key
+operation_id
+participant identity
+transition_participants_hash
+terminal head_id and head_epoch
+terminal journal sequence and entry hash
+terminal resulting-state hash
+finalization successor-certificate hash
+recovery-closure root
+owner_operation_id
+claimed_successor: null
+acknowledgement ID and hash
+```
+
+The record and its parent-directory metadata MUST be durable before the
+participant returns success. Duplicate acknowledgement requests return the same
+record when all bound fields match.
+
+#### Full-set acknowledgement certificate
+
+Mother obtains finalization acknowledgement only after freshly retrieving the
+immutable acknowledgement from every frozen participant and independently
+validating every binding. It then writes a canonical full-set acknowledgement
+certificate outside the network journal, for example:
+
+```text
+/runtime/state/mother/actions/<operation-id>/finalization/full-set-acknowledgement.json
+```
+
+The certificate contains the frozen participant set and hash, exact terminal
+head, exact finalization successor-certificate hash, every acknowledgement and
+its hash, the canonical acknowledgement-set hash, and the full-set certificate
+hash.
+
+The acknowledgement certificate MUST NOT be appended as a network-journal
+entry. A journal entry asserting that every participant acknowledged the
+previous head would create a new head that itself required acknowledgement. The
+authoritative topology remains the original certified
+`pending-action-finalized` entry.
+
+#### Terminal release after acknowledgement
+
+A finalization release request MUST carry the exact full-set acknowledgement
+certificate. Each frozen participant independently retrieves and validates every
+acknowledgement before applying terminal `release`. It MUST also verify:
+
+```text
+its local head is the exact acknowledged terminal head
+its replayed resulting-state hash matches
+its accepted certificate and rollover history match the finalization certificate
+the same operation still owns the reservation or an identical release exists
+claimed_successor is null
+```
+
+Release is idempotent and uses the replica-local transition in
+`MOTHER-DESIGN-026`. A participant that has already released returns its exact
+durable release record.
+
+While release is incomplete:
+
+```text
+operation state remains finalized-replication-pending
+active_writer_operation_id remains logically owned by the operation
+all operation scopes remain owned
+ordinary mutation remains blocked
+the exact release is retried on lagging participants
+```
+
+A locally completed release does not authorize a new writer because no new
+operation can obtain a full-set reservation while any participant or operation
+scope still records the prior terminal release as incomplete.
+
+Mother MUST NOT perform the following terminal actions before it freshly
+retrieves and verifies the exact release record from every frozen participant.
+After that proof, Mother MAY:
+
+```text
+enter finalized
+clear active_writer_operation_id in terminal projections
+release all operation scopes
+clear current-operation pointers
+report finalization complete
+```
+
+Acknowledgement and release records remain immutable operational evidence outside
+the network journal. Their completion changes operation and reservation
+lifecycle state; it does not create a new topology head.
+
+#### Unavailable-participant exclusion reseal
+
+If at least one participant committed the exact certified finalization head and a
+different frozen participant cannot be restored, the operation remains
+`finalized-replication-pending` until the operator either restores that
+participant or invokes the explicit finalization-completion exclusion reseal.
+
+That reseal MUST:
+
+1. start only from the already-authoritative exact finalization head and
+   certificate;
+2. preserve permanent rollback closure;
+3. preserve the excluded participant's journal, reservation, acknowledgement,
+   and failure history as superseded evidence;
+4. exclude only explicitly named unavailable participants;
+5. increment `head_epoch` and create a new head authority and sealed replica-set
+   hash over the retained participants;
+6. mark every excluded participant stale, excluded, and prohibited from
+   self-rejoining;
+7. copy and verify the complete finalization lineage, private-state generation,
+   and transitive recovery-object closure on every retained participant;
+8. durably acknowledge the new seal on every retained participant;
+9. release the old operation reservation on the retained participants under the
+   explicit reseal proof;
+10. leave the excluded participant's old reservation harmless because its older
+    head epoch and replica-set hash are no longer accepted by the retained set.
+
+After every retained participant durably acknowledges the new seal and returns
+the required release record, the retained set becomes the terminal release set
+for this operation. Mother MAY then enter `finalized`, clear the operation
+scopes, and preserve the excluded participant as stale historical evidence.
+
+This is the sole exception to the ordinary requirement that every expected
+replica be reachable for reseal. It is a post-commit recovery transition, not a
+way to choose a different final topology, reopen rollback, discard the certified
+head, or silently weaken a pre-commit participant set. If no participant
+committed the exact finalization successor, this escape path MUST NOT be used.
+
+#### Required finalization tests
+
+Implementations MUST test at least:
+
+```text
+lost response before any certificate acceptance
+accepted certificate without head replacement
+first head replacement with lost response
+different first-committing participants
+retry after one or several participants roll claims forward
+lagging participant validation after peers already committed
+missing immutable object during resynchronization
+crash before and after acknowledgement persistence
+partial acknowledgement retrieval
+forged or stale full-set acknowledgement certificate
+crash before and after each terminal release
+partial release with a later retry
+unavailable participant before any finalization commit
+unavailable participant after authoritative commit
+exclusion reseal preserving rollback closure and incrementing head_epoch
+delayed old-epoch mutation after exclusion reseal
+```
+
+Each test MUST preserve one exact finalization successor, permanent rollback
+closure after its first durable commit, and fail-closed behavior when exact
+participant evidence cannot be proven.
+
 ### Remaining open design nodes
 
 `MOTHER-OPEN-017: zero-network-and-prospective-replica-bootstrap`
@@ -4290,16 +4723,6 @@ removal of the final validator, preservation of network identity at zero
 validators, rollback, and the exact point at which a prospective host becomes a
 required replica.
 
-`MOTHER-OPEN-018: finalization-replication-state-contract`
-
-The minimum state distinction is fixed as
-`finalization-not-committed`, `finalized-replication-pending`, and `finalized`.
-The remaining contract MUST define the exact full-set acknowledgement,
-retry/recovery, and journal-head transition rules for
-`finalized-replication-pending`. Every such transition MUST use
-`MOTHER-DESIGN-026`, so two current writers cannot certify different finalization
-successors for one expected head.
-
 The sealed-state format, crash and ambiguous-step recovery model, typed guard
 prestate contract, evidence-backed full-guard assertion contract, durable
 filesystem journal and locking model, integrated distributed route/topology
@@ -4308,13 +4731,16 @@ pending-versus-finalized network-state model, guard-mediated reversible QBFT
 membership contract, Coolify-API-key local-control boundary, governance-office
 assertion contract, reusable bounded call-runner contract, complete private-state
 replication policy, fail-closed schema/capability contract, replacement-head
-recovery architecture, and local-generation adoption/head-fenced projection
-repair contract are otherwise design-resolved. `MOTHER-DESIGN-024` requires
-complete transitive recovery-object closure before activation,
-`MOTHER-DESIGN-025` defines local state adoption and projection maintenance, and
-`MOTHER-DESIGN-026` defines fail-closed full-set writer fencing, exact
-single-successor certification, successor rollover, two-phase cancellation, and
-terminal release.
+recovery architecture, local-generation adoption/head-fenced projection repair,
+full-set writer fencing, and finalization resynchronization are otherwise
+design-resolved. `MOTHER-DESIGN-024` requires complete transitive
+recovery-object closure before activation, `MOTHER-DESIGN-025` defines local
+state adoption and projection maintenance, `MOTHER-DESIGN-026` defines
+fail-closed full-set writer fencing, exact single-successor certification,
+successor rollover, monotonic retry evidence, two-phase cancellation, and
+terminal release, and `MOTHER-DESIGN-027` defines deterministic certified
+finalization completion, external full-set acknowledgement, and terminal
+release.
 
 Exact wire-field names, ABI adapters, schema validators, capability registries,
 and migration implementations remain implementation acceptance work. They MUST
@@ -4387,6 +4813,11 @@ python tools/mother/mother.py reseal-state finalize mainnet
 
 # Continue without an unreachable expected replica only through an explicit reseal.
 python tools/mother/mother.py reseal-state prep mainnet --exclude-host coolify-b --reason "host unreachable"
+python tools/mother/mother.py reseal-state do mainnet
+python tools/mother/mother.py reseal-state finalize mainnet
+
+# After an authoritative finalization commit, exclusion MUST start from that exact head.
+python tools/mother/mother.py reseal-state prep mainnet --from-finalization-head <head-hash> --exclude-host coolify-b --reason "unrecoverable during finalization completion"
 python tools/mother/mother.py reseal-state do mainnet
 python tools/mother/mother.py reseal-state finalize mainnet
 
@@ -4677,6 +5108,9 @@ POST /v1/internal/networks/<network>/successor-reservations/cancel-commit
 POST /v1/internal/networks/<network>/successor-reservations/cancel-abort
 POST /v1/internal/networks/<network>/successor-reservations/release
 GET  /v1/internal/networks/<network>/successor-reservations/<operation-id>
+GET  /v1/internal/networks/<network>/finalization/<operation-id>/status
+POST /v1/internal/networks/<network>/finalization/<operation-id>/acknowledge
+GET  /v1/internal/networks/<network>/finalization/<operation-id>/acknowledgements
 POST /v1/networks/<network>/repair-projections
 POST /v1/networks/<network>/sync-state/prep
 POST /v1/networks/<network>/sync-state/do
@@ -4700,6 +5134,8 @@ POST /v1/operations/<operation-id>/retry-resume       # optional cross-check for
 GET  /v1/operations/<operation-id>
 GET  /v1/operations/<operation-id>/checkpoints
 GET  /v1/operations/<operation-id>/successor-certificates
+GET  /v1/operations/<operation-id>/finalization-acknowledgements
+GET  /v1/operations/<operation-id>/finalization-ack-certificate
 GET  /v1/operations/<operation-id>/remediation
 GET  /v1/operations/<operation-id>/provisional-frames
 GET  /v1/operations/<operation-id>/rollback-stack
@@ -4724,11 +5160,21 @@ The internal successor-reservation endpoints have fixed roles:
 - `cancel-abort` independently validates accepted-certificate or
   committed-successor evidence, removes only the matching prepare freeze, and
   restores the exact claim so that successor application can finish;
-- `release` is available only for an exact fully replicated terminal head and
-  applies the exact terminal-release transition;
-- `GET` returns the owner, predecessor, nullable successor claim, accepted
-  certificate, cancellation prepare/commit/abort state, release state, and
-  crash-reconciliation evidence required by diagnosis.
+- `release` for a rolled-back outcome is available only for an exact fully
+  replicated terminal head; `release` for a finalized outcome additionally
+  requires independently validated full-set acknowledgement under
+  `MOTHER-DESIGN-027`;
+- reservation `GET` returns the owner, predecessor, nullable successor claim,
+  accepted certificate, cancellation prepare/commit/abort state, release state,
+  and crash-reconciliation evidence required by diagnosis;
+- finalization `status` returns the exact head, accepted-certificate, rollover,
+  acknowledgement, and release state required to distinguish non-commit,
+  ambiguity, committed lag, and completion;
+- finalization `acknowledge` writes or replays the immutable local
+  replay-verified acknowledgement and MUST NOT append a network-journal entry;
+- finalization `acknowledgements` exposes independently retrievable immutable
+  acknowledgements so each release recipient can validate the complete frozen
+  participant set.
 
 `repair-projections` is non-authoritative, local-only, atomic, idempotent
 maintenance and is explicitly exempt from the general `prep`/`do`/`finalize`
@@ -5036,6 +5482,9 @@ This staged-authority boundary is the most important Mother boundary.
   operation, and rollback verification contract for every step that `do` can
   perform;
 - acquire logical ownership of every affected scope;
+- for an established network, freeze `transition_participants` as the exact
+  sealed expected replica set and freeze its canonical
+  `transition_participants_hash`;
 - write an immutable prepared operation record;
 - print the plan, risks, affected scopes, required confirmations, and rollback
   behavior.
@@ -5105,8 +5554,9 @@ ledger and lock records.
 - recapture prestate over a failed or partially applied result;
 - promote a frame while its forward step remains failed or unverified;
 - dispatch live mutation while reservation acquisition is partial, split,
-  canceled, stale, or otherwise lacks one current receipt from every expected
-  replica.
+  canceled, stale, or otherwise lacks complete current writer-ownership proof
+  from every expected replica through the exact active claim or monotonic
+  accepted/committed evidence.
 
 If a step fails during `do`, Mother MUST leave its frame provisional, enter
 `remediation-required`, and report the unresolved step, participant evidence,
@@ -5134,34 +5584,56 @@ nor a recognized partial/desired state can be proven, retry MUST be refused.
 - verify that all mutation checkpoints are complete;
 - verify that no armed provisional frame remains unresolved;
 - verify that the desired state matches the actual state;
+- verify the `transition_participants` and
+  `transition_participants_hash` frozen by `prep`;
 - append a `frame-close-prepared` record for every promoted active rollback frame
   to the immutable rollback journal;
 - verify those rollback-journal records are durable;
-- commit `finalization-prepared` in the action journal with exact rollback and
-  pending-network-state references;
+- commit `finalization-prepared` in the action journal with exact rollback,
+  pending-network-state, frozen-participant, immutable-closure,
+  finalization-transition-intent, and expected-resulting-state references;
 - construct and obtain a full-set exact-successor certificate for
   `pending-action-finalized`;
-- commit that certified transition in the authoritative network journal,
-  promoting the pending desired topology to finalized topology and clearing the
-  pending action;
-- immediately close rollback and enter `finalized-replication-pending` once that
-  authoritative network-journal commit succeeds;
-- retain all active scope ownership and block ordinary mutation while
+- commit `finalization-certified` in the action journal with the exact
+  certificate, successor, prepared-finalization, and frozen-participant hashes;
+- apply only that certified transition to the frozen participants using
+  `MOTHER-DESIGN-026`;
+- treat the first durable participant commit of that exact successor as the
+  irreversible authority boundary, immediately close rollback, and enter
   `finalized-replication-pending`;
-- replicate and verify that exact network-journal head on every expected replica;
+- enter `finalization-commit-ambiguous` when an interrupted request leaves the
+  exact participant commit status unknown;
+- on exact retry, inspect every frozen participant and resynchronize every
+  lagging participant to the same certified finalization head;
+- transfer and verify every immutable object required to replay that head;
 - append or verify the action-journal `action-finalized` mirror;
-- clear the active rollback-stack projection only after the authoritative
-  network-journal finalization commit;
+- clear the active rollback-stack projection only after an exact participant
+  commit is proven;
+- collect replay-verified durable acknowledgements from every frozen participant
+  outside the network journal;
+- construct and persist the canonical full-set acknowledgement certificate
+  outside the network journal;
+- retain all active scope ownership and block ordinary mutation while
+  acknowledgement or reservation release remains incomplete;
+- require each release recipient to independently validate the full-set
+  acknowledgement certificate and exact local terminal head;
 - enter `finalized` and release active scope and successor-reservation ownership
-  only after every expected replica durably acknowledges the exact finalization
-  head and confirms durable reservation release.
+  only after every required participant's exact durable release record is
+  freshly proven.
 
-A failure before the authoritative network-journal finalization commit leaves the
-operation in `finalize-failed`; rollback remains available. A failure or
-interruption after that commit MUST NOT return to `finalize-failed` and MUST NOT
-offer rollback. It leaves the operation in `finalized-replication-pending`, where
-only acknowledgement retry, diagnosis, and explicit replication remediation are
-allowed.
+If every frozen participant proves that it neither accepted nor committed the
+exact finalization successor, Mother MAY cancel that prepared successor attempt
+through `MOTHER-DESIGN-026`, enter `finalize-failed`, and keep rollback
+available. Accepted-certificate evidence without a proven head commit is
+commit-directed: only exact retry is permitted until commit status is resolved.
+
+A timeout, lost response, or interruption with incomplete participant evidence
+enters `finalization-commit-ambiguous`; Mother MUST NOT infer either commit or
+non-commit. Once any participant's exact finalization commit is proven, the
+operation MUST NOT return to `finalize-failed` and MUST NOT offer rollback. It
+remains `finalized-replication-pending` until resynchronization, acknowledgement,
+and release complete or the explicit post-commit exclusion reseal in
+`MOTHER-DESIGN-027` supersedes an unavailable participant.
 
 `finalize` MUST NOT perform hidden repair. If postconditions fail before the
 authoritative finalization commit, `finalize` MUST leave the operation open and
@@ -5176,9 +5648,11 @@ mother rollback <network> --through <layer-id>
 
 ### `rollback`
 
-`rollback` is valid for every prepared operation only until the authoritative
-network-journal finalization entry commits. Replica acknowledgement can still be
-pending after that boundary, but rollback is already permanently closed.
+`rollback` is valid for every prepared operation only until any frozen
+transition participant durably commits the exact certified
+`pending-action-finalized` successor. Replica acknowledgement and release can
+still be pending after that boundary, but rollback is already permanently
+closed.
 
 Mother MUST first inspect both:
 
@@ -5663,6 +6137,7 @@ doing
 remediation-required
 do-complete-pending-finalize
 finalizing
+finalization-commit-ambiguous
 finalize-failed
 finalized-replication-pending
 finalized
@@ -5701,15 +6176,27 @@ remediation-required:
 do-complete-pending-finalize:
   finalize, rollback --all, rollback --count <n>, rollback --through <layer-id>
 
+finalization-commit-ambiguous:
+  exact status inspection on every frozen transition participant
+  exact finalize retry/resynchronization only
+  no rollback, different successor, sync-state, or reseal-from-live while outcome
+  remains ambiguous
+  if any exact commit is proven, enter finalized-replication-pending
+  if every participant proves neither acceptance nor commit, cancel the exact
+  prepared successor and enter finalize-failed
+
 finalize-failed:
-  valid only when no authoritative network-journal finalization entry exists
+  valid only when every frozen participant proves that no exact finalization
+  successor was accepted or committed and any prepared attempt was canceled
   finalize retry
   retry/resume when an unverified mutation is identified
   rollback choices
 
 finalized-replication-pending:
   rollback is closed
-  acknowledgement retry, diagnosis, and explicit replication remediation only
+  exact finalize retry/resynchronization, acknowledgement retry, diagnosis,
+  terminal release retry, and explicit finalization-completion exclusion reseal
+  only
   all active scopes remain owned and ordinary mutation remains blocked
 
 rollback-failed:
@@ -5730,8 +6217,10 @@ before any live mutation. A failed or unverified live step maps to
 verified and promoted or its prestate is restored and the frame is closed.
 Read-only diagnosis is always allowed and MUST show the per-replica reservation
 owner and claim distribution, certificate status, cancellation prepare,
-commit, abort, and tombstone state, provisional layer, promoted stack,
-participant evidence, pop-able range, and exact allowed commands.
+commit, abort, and tombstone state, frozen finalization participants, exact
+finalization head status, accepted/committed evidence, acknowledgement and
+release state, provisional layer, promoted stack, participant evidence,
+pop-able range, and exact allowed commands.
 
 `sync-state` uses a separate normative local-adoption state machine because it
 does not create or finalize a network mutation:
@@ -6288,15 +6777,22 @@ Inputs:
 Outputs:
 
 - final verification report;
-- `finalized-replication-pending` or `finalized` status;
-- released scopes and successor reservations only after every expected replica
-  acknowledges the exact finalization head and durable reservation release;
+- `finalization-commit-ambiguous`, `finalized-replication-pending`, or
+  `finalized` status;
+- frozen-participant status, durable acknowledgement, and release evidence;
+- released scopes and successor reservations only after every required
+  participant acknowledges the exact finalization head and durable reservation
+  release is proven;
 - finalized operation record.
 
-Finalize is the only success path that makes rollback unavailable. Once the
-authoritative network-journal finalization entry commits, the operation enters
-`finalized-replication-pending` until every expected replica acknowledges that
-exact head; only then is its reported state `finalized`.
+Finalize is the only success path that makes rollback unavailable. Once any
+frozen transition participant durably commits the exact certified
+network-journal finalization successor, the operation enters
+`finalized-replication-pending`. It becomes `finalized` only after every required
+participant is resynchronized, durably acknowledges that exact head, and returns
+the exact terminal release record. An interrupted application whose exact status
+is not yet known is reported as `finalization-commit-ambiguous` rather than
+guessed.
 
 ### Rollback
 
@@ -6623,21 +7119,24 @@ not sufficient proof.
 After `do` succeeds, the network SHOULD look complete to the operator, but the
 entire distributed action remains reversible. Only `finalize` closes rollback.
 
-Finalization MUST prove:
+Before the first finalization commit, `finalize` MUST prove:
 
-- every expected host remains reachable;
+- every frozen transition participant remains reachable;
 - every participant still belongs to this action and has no foreign pending work;
 - validator, RPC, and Hub/FDB states all match the prepared result;
 - all guard assertions are fresh for current generations;
 - every distributed rollback layer and participant frame is accounted for;
-- every expected replica agrees on the pending resulting state;
-- the same operation still owns every expected replica reservation;
+- every frozen participant agrees on the pending resulting state;
+- the same operation still owns every frozen participant reservation;
 - one full-set certificate binds the exact current head to the exact proposed
   `pending-action-finalized` successor.
 
-The committed network-journal `pending-action-finalized` entry is the
-irreversible boundary. After it commits, an opposite change is a new `add-node`
-or `remove-node` action with new prestates and a new rollback stack.
+The first durable participant commit of that exact certified
+`pending-action-finalized` successor is the irreversible boundary. After it
+commits, an opposite change is a new `add-node` or `remove-node` action with new
+prestates and a new rollback stack. A missing participant after that boundary is
+handled only by resynchronization or the explicit exclusion-reseal path in
+`MOTHER-DESIGN-027`; it does not reopen rollback.
 
 ### Repair-only route reconciliation
 
@@ -6697,10 +7196,12 @@ A Mother diagnosis report is read-only and SHOULD contain at least:
 ```
 
 Diagnosis MUST NOT decide to fix anything. It only reports facts, topology
-classification, current operation ID, current stage, rollback availability, and
-active operation constraints. The diagnosis report is the normal way for an
-operator to learn which operation Mother currently owns and which finalize or
-rollback command is allowed next.
+classification, current operation ID, current stage, rollback availability,
+frozen finalization participants, exact per-participant finalization head and
+certificate state, acknowledgement/release progress, and active operation
+constraints. The diagnosis report is the normal way for an operator to learn
+which operation Mother currently owns and which exact finalize, resynchronization,
+exclusion-reseal, or rollback command is allowed next.
 
 ## Operation file
 
@@ -6713,6 +7214,8 @@ A prepared Mother operation file SHOULD contain at least:
   "kind": "reseal-qbft",
   "stage": "prepared",
   "network": "mainnet",
+  "transition_participants": ["coolify-a", "coolify-b", "coolify-c"],
+  "transition_participants_hash": "sha256:...",
   "current": true,
   "idempotency_key": "...",
   "created_at": "iso-8601",
@@ -6777,6 +7280,12 @@ Mother safety rules:
 - The distributed reservation lives outside the ordinary rollback stack and
   remains held through remediation, rollback, and
   `finalized-replication-pending`.
+- Finalization participant membership is frozen during `prep` and MUST NOT be
+  recalculated from the resulting topology.
+- Finalization acknowledgement and its full-set certificate MUST remain outside
+  the network journal.
+- A finalization timeout or lost response MUST enter exact-status reconciliation;
+  Mother MUST NOT infer commit or non-commit.
 - Mother stores the active operation ID as the current operation for every owned scope.
 - `mother diagnose` MUST report the current operation ID and allowed next commands.
 - Rollback defaults to the current operation; the operator MUST NOT have to describe what to undo.
@@ -6796,8 +7305,10 @@ Mother safety rules:
   or rolled back.
 - `prep` is the only stage that interprets operator intent.
 - `do` performs only the prepared operation.
-- `finalize` proves completion; durable scope ownership is released only after
-  the exact finalization head is acknowledged by every expected replica.
+- `finalize` proves completion; the first durable commit of the exact certified
+  finalization successor closes rollback, and durable scope ownership is released
+  only after every frozen participant acknowledgement and required terminal
+  release record is proven under `MOTHER-DESIGN-027`.
 - `rollback` backs out a non-finalized operation or honestly reports why it
   cannot.
 - Diagnosis and sealed-state preflight are always read-only.
@@ -6861,7 +7372,8 @@ Mother SHOULD be implemented in this order:
    - reserve network identity, officer/admin identities, node validator keys,
      validator addresses, first-genesis material, and route reservations;
    - create durable locations for actions, rollback stacks, routes, guards,
-     locks, successor reservations, successor certificates, topology, and
+     locks, successor reservations, successor certificates, finalization
+     acknowledgements, full-set acknowledgement certificates, topology, and
      version/capability records;
    - store the initial private identity backend as inline local private YAML;
    - make any `*_key_ref` values internal references to records in the same
@@ -6871,7 +7383,8 @@ Mother SHOULD be implemented in this order:
    - mounts `/runtime/state/mother/`;
    - reports version, explicit readable/writable schemas, executable capabilities,
      state root, active operations, checkpoints, rollback stacks, reservation
-     distributions, and successor certificates;
+     distributions, successor certificates, finalization participant status,
+     acknowledgements, and release progress;
    - treats the container and mounted API implementation as replaceable;
    - freezes action compatibility requirements and refuses authoritative mutation
      when any required schema or capability is unknown or unsupported.
@@ -6903,6 +7416,7 @@ Mother SHOULD be implemented in this order:
    - idempotency keys;
    - durable per-replica operation reservations, successor claims, receipts,
      cancellation prepare/commit/abort records, cancellation tombstones,
+     monotonic claim/accepted/committed history, finalization acknowledgements,
      certificate storage, and release records;
    - generic rollback resolution.
 
@@ -6930,7 +7444,13 @@ Mother SHOULD be implemented in this order:
      anchor or automatic winner;
    - atomically persist per-replica owner and exact-successor claims;
    - make every accepting journal replica freshly retrieve and validate the
-     complete receipt set rather than trusting an assembled certificate label;
+     complete participant set rather than trusting an assembled certificate
+     label;
+   - accept monotonic proof from each participant as either the exact active
+     predecessor claim or the exact accepted/committed successor under the same
+     certificate;
+   - retain immutable claim, receipt, accepted-certificate, prepare, commit, and
+     tombstone evidence after active pointers roll forward;
    - durably accept and apply only the exact certified successor;
    - roll `current_predecessor` forward after commit, clear
      `claimed_successor`, and retain the same operation owner;
@@ -6939,9 +7459,10 @@ Mother SHOULD be implemented in this order:
    - implement replica-local atomic exclusion between certificate acceptance and
      cancellation preparation;
    - implement full-set two-phase cancellation with independently validated
-     prepare certificates, deterministic abort to an already accepted successor,
-     commit-only recovery after full preparation, idempotent tombstones, and
-     exhaustive apply/cancel interleaving tests;
+     prepare certificates, monotonic active-prepare-or-committed validation,
+     deterministic abort to an already accepted successor, commit-only recovery
+     after full preparation, idempotent tombstones, and exhaustive apply/cancel
+     interleaving tests;
    - implement certified-rollback refusal, terminal release, and crash
      reconstruction;
    - retain reservation ownership and `active_writer_operation_id` through
@@ -6971,20 +7492,27 @@ Mother SHOULD be implemented in this order:
      current-operation pointer cleanup.
 
 11. `finalize`
-   - postcondition checks;
+   - implement `MOTHER-DESIGN-027`;
+   - freeze transition participants during `prep`;
+   - perform postcondition checks and cross-journal finalization preparation;
    - exact-successor certification of the authoritative finalization transition;
-   - cross-journal finalization preparation;
    - network-journal promotion from pending desired topology to finalized
      topology;
-   - closes the rollback window immediately at the authoritative network-journal
-     commit;
-   - enters `finalized-replication-pending` and retains scopes while any expected
-     replica acknowledgement is missing;
-   - retries or remediates full replica acknowledgement without reopening
-     rollback;
-   - enters `finalized` and releases scopes and the successor reservation only
-     after every expected replica acknowledges the exact finalization head and
-     confirms durable reservation release.
+   - close the rollback window at the first durable participant commit of the
+     exact certified successor;
+   - enter `finalization-commit-ambiguous` after an uncertain application result
+     and permit only exact status inspection and exact retry;
+   - resynchronize every lagging frozen participant to the same certified head
+     using monotonic accepted-or-committed evidence;
+   - transfer and verify the complete immutable recovery-object closure;
+   - create replay-verified participant acknowledgements and one canonical
+     full-set acknowledgement certificate outside the network journal;
+   - retain scopes and operation ownership while acknowledgement or release is
+     incomplete;
+   - enter `finalized` only after every required terminal release record is
+     freshly proven;
+   - support the explicit post-commit exclusion reseal without reopening
+     rollback or choosing a different final topology.
 
 12. Distributed QBFT membership controller
    - frozen proposal, voter, and observer manifests;
@@ -7042,7 +7570,12 @@ Mother SHOULD be implemented in this order:
    - implement only after `MOTHER-OPEN-017` is resolved.
 
 21. Finalization replication-state reconciler
-   - implement only after `MOTHER-OPEN-018` is resolved.
+   - implement the exact-status inspection, certified-head resynchronization,
+     immutable-object transfer, replay verification, durable acknowledgement,
+     full-set acknowledgement-certificate, terminal-release, and post-commit
+     exclusion-reseal paths in `MOTHER-DESIGN-027`;
+   - add crash and interleaving tests at every certificate, head, acknowledgement,
+     and release durability boundary.
 
 22. Requirements-language lint
    - parse Markdown prose separately from fenced examples and quotations;

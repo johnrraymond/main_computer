@@ -9,6 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "main_computer" / "web" / "applications" / "scripts"
+DOC = ROOT / "pretty_docs" / "mcel-authored-surface-document.md"
 
 
 def run_node(script: str) -> dict:
@@ -103,3 +104,31 @@ def test_authored_surface_document_node_api_builds_surface_from_html_ridges() ->
     assert data["surfaceIrBuildable"] is True
     assert data["layoutGrammarBuildable"] is True
     assert data["surfaceId"] == "demo.surface"
+
+
+def test_patch24a_authored_document_spec_defines_host_independent_hierarchy() -> None:
+    text = " ".join(DOC.read_text(encoding="utf-8").split())
+
+    required_phrases = [
+        "Patch 24a: Document Editor authored-document contract",
+        "document",
+        "page",
+        "section",
+        "heading",
+        "block",
+        "paragraph",
+        "object",
+        "selection",
+        "annotation",
+        "export-target",
+        "Heading identity MUST NOT be derived from heading text alone",
+        "A page is a layout/projection boundary",
+        "a section is a logical structure boundary",
+        "Opening a different Pretty Doc replaces the current authored-document root only",
+        "MUST NOT be copied into the static application-layout grammar",
+        "extractAuthoredDocument(root)",
+        "listDocumentHeadings(authoredDocument)",
+        "The existing v1 analyzer behavior remains unchanged",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text

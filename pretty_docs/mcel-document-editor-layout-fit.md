@@ -1,32 +1,42 @@
 # Document Editor layout fit
 
-Patch 21 stabilizes the Document Editor as a usable MCEL surface, not only a semantic one.
+Patch 21 stabilized the Document Editor as a usable MCEL surface, not only a
+semantic one.
 
-Patch 21a corrects the lane policy after live use showed that stacking the right Document AI companion was the wrong degradation. The intended behavior is:
+Patch 21a corrected the lane policy after live use showed that stacking the
+right Document AI companion was the wrong degradation. The then-current layout
+was:
 
 ```text
 left Pretty Docs library | document page | right Document AI companion
 ```
 
-The right rail remains on the right. The left file list is the lane that shrinks first, because it is navigational support rather than the primary authoring surface or the companion/action rail.
+The right rail remained on the right. The left file list was the lane that
+shrunk first.
 
-The observed failure class has two parts:
+The observed failure class had two parts:
 
-- the component could exceed its available width even though the browser viewport was not narrow;
-- floating menu/debug actions and a display-contents workspace wrapper could be misclassified by diagnostics as required-region or visual-overlap failures.
+- the component could exceed its available width even though the browser
+  viewport was not narrow;
+- floating menu/debug actions and a display-contents workspace wrapper could be
+  misclassified by diagnostics as required-region or visual-overlap failures.
 
-The fix is deliberately narrow:
+The correction was deliberately narrow:
 
 - keep the existing Document Editor UI and behavior;
 - keep the `[e/w/g]` diagnostics counter in the Document Editor header;
 - make the document shell respond to its own container width;
-- preserve the right Document AI rail as the right grid column at constrained widths;
-- shrink the left Pretty Docs library lane through compact widths and ellipsis instead of moving the AI rail below the page;
+- preserve the right Document AI rail as the right grid column at constrained
+  widths;
+- shrink the left Pretty Docs library lane through compact widths and ellipsis
+  instead of moving the AI rail below the page;
 - avoid treating floating menu bodies as normal semantic layout projections;
-- treat the visible document shell as the required workspace box because `.document-workspace` is a `display: contents` grouping wrapper;
-- mark Document Editor panes, controls, and readable text as runtime visual-fit candidates without making the entire action header a readable text range.
+- treat the visible document shell as the required workspace box because
+  `.document-workspace` is a `display: contents` grouping wrapper;
+- mark Document Editor panes, controls, and readable text as runtime visual-fit
+  candidates without making the entire action header a readable text range.
 
-Going forward, Document Editor conformance requires the same layers as File Explorer:
+Document Editor conformance requires:
 
 ```text
 semantic-surface
@@ -36,71 +46,158 @@ runtime-visual-fit
 diagnostic-no-throw
 ```
 
-The important distinction is that semantic validity only proves what the surface means. Runtime visual-fit proves that the user can actually read and use the surface in the rendered app.
+Semantic validity proves what the surface means. Runtime visual-fit proves that
+the user can actually read and use the rendered surface.
 
 ## Patch 21b residual visual-fit hardening
 
-Patch 21b addresses the remaining "good-ish" state after the three-lane policy landed:
+Patch 21b kept the three-lane layout and fixed diagnostic/fit noise:
 
 ```text
-left library | document page | right Document AI
-```
-
-The intended layout remains three lanes. The right rail stays on the right, and the Pretty Docs/library lane continues to be the lane that compresses first.
-
-The remaining fixes are diagnostic and fit-oriented:
-
-```text
-- library cards use border-box sizing so a shrunk file list does not bleed by its own padding
-- MCEL no longer treats large document containers as readable text leaves
-- open menu bodies and debug menu bodies remain floating controls, not normal semantic projections
-- the page overlay layer is ignored by sibling-overlap checks because it is aria-hidden and pointer-passive
+- library cards use border-box sizing
+- MCEL does not treat large document containers as readable text leaves
+- open menu bodies and debug menu bodies remain floating controls
+- the page overlay layer is ignored by sibling-overlap checks
 - display: contents wrappers are ignored by collapsed-owner detection
 ```
 
-This keeps the runtime-visual-fit layer focused on actual unreadable/clipped content instead of intentional overlays or structural wrappers.
-
-
 ## Patch 21c rail content-fit contract
 
-Patch 21c fixes the remaining Pretty Docs header clipping case. The three-lane policy was correct, but the left rail was allowed to become narrower than its own header controls could fit:
+Patch 21c fixed the Pretty Docs header clipping case:
 
 ```text
 PRETTY DOCS | Refresh | Close
 ```
 
-The correction adds a micro-layout contract inside the shrink-first rail:
+The rail remained shrink-first, but its controls gained declared wrap,
+compact, and compact-icon behavior.
 
-```text
-- the rail remains the shrink-first column
-- the right Document AI rail remains on the right
-- the library header is a compact grid, not a single non-wrapping row
-- the title can wrap within the rail
-- header actions can wrap into compact rows
-- at very narrow rail widths, Refresh and Close become icon-sized controls with aria-label/title text
-- truncation/compact-icon behavior is declared with data-mcel-fit-policy
-```
-
-This captures the distinction between macro fit and micro fit:
+This established the distinction:
 
 ```text
 macro fit: the big regions fit in the app shell
-micro fit: the readable/control content inside each region still has a declared fit policy
+micro fit: readable/control content inside each region has a fit policy
 ```
 
-For semantic-runtime apps, content-fit violations are now hard runtime visual-fit failures. A semantic surface should not show a green top-level diagnostic result while required readable/control content is visibly clipped.
+For semantic-runtime apps, content-fit violations are hard runtime visual-fit
+failures.
 
-## Patch 22a correction
+## Patch 22a and 22b page auto-fit
 
-The fit-policy contract made the Document Editor diagnostics stricter, which was correct, but the workbench still needed a comfort pass.  The three-lane layout now keeps the right AI rail on the right, keeps the left Pretty Docs rail as the shrink-first lane, and auto-fits the document page down inside the remaining center lane instead of leaving the page clipped or awkwardly scrolled at normal constrained widths.
+The three-lane layout kept the right AI rail on the right, kept the left Pretty
+Docs rail shrink-first, and auto-fit the document page down inside the remaining
+center lane. Page fit refresh observes the canvas, object stage, shell, and app
+visibility so a reopened app does not keep stale zoom.
 
-The page fit is runtime-sized from the canvas width.  It only scales downward from the requested zoom and records the state with `data-document-auto-fit`, so the layout remains measurable by MCEL visual-fit probes.
+## Patch 24a target lane responsibilities
 
-## Patch 22b visibility-aware page auto-fit
+Patch 24a changes the specification before changing the live UI.
 
-The Document Editor page fit refresh now observes the canvas, object stage,
-shell, and app visibility state.  This prevents the page from keeping a stale
-zoom when the app is opened after initial load or when the right rail constrains
-the center lane.  The right AI rail remains on the right, the Pretty Docs rail
-remains shrink-first, and the page can fit down to a smaller bounded zoom before
-horizontal clipping is allowed.
+The target layout is:
+
+```text
+left Document Outline | editable document page | right Document AI dock
+```
+
+The Pretty Docs file list is no longer a persistent lane. It moves to a
+transient modal opened by `Open Pretty Doc...`.
+
+### Left outline lane
+
+The navigation lane is owned by the current document outline. Its content is
+the heading hierarchy of the loaded document.
+
+The outline lane:
+
+- MAY compact at constrained widths;
+- MUST keep heading navigation readable and keyboard reachable;
+- MAY truncate individual long heading labels while preserving accessible full
+  text;
+- MUST provide a `No headings yet` state;
+- MUST NOT fall back to displaying the Pretty Docs file list.
+
+The outline is a dynamic projection of authored headings. Its container belongs
+to static app layout grammar; an unbounded list of heading rows does not.
+
+### Center authoring lane
+
+The center lane remains the primary width owner. It reclaims width whenever the
+right companion docks.
+
+Page auto-fit must respond to all of these changes:
+
+```text
+outline width change
+companion expanded/docked transition
+modal close after document load
+application visibility change
+owned container resize
+```
+
+The modal itself must not alter the saved document zoom. After a successful
+load, the new document is fit against the current center-lane capacity.
+
+### Right companion lane
+
+The companion remains right-owned but no longer reserves its full expanded
+width while inactive.
+
+States:
+
+```text
+docked   -> compact right-side affordance; document lane reclaims width
+expanded -> full companion is visible
+active   -> focus, request, draft, pending result, or pinned-open state
+overlay  -> narrow-capacity presentation above the page
+```
+
+The companion may dock only when it has no active condition. Docking preserves
+thread, draft, result, and selection context. The reopen control uses a declared
+compact/compact-icon fit policy.
+
+The target fit policy is:
+
+```text
+expanded/active: normal right companion lane
+docked: collapse-optional with reachable compact control
+overlay: explicit overlay policy at narrow owned width
+```
+
+The companion must not auto-dock during a running request, while its input has
+an unsent draft, while generated output awaits review/apply, while focus remains
+inside it, or while it is pinned open.
+
+### Pretty Docs modal
+
+The file picker is a temporary overlay, not a fourth persistent lane.
+
+It must:
+
+- fit inside the owned application bounds;
+- trap focus and restore it on close;
+- keep `Open` and `Cancel` reachable;
+- support a scroll owner for long file lists;
+- avoid projecting every candidate row into static layout grammar;
+- pass through save/discard/cancel when current edits are dirty;
+- remain open with an actionable error when loading fails.
+
+### Runtime conformance additions for Patch 24b
+
+The implementation patch should extend runtime checks to prove:
+
+```text
+navigation role is document-outline-navigation
+persistent navigation does not contain the Pretty Docs file list
+file picker is modal and transient
+docked companion leaves a reachable reopen control
+docked companion state preserves context
+center lane grows when the companion docks
+page auto-fit refreshes after companion transitions and document load
+dynamic outline/file rows do not pollute static layout collision evidence
+```
+
+## Patch boundary
+
+Patch 24a is specification and contract-test work only. The live Document
+Editor remains on the Patch 22b UI until Patch 24b implements the outline,
+modal picker, and docked companion.

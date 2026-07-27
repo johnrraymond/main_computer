@@ -1,9 +1,9 @@
 # MCEL Document Editor Surface Pilot
 
-Patch 20 promotes Document Editor from a layout-bound legacy app into a
+Patch 20 promoted Document Editor from a layout-bound legacy app into a
 semantic-runtime MCEL app surface.
 
-The intent is narrow:
+The original intent was narrow:
 
 ```text
 existing Document Editor UI
@@ -15,15 +15,17 @@ existing Document Editor UI
   -> enrolled semantic-runtime conformance
 ```
 
-This does not redesign Document Editor and does not add a visible panel.
+Patch 20 did not redesign Document Editor or add a visible panel. Patch 24a now
+specifies the next Document Editor interaction model before Patch 24b changes
+the live UI.
 
-## Surface
+## Current surface
 
 ```text
 document-editor.surface.primary
 ```
 
-## Regions
+## Current application-surface regions
 
 ```text
 document-editor.region.navigation
@@ -37,7 +39,156 @@ document-editor.region.document-content
 document-editor.region.companion
 ```
 
-## Static nodes
+## Patch 24a target model
+
+Document Editor has two related semantic layers:
+
+```text
+application surface
+  shell, menu, toolbar, outline rail, authoring lane, companion, status, modal
+
+authored document
+  document, page, section, heading, block, paragraph, object,
+  selection, annotation, export target
+```
+
+The application surface hosts and projects the authored document. The authored
+document is not flattened into an unbounded list of static application-layout
+nodes.
+
+The three persistent lanes have these responsibilities:
+
+```text
+left navigation  -> headings for the current document
+center primary   -> editable document/page
+right companion  -> Document AI context and actions
+```
+
+File selection is a transient task:
+
+```text
+Open Pretty Doc
+  -> modal file picker
+  -> choose a candidate
+  -> resolve unsaved changes when required
+  -> load the selected document
+  -> rebuild the current document outline
+```
+
+### Left navigation: current document outline
+
+The left rail MUST represent the structure of the currently loaded document. It
+MUST NOT use its persistent body as the Pretty Docs file list.
+
+The outline contract is:
+
+- Extract heading entries from the current editable document.
+- Preserve heading level and hierarchy.
+- Use stable authored-node identity so duplicate heading text remains
+  unambiguous.
+- Rebuild after document load and update after edits with bounded/debounced
+  work.
+- Scroll to and focus the matching authored heading when an outline entry is
+  activated.
+- Track the heading nearest the current caret, selection, or viewport position.
+- Show a clear `No headings yet` empty state.
+- Keep a compact current-document label and an `Open Pretty Doc...` command
+  available without embedding the file list in the rail.
+
+Planned semantic identifiers:
+
+```text
+document-editor.region.navigation
+  role: document-outline-navigation
+
+document-editor.node.document-outline
+document-editor.node.current-document
+document-editor.control.open-pretty-doc
+document-editor.control.outline-heading
+document-editor.edge.outline-navigates-heading
+```
+
+Individual heading entries are authored-document projections. They SHOULD be
+identified by stable authored heading IDs and MUST NOT become permanent static
+application-layout nodes.
+
+### Pretty Docs modal picker
+
+The Pretty Docs list belongs in an accessible modal opened by the explicit
+`Open Pretty Doc...` action.
+
+The modal MUST:
+
+- expose searchable/selectable Pretty Docs candidates;
+- show enough identity to distinguish similarly named documents;
+- support pointer and keyboard selection;
+- provide explicit `Open` and `Cancel` actions;
+- trap focus while open and restore focus to the invoking control when closed;
+- avoid silently discarding local edits;
+- keep the picker open and report the error if the selected document cannot be
+  loaded.
+
+When the current document is dirty, opening another document MUST pass through
+an explicit save/discard/cancel decision. Selecting a candidate alone does not
+mutate the current editing session.
+
+Planned semantic identifiers:
+
+```text
+document-editor.region.file-picker-modal
+document-editor.node.pretty-doc-picker
+document-editor.node.pretty-doc-candidate
+document-editor.control.confirm-open-pretty-doc
+document-editor.control.cancel-pretty-doc-picker
+document-editor.edge.picker-selects-document
+```
+
+Candidate rows are dynamic modal content. They MAY expose semantic identity and
+accessible controls, but MUST NOT be emitted as unbounded static
+application-surface layout nodes.
+
+### Right companion: docked when inactive
+
+The Document AI companion remains owned by the right side. It SHOULD reclaim
+space for the primary authoring lane when it is not actively being used.
+
+Supported states:
+
+```text
+docked
+expanded
+active
+overlay
+```
+
+The companion is active while any of these conditions hold:
+
+- keyboard focus is inside the companion;
+- an AI request is running;
+- the prompt contains an unsent draft;
+- generated output is awaiting review or apply;
+- the user has pinned the companion open.
+
+When none of those conditions hold, the companion MAY slide or compact to a
+right-side dock. Docking MUST preserve the thread, draft, result, and selection
+context. A compact, readable control MUST remain available to reopen it.
+
+At narrow owned widths, the companion MAY use an explicit overlay policy rather
+than permanently reducing the document page below its usable fit. Overlay mode
+must remain dismissible and must not silently cover active document controls.
+
+Planned fit/state ridges:
+
+```text
+data-mcel-companion-state="docked|expanded|active|overlay"
+data-mcel-fit-policy="collapse-optional"
+data-mcel-fit-role="document-ai-companion"
+```
+
+## Current static nodes
+
+Until Patch 24b implements the target model, the current runtime surface still
+extracts these Patch 20 nodes:
 
 ```text
 document-editor.node.document-session
@@ -53,7 +204,7 @@ document-editor.node.ai-context
 document-editor.node.status-message
 ```
 
-## Static edges
+## Current static edges
 
 ```text
 document-editor.edge.library-selects-document
@@ -66,7 +217,7 @@ document-editor.edge.companion-describes-content
 document-editor.edge.export-projects-document
 ```
 
-## Controls
+## Current controls
 
 ```text
 document-editor.control.toggle-library
@@ -80,6 +231,10 @@ document-editor.control.discard-draft
 document-editor.control.ai-apply
 document-editor.control.ai-send
 ```
+
+These current identifiers remain documented so Patch 24b can make deliberate
+create/replace decisions rather than silently claiming the target state is
+already live.
 
 ## Runtime helper
 
@@ -114,11 +269,19 @@ runtime-visual-fit
 diagnostic-no-throw
 ```
 
+## Patch boundary
+
+Patch 24a is specification and contract-test work only. It does not claim that
+the live Document Editor already provides the outline, modal picker, or docked
+companion. Patch 24b is responsible for implementing those behaviors and
+updating the runtime surface identifiers.
+
 ## Safety rules
 
-- No visible UI redesign.
-- No app behavior refactor.
-- No new editor panel.
+- Do not silently discard authored changes.
+- Do not confuse file selection with current-document navigation.
+- Do not destroy companion state when docking it.
+- Do not emit unbounded dynamic heading or file rows as static layout grammar.
+- Required readable/control content must retain a declared fit policy.
+- Keep the application surface and authored-document semantics distinguishable.
 - No unrelated domain vocabulary.
-- MCEL adds semantic structure, runtime diagnosis contract, layout records, and
-  conformance enrollment.

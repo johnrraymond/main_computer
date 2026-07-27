@@ -351,3 +351,28 @@ def test_document_editor_surface_is_domain_neutral_and_documented() -> None:
     for text in [script, doc]:
         for term in forbidden_terms:
             assert term not in text
+
+
+def test_patch24a_document_editor_spec_separates_outline_picker_and_companion() -> None:
+    doc = " ".join(DOC.read_text(encoding="utf-8").split())
+
+    required_phrases = [
+        "Patch 24a target model",
+        "left navigation -> headings for the current document",
+        "File selection is a transient task",
+        "The left rail MUST represent the structure of the currently loaded document",
+        "document-outline-navigation",
+        "Open Pretty Doc...",
+        "document-editor.region.file-picker-modal",
+        "explicit save/discard/cancel decision",
+        "docked",
+        "expanded",
+        "active",
+        "overlay",
+        "Docking MUST preserve the thread, draft, result, and selection context",
+        "MUST NOT be emitted as unbounded static application-surface layout nodes",
+        "Patch 24a is specification and contract-test work only",
+        "Patch 24b is responsible for implementing those behaviors",
+    ]
+    for phrase in required_phrases:
+        assert phrase in doc

@@ -2291,12 +2291,22 @@
 .scene-shuttle3d-health-label,
 .scene-shuttle3d-combat-line,
 .scene-shuttle3d-phaser-line,
-.scene-shuttle3d-pilot-line {
+.scene-shuttle3d-pilot-line,
+.scene-shuttle3d-ship-line {
   font-size: 0.68rem;
   font-weight: 900;
   letter-spacing: 0.075em;
   text-transform: uppercase;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.72);
+}
+
+.scene-shuttle3d-ship-line {
+  color: #bbf7d0;
+  line-height: 1.35;
+}
+
+.scene-shuttle3d-ship-line[hidden] {
+  display: none;
 }
 
 .scene-shuttle3d-health-track {
