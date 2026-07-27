@@ -5285,3 +5285,37 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
     width: min(420px, calc(100vw - 24px));
   }
 }
+
+
+/* The inactive Code Editor compatibility guard must not re-enable document
+   scrolling merely because the hidden Code Editor DOM remains mounted. */
+html:has(body[data-active-app="document"]) {
+  height: 100dvh !important;
+  overflow: hidden !important;
+}
+
+body[data-active-app="document"]:has(#code-editor-app) {
+  height: 100dvh !important;
+  overflow: hidden !important;
+}
+
+/* Patch 24a4: participate in the focused applications host instead of pinning
+   Code Editor to the browser origin. The host reserves the Apps gutter and the
+   editor fills only the remaining app-owned canvas. */
+body[data-active-app="code-editor"] #code-editor-app,
+body[data-active-app="code-editor"] #code-editor-app.code-editor-app,
+body[data-active-app="code-editor"] .code-editor-app#code-editor-app {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+}
+
+body[data-active-app="code-editor"] #code-editor-app .code-studio-shell {
+  inset: 4px !important;
+}
+

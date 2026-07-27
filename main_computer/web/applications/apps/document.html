@@ -1,5 +1,5 @@
 <div class="document-app document-library-open document-ai-open" id="document-app" aria-label="Document editor" data-mcel-workbench="document-editor" data-mcel-layout="page-centered-writing-workbench" data-mcel-surface-id="document-editor.surface.primary" data-mcel-surface-kind="application-surface" data-mcel-surface-role="document-authoring-workbench" data-mcel-surface-contract="document-editor.contract.semantic-surface-pilot" data-mcel-authoritative="true" data-mcel-renderer="document-editor.runtime-dom" data-mcel-projection="html" data-layout-viewport-width="1440" data-layout-viewport-height="900" data-layout-safe-margin="16" data-mcel-visual-owner="document-editor.surface.primary" data-mcel-layout-zone="document-editor.surface.primary">
-            <div class="document-shell app-widget" data-widget-label="Document Editor" data-mcel-element="element.layout.document-workbench">
+            <div class="document-shell app-widget" data-widget-label="Document Editor" data-widget-chrome="app-owned" data-mcel-element="element.layout.document-workbench">
               <aside class="document-library" id="document-library" aria-label="Pretty Docs library" aria-hidden="false" data-mcel-layout-zone="navigation" data-mcel-element="element.layout.document-navigation-zone" data-mcel-region="document-editor.region.navigation" data-mcel-region-role="document-library-navigation" data-layout-x="16" data-layout-y="16" data-layout-region-width="272" data-layout-region-height="868" data-mcel-visual-owner="document-editor.region.navigation" data-mcel-zone="document-editor.region.navigation">
                 <div class="document-library-head" data-mcel-fit-policy="wrap" data-mcel-fit-role="document-library-header" data-mcel-fit-required="true">
                   <strong data-mcel-fit-policy="wrap" data-mcel-fit-role="document-library-title" data-mcel-fit-required="true">Pretty Docs</strong>
@@ -25,6 +25,7 @@
                     <button type="button" class="mcel-diagnostics-counter" id="document-diagnostics-counter" data-mcel-diagnostics-counter="document" aria-label="MCEL diagnostics counter">[00/00/00]</button>
                     <button class="document-library-toggle" type="button" id="document-library-toggle" aria-expanded="true" aria-controls="document-library" data-mcel-control="document-editor.control.toggle-library" data-mcel-control-action="toggle_document_library" data-mcel-reveals="document-editor.node.document-library" data-layout-anchor-x="1180" data-layout-anchor-y="60" data-layout-width="64" data-layout-height="32" data-layout-z="2" data-mcel-source="document-editor.dom" data-mcel-provenance="patch:mcel-safe-20-document-editor-surface" data-mcel-readable="true">Docs</button>
                     <button class="document-ai-toggle" type="button" id="document-ai-toggle" aria-expanded="true" aria-controls="document-ai-pane" data-mcel-control="document-editor.control.toggle-ai" data-mcel-control-action="toggle_document_ai_companion" data-mcel-reveals="document-editor.node.ai-context" data-layout-anchor-x="1260" data-layout-anchor-y="60" data-layout-width="48" data-layout-height="32" data-layout-z="2" data-mcel-source="document-editor.dom" data-mcel-provenance="patch:mcel-safe-20-document-editor-surface" data-mcel-readable="true">AI</button>
+                    <button class="fullscreen-control document-fullscreen-control" type="button" id="document-fullscreen-control" data-fullscreen-target="closest" aria-label="Toggle Document Editor full screen">Full Screen</button>
                     <details class="document-menu-popover" id="document-insert-menu">
                       <summary>Insert</summary>
                       <div class="document-menu-popover-body">
@@ -168,12 +169,12 @@
                     <button type="button" id="document-ai-close">Close</button>
                   </div>
                 </div>
-                <div class="document-ai-anchor-summary" id="document-ai-anchor-summary" data-mcel-node-id="document-editor.node.ai-context" data-mcel-node-type="ai_context" data-mcel-node-label="Document AI context" data-mcel-source="document-editor.dom" data-mcel-provenance="patch:mcel-safe-20-document-editor-surface" data-mcel-channel="DOCUMENT_EDITOR" data-mcel-home-region="document-editor.region.companion" data-mcel-actual-region="document-editor.region.companion" data-layout-anchor-x="1288" data-layout-anchor-y="200" data-layout-width="220" data-layout-height="64" data-layout-z="1" data-layout-region="document-editor.region.companion" data-layout-ports="north,south,east,west" data-mcel-readable="true">No anchor locked.</div>
-                <div class="document-ai-actions">
-                  <button type="button" id="document-ai-lock-anchor">Lock anchor</button>
-                  <button type="button" id="document-ai-rebase">Refresh anchor</button>
-                </div>
                 <div class="document-ai-main" id="document-ai-main">
+                  <div class="document-ai-anchor-summary" id="document-ai-anchor-summary" data-mcel-node-id="document-editor.node.ai-context" data-mcel-node-type="ai_context" data-mcel-node-label="Document AI context" data-mcel-source="document-editor.dom" data-mcel-provenance="patch:mcel-safe-20-document-editor-surface" data-mcel-channel="DOCUMENT_EDITOR" data-mcel-home-region="document-editor.region.companion" data-mcel-actual-region="document-editor.region.companion" data-layout-anchor-x="1288" data-layout-anchor-y="200" data-layout-width="220" data-layout-height="64" data-layout-z="1" data-layout-region="document-editor.region.companion" data-layout-ports="north,south,east,west" data-mcel-readable="true">No anchor locked.</div>
+                  <div class="document-ai-actions">
+                    <button type="button" id="document-ai-lock-anchor">Lock anchor</button>
+                    <button type="button" id="document-ai-rebase">Refresh anchor</button>
+                  </div>
                   <div class="document-ai-chip-row" aria-label="Document AI prompts">
                     <button type="button" data-document-ai-chip="Improve clarity without changing meaning.">Improve</button>
                     <button type="button" data-document-ai-chip="Fix grammar and punctuation.">Grammar</button>

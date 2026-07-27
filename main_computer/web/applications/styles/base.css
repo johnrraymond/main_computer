@@ -793,3 +793,84 @@
       color: var(--muted);
       line-height: 1.5;
     }
+
+    /* Patch 24a4: focused application host.
+       Code Editor and Document Editor own the viewport beneath the persistent
+       Apps gutter. The collapsed launcher rail is host chrome, never an overlay
+       on app-owned controls; expanding the launcher remains a temporary overlay. */
+    html:has(body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    )),
+    body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    ) {
+      height: 100dvh !important;
+      overflow: hidden !important;
+    }
+    body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    ) .viewport {
+      height: 100dvh;
+      min-height: 0;
+    }
+    body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    ) main {
+      display: block;
+      min-height: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    ) .stage {
+      position: fixed;
+      inset: 0 0 0 var(--app-taskbar-reserved-width);
+      z-index: 1200;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+      gap: 0;
+      padding: 4px;
+      border-radius: 0;
+      overflow: hidden;
+    }
+    body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    ) .stage-head,
+    body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    ) .demo-controls {
+      display: none !important;
+    }
+    body[data-has-app-taskbar="true"]:is(
+      [data-active-app="code-editor"],
+      [data-active-app="document"]
+    ) .canvas-wrap {
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      border: 0;
+      border-radius: 0;
+      overflow: hidden;
+    }
+    @supports not (height: 100dvh) {
+      body[data-has-app-taskbar="true"]:is(
+        [data-active-app="code-editor"],
+        [data-active-app="document"]
+      ),
+      body[data-has-app-taskbar="true"]:is(
+        [data-active-app="code-editor"],
+        [data-active-app="document"]
+      ) .viewport {
+        height: 100vh;
+      }
+    }
+

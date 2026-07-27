@@ -7,7 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "main_computer" / "web" / "applications"
 DOCUMENT_HTML = WEB / "apps" / "document.html"
 DOCUMENT_CSS = WEB / "styles" / "document.css"
+CODE_EDITOR_CSS = WEB / "styles" / "code-editor.css"
 BASE_CSS = WEB / "styles" / "base.css"
+WIDGET_EDITOR_CORE = WEB / "scripts" / "widget-editor-core.js"
 COUNTER_CSS = WEB / "styles" / "mcel-diagnostics-counter-widget.css"
 COUNTER_JS = WEB / "scripts" / "mcel-diagnostics-counter-widget.js"
 SURFACE_JS = WEB / "scripts" / "mcel-document-editor-surface.js"
@@ -256,3 +258,62 @@ def test_patch24a_layout_spec_assigns_outline_modal_and_docked_companion() -> No
     ]
     for phrase in required_phrases:
         assert phrase in text
+
+def test_patch24a4_focused_host_reserves_apps_gutter_for_code_and_document() -> None:
+    base = BASE_CSS.read_text(encoding="utf-8")
+    code_css = CODE_EDITOR_CSS.read_text(encoding="utf-8")
+    code_doc = (ROOT / "pretty_docs" / "mcel-code-editor-surface-diagnostics.md").read_text(encoding="utf-8")
+
+    assert "Patch 24a4: focused application host" in base
+    assert '[data-active-app="code-editor"]' in base
+    assert '[data-active-app="document"]' in base
+    assert "inset: 0 0 0 var(--app-taskbar-reserved-width);" in base
+    assert "grid-template-rows: minmax(0, 1fr);" in base
+    assert ") .stage-head," in base
+    assert ") .demo-controls {" in base
+    assert "display: none !important;" in base
+    assert ") .canvas-wrap {" in base
+    assert "height: 100%;" in base
+
+    assert "Patch 24a4: participate in the focused applications host" in code_css
+    assert 'body[data-active-app="code-editor"] #code-editor-app' in code_css
+    assert "position: absolute !important;" in code_css
+    assert "width: 100% !important;" in code_css
+    assert "height: 100% !important;" in code_css
+    assert 'body[data-active-app="document"]:has(#code-editor-app)' in code_css
+    assert "overflow: hidden !important;" in code_css
+    assert "Apps gutter right edge <= Code Editor root left edge" in code_doc
+
+
+def test_patch24a4_document_uses_compact_app_owned_chrome_and_ai_scroll_body() -> None:
+    html = DOCUMENT_HTML.read_text(encoding="utf-8")
+    css = DOCUMENT_CSS.read_text(encoding="utf-8")
+    widgets = WIDGET_EDITOR_CORE.read_text(encoding="utf-8")
+    doc = DOC.read_text(encoding="utf-8")
+
+    assert 'data-widget-chrome="app-owned"' in html
+    assert 'id="document-fullscreen-control"' in html
+    assert 'data-fullscreen-target="closest"' in html
+    assert 'const appOwnedChrome = widget.dataset.widgetChrome === "app-owned";' in widgets
+    assert 'if (!appOwnedChrome && !widget.querySelector(":scope > .fullscreen-control"))' in widgets
+    assert 'if (!appOwnedChrome && !widget.querySelector(":scope > .widget-ticker"))' in widgets
+
+    assert "Patch 24a4: compact document-owned chrome" in css
+    assert "grid-template-rows: 36px 34px minmax(0, 1fr) 26px;" in css
+    assert '#document-app .document-identity-purpose {\n  display: none;' in css
+    assert '#document-app .document-head-actions {\n  flex: 0 1 auto;\n  flex-wrap: nowrap;' in css
+    assert '#document-app .document-toolbar {\n  height: 34px;' in css
+    assert '#document-app .document-shell[data-widget-chrome="app-owned"]:fullscreen {' in css
+    assert '#document-app .document-readonly-note {\n  display: none;' in css
+    assert '#document-app .document-ai-pane {\n  grid-template-rows: auto minmax(0, 1fr) auto;' in css
+    assert '#document-app .document-ai-main {\n  min-height: 0;\n  overflow: auto;' in css
+
+    ai_main = html.index('class="document-ai-main" id="document-ai-main"')
+    anchor = html.index('id="document-ai-anchor-summary"')
+    composer = html.index('class="document-ai-composer"')
+    assert ai_main < anchor < composer
+
+    assert "Focused host and vertical budget correction (Patch 24a4)" in doc
+    assert "The generic embedded-widget ticker is not part of the Document Editor layout" in doc
+    assert "anchored header scrollable context/conversation/result body anchored prompt composer" in " ".join(doc.split())
+

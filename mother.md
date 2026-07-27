@@ -1,6 +1,6 @@
 # Mother control surface
 
-Status: design baseline for the new `mother` namespace.
+Status: normative design baseline for the new `mother` namespace. All numbered architectural design nodes are resolved; implementation verification remains required.
 
 ## Normative requirement language
 
@@ -50,12 +50,12 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-005` | Journal entries and heads have deterministic atomic commit semantics | [Atomic filesystem commit](#atomic-filesystem-commit) | Crash-point and fsync fault-injection tests | — | Implementable |
 | `MOTHER-REQ-006` | Operating-system locks, scope ownership, and full-set reservations serialize mutation | [Locking model](#locking-model) | Concurrent-writer, split-reservation, and stale-metadata tests | — | Implementable |
 | `MOTHER-REQ-007` | Cross-journal facts retain one owner and one irreversible commit point | [Cross-journal transitions](#cross-journal-transitions) | Replay proof and interrupted-finalize tests | — | Implementable |
-| `MOTHER-REQ-008` | Distributed mutation starts only after a full-network clean-state barrier | [Full-network clean-state barrier](#full-network-clean-state-barrier) | Multi-host disagreement and unreachable-host tests | `MOTHER-OPEN-017` for prospective replicas | Implementable for established replicas |
+| `MOTHER-REQ-008` | Distributed mutation starts only after the correct current-replica barrier and any prospective-host readiness barrier | [Full-network clean-state barrier](#full-network-clean-state-barrier) | Established, enrollment, bootstrap, disagreement, and unreachable-host tests | — | Implementable |
 | `MOTHER-REQ-009` | Rollback frames are armed before mutation and removed only after verified restoration | [Distributed rollback layers](#distributed-rollback-layers) | Interrupted-step, retry, and LIFO restoration tests | — | Implementable |
 | `MOTHER-REQ-010` | RPC routing is a typed, reversible distributed resource | [Typed RPC routing resource](#typed-rpc-routing-resource) | Complete-prestate and convergence tests | — | Implementable |
 | `MOTHER-REQ-011` | Hub/FDB topology is a typed, reversible distributed resource | [Typed Hub/FDB topology resource](#typed-hubfdb-topology-resource) | Participant convergence and rollback tests | — | Implementable |
-| `MOTHER-REQ-012` | `add-node` is one staged distributed lifecycle operation | [Integrated add-node sequence](#integrated-add-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017` | Blocked for production |
-| `MOTHER-REQ-013` | `remove-node` is one staged distributed lifecycle operation | [Integrated remove-node sequence](#integrated-remove-node-sequence) | End-to-end lifecycle and rollback proof | `MOTHER-OPEN-017` | Blocked for production |
+| `MOTHER-REQ-012` | `add-node` is one staged distributed lifecycle operation, including prospective-host enrollment when required | [Integrated add-node sequence](#integrated-add-node-sequence) | Established-host, prospective-host, reactivation, lifecycle, and rollback proof | — | Implementable |
+| `MOTHER-REQ-013` | `remove-node` is one staged distributed lifecycle operation and does not implicitly de-enroll a replica host | [Integrated remove-node sequence](#integrated-remove-node-sequence) | Last-node, last-validator, zero-validator, lifecycle, and rollback proof | — | Implementable |
 | `MOTHER-REQ-014` | QBFT membership changes use frozen participants, durable receipts, and convergence proof | [Frozen proposal and participant manifest](#frozen-proposal-and-participant-manifest) | Vote, receipt, effective-set, and block-proof tests | — | Implementable beneath blocked production mutation |
 | `MOTHER-REQ-015` | Schema and capability negotiation fails closed | [Startup and command preflight](#startup-and-command-preflight) | Compatibility matrix and unsupported-schema tests | — | Implementable |
 | `MOTHER-REQ-016` | Recovery transfers the complete transitive object and private-state closure | [Resolved design decisions](#resolved-design-decisions) | Closure traversal, missing-object, and hash tests | — | Implementable |
@@ -66,7 +66,7 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-021` | Active operations exclusively own conflicting scopes until their terminal boundary | [Active operation conflict rule](#active-operation-conflict-rule) | Local conflict-matrix, distributed-reservation, and terminal-release tests | — | Implementable |
 | `MOTHER-REQ-022` | Network finalization closes rollback at the atomic active-local-head commit of the exact certified finalization successor | [Commit and finalize boundary](#commit-and-finalize-boundary) | Pre/post-local-head-commit crash and rollback-closure tests | — | Implementable |
 | `MOTHER-REQ-023` | Every full-set replica accepts at most one exact successor per predecessor and retains monotonic accepted-or-committed evidence through rollover, two-phase cancellation, and terminal release | [Full-set successor reservation and single-successor commit](#full-set-successor-reservation-and-single-successor-commit) | Competing-writer, split-reservation, forged-certificate, monotonic-retry, rollover, exhaustive apply/cancel interleaving, cancellation, release, and crash tests | — | Implementable |
-| `MOTHER-REQ-024` | Zero-network and prospective replicas use an explicit enrollment transaction | [Remaining open design nodes](#remaining-open-design-nodes) | Empty-network and host-enrollment lifecycle tests | `MOTHER-OPEN-017` | Blocked |
+| `MOTHER-REQ-024` | Replica membership, prospective enrollment, zero-validator continuity, and first network birth use explicit authority boundaries | [Replica enrollment, de-enrollment, zero-validator continuity, and network birth](#replica-enrollment-de-enrollment-zero-validator-continuity-and-network-birth) | Enrollment, retirement, zero-validator, bootstrap, secret-exposure, and crash-boundary tests | — | Implementable |
 | `MOTHER-REQ-025` | Finalization commits one exact certified terminal head locally, resynchronizes sealed replicas, acknowledges outside the journal, and releases ownership only from full-set proof | [Finalization resynchronization and full-set acknowledgement](#finalization-resynchronization-and-full-set-acknowledgement) | Local-head crash-boundary, monotonic replica retry, closure transfer, acknowledgement, partial-release, and exclusion-reseal tests | — | Implementable |
 
 `mother` is the replacement control surface for validator lifecycle operations that
@@ -93,11 +93,11 @@ of those actions; the operator does not run separate topology commands.
 Goal:
 
 ```text
-Start with no committed validator topology.
-Add the first super-node on coolify-a and make it fully operational.
-Add a second super-node on coolify-c and make it fully operational.
-Remove coolify-a's node from the network and remove/disable its service.
-End with coolify-c as the solo effective network.
+Start with an unborn network: no committed birth record, seal, or journal head.
+Bootstrap the network and add the first super-node on coolify-a.
+Enroll coolify-c prospectively while adding the second super-node.
+Remove coolify-a's node without de-enrolling coolify-a.
+End with coolify-c as the solo validator while both hosts remain Mother replicas.
 ```
 
 Prerequisite:
@@ -133,7 +133,8 @@ mother add-node do mainnet
 #   the first validator is active on Mother-owned first-genesis material;
 #   host-local canonical RPC routing is correct;
 #   Hub/FDB topology is correct on every current node;
-#   the action remains fully rollback-capable.
+#   the network birth head and initial replica set precede live mutation;
+#   the node action remains rollback-capable until ordinary finalization.
 
 mother add-node finalize mainnet
 
@@ -142,6 +143,7 @@ mother add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
 mother add-node do mainnet
 
 # Result before finalize:
+#   coolify-c has enrollment readiness but no predecessor authority;
 #   both validator addresses are in the agreed QBFT set;
 #   affected RPC routes include the correct eligible backends;
 #   every node reports the new Hub/FDB topology;
@@ -163,14 +165,15 @@ mother remove-node do mainnet
 mother remove-node finalize mainnet
 
 # Result:
-#   coolify-c's mainnetc-super1 is the solo effective network.
+#   coolify-c's mainnetc-super1 is the solo validator;
+#   coolify-a remains a replica until separately de-enrolled.
 ```
 
-Before either `add-node prep` or `remove-node prep` can succeed, every expected
-Coolify host MUST be reachable, agree on the committed network journal/state,
-and prove that it has no unresolved action, active rollback, provisional guard
-frame, or conflicting resource lock. The action is allowed to begin only after
-that full-network clean-state barrier succeeds.
+Before either `add-node prep` or `remove-node prep` can succeed, every current
+replica MUST pass the authoritative journal/state barrier. Every prospective
+host MUST separately pass enrollment readiness without being counted as
+predecessor authority. The action begins only after both role-correct barriers
+succeed.
 
 At every point after `prep` and before `finalize`, `mother diagnose mainnet`
 MUST report the current operation ID, stage, distributed participants, owned
@@ -340,8 +343,8 @@ These ownership rules also apply:
 2. `add-node` installs reserved identity; it does not invent validator identity.
 3. `add-node` activates chain topology, RPC routing, and Hub/FDB topology using
    Mother-owned facts as ordered phases of one action.
-4. The first-node genesis is generated from Mother private state, not guessed by
-   a running super-node.
+4. The first-node genesis is generated from Mother private state and committed
+   exactly once by the network-birth transaction; reactivation reuses it.
 5. Public/officer/admin identities are generated before deployment and recorded
    in private state.
 6. Operation records MAY refer to secrets in private state, but SHOULD NOT copy
@@ -607,6 +610,9 @@ replica_hosts:
   - coolify-a
   - coolify-b
   - coolify-c
+pending_membership_transition: null
+# When non-null, the operation-bound shape freezes current, prospective,
+# transition, desired, and retiring host sets plus their canonical hashes.
 excluded_hosts: []
 sealed_at: "..."
 sealed_by: "local-head:<machine-id>"
@@ -614,11 +620,20 @@ last_finalized_action_id: "operation-..."
 schema_version: "mother.network-state.v1"
 ```
 
-`replica_hosts` is the exact expected replica set for that sealed epoch. It is
-not an advisory inventory list. Its canonically serialized host identities
-produce `replica_set_hash`; response order, discovery order, DNS order, and
-reachability order do not. A host remains part of the expected replica set until
-an explicit reseal commits a new replica set that excludes it.
+`replica_hosts` is the exact current control-plane replica set for that sealed
+epoch. It is independent of validator-node presence and is not an advisory
+inventory list. Its canonically serialized host identities produce
+`replica_set_hash`; response order, discovery order, DNS order, and reachability
+order do not. Removing a host's last validator node does not remove the host from
+this set. A host leaves only through an explicit membership-changing
+finalization, de-enrollment reseal, or finalization-completion exclusion reseal.
+
+`pending_membership_transition`, when present, freezes the membership sets in
+`MOTHER-DESIGN-028`. Before local finalization, `replica_hosts` continues to name
+the current replicas; prospective hosts have staging duties but no predecessor
+writer-fencing authority. The authoritative local finalization successor
+replaces `replica_hosts` with the desired set, while ordinary mutation remains
+blocked until transition acknowledgement and terminal completion.
 `active_writer_operation_id` names the operation that owns the distributed
 successor reservation. It becomes non-null when the first certified successor is
 accepted and remains non-null throughout `do`, remediation, rollback,
@@ -637,20 +652,20 @@ script MUST run a sealed-state and journal preflight:
    matches the local network-state document;
 3. load and validate the local private-state document, private-state metadata,
    and private-recovery manifest referenced by the reconstructed network state;
-4. load the expected `replica_hosts` from that reconstructed state;
-5. query every expected replica host for its journal head, active checkpoint,
+4. load the current `replica_hosts` and any frozen pending membership-transition sets;
+5. query every current expected replica host for its journal head, active checkpoint,
    replayed state hash, finalized topology epoch, pending-action metadata,
    private-state schema/generation/hash, private-recovery manifest hash, and
    durable successor-reservation state for the exact expected head;
 6. stop before normal mutation if any expected replica host is unreachable,
    cannot replay its journal, cannot validate its private recovery material, or
    does not return usable network-state and private-state metadata;
-7. require every expected replica and the local head to agree on the active
+7. require every current expected replica and the local head to agree on the active
    checkpoint, journal head sequence/hash, finalized topology epoch, pending
    action identity/phase, complete state hash, private-state schema/generation/
    hash, private-recovery manifest hash, expected replica-set hash, and any
-   active writer-reservation owner or successor claim;
-8. if every expected replica agrees and the local head is stale, stop ordinary
+   active writer-reservation owner or successor claim; when enrollment is pending, separately require every prospective host to prove its exact staging generation, enrollment lock, and readiness receipt without counting it as predecessor authority;
+8. if every current expected replica agrees and the local head is stale, stop ordinary
    mutation and direct the operator to staged `sync-state`. That operation MUST
    adopt the complete frozen generation, including private-state and recovery
    objects referenced by its verified closure, and MUST commit only through the
@@ -666,12 +681,18 @@ majority quorum. For example, if `coolify-a` and `coolify-c` agree but
 `coolify-b` is unreachable while the current state still lists all three hosts,
 Mother MUST NOT silently proceed with two of three.
 
-The operator has exactly two availability choices when an expected replica is
-unreachable:
+When a current expected replica is unreachable, the operator has exactly two
+availability choices:
 
 1. restore reachability to that host and rerun preflight; or
 2. explicitly reseal the network with a new replica set that excludes the
    missing host.
+
+Before local membership finalization, an unreachable prospective host is not an
+authoritative replica exclusion: restore and resume the same enrollment, or roll
+it back and retain the unchanged current replica set. After local finalization,
+failure to restore a newly committed replica uses the post-commit exclusion
+reseal.
 
 Resealing without a missing host is a network-visible recovery action. It MUST
 create a new topology epoch and state hash, record the removed host and reason,
@@ -718,7 +739,8 @@ including:
 ```text
 writer reservation attached and pending action opened
 successor certificate accepted
-participant set accepted
+participant and replica-membership sets accepted
+prospective enrollment staged and readiness accepted
 distributed prestate layer armed
 validator membership verified
 RPC routing verified
@@ -727,6 +749,7 @@ remediation required
 partial or complete rollback verified
 ready to finalize
 pending action finalized or rolled back
+replica enrollment activated or retired after full acknowledgement
 ```
 
 The global entry MAY reference detailed participant receipts and action/rollback
@@ -800,7 +823,7 @@ currently applied and verified distributed phases
 participant and receipt references
 active writer operation and last accepted successor-certificate hash
 rollback availability and remediation status
-expected replica set and canonical replica-set hash
+current, prospective, transition, desired, and retiring replica sets and their canonical hashes when membership changes
 ```
 
 It is a persisted checkpoint, not an independently trusted authority. The
@@ -817,7 +840,7 @@ The journal contains transitions such as:
 - Hub/FDB topology changes;
 - remediation and rollback progress that changes network-scoped action state;
 - contract deployment or governance-office changes;
-- zero-node and first-node transitions;
+- zero-validator, reactivation, network-birth, prospective-enrollment, replica-retirement, and first-node transitions;
 - finalization, reseal, rectification, and authoritative-checkpoint events.
 
 Host-local temporary files, raw retry logs, transient health observations,
@@ -840,6 +863,7 @@ expected_head_epoch: 7
 expected_journal_sequence: 141
 expected_journal_hash: "sha256:..."
 expected_replica_set_hash: "sha256:..."
+desired_replica_set_hash: "sha256:..."  # membership-changing successors
 prepared_intent_hash: "sha256:..."
 successor_certificate_hash: "sha256:..."
 previous_entry_hash: "sha256:..."
@@ -1960,8 +1984,8 @@ target host. Current replicas and current-node hosts MUST freshly prove the full
 state-agreement barrier below. A target host that is not yet enrolled MAY report
 itself as `prospective-unenrolled`; it MUST still prove reachability, compatible
 capabilities, no pending work, no conflicting locks, and a clean bootstrap scope,
-but it is not counted as an agreeing replica until the explicit enrollment
-contract in `MOTHER-OPEN-017` completes.
+but it is not counted as predecessor authority. It participates through the
+explicit enrollment-readiness contract in `MOTHER-DESIGN-028`.
 
 ```text
 reachable
@@ -1978,7 +2002,8 @@ supported action, guard, route, journal, and successor-reservation schemas
 
 The action does not begin when any expected host is unavailable or pending.
 Majority agreement is insufficient. `prep` performs a read-only barrier
-evaluation and freezes the exact participant set, canonical replica-set hash,
+evaluation and freezes the exact current, prospective, transition, desired, and
+retiring replica sets required by the operation, their canonical hashes,
 head tuple, generations, prepared-intent hash, and assertion evidence.
 Immediately before the first mutation, `do` acquires the local network lock,
 freshly revalidates that frozen barrier, and obtains the full-set successor
@@ -2792,9 +2817,13 @@ restore the captured before-set, then closes the provisional layer without ever
 placing it on the completed rollback stack.
 
 For hard mode, rollback restores the captured complete QBFT configuration and
-topology through the hard-mode restore contract. For initial mode, rollback
-restores the captured zero-node/bootstrap prestate. Mother MUST NOT switch among
-initial, soft, and hard recovery mechanisms after `prep`.
+topology through the hard-mode restore contract. For reactivation, rollback
+restores the born network's preserved zero-validator state. For initial mode,
+rollback before the first local head commit restores the unborn bootstrap
+prestate; rollback after that commit preserves the birth identity, genesis,
+lineage, private state, and replica set while restoring node infrastructure.
+Mother MUST NOT switch among initial, reactivate, soft, and hard recovery
+mechanisms after `prep`.
 
 ### Authority and receipt chaining
 
@@ -3544,12 +3573,13 @@ not a hidden topology change and not automatic action completion.
 
 `MOTHER-OPEN-016: full-set-writer-fencing-and-single-successor-commit` is
 resolved for every established network that already has one committed
-authoritative head and one sealed expected replica set. Bootstrap authority and
-prospective-replica enrollment remain exclusively in `MOTHER-OPEN-017`.
+authoritative head and one sealed current replica set. Membership-changing
+successors use the current-replica authorization rule in `MOTHER-DESIGN-028`;
+true network birth uses its synthetic-predecessor bootstrap certificate.
 
 The protocol deliberately chooses safety over collision liveness. A writer does
 not discover, elect, or depend on a first lock host. It attempts the exact same
-claim on every host in the replica set frozen by `prep`. Requests MAY be
+ordinary claim on every current replica frozen by `prep`. Requests MAY be
 parallel, sequential, retried, delayed, or delivered in different orders. A
 writer is authorized only after it proves the complete set. Therefore two
 writers can split reservations and wedge progress, but neither can become an
@@ -3590,6 +3620,7 @@ expected_journal_hash
 expected_state_hash
 expected_replica_hosts
 expected_replica_set_hash
+desired_replica_set_hash  # same unless membership changes
 operation_id
 prepared_intent_hash
 first_successor_sequence
@@ -3606,7 +3637,7 @@ The proposed successor entry MUST be fully constructed before its claim is sent.
 Its entry hash binds the complete immutable transition, including its predecessor
 tuple, operation identity, prepared intent, changes, resulting state hash, and
 replica-set hash. A writer MUST NOT reuse one claim for different entry bytes,
-different resulting state, a different predecessor, or a different operation.
+different resulting state, a different predecessor, a different operation, or a different desired replica-set hash. For a membership-changing successor, only current replicas issue predecessor claims; the certificate also binds the desired replica-set hash and prospective readiness-receipt root.
 
 #### Replica-local atomic reservation rule
 
@@ -3632,6 +3663,8 @@ network_key
 owner_operation_id
 prepared_intent_hash
 expected_replica_set_hash
+desired_replica_set_hash
+enrollment_readiness_root: null or sha256
 current_predecessor:
   head_id
   head_epoch
@@ -3675,6 +3708,8 @@ expected_journal_sequence
 expected_journal_hash
 expected_state_hash
 expected_replica_set_hash
+desired_replica_set_hash
+enrollment_readiness_root: null or sha256
 operation_id
 prepared_intent_hash
 proposed_successor_sequence
@@ -3734,7 +3769,7 @@ leaves the durable record authoritative.
 
 #### Full-set certificate and first mutation boundary
 
-The writer attempts the claim against every exact expected replica. It enters
+The writer attempts the claim against every exact current replica. It enters
 `reserving-successor` while acquisition is in progress. If any replica rejects,
 times out, is unreachable, or returns an incompatible receipt, the operation
 enters `reservation-incomplete`.
@@ -3746,9 +3781,10 @@ certificate schema
 network and operation identity
 prepared_intent_hash
 exact expected head tuple
-exact expected replica hosts and replica-set hash
+exact current replica hosts and current replica-set hash
+desired replica-set hash and prospective readiness-receipt root
 exact proposed successor sequence, entry hash, and resulting-state hash
-one current durable receipt from every expected replica
+one current durable receipt from every current replica
 canonical receipt-set hash
 certificate hash
 ```
@@ -3779,9 +3815,10 @@ Advancing from the active predecessor claim to accepted or committed successor
 evidence MUST NOT make the same certificate invalid for a lagging participant.
 The immutable claim, receipt, accepted-certificate record, and committed-head
 evidence MUST remain independently addressable after rollover. Every accepting
-replica MUST validate the complete participant set, canonical receipt-set hash,
-predecessor, successor, operation, intent, replica-set hash, and certificate
-hash against one of those two states for every participant.
+replica MUST validate the complete current-replica set, canonical receipt-set
+hash, predecessor, successor, operation, intent, current and desired replica-set
+hashes, readiness-receipt root, and certificate hash against one of those two
+states for every current participant.
 
 The controlling Mother MAY orchestrate transport, but a certificate document,
 receipt copy, or assertion labeled “full set” is not acceptance authority.
@@ -3802,7 +3839,7 @@ local head is not the certificate predecessor:
 a matching cancellation-prepare or cancellation-commit record exists:
   reject cancellation-prepared or reservation-cancelled
 
-local owner, intent, replica set, or claimed successor differs:
+local owner, intent, current/desired replica sets, readiness root, or claimed successor differs:
   reject certificate-not-locally-reserved
 
 identical accepted-certificate record exists:
@@ -3838,7 +3875,9 @@ cancellation or a different successor.
 
 The complete certificate for `pending-action-opened` is the first authoritative
 action of `do`. Mother MUST commit and replicate that exact certified transition
-to every expected replica before dispatching any live infrastructure mutation.
+to every current replica before dispatching live infrastructure mutation.
+For a prospective target, the exact pending-action generation and readiness
+receipt MUST also be present under its enrollment lock before host-local mutation.
 The successor reservation is not an ordinary rollback frame. The first
 rollback frame is armed only after the certified pending action is replicated
 and immediately before the first live mutating substep.
@@ -3859,7 +3898,8 @@ live infrastructure request:
   prepared_intent_hash
   active_writer_certificate_hash
   current head tuple
-  expected replica-set hash
+  current and desired replica-set hashes
+  enrollment-readiness root when membership changes
   step identity
 
 authoritative journal write:
@@ -3868,16 +3908,19 @@ authoritative journal write:
   successor_certificate_hash
   expected predecessor tuple
   proposed successor sequence, entry hash, and resulting-state hash
-  expected replica-set hash
+  current and desired replica-set hashes
+  enrollment-readiness root when membership changes
   transition identity
 ```
 
-The receiving host MUST verify that its current durable reservation state or
-immutable rollover history still proves the operation owner, current head, and
-applicable accepted or proposed claim. Mother MUST freshly revalidate the
-complete replica set before each authoritative journal transition and before
-dispatching each new mutating substep. A stale certificate MUST NOT authorize
-work merely because it was complete earlier.
+A current replica MUST verify that its durable reservation state or immutable
+rollover history proves the operation owner, current head, and applicable claim.
+A prospective host instead verifies the exact enrollment lock, readiness
+receipt, staged generation, current-set writer certificate, and prepared step.
+Mother MUST freshly revalidate every current replica and affected prospective
+enrollment before each authoritative journal transition and new mutating substep.
+A stale certificate or readiness receipt MUST NOT authorize work merely because
+it was complete earlier.
 
 #### One exact successor per journal head
 
@@ -4299,8 +4342,7 @@ local durable record corruption:
 There is no automatic winner and no wall-clock expiration. A replacement Mother
 can resume the same reservation only by presenting the same operation ID,
 prepared-intent hash, and exact claimed successor and by revalidating every
-expected replica. Different authority, lineage selection, replica-set change, or
-bootstrap remains an explicit recovery/reseal or `MOTHER-OPEN-017` operation.
+expected replica. Different authority or lineage selection remains an explicit recovery/reseal operation. Replica-set change and true network birth follow `MOTHER-DESIGN-028` and MUST NOT be synthesized by ordinary reservation recovery.
 
 
 ### Finalization resynchronization and full-set acknowledgement
@@ -4341,19 +4383,25 @@ post-commit exclusion reseal supersedes that set.
 
 #### Frozen transition participants
 
-For an established network, operation `prep` MUST freeze:
+For every operation, `prep` MUST freeze:
 
 ```text
 transition_participants
 transition_participants_hash
 ```
 
-`transition_participants` is exactly the sealed `replica_hosts` set and
-`transition_participants_hash` is its canonical hash at the operation's prepared
-prestate. The set MUST NOT be recomputed from the desired topology, the
-post-finalization topology, discovery results, reachability, response order, or
-a later seal. `MOTHER-OPEN-017` defines how a prospective host can become part of
-a future transition participant set.
+For an operation that does not change replica membership,
+`transition_participants` is exactly the sealed current replica set. For an
+enrollment or de-enrollment transition, it is the canonical union of current
+and prospective hosts; retiring replicas are already current participants.
+Only current replicas authorize the predecessor successor certificate.
+Prospective hosts stage and acknowledge under `MOTHER-DESIGN-028`.
+
+The set and hash MUST NOT be recomputed from validator topology, the
+post-finalization replica topology, discovery, reachability, response order, or
+a later seal. Every frozen transition participant MUST acknowledge the
+authoritative local finalization head before activation, retirement, and
+terminal release complete.
 
 The action-journal `finalization-prepared` record MUST bind at least:
 
@@ -4361,8 +4409,12 @@ The action-journal `finalization-prepared` record MUST bind at least:
 operation_id
 prepared_intent_hash
 exact pending network-journal head
-transition_participants
-transition_participants_hash
+current_replica_hosts and current_replica_set_hash
+prospective_replica_hosts and prospective_replica_set_hash
+transition_participants and transition_participants_hash
+desired_replica_hosts and desired_replica_set_hash
+retiring_replica_hosts
+enrollment-readiness receipt root
 expected pending-action-finalized successor sequence
 finalization transition intent hash
 exact resulting state hash
@@ -4386,8 +4438,9 @@ explicit recovery or reseal operation and MUST NOT be hidden inside `finalize`.
 #### Irreversible local-head boundary and replica lag
 
 After `finalization-certified` is durable, the active local head MUST freshly
-validate the complete full-set successor certificate, the exact predecessor, the
-frozen participant-set hash, and the exact proposed successor bytes. It then
+validate the complete current-replica successor certificate, the exact
+predecessor, all frozen membership-set hashes, the prospective readiness-receipt
+root, and the exact proposed successor bytes. It then
 commits the finalization transition under the ordinary atomic filesystem
 journal contract:
 
@@ -4451,24 +4504,22 @@ Rerunning `mother <kind> finalize <network>` for
 3. prove that the local head is the exact certified
    `pending-action-finalized` successor and that its resulting-state hash and
    complete recovery-closure root match;
-4. query every frozen participant for its journal head, replayed state hash,
-   accepted-certificate record, immutable predecessor claim/receipt history,
-   successor-rollover state, acknowledgement, and release state;
-5. identify only replicas that lag the exact authoritative local head; Mother
-   MUST NOT elect a different head or use majority choice;
-6. independently validate every participant using the monotonic
-   active-claim-or-accepted/committed rule in `MOTHER-DESIGN-026`;
-7. transfer every missing immutable journal entry, checkpoint, private-state
-   object, rollback/action reference, and transitive recovery object required to
-   replay that exact local head;
-8. apply the exact certified successor to every lagging participant through
-   `MOTHER-DESIGN-026`;
-9. replay each participant through the resulting head and verify its complete
-   resulting-state hash and recovery-closure root;
-10. verify successor rollover retains the same operation owner with
-    `claimed_successor: null`;
-11. collect or refresh durable acknowledgement only after all local durability
-    and replay conditions pass.
+4. query every frozen participant for its role, journal head, replayed state
+   hash, acknowledgement, and terminal state; for current replicas also retrieve
+   certificate/claim/rollover evidence, and for prospective hosts retrieve the
+   enrollment lock, readiness receipt, and staged-generation identity;
+5. identify only participants that lag the exact authoritative local head;
+6. validate current replicas through the monotonic rule in
+   `MOTHER-DESIGN-026` and prospective hosts through the exact readiness receipt
+   and enrollment lock in `MOTHER-DESIGN-028`;
+7. transfer every missing immutable object required to replay the exact local
+   head;
+8. apply the exact certified successor to lagging current replicas and install
+   the exact committed final head into each prospective enrollment generation;
+9. replay and verify every participant;
+10. verify current-replica rollover retains the owner with a null claim and
+    prospective hosts retain their exact enrollment evidence pending activation;
+11. collect durable acknowledgement only after all role-specific checks pass.
 
 This procedure is not `sync-state`. `sync-state` adopts a generation only after
 the existing replicas already agree unanimously. Finalization retry replicates
@@ -4485,19 +4536,21 @@ journal at a conceptual path such as:
 /runtime/state/mother/networks/<network>/finalization-acknowledgements/<operation-id>/<participant-id>.json
 ```
 
-A participant MUST NOT acknowledge until it has:
+A participant MUST NOT acknowledge until it has persisted and fsynced the exact
+terminal head, replayed it, verified the resulting-state hash and immutable
+recovery closure, and satisfied its role-specific condition:
 
 ```text
-persisted and fsynced the exact successor certificate
-persisted and fsynced the exact journal entry
-atomically replaced and durably flushed the journal-head pointer
-fsynced all relevant parent-directory metadata
-replayed successfully through the exact terminal head
-verified the complete resulting-state hash
-verified every referenced immutable object and transitive recovery-closure object
-completed successor rollover
-retained owner_operation_id for the operation
-recorded claimed_successor as null
+current replica retained or retiring:
+  persist the successor certificate
+  complete successor rollover
+  retain owner_operation_id
+  record claimed_successor as null
+
+prospective replica:
+  retain the exact enrollment lock and immutable readiness receipt
+  prove the terminal head names the prepared desired replica set
+  do not advertise ordinary predecessor authority
 ```
 
 The acknowledgement binds at least:
@@ -4513,8 +4566,10 @@ terminal journal sequence and entry hash
 terminal resulting-state hash
 finalization successor-certificate hash
 recovery-closure root
-owner_operation_id
-claimed_successor: null
+participant_role: current-retained | current-retiring | prospective
+owner_operation_id or enrollment_lock_id
+claimed_successor: null for current replicas
+enrollment_readiness_receipt_hash for prospective replicas
 acknowledgement ID and hash
 ```
 
@@ -4546,21 +4601,26 @@ authoritative topology remains the original certified
 
 #### Terminal release after acknowledgement
 
-A finalization release request MUST carry the exact full-set acknowledgement
-certificate. Each frozen participant independently retrieves and validates every
-acknowledgement before applying terminal `release`. It MUST also verify:
+A terminal-completion request MUST carry the exact full-set acknowledgement
+certificate. Each participant independently validates it and applies one
+idempotent role-specific transition:
 
 ```text
-its local head is the exact acknowledged terminal head
-its replayed resulting-state hash matches
-its accepted certificate and rollover history match the finalization certificate
-the same operation still owns the reservation or an identical release exists
-claimed_successor is null
+current replica retained:
+  verify exact head, certificate, rollover, owner, and null claim
+  release the operation reservation and remain active
+
+current replica retiring:
+  verify the same evidence
+  release the reservation and write replica-retired
+
+prospective replica:
+  verify exact head, readiness receipt, staged generation, and enrollment lock
+  write replica-activated and replace the lock with ordinary replica state
 ```
 
-Release is idempotent and uses the replica-local transition in
-`MOTHER-DESIGN-026`. A participant that has already released returns its exact
-durable release record.
+An already completed participant returns the same durable release, retirement,
+or activation record.
 
 While release is incomplete:
 
@@ -4569,16 +4629,16 @@ operation state remains finalized-replication-pending
 active_writer_operation_id remains logically owned by the operation
 all operation scopes remain owned
 ordinary mutation remains blocked
-the exact release is retried on lagging participants
+the exact role-specific terminal transition is retried on lagging participants
 ```
 
-A locally completed release does not authorize a new writer because no new
-operation can obtain a full-set reservation while any participant or operation
-scope still records the prior terminal release as incomplete.
+A locally completed release, activation, or retirement does not authorize a new
+writer because no new operation can obtain a full-set reservation while any
+participant or operation scope records terminal completion as incomplete.
 
 Mother MUST NOT perform the following terminal actions before it freshly
-retrieves and verifies the exact release record from every frozen participant.
-After that proof, Mother MAY:
+retrieves and verifies the exact role-specific terminal record from every
+frozen participant. After that proof, Mother MAY:
 
 ```text
 enter finalized
@@ -4588,9 +4648,10 @@ clear current-operation pointers
 report finalization complete
 ```
 
-Acknowledgement and release records remain immutable operational evidence outside
-the network journal. Their completion changes operation and reservation
-lifecycle state; it does not create a new topology head.
+Acknowledgement, release, activation, and retirement records remain immutable
+operational evidence outside the network journal. Their completion changes
+operation, reservation, and membership lifecycle state; it does not create a
+new topology head.
 
 #### Unavailable-participant exclusion reseal
 
@@ -4653,6 +4714,9 @@ crash before and after each terminal release
 partial release with a later retry
 unavailable participant before the local finalization commit
 unavailable participant after the authoritative local commit
+prospective host acknowledged but not yet activated
+retiring host acknowledged but not yet retired
+membership-changing finalization with current-only predecessor certification
 exclusion reseal preserving rollback closure and incrementing head_epoch
 delayed old-epoch mutation after exclusion reseal
 ```
@@ -4661,50 +4725,324 @@ Each test MUST preserve one exact finalization successor, permanent rollback
 closure after its atomic active-local-head commit, and fail-closed behavior when
 the local authority or exact replica evidence cannot be proven.
 
-### Remaining open design nodes
+### Replica enrollment, de-enrollment, zero-validator continuity, and network birth
 
-`MOTHER-OPEN-017: zero-network-and-prospective-replica-bootstrap`
+`MOTHER-DESIGN-028: staged-replica-membership-and-zero-network-bootstrap`
 
-The document still needs the explicit enrollment transaction for a host that is
-not yet a replica and for a network with no current validators. It MUST define:
+`MOTHER-OPEN-017: zero-network-and-prospective-replica-bootstrap` is resolved.
+Replica membership is a control-plane authority fact independent of validator
+and node membership. Existing replicas authorize changes from the predecessor
+state, prospective replicas stage and acknowledge without receiving premature
+authority, and the active local head is the only writer that commits a changed
+replica set.
+
+The following invariants are normative:
+
+```text
+Removing a host's last validator node does not remove the host from the Mother replica set.
+A zero-validator network retains its birth identity, genesis, lineage, private state, recovery closure, and replica set.
+A prospective host has no ordinary predecessor authority before local membership finalization.
+A membership-changing successor is authorized by current replicas and binds current and desired replica-set hashes.
+No next ordinary mutation begins until transition acknowledgement and terminal completion.
+Only a network with no committed birth record can use the synthetic-predecessor bootstrap path.
+```
+
+#### Frozen membership sets
+
+Every operation that can change replica membership MUST freeze:
 
 ```text
 current_replica_hosts
+current_replica_set_hash
 prospective_replica_hosts
+prospective_replica_set_hash
 transition_participants
+transition_participants_hash
 desired_replica_hosts
+desired_replica_set_hash
+retiring_replica_hosts = current_replica_hosts - desired_replica_hosts
 ```
 
-and govern initial state/private-recovery transfer, first-node bootstrap, adding
-the first node on a new host, removing the last node from a host, intentional
-removal of the final validator, preservation of network identity at zero
-validators, rollback, and the exact point at which a prospective host becomes a
-required replica.
+`current_replica_hosts` is exactly the predecessor seal's `replica_hosts`.
+`prospective_replica_hosts` contains new hosts that stage and verify but do not
+authorize that predecessor. `transition_participants` is the canonical union of
+current and prospective hosts. `desired_replica_hosts` is written by the
+authoritative local finalization successor. These sets and hashes are frozen
+intent and MUST NOT be recalculated from discovery, reachability, validator
+presence, response order, or partial progress.
 
-The sealed-state format, crash and ambiguous-step recovery model, typed guard
-prestate contract, evidence-backed full-guard assertion contract, durable
-filesystem journal and locking model, integrated distributed route/topology
-lifecycle, provisional-frame remediation lifecycle, replicated
-pending-versus-finalized network-state model, guard-mediated reversible QBFT
-membership contract, Coolify-API-key local-control boundary, governance-office
-assertion contract, reusable bounded call-runner contract, complete private-state
-replication policy, fail-closed schema/capability contract, replacement-head
-recovery architecture, local-generation adoption/head-fenced projection repair,
-full-set writer fencing, and finalization resynchronization are otherwise
-design-resolved. `MOTHER-DESIGN-024` requires complete transitive
-recovery-object closure before activation, `MOTHER-DESIGN-025` defines local
-state adoption and projection maintenance, `MOTHER-DESIGN-026` defines
-fail-closed full-set writer fencing, exact single-successor certification,
-successor rollover, monotonic retry evidence, two-phase cancellation, and
-terminal release, and `MOTHER-DESIGN-027` defines deterministic certified
-finalization completion, external full-set acknowledgement, and terminal
-release.
+Adding a node to an existing replica host needs no enrollment. Adding the first
+managed node to a host outside the current set makes it prospective unless a
+separate prepared enrollment already covers it.
 
-Exact wire-field names, ABI adapters, schema validators, capability registries,
-and migration implementations remain implementation acceptance work. They MUST
-preserve the resolved contracts and MUST NOT invent a different authority,
-quorum, or recovery model.
+The authority boundary is:
 
+```text
+before local finalization:
+  current replicas authorize predecessor successors
+  prospective hosts have staging and acknowledgement duties only
+  the authoritative seal still names current replicas
+
+after atomic local finalization:
+  desired replicas are the committed topology
+  rollback is closed
+  all transition participants still owe completion
+  ordinary mutation remains blocked
+
+after full acknowledgement and terminal completion:
+  desired replicas become current replicas for the next operation
+  enrolled hosts become operational replicas
+  retiring hosts become stale excluded replicas
+```
+
+#### Prospective-host enrollment
+
+`prep` MUST run the ordinary full barrier against every current replica and
+separately prove each prospective host is reachable, capability-compatible,
+free of foreign operations and locks, and has an empty or explicitly replaceable
+network namespace.
+
+`do` MUST acquire a durable no-expiry enrollment lock before copying private
+material. Mother transfers one complete immutable staging generation containing
+the journal/checkpoint lineage, complete current and pending network state,
+private state, private-recovery manifest, transitive recovery closure, network
+birth identity, genesis, chain identity, and required operation and rollback
+objects.
+
+The prospective host verifies every object hash, schema, replay result,
+private-state reference, identity, and frozen membership hash, then writes an
+immutable `enrollment-readiness` receipt binding at least:
+
+```text
+operation_id
+prepared_intent_hash
+host_identity
+current_replica_set_hash
+prospective_replica_set_hash
+transition_participants_hash
+desired_replica_set_hash
+staged_generation_id and manifest hash
+journal head tuple and replayed state hash
+private-state generation and hash
+recovery-closure manifest hash
+enrollment_lock_id
+receipt_hash
+```
+
+An enrollment-ready host MUST reject ordinary predecessor successor claims and
+MUST NOT advertise itself as active. The current replicas remain the only
+issuers of each ordinary `MOTHER-DESIGN-026` certificate. A
+membership-changing certificate MUST bind the current and desired replica-set
+hashes plus the canonical root of all prospective readiness receipts.
+
+The prospective host can perform prepared host-local node work under its
+enrollment lock, but the receipt grants transition duties only.
+
+#### Membership finalization and terminal activation
+
+The exact `pending-action-finalized` successor MUST include all frozen membership
+sets and write `replica_hosts = desired_replica_hosts`. The active local head
+commits it under `MOTHER-DESIGN-027`; that atomic replacement is the only
+membership authority boundary.
+
+Mother then pushes the exact committed head and closure to every transition
+participant. The full-set acknowledgement certificate authorizes idempotent
+terminal transitions:
+
+```text
+retained current host:
+  release the operation reservation and remain active
+
+prospective host included in desired:
+  prove staged generation and final head
+  write replica-activated
+  replace enrollment lock with ordinary replica state
+
+current host excluded from desired:
+  acknowledge the excluding head
+  release the old reservation
+  write replica-retired
+  preserve history and mark the namespace stale
+```
+
+Partial activation, retirement, or release leaves
+`finalized-replication-pending`, retains all scopes, and blocks new mutation. A
+host MUST NOT infer operational membership merely because the desired set names
+it before global completion.
+
+If a transition participant cannot complete after local finalization, the
+explicit finalization-completion exclusion reseal starts from that exact head,
+never reopens rollback, increments `head_epoch`, and records the host stale and
+excluded.
+
+#### Replica removal is separate from node removal
+
+Removing a host's last node or validator MUST NOT implicitly remove the host
+from the replica set. Explicit de-enrollment is a separate membership-changing
+operation, normally `reseal-state --exclude-host`. The retiring host remains a
+current predecessor authority and transition participant until it acknowledges
+the final head, releases its reservation, and records retirement. It MUST NOT
+automatically rejoin later.
+
+An unreachable host uses the documented exclusion-reseal path. If a host is
+compromised or no longer trusted after receiving private material, every
+affected identity or secret whose confidentiality cannot be proven MUST be
+rotated; de-enrollment cannot erase previously copied bytes.
+
+#### Zero-validator continuity and reactivation
+
+Removing the final validator requires explicit prepared authorization such as
+`--allow-zero-validators`. Finalization preserves the network birth identity,
+genesis, journal lineage, private state, recovery closure, and replica set while
+committing an empty validator topology.
+
+The last-validator removal plan MUST NOT require post-removal block progress.
+It MUST instead prove the exact empty validator set, prepared runtime and route
+state, preserved identity, and complete replica replay agreement.
+
+`initial` and `reactivate` are distinct:
+
+```text
+initial:
+  no committed network-birth record exists
+  use true bootstrap
+
+reactivate:
+  the network is born but has zero validators
+  reuse identity, genesis, lineage, private state, and replica set
+  never generate another first genesis
+```
+
+Reactivation on a new host composes prospective enrollment with `reactivate`; it
+is not another birth.
+
+#### True zero-replica network birth
+
+Bootstrap is allowed only when no birth record, seal, or network journal head
+exists; `current_replica_hosts` is empty; the active local head owns the
+bootstrap scope; and the desired initial replica set is explicit and non-empty.
+
+The local head writes immutable independently addressable bootstrap metadata
+binding:
+
+```text
+network_birth_id and network key
+bootstrap authority head ID and epoch
+bootstrap operation and prepared-intent hash
+network identity, genesis hash, and initial private-state hash
+initial recovery-closure root
+desired initial replica set and hash
+synthetic predecessor network-unborn:<network_birth_id>
+exact first journal entry and resulting state hash
+post-birth successor_authority_replica_hosts and hash
+```
+
+Every desired initial host atomically reserves that synthetic predecessor,
+receives and verifies the complete initial staging generation, and writes an
+immutable bootstrap-readiness receipt. A host accepts at most one exact birth
+record for that network namespace. Partial or split reservations authorize
+nothing and do not expire automatically.
+
+Mother constructs a full-set bootstrap certificate only after freshly
+retrieving every exact reservation and readiness receipt. The certificate binds
+the synthetic predecessor, birth record, operation, desired initial set,
+genesis, private state, closure root, and exact first journal entry. Every host
+and the local head independently validate the complete certificate.
+
+The active local head atomically commits the exact first journal head. It is a
+birth-plus-pending-action transition that establishes the network identity,
+genesis, initial replica set, and active operation; it does not silently
+finalize node lifecycle.
+
+```text
+before first local-head commit:
+  cancel bootstrap reservations and staging
+  restore captured bootstrap infrastructure prestate
+  network remains unborn
+
+after first local-head commit:
+  network identity and genesis permanently exist
+  desired initial hosts are the committed current replica set
+  ordinary MOTHER-DESIGN-026 governs later successors
+  the node operation remains rollback-capable until ordinary finalization
+```
+
+Remote application of the first head MUST follow the local commit and complete
+on every initial host before any live validator, routing, Hub/FDB, or service
+mutation. Each host rolls its bootstrap reservation into the ordinary operation
+owner for the committed first head. Mother then durably records
+`bootstrap-authority-rolled-over`: the immutable prepared bootstrap prestate
+continues to show `current_replica_hosts: []`, while every later successor of the
+born head uses the exact committed initial replica set as
+`successor_authority_replica_hosts`. This is a deterministic consequence of the
+birth head, not reinterpretation of operator intent.
+
+Failure afterward is recovered as an established-network pending action. Full
+rollback can return the born network to zero validators and no deployed node,
+but MUST preserve birth identity, genesis, private state, lineage, and replica
+set.
+
+#### Rollback, durable records, and APIs
+
+Before membership finalization, rollback restores host-local prestates, discards
+unpublished staging where possible, writes immutable rollback evidence, releases
+enrollment locks only after verification, and leaves the current replica set
+unchanged. After local membership finalization, enrollment rollback is closed;
+recovery drives participants forward or uses post-commit exclusion reseal.
+
+Rollback cannot prove a remote host forgot private material. Loss of trust after
+private-state transfer requires explicit identity rotation.
+
+Enrollment and bootstrap evidence MUST remain outside swappable generations.
+Conceptual durable paths include:
+
+```text
+/runtime/state/mother/networks/<network>/enrollments/<operation-id>/
+/runtime/state/mother/network-birth/<network-birth-id>/
+```
+
+Conceptual APIs include:
+
+```text
+GET  /v1/networks/<network>/membership
+GET  /v1/internal/networks/<network>/enrollment/<operation-id>
+POST /v1/internal/networks/<network>/enrollment/stage
+POST /v1/internal/networks/<network>/enrollment/readiness
+POST /v1/internal/networks/<network>/enrollment/activate
+POST /v1/internal/networks/<network>/enrollment/retire
+POST /v1/internal/networks/<network>/enrollment/rollback
+POST /v1/internal/network-birth/reservations/claim
+POST /v1/internal/network-birth/reservations/cancel
+POST /v1/internal/network-birth/readiness
+GET  /v1/internal/network-birth/<network-birth-id>/status
+```
+
+Every mutation endpoint is idempotent for identical bytes and rejects an
+idempotency key reused with different bytes. Activation and retirement require
+the full-set acknowledgement certificate. Bootstrap claim and cancellation use
+the same fail-closed durable no-expiry principles as `MOTHER-DESIGN-026`.
+
+#### Required tests
+
+Tests MUST cover established-host add, prospective-host add, failure before and
+after private transfer, rollback before local membership finalization, crashes
+around readiness and local finalization, partial activation and retirement,
+last-node removal retaining replica membership, explicit retirement,
+unreachable and compromised exclusion, unauthorized and authorized final-
+validator removal, zero-validator reactivation without genesis change,
+rejection of `initial` for a born network, competing bootstrap splits, failure
+and crashes around first-head commit, first-head replication failure, rollback
+after birth preserving identity, delayed requests after cancellation, and the
+identity-rotation warning after untrusted private-state exposure.
+
+### Remaining open design nodes
+
+There are no unresolved numbered architectural design nodes.
+`MOTHER-OPEN-001` through `MOTHER-OPEN-018` remain permanent historical
+identifiers for resolved decisions. Implementation conformance, wire schemas,
+adapters, migrations, and executed tests remain acceptance work and MUST NOT
+introduce a different authority, quorum, enrollment, bootstrap, or recovery
+model.
 
 ## Namespace
 
@@ -4746,6 +5084,9 @@ tools/mother/
     checkpoints.py
     locks.py
     successor_reservations.py
+    replica_membership.py
+    enrollment.py
+    network_birth.py
     planning.py
     reporting.py
     rollback_stack.py
@@ -4779,12 +5120,12 @@ python tools/mother/mother.py reseal-state prep mainnet --from-finalization-head
 python tools/mother/mother.py reseal-state do mainnet
 python tools/mother/mother.py reseal-state finalize mainnet
 
-# A recovered host is refreshed and explicitly re-included; it never self-rejoins.
+# A recovered or new host is staged as prospective and explicitly included; it never self-rejoins.
 python tools/mother/mother.py reseal-state prep mainnet --include-host coolify-b --reason "host recovered"
 python tools/mother/mother.py reseal-state do mainnet
 python tools/mother/mother.py reseal-state finalize mainnet
 
-# Complete distributed node lifecycle.
+# Complete distributed node lifecycle. A new host is enrolled inside the same action.
 python tools/mother/mother.py add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
 python tools/mother/mother.py add-node do mainnet
 python tools/mother/mother.py add-node finalize mainnet
@@ -4792,6 +5133,12 @@ python tools/mother/mother.py add-node finalize mainnet
 python tools/mother/mother.py remove-node prep mainnet --node mainneta-super1 --mode soft
 python tools/mother/mother.py remove-node do mainnet
 python tools/mother/mother.py remove-node finalize mainnet
+
+# Intentional zero-validator state preserves identity, genesis, lineage, and replicas.
+python tools/mother/mother.py remove-node prep mainnet --node mainneta-super1 --mode soft --allow-zero-validators
+
+# Reactivation reuses the existing birth record and genesis.
+python tools/mother/mother.py add-node prep mainnet --node mainneta-super1 --host coolify-a --mode reactivate
 
 # Remediation and rollback. Mother resolves the active operation from the control surface.
 python tools/mother/mother.py add-node do mainnet                  # retry/resume
@@ -5058,7 +5405,18 @@ GET  /v1/state-root
 GET  /v1/diagnose/<network>
 GET  /v1/networks/<network>/seal
 GET  /v1/networks/<network>/replicas
+GET  /v1/networks/<network>/membership
 GET  /v1/networks/<network>/successor-reservations
+GET  /v1/internal/networks/<network>/enrollment/<operation-id>
+POST /v1/internal/networks/<network>/enrollment/stage
+POST /v1/internal/networks/<network>/enrollment/readiness
+POST /v1/internal/networks/<network>/enrollment/activate
+POST /v1/internal/networks/<network>/enrollment/retire
+POST /v1/internal/networks/<network>/enrollment/rollback
+POST /v1/internal/network-birth/reservations/claim
+POST /v1/internal/network-birth/reservations/cancel
+POST /v1/internal/network-birth/readiness
+GET  /v1/internal/network-birth/<network-birth-id>/status
 POST /v1/internal/networks/<network>/successor-reservations/claim
 POST /v1/internal/networks/<network>/successor-reservations/apply-certified-successor
 POST /v1/internal/networks/<network>/successor-reservations/cancel-prepare
@@ -5138,6 +5496,24 @@ The internal successor-reservation endpoints have fixed roles:
 - finalization `acknowledgements` exposes independently retrievable immutable
   acknowledgements so each release recipient can validate the complete frozen
   participant set.
+
+The membership and bootstrap endpoints have fixed roles:
+
+- membership `GET` returns current, prospective, transition, desired, and
+  retiring sets plus terminal progress;
+- enrollment `stage` acquires or replays the durable prospective-host lock and
+  stores the complete immutable staging generation without granting predecessor
+  authority;
+- enrollment `readiness` writes or replays the exact verified receipt;
+- enrollment `activate` and `retire` require the full-set finalization
+  acknowledgement certificate;
+- enrollment `rollback` is available only before local membership finalization
+  and MUST NOT claim that copied private material was forgotten;
+- network-birth `claim` atomically reserves one birth record against the
+  synthetic predecessor; `cancel` cancels only an uncommitted reservation;
+- network-birth `readiness` proves the complete initial generation and recovery
+  closure; status exposes every reservation/readiness record and the first-head
+  commit boundary.
 
 `repair-projections` is non-authoritative, local-only, atomic, idempotent
 maintenance and is explicitly exempt from the general `prep`/`do`/`finalize`
@@ -5445,9 +5821,10 @@ This staged-authority boundary is the most important Mother boundary.
   operation, and rollback verification contract for every step that `do` can
   perform;
 - acquire logical ownership of every affected scope;
-- for an established network, freeze `transition_participants` as the exact
-  sealed expected replica set and freeze its canonical
-  `transition_participants_hash`;
+- freeze current, prospective, transition, desired, and retiring replica sets
+  and hashes under `MOTHER-DESIGN-028`; when membership is unchanged, current,
+  transition, and desired equal the sealed replica set and the other sets are
+  empty;
 - write an immutable prepared operation record;
 - print the plan, risks, affected scopes, required confirmations, and rollback
   behavior.
@@ -5476,10 +5853,11 @@ ledger and lock records.
 
 - load the prepared operation by operation ID;
 - confirm the operation is still active for its declared scopes;
-- freshly revalidate the frozen expected head, expected replica set, and full
-  clean-state barrier;
-- acquire or resume the same durable operation reservation on every expected
-  replica and persist the exact full-set certificate;
+- freshly revalidate the frozen expected head, current replica set,
+  current-replica barrier, and any prospective readiness barrier;
+- acquire or resume the same durable operation reservation on every current
+  replica and persist the exact full-set certificate; true birth instead obtains
+  the bootstrap certificate from every desired initial host;
 - commit and fully replicate the certified `pending-action-opened` successor
   before dispatching any live infrastructure mutation;
 - refuse if the live state has drifted beyond the prepared preconditions unless
@@ -5547,16 +5925,17 @@ nor a recognized partial/desired state can be proven, retry MUST be refused.
 - verify that all mutation checkpoints are complete;
 - verify that no armed provisional frame remains unresolved;
 - verify that the desired state matches the actual state;
-- verify the `transition_participants` and
-  `transition_participants_hash` frozen by `prep`;
+- verify all frozen current, prospective, transition, desired, and retiring
+  membership sets and hashes;
 - append a `frame-close-prepared` record for every promoted active rollback frame
   to the immutable rollback journal;
 - verify those rollback-journal records are durable;
 - commit `finalization-prepared` in the action journal with exact rollback,
   pending-network-state, frozen-participant, immutable-closure,
   finalization-transition-intent, and expected-resulting-state references;
-- construct and obtain a full-set exact-successor certificate for
-  `pending-action-finalized`;
+- construct and obtain a current-replica full-set exact-successor certificate
+  for `pending-action-finalized`, binding current and desired replica-set hashes
+  and the prospective readiness-receipt root when membership changes;
 - commit `finalization-certified` in the action journal with the exact
   certificate, successor, prepared-finalization, and frozen-participant hashes;
 - freshly validate the complete certificate, local predecessor, frozen
@@ -5567,8 +5946,9 @@ nor a recognized partial/desired state can be proven, retry MUST be refused.
   boundary, immediately close rollback, and enter
   `finalized-replication-pending`;
 - begin remote replication only after the local commit, applying the exact
-  authoritative local transition to every frozen participant through
-  `MOTHER-DESIGN-026`;
+  authoritative local transition to every frozen transition participant through
+  ordinary successor application for current replicas and enrollment activation
+  for prospective replicas;
 - on exact retry, replay the authoritative local head and resynchronize every
   lagging participant to that same certified finalization head;
 - transfer and verify every immutable object required to replay that head;
@@ -6029,20 +6409,32 @@ phases of `add-node` and `remove-node`.
   leaves the complete distributed action rollback-capable until the documented irreversible commit point.
 - `remove-node` withdraws Hub/FDB topology and RPC routing, removes validator
   membership, detaches/removes the service, and leaves the complete distributed
-  action rollback-capable until the documented irreversible commit point.
+  action rollback-capable until the documented irreversible commit point. It
+  does not de-enroll the host unless an explicit replica-membership change was
+  prepared.
 - `reseal-qbft` repairs the entire selected QBFT topology in place and is not an
   ordinary node lifecycle command.
 
-Mother supports three topology-change modes. The operator's primary node command
+Mother supports four topology-change modes. The operator's primary node command
 MUST choose or imply the mode during `prep`; `do` MUST NOT switch modes.
 
 Initial topology change:
 
 ```text
-Used only by add-node when committed chain topology is empty.
+Used only when no committed network-birth record exists.
+Runs the synthetic-predecessor bootstrap in MOTHER-DESIGN-028.
 Installs Mother-owned first-genesis material from /runtime/state/mother/identity.private.yaml.
 Starts the first validator from the reserved identity.
 No live QBFT vote exists because there are no prior validators.
+```
+
+Reactivation topology change:
+
+```text
+Used only when the network is already born and its finalized validator set is empty.
+Reuses the preserved identity, genesis, private state, lineage, and replica set.
+Starts a reserved validator without generating a new genesis.
+No live QBFT vote exists because there are no current validators.
 ```
 
 Soft topology change:
@@ -6063,7 +6455,8 @@ Validators are restarted and agreement is verified.
 ```
 
 Soft mode is for healthy consensus. Hard mode is for explicit maintenance or
-drift repair. Initial mode is for the first node in an empty topology. A hard
+drift repair. Initial mode is only for an unborn network; reactivation is for a
+born zero-validator network. A hard
 topology phase is not service deployment. It MAY stop and restart validator
 subprocesses, but it MUST NOT delete/recreate unrelated Coolify services, rebuild
 images, or replace compose.
@@ -6182,12 +6575,61 @@ A failed or split reservation acquisition maps to `reservation-incomplete`
 before any live mutation. A failed or unverified live step maps to
 `remediation-required`; its frame remains provisional until it is successfully
 verified and promoted or its prestate is restored and the frame is closed.
-Read-only diagnosis is always allowed and MUST show the per-replica reservation
-owner and claim distribution, certificate status, cancellation prepare,
-commit, abort, and tombstone state, frozen finalization participants, exact
+Read-only diagnosis is always allowed and MUST show the frozen membership sets;
+enrollment/bootstrap locks, readiness, activation, retirement, and rollback
+evidence; per-replica reservation owner and claim distribution; certificate
+status; cancellation prepare, commit, abort, and tombstone state; frozen
+finalization participants; exact
 finalization head status, accepted/committed evidence, acknowledgement and
 release state, provisional layer, promoted stack, participant evidence,
 pop-able range, and exact allowed commands.
+
+Membership-changing operations also use this normative participant-local state
+machine:
+
+```text
+prospective-unenrolled:
+  no enrollment lock and no replica authority
+
+enrollment-staging:
+  durable lock held; transfer or verification incomplete
+
+enrollment-ready:
+  immutable readiness receipt durable; no predecessor authority
+
+enrollment-finalization-pending:
+  local membership finalization committed; acknowledgement or activation incomplete
+
+replica-active:
+  terminal enrollment state after full-set acknowledgement and activation
+
+enrollment-rolling-back:
+  pre-finalization cleanup and prestate restoration in progress
+
+enrollment-rolled-back:
+  terminal pre-finalization rollback; current replica set unchanged
+
+replica-retirement-pending:
+  excluding local finalization committed; acknowledgement or retirement incomplete
+
+replica-retired:
+  terminal stale excluded state with immutable history retained
+
+network-unborn:
+  no committed birth record or journal head
+
+bootstrap-reserving:
+  synthetic-predecessor reservations/readiness incomplete
+
+bootstrap-ready:
+  full-set bootstrap certificate durable; first local head not committed
+
+network-born-pending-action:
+  first local head committed and replicated; ordinary operation ownership applies
+```
+
+Before the relevant local commit, enrollment or bootstrap can roll back. After
+that commit it can only complete forward or use explicit exclusion reseal.
 
 `sync-state` uses a separate normative local-adoption state machine because it
 does not create or finalize a network mutation:
@@ -6311,7 +6753,9 @@ Purpose:
 - recover when local state is stale but the network replicas agree;
 - create an explicit new seal when remote replicas disagree or the network is
   wedged;
-- push the chosen complete network-state seal to the replicas;
+- explicitly enroll or retire hosts when `--include-host` or `--exclude-host` is
+  prepared;
+- push the chosen complete network-state seal to all transition participants;
 - retain superseded conflicting seals for audit.
 
 Stage contract:
@@ -6331,6 +6775,9 @@ mother rollback mainnet
 - selected source of truth, if any;
 - live guard, topology, route, and service facts used to justify the reseal;
 - desired new topology epoch and state hash;
+- frozen current, prospective, transition, desired, and retiring replica sets
+  and hashes;
+- enrollment readiness or retirement evidence required by the plan;
 - exact replica files to write;
 - exact superseded seal markers to write;
 - rollback behavior for replicas that have already accepted the new seal.
@@ -6410,7 +6857,7 @@ Purpose:
 Stage contract:
 
 ```text
-mother add-node prep mainnet --node <service> --host <host> --mode initial|soft|hard
+mother add-node prep mainnet --node <service> --host <host> --mode initial|reactivate|soft|hard
 mother add-node do mainnet
 mother add-node finalize mainnet
 mother rollback mainnet
@@ -6418,7 +6865,10 @@ mother rollback mainnet
 
 `prep` MUST run the full-network clean-state barrier and record:
 
-- every expected Coolify host and network participant;
+- frozen current, prospective, transition, desired, and retiring replica sets
+  and hashes;
+- every current replica and execution participant;
+- any required enrollment or network-birth record;
 - current committed and observed service, validator, RPC, and Hub/FDB topology;
 - target service name, host, ports, and route reservations;
 - reserved validator identity;
@@ -6431,22 +6881,26 @@ mother rollback mainnet
 
 `do` performs only the prepared action:
 
-1. capture target service, identity, and runtime prestates;
-2. create/repair the service and establish a healthy private candidate;
-3. capture validator-membership prestates across the frozen voter/observer
-   manifest;
-4. perform the prepared initial, guard-mediated soft-vote, or hard change and
-   verify complete set agreement plus post-change block progress;
-5. capture and reconcile RPC routing on every affected host;
-6. capture and reconcile Hub/FDB topology on every affected node;
-7. run full guard verification and leave the action pending finalize.
+1. cross the current-replica barrier and any enrollment-readiness barrier;
+2. for true birth, obtain and commit the bootstrap first head; otherwise obtain
+   the current-replica pending-action certificate;
+3. verify prospective enrollment state when applicable;
+4. capture target service, identity, and runtime prestates;
+5. create/repair the service and establish a healthy private candidate;
+6. capture validator-membership prestates when validators exist;
+7. perform initial bootstrap, reactivation, soft-vote, or hard change and verify
+   the applicable desired-set and block assertions;
+8. capture and reconcile RPC routing on every affected host;
+9. capture and reconcile Hub/FDB topology on every affected node;
+10. run full guard and membership verification and leave the action pending
+    finalize.
 
 Forbidden:
 
 - inventing validator identity at runtime;
 - publishing RPC before validator admission is proven;
 - applying Hub/FDB topology before RPC reconciliation succeeds;
-- beginning while any expected host has unresolved work;
+- beginning while any current replica or prospective transition host has unresolved work;
 - treating a majority response as full-network success;
 - creating a separate hidden topology operation;
 - considering `vote-requested` to be success.
@@ -6454,6 +6908,8 @@ Forbidden:
 `finalize` MUST freshly prove:
 
 - service and identity match the prepared target;
+- any prospective host has the exact staged generation, readiness receipt, and
+  enrollment lock frozen by `prep`;
 - all validators report the desired effective validator set;
 - block production progresses;
 - each affected RPC host matches the desired owned route graph;
@@ -6476,7 +6932,7 @@ Purpose:
 Stage contract:
 
 ```text
-mother remove-node prep mainnet --node <service> --mode soft|hard
+mother remove-node prep mainnet --node <service> --mode soft|hard [--allow-zero-validators]
 mother remove-node do mainnet
 mother remove-node finalize mainnet
 mother rollback mainnet
@@ -6490,6 +6946,9 @@ mother rollback mainnet
 - current and desired RPC route graphs;
 - current and desired Hub/FDB topology;
 - selected mode and final service policy;
+- explicit final-validator authorization when the desired set is empty;
+- confirmation that host replica membership is unchanged unless a separate
+  membership transition is prepared;
 - for soft mode, the proposal ID, frozen voter/observer manifest, before and
   desired validator-set hashes, and baseline block number;
 - every distributed mutation scope;
@@ -6514,17 +6973,18 @@ Forbidden:
 - removing the final validator by accident;
 - inferring the target from ordinal or service count;
 - deleting the service before Hub/FDB, RPC, and validator dependencies are removed;
-- treating removal of the final validator as an ordinary removal before
-  `MOTHER-OPEN-017` defines explicit zero-validator authorization, identity
-  preservation, and recovery bootstrap.
+- removing the final validator without explicit `--allow-zero-validators`;
+- generating a new genesis or birth identity for a born zero-validator network;
+- implicitly removing the host from replica membership because its last node or
+  validator is removed;
 - hiding a hard reseal inside an ordinary soft remove;
-- beginning while any expected host has unresolved work;
+- beginning while any current replica or prospective transition host has unresolved work;
 - treating partial distributed completion as success.
 
 `finalize` MUST freshly prove:
 
 - target is absent from the effective validator set;
-- survivors agree and block production progresses;
+- survivors agree and block production progresses when the desired validator set is non-empty; when it is empty, the prepared zero-validator assertions and replica replay agreement succeed;
 - target is absent from every RPC route graph;
 - every node reports the desired Hub/FDB topology;
 - target service state matches the prepared removal policy;
@@ -6672,6 +7132,8 @@ Outputs:
 - block heights;
 - lifecycle markers;
 - active Mother operation records;
+- current, prospective, transition, desired, and retiring replica sets;
+- enrollment and network-birth transaction status;
 - classification.
 
 No locks are acquired and no mutation occurs.
@@ -6701,11 +7163,13 @@ Outputs:
 - risk report.
 
 Prep owns the affected logical scopes until full rollback completes or the
-operation reaches `finalized`. At the beginning of `do`, an authoritative
-network mutation additionally acquires the distributed
-`successor-reservation:<network>` scope from every expected replica. That
-ownership remains held throughout `reservation-incomplete`, remediation,
-rollback, and `finalized-replication-pending`.
+operation reaches `finalized`. A membership-changing action also owns each
+prospective enrollment or bootstrap scope. At the beginning of `do`, an
+established mutation acquires `successor-reservation:<network>` from every
+current replica; true birth acquires the synthetic-predecessor bootstrap
+reservation from every desired initial host. Ownership remains held throughout
+reservation/enrollment incompleteness, remediation, rollback, and
+`finalized-replication-pending`.
 
 ### Do
 
@@ -6893,7 +7357,7 @@ not separately finalizable and do not release their rollback frames.
 
 ### Distributed preparation barrier
 
-`add-node prep` and `remove-node prep` MUST fail unless every expected Coolify
+`add-node prep` and `remove-node prep` MUST fail unless every current replica
 host proves:
 
 - it is reachable;
@@ -6906,10 +7370,12 @@ host proves:
 - it supports the required schema and capabilities, including exact-successor
   claim, receipt, cancellation, and release.
 
-Mother records the exact participant set in the action journal. The participant
-set MAY include every current node, every voting validator, every affected
-Coolify host, and the target node. The frozen participant set MUST NOT silently drop any participant after
-`prep`.
+Every prospective host MUST separately pass the enrollment-readiness barrier and
+is not counted as an agreeing predecessor replica. Mother records the exact
+current, prospective, transition, desired, and retiring sets. The execution
+participant set also includes every current node, voter, affected host, and
+target required for work or acknowledgement and MUST NOT silently drop any
+participant after `prep`.
 
 ### Distributed rollback semantics
 
@@ -6940,7 +7406,9 @@ or becomes unreachable. Lower completed layers are not attempted.
 `add-node prep` MUST calculate and record:
 
 - the complete target service and identity plan;
-- the mode: `initial`, `soft`, or `hard`;
+- the mode: `initial`, `reactivate`, `soft`, or `hard`;
+- the frozen current, prospective, transition, desired, and retiring replica sets and hashes;
+- any required enrollment or network-birth transaction;
 - the current and desired validator sets;
 - the current and desired host-local RPC route graphs;
 - the current and desired Hub/FDB topology for every node;
@@ -6951,29 +7419,26 @@ or becomes unreachable. Lower completed layers are not attempted.
 promoted only after its complete forward poststate is freshly verified; the next
 numbered phase MUST NOT begin before promotion commits.
 
-1. Cross the distributed preparation barrier.
-2. Acquire the exact full-set operation reservation, certify and fully replicate
-   `pending-action-opened`, and retain the reservation beneath the rollback stack.
-3. Capture the target service prestate and create or repair the service.
-4. Capture identity prestate and install the reserved identity.
-5. Capture runtime prestate and establish a healthy private candidate.
-6. Capture validator-membership prestate for the frozen voter/observer manifest,
-   including the before-set hash and baseline block.
-7. Admit the validator using the prepared initial mode, guard-mediated soft-vote
-   proposal, or hard mode.
-8. Freshly prove all required receipts, network-wide desired-set agreement, and
-   post-membership block progress.
-9. Capture complete RPC-routing prestate on every affected Coolify host.
-10. Reconcile complete host-local canonical RPC backend sets.
-11. Freshly prove route ownership, backend membership, Traefik load, and expected
-    public chain identity.
-12. Capture complete Hub/FDB prestate on every current node, including the new
-    node.
-13. Reconcile complete Hub/FDB topology on every participant.
-14. Freshly prove the same topology epoch, peers, forwarding entries, and
-    handoff targets everywhere.
-15. Replicate and verify the pending resulting state.
-16. Mark the action `do-complete-pending-finalize`.
+1. Cross the current-replica barrier and any prospective readiness barrier.
+2. For true birth, obtain the full-set bootstrap certificate, atomically commit
+   and replicate the birth-plus-pending-action first head, and roll bootstrap
+   ownership into ordinary ownership. Otherwise acquire the current-replica
+   reservation and fully replicate `pending-action-opened`.
+3. On a prospective host, verify its enrollment lock and immutable staged generation.
+4. Capture the target service prestate and create or repair the service.
+5. Capture identity prestate and install the reserved identity.
+6. Capture runtime prestate and establish a healthy private candidate.
+7. Capture validator-membership prestate when validators exist.
+8. Admit the validator using initial bootstrap, reactivation, soft-vote, or hard mode.
+9. Prove receipts, desired-set agreement, and applicable block progress.
+10. Capture complete RPC-routing prestate.
+11. Reconcile canonical RPC backend sets.
+12. Prove route ownership, backend membership, Traefik load, and chain identity.
+13. Capture complete Hub/FDB prestate.
+14. Reconcile complete Hub/FDB topology.
+15. Prove topology agreement everywhere.
+16. Replicate and verify pending network and enrollment state.
+17. Mark the action `do-complete-pending-finalize`.
 
 The active stack after a successful add is:
 
@@ -6992,8 +7457,10 @@ Rollback therefore restores Hub/FDB topology first, then RPC routing, then the
 prior validator set, and finally the target runtime, identity, and service.
 
 `add-node finalize` MUST freshly verify the complete active assertion set across
-all participants. It then closes every rollback layer through the journaled
-finalization protocol and commits/replicates the resulting network state.
+all participants and every prospective readiness receipt. It then closes every
+rollback layer through the journaled finalization protocol, commits the desired
+replica set at the active local head, and completes acknowledgement, enrollment
+activation, reservation release, and terminal scope release.
 
 ### `remove-node`
 
@@ -7001,6 +7468,9 @@ finalization protocol and commits/replicates the resulting network state.
 
 - the explicit target service and validator;
 - the mode: `soft` or `hard`;
+- whether final-validator removal is explicitly authorized;
+- confirmation that replica membership remains unless an explicit desired
+  replica-set change is prepared;
 - surviving validator and service participants;
 - the current and desired Hub/FDB topology;
 - the current and desired RPC route graphs;
@@ -7013,9 +7483,9 @@ finalization protocol and commits/replicates the resulting network state.
 promoted only after its complete forward poststate is freshly verified; a failed
 phase enters remediation and blocks later phases.
 
-1. Cross the distributed preparation barrier.
-2. Acquire the exact full-set operation reservation, certify and fully replicate
-   `pending-action-opened`, and retain the reservation beneath the rollback stack.
+1. Cross the current-replica and any membership-transition barrier.
+2. Acquire the current-replica operation reservation, certify and fully
+   replicate `pending-action-opened`, and retain it beneath the rollback stack.
 3. Freshly verify that all surviving Hub, RPC, and validator participants are
    healthy enough to carry the resulting network.
 4. Capture Hub/FDB prestate on every current node.
@@ -7027,8 +7497,9 @@ phase enters remediation and blocks later phases.
    while the target remains running and reachable.
 9. Remove the validator using the prepared guard-mediated soft-vote proposal or
    hard mode.
-10. Freshly prove all required receipts, target absence, complete desired-set
-    agreement, and post-membership block progress.
+10. Prove all receipts, target absence, and desired-set agreement. Require
+    block progress only for a non-empty validator set; otherwise prove the
+    prepared zero-validator state.
 11. Capture target service, runtime, and identity prestate.
 12. Detach, disable, archive, or remove the target exactly as prepared.
 13. Replicate and verify the pending resulting state.
@@ -7051,9 +7522,11 @@ restores the prior Hub/FDB topology. The target is not exposed again before the
 runtime and validator membership it depends on are healthy.
 
 `remove-node finalize` MUST freshly prove the complete active assertion set
-across all participants. It then closes every rollback layer through the
-journaled finalization protocol and commits/replicates the resulting network
-state.
+across all participants, including prepared zero-validator assertions when
+applicable. It then closes every rollback layer through the journaled
+finalization protocol. Removing the last node leaves host replica membership
+unchanged unless an explicit desired replica-set change is part of the same
+prepared operation.
 
 ### Routing and Hub/FDB assertions
 
@@ -7089,14 +7562,17 @@ entire distributed action remains reversible. Only `finalize` closes rollback.
 Before the active-local-head finalization commit, `finalize` MUST prove:
 
 - every frozen transition participant remains reachable;
+- every current replica still owns the predecessor reservation;
+- every prospective host still owns the exact enrollment lock and readiness receipt;
 - every participant still belongs to this action and has no foreign pending work;
 - validator, RPC, and Hub/FDB states all match the prepared result;
 - all guard assertions are fresh for current generations;
 - every distributed rollback layer and participant frame is accounted for;
 - every frozen participant agrees on the pending resulting state;
 - the same operation still owns every frozen participant reservation;
-- one full-set certificate binds the exact current head to the exact proposed
-  `pending-action-finalized` successor.
+- one current-replica full-set certificate binds the exact current head,
+  current and desired replica-set hashes, readiness-receipt root, and exact
+  proposed `pending-action-finalized` successor.
 
 The atomic active-local-head commit of that exact certified
 `pending-action-finalized` successor is the irreversible boundary. Remote
@@ -7164,8 +7640,9 @@ A Mother diagnosis report is read-only and SHOULD contain at least:
 ```
 
 Diagnosis MUST NOT decide to fix anything. It only reports facts, topology
-classification, current operation ID, current stage, rollback availability,
-frozen finalization participants, exact per-participant finalization head and
+classification, current operation ID, current stage, rollback availability, frozen membership
+sets, enrollment/bootstrap progress, frozen finalization participants, exact
+per-participant finalization head and
 certificate state, acknowledgement/release progress, and active operation
 constraints. The diagnosis report is the normal way for an operator to learn
 which operation Mother currently owns and which exact finalize, resynchronization,
@@ -7182,8 +7659,16 @@ A prepared Mother operation file SHOULD contain at least:
   "kind": "reseal-qbft",
   "stage": "prepared",
   "network": "mainnet",
+  "current_replica_hosts": ["coolify-a", "coolify-b"],
+  "current_replica_set_hash": "sha256:...",
+  "prospective_replica_hosts": ["coolify-c"],
+  "prospective_replica_set_hash": "sha256:...",
   "transition_participants": ["coolify-a", "coolify-b", "coolify-c"],
   "transition_participants_hash": "sha256:...",
+  "desired_replica_hosts": ["coolify-a", "coolify-b", "coolify-c"],
+  "desired_replica_set_hash": "sha256:...",
+  "retiring_replica_hosts": [],
+  "enrollment_readiness_root": "sha256:...",
   "current": true,
   "idempotency_key": "...",
   "created_at": "iso-8601",
@@ -7216,8 +7701,9 @@ A prepared Mother operation file SHOULD contain at least:
 }
 ```
 
-The operation file is immutable with respect to intent and desired state. Its
-runtime status, checkpoint list, provisional-frame view, and `rollback_stack`
+The operation file is immutable with respect to intent, desired state, frozen
+membership sets, enrollment-readiness root, and bootstrap identity. Its runtime
+status, checkpoint list, provisional-frame view, and `rollback_stack`
 field are derived projections rebuilt from the committed action and rollback
 journals. `do` MUST NOT edit the desired state it was asked to perform.
 
@@ -7238,9 +7724,10 @@ Mother safety rules:
   non-authoritative, local-only, atomic, idempotent maintenance fenced by an
   unchanged authoritative local head.
 - Every prepared operation accepts `rollback` until its documented irreversible commit point.
-- An established-network writer MUST obtain one current durable reservation receipt
-  from every exact expected replica before any live mutation or authoritative
-  network-journal successor is allowed.
+- An established-network writer MUST obtain one current durable reservation
+  receipt from every exact current replica before any live mutation or
+  authoritative network-journal successor is allowed. Prospective hosts provide
+  readiness, not predecessor claims.
 - Partial or split reservations authorize nothing, never expire automatically,
   and MUST NOT cause Mother to select a winner.
 - Every authoritative network-journal transition MUST carry a full-set certificate
@@ -7248,12 +7735,19 @@ Mother safety rules:
 - The distributed reservation lives outside the ordinary rollback stack and
   remains held through remediation, rollback, and
   `finalized-replication-pending`.
-- Finalization participant membership is frozen during `prep` and MUST NOT be
-  recalculated from the resulting topology.
+- Current, prospective, transition, desired, and retiring membership is frozen
+  during `prep` and MUST NOT be recalculated from validator presence or resulting
+  topology.
+- Replica membership is independent of node and validator membership.
+- A prospective host MUST NOT receive predecessor writer authority before the
+  atomic local membership-finalization commit.
+- Initial network birth MUST use the synthetic-predecessor full-set bootstrap
+  certificate and MUST NOT be reused for reactivation.
 - Finalization acknowledgement and its full-set certificate MUST remain outside
   the network journal.
-- A finalization timeout or lost response MUST enter exact-status reconciliation;
-  Mother MUST NOT infer commit or non-commit.
+- A finalization timeout or lost response MUST be classified from the durable
+  active local head; remote lag after local commit remains
+  `finalized-replication-pending`.
 - Mother stores the active operation ID as the current operation for every owned scope.
 - `mother diagnose` MUST report the current operation ID and allowed next commands.
 - Rollback defaults to the current operation; the operator MUST NOT have to describe what to undo.
@@ -7313,7 +7807,7 @@ Mother safety rules:
 - Add-node MUST NOT publish Hub/FDB topology before RPC reconciliation succeeds.
 - Remove-node MUST withdraw Hub/FDB and RPC dependencies before validator
   removal and service deletion.
-- Soft/hard topology mode is chosen during `prep` and MUST NOT change during `do`.
+- Initial/reactivate/soft/hard topology mode is chosen during `prep` and MUST NOT change during `do`.
 - Mother MUST distinguish observed topology, finalized topology, and replicated pending distributed state.
 - Unknown or unsupported required schemas/capabilities permit diagnosis and export
   but block mutation, rollback, finalize, reseal, migration, and replacement-head
@@ -7351,8 +7845,9 @@ Mother SHOULD be implemented in this order:
    - mounts `/runtime/state/mother/`;
    - reports version, explicit readable/writable schemas, executable capabilities,
      state root, active operations, checkpoints, rollback stacks, reservation
-     distributions, successor certificates, finalization participant status,
-     acknowledgements, and release progress;
+     distributions, successor certificates, replica-membership and enrollment
+     state, network-birth state, finalization participant status,
+     acknowledgements, and terminal progress;
    - treats the container and mounted API implementation as replaceable;
    - freezes action compatibility requirements and refuses authoritative mutation
      when any required schema or capability is unknown or unsupported.
@@ -7384,8 +7879,9 @@ Mother SHOULD be implemented in this order:
    - idempotency keys;
    - durable per-replica operation reservations, successor claims, receipts,
      cancellation prepare/commit/abort records, cancellation tombstones,
-     monotonic claim/accepted/committed history, finalization acknowledgements,
-     certificate storage, and release records;
+     monotonic claim/accepted/committed history, enrollment locks/readiness,
+     bootstrap reservations/readiness, finalization acknowledgements,
+     certificate storage, activation/retirement, and release records;
    - generic rollback resolution.
 
 6. Local generation and projection maintenance
@@ -7408,8 +7904,8 @@ Mother SHOULD be implemented in this order:
 
 8. Full-set writer-fencing and successor-commit engine
    - implement `MOTHER-DESIGN-026`;
-   - attempt claims against the exact sealed replica set without a discovered
-     anchor or automatic winner;
+   - attempt ordinary claims against the exact current replica set without a
+     discovered anchor or automatic winner;
    - atomically persist per-replica owner and exact-successor claims;
    - make every accepting journal replica freshly retrieve and validate the
      complete participant set rather than trusting an assembled certificate
@@ -7460,8 +7956,10 @@ Mother SHOULD be implemented in this order:
      current-operation pointer cleanup.
 
 11. `finalize`
-   - implement `MOTHER-DESIGN-027`;
-   - freeze transition participants during `prep`;
+   - implement `MOTHER-DESIGN-027` with membership roles from
+     `MOTHER-DESIGN-028`;
+   - freeze current, prospective, transition, desired, and retiring sets during
+     `prep`;
    - perform postcondition checks and cross-journal finalization preparation;
    - exact-successor certification of the authoritative finalization transition;
    - network-journal promotion from pending desired topology to finalized
@@ -7470,15 +7968,15 @@ Mother SHOULD be implemented in this order:
    - classify interrupted local commit from the durable local head pointer and
      route unreadable or unprovable local authority to `recover-head` or reseal;
    - begin remote replication only after the local commit;
-   - resynchronize every lagging frozen participant to the same authoritative
-     local head using monotonic accepted-or-committed evidence;
+   - resynchronize current replicas through monotonic accepted-or-committed
+     evidence and prospective hosts through immutable enrollment readiness;
    - transfer and verify the complete immutable recovery-object closure;
    - create replay-verified participant acknowledgements and one canonical
      full-set acknowledgement certificate outside the network journal;
    - retain scopes and operation ownership while acknowledgement or release is
      incomplete;
-   - enter `finalized` only after every required terminal release record is
-     freshly proven;
+   - enter `finalized` only after every required release, activation, or
+     retirement record is freshly proven;
    - support the explicit post-commit exclusion reseal without reopening
      rollback or choosing a different final topology.
 
@@ -7497,13 +7995,17 @@ Mother SHOULD be implemented in this order:
 
 14. `mother_add_node.py`
    - service and identity preparation;
-   - initial, guard-mediated soft, and hard validator admission;
+   - initial bootstrap, zero-validator reactivation, guard-mediated soft, and
+     hard validator admission;
+   - prospective-host enrollment when the target host is not current;
    - RPC reconciliation;
    - network-wide Hub/FDB reconciliation;
    - one rollback-capable action until the documented irreversible commit point.
 
 15. `mother_remove_node.py`
    - network-wide Hub/FDB withdrawal;
+   - explicit final-validator authorization and zero-validator assertions;
+   - retention of replica membership when the host's last node is removed;
    - RPC withdrawal;
    - guard-mediated soft and hard validator removal;
    - service detach/disable/archive/removal;
@@ -7534,8 +8036,16 @@ Mother SHOULD be implemented in this order:
    - activates a new replicated head epoch only after full-set acknowledgement;
    - requires every later ordinary writer to use `MOTHER-DESIGN-026`.
 
-20. Prospective replica and zero-network bootstrap
-   - implement only after `MOTHER-OPEN-017` is resolved.
+20. Replica-membership and network-birth engine
+   - implement `MOTHER-DESIGN-028`;
+   - freeze current, prospective, transition, desired, and retiring sets;
+   - stage immutable generations and readiness receipts without premature authority;
+   - bind current and desired replica hashes into current-replica certificates;
+   - activate and retire replicas only from full-set acknowledgement;
+   - preserve replica membership across last-node removal;
+   - implement explicit zero-validator authorization and reactivation without new genesis;
+   - implement synthetic-predecessor full-set bootstrap and crash/split tests;
+   - require identity rotation when private material reached an untrusted host.
 
 21. Finalization replication-state reconciler
    - implement the exact-status inspection, certified-head resynchronization,

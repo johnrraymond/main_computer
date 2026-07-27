@@ -16,7 +16,8 @@
     function ensureApplicationWidgets() {
       document.querySelectorAll(".app-widget").forEach((widget) => {
         widget.classList.add("app-fullscreen-widget", "fullscreen-widget");
-        if (!widget.querySelector(":scope > .fullscreen-control")) {
+        const appOwnedChrome = widget.dataset.widgetChrome === "app-owned";
+        if (!appOwnedChrome && !widget.querySelector(":scope > .fullscreen-control")) {
           const button = document.createElement("button");
           button.className = "fullscreen-control";
           button.type = "button";
@@ -24,7 +25,7 @@
           button.textContent = "Full Screen";
           widget.prepend(button);
         }
-        if (!widget.querySelector(":scope > .widget-ticker")) {
+        if (!appOwnedChrome && !widget.querySelector(":scope > .widget-ticker")) {
           const ticker = document.createElement("div");
           ticker.className = "widget-ticker";
           ticker.innerHTML = `<span>${applicationWidgetLabel(widget)} | embedded ticker view | full screen switches this widget into focus mode</span>`;

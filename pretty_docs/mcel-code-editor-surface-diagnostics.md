@@ -72,3 +72,23 @@ code-editor-primary-editor-not-layout-usable
 ```
 
 The pathway does not replace the existing Code Editor contract checks. It adds MCEL surface-level evidence to the same diagnostic report.
+
+## Focused applications host
+
+The Code Editor no longer pins its root to the browser origin. The applications
+host reserves the collapsed Apps gutter, and Code Editor fills the remaining
+host canvas.
+
+The required geometry is:
+
+```text
+Apps gutter right edge <= Code Editor root left edge
+Code Editor root width == focused host canvas width
+Code Editor root height == focused host canvas height
+```
+
+The launcher may overlay the workbench only while explicitly expanded. In its
+collapsed state it must not cover the Explorer or Monaco surface. Runtime
+surface measurements therefore describe the app-owned viewport rather than a
+viewport hidden beneath host chrome.
+

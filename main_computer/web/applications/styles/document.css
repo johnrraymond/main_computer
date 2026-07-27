@@ -1535,3 +1535,198 @@
   max-height: none;
 }
 
+/* Patch 24a4: compact document-owned chrome.
+   The focused applications host gives Document Editor the full app viewport.
+   Only the session row, formatting row, and compact status strip permanently
+   consume vertical space; the authoring workbench owns everything else. */
+body[data-active-app="document"] #document-app {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  padding: 0;
+}
+
+#document-app .document-shell[data-widget-chrome="app-owned"] {
+  grid-template-rows: 36px 34px minmax(0, 1fr) 26px;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 4px;
+  padding-top: 4px;
+}
+
+
+#document-app .document-shell[data-widget-chrome="app-owned"]:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  padding: 4px;
+  overflow: hidden;
+}
+
+#document-app .document-shell[data-widget-chrome="app-owned"] > .widget-ticker,
+#document-app .document-shell[data-widget-chrome="app-owned"] > .fullscreen-control {
+  display: none !important;
+}
+
+#document-app .document-head {
+  height: 36px;
+  min-height: 0;
+  padding: 3px 6px;
+  border-radius: 4px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+#document-app .document-identity {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+#document-app .document-identity-purpose {
+  display: none;
+}
+
+#document-app .document-current-path {
+  flex: 1 1 auto;
+  max-width: none;
+}
+
+#document-app .document-head-actions {
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+#document-app .document-head-actions > button,
+#document-app .document-head-actions > details > summary,
+#document-app .document-head-actions .document-status {
+  min-height: 26px;
+  height: 26px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+#document-app .document-head .fullscreen-control {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  display: inline-flex !important;
+  align-items: center;
+  width: auto;
+  min-width: max-content;
+  color: var(--ink);
+  background: #141410;
+}
+
+#document-app .document-toolbar {
+  height: 34px;
+  min-height: 0;
+  padding: 3px 4px;
+  gap: 4px;
+  border-radius: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+#document-app .document-toolbar button,
+#document-app .document-toolbar select {
+  min-height: 26px;
+  height: 26px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+#document-app .document-toolbar select {
+  min-width: 104px;
+}
+
+#document-app .document-top-status {
+  height: 26px;
+  min-height: 0;
+  padding: 2px 5px;
+  gap: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+#document-app .document-readonly-note {
+  display: none;
+}
+
+#document-app .document-draft-banner {
+  min-width: 0;
+  padding: 2px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#document-app .document-draft-controls {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+#document-app .document-draft-controls span,
+#document-app .document-draft-controls button {
+  min-height: 20px;
+  height: 20px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+#document-app .document-library,
+#document-app .document-object-stage,
+#document-app .document-ai-pane {
+  min-height: 0;
+  max-height: 100%;
+}
+
+#document-app .document-ai-pane {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 4px;
+}
+
+#document-app .document-ai-head {
+  min-height: 28px;
+  align-items: center;
+}
+
+#document-app .document-ai-main {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+#document-app #document-ai-prompt {
+  min-height: 58px;
+  max-height: 84px;
+  resize: none;
+}
+
+#document-app .document-ai-composer .document-ai-actions {
+  padding: 4px;
+}
+

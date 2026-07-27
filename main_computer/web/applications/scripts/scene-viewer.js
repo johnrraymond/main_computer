@@ -3239,8 +3239,7 @@
         motherShipWalkableRegions() {
           return [
             {id: "bay.shuttle", minX: -4.72, maxX: 4.72, minZ: -4.62, maxZ: 5.12},
-            {id: "bay.ops", minX: 1.4, maxX: 4.9, minZ: -9.45, maxZ: -4.2},
-            {id: "bay.ops-collar", minX: -2.35, maxX: 4.9, minZ: -9.45, maxZ: -4.55},
+            {id: "bay.ops", minX: -2.25, maxX: 4.9, minZ: -9.45, maxZ: -4.2},
             {id: "security.checkpoint", minX: -3.2, maxX: 3.2, minZ: -13.55, maxZ: -8.75},
             {id: "corridor.main", minX: -6.55, maxX: 6.55, minZ: -18.75, maxZ: -13.25},
             {id: "corridor.trunk", minX: -2.55, maxX: 2.55, minZ: -25.85, maxZ: -13.25},
@@ -3279,7 +3278,7 @@
 
         shipLocationForPosition(x, z) {
           if (z > -4.65) return "bay.shuttle";
-          if (x > 1.25 && z > -9.65) return "bay.ops";
+          if (x >= -2.25 && x <= 4.9 && z > -9.65) return "bay.ops";
           if (z > -13.6) return "security.checkpoint";
           if (x > 1.95 && z > -24.35 && z < -17.05) return "engineering.access";
           if (x < -1.95 && z > -24.35 && z < -17.05) return "medbay.stub";
@@ -3345,11 +3344,11 @@
             return false;
           }
           this.clearMovementKeys();
-          this.camera = [3.08, 0.9, -6.08];
-          this.setLook(42, -3);
+          this.camera = [2.55, 0.9, -5.78];
+          this.setLook(28, -3);
           this.setShipLocation("bay.ops", true);
           this.setShipObjective("objective.bay-ops", true);
-          this.setShipInteractionStatus("Entered Bay Operations access. Use the Bay Operations Terminal to open the inner door.");
+          this.setShipInteractionStatus("Entered the lit Bay Operations vestibule. Use the Bay Operations Terminal to open the inner door.");
           if (typeof this.onCameraMoved === "function") this.onCameraMoved(this.camera.slice());
           this.emitShipState(true);
           return true;
@@ -3434,9 +3433,11 @@
 
         shipInteractionTarget() {
           if (!this.isShuttleBaySceneActive() || !this.isShuttleBayPlayerControlActive()) return null;
+          const activeLocation = this.shipLocationForPosition(this.camera[0], this.camera[2]);
           let nearest = null;
           let nearestDistance = Infinity;
           this.shipInteractionZones().forEach((zone) => {
+            if (zone.location && zone.location !== activeLocation) return;
             const dx = this.camera[0] - zone.position[0];
             const dz = this.camera[2] - zone.position[1];
             const distance = Math.hypot(dx, dz);
@@ -4096,15 +4097,37 @@
           builder.beam([-0.72, 0.02, 4.96], [0.72, 0.02, 4.96], 0.024, light);
 
           // Bay Operations on the shipside/right side of the bay.
-          roomShell(1.35, 5.05, -9.65, -4.35, blue);
+          // Keep the access vestibule, visible corridor, and walkable bounds aligned so players never step into an unrendered void.
+          roomShell(-2.35, 5.05, -9.65, -4.35, blue);
           wallX(5.05, -9.65, -4.35);
-          wallZ(-9.65, 1.35, 5.05);
-          builder.box([1.35, -1.2, -9.65], [1.65, 2.85, -8.1], wall);
-          builder.box([2.12, -1.055, -6.95], [4.45, -0.96, -5.15], builder.color("#0f172a"));
+          wallX(-2.35, -9.65, -8.1);
+          // Segment the forward Bay Ops bulkhead so the central transit spine is a real visible opening.
+          wallZ(-9.65, -2.35, -1.14);
+          wallZ(-9.65, 1.14, 5.05);
+          wallZ(-4.35, -2.35, 2.12);
+          wallZ(-4.35, 4.45, 5.05);
+          builder.box([2.12, -1.055, -6.95], [4.45, -0.96, -5.15], builder.color("#1d4ed8"));
+          builder.box([-1.9, -1.055, -9.12], [1.12, -0.96, -5.05], deck);
+          // Bay Ops interior transit spine: this replaces the previous black void with a modeled corridor throat.
+          builder.box([-1.18, -1.06, -9.72], [1.18, -0.92, -8.62], builder.color("#243244"));
+          builder.box([-1.42, -1.04, -9.76], [-1.16, 2.12, -8.58], bulkhead);
+          builder.box([1.16, -1.04, -9.76], [1.42, 2.12, -8.58], bulkhead);
+          builder.box([-1.42, 2.12, -9.76], [1.42, 2.48, -8.58], bulkhead);
+          builder.beam([-1.04, -0.72, -9.42], [1.04, -0.72, -9.42], 0.026, blue);
+          builder.beam([-1.04, -0.72, -8.86], [1.04, -0.72, -8.86], 0.026, blue);
+          builder.beam([-1.08, 1.74, -9.54], [1.08, 1.74, -9.54], 0.028, light);
+          builder.beam([-1.08, 0.4, -9.55], [-1.08, 0.4, -8.72], 0.022, green);
+          builder.beam([1.08, 0.4, -9.55], [1.08, 0.4, -8.72], 0.022, green);
+          builder.box([-0.72, -1.052, -9.38], [0.72, -0.93, -9.2], green);
+          builder.box([-0.72, -1.052, -8.98], [0.72, -0.93, -8.8], green);
           builder.beam([2.34, -0.72, -5.42], [4.28, -0.72, -6.82], 0.024, blue);
           builder.beam([4.28, -0.72, -5.42], [2.34, -0.72, -6.82], 0.024, blue);
+          builder.beam([-1.55, -0.76, -5.25], [0.0, -0.76, -8.75], 0.024, blue);
+          builder.beam([1.55, -0.76, -5.25], [0.0, -0.76, -8.75], 0.024, blue);
+          builder.beam([2.14, 0.12, -4.58], [4.42, 0.12, -4.58], 0.03, green);
           terminalBlock("terminal.bay-ops", 3.86, -6.42, blue);
           builder.beam([2.0, 0.1, -5.15], [4.55, 0.1, -5.15], 0.024, blue);
+          builder.beam([-1.12, 0.14, -8.82], [1.12, 0.14, -8.82], 0.024, amber);
           mapMarker(3.86, -6.42, blue);
 
           // Security checkpoint and inner bay door.
@@ -5145,7 +5168,7 @@
             const phase = (pilot.dockingCutscenePhase || "idle").replace(/-/g, " ").toUpperCase();
             twiddleSystem.dataset.cutscene = pilot.dockingCutsceneActive ? "active" : (pilot.playerExitedToBay ? "complete" : "inactive");
             twiddleSystem.dataset.playerControl = pilot.shuttleBayControlActive ? "active" : "inactive";
-            twiddleSystem.hidden = !(pilot.dockingCutsceneActive || pilot.playerExitedToBay || pilot.flightDocked);
+            twiddleSystem.hidden = !(pilot.dockingCutsceneActive || (!pilot.shuttleBayControlActive && (pilot.playerExitedToBay || pilot.flightDocked)));
             if (pilot.shuttleBayControlActive) {
               twiddleStatus.textContent = `Control restored in ${pilot.shuttleBayLabel}.`;
               twiddleButton.disabled = true;
@@ -5251,8 +5274,14 @@
               pilotPrompt.textContent = `Autopilot docking with ${pilot.targetLabel}: shuttle entering bay, landing, and cadet exiting`;
             } else if (pilot.playerExitedToBay) {
               pilotLine.textContent = `ARRIVED: ${pilot.shuttleBayLabel} • FIRST-PERSON CONTROL`;
-              pilotPrompt.hidden = false;
-              pilotPrompt.textContent = `Cutscene complete — W/A/S/D to walk the ${pilot.shuttleBayLabel} • drag or arrows to look`;
+              const shipTarget = renderer.shipInteractionTarget?.();
+              if (shipTarget) {
+                pilotPrompt.hidden = false;
+                pilotPrompt.textContent = renderer.shipInteractionHint(shipTarget);
+              } else {
+                pilotPrompt.hidden = true;
+                pilotPrompt.textContent = `W/A/S/D to walk the ${pilot.shuttleBayLabel} • drag or arrows to look`;
+              }
             } else if (pilot.active) {
               const range = pilot.flightDocked ? `DOCKED WITH ${pilot.targetLabel}` : `RANGE ${pilot.flightDistance.toFixed(1)} TO ${pilot.targetLabel}`;
               pilotLine.textContent = `PILOTING ${pilot.stationLabel} • ${range} • SPEED ${pilot.flightSpeed.toFixed(1)} • E EXIT`;

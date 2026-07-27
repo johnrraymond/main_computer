@@ -270,3 +270,51 @@ companion header and prompt composer remain reachable during internal overflow
 Patch 24a is specification and contract-test work only. The live Document
 Editor remains on the Patch 22b UI until Patch 24b implements the outline,
 modal picker, and docked companion.
+
+### Focused host and vertical budget correction (Patch 24a4)
+
+Code Editor and Document Editor use the focused applications host. The host
+reserves the collapsed Apps gutter before calculating the app-owned viewport.
+The collapsed Apps control MUST NOT overlap the Explorer, document outline,
+authoring page, companion, or any other app-owned control. Expanding the Apps
+launcher is an explicit temporary overlay.
+
+For Document Editor, permanent vertical chrome is limited to:
+
+```text
+compact document/session row
+compact formatting row
+primary workbench
+compact status strip
+```
+
+The generic embedded-widget ticker is not part of the Document Editor layout.
+Full-screen remains available from the document-owned session row.
+
+The session row and formatting row MUST remain single-line scroll/overflow
+owners rather than wrapping into extra vertical rows. The compact status strip
+MAY expose save state, revision, reload, and discard controls, but it MUST NOT
+consume the primary workbench's remaining-height allocation.
+
+The companion has exactly three vertical owners:
+
+```text
+anchored header
+scrollable context/conversation/result body
+anchored prompt composer
+```
+
+Anchor controls and quick actions belong inside the scrollable middle body.
+They MUST NOT collapse that body to zero height while their readable descendants
+remain painted outside it.
+
+The focused host and app shell must satisfy these measurable properties:
+
+```text
+app left edge >= reserved Apps gutter right edge
+app height == focused canvas height
+primary workbench row uses minmax(0, 1fr)
+document primary host height >= 320px at the supported short viewport
+document scroll does not move either side panel
+```
+
