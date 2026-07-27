@@ -90,6 +90,14 @@ The authored-document model is the semantic source for:
 Outline updates SHOULD be incremental or debounced. Rebuilding the outline must
 not rewrite document content, reset selection, or lose undo history.
 
+The authored-document adapter MUST expose enough heading identity and ordering
+for the application projection to maintain one active outline entry. Document
+caret, selection, or viewport movement may change that active heading. The
+outline may scroll its own list to keep the active entry visible, but that
+projection scroll state is not authored-document content and MUST NOT mutate the
+document or its undo history. Activating an outline entry is the action that
+requests document scroll/focus for the referenced heading.
+
 Opening a different Pretty Doc replaces the current authored-document root only
 after unsaved-change policy and load success are resolved.
 

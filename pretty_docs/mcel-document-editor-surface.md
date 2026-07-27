@@ -56,13 +56,18 @@ The application surface hosts and projects the authored document. The authored
 document is not flattened into an unbounded list of static application-layout
 nodes.
 
-The three persistent lanes have these responsibilities:
+The editor has three conceptual zones:
 
 ```text
 left navigation  -> headings for the current document
 center primary   -> editable document/page
 right companion  -> Document AI context and actions
 ```
+
+Only the center primary zone is the permanent width and document-scroll owner.
+The outline and companion are anchored auxiliary surfaces. Depending on owned
+container capacity, they may remain visible, compact, dock, or overlay without
+forcing the document below its readable fit.
 
 File selection is a transient task:
 
@@ -74,6 +79,39 @@ Open Pretty Doc
   -> load the selected document
   -> rebuild the current document outline
 ```
+
+### Scroll ownership and viewport anchoring
+
+Document Editor MUST NOT use the authored page scroll as a shared workbench
+scroll. The editor body has bounded viewport height and equivalent independent
+scroll owners for:
+
+```text
+outline-scroll-container
+document-scroll-container
+companion-content-scroll-container
+```
+
+The contract is:
+
+- The center document scrollbar moves authored pages only.
+- Document scrolling MUST NOT move the outline rail, the companion panel, or
+  the document/format toolbars vertically.
+- The outline body owns its own vertical scrollbar for long heading lists.
+- Document caret/selection/viewport changes update the active outline entry.
+- The outline scroll position SHOULD adjust as needed to keep the active entry
+  visible without changing the document scroll position.
+- Activating an outline entry is the explicit action that scrolls/focuses the
+  matching authored heading.
+- The companion remains anchored while the document scrolls. Only its internal
+  conversation/result body scrolls when companion content overflows; its
+  heading, reopen/close affordance, and prompt composer remain reachable.
+- A file-picker modal owns its own candidate-list scroll and does not borrow the
+  document scrollbar.
+
+At constrained widths an outline drawer or companion overlay remains an
+independent anchored surface. Overlay presentation does not transfer document
+scroll ownership to the shell.
 
 ### Left navigation: current document outline
 
@@ -91,6 +129,9 @@ The outline contract is:
 - Scroll to and focus the matching authored heading when an outline entry is
   activated.
 - Track the heading nearest the current caret, selection, or viewport position.
+- Highlight that active heading and auto-scroll the outline's own list just
+  enough to keep the active navigation point visible.
+- Remain anchored in the editor viewport while the document pages scroll.
 - Show a clear `No headings yet` empty state.
 - Keep a compact current-document label and an `Open Pretty Doc...` command
   available without embedding the file list in the rail.
@@ -172,6 +213,12 @@ The companion is active while any of these conditions hold:
 When none of those conditions hold, the companion MAY slide or compact to a
 right-side dock. Docking MUST preserve the thread, draft, result, and selection
 context. A compact, readable control MUST remain available to reopen it.
+
+The expanded or active companion remains anchored to the right edge of the
+Document Editor viewport while the document scrolls. Document scrolling MUST
+NOT translate the companion with authored pages. Companion overflow is handled
+inside the companion content body so its header and prompt composer remain
+reachable.
 
 At narrow owned widths, the companion MAY use an explicit overlay policy rather
 than permanently reducing the document page below its usable fit. Overlay mode
@@ -280,6 +327,9 @@ updating the runtime surface identifiers.
 
 - Do not silently discard authored changes.
 - Do not confuse file selection with current-document navigation.
+- Do not use one shared vertical scroll for the outline, document, and
+  companion.
+- Do not move either side panel when authored pages scroll.
 - Do not destroy companion state when docking it.
 - Do not emit unbounded dynamic heading or file rows as static layout grammar.
 - Required readable/control content must retain a declared fit policy.

@@ -371,6 +371,10 @@ def test_patch24a_document_editor_spec_separates_outline_picker_and_companion() 
         "overlay",
         "Docking MUST preserve the thread, draft, result, and selection context",
         "MUST NOT be emitted as unbounded static application-surface layout nodes",
+        "Only the center primary zone is the permanent width and document-scroll owner",
+        "Document scrolling MUST NOT move the outline rail, the companion panel",
+        "The outline body owns its own vertical scrollbar",
+        "Only its internal conversation/result body scrolls",
         "Patch 24a is specification and contract-test work only",
         "Patch 24b is responsible for implementing those behaviors",
     ]

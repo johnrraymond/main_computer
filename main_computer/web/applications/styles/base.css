@@ -454,9 +454,25 @@
       overflow: hidden;
       min-height: 320px;
     }
+    /* Document Editor owns three independent internal scroll regions.
+       Keep the host viewport definite so long authored content cannot grow the
+       application stage beyond the browser viewport. */
+    body[data-active-app="document"] {
+      height: 100vh;
+      overflow: hidden;
+    }
+    body[data-active-app="document"] .viewport {
+      height: 100vh;
+      min-height: 0;
+    }
+    body[data-active-app="document"] main,
     body[data-active-app="document"] .stage,
     body[data-active-app="document"] .canvas-wrap {
-      overflow: visible;
+      min-height: 0;
+      overflow: hidden;
+    }
+    body[data-active-app="document"] .stage {
+      grid-template-rows: auto minmax(0, 1fr) auto;
     }
     #webgl-demo {
       display: block;

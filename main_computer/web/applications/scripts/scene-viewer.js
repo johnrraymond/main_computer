@@ -3178,8 +3178,10 @@
         shuttleBayPlayerSpawn() {
           return {
             position: [0.24, 0.9, 4.3],
-            yaw: 180,
-            pitch: -3
+            // Face into the mother ship and toward the starboard/right side of the bay.
+            // In bay coordinates, shipside is negative Z and bay-right is positive X.
+            yaw: 32,
+            pitch: -4
           };
         }
 

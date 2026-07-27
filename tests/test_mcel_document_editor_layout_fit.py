@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "main_computer" / "web" / "applications"
 DOCUMENT_HTML = WEB / "apps" / "document.html"
 DOCUMENT_CSS = WEB / "styles" / "document.css"
+BASE_CSS = WEB / "styles" / "base.css"
 COUNTER_CSS = WEB / "styles" / "mcel-diagnostics-counter-widget.css"
 COUNTER_JS = WEB / "scripts" / "mcel-diagnostics-counter-widget.js"
 SURFACE_JS = WEB / "scripts" / "mcel-document-editor-surface.js"
@@ -59,6 +60,50 @@ def test_document_editor_layout_keeps_ai_rail_right_and_shrinks_library() -> Non
     assert "#document-library-refresh::before" in css
     assert '#document-library-close::before' in css
     assert ".document-library-head-actions,\n      .document-library-empty" not in css
+
+
+def test_document_editor_host_and_side_rails_are_viewport_bounded() -> None:
+    base = BASE_CSS.read_text(encoding="utf-8")
+    css = DOCUMENT_CSS.read_text(encoding="utf-8")
+
+    assert 'body[data-active-app="document"] {' in base
+    assert "height: 100vh;" in base
+    assert 'body[data-active-app="document"] .viewport {' in base
+    assert 'body[data-active-app="document"] main,' in base
+    assert 'body[data-active-app="document"] .stage,' in base
+    assert 'body[data-active-app="document"] .canvas-wrap {' in base
+    assert "overflow: hidden;" in base
+    assert 'body[data-active-app="document"] .stage {\n      grid-template-rows: auto minmax(0, 1fr) auto;' in base
+    assert 'body[data-active-app="document"] .stage,\n    body[data-active-app="document"] .canvas-wrap {\n      overflow: visible;' not in base
+
+    assert ".document-app {" in css
+    assert "height: 100%;\n      max-height: 100%;" in css
+    assert ".document-shell {" in css
+    assert "width: 100%;\n      height: 100%;\n      max-height: 100%;" in css
+    assert ".document-library {" in css
+    assert "max-height: 100%;\n      align-self: stretch;" in css
+    assert ".document-library-list {" in css
+    assert "overflow-x: hidden;\n      overflow-y: auto;" in css
+    assert "overscroll-behavior: contain;" in css
+    assert "scrollbar-gutter: stable;" in css
+    assert ".document-object-stage {" in css
+    assert ".document-ai-pane {" in css
+    assert css.count(".document-ai-pane {\n        min-height: 0;") == 2
+    assert ".document-ai-pane {\n        min-height: 320px;" not in css
+
+
+def test_document_library_rows_do_not_collapse_inside_bounded_scroll_owner() -> None:
+    css = DOCUMENT_CSS.read_text(encoding="utf-8")
+
+    assert "Patch 24a3: a bounded navigation list must overflow as whole rows" in css
+    assert ".document-library-list {\n  grid-auto-rows: max-content;" in css
+    assert ".document-library-item {\n  min-height: 42px;" in css
+    assert "grid-template-rows: auto auto;" in css
+    assert "align-content: start;" in css
+    assert ".document-library-item strong {\n  display: block;" in css
+    assert "min-height: 1.2em;" in css
+    assert "line-height: 1.2;" in css
+    assert "writing-mode: horizontal-tb;" in css
 
 
 def test_document_editor_overbudget_layout_preserves_three_lane_workbench() -> None:
@@ -198,6 +243,15 @@ def test_patch24a_layout_spec_assigns_outline_modal_and_docked_companion() -> No
         "The file picker is a temporary overlay, not a fourth persistent lane",
         "pass through save/discard/cancel",
         "dynamic outline/file rows do not pollute static layout collision evidence",
+        "conceptual zones, not three columns that must always consume width",
+        "Independent scroll ownership (Patch 24a1)",
+        "Document scrolling MUST NOT move either side panel",
+        "The outline list owns its own vertical scrollbar",
+        "Only the companion conversation/result body scrolls",
+        "The editor shell is not the document scroll owner",
+        "Viewport containment correction (Patch 24a2)",
+        "Long outline or file-list content MUST NOT increase the height of the editor shell",
+        "Responsive rules MUST NOT impose a positive minimum height on the companion",
         "Patch 24a is specification and contract-test work only",
     ]
     for phrase in required_phrases:

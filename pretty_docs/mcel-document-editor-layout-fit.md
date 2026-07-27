@@ -93,14 +93,74 @@ visibility so a reopened app does not keep stale zoom.
 
 Patch 24a changes the specification before changing the live UI.
 
-The target layout is:
+The target conceptual layout is:
 
 ```text
 left Document Outline | editable document page | right Document AI dock
 ```
 
+These are conceptual zones, not three columns that must always consume width.
+The center document is the permanent primary surface. The outline and companion
+may stay visible, dock, collapse, use drawers, or overlay according to owned
+container capacity.
+
 The Pretty Docs file list is no longer a persistent lane. It moves to a
 transient modal opened by `Open Pretty Doc...`.
+
+### Independent scroll ownership (Patch 24a1)
+
+The workbench uses bounded height and three independent vertical scroll owners:
+
+```text
+outline list       -> scrolls heading navigation only
+document viewport  -> scrolls authored pages only
+companion content  -> scrolls AI conversation/results only
+```
+
+Document scrolling MUST NOT move either side panel. The outline rail and right
+companion remain anchored in the Document Editor viewport while authored pages
+move through the center document viewport.
+
+The outline list owns its own vertical scrollbar. As document caret, selection,
+or viewport position changes, the corresponding outline entry becomes active
+and the outline scroll position adjusts just enough to keep that active
+navigation point visible. This synchronization MUST NOT change document scroll
+position. Clicking an outline entry explicitly scrolls/focuses the document.
+
+The companion header, close/reopen control, and prompt composer remain
+reachable. Only the companion conversation/result body scrolls when its content
+overflows. Document scroll events do not change the companion's vertical
+position.
+
+The editor shell is not the document scroll owner. Toolbars, side surfaces, and
+modal chrome remain outside the authored-page scroll. A Pretty Docs modal owns a
+separate candidate-list scrollbar.
+
+At narrow widths the outline and companion may become drawers or overlays, but
+their scroll ownership remains independent from the document.
+
+### Viewport containment correction (Patch 24a2)
+
+The active Document Editor route owns a definite browser-viewport height. Its
+outer stage, canvas wrapper, app root, and document shell MUST clip overflow and
+pass the remaining height to the internal grid.
+
+Long outline or file-list content MUST NOT increase the height of the editor
+shell, the application stage, or the browser page. Overflow belongs to the
+bounded navigation list, authored document viewport, or companion content
+scroll owner.
+
+Responsive rules MUST NOT impose a positive minimum height on the companion
+that can force the shared workbench row beyond the available viewport height.
+
+
+### Bounded navigation row sizing correction (Patch 24a3)
+
+A bounded navigation list MUST overflow as complete readable rows. The grid or
+list layout MUST NOT compress repeated rows until their title tracks have zero
+height. Each temporary file-list row and future outline row keeps an intrinsic
+or explicit minimum block size; excess rows belong to the navigation
+scrollbar.
 
 ### Left outline lane
 
@@ -109,6 +169,9 @@ the heading hierarchy of the loaded document.
 
 The outline lane:
 
+- remains anchored while the center document scrolls;
+- owns a scrollbar for long heading lists;
+- keeps the active heading visible by adjusting only its own scroll position;
 - MAY compact at constrained widths;
 - MUST keep heading navigation readable and keyboard reachable;
 - MAY truncate individual long heading labels while preserving accessible full
@@ -140,7 +203,9 @@ load, the new document is fit against the current center-lane capacity.
 ### Right companion lane
 
 The companion remains right-owned but no longer reserves its full expanded
-width while inactive.
+width while inactive. When expanded or active, it remains vertically anchored
+while the document scrolls; its internal conversation/result body is the only
+companion subregion that should require vertical scrolling.
 
 States:
 
@@ -194,6 +259,10 @@ docked companion state preserves context
 center lane grows when the companion docks
 page auto-fit refreshes after companion transitions and document load
 dynamic outline/file rows do not pollute static layout collision evidence
+document scrolling does not move the outline or companion
+outline, document, and companion content have independent scroll owners
+active outline entry stays visible without changing document scroll position
+companion header and prompt composer remain reachable during internal overflow
 ```
 
 ## Patch boundary
