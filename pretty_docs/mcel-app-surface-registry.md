@@ -14,11 +14,11 @@ file-explorer    semantic-runtime
 document         semantic-runtime
 website-builder  runtime-baseline
 code-editor      host-workbench
-calculator       runtime-baseline
+calculator       semantic-runtime
 ```
 
-File Explorer and Document Editor require the full five-layer baseline because they now have
-domain-neutral semantic surface pilots:
+File Explorer, Document Editor, and Calculator require the full five-layer baseline because they now have
+domain-neutral semantic surface contracts:
 
 ```text
 semantic-surface
@@ -28,8 +28,7 @@ runtime-visual-fit
 diagnostic-no-throw
 ```
 
-Website Builder, Code Editor, and Calculator are required app-surface entries
-too, but their current policy requires the runtime layers first:
+Website Builder and Code Editor are required app-surface entries too, but their current policy requires the runtime layers first:
 
 ```text
 runtime-ownership

@@ -392,6 +392,8 @@ def test_actual_truth_gate_can_prove_calculator_semantic_runtime_with_bound_evid
                   failedLayerIds: [],
                   unavailableLayerIds: [],
                   requiredLayerStatuses: {{
+                    "semantic-surface": "pass",
+                    "layout-grammar": "pass",
                     "runtime-ownership": "pass",
                     "runtime-visual-fit": "pass",
                     "diagnostic-no-throw": "pass"
@@ -403,6 +405,8 @@ def test_actual_truth_gate_can_prove_calculator_semantic_runtime_with_bound_evid
                   policyFailedLayerIds: [],
                   policyUnavailableLayerIds: [],
                   layers: [
+                    {{id: "semantic-surface", status: "pass"}},
+                    {{id: "layout-grammar", status: "pass"}},
                     {{id: "runtime-ownership", status: "pass"}},
                     {{id: "runtime-visual-fit", status: "pass"}},
                     {{id: "diagnostic-no-throw", status: "pass"}}

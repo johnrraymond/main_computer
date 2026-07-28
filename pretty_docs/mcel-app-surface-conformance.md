@@ -53,9 +53,8 @@ calculator
 ```
 
 The registry also records which layers are currently required for each app. File
-Explorer and Document Editor require the full semantic/runtime baseline. Website Builder, Code
-Editor, and Calculator require the runtime baseline first, while their full
-static semantic surface conversions can progress separately.
+Explorer, Document Editor, and Calculator require the full semantic/runtime baseline. Website Builder and Code
+Editor require the runtime baseline first, while their full static semantic surface conversions can progress separately.
 
 ## Surface fit-policy contract
 
@@ -71,4 +70,4 @@ Runtime-baseline and host-workbench apps are judged by their registered required
 layers.  Static semantic/layout layers may be unavailable for a plain source
 file or a runtime-only app without making the whole app fail.  Semantic-runtime
 apps still require the semantic-surface and layout-grammar layers explicitly,
-so this policy does not weaken File Explorer or Document Editor conformance.
+so this policy does not weaken File Explorer, Document Editor, or Calculator conformance.

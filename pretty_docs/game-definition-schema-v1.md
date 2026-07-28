@@ -180,18 +180,34 @@ terminal radius is positive
 
 ## Interactions
 
-An interaction definition names what the terminal or object asks the runtime to do. The definition declares requirements and observable effects; the registry supplies the safe implementation.
+An interaction definition names what the terminal or object asks the runtime to do. The definition declares a safe handler id and optional observable status/effects; the runtime registry supplies the implementation.
 
 ```json
 {
-  "id": "fireEnemyShipVolley",
-  "kind": "terminal-action",
+  "id": "fireBridgeTacticalConsole",
+  "label": "Fire Bridge Tactical Console",
+  "handler": "fireBridgeTacticalConsole",
   "requires": ["enemyShip.tracked"],
-  "effects": ["enemyShip.damage", "viewscreen.weaponFire", "objective.advance"]
+  "effects": ["enemyShip.damage", "viewscreen.weaponFire", "objective.advance"],
+  "emitsState": true
 }
 ```
 
-Version 1 should avoid arbitrary scripts. Interaction ids should map to tested runtime handlers.
+Patch E also allows the current nested project metadata form to use an object map:
+
+```json
+{
+  "interactions": {
+    "fireBridgeTacticalConsole": {
+      "id": "fireBridgeTacticalConsole",
+      "label": "Fire Bridge Tactical Console",
+      "handler": "fireBridgeTacticalConsole"
+    }
+  }
+}
+```
+
+Version 1 should avoid arbitrary scripts. Interaction ids should map to tested runtime handlers, and validators should fail content where an interactable action has no interaction registry entry.
 
 ## Objectives
 
@@ -263,7 +279,7 @@ An interactable is the gameplay target that actually produces a prompt and recei
 }
 ```
 
-Patch D extracts current mother-ship E-key targets into `motherShipInterior.interactables`. A later schema migration can map that nested project metadata directly into top-level `interactables`.
+Patch D extracts current mother-ship E-key targets into `motherShipInterior.interactables`. Patch E resolves each interactable `action` through `motherShipInterior.interactions` before invoking a safe runtime handler. A later schema migration can map that nested project metadata directly into top-level `interactables` and `interactions`.
 
 Validators should confirm that every interactable is inside a reachable room, has a non-empty prompt, and points to a registered action handler.
 

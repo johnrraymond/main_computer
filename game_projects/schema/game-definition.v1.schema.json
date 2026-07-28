@@ -92,10 +92,17 @@
       "default": []
     },
     "interactions": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/interaction"
-      },
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/interaction"
+          }
+        },
+        {
+          "$ref": "#/$defs/interactionMap"
+        }
+      ],
       "default": []
     },
     "objectives": {
@@ -415,7 +422,7 @@
       "additionalProperties": false,
       "required": [
         "id",
-        "kind"
+        "handler"
       ],
       "properties": {
         "id": {
@@ -441,6 +448,15 @@
         },
         "handler": {
           "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "emitsState": {
+          "type": "boolean"
         }
       }
     },
@@ -590,6 +606,13 @@
           "type": "string"
         }
       }
+    },
+    "interactionMap": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/interaction"
+      },
+      "default": {}
     }
   }
 }

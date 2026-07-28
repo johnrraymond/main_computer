@@ -75,11 +75,11 @@ var McelAppSurfaceRegistry = (() => {
       label: "Calculator",
       state: "surface-aware",
       conformanceRequired: true,
-      maturity: "runtime-baseline",
+      maturity: "semantic-runtime",
       surfaceId: "calculator.surface.workspace",
       contractId: "calculator.contract.default.app-health",
-      requiredLayerIds: RUNTIME_LAYER_IDS,
-      notes: "Compact control/result surface; runtime conformance is required before a full static semantic surface is added."
+      requiredLayerIds: BASELINE_LAYER_IDS,
+      notes: "Multi-lane computation surface; requires Calculator semantic extraction, shared layout grammar, runtime ownership, visual fit, and diagnostic no-throw checks."
     },
     document: {
       appId: "document",

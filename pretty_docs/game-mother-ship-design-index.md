@@ -21,6 +21,7 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 | `pretty_docs/game-runtime-patch-C-rooms-and-movement.md` | Patch C implementation note for extracting mother-ship rooms, movement bounds, exits, and spawns into level data |
 | `pretty_docs/game-runtime-patch-D-interactables.md` | Patch D implementation note for extracting mother-ship terminals, prompts, ranges, and E-key action ids into interactable data |
+| `pretty_docs/game-runtime-patch-E-interaction-registry.md` | Patch E implementation note for routing E-key action ids through a safe interaction registry |
 
 ## Intended use
 
@@ -65,4 +66,4 @@ Each future implementation patch should:
 
 The mother-ship content has reached the point where new features should be planned against the data-driven runtime architecture instead of continuing to add one-off renderer branches. Future implementation patches should preserve the existing playable route while moving state, rooms, interactables, objectives, and validation into explicit game-definition data.
 
-Patch A for that transition is documentation/schema only. It does not change runtime behavior. Patch B centralizes current mother-ship state defaults into one runtime factory while preserving the current bridge route, viewscreen, tactical console, and no-locked-door behavior. Patch C extracts the current room list, movement bounds, exits, and shuttle-bay spawn into explicit level data while keeping the same route playable. Patch D extracts terminals, prompts, interaction ranges, and E-key action ids into `motherShipInterior.interactables` while preserving the current route and bridge/tactical behavior.
+Patch A for that transition is documentation/schema only. It does not change runtime behavior. Patch B centralizes current mother-ship state defaults into one runtime factory while preserving the current bridge route, viewscreen, tactical console, and no-locked-door behavior. Patch C extracts the current room list, movement bounds, exits, and shuttle-bay spawn into explicit level data while keeping the same route playable. Patch D extracts terminals, prompts, interaction ranges, and E-key action ids into `motherShipInterior.interactables` while preserving the current route and bridge/tactical behavior. Patch E routes those action ids through a safe interaction registry so future validators can prove that every prompt has a handler before content ships.

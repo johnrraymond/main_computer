@@ -43,6 +43,10 @@ Patch B implementation note: mother-ship state defaults now flow through `shuttl
 
 Patch C implementation note: mother-ship rooms, movement bounds, exits, and the shuttle-bay arrival spawn now flow through `shuttle3dMotherShipInteriorLevelDefaults()` and project `motherShipInterior.rooms` / `movement` / `spawns` data. Later patches should not reintroduce hardcoded room-coordinate chains.
 
+Patch D implementation note: terminals, prompts, ranges, and action ids now flow through `motherShipInterior.interactables` and `shuttle3dNormalizeMotherShipInteractables()`.
+
+Patch E implementation note: action ids now flow through `motherShipInterior.interactions`, `shuttle3dNormalizeMotherShipInteractions()`, and `createShipInteractionRegistry()` before invoking safe runtime handlers.
+
 ## Patch series overview
 
 | Patch | Working name | Player-facing result |

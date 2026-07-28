@@ -2895,7 +2895,43 @@
               action: "trackEnemyShipOnViewscreen",
               prompt: "Press E to use Bridge Viewscreen."
             }
-          ]
+          ],
+          // Patch E formalizes action ids as registry entries instead of embedding E-key behavior in a switch.
+          interactions: {
+            enterBayOpsAccess: {
+              id: "enterBayOpsAccess",
+              label: "Enter Bay Operations access",
+              handler: "enterBayOpsAccess"
+            },
+            activateBayOperationsTerminal: {
+              id: "activateBayOperationsTerminal",
+              label: "Activate Bay Operations Terminal",
+              handler: "activateBayOperationsTerminal",
+              status: "Bay Operations online. Route to Security Checkpoint is available."
+            },
+            restoreEngineeringPower: {
+              id: "restoreEngineeringPower",
+              label: "Restore Engineering Power",
+              handler: "restoreEngineeringPower",
+              status: "Engineering restored main power. Bridge route confirmed open."
+            },
+            inspectOpenDoorRoute: {
+              id: "inspectOpenDoorRoute",
+              label: "Inspect open route",
+              handler: "inspectOpenDoorRoute"
+            },
+            trackEnemyShipOnViewscreen: {
+              id: "trackEnemyShipOnViewscreen",
+              label: "Track enemy ship on bridge viewscreen",
+              handler: "trackEnemyShipOnViewscreen",
+              status: "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire."
+            },
+            fireBridgeTacticalConsole: {
+              id: "fireBridgeTacticalConsole",
+              label: "Fire Bridge Tactical Console",
+              handler: "fireBridgeTacticalConsole"
+            }
+          }
         };
       }
 
@@ -3075,6 +3111,33 @@
       }
 
 
+      function shuttle3dNormalizeMotherShipInteractions(value, fallbackInteractions) {
+        const fallback = shuttle3dObjectValue(fallbackInteractions);
+        const supplied = shuttle3dObjectValue(value);
+        const source = {...fallback, ...supplied};
+        return Object.fromEntries(
+          Object.entries(source)
+            .map(([key, interaction]) => {
+              const raw = shuttle3dObjectValue(interaction);
+              const fallbackEntry = shuttle3dObjectValue(fallback[key]);
+              const id = String(raw.id || fallbackEntry.id || key).trim();
+              if (!id) return null;
+              return [
+                id,
+                {
+                  id,
+                  label: String(raw.label || fallbackEntry.label || id),
+                  handler: String(raw.handler || raw.effect || raw.action || fallbackEntry.handler || fallbackEntry.effect || fallbackEntry.action || id),
+                  status: String(raw.status || fallbackEntry.status || ""),
+                  emitsState: raw.emitsState !== false && fallbackEntry.emitsState !== false
+                }
+              ];
+            })
+            .filter(Boolean)
+        );
+      }
+
+
       function shuttle3dMotherShipInteriorConfig(scene) {
         const supplied = scene?.metadata?.shuttle3d?.motherShipInterior;
         const interior = supplied && typeof supplied === "object" ? supplied : {};
@@ -3104,6 +3167,10 @@
           levelDefaults.interactables,
           terminals,
           doors
+        );
+        const interactions = shuttle3dNormalizeMotherShipInteractions(
+          interior.interactions,
+          levelDefaults.interactions
         );
         const flags = shuttle3dNormalizeMotherShipFlags({
           ...defaults.flags,
@@ -3149,6 +3216,7 @@
           movement: shuttle3dCloneJson(movement),
           spawns: shuttle3dCloneJson(spawns),
           interactables: shuttle3dCloneJson(interactables),
+          interactions: shuttle3dCloneJson(interactions),
           doors: shuttle3dCloneJson(stateDefaults.doors),
           terminals: shuttle3dCloneJson(stateDefaults.terminals),
           flags: shuttle3dCloneJson(stateDefaults.flags),
@@ -3418,6 +3486,7 @@
           this.interiorConfig = shuttle3dMotherShipInteriorConfig(scene);
           this.flight = this.createFlightState();
           this.shipState = this.createShipState();
+          this.shipInteractionRegistry = this.createShipInteractionRegistry();
           this.pilotStations = shuttle3dPilotStationsConfig(scene);
           this.hoveredPilotStation = null;
           this.pilot = {
@@ -4023,50 +4092,109 @@
           return `Press E to inspect ${target.label}.`;
         }
 
-        performShipInteractionAction(target) {
-          const action = String(target?.action || target?.interaction || "");
-          switch (action) {
-            case "enterBayOpsAccess":
-              return this.enterBayOpsAccess();
-            case "activateBayOperationsTerminal":
-              this.setShipTerminalState("terminal.bay-ops", "online");
-              this.setShipDoorState("door.bay-inner", "open");
-              this.setShipObjective("objective.enter-corridor");
-              if (this.shipState?.flags) this.shipState.flags.bayOpsTerminalUsed = true;
-              this.setShipInteractionStatus("Bay Operations online. Route to Security Checkpoint is available.");
-              return true;
-            case "restoreEngineeringPower":
-              this.setShipTerminalState("terminal.engineering-power", "online");
-              this.shipState.power = "online";
-              this.shipState.security = "yellow-alert";
-              this.setShipDoorState("door.bridge", "open");
-              this.setShipObjective("objective.bridge-access");
-              if (this.shipState?.flags) this.shipState.flags.engineeringPowerRestored = true;
-              this.setShipInteractionStatus("Engineering restored main power. Bridge route confirmed open.");
-              return true;
-            case "trackEnemyShipOnViewscreen":
-              this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
-              this.setShipObjective(this.enemyShipDisabled() ? "objective.enemy-disabled" : "objective.enemy-attack", true);
-              if (this.shipState?.flags) {
-                this.shipState.flags.enemyShipOnBridgeViewscreen = true;
-                this.shipState.flags.bridgeViewscreenTrackingActive = true;
-                this.shipState.flags.bridgeViewscreenInteractedAtMs = Math.round(this.lastFrameTime || 0);
-              }
-              this.setShipInteractionStatus("Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.");
-              this.emitShipState(true);
-              return true;
-            case "fireBridgeTacticalConsole":
-              return this.fireBridgeTacticalConsole();
-            case "inspectOpenDoorRoute":
-              if (this.shipDoorState(target.id) !== "open") this.setShipDoorState(target.id, "open");
-              if (target.id === "door.bay-inner" || target.id === "door.security-hub") this.setShipObjective("objective.restore-power");
-              if (target.id === "door.engineering-access" || target.id === "door.medbay" || target.id === "door.science") this.setShipObjective("objective.survey-departments");
-              if (target.id === "door.bridge") this.setShipObjective("objective.bridge-screen");
-              this.setShipInteractionStatus(`${target.label} route is open. No door lock is required.`);
-              return true;
-            default:
-              return false;
+        createShipInteractionHandlerMap() {
+          return {
+            enterBayOpsAccess: (target, interaction) => this.enterBayOpsAccess(target, interaction),
+            activateBayOperationsTerminal: (target, interaction) => this.activateBayOperationsTerminal(target, interaction),
+            restoreEngineeringPower: (target, interaction) => this.restoreEngineeringPower(target, interaction),
+            trackEnemyShipOnViewscreen: (target, interaction) => this.trackEnemyShipOnViewscreen(target, interaction),
+            fireBridgeTacticalConsole: (target, interaction) => this.fireBridgeTacticalConsole(target, interaction),
+            inspectOpenDoorRoute: (target, interaction) => this.inspectOpenDoorRoute(target, interaction)
+          };
+        }
+
+        createShipInteractionRegistry() {
+          const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
+          const definitions = config.interactions || {};
+          const handlers = this.createShipInteractionHandlerMap();
+          const registry = {};
+          Object.entries(definitions).forEach(([actionId, definition]) => {
+            const raw = definition && typeof definition === "object" ? definition : {};
+            const id = String(raw.id || actionId).trim();
+            if (!id) return;
+            const handlerId = String(raw.handler || id).trim();
+            registry[id] = {
+              id,
+              label: String(raw.label || id),
+              handlerId,
+              status: String(raw.status || ""),
+              emitsState: raw.emitsState !== false,
+              handler: handlers[handlerId] || null
+            };
+          });
+          Object.keys(handlers).forEach((handlerId) => {
+            if (registry[handlerId]) return;
+            registry[handlerId] = {
+              id: handlerId,
+              label: handlerId,
+              handlerId,
+              status: "",
+              emitsState: true,
+              handler: handlers[handlerId]
+            };
+          });
+          return registry;
+        }
+
+        shipInteractionDefinition(actionId) {
+          const id = String(actionId || "").trim();
+          if (!id) return null;
+          if (!this.shipInteractionRegistry) this.shipInteractionRegistry = this.createShipInteractionRegistry();
+          return this.shipInteractionRegistry[id] || null;
+        }
+
+        activateBayOperationsTerminal(target, interaction) {
+          this.setShipTerminalState("terminal.bay-ops", "online");
+          this.setShipDoorState("door.bay-inner", "open");
+          this.setShipObjective("objective.enter-corridor");
+          if (this.shipState?.flags) this.shipState.flags.bayOpsTerminalUsed = true;
+          this.setShipInteractionStatus(interaction?.status || "Bay Operations online. Route to Security Checkpoint is available.");
+          return true;
+        }
+
+        restoreEngineeringPower(target, interaction) {
+          this.setShipTerminalState("terminal.engineering-power", "online");
+          this.shipState.power = "online";
+          this.shipState.security = "yellow-alert";
+          this.setShipDoorState("door.bridge", "open");
+          this.setShipObjective("objective.bridge-access");
+          if (this.shipState?.flags) this.shipState.flags.engineeringPowerRestored = true;
+          this.setShipInteractionStatus(interaction?.status || "Engineering restored main power. Bridge route confirmed open.");
+          return true;
+        }
+
+        trackEnemyShipOnViewscreen(target, interaction) {
+          this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
+          this.setShipObjective(this.enemyShipDisabled() ? "objective.enemy-disabled" : "objective.enemy-attack", true);
+          if (this.shipState?.flags) {
+            this.shipState.flags.enemyShipOnBridgeViewscreen = true;
+            this.shipState.flags.bridgeViewscreenTrackingActive = true;
+            this.shipState.flags.bridgeViewscreenInteractedAtMs = Math.round(this.lastFrameTime || 0);
           }
+          this.setShipInteractionStatus(interaction?.status || "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.");
+          this.emitShipState(true);
+          return true;
+        }
+
+        inspectOpenDoorRoute(target) {
+          if (this.shipDoorState(target.id) !== "open") this.setShipDoorState(target.id, "open");
+          if (target.id === "door.bay-inner" || target.id === "door.security-hub") this.setShipObjective("objective.restore-power");
+          if (target.id === "door.engineering-access" || target.id === "door.medbay" || target.id === "door.science") this.setShipObjective("objective.survey-departments");
+          if (target.id === "door.bridge") this.setShipObjective("objective.bridge-screen");
+          this.setShipInteractionStatus(`${target.label} route is open. No door lock is required.`);
+          return true;
+        }
+
+        performShipInteractionAction(target) {
+          const actionId = String(target?.action || target?.interaction || "").trim();
+          const interaction = this.shipInteractionDefinition(actionId);
+          if (!interaction?.handler) {
+            if (actionId) this.setShipInteractionStatus(`No interaction handler registered for ${actionId}.`);
+            return false;
+          }
+          const result = interaction.handler(target, interaction);
+          if (result && interaction.emitsState !== false) this.emitShipState(true);
+          return Boolean(result);
         }
 
         interactWithShip() {

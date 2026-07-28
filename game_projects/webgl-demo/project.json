@@ -1617,7 +1617,42 @@
                 "action": "trackEnemyShipOnViewscreen",
                 "prompt": "Press E to use Bridge Viewscreen."
               }
-            ]
+            ],
+            "interactions": {
+              "enterBayOpsAccess": {
+                "id": "enterBayOpsAccess",
+                "label": "Enter Bay Operations access",
+                "handler": "enterBayOpsAccess"
+              },
+              "activateBayOperationsTerminal": {
+                "id": "activateBayOperationsTerminal",
+                "label": "Activate Bay Operations Terminal",
+                "handler": "activateBayOperationsTerminal",
+                "status": "Bay Operations online. Route to Security Checkpoint is available."
+              },
+              "restoreEngineeringPower": {
+                "id": "restoreEngineeringPower",
+                "label": "Restore Engineering Power",
+                "handler": "restoreEngineeringPower",
+                "status": "Engineering restored main power. Bridge route confirmed open."
+              },
+              "inspectOpenDoorRoute": {
+                "id": "inspectOpenDoorRoute",
+                "label": "Inspect open route",
+                "handler": "inspectOpenDoorRoute"
+              },
+              "trackEnemyShipOnViewscreen": {
+                "id": "trackEnemyShipOnViewscreen",
+                "label": "Track enemy ship on bridge viewscreen",
+                "handler": "trackEnemyShipOnViewscreen",
+                "status": "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire."
+              },
+              "fireBridgeTacticalConsole": {
+                "id": "fireBridgeTacticalConsole",
+                "label": "Fire Bridge Tactical Console",
+                "handler": "fireBridgeTacticalConsole"
+              }
+            }
           }
         },
         "combatEnabled": true,

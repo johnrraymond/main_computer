@@ -4,7 +4,7 @@
 
 This is the documentation-first requirements contract for the Calculator app.
 
-The current implementation has a calculator route, a rich calculator DOM, arithmetic input/result controls, scientific graphing controls, a graph canvas, Mathics symbolic panels, result Q&A, an embedded calculator chat panel, a calculator MCEL domain pack, and a dedicated Calculator semantic adapter registered with the MCEL domain-adapter registry.
+The current implementation has a calculator route, a rich calculator DOM, arithmetic input/result controls, scientific graphing controls, a graph canvas, Mathics symbolic panels, result Q&A, an embedded calculator chat panel, a calculator MCEL domain pack, a dedicated Calculator semantic adapter registered with the MCEL domain-adapter registry, and a five-layer Calculator semantic surface with shared layout grammar.
 
 The current semantic runtime is intentionally lane-explicit:
 
@@ -88,6 +88,7 @@ current_sources:
   - main_computer/web/applications/apps/calculator.html
   - main_computer/web/applications/scripts/calculator.js
   - main_computer/web/applications/scripts/calculator-semantic-adapter.js
+  - main_computer/web/applications/scripts/mcel-calculator-surface.js
   - main_computer/web/applications/scripts/dom-bindings/calculator.js
   - main_computer/web/applications/scripts/mcel-supercut-packs-calculator.js
   - main_computer/web/applications/styles/calculator.css
@@ -97,6 +98,8 @@ semantic_adapter:
 verification:
   - tests/test_viewport_app_routes.py
   - tests/test_viewport_applications_static_core.py
+  - tests/test_mcel_calculator_semantic_adapter.py
+  - tests/test_mcel_calculator_surface.py
   - tests/test_mcel_documentation.py
 ```
 

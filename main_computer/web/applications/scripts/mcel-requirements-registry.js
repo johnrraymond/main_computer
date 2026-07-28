@@ -286,7 +286,7 @@
         }
       ],
       "source": {
-        "end_line": 101,
+        "end_line": 104,
         "file": "pretty_docs/mcel-calculator-requirements.md",
         "start_line": 75
       },
@@ -1740,7 +1740,7 @@
         }
       ],
       "source": {
-        "end_line": 101,
+        "end_line": 104,
         "file": "pretty_docs/mcel-calculator-requirements.md",
         "start_line": 75
       },
@@ -3047,9 +3047,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 1098,
+                "end_line": 1101,
                 "file": "pretty_docs/mcel-calculator-requirements.md",
-                "start_line": 1075
+                "start_line": 1078
               },
               "source_binding": "calculator.binding.route-and-ui",
               "status": "specified",
@@ -3088,9 +3088,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 1043,
+                "end_line": 1046,
                 "file": "pretty_docs/mcel-calculator-requirements.md",
-                "start_line": 1021
+                "start_line": 1024
               },
               "source_binding": "calculator.binding.route-and-ui",
               "status": "specified",
@@ -3160,9 +3160,9 @@
               ],
               "severity": "critical",
               "source": {
-                "end_line": 1073,
+                "end_line": 1076,
                 "file": "pretty_docs/mcel-calculator-requirements.md",
-                "start_line": 1045
+                "start_line": 1048
               },
               "source_binding": "calculator.binding.route-and-ui",
               "status": "specified",

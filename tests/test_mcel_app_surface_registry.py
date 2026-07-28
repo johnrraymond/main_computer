@@ -204,8 +204,10 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
     ]
 
     assert data["calculator"]["conformanceRequired"] is True
-    assert data["calculator"]["maturity"] == "runtime-baseline"
+    assert data["calculator"]["maturity"] == "semantic-runtime"
     assert data["calculator"]["requiredLayerIds"] == [
+        "semantic-surface",
+        "layout-grammar",
         "runtime-ownership",
         "runtime-visual-fit",
         "diagnostic-no-throw",
@@ -218,11 +220,15 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
 
 
 def test_required_runtime_baseline_apps_can_pass_without_static_surface_yet() -> None:
-    report = healthy_runtime_report("calculator", "calculator.surface.workspace", ".calculator-workspace")
+    report = healthy_runtime_report(
+        "website-builder",
+        "website-builder.surface.preview",
+        "#website-builder-preview-frame",
+    )
     script = load_conformance_stack(
         f"""
         const result = conformance.evaluateAppSurfaceConformance({{
-          appId: "calculator",
+          appId: "website-builder",
           report: {json.dumps(report)}
         }});
         process.stdout.write(JSON.stringify({{
@@ -318,6 +324,46 @@ def test_file_explorer_full_policy_requires_all_five_layers() -> None:
     assert data["policyFailedLayerIds"] == []
     assert data["policyUnavailableLayerIds"] == []
 
+
+
+def test_calculator_full_policy_requires_all_five_layers() -> None:
+    html = (WEB / "apps" / "calculator.html").read_text(encoding="utf-8")
+    report = healthy_runtime_report(
+        "calculator",
+        "calculator.surface.workspace",
+        ".calculator-workspace",
+    )
+    script = load_conformance_stack(
+        f"""
+        const result = conformance.evaluateAppSurfaceConformance({{
+          appId: "calculator",
+          surfaceHtml: {json.dumps(html)},
+          report: {json.dumps(report)}
+        }});
+        process.stdout.write(JSON.stringify({{
+          status: result.status,
+          valid: result.valid,
+          maturity: result.registryPolicy.maturity,
+          requiredLayerIds: result.requiredLayerIds,
+          policyFailedLayerIds: result.policyFailedLayerIds,
+          policyUnavailableLayerIds: result.policyUnavailableLayerIds
+        }}));
+        """
+    )
+    data = run_node_json(script)
+
+    assert data["status"] == "pass"
+    assert data["valid"] is True
+    assert data["maturity"] == "semantic-runtime"
+    assert data["requiredLayerIds"] == [
+        "semantic-surface",
+        "layout-grammar",
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    ]
+    assert data["policyFailedLayerIds"] == []
+    assert data["policyUnavailableLayerIds"] == []
 
 def test_registry_documentation_is_domain_neutral() -> None:
     text = DOC.read_text(encoding="utf-8")
