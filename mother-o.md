@@ -3,7 +3,7 @@
 Status: operator-facing companion to `mother.md`
 
 Source reviewed: `mother.md` SHA-256
-`98eb673525055bd512ef472f5c6df0c28e16cb097ca61de904d54723d3ae7723`
+`7bcb507b4acecdba3c16c801f5da222261ef6f11d9e0b94a94d7f9eb3cfc5e28`
 
 ## 1. Purpose and authority
 
@@ -73,25 +73,31 @@ The key rules are:
 
 ### 3.1 Summary
 
-| Operation | Operator intent | Class | Stages | CLI status |
-|---|---|---|---|---|
-| `diagnose` | Explain the current network and operation state | Read-only | One shot | Defined |
-| `plan` | Preview scopes, conflicts, risks, and rollback model | Read-only | One shot; normally inside `prep` | Defined as planner boundary |
-| Evidence inspection/export | Preserve raw evidence when state cannot be interpreted safely | Read-only | One shot | Surface name not frozen |
-| `add-node` | Add or reactivate one complete super-node | Authoritative | `prep` / `do` / `finalize` / generic `rollback` | Defined |
-| `remove-node` | Remove one complete super-node | Authoritative | `prep` / `do` / `finalize` / generic `rollback` | Defined |
-| `restore-service` | Recreate or repair a missing Coolify service without changing consensus membership | Authoritative repair | `prep` / `do` / `finalize` / generic `rollback` | Operation defined; some options not frozen |
-| `reseal-qbft` | Repair QBFT configuration on selected existing services | Authoritative repair | `prep` / `do` / `finalize` / generic `rollback` | Defined |
-| `rpc-propagate` | Repair a damaged RPC route graph | Authoritative repair | `prep` / `do` / `finalize` / generic `rollback` | Operation and API path defined; CLI options not frozen |
-| `sync-state` | Adopt an already-authoritative, unanimously agreed remote generation locally | Staged local adoption | `prep` / `do` / `rollback` / `finalize` | Defined |
-| `recover-head` | Reconstruct a lost local Mother state root from unanimous compatible replicas | Authority recovery | `prep` / `do` / `finalize` | Defined |
-| `reseal-state` | Restore authority when reachable replicas diverge but a safe common base is provable | Authority recovery | `prep` / `do` / `finalize` / generic `rollback` before commit | Defined |
-| Replica membership change | Enroll or retire a Mother replica host independently of node lifecycle | Authoritative membership | `prep` / `do` / `finalize` / generic `rollback` | Required; ordinary standalone CLI name not frozen |
-| Schema migration | Move durable Mother state between explicitly supported schema versions | Authoritative migration | Journaled staged operation | Required; CLI name not frozen |
-| Identity or secret rotation | Replace private material after explicit operator intent or loss of trust | Authoritative corrective action | Journaled staged operation | Required when exposure cannot be ruled out; CLI and detailed contract not frozen |
-| `repair-projections` | Rebuild derived local projections from the pinned authoritative local journal | Non-authoritative maintenance | One shot | Operation defined; CLI spelling not frozen |
-| `rollback` | Reverse an active staged operation before its commit boundary | Lifecycle control | One shot or retry | Defined |
-| Retry/resume | Continue the exact active operation after interruption or recognized partial completion | Lifecycle control | Repeat the same `do` or `finalize` | Defined |
+| Operation ID | Operation | Operator intent | Class | Stages | CLI status |
+|---|---|---|---|---|---|
+| `MOTHER-OP-DIAGNOSE` | `diagnose` | Explain the current network and operation state | Read-only | One shot | Defined |
+| `MOTHER-OP-PLAN` | `plan` | Preview scopes, conflicts, risks, and rollback model | Read-only | One shot; normally inside `prep` | Defined as planner boundary |
+| `MOTHER-OP-EVIDENCE-EXPORT` | Evidence inspection/export | Preserve raw evidence when state cannot be interpreted safely | Read-only | One shot | Surface name not frozen |
+| `MOTHER-OP-ADD-NODE` | `add-node` | Add or reactivate one complete super-node | Authoritative | `prep` / `do` / `finalize` / generic `rollback` | Defined |
+| `MOTHER-OP-REMOVE-NODE` | `remove-node` | Remove one complete super-node | Authoritative | `prep` / `do` / `finalize` / generic `rollback` | Defined |
+| `MOTHER-OP-RESTORE-SERVICE` | `restore-service` | Recreate or repair a missing Coolify service without changing consensus membership | Authoritative repair | `prep` / `do` / `finalize` / generic `rollback` | Operation defined; some options not frozen |
+| `MOTHER-OP-RESEAL-QBFT` | `reseal-qbft` | Repair QBFT configuration on selected existing services | Authoritative repair | `prep` / `do` / `finalize` / generic `rollback` | Defined |
+| `MOTHER-OP-RPC-PROPAGATE` | `rpc-propagate` | Repair a damaged RPC route graph | Authoritative repair | `prep` / `do` / `finalize` / generic `rollback` | Operation and API path defined; CLI options not frozen |
+| `MOTHER-OP-SYNC-STATE` | `sync-state` | Adopt an already-authoritative, unanimously agreed remote generation locally | Staged local adoption | `prep` / `do` / `rollback` / `finalize` | Defined |
+| `MOTHER-OP-RECOVER-HEAD` | `recover-head` | Reconstruct a lost local Mother state root from unanimous compatible replicas | Authority recovery | `prep` / `do` / `finalize` | Defined; pre-activation abort/rollback remains contract-open |
+| `MOTHER-OP-RESEAL-STATE` | `reseal-state` | Restore authority when reachable replicas diverge but a safe common base is provable | Authority recovery | `prep` / `do` / `finalize` / generic `rollback` before commit | Defined |
+| `MOTHER-OP-REPLICA-ENROLL` | Ordinary replica enrollment | Enroll a Mother replica host independently of node lifecycle | Authoritative membership | `prep` / `do` / `finalize` / generic `rollback` | Required; standalone CLI name not frozen |
+| `MOTHER-OP-REPLICA-RETIRE` | Ordinary replica retirement | Retire a Mother replica host independently of node lifecycle | Authoritative membership | `prep` / `do` / `finalize` / generic `rollback` | Required; standalone CLI name not frozen |
+| `MOTHER-OP-SCHEMA-MIGRATION` | Schema migration | Move durable Mother state between explicitly supported schema versions | Authoritative migration | Journaled staged operation | Contract-open; mutating entry points disabled |
+| `MOTHER-OP-IDENTITY-ROTATION` | Identity or secret rotation | Replace private material after explicit operator intent or loss of trust | Authoritative corrective action | Journaled staged operation | Contract-open; mutating entry points disabled |
+| `MOTHER-OP-REPAIR-PROJECTIONS` | `repair-projections` | Rebuild derived local projections from the pinned authoritative local journal | Non-authoritative maintenance | One shot | Operation defined; CLI spelling not frozen |
+| active operation identity | `rollback` | Reverse an active staged operation before its commit boundary | Lifecycle control | One shot or retry | Defined |
+| active operation identity | Retry/resume | Continue the exact active operation after interruption or recognized partial completion | Lifecycle control | Repeat the same `do` or `finalize` | Defined |
+
+The `MOTHER-OP-*` values in this table are the canonical operation IDs used by
+`mother-o-f.md`, `mother-o-f-m.md`, tests, evidence, and traceability registries.
+Lifecycle controls such as rollback and retry/resume are addressed by active
+operation identity rather than a separate `MOTHER-OP-*` catalog entry.
 
 ### 3.2 Actions that are not separate top-level operations
 
@@ -660,13 +666,18 @@ additional change is a new operation.
 | `doing` | Retry/resume exact `do`; rollback; `diagnose` |
 | `remediation-required` | Retry/resume; `rollback --all`; `rollback --count`; `rollback --through`; `diagnose` |
 | `do-complete-pending-finalize` | `finalize`; any valid rollback form; `diagnose` |
-| `finalizing` with predecessor still authoritative | Exact finalize retry or certified cancellation followed by rollback |
-| `finalizing` with successor already authoritative | Reconcile forward to `finalized-replication-pending`; no rollback |
+| `finalizing` with predecessor still authoritative | Exact finalize retry or certified cancellation followed by rollback; `diagnose` |
+| `finalizing` with successor already authoritative | Reconcile forward to `finalized-replication-pending`; no rollback; `diagnose` |
 | `finalize-failed` | Finalize retry; retry/resume if needed; rollback; `diagnose` |
 | `finalized-replication-pending` | Exact finalize/resynchronization/acknowledgement/release retry; `diagnose`; no rollback or new mutation |
-| `rollback-failed` | Exact rollback retry; diagnosis; explicit rectification for unrecognized corruption |
-| `finalized` | Diagnose or begin a new operation |
-| `rolled-back` | Diagnose or begin a new operation |
+| `rolling-back` | Exact rollback retry/resume; `diagnose`; no forward mutation |
+| `rollback-failed` | Exact rollback retry; `diagnose`; explicit rectification for unrecognized corruption |
+| `finalized` | `diagnose` or begin a new operation |
+| `rolled-back` | `diagnose` or begin a new operation |
+
+`diagnose` remains available in every state, including terminal and failure
+states. It remains read-only and does not release, roll back, finalize, or adopt
+authority.
 
 `sync-state` has a separate local-adoption lifecycle:
 
@@ -690,7 +701,7 @@ additional change is a new operation.
 | Add a node to a healthy live QBFT network | `add-node --mode soft` |
 | Add a node during explicit offline maintenance | `add-node --mode hard` |
 | Restart a born network whose finalized validator set is empty | `add-node --mode reactivate` |
-| Remove a node while keeping at least one validator | `remove-node --mode soft|hard` |
+| Remove a node while keeping at least one validator | `remove-node --mode soft / hard` |
 | Deliberately remove the final validator | `remove-node ... --allow-zero-validators` |
 | Repair only a missing/damaged Coolify service | `restore-service` |
 | Repair QBFT files/topology on existing services | `reseal-qbft` |
@@ -808,21 +819,37 @@ a new topology decision.
 12. If Mother cannot prove the current head, participant set, prestate, or
     rollback closure, stop and use the diagnosis-directed recovery path.
 
-## 17. Remaining command-surface decisions
+## 17. Remaining open items
 
-The architecture is complete, but this operator surface still needs final CLI
-spelling for:
+This catalog is the operation-ID authority, but not every public surface or
+mutating contract is closed.
+
+### 17.1 Surface-open items
+
+The following items have defined safety boundaries, but still need final CLI
+spelling, options, or presentation:
 
 1. ordinary standalone replica-host enrollment;
 2. ordinary standalone replica-host retirement;
-3. schema migration;
-4. raw-evidence inspection/export;
-5. the full `rpc-propagate` option set;
-6. the exact `repair-projections` CLI spelling;
-7. the full `restore-service` option set;
-8. identity/secret rotation and related explicit corrective-action contracts;
-9. pre-activation abort or rollback semantics for `recover-head`.
+3. raw-evidence inspection/export;
+4. the full `rpc-propagate` option set;
+5. the exact `repair-projections` CLI spelling;
+6. the full `restore-service` option set.
 
-These are interface-definition tasks. They MUST preserve the authority,
-participant, staging, rollback, and irreversible-boundary contracts already
-defined by `mother.md`.
+Surface work MUST preserve the authority, participant, staging, rollback, and
+irreversible-boundary contracts already defined by `mother.md`.
+
+### 17.2 Contract-open items
+
+The following operations do not yet have enough product contract to implement
+their mutating paths:
+
+1. pre-activation abort or rollback semantics for `recover-head`;
+2. schema-migration authority, commit, rollback, and mixed-version semantics;
+3. identity/secret-rotation authority, revocation, rollback, and recovery
+   semantics.
+
+The first implementation milestone MAY keep read-only preparation, diagnosis,
+evidence, and planning seams for these operations. Every mutating entry point in
+a `contract-open` path MUST remain unreachable and return the documented
+`MOTHER_OPEN_*` error until the owning contract is closed.

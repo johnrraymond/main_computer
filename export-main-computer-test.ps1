@@ -635,6 +635,7 @@ $exportItems = @(
   "mother.md",
   "mother-o.md",
   "mother-o-f.md",
+  "mother-o-f-m.md",
   "deploy/local-platform",
   "deploy/scheduler-lab/docker-compose.worker-lab.yml",
   "deploy/scheduler-lab/Dockerfile.simulator",

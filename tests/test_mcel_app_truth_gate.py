@@ -207,7 +207,7 @@ def test_complete_authorities_and_fresh_evidence_prove_semantic_runtime() -> Non
     truth = run_node_json(script)
 
     assert truth["schema"] == "mcel-app-truth-snapshot-v1"
-    assert truth["overallStatus"] == "runtime-proven"
+    assert truth["overallStatus"] == "semantic-runtime-proven"
     assert truth["requirements"]["contractComplete"] is True
     assert truth["adapter"]["fullApplicationSemanticReady"] is True
     assert truth["evidence"]["runtime"]["fresh"] is True
@@ -216,6 +216,96 @@ def test_complete_authorities_and_fresh_evidence_prove_semantic_runtime() -> Non
     assert truth["claims"]["acceptanceProven"] is True
     assert truth["claims"]["semanticRuntimeProven"] is True
     assert truth["findings"] == []
+
+
+def test_complete_current_scope_ignores_prohibited_and_explicitly_excluded_planned_intents() -> None:
+    prelude = fake_registry_prelude()
+    prelude += """
+    const baseEvaluateAdapterReadiness = domainAdapterRegistry.evaluateAdapterReadiness;
+    domainAdapterRegistry.evaluateAdapterReadiness = function(appId) {
+      return {
+        ...baseEvaluateAdapterReadiness(appId),
+        executableIntentCount: 2,
+        prohibitedIntentCount: 3,
+        blockedIntentCount: 3,
+        totalIntentCount: 5,
+        intentCoverage: {
+          excludedPlannedIntentIds: ["openInOwningApp"]
+        },
+        intentCoverageValidation: {
+          incompleteIntentIds: []
+        }
+      };
+    };
+    """
+    script = load_truth_gate(
+        prelude
+        + """
+        const truth = gate.evaluateAppTruth("demo", {
+          requirementsRegistry,
+          domainAdapterRegistry,
+          appSurfaceRegistry,
+          runtimeEvidence,
+          acceptanceEvidence,
+          now: "2026-07-27T12:00:00Z"
+        });
+        process.stdout.write(JSON.stringify(truth));
+        """
+    )
+    truth = run_node_json(script)
+
+    assert truth["overallStatus"] == "semantic-runtime-proven"
+    assert truth["claims"]["semanticRuntimeProven"] is True
+    assert truth["adapter"]["excludedPlannedIntentIds"] == ["openInOwningApp"]
+    assert truth["adapter"]["prohibitedIntentCount"] == 3
+    assert "required-intent-not-executable" not in truth["findingCodes"]
+
+
+def test_incomplete_current_scope_keeps_required_intent_finding() -> None:
+    prelude = fake_registry_prelude(full_semantic_ready=False)
+    prelude += """
+    const baseEvaluateAdapterReadiness = domainAdapterRegistry.evaluateAdapterReadiness;
+    domainAdapterRegistry.evaluateAdapterReadiness = function(appId) {
+      return {
+        ...baseEvaluateAdapterReadiness(appId),
+        intentCoverageReady: false,
+        fullApplicationSemanticReady: false,
+        semanticRuntimeReady: false,
+        executableIntentCount: 1,
+        declaredOnlyIntentCount: 1,
+        blockedIntentCount: 1,
+        totalIntentCount: 2,
+        semanticRuntimeScope: "partial-demo-v1",
+        intentCoverageValidation: {
+          incompleteIntentIds: ["saveDemo"]
+        },
+        missingApplicationSemantics: ["saveDemo"]
+      };
+    };
+    """
+    script = load_truth_gate(
+        prelude
+        + """
+        const truth = gate.evaluateAppTruth("demo", {
+          requirementsRegistry,
+          domainAdapterRegistry,
+          appSurfaceRegistry,
+          runtimeEvidence,
+          acceptanceEvidence,
+          now: "2026-07-27T12:00:00Z"
+        });
+        process.stdout.write(JSON.stringify(truth));
+        """
+    )
+    truth = run_node_json(script)
+
+    assert truth["overallStatus"] == "runtime-proven"
+    assert truth["claims"]["semanticRuntimeProven"] is False
+    assert "required-intent-not-executable" in truth["findingCodes"]
+    finding = next(item for item in truth["findings"] if item["code"] == "required-intent-not-executable")
+    assert finding["detail"]["currentScopeIntentCount"] == 2
+    assert finding["detail"]["incompleteIntentIds"] == ["saveDemo"]
+    assert finding["detail"]["semanticRuntimeScope"] == "partial-demo-v1"
 
 
 def test_passing_surface_evidence_does_not_overclaim_missing_domain_semantics() -> None:
@@ -427,7 +517,7 @@ def test_snapshot_joins_union_of_known_apps_and_reports_stable_counts() -> None:
 
     assert snapshot["appIds"] == ["demo", "explicit-app", "legacy-app"]
     assert snapshot["appCount"] == 3
-    assert snapshot["statusCounts"]["runtime-proven"] == 1
+    assert snapshot["statusCounts"]["semantic-runtime-proven"] == 1
     assert sum(snapshot["statusCounts"].values()) == 3
     assert snapshot["findingCounts"]["requirements-contract-missing"] == 2
     by_app = {entry["appId"]: entry for entry in snapshot["apps"]}

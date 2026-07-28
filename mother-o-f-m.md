@@ -6,13 +6,13 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 98eb673525055bd512ef472f5c6df0c28e16cb097ca61de904d54723d3ae7723
+SHA-256: 7bcb507b4acecdba3c16c801f5da222261ef6f11d9e0b94a94d7f9eb3cfc5e28
 
 mother-o.md
-SHA-256: 1678e8ca58a6c3242067d645d62975e844bf077fc4201e9113c7f54d294a9925
+SHA-256: fa2420013238e664d14e4c38554d4b3574b8cbabdc84764803e39a67daade63e
 
 mother-o-f.md
-SHA-256: 43636e232a5f0a68d034a49df567f0a532df6212ad11d29391ca43406eea4cdf
+SHA-256: 67bc258d47ff3ea24148969131f74f530250b64d81b4e591e1e07bf8fd5d92ff
 ```
 
 ## 1. Purpose and authority
@@ -41,9 +41,9 @@ If the documents conflict, the earlier document in that precedence order
 governs. This document MUST NOT invent a weaker authority, rollback,
 membership, bootstrap, recovery, or finalization model.
 
-The attached source snapshot contains no `tools/mother/` implementation. Every
-module below is therefore a specified implementation target, not a claim about
-existing code.
+This document describes the required `tools/mother/` implementation surface.
+A module listed here is a specified implementation target until production code,
+tests, and registry evidence prove that the module exists and conforms.
 
 ## 2. Module decomposition rules
 
@@ -93,6 +93,12 @@ Production code MUST NOT:
   owner module;
 - infer success from transport success;
 - silently repair or adopt state while executing an observation module.
+
+Release ownership is single-layered: `MOTHER-OFM-AUTH-*` modules release D026
+reservations and authority-protocol fencing, `MOTHER-OFM-RB-*` modules close
+rollback-frame ownership, `MOTHER-OFM-REC-003` closes D029/D028 reseal protocol
+ownership, and `MOTHER-OFM-CTL-*` modules alone release logical mutation scopes
+and current-operation ownership.
 
 ### 2.4 Module authority classes
 
@@ -469,7 +475,7 @@ return `OperationCommandResult`.
 |---|---|---|---|
 | `MOTHER-OFM-REC-001` | `common/state_sync.py` | `pin_candidate`, `download_to_staging`, `verify_staging`, `prepare_activation`, `switch_pointer`, `reconcile`, `discard` | local-authority writer; never changes network head ID, epoch, or lineage |
 | `MOTHER-OFM-REC-002` | `common/recovery.py` | `load_descriptor`, `prove_unanimous_candidate`, `fetch_objects`, `restore_state_root`, `replay_and_verify`, `activate_replacement_identity`, `replicate_activation` | local then replicated recovery protocol; exact expected set required |
-| `MOTHER-OFM-REC-003` | `common/authority_reseal.py` | `collect_base_reports`, `prove_common_base`, `calculate_head_sets`, `classify_obligations`, `build_intent`, `build_checkpoint`, `build_proposal`, `collect_acceptances`, `build_certificate`, `compose_membership`, `build_bundle`, `commit`, `complete_forward`, `cancel` | D029 authority protocol; all current replicas reachable and accepting |
+| `MOTHER-OFM-REC-003` | `common/authority_reseal.py` | `collect_base_reports`, `prove_common_base`, `calculate_head_sets`, `classify_obligations`, `build_intent`, `build_checkpoint`, `build_proposal`, `collect_proposal_acceptances`, `build_certificate`, `compose_membership`, `collect_completed_certificate_acceptances`, `build_bundle`, `commit`, `complete_forward`, `commit_fence_rollover`, `prepare_cancel`, `commit_or_abort_cancel` | D029 authority protocol; all current replicas reachable and accepting; membership-changing mode composes with D028 before completed-certificate acceptance |
 
 ### 5.12 Maintenance modules
 
@@ -655,7 +661,7 @@ boundaries.
 | `MOTHER-OF-AUTH-012` | `MOTHER-OFM-AUTH-005.collect_acknowledgements` → `MOTHER-OFM-AUTH-002.validate_acceptances` | Replay-verified durable acknowledgement set |
 | `MOTHER-OF-AUTH-013` | `MOTHER-OFM-AUTH-002.build_ack_certificate` → `MOTHER-OFM-CORE-012.put_immutable` | Full-set immutable acknowledgement certificate |
 | `MOTHER-OF-AUTH-014` | `MOTHER-OFM-AUTH-006.verify_terminal_membership` → `MOTHER-OFM-MEM-001.validate_terminal_evidence` | Exact activation/retirement terminal evidence |
-| `MOTHER-OF-AUTH-015` | `MOTHER-OFM-AUTH-006.complete_release` → `MOTHER-OFM-AUTH-001.release` → `MOTHER-OFM-CTL-004.release_with_proof` | Reservation and scopes released after terminal proof |
+| `MOTHER-OF-AUTH-015` | `MOTHER-OFM-AUTH-006.complete_release` → `MOTHER-OFM-AUTH-001.release` | D026 reservations and authority-protocol fencing released after terminal proof; logical scopes remain owned by `MOTHER-OF-CTL-016` |
 | `MOTHER-OF-AUTH-016` | `MOTHER-OFM-AUTH-007.reconcile_head_commit,reconcile_replication` → `MOTHER-OFM-CTL-006.reconcile_from_durable_effect` | Ambiguous attempt classified by durable head/evidence |
 | `MOTHER-OF-AUTH-017` | `MOTHER-OFM-AUTH-008.claim_birth_authority,accept_birth_entry` → `MOTHER-OFM-MEM-004.build_birth_checkpoint` | Accepted sequence-1 birth checkpoint under synthetic predecessor authority |
 | `MOTHER-OF-AUTH-018` | `MOTHER-OFM-RB-004.verify_restored` → `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable` | Exact rollback-progress/completed entry matching verified restored state, ready for the parent reservation/certificate/bundle/commit functions |
@@ -674,7 +680,7 @@ boundaries.
 | `MOTHER-OF-RB-007` | `MOTHER-OFM-RB-001.load_verified` → `MOTHER-OFM-RB-004.verify_restored` → `MOTHER-OFM-OBS-007.run_assertion_set` | Restored prestate and active invariants verified |
 | `MOTHER-OF-RB-008` | `MOTHER-OFM-RB-003.record_started,record_step,record_failed,record_verified` | Append-only rollback progress/failure evidence |
 | `MOTHER-OF-RB-009` | `MOTHER-OFM-AUTH-006.prepare_intent` closure evidence → `MOTHER-OFM-RB-002.close` | Promoted frames closed but retained until terminal release |
-| `MOTHER-OF-RB-010` | `MOTHER-OFM-CTL-006.validate_terminal` → `MOTHER-OFM-RB-002.close` → `MOTHER-OFM-CTL-004.release_with_proof` | Rollback ownership released only after verified terminal state |
+| `MOTHER-OF-RB-010` | `MOTHER-OFM-CTL-006.validate_terminal` → `MOTHER-OFM-RB-002.close` | Rollback-frame ownership closed only after verified terminal state; logical scopes remain owned by `MOTHER-OF-CTL-016` |
 
 ### 7.6 Replica membership and birth
 
@@ -771,13 +777,13 @@ boundaries.
 | `MOTHER-OF-RSL-004` | `MOTHER-OFM-CTL-003.inspect_active` → `MOTHER-OFM-RB-003.replay` → `MOTHER-OFM-AUTH-001.resume` → `MOTHER-OFM-AUTH-006.verify_terminal_membership` → `MOTHER-OFM-MEM-003.validate_decision` → `MOTHER-OFM-REC-003.classify_obligations` | Each unresolved obligation preserved, carried as remediation-required, or blocks |
 | `MOTHER-OF-RSL-005` | `MOTHER-OFM-REC-003.build_intent` → `MOTHER-OFM-CORE-003.canonical_json` → `MOTHER-OFM-CORE-012.put_immutable` | Prepared intent containing only pre-entry facts and separate obligation/closure roots |
 | `MOTHER-OF-RSL-006` | `MOTHER-OFM-REC-003.build_checkpoint` → `MOTHER-OFM-STATE-002.build_checkpoint,validate_checkpoint` → `MOTHER-OFM-CORE-012.put_immutable` | Exact successor checkpoint binding `prepared_intent_hash`, not future proposal/certificate hashes |
-| `MOTHER-OF-RSL-007` | `MOTHER-OFM-REC-003.build_proposal,collect_acceptances` → `MOTHER-OFM-AUTH-002.validate_acceptances` | Proposal binds intent plus entry and is accepted exactly once by every current replica |
-| `MOTHER-OF-RSL-008` | `MOTHER-OFM-REC-003.build_certificate,collect_acceptances` with completed-certificate phase → `MOTHER-OFM-CORE-012.put_immutable` | Authority-reseal certificate bound to proposal, successor entry, and full base-authority acceptances |
-| `MOTHER-OF-RSL-009` | `MOTHER-OFM-REC-003.compose_membership` → `MOTHER-OFM-MEM-002` readiness APIs → `MOTHER-OFM-MEM-003` acceptance/decision APIs | D028 prospective-host and membership evidence composed without back door |
+| `MOTHER-OF-RSL-007` | `MOTHER-OFM-REC-003.build_proposal,collect_proposal_acceptances` → `MOTHER-OFM-AUTH-002.validate_acceptances` | Proposal binds intent plus entry and is accepted exactly once by every base-authority replica, installing the D029 fence |
+| `MOTHER-OF-RSL-008` | `MOTHER-OFM-REC-003.build_certificate` → conditional `MOTHER-OFM-REC-003.collect_completed_certificate_acceptances` → `MOTHER-OFM-CORE-012.put_immutable` | Certificate is built after proposal acceptance; completed-certificate acceptance is immediate for pure D029 but, for membership-changing D029+D028, occurs only after RSL-009 creates the D028 transition-acceptance root and transition-decision hash |
+| `MOTHER-OF-RSL-009` | `MOTHER-OFM-REC-003.compose_membership` → `MOTHER-OFM-MEM-002` readiness APIs → `MOTHER-OFM-MEM-003` transition-acceptance/decision APIs | D028 readiness, transition-acceptance root, and transition decision are durable before membership-mode D029 completed-certificate acceptance |
 | `MOTHER-OF-RSL-010` | `MOTHER-OFM-REC-003.build_bundle` → `MOTHER-OFM-AUTH-003.build_bundle,validate_bundle` → `MOTHER-OFM-CORE-012.put_immutable` | `authority-reseal` bundle with D028 roots when membership changes |
 | `MOTHER-OF-RSL-011` | `MOTHER-OFM-REC-003.commit` → `MOTHER-OFM-AUTH-004.commit_entry_bundle_pair` → `MOTHER-OFM-AUTH-007.reconcile_head_commit` | Atomic authority-reseal entry/bundle head commit |
-| `MOTHER-OF-RSL-012` | `MOTHER-OFM-REC-003.complete_forward` → `MOTHER-OFM-AUTH-005.replicate_closure,collect_acknowledgements` → `MOTHER-OFM-AUTH-002.build_ack_certificate` → `MOTHER-OFM-MEM-001.validate_terminal_evidence` and conditional `activate`/`retire` → `MOTHER-OFM-AUTH-006.complete_release` → `MOTHER-OFM-CTL-004.release_with_proof` | Reseal replicated, acknowledged, membership-completed, and scopes released |
-| `MOTHER-OF-RSL-013` | `MOTHER-OFM-REC-003.cancel` → `MOTHER-OFM-MEM-003.cancel_decision` → `MOTHER-OFM-MEM-002.cancel_and_tombstone` → `MOTHER-OFM-CTL-004.release_with_proof` | Uncommitted reseal canceled without early membership-fence release |
+| `MOTHER-OF-RSL-012` | `MOTHER-OFM-REC-003.complete_forward` → `MOTHER-OFM-AUTH-005.replicate_closure,collect_acknowledgements` → `MOTHER-OFM-AUTH-002.build_ack_certificate` → `MOTHER-OFM-MEM-001.validate_terminal_evidence` and conditional `activate`/`retire` → `MOTHER-OFM-REC-003.commit_fence_rollover` | Reseal replicated, acknowledged, membership-completed, and D029/D028 protocol ownership closed; logical scope release remains owned by `MOTHER-OF-CTL-016` |
+| `MOTHER-OF-RSL-013` | `MOTHER-OFM-REC-003.prepare_cancel` → conditional `MOTHER-OFM-MEM-003.cancel_decision` → conditional `MOTHER-OFM-MEM-002.cancel_and_tombstone` → `MOTHER-OFM-REC-003.commit_or_abort_cancel` | D029 cancellation keeps the D029 fence installed until any composed D028 full-set cancellation is terminal; logical scope release remains owned by `MOTHER-OF-CTL-016` |
 
 ### 7.12 Schema migration
 
@@ -1079,21 +1085,51 @@ post-entry membership roots.
 
 ### 11.2 Authority-restoring reseal
 
+Pure D029 construction order:
+
 ```text
 prepared authority-reseal intent
   -> successor checkpoint entry binding prepared_intent_hash
     -> authority-reset proposal binding intent plus successor entry
-      -> full current-set acceptances
+      -> full base-authority proposal acceptances installing the D029 fence
         -> authority-reseal certificate
-          -> D028 post-entry evidence, when membership changes
-            -> authorization bundle
-              -> atomic entry/bundle head commit
+          -> full base-authority completed-certificate acceptances
+            -> authority-reseal-certificate-acceptance-set root
+              -> authorization bundle
+                -> atomic entry/bundle head commit
 ```
 
-The checkpoint state MUST NOT contain certificate or bundle hashes. The
-superseded-head set contains only observed valid network entry/bundle head
-tuples other than the selected predecessor. Unresolved obligations and recovery
-closures use separate roots and cannot be extinguished by reseal.
+Membership-changing D029+D028 construction order:
+
+```text
+prospective staging, private/recovery closure transfer, and readiness root
+  -> prepared authority-reseal intent
+    -> successor checkpoint entry binding prepared_intent_hash
+      -> authority-reset proposal binding intent plus successor entry
+        -> full base-authority proposal acceptances installing the D029 fence
+          -> authority-reseal certificate
+            -> D028 transition acceptances for that exact certificate
+              -> D028 transition-acceptance-set root
+                -> local D028 commit-in-progress transition decision
+                  -> full base-authority completed-certificate acceptances binding those D028 roots
+                    -> authority-reseal-certificate-acceptance-set root
+                      -> authorization bundle with D029 and D028 roots
+                        -> atomic entry/bundle head commit
+```
+
+The checkpoint state MUST NOT contain certificate, certificate-acceptance, bundle,
+or D028 post-entry hashes. The superseded-head set contains only observed valid
+network entry/bundle head tuples other than the selected predecessor. Unresolved
+obligations, obligation dispositions, and recovery closures use separate roots
+and cannot be extinguished by reseal.
+
+Membership-changing D029+D028 cancellation MUST keep the active D029 fence
+installed after D029 cancellation prepare, convert the local D028 decision to
+cancellation-authorized with that exact D029 cancellation-prepare certificate,
+finish the complete D028 full-set cancellation protocol, and only then commit or
+tombstone D029 cancellation. Pure D029 MAY release the D029 fence after terminal
+D029 cancellation; membership-changing D029+D028 MAY release it only after both
+D029 and D028 cancellation are terminal.
 
 ### 11.3 Finalization
 
@@ -1129,8 +1165,12 @@ reopens rollback.
 | Projection head changed before publish | Discard and bounded-retry from the new pinned head |
 
 Cancellation modules accept the same authority-generation lock and exact
-prepared object identity as acceptance. Release occurs only after durable
-cancellation or terminal forward proof on every required participant.
+prepared object identity as acceptance. For membership-changing D029+D028,
+D029 cancellation prepare and D028 cancellation are distinct terminal protocols:
+the D029 fence remains installed until D028 cancellation is fully proven and the
+D029 cancellation commit or abort is recorded. `MOTHER-OF-CTL-016` performs
+logical scope and current-operation release only after durable cancellation or
+terminal forward proof on every required participant.
 
 ## 13. Requirement-to-module coverage
 
@@ -1164,6 +1204,7 @@ the complete function-level expansion remains section 7.
 | `MOTHER-REQ-023` | `MOTHER-OFM-AUTH-001` through `007` |
 | `MOTHER-REQ-024` | `MOTHER-OFM-MEM-001` through `004`, `MOTHER-OFM-AUTH-008` |
 | `MOTHER-REQ-025` | `MOTHER-OFM-AUTH-005`, `006`, `007`, `MOTHER-OFM-XPORT-001` through `003` |
+| `MOTHER-REQ-026` | `MOTHER-OFM-REC-003`, `MOTHER-OFM-AUTH-001` through `004`, `MOTHER-OFM-AUTH-007`, `MOTHER-OFM-MEM-002`, `003` when membership changes |
 
 ## 14. Module acceptance contract
 
@@ -1267,7 +1308,46 @@ chain or safety contract.
 No module implementation MAY fill these gaps by choosing a convenient local
 pointer, using live facts as authority, or reusing an unrelated successor kind.
 
-## 16. Implementation order
+## 16. Public callable interface appendix
+
+Before contract tests are written, the implementation MUST materialize the
+public module seams from sections 5 and 7 into a checked registry at
+`tools/mother/common/api_registry.yaml` or an equivalent generated artifact. The
+registry is the callable-interface source of truth for tests; prose tables are
+the human-readable source.
+
+Each public method entry MUST contain:
+
+```yaml
+module_id: MOTHER-OFM-...
+source_path: tools/mother/...
+method: method_name
+signature: "method_name(ctx: MotherContext, input: TypedInput, *, idempotency_key: IdempotencyKey, locks: LockSet) -> TypedResult"
+input_type: TypedInput
+return_type: TypedResult
+optional_fields: []
+enum_fields: {}
+durable_path_templates: []
+error_codes: []
+retry_classification: fatal | retry_same_request | reconcile | blocked_open_contract
+idempotency_key_fields: []
+required_lock_inputs: []
+returned_evidence_types: []
+durable_effect_types: []
+status: specified | surface-open | contract-open | conditional
+```
+
+Operation entry modules use the exact shell from section 8.1. Lower-level module
+methods MAY use more specific typed input and result models, but they MUST NOT
+accept untyped dictionaries for authoritative mutation and MUST NOT perform a
+side effect unless the registry lists the required locks, idempotency key,
+durable path ownership, returned evidence type, and retry classification.
+
+For `contract-open` paths, the registry MUST expose only read-only preparation,
+diagnosis, or planning calls plus disabled mutating calls that fail before their
+first side effect with the corresponding `MOTHER_OPEN_*` error.
+
+## 17. Implementation order
 
 The dependency-safe implementation order is:
 
@@ -1294,7 +1374,7 @@ An implementation slice is accepted only when all earlier dependencies it uses
 already meet section 14. A later operation MUST NOT ship with a private copy of
 an unfinished lower-level algorithm.
 
-## 17. Implementation completeness checklist
+## 18. Implementation completeness checklist
 
 Before production code is considered conformant:
 
@@ -1316,7 +1396,7 @@ Before production code is considered conformant:
 - module, functionality, operation, and requirement traceability is machine
   checkable.
 
-## 18. Machine-checkable traceability
+## 19. Machine-checkable traceability
 
 The implementation repository MUST maintain a registry generated from or
 validated against this document with:
@@ -1325,6 +1405,18 @@ validated against this document with:
 module_id
 source_path
 public_api
+exact_public_signatures
+input_types
+return_types
+optional_fields
+enum_fields
+durable_path_templates
+error_codes
+retry_classifications
+idempotency_key_fields
+required_lock_inputs
+returned_evidence_types
+durable_effect_types
 authority_class
 owned_paths
 dependency_module_ids
@@ -1345,7 +1437,7 @@ The conformance check fails on:
 - a `contract-open` call reachable past its side-effect gate;
 - a parent source hash mismatch without an explicit review of this document.
 
-## 19. Final implementation rule
+## 20. Final implementation rule
 
 Code follows the chain:
 

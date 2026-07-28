@@ -108,6 +108,7 @@ The summary status is one of:
 - `partially-implemented`
 - `verification-incomplete`
 - `runtime-proven`
+- `semantic-runtime-proven`
 - `blocked`
 
 The summary is navigation, not the whole truth. Consumers must retain the component states and findings.
@@ -122,6 +123,18 @@ finding: missing-domain-adapter
 ```
 
 It means the enrolled runtime surface is proven, while executable application semantics are not.
+
+When `semanticRuntimeProven` is true, the summary status is
+`semantic-runtime-proven`. This label is reserved for the combined proof of a
+complete requirements contract, full semantic readiness for the adapter's
+declared current scope, fresh passing runtime surface evidence, and passing
+acceptance evidence.
+
+Intent completeness follows the domain-adapter registry's derived current-scope
+coverage audit. Policy-prohibited intents are valid complete classifications,
+and explicitly excluded planned intents do not count as current required
+intents. `required-intent-not-executable` is emitted only when the current
+semantic scope itself is incomplete or has no executable intent.
 
 ## Evidence freshness
 

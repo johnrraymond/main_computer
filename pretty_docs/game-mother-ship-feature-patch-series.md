@@ -22,6 +22,23 @@ shuttle cockpit
 
 The next patches should not rework that path unless a defect blocks progression. The first expansion goal is to let the player leave the shuttle bay, explore connected ship spaces, interact with ship systems, and understand the next objective.
 
+
+## Architecture rework track
+
+The game has outgrown the one-renderer-knows-everything model. Before large new room or system additions, use this architecture track to make future ship features data-driven and easier to verify.
+
+| Patch | Purpose | Runtime behavior change |
+| --- | --- | --- |
+| A. Architecture docs and schema | Add runtime architecture docs, patch-aware content design, and `game-definition.v1` schema | None |
+| B. State defaults extraction | Move mother-ship runtime defaults into one definition object | Should preserve behavior |
+| C. Rooms and movement extraction | Move room ids, names, bounds, exits, and spawns into data | Should preserve behavior |
+| D. Interactable extraction | Move terminals, prompts, radii, and objective targets into data | Should preserve behavior |
+| E. Interaction registry | Route E-key handling through named safe handlers | Should preserve behavior with cleaner dispatch |
+| F. Definition validators | Add tests for reachability, prompt handlers, objective targets, and spawn placement | No gameplay change |
+| G. Renderer decomposition | Split drawing primitives from gameplay state and interaction logic | Should preserve behavior |
+
+Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
+
 ## Patch series overview
 
 | Patch | Working name | Player-facing result |

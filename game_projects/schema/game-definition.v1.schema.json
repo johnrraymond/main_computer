@@ -1,0 +1,445 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "game.definition.v1",
+  "title": "Main Computer Game Definition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "title",
+    "version",
+    "start",
+    "rooms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "game.definition.v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "room",
+        "spawn"
+      ],
+      "properties": {
+        "room": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spawn": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "rooms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/room"
+      }
+    },
+    "exits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/exit"
+      },
+      "default": []
+    },
+    "spawns": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/spawn"
+      },
+      "default": []
+    },
+    "props": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/prop"
+      },
+      "default": []
+    },
+    "terminals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/terminal"
+      },
+      "default": []
+    },
+    "interactions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/interaction"
+      },
+      "default": []
+    },
+    "objectives": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/objective"
+      },
+      "default": []
+    },
+    "encounters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/encounter"
+      },
+      "default": []
+    },
+    "stateDefaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requireConnectedRooms": {
+          "type": "boolean",
+          "default": true
+        },
+        "requireReachableTerminals": {
+          "type": "boolean",
+          "default": true
+        },
+        "requireInteractionHandlers": {
+          "type": "boolean",
+          "default": true
+        },
+        "requireObjectiveTargets": {
+          "type": "boolean",
+          "default": true
+        },
+        "requireSpawnInsideRoom": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "default": {}
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "number": {
+      "type": "number"
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minX",
+        "maxX",
+        "minZ",
+        "maxZ"
+      ],
+      "properties": {
+        "minX": {
+          "type": "number"
+        },
+        "maxX": {
+          "type": "number"
+        },
+        "minZ": {
+          "type": "number"
+        },
+        "maxZ": {
+          "type": "number"
+        }
+      }
+    },
+    "position": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "room": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "bounds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string"
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "render": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    },
+    "exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "bounds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "render": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    },
+    "spawn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "room",
+        "position",
+        "yaw"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "room": {
+          "$ref": "#/$defs/id"
+        },
+        "position": {
+          "$ref": "#/$defs/position"
+        },
+        "yaw": {
+          "type": "number"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "prop": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "room",
+        "kind",
+        "position"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "room": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "position": {
+          "$ref": "#/$defs/position"
+        },
+        "label": {
+          "type": "string"
+        },
+        "size": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "display": {
+          "type": "string"
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "room",
+        "position",
+        "radius",
+        "label",
+        "prompt",
+        "interaction"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "room": {
+          "$ref": "#/$defs/id"
+        },
+        "position": {
+          "$ref": "#/$defs/position"
+        },
+        "radius": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "interaction": {
+          "$ref": "#/$defs/id"
+        },
+        "statusKey": {
+          "type": "string"
+        }
+      }
+    },
+    "interaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "handler": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string"
+        },
+        "completeWhen": {
+          "type": "string"
+        }
+      }
+    },
+    "encounter": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stateKey": {
+          "type": "string"
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

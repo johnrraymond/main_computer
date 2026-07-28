@@ -14,6 +14,10 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-mother-ship-implementation-plan.md` | Safe implementation milestones, test plan, risk notes |
 | `pretty_docs/game-mother-ship-feature-patch-series.md` | Ordered implementation patch backlog with files, acceptance checks, and verification |
 | `pretty_docs/game-mother-ship-bridge-route-plan.md` | Focused route plan for filling out the rest of the ship so the player can reach the bridge |
+| `pretty_docs/game-runtime-rearchitecture-plan.md` | Architecture plan for moving games from hardcoded renderer behavior to a data-driven runtime |
+| `pretty_docs/game-definition-schema-v1.md` | Human-readable guide to the first game definition schema |
+| `pretty_docs/game-patch-aware-content-architecture.md` | Patch-aware content tiers, metadata, acceptance checks, and validation loop |
+| `game_projects/schema/game-definition.v1.schema.json` | Machine-readable JSON Schema for future game definition data |
 
 ## Intended use
 
@@ -21,12 +25,12 @@ Use these documents before adding more ship geometry or gameplay systems. The cu
 
 ```text
 read design index
-→ read bridge route plan
-→ ensure Bay Ops and Security are visibly connected
-→ add Main Corridor Hub signage
-→ make Engineering restore bridge power
-→ add Bridge Access Vestibule
-→ add walkable Bridge Deck and command console
+→ read runtime rearchitecture plan
+→ read game definition schema
+→ keep the bridge route playable
+→ extract current rooms, bounds, exits, terminals, and objectives into data
+→ add validators before adding more ship content
+→ resume content expansion through data-first patches
 ```
 
 ## Current implementation boundary
@@ -53,3 +57,9 @@ Each future implementation patch should:
 - package full replacement files for `new_patch.py`;
 - verify with `node --check`, targeted game tests, and `new_patch.py --dry-run`.
 
+
+## Architecture transition
+
+The mother-ship content has reached the point where new features should be planned against the data-driven runtime architecture instead of continuing to add one-off renderer branches. Future implementation patches should preserve the existing playable route while moving state, rooms, interactables, objectives, and validation into explicit game-definition data.
+
+Patch A for that transition is documentation/schema only. It does not change runtime behavior.

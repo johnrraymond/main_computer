@@ -32,6 +32,8 @@ Current prohibited intents:
 
 `openInOwningApp` remains planned and outside the current readiness derivation. The adapter does not silently open another application, save a file, create a revision, stage Git state, or execute a command.
 
+The truth gate preserves that distinction: the three prohibited mutation/command intents are complete policy classifications, while `openInOwningApp` is reported as an explicitly excluded planned intent. Neither creates a false `required-intent-not-executable` finding for the current bounded read-only scope.
+
 ## Runtime ownership
 
 The File Explorer UI routes its existing roots, list, search, and read requests through `FileExplorerSemanticAdapter.requestEndpoint(...)` when the adapter is available. The underlying API remains authoritative for filesystem boundary enforcement and read-only response data.

@@ -487,4 +487,7 @@ def test_actual_truth_gate_can_prove_file_explorer_semantic_runtime_with_bound_e
     assert result["claims"]["runtimeSurfaceProven"] is True
     assert result["claims"]["acceptanceProven"] is True
     assert result["claims"]["semanticRuntimeProven"] is True
+    assert result["overallStatus"] == "semantic-runtime-proven"
+    assert result["adapter"]["excludedPlannedIntentIds"] == ["openInOwningApp"]
     assert "missing-domain-adapter" not in result["findingCodes"]
+    assert "required-intent-not-executable" not in result["findingCodes"]

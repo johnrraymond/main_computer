@@ -148,6 +148,11 @@ var McelAppTruthGate = (() => {
       prohibitedIntentCount: Number(state.prohibitedIntentCount || 0),
       blockedIntentCount: Number(state.blockedIntentCount || 0),
       totalIntentCount: Number(state.totalIntentCount || 0),
+      excludedPlannedIntentIds: uniqueStrings(state.intentCoverage?.excludedPlannedIntentIds),
+      incompleteIntentIds: uniqueStrings(
+        state.intentCoverageValidation?.incompleteIntentIds ||
+        state.missingApplicationSemantics
+      ),
       recoveryReady: state.recoveryReady === true,
       recoveryCoverageReady: state.recoveryCoverageReady === true,
       missingSemantics: uniqueStrings(state.missingSemantics),
@@ -458,20 +463,24 @@ var McelAppTruthGate = (() => {
     } else if (
       requirements.intentCount > 0 &&
       (!adapter.intentCoverageReady ||
-        adapter.declaredOnlyIntentCount > 0 ||
-        adapter.blockedIntentCount > 0 ||
+        !adapter.fullApplicationSemanticReady ||
         adapter.executableIntentCount === 0)
     ) {
       findings.push(finding(
         "required-intent-not-executable",
         "warning",
-        "One or more required application intents are not proven executable.",
+        "One or more intents required by the adapter's current semantic scope are not proven complete.",
         {
           appId: adapter.appId,
-          requiredIntentCount: requirements.intentCount,
+          declaredContractIntentCount: requirements.intentCount,
+          currentScopeIntentCount: adapter.totalIntentCount,
           executableIntentCount: adapter.executableIntentCount,
+          prohibitedIntentCount: adapter.prohibitedIntentCount,
           declaredOnlyIntentCount: adapter.declaredOnlyIntentCount,
           blockedIntentCount: adapter.blockedIntentCount,
+          excludedPlannedIntentIds: adapter.excludedPlannedIntentIds,
+          incompleteIntentIds: adapter.incompleteIntentIds,
+          semanticRuntimeScope: adapter.semanticRuntimeScope,
           missingApplicationSemantics: adapter.missingApplicationSemantics
         }
       ));
@@ -620,7 +629,8 @@ var McelAppTruthGate = (() => {
 
   function overallStatus(claims, findings) {
     if (findings.some((item) => item.blocking)) return "blocked";
-    if (claims.semanticRuntimeProven || claims.verificationComplete) return "runtime-proven";
+    if (claims.semanticRuntimeProven) return "semantic-runtime-proven";
+    if (claims.verificationComplete) return "runtime-proven";
     if (claims.implementationPresent && (
       findings.some((item) => [
         "runtime-evidence-missing",

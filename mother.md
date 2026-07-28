@@ -8172,7 +8172,7 @@ generation named by that pointer and reconcile the operation record to
 
 ## Script boundaries
 
-### `mother_diagnose.py`
+### `tools/mother/diagnose.py`
 
 Read-only only.
 
@@ -8202,7 +8202,7 @@ Output:
 diagnosis-report.json
 ```
 
-### `mother_plan.py`
+### `tools/mother/plan.py`
 
 Read-only planner.
 
@@ -8215,21 +8215,35 @@ Purpose:
 - build a candidate operation plan;
 - show risks and rollback model.
 
-`mother_plan.py` MAY be used internally by `prep`, but it MUST NOT mutate live
+`tools/mother/plan.py` MAY be used internally by `prep`, but it MUST NOT mutate live
 infrastructure.
 
-### `mother_reseal_state.py`
+### `tools/mother/sync_state.py`
 
-Complete network-state replica recovery transaction.
+Local stale-state adoption.
+
+Purpose:
+
+- adopt an already-authoritative, unanimously agreed remote generation into the
+  local active-generation pointer;
+- verify the exact remote entry/bundle head, complete immutable object closure,
+  private recovery closure, and replay-derived projections before activation;
+- preserve the existing network head ID, head epoch, lineage, replica set, and
+  authorization-bundle chain;
+- refuse to choose between divergent lineages, alter authority, exclude a
+  participant, or repair ordinary projections through adoption.
+
+### `tools/mother/reseal_state.py`
+
+Authority-restoring network-state replica recovery transaction.
 
 Purpose:
 
 - compare the active local head state with sealed complete-state replicas on
   the remote machines;
-- recover when local state is stale but the network replicas agree;
-- create an explicit new seal when all base-authority replicas are reachable but
-  remote replicas disagree, report corrupt or hash-invalid suffixes, or the
-  network is wedged;
+- create an explicit new authority-reseal checkpoint when all base-authority
+  replicas are reachable but remote replicas disagree, report corrupt or
+  hash-invalid suffixes, or the network is wedged;
 - keep ordinary non-divergent host enrollment and retirement on D026+D028;
 - combine reachable-host enrollment or retirement with an authority-divergence
   reseal only when `--include-host` or `--exclude-host` is prepared, every
@@ -8284,7 +8298,7 @@ Rollback expectation:
 - after the atomic entry/bundle pointer commit, rollback to a divergent lineage
   is prohibited and recovery completes forward.
 
-### `mother_reseal_qbft.py`
+### `tools/mother/reseal_qbft.py`
 
 In-place validator configuration transaction.
 
@@ -8326,7 +8340,7 @@ Rollback expectation:
   snapshot;
 - never invent pre-operation state that was not captured in `prep`.
 
-### `mother_add_node.py`
+### `tools/mother/add_node.py`
 
 Complete distributed node addition.
 
@@ -8416,7 +8430,7 @@ Forbidden:
 - every distributed rollback frame is present and consistent;
 - all expected replicas agree on the resulting network state.
 
-### `mother_remove_node.py`
+### `tools/mother/remove_node.py`
 
 Complete distributed node removal.
 
@@ -8497,7 +8511,7 @@ invoke the same complete distributed `add-node` or `remove-node` action engine.
 They MUST NOT expose a partial validator-only workflow when service, RPC, or
 Hub/FDB state is affected.
 
-### `mother_restore_service.py`
+### `tools/mother/restore_service.py`
 
 Coolify service repair only.
 
@@ -9402,7 +9416,7 @@ Mother SHOULD be implemented in this order:
      existing host runner;
    - uses structured local-call envelopes instead of a general remote shell.
 
-4. `mother_diagnose.py` and `mother_probe_topology.py`
+4. `tools/mother/diagnose.py` and `tools/mother/probe_topology.py`
    - read-only;
    - no locks;
    - reports services, guards, validators, QBFT sets, route state, lifecycle
@@ -9538,7 +9552,7 @@ Mother SHOULD be implemented in this order:
    - node-local Hub/FDB desired-state reconciliation;
    - distributed rollback-layer accounting and assertions.
 
-14. `mother_add_node.py`
+14. `tools/mother/add_node.py`
    - service and identity preparation;
    - initial bootstrap, zero-validator reactivation, guard-mediated soft, and
      hard validator admission;
@@ -9547,7 +9561,7 @@ Mother SHOULD be implemented in this order:
    - network-wide Hub/FDB reconciliation;
    - one rollback-capable action until the documented irreversible commit point.
 
-15. `mother_remove_node.py`
+15. `tools/mother/remove_node.py`
    - network-wide Hub/FDB withdrawal;
    - explicit final-validator authorization and zero-validator assertions;
    - retention of replica membership when the host's last node is removed;
@@ -9556,12 +9570,12 @@ Mother SHOULD be implemented in this order:
    - service detach/disable/archive/removal;
    - one rollback-capable action until the documented irreversible commit point.
 
-16. `mother_reseal_qbft.py`
+16. `tools/mother/reseal_qbft.py`
    - full-set hard topology repair for existing services;
    - in-place guard-mediated config repair only;
    - no Coolify service deletion or compose changes.
 
-17. `mother_restore_service.py`
+17. `tools/mother/restore_service.py`
    - explicit service repair only;
    - no QBFT membership mutation.
 
@@ -9571,7 +9585,7 @@ Mother SHOULD be implemented in this order:
    - frozen per-action compatibility requirements;
    - fail-closed preflight and explicit journaled migration only.
 
-19. `mother_recover_head.py`
+19. `tools/mother/recover_head.py`
    - discovers the exact expected replica set from a recovery descriptor;
    - requires unanimous compatible replica state and one complete transitive
      recovery-object closure;
@@ -9610,7 +9624,29 @@ Mother SHOULD be implemented in this order:
      replacement;
    - require identity rotation when private material reached an untrusted host.
 
-21. Finalization replication-state reconciler
+21. Authority-restoring reseal engine
+   - implement `MOTHER-DESIGN-029`;
+   - keep ordinary non-divergent membership changes on D026+D028;
+   - collect one observed-head report from every base-authority replica and prove
+     the newest common valid authority base before constructing an intent;
+   - stage prospective readiness before the prepared intent when membership
+     changes, then bind the readiness root through the D029+D028 composed path;
+   - construct the acyclic sequence `prepared intent -> checkpoint entry ->
+     proposal -> proposal acceptances -> certificate -> D028 transition evidence
+     when applicable -> completed-certificate acceptances -> bundle -> pointer`;
+   - make D029 proposal acceptance share the D026 journal/reservation fencing
+     plane and block ordinary successors while active;
+   - keep the D029 fence installed until forward commit rolls it into immutable
+     committed-fence history, or until pure-D029 cancellation is terminal, or,
+     for membership-changing D029+D028, until both D028 and D029 cancellation are
+     terminal;
+   - preserve or remediate every unresolved obligation through explicit
+     disposition roots and block when safe disposition or recovery closure cannot
+     be proven;
+   - reject unreachable base-authority replicas, unprovable common bases,
+     invalid selected predecessors, and all quorum or remaining-host shortcuts.
+
+22. Finalization replication-state reconciler
    - implement the exact-status inspection, certified-head resynchronization,
      immutable-object transfer, replay verification, durable acknowledgement,
      full-set acknowledgement-certificate, terminal-release, and
@@ -9618,7 +9654,7 @@ Mother SHOULD be implemented in this order:
    - add crash and interleaving tests at every certificate, head, acknowledgement,
      and release durability boundary.
 
-22. Requirements-language lint
+23. Requirements-language lint
    - parse Markdown prose separately from fenced examples and quotations;
    - normalize each logical prose paragraph across Markdown line wrapping before
      evaluating modal constructions, so a split phrase such as `MUST` followed by
