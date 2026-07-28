@@ -2611,7 +2611,7 @@
                 "label": "Science/Ops Door",
                 "location": "corridor.main",
                 "position": [
-                  -3.25,
+                  -2.45,
                   -25.0
                 ],
                 "range": 1.85,
@@ -2702,35 +2702,105 @@
               "enterBayOpsAccess": {
                 "id": "enterBayOpsAccess",
                 "label": "Enter Bay Operations access",
-                "handler": "enterBayOpsAccess"
+                "handler": "enterBayOpsAccess",
+                "status": "Entered the lit Bay Operations vestibule. The route ahead is open.",
+                "changesState": [
+                  "location",
+                  "objectiveId",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Entered the lit Bay Operations vestibule. The route ahead is open.",
+                "nextObjective": "objective.bay-ops"
               },
               "activateBayOperationsTerminal": {
                 "id": "activateBayOperationsTerminal",
                 "label": "Activate Bay Operations Terminal",
                 "handler": "activateBayOperationsTerminal",
-                "status": "Bay Operations online. Route to Security Checkpoint is available."
+                "status": "Bay Operations online. Route to Security Checkpoint is available.",
+                "changesState": [
+                  "terminals[terminal.bay-ops].state",
+                  "doors[door.bay-inner].state",
+                  "flags.bayOpsTerminalUsed",
+                  "objectiveId",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Bay Operations online. Route to Security Checkpoint is available.",
+                "nextObjective": "objective.enter-corridor"
               },
               "restoreEngineeringPower": {
                 "id": "restoreEngineeringPower",
                 "label": "Restore Engineering Power",
                 "handler": "restoreEngineeringPower",
-                "status": "Engineering restored main power. Bridge route confirmed open."
+                "status": "Engineering restored main power. Bridge route confirmed open.",
+                "changesState": [
+                  "terminals[terminal.engineering-power].state",
+                  "power",
+                  "security",
+                  "doors[door.bridge].state",
+                  "flags.engineeringPowerRestored",
+                  "objectiveId",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Engineering restored main power. Bridge route confirmed open.",
+                "nextObjective": "objective.bridge-access"
               },
               "inspectOpenDoorRoute": {
                 "id": "inspectOpenDoorRoute",
                 "label": "Inspect open route",
-                "handler": "inspectOpenDoorRoute"
+                "handler": "inspectOpenDoorRoute",
+                "changesState": [
+                  "doors[target.id].state",
+                  "objectiveId",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Route is open. No door lock is required.",
+                "nextObjective": [
+                  "objective.restore-power",
+                  "objective.survey-departments",
+                  "objective.bridge-screen"
+                ]
               },
               "trackEnemyShipOnViewscreen": {
                 "id": "trackEnemyShipOnViewscreen",
                 "label": "Track enemy ship on bridge viewscreen",
                 "handler": "trackEnemyShipOnViewscreen",
-                "status": "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire."
+                "status": "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.",
+                "changesState": [
+                  "terminals[terminal.bridge-viewscreen].state",
+                  "flags.enemyShipOnBridgeViewscreen",
+                  "flags.bridgeViewscreenTrackingActive",
+                  "flags.bridgeViewscreenInteractedAtMs",
+                  "objectiveId",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.",
+                "nextObjective": [
+                  "objective.enemy-attack",
+                  "objective.enemy-disabled"
+                ]
               },
               "fireBridgeTacticalConsole": {
                 "id": "fireBridgeTacticalConsole",
                 "label": "Fire Bridge Tactical Console",
-                "handler": "fireBridgeTacticalConsole"
+                "handler": "fireBridgeTacticalConsole",
+                "changesState": [
+                  "terminals[terminal.bridge-viewscreen].state",
+                  "terminals[terminal.bridge-tactical].state",
+                  "flags.bridgeViewscreenTrackingActive",
+                  "flags.enemyShipOnBridgeViewscreen",
+                  "flags.bridgeTacticalArmed",
+                  "flags.bridgeTacticalShotsFired",
+                  "flags.bridgeTacticalLastFireAtMs",
+                  "flags.enemyShipHullPercent",
+                  "flags.enemyShipDisabled",
+                  "objectiveId",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Bridge tactical console fired. Enemy raider hull updated.",
+                "nextObjective": [
+                  "objective.enemy-attack",
+                  "objective.enemy-disabled"
+                ]
               }
             },
             "validation": {
@@ -2741,7 +2811,8 @@
               "requireObjectiveTargets": true,
               "requireSpawnInsideRoom": true,
               "requireOpenDoors": true,
-              "requirePropTargets": true
+              "requirePropTargets": true,
+              "requireInteractionEffects": true
             },
             "props": [
               {

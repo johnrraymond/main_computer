@@ -61,7 +61,10 @@ def test_self_diagnosis_knows_file_explorer_visual_fit_selectors() -> None:
     ]:
         assert expected in diagnosis
 
-    assert 'appId === "file-explorer"\n      ) {\n        detectSemanticProjectionBleed' in diagnosis
+    file_explorer_bleed_branch = diagnosis.split('if (appId === "document" || appId === "file-explorer")', 1)
+    assert len(file_explorer_bleed_branch) == 2
+    file_explorer_bleed_body = file_explorer_bleed_branch[1].split("function contentFitCandidateSelector", 1)[0]
+    assert "detectSemanticProjectionBleed(container, context).forEach" in file_explorer_bleed_body
 
 
 def test_layout_fit_documentation_exists() -> None:

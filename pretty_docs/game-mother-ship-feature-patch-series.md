@@ -46,6 +46,7 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | O. Room geometry extraction | Render structural shells, walls, openings, panels, and beams from `motherShipInterior.rooms[].geometry` | Should preserve behavior while making room structure data-first |
 | O.1. Docking handoff void guard | Suppress held shuttle-flight movement keys after docking and add data-defined corridor trunk rails | Corrective only; no locked-door progression |
 | P. Content-defined viewscreens/displays | Render bridge viewscreen display from `motherShipInterior.props` using `kind: "viewscreen"` and `display: "enemyShipTactical"` | Should preserve bridge tracking/combat while making display presentation data-first |
+| Q. Interaction effect metadata | Add `changesState`, `successStatus`, and `nextObjective` expectations to safe interaction definitions | Should preserve behavior while making E-key results easier to validate |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -479,4 +480,10 @@ Patch O implementation note: mother-ship room shell, wall, opening, door-panel, 
 Patch O.1 corrective note: docking handoff now suppresses movement keys held from shuttle flight until release, and `corridor.trunk.geometry` carries data-defined rails/guide strips/beams so a fast post-docking walk no longer reads as empty space. The no-locked-door rule remains unchanged.
 
 Patch P implementation note: bridge viewscreen rendering now flows through `motherShipInterior.props` with `kind: "viewscreen"` and `display: "enemyShipTactical"`. The renderer resolves the display through `appendMotherShipViewscreenDisplay(builder, prop, nowMs)` and validates authored display ids against supported display programs.
+
+Patch Q implementation note: E-key actions still resolve through the safe interaction registry, but each authored interaction now carries effect expectations through `changesState`, `successStatus`, and `nextObjective`. Validation checks that declared next objectives exist and warns when an interaction has no observable success metadata. This is meant to catch “prompt appeared but E did nothing” defects earlier without granting project data arbitrary script execution.
+
+Patch R implementation note: a direct Python project-JSON validator harness now loads `webgl-demo`, `starter-game`, and `new-game` and checks mother-ship room reachability, prompt handler/effect metadata, terminal prop/hotspot coverage, objective targets, display targets, and room-bound placement before runtime. The harness also corrected the Science/Ops door hotspot so it sits inside the corridor trunk alias it declares.
+
+
 

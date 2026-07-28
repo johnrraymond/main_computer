@@ -167,6 +167,10 @@
         "requirePropTargets": {
           "type": "boolean",
           "default": true
+        },
+        "requireInteractionEffects": {
+          "type": "boolean",
+          "default": true
         }
       },
       "default": {}
@@ -509,6 +513,30 @@
         },
         "emitsState": {
           "type": "boolean"
+        },
+        "changesState": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "successStatus": {
+          "type": "string"
+        },
+        "nextObjective": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          ]
         }
       }
     },

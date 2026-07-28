@@ -175,6 +175,11 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(interior["interactions"]["trackEnemyShipOnViewscreen"]["handler"], "trackEnemyShipOnViewscreen")
         self.assertEqual(interior["interactions"]["fireBridgeTacticalConsole"]["handler"], "fireBridgeTacticalConsole")
         self.assertEqual(interior["interactions"]["inspectOpenDoorRoute"]["handler"], "inspectOpenDoorRoute")
+        self.assertEqual(interior["interactions"]["activateBayOperationsTerminal"]["nextObjective"], "objective.enter-corridor")
+        self.assertIn("flags.bayOpsTerminalUsed", interior["interactions"]["activateBayOperationsTerminal"]["changesState"])
+        self.assertEqual(interior["interactions"]["restoreEngineeringPower"]["successStatus"], "Engineering restored main power. Bridge route confirmed open.")
+        self.assertIn("objective.enemy-disabled", interior["interactions"]["fireBridgeTacticalConsole"]["nextObjective"])
+        self.assertTrue(interior["validation"]["requireInteractionEffects"])
         self.assertFalse(interior["flags"]["bridgeViewscreenTrackingActive"])
         self.assertFalse(interior["flags"]["bridgeTacticalArmed"])
         self.assertEqual(interior["flags"]["bridgeTacticalShotsFired"], 0)
@@ -507,6 +512,12 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn('kind === "viewscreen"', scene_viewer_script)
         self.assertIn("prop.display.bridge-viewscreen", scene_viewer_script)
         self.assertIn("game-runtime-patch-P-content-defined-viewscreens", scene_viewer_script)
+        self.assertIn("Patch Q exposes expected interaction effects", scene_viewer_script)
+        self.assertIn("shuttle3dInteractionStringList", scene_viewer_script)
+        self.assertIn("requireInteractionEffects", scene_viewer_script)
+        self.assertIn("successStatus", scene_viewer_script)
+        self.assertIn("nextObjective", scene_viewer_script)
+        self.assertIn("game-runtime-patch-Q-interaction-effect-metadata", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

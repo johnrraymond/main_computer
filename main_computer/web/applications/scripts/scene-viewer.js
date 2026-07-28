@@ -4125,39 +4125,92 @@
             }
           ],
           // Patch E formalizes action ids as registry entries instead of embedding E-key behavior in a switch.
+          // Patch Q exposes expected interaction effects so data can describe what a successful E-key action changes.
+          // See pretty_docs/game-runtime-patch-Q-interaction-effect-metadata.md.
           interactions: {
             enterBayOpsAccess: {
               id: "enterBayOpsAccess",
               label: "Enter Bay Operations access",
-              handler: "enterBayOpsAccess"
+              handler: "enterBayOpsAccess",
+              changesState: ["location", "objectiveId", "lastInteractionStatus"],
+              successStatus: "Entered the lit Bay Operations vestibule. The route ahead is open.",
+              nextObjective: "objective.bay-ops"
             },
             activateBayOperationsTerminal: {
               id: "activateBayOperationsTerminal",
               label: "Activate Bay Operations Terminal",
               handler: "activateBayOperationsTerminal",
-              status: "Bay Operations online. Route to Security Checkpoint is available."
+              status: "Bay Operations online. Route to Security Checkpoint is available.",
+              changesState: [
+                "terminals[terminal.bay-ops].state",
+                "doors[door.bay-inner].state",
+                "flags.bayOpsTerminalUsed",
+                "objectiveId",
+                "lastInteractionStatus"
+              ],
+              successStatus: "Bay Operations online. Route to Security Checkpoint is available.",
+              nextObjective: "objective.enter-corridor"
             },
             restoreEngineeringPower: {
               id: "restoreEngineeringPower",
               label: "Restore Engineering Power",
               handler: "restoreEngineeringPower",
-              status: "Engineering restored main power. Bridge route confirmed open."
+              status: "Engineering restored main power. Bridge route confirmed open.",
+              changesState: [
+                "terminals[terminal.engineering-power].state",
+                "power",
+                "security",
+                "doors[door.bridge].state",
+                "flags.engineeringPowerRestored",
+                "objectiveId",
+                "lastInteractionStatus"
+              ],
+              successStatus: "Engineering restored main power. Bridge route confirmed open.",
+              nextObjective: "objective.bridge-access"
             },
             inspectOpenDoorRoute: {
               id: "inspectOpenDoorRoute",
               label: "Inspect open route",
-              handler: "inspectOpenDoorRoute"
+              handler: "inspectOpenDoorRoute",
+              changesState: ["doors[target.id].state", "objectiveId", "lastInteractionStatus"],
+              successStatus: "Route is open. No door lock is required.",
+              nextObjective: ["objective.restore-power", "objective.survey-departments", "objective.bridge-screen"]
             },
             trackEnemyShipOnViewscreen: {
               id: "trackEnemyShipOnViewscreen",
               label: "Track enemy ship on bridge viewscreen",
               handler: "trackEnemyShipOnViewscreen",
-              status: "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire."
+              status: "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.",
+              changesState: [
+                "terminals[terminal.bridge-viewscreen].state",
+                "flags.enemyShipOnBridgeViewscreen",
+                "flags.bridgeViewscreenTrackingActive",
+                "flags.bridgeViewscreenInteractedAtMs",
+                "objectiveId",
+                "lastInteractionStatus"
+              ],
+              successStatus: "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.",
+              nextObjective: ["objective.enemy-attack", "objective.enemy-disabled"]
             },
             fireBridgeTacticalConsole: {
               id: "fireBridgeTacticalConsole",
               label: "Fire Bridge Tactical Console",
-              handler: "fireBridgeTacticalConsole"
+              handler: "fireBridgeTacticalConsole",
+              changesState: [
+                "terminals[terminal.bridge-viewscreen].state",
+                "terminals[terminal.bridge-tactical].state",
+                "flags.bridgeViewscreenTrackingActive",
+                "flags.enemyShipOnBridgeViewscreen",
+                "flags.bridgeTacticalArmed",
+                "flags.bridgeTacticalShotsFired",
+                "flags.bridgeTacticalLastFireAtMs",
+                "flags.enemyShipHullPercent",
+                "flags.enemyShipDisabled",
+                "objectiveId",
+                "lastInteractionStatus"
+              ],
+              successStatus: "Bridge tactical console fired. Enemy raider hull updated.",
+              nextObjective: ["objective.enemy-attack", "objective.enemy-disabled"]
             }
           }
         };
@@ -4522,6 +4575,20 @@
       }
 
 
+      function shuttle3dInteractionStringList(value, fallback = []) {
+        const source = Array.isArray(value) ? value : Array.isArray(fallback) ? fallback : value ? [value] : fallback ? [fallback] : [];
+        return source
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean);
+      }
+
+      function shuttle3dNormalizeInteractionNextObjective(value, fallback = "") {
+        const source = value !== undefined ? value : fallback;
+        const entries = shuttle3dInteractionStringList(source);
+        if (Array.isArray(source)) return entries;
+        return entries[0] || "";
+      }
+
       function shuttle3dNormalizeMotherShipInteractions(value, fallbackInteractions) {
         const fallback = shuttle3dObjectValue(fallbackInteractions);
         const supplied = shuttle3dObjectValue(value);
@@ -4533,13 +4600,17 @@
               const fallbackEntry = shuttle3dObjectValue(fallback[key]);
               const id = String(raw.id || fallbackEntry.id || key).trim();
               if (!id) return null;
+              const status = String(raw.status || fallbackEntry.status || "");
               return [
                 id,
                 {
                   id,
                   label: String(raw.label || fallbackEntry.label || id),
                   handler: String(raw.handler || raw.effect || raw.action || fallbackEntry.handler || fallbackEntry.effect || fallbackEntry.action || id),
-                  status: String(raw.status || fallbackEntry.status || ""),
+                  status,
+                  changesState: shuttle3dInteractionStringList(raw.changesState, fallbackEntry.changesState),
+                  successStatus: String(raw.successStatus || fallbackEntry.successStatus || status),
+                  nextObjective: shuttle3dNormalizeInteractionNextObjective(raw.nextObjective, fallbackEntry.nextObjective),
                   emitsState: raw.emitsState !== false && fallbackEntry.emitsState !== false
                 }
               ];
@@ -4568,6 +4639,7 @@
           requireConnectedRooms: supplied.requireConnectedRooms !== false,
           requireReachableInteractables: supplied.requireReachableInteractables !== false,
           requireInteractionHandlers: supplied.requireInteractionHandlers !== false,
+          requireInteractionEffects: supplied.requireInteractionEffects !== false,
           requireObjectiveTargets: supplied.requireObjectiveTargets !== false,
           requireSpawnInsideRoom: supplied.requireSpawnInsideRoom !== false,
           requireRenderableProps: supplied.requireRenderableProps !== false,
@@ -4599,10 +4671,24 @@
         );
       }
 
-      function shuttle3dRoomForLocation(config, location) {
+      function shuttle3dRoomsForLocation(config, location) {
         const wanted = String(location || "");
+        if (!wanted) return [];
         const rooms = Array.isArray(config?.rooms) ? config.rooms : [];
-        return rooms.find((room) => room.id === wanted || room.location === wanted) || null;
+        return rooms.filter((room) => room.id === wanted || room.location === wanted);
+      }
+
+      function shuttle3dRoomForLocation(config, location) {
+        return shuttle3dRoomsForLocation(config, location)[0] || null;
+      }
+
+      function shuttle3dRoomForLocationAtPoint(config, location, x, z) {
+        const matches = shuttle3dRoomsForLocation(config, location);
+        return matches.find((room) => shuttle3dPointInsideBounds(x, z, room.bounds)) || matches[0] || null;
+      }
+
+      function shuttle3dLocationExists(config, location) {
+        return shuttle3dRoomsForLocation(config, location).length > 0;
       }
 
       function shuttle3dPositionFromSpawn(spawn) {
@@ -4682,14 +4768,14 @@
         });
 
         Object.entries(config?.locations || {}).forEach(([location]) => {
-          if (!shuttle3dRoomForLocation(config, location)) {
+          if (!shuttle3dLocationExists(config, location)) {
             warnings.push(`location ${location} has no matching room`);
           }
         });
 
         Object.entries(objectives).forEach(([objectiveId, objective]) => {
           const location = String(objective?.location || "");
-          if (rules.requireObjectiveTargets && location && !shuttle3dRoomForLocation(config, location)) {
+          if (rules.requireObjectiveTargets && location && !shuttle3dLocationExists(config, location)) {
             errors.push(`objective ${objectiveId} points at missing location ${location}`);
           }
         });
@@ -4697,7 +4783,7 @@
         Object.entries(doors).forEach(([doorId, door]) => {
           ["from", "to"].forEach((side) => {
             const location = String(door?.[side] || "");
-            if (rules.requireConnectedRooms && location && !shuttle3dRoomForLocation(config, location)) {
+            if (rules.requireConnectedRooms && location && !shuttle3dLocationExists(config, location)) {
               errors.push(`door ${doorId} ${side} references missing location ${location}`);
             }
           });
@@ -4708,15 +4794,15 @@
 
         exits.forEach((exit) => {
           const id = String(exit?.id || "exit");
-          if (rules.requireConnectedRooms && !shuttle3dRoomForLocation(config, exit?.from)) errors.push(`${id} starts at missing room/location ${exit?.from}`);
-          if (rules.requireConnectedRooms && !shuttle3dRoomForLocation(config, exit?.to)) errors.push(`${id} ends at missing room/location ${exit?.to}`);
+          if (rules.requireConnectedRooms && !shuttle3dLocationExists(config, exit?.from)) errors.push(`${id} starts at missing room/location ${exit?.from}`);
+          if (rules.requireConnectedRooms && !shuttle3dLocationExists(config, exit?.to)) errors.push(`${id} ends at missing room/location ${exit?.to}`);
           if (rules.requireConnectedRooms && !shuttle3dBoundsAreUsable(exit?.bounds)) errors.push(`${id} has invalid bounds`);
           if (exit?.door && !doors[exit.door]) warnings.push(`${id} references missing door ${exit.door}`);
         });
 
         Object.entries(terminals).forEach(([terminalId, terminal]) => {
           const location = String(terminal?.location || "");
-          if (location && !shuttle3dRoomForLocation(config, location)) {
+          if (location && !shuttle3dLocationExists(config, location)) {
             errors.push(`terminal ${terminalId} points at missing location ${location}`);
           }
         });
@@ -4725,17 +4811,33 @@
           const handlerId = String(interaction?.handler || interactionId || "");
           if (rules.requireInteractionHandlers && !handlerId) errors.push(`interaction ${interactionId} has no handler`);
           else if (rules.requireInteractionHandlers && !supportedHandlers.has(handlerId)) errors.push(`interaction ${interactionId} uses unsupported handler ${handlerId}`);
+
+          if (rules.requireInteractionEffects) {
+            // Patch Q validates authored effect expectations without replacing the safe handler registry.
+            const changesState = Array.isArray(interaction?.changesState) ? interaction.changesState : [];
+            if (!changesState.length) warnings.push(`interaction ${interactionId} declares no changesState expectations`);
+            changesState.forEach((entry, index) => {
+              if (!String(entry || "").trim()) errors.push(`interaction ${interactionId} changesState[${index}] is empty`);
+            });
+            const successStatus = String(interaction?.successStatus || interaction?.status || "").trim();
+            if (!successStatus) warnings.push(`interaction ${interactionId} declares no successStatus`);
+            const nextObjectives = shuttle3dInteractionStringList(interaction?.nextObjective);
+            nextObjectives.forEach((objectiveId) => {
+              if (!objectives[objectiveId]) errors.push(`interaction ${interactionId} nextObjective references missing objective ${objectiveId}`);
+            });
+          }
         });
 
         (Array.isArray(config?.interactables) ? config.interactables : []).forEach((interactable) => {
           const id = String(interactable?.id || "interactable");
           const location = String(interactable?.location || "");
-          const room = shuttle3dRoomForLocation(config, location);
           const position = Array.isArray(interactable?.position) ? interactable.position : [];
           const x = Number(position[0]);
           const z = Number(position[1]);
-          if (rules.requireReachableInteractables && !room) errors.push(`${id} points at missing location ${location}`);
-          else if (rules.requireReachableInteractables && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`${id} is outside its room bounds`);
+          const locationMatches = shuttle3dRoomsForLocation(config, location);
+          const room = shuttle3dRoomForLocationAtPoint(config, location, x, z);
+          if (rules.requireReachableInteractables && !locationMatches.length) errors.push(`${id} points at missing location ${location}`);
+          else if (rules.requireReachableInteractables && !shuttle3dPointInsideBounds(x, z, room?.bounds)) errors.push(`${id} is outside its declared room/location bounds`);
           if (rules.requireReachableInteractables && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`${id} is outside playable movement bounds`);
           if (rules.requireReachableInteractables && (!Number.isFinite(Number(interactable?.range)) || Number(interactable.range) <= 0)) {
             errors.push(`${id} has an invalid interaction range`);
@@ -4751,14 +4853,16 @@
           // Patch J keeps data-defined visual content honest by validating prop targets.
           const id = String(prop?.id || "prop");
           const roomId = String(prop?.room || prop?.location || "");
-          const room = config?.roomMap?.[roomId] || shuttle3dRoomForLocation(config, roomId);
           const position = Array.isArray(prop?.position) ? prop.position : [];
           const x = Number(position[0]);
           const z = Number(position[1]);
+          const exactRoom = config?.roomMap?.[roomId] || null;
+          const locationMatches = exactRoom ? [exactRoom] : shuttle3dRoomsForLocation(config, roomId);
+          const room = exactRoom || shuttle3dRoomForLocationAtPoint(config, roomId, x, z);
           const target = String(prop?.target || "").trim();
           const display = String(prop?.display || "").trim();
-          if (rules.requireRenderableProps && !room) errors.push(`${id} points at missing room ${roomId}`);
-          else if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`${id} is outside its room bounds`);
+          if (rules.requireRenderableProps && !locationMatches.length) errors.push(`${id} points at missing room ${roomId}`);
+          else if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, room?.bounds)) errors.push(`${id} is outside its declared room/location bounds`);
           if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`${id} is outside playable movement bounds`);
           if (rules.requireRenderableProps && !String(prop?.kind || "").trim()) errors.push(`${id} is missing a render kind`);
           if (rules.requirePropTargets && target && !propTargetIsKnown(target)) errors.push(`${id} targets missing content ${target}`);
@@ -4766,10 +4870,12 @@
         });
 
         Object.entries(config?.spawns || {}).forEach(([spawnId, spawn]) => {
-          const room = shuttle3dRoomForLocation(config, spawn?.room || spawn?.location);
           const [x, z] = shuttle3dPositionFromSpawn(spawn);
-          if (rules.requireSpawnInsideRoom && !room) errors.push(`spawn ${spawnId} points at missing room ${spawn?.room || spawn?.location}`);
-          else if (rules.requireSpawnInsideRoom && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`spawn ${spawnId} is outside its room bounds`);
+          const location = spawn?.room || spawn?.location;
+          const locationMatches = shuttle3dRoomsForLocation(config, location);
+          const room = shuttle3dRoomForLocationAtPoint(config, location, x, z);
+          if (rules.requireSpawnInsideRoom && !locationMatches.length) errors.push(`spawn ${spawnId} points at missing room ${spawn?.room || spawn?.location}`);
+          else if (rules.requireSpawnInsideRoom && !shuttle3dPointInsideBounds(x, z, room?.bounds)) errors.push(`spawn ${spawnId} is outside its declared room/location bounds`);
           if (rules.requireSpawnInsideRoom && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`spawn ${spawnId} is outside playable movement bounds`);
         });
 
@@ -5803,6 +5909,9 @@
               label: String(raw.label || id),
               handlerId,
               status: String(raw.status || ""),
+              changesState: shuttle3dInteractionStringList(raw.changesState),
+              successStatus: String(raw.successStatus || raw.status || ""),
+              nextObjective: raw.nextObjective !== undefined ? shuttle3dCloneJson(raw.nextObjective) : "",
               emitsState: raw.emitsState !== false,
               handler: handlers[handlerId] || null
             };
@@ -5814,6 +5923,9 @@
               label: handlerId,
               handlerId,
               status: "",
+              changesState: [],
+              successStatus: "",
+              nextObjective: "",
               emitsState: true,
               handler: handlers[handlerId]
             };

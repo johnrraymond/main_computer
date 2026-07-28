@@ -270,6 +270,14 @@ An interaction definition names what the terminal or object asks the runtime to 
   "handler": "fireBridgeTacticalConsole",
   "requires": ["enemyShip.tracked"],
   "effects": ["enemyShip.damage", "viewscreen.weaponFire", "objective.advance"],
+  "changesState": [
+    "terminals[terminal.bridge-tactical].state",
+    "flags.enemyShipHullPercent",
+    "objectiveId",
+    "lastInteractionStatus"
+  ],
+  "successStatus": "Bridge tactical console fired. Enemy raider hull updated.",
+  "nextObjective": ["objective.enemy-attack", "objective.enemy-disabled"],
   "emitsState": true
 }
 ```
@@ -289,6 +297,8 @@ Patch E also allows the current nested project metadata form to use an object ma
 ```
 
 Version 1 should avoid arbitrary scripts. Interaction ids should map to tested runtime handlers, and validators should fail content where an interactable action has no interaction registry entry.
+
+Patch Q adds interaction effect metadata without replacing the safe handler registry. `changesState` names the runtime state paths a successful handler is expected to touch, `successStatus` gives the expected player-facing success message, and `nextObjective` names the objective or objective set that a successful action may select. Validators check that `nextObjective` values resolve to known objectives and warn when an interaction omits observable effect expectations.
 
 ## Objectives
 
@@ -385,6 +395,7 @@ A definition should declare which validators are expected to pass.
     "requireReachableTerminals": true,
     "requireReachableInteractables": true,
     "requireInteractionHandlers": true,
+    "requireInteractionEffects": true,
     "requireObjectiveTargets": true,
     "requireSpawnInsideRoom": true,
     "requirePropTargets": true
@@ -405,6 +416,8 @@ all terminals are inside room bounds
 all terminals reference existing rooms
 all interactables are inside room bounds
 all interactables reference registered actions
+all interactions declare observable effect expectations
+all interaction nextObjective values reference known objectives
 all terminals reference registered interactions
 all objective targets exist
 all spawns are inside room bounds
@@ -412,6 +425,13 @@ all prop targets point to known rooms, terminals, doors, interactables, objectiv
 the room graph connects start.room to bridge.deck
 the bridge viewscreen and tactical console are reachable
 ```
+
+### Patch R project JSON validator harness
+
+Patch R adds `tests/test_game_definition_validator_harness.py`, a direct Python-side harness for the current nested mother-ship project metadata. It loads the default project JSON files before route/runtime normalization and checks the relationships that have caused live regressions: room graph reachability, interactable placement, prompt-to-handler links, interaction effect metadata, terminal prop/hotspot coverage, objective targets, display targets, and spawn placement.
+
+The harness treats location aliases as valid when at least one authored room id or `location` matches the reference. For point-bearing content, the point must be inside one of the rooms matched by that id/location alias.
+
 
 ## Versioning rule
 
@@ -428,6 +448,7 @@ Patch F makes validation executable for the mother-ship interior runtime. The sa
     "requireConnectedRooms": true,
     "requireReachableInteractables": true,
     "requireInteractionHandlers": true,
+    "requireInteractionEffects": true,
     "requireObjectiveTargets": true,
     "requireSpawnInsideRoom": true,
     "requireOpenDoors": true
