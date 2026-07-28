@@ -1652,6 +1652,15 @@
                 "label": "Fire Bridge Tactical Console",
                 "handler": "fireBridgeTacticalConsole"
               }
+            },
+            "validation": {
+              "requireRoomBoundsInsideMovement": true,
+              "requireConnectedRooms": true,
+              "requireReachableInteractables": true,
+              "requireInteractionHandlers": true,
+              "requireObjectiveTargets": true,
+              "requireSpawnInsideRoom": true,
+              "requireOpenDoors": true
             }
           }
         },

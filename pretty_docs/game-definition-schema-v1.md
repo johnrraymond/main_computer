@@ -323,3 +323,34 @@ the bridge viewscreen and tactical console are reachable
 ## Versioning rule
 
 Schema v1 should be append-only where possible. New optional fields may be added, but existing field meanings should not change without a new schema id.
+
+### Patch F validation rules
+
+Patch F makes validation executable for the mother-ship interior runtime. The same ideas should be preserved for future `game.definition.v1` data.
+
+```json
+{
+  "validation": {
+    "requireRoomBoundsInsideMovement": true,
+    "requireConnectedRooms": true,
+    "requireReachableInteractables": true,
+    "requireInteractionHandlers": true,
+    "requireObjectiveTargets": true,
+    "requireSpawnInsideRoom": true,
+    "requireOpenDoors": true
+  }
+}
+```
+
+The runtime validator should produce a report with this shape:
+
+```json
+{
+  "schema": "game.motherShipInterior.validation.v1",
+  "ok": true,
+  "errors": [],
+  "warnings": []
+}
+```
+
+These checks are meant to catch mismatches before a player reaches them: rooms outside movement bounds, prompts without handlers, terminals outside room bounds, objectives targeting missing locations, and reintroduced locked doors.

@@ -47,6 +47,8 @@ Patch D implementation note: terminals, prompts, ranges, and action ids now flow
 
 Patch E implementation note: action ids now flow through `motherShipInterior.interactions`, `shuttle3dNormalizeMotherShipInteractions()`, and `createShipInteractionRegistry()` before invoking safe runtime handlers.
 
+Patch F implementation note: mother-ship definitions now produce `validationRules`, `validationReport`, and `this.shipDefinitionValidation` through `shuttle3dValidateMotherShipInteriorConfig()`, checking reachability, prompts, handlers, objective targets, spawn placement, and the no-locked-door rule.
+
 ## Patch series overview
 
 | Patch | Working name | Player-facing result |

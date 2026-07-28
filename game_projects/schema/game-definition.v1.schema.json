@@ -151,6 +151,14 @@
         "requireSpawnInsideRoom": {
           "type": "boolean",
           "default": true
+        },
+        "requireRoomBoundsInsideMovement": {
+          "type": "boolean",
+          "default": true
+        },
+        "requireOpenDoors": {
+          "type": "boolean",
+          "default": true
         }
       },
       "default": {}

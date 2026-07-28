@@ -3138,6 +3138,182 @@
       }
 
 
+      function shuttle3dMotherShipSupportedInteractionHandlers() {
+        return new Set([
+          "enterBayOpsAccess",
+          "activateBayOperationsTerminal",
+          "restoreEngineeringPower",
+          "trackEnemyShipOnViewscreen",
+          "fireBridgeTacticalConsole",
+          "inspectOpenDoorRoute"
+        ]);
+      }
+
+      function shuttle3dNormalizeMotherShipValidationRules(value) {
+        const supplied = shuttle3dObjectValue(value);
+        return {
+          requireRoomBoundsInsideMovement: supplied.requireRoomBoundsInsideMovement !== false,
+          requireConnectedRooms: supplied.requireConnectedRooms !== false,
+          requireReachableInteractables: supplied.requireReachableInteractables !== false,
+          requireInteractionHandlers: supplied.requireInteractionHandlers !== false,
+          requireObjectiveTargets: supplied.requireObjectiveTargets !== false,
+          requireSpawnInsideRoom: supplied.requireSpawnInsideRoom !== false,
+          requireOpenDoors: supplied.requireOpenDoors !== false
+        };
+      }
+
+      function shuttle3dPointInsideBounds(x, z, bounds) {
+        return (
+          shuttle3dBoundsAreUsable(bounds)
+          && Number.isFinite(Number(x))
+          && Number.isFinite(Number(z))
+          && Number(x) >= bounds.minX
+          && Number(x) <= bounds.maxX
+          && Number(z) >= bounds.minZ
+          && Number(z) <= bounds.maxZ
+        );
+      }
+
+      function shuttle3dBoundsContainBounds(outer, inner) {
+        return (
+          shuttle3dBoundsAreUsable(outer)
+          && shuttle3dBoundsAreUsable(inner)
+          && inner.minX >= outer.minX
+          && inner.maxX <= outer.maxX
+          && inner.minZ >= outer.minZ
+          && inner.maxZ <= outer.maxZ
+        );
+      }
+
+      function shuttle3dRoomForLocation(config, location) {
+        const wanted = String(location || "");
+        const rooms = Array.isArray(config?.rooms) ? config.rooms : [];
+        return rooms.find((room) => room.id === wanted || room.location === wanted) || null;
+      }
+
+      function shuttle3dPositionFromSpawn(spawn) {
+        const position = Array.isArray(spawn?.position) ? spawn.position : [];
+        if (position.length >= 3) return [Number(position[0]), Number(position[2])];
+        return [Number(position[0]), Number(position[1])];
+      }
+
+      function shuttle3dValidateMotherShipInteriorConfig(config, rulesInput) {
+        // Patch F validates definition reachability before content patches ship.
+        const errors = [];
+        const warnings = [];
+        const rooms = Array.isArray(config?.rooms) ? config.rooms : [];
+        const roomIds = new Set();
+        const roomLocations = new Set();
+        const movementBounds = config?.movement?.bounds;
+        const doors = shuttle3dObjectValue(config?.doors);
+        const terminals = shuttle3dObjectValue(config?.terminals);
+        const interactions = shuttle3dObjectValue(config?.interactions);
+        const objectives = shuttle3dObjectValue(config?.objectives);
+        const supportedHandlers = shuttle3dMotherShipSupportedInteractionHandlers();
+        const rules = shuttle3dNormalizeMotherShipValidationRules(rulesInput || config?.validationRules);
+
+        if (rules.requireRoomBoundsInsideMovement && !shuttle3dBoundsAreUsable(movementBounds)) {
+          errors.push("mother-ship movement bounds are invalid");
+        }
+
+        rooms.forEach((room, index) => {
+          if (!room?.id) {
+            errors.push(`room[${index}] is missing an id`);
+            return;
+          }
+          if (roomIds.has(room.id)) errors.push(`duplicate room id: ${room.id}`);
+          roomIds.add(room.id);
+          if (room.location) roomLocations.add(room.location);
+          if (!shuttle3dBoundsAreUsable(room.bounds)) errors.push(`room ${room.id} has invalid bounds`);
+          else if (rules.requireRoomBoundsInsideMovement && !shuttle3dBoundsContainBounds(movementBounds, room.bounds)) {
+            errors.push(`room ${room.id} is outside mother-ship movement bounds`);
+          }
+        });
+
+        Object.entries(config?.locations || {}).forEach(([location]) => {
+          if (!shuttle3dRoomForLocation(config, location)) {
+            warnings.push(`location ${location} has no matching room`);
+          }
+        });
+
+        Object.entries(objectives).forEach(([objectiveId, objective]) => {
+          const location = String(objective?.location || "");
+          if (rules.requireObjectiveTargets && location && !shuttle3dRoomForLocation(config, location)) {
+            errors.push(`objective ${objectiveId} points at missing location ${location}`);
+          }
+        });
+
+        Object.entries(doors).forEach(([doorId, door]) => {
+          ["from", "to"].forEach((side) => {
+            const location = String(door?.[side] || "");
+            if (rules.requireConnectedRooms && location && !shuttle3dRoomForLocation(config, location)) {
+              errors.push(`door ${doorId} ${side} references missing location ${location}`);
+            }
+          });
+          if (rules.requireOpenDoors && String(door?.state || "").toLowerCase() === "locked") {
+            errors.push(`door ${doorId} is locked; mother-ship doors must remain traversal-open`);
+          }
+        });
+
+        (Array.isArray(config?.exits) ? config.exits : []).forEach((exit) => {
+          const id = String(exit?.id || "exit");
+          if (rules.requireConnectedRooms && !shuttle3dRoomForLocation(config, exit?.from)) errors.push(`${id} starts at missing room/location ${exit?.from}`);
+          if (rules.requireConnectedRooms && !shuttle3dRoomForLocation(config, exit?.to)) errors.push(`${id} ends at missing room/location ${exit?.to}`);
+          if (rules.requireConnectedRooms && !shuttle3dBoundsAreUsable(exit?.bounds)) errors.push(`${id} has invalid bounds`);
+          if (exit?.door && !doors[exit.door]) warnings.push(`${id} references missing door ${exit.door}`);
+        });
+
+        Object.entries(terminals).forEach(([terminalId, terminal]) => {
+          const location = String(terminal?.location || "");
+          if (location && !shuttle3dRoomForLocation(config, location)) {
+            errors.push(`terminal ${terminalId} points at missing location ${location}`);
+          }
+        });
+
+        Object.entries(interactions).forEach(([interactionId, interaction]) => {
+          const handlerId = String(interaction?.handler || interactionId || "");
+          if (rules.requireInteractionHandlers && !handlerId) errors.push(`interaction ${interactionId} has no handler`);
+          else if (rules.requireInteractionHandlers && !supportedHandlers.has(handlerId)) errors.push(`interaction ${interactionId} uses unsupported handler ${handlerId}`);
+        });
+
+        (Array.isArray(config?.interactables) ? config.interactables : []).forEach((interactable) => {
+          const id = String(interactable?.id || "interactable");
+          const location = String(interactable?.location || "");
+          const room = shuttle3dRoomForLocation(config, location);
+          const position = Array.isArray(interactable?.position) ? interactable.position : [];
+          const x = Number(position[0]);
+          const z = Number(position[1]);
+          if (rules.requireReachableInteractables && !room) errors.push(`${id} points at missing location ${location}`);
+          else if (rules.requireReachableInteractables && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`${id} is outside its room bounds`);
+          if (rules.requireReachableInteractables && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`${id} is outside playable movement bounds`);
+          if (rules.requireReachableInteractables && (!Number.isFinite(Number(interactable?.range)) || Number(interactable.range) <= 0)) {
+            errors.push(`${id} has an invalid interaction range`);
+          }
+          const action = String(interactable?.action || "");
+          if (rules.requireInteractionHandlers && !action) errors.push(`${id} has no action id`);
+          else if (rules.requireInteractionHandlers && !interactions[action]) errors.push(`${id} references missing interaction ${action}`);
+          if (id.startsWith("terminal.") && !terminals[id]) warnings.push(`${id} has no matching terminal state entry`);
+          if (id.startsWith("door.") && !doors[id]) warnings.push(`${id} has no matching door state entry`);
+        });
+
+        Object.entries(config?.spawns || {}).forEach(([spawnId, spawn]) => {
+          const room = shuttle3dRoomForLocation(config, spawn?.room || spawn?.location);
+          const [x, z] = shuttle3dPositionFromSpawn(spawn);
+          if (rules.requireSpawnInsideRoom && !room) errors.push(`spawn ${spawnId} points at missing room ${spawn?.room || spawn?.location}`);
+          else if (rules.requireSpawnInsideRoom && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`spawn ${spawnId} is outside its room bounds`);
+          if (rules.requireSpawnInsideRoom && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`spawn ${spawnId} is outside playable movement bounds`);
+        });
+
+        return {
+          schema: "game.motherShipInterior.validation.v1",
+          ok: errors.length === 0,
+          errors,
+          warnings,
+          rules
+        };
+      }
+
+
       function shuttle3dMotherShipInteriorConfig(scene) {
         const supplied = scene?.metadata?.shuttle3d?.motherShipInterior;
         const interior = supplied && typeof supplied === "object" ? supplied : {};
@@ -3177,6 +3353,7 @@
           ...shuttle3dObjectValue(interior.flags),
           ...shuttle3dObjectValue(suppliedStateDefaults.flags)
         });
+        const validationRules = shuttle3dNormalizeMotherShipValidationRules(interior.validation);
 
         const initialLocation = String(
           suppliedStateDefaults.location
@@ -3202,7 +3379,7 @@
           lastInteractionStatus: ""
         };
 
-        return {
+        const config = {
           enabled: interior.enabled !== false,
           initialLocation: stateDefaults.location,
           initialObjective: stateDefaults.objectiveId,
@@ -3220,8 +3397,11 @@
           doors: shuttle3dCloneJson(stateDefaults.doors),
           terminals: shuttle3dCloneJson(stateDefaults.terminals),
           flags: shuttle3dCloneJson(stateDefaults.flags),
-          stateDefaults
+          stateDefaults,
+          validationRules: shuttle3dCloneJson(validationRules)
         };
+        config.validationReport = shuttle3dValidateMotherShipInteriorConfig(config, validationRules);
+        return config;
       }
 
 
@@ -3484,6 +3664,7 @@
           this.combat = shuttle3dCombatConfig(scene);
           this.flightConfig = shuttle3dFlightConfig(scene);
           this.interiorConfig = shuttle3dMotherShipInteriorConfig(scene);
+          this.shipDefinitionValidation = this.interiorConfig.validationReport;
           this.flight = this.createFlightState();
           this.shipState = this.createShipState();
           this.shipInteractionRegistry = this.createShipInteractionRegistry();

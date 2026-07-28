@@ -432,6 +432,12 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("performShipInteractionAction(target)", scene_viewer_script)
         self.assertIn("createShipStateFromDefaults()", scene_viewer_script)
         self.assertIn("Patch B keeps the no-locked-door rule centralized", scene_viewer_script)
+        self.assertIn("Patch F validates definition reachability before content patches ship", scene_viewer_script)
+        self.assertIn("shuttle3dValidateMotherShipInteriorConfig", scene_viewer_script)
+        self.assertIn("shuttle3dNormalizeMotherShipValidationRules", scene_viewer_script)
+        self.assertIn("validationReport", scene_viewer_script)
+        self.assertIn("this.shipDefinitionValidation", scene_viewer_script)
+        self.assertIn("requireOpenDoors", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(
