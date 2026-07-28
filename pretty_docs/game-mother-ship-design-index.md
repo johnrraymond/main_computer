@@ -37,6 +37,7 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-runtime-patch-Q-interaction-effect-metadata.md` | Patch Q implementation note for data-declared interaction effect expectations |
 | `pretty_docs/game-runtime-patch-R-validator-test-harness.md` | Patch R implementation note for direct project JSON validation of mother-ship definitions |
 | `pretty_docs/game-runtime-patch-S-renderer-module-split.md` | Patch S implementation note for browser-safe shuttle-3D renderer module registry and extracted room-geometry/viewscreen render passes |
+| `pretty_docs/game-runtime-patch-T-save-migration-model.md` | Patch T implementation note for explicit mother-ship definition/state versions and load-time migration defaults |
 
 ## Intended use
 

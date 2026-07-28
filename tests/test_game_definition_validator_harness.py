@@ -16,6 +16,9 @@ PROJECT_PATHS = (
 )
 SUPPORTED_SYSTEM_TARGETS = {"enemyShip"}
 SUPPORTED_DISPLAY_PROGRAMS = {"enemyShipTactical"}
+MOTHER_SHIP_INTERIOR_SCHEMA = "game.motherShipInterior.v1"
+MOTHER_SHIP_INTERIOR_DEFINITION_VERSION = "game.motherShipInterior.definition.v2"
+MOTHER_SHIP_INTERIOR_STATE_VERSION = "game.motherShipInterior.state.v1"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -111,6 +114,16 @@ class MotherShipDefinitionHarnessTests(unittest.TestCase):
         interactables = interior.get("interactables", [])
         interactions = interior.get("interactions", {})
         props = interior.get("props", [])
+
+        if interior.get("schema") != MOTHER_SHIP_INTERIOR_SCHEMA:
+            problems.append(f"{label}: motherShipInterior.schema must be {MOTHER_SHIP_INTERIOR_SCHEMA}")
+        if interior.get("definitionVersion") != MOTHER_SHIP_INTERIOR_DEFINITION_VERSION:
+            problems.append(f"{label}: motherShipInterior.definitionVersion must be {MOTHER_SHIP_INTERIOR_DEFINITION_VERSION}")
+        if interior.get("stateVersion") != MOTHER_SHIP_INTERIOR_STATE_VERSION:
+            problems.append(f"{label}: motherShipInterior.stateVersion must be {MOTHER_SHIP_INTERIOR_STATE_VERSION}")
+        validation = interior.get("validation", {})
+        if not isinstance(validation, dict) or validation.get("requireDefinitionVersion") is not True:
+            problems.append(f"{label}: validation.requireDefinitionVersion must be true")
 
         if not isinstance(rooms, list) or not rooms:
             return [f"{label}: motherShipInterior.rooms must be a non-empty list"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import inspect
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -1050,3 +1051,49 @@ class TestImmutableDurabilityBoundaryHardening:
         assert root in flushed
         assert root / reference.algorithm in flushed
         assert prefix in flushed
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-027"],
+    operations=["MOTHER-OP-UPGRADE-HUB"],
+    functionalities=["MOTHER-OF-AUTH-004"],
+    modules=["MOTHER-OFM-CORE-012"],
+)
+class TestObjectStoreTypedMetadataAndSynchronizationSeam:
+    def test_object_store_root_metadata_probe_failure_is_typed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        errors = _errors()
+        root = tmp_path / "objects"
+        real_exists = Path.exists
+
+        def denied_exists(path: Path) -> bool:
+            if path == root:
+                raise PermissionError("object-store metadata denied")
+            return real_exists(path)
+
+        monkeypatch.setattr(Path, "exists", denied_exists)
+
+        with pytest.raises(errors.MotherError) as caught:
+            object_store.put_immutable(
+                root,
+                b"payload",
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_READ_FAILED",
+            retry_class="after-reobserve",
+            authority_effect="none",
+        )
+
+    def test_object_store_uses_only_public_core_011_synchronization_seam(self) -> None:
+        object_store = _object_store()
+        source = inspect.getsource(object_store)
+
+        assert "atomic_files.synchronized_target(" in source
+        assert "atomic_files._exclusive_target_lock(" not in source

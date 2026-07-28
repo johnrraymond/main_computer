@@ -49,6 +49,7 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | Q. Interaction effect metadata | Add `changesState`, `successStatus`, and `nextObjective` expectations to safe interaction definitions | Should preserve behavior while making E-key results easier to validate |
 | R. Validator test harness | Add direct project-JSON tests for room reachability, prompt handlers/effects, terminal visibility, objective/display targets, and placement | No gameplay change |
 | S. Renderer module split | Move selected shuttle-3D renderer passes out of `scene-viewer.js` into browser-safe registered script modules | Should preserve behavior while reducing renderer file size |
+| T. Save/migration model | Add explicit mother-ship definition/state versions and load-time compatibility defaults for legacy or partially edited projects | No gameplay change; current-format runtime input becomes predictable |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -488,3 +489,11 @@ Patch Q implementation note: E-key actions still resolve through the safe intera
 Patch R implementation note: a direct Python project-JSON validator harness now loads `webgl-demo`, `starter-game`, and `new-game` and checks mother-ship room reachability, prompt handler/effect metadata, terminal prop/hotspot coverage, objective targets, display targets, and room-bound placement before runtime. The harness also corrected the Science/Ops door hotspot so it sits inside the corridor trunk alias it declares.
 
 Patch S implementation note: `applications.html` now includes a shuttle-3D renderer module registry plus extracted room-geometry and viewscreen render modules before `scene-viewer.js`. The renderer class keeps `appendMotherShipRoomGeometry`, `appendMotherShipViewscreenDisplay`, and `appendEnemyShipTacticalDisplay` as delegating seams so gameplay call sites stay stable while implementation code moves out of the monolithic file.
+
+
+Patch T implementation note: mother-ship definitions now declare `schema`,
+`definitionVersion`, and `stateVersion`. Runtime loading passes definitions through
+`shuttle3dMigrateMotherShipInteriorDefinition(...)` before validators, renderer
+passes, or interaction code read them. The game-editor project read route mirrors
+this behavior for legacy project JSON by applying safe defaults from the current
+default project without writing those defaults back to disk.

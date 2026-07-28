@@ -4640,6 +4640,7 @@
           requireReachableInteractables: supplied.requireReachableInteractables !== false,
           requireInteractionHandlers: supplied.requireInteractionHandlers !== false,
           requireInteractionEffects: supplied.requireInteractionEffects !== false,
+          requireDefinitionVersion: supplied.requireDefinitionVersion !== false,
           requireObjectiveTargets: supplied.requireObjectiveTargets !== false,
           requireSpawnInsideRoom: supplied.requireSpawnInsideRoom !== false,
           requireRenderableProps: supplied.requireRenderableProps !== false,
@@ -4715,6 +4716,18 @@
         const rules = shuttle3dNormalizeMotherShipValidationRules(rulesInput || config?.validationRules);
         const propSystemTargets = new Set(["enemyShip"]);
         const propDisplayTargets = new Set(["enemyShipTactical"]);
+        if (rules.requireDefinitionVersion) {
+          const definitionVersion = String(config?.definitionVersion || "").trim();
+          if (definitionVersion !== SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION) {
+            warnings.push(`mother-ship definitionVersion ${definitionVersion || "<missing>"} does not match ${SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION}`);
+          }
+          const stateVersion = String(config?.stateVersion || config?.stateDefaults?.stateVersion || "").trim();
+          if (!stateVersion) warnings.push("mother-ship stateVersion is missing");
+        }
+        const migrationDefaults = Array.isArray(config?.migration?.defaultsApplied) ? config.migration.defaultsApplied : [];
+        if (migrationDefaults.length) {
+          warnings.push(`mother-ship migration supplied defaults for ${migrationDefaults.join(", ")}`);
+        }
         const propTargetIsKnown = (target) => {
           const targetId = String(target || "").trim();
           if (!targetId) return true;
@@ -4889,11 +4902,115 @@
       }
 
 
+      const SHUTTLE3D_MOTHER_SHIP_INTERIOR_SCHEMA = "game.motherShipInterior.v1";
+      const SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION = "game.motherShipInterior.definition.v2";
+      const SHUTTLE3D_MOTHER_SHIP_INTERIOR_STATE_VERSION = "game.motherShipInterior.state.v1";
+
+      function shuttle3dMotherShipInteriorVersionText(value, fallback = "") {
+        const text = String(value || "").trim();
+        return text || fallback;
+      }
+
+      function shuttle3dMotherShipInteriorApplyScalarDefault(target, key, fallback, defaultsApplied) {
+        if (target[key] === undefined || target[key] === null || String(target[key]).trim() === "") {
+          target[key] = shuttle3dCloneJson(fallback);
+          defaultsApplied.push(key);
+        }
+      }
+
+      function shuttle3dMotherShipInteriorApplyObjectDefault(target, key, fallback, defaultsApplied) {
+        const supplied = shuttle3dObjectValue(target[key]);
+        if (!Object.keys(supplied).length) {
+          target[key] = shuttle3dCloneJson(fallback, {});
+          defaultsApplied.push(key);
+          return;
+        }
+        target[key] = {...shuttle3dCloneJson(fallback, {}), ...shuttle3dCloneJson(supplied, {})};
+      }
+
+      function shuttle3dMotherShipInteriorApplyListDefault(target, key, fallback, defaultsApplied) {
+        if (!Array.isArray(target[key]) || !target[key].length) {
+          target[key] = shuttle3dCloneJson(Array.isArray(fallback) ? fallback : []);
+          defaultsApplied.push(key);
+        }
+      }
+
+      function shuttle3dMigrateMotherShipInteriorDefinition(value, defaults, levelDefaults) {
+        // Patch T centralizes compatibility defaults before renderers and validators read the definition.
+        const source = shuttle3dObjectValue(value);
+        const migrated = shuttle3dCloneJson(source, {});
+        const defaultsApplied = [];
+        const migrations = [];
+        const sourceDefinitionVersion = shuttle3dMotherShipInteriorVersionText(
+          source.definitionVersion || source.definition_version || source.version || source.schema,
+          "legacy-unversioned"
+        );
+
+        if (!source.definitionVersion || source.definitionVersion !== SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION) {
+          migrations.push(`${sourceDefinitionVersion}->${SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION}`);
+        }
+
+        if (!source.schema) defaultsApplied.push("schema");
+        migrated.schema = SHUTTLE3D_MOTHER_SHIP_INTERIOR_SCHEMA;
+        migrated.definitionVersion = SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION;
+        migrated.stateVersion = shuttle3dMotherShipInteriorVersionText(
+          source.stateVersion || source.state_version,
+          SHUTTLE3D_MOTHER_SHIP_INTERIOR_STATE_VERSION
+        );
+
+        shuttle3dMotherShipInteriorApplyScalarDefault(migrated, "enabled", true, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyScalarDefault(migrated, "initialLocation", defaults.location, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyScalarDefault(migrated, "initialObjective", defaults.objectiveId, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyScalarDefault(migrated, "power", defaults.power, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyScalarDefault(migrated, "security", defaults.security, defaultsApplied);
+
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "locations", defaults.locations, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "objectives", defaults.objectives, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "doors", defaults.doors, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "terminals", defaults.terminals, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "flags", defaults.flags, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "spawns", levelDefaults.spawns, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "movement", levelDefaults.movement, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "interactions", levelDefaults.interactions, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyObjectDefault(migrated, "validation", {
+          requireRoomBoundsInsideMovement: true,
+          requireConnectedRooms: true,
+          requireReachableInteractables: true,
+          requireInteractionHandlers: true,
+          requireInteractionEffects: true,
+          requireObjectiveTargets: true,
+          requireSpawnInsideRoom: true,
+          requireRenderableProps: true,
+          requirePropTargets: true,
+          requireOpenDoors: true,
+          requireDefinitionVersion: true
+        }, defaultsApplied);
+
+        shuttle3dMotherShipInteriorApplyListDefault(migrated, "rooms", levelDefaults.rooms, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyListDefault(migrated, "exits", levelDefaults.exits, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyListDefault(migrated, "props", levelDefaults.props, defaultsApplied);
+        shuttle3dMotherShipInteriorApplyListDefault(migrated, "interactables", levelDefaults.interactables, defaultsApplied);
+
+        return {
+          definition: migrated,
+          report: {
+            schema: "game.motherShipInterior.migration.v1",
+            sourceDefinitionVersion,
+            targetDefinitionVersion: SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION,
+            stateVersion: migrated.stateVersion,
+            migratedAtLoad: migrations.length > 0 || defaultsApplied.length > 0,
+            migrations,
+            defaultsApplied: Array.from(new Set(defaultsApplied)).sort()
+          }
+        };
+      }
+
       function shuttle3dMotherShipInteriorConfig(scene) {
         const supplied = scene?.metadata?.shuttle3d?.motherShipInterior;
-        const interior = supplied && typeof supplied === "object" ? supplied : {};
         const defaults = shuttle3dMotherShipInteriorStateDefaults();
         const levelDefaults = shuttle3dMotherShipInteriorLevelDefaults();
+        const migratedInterior = shuttle3dMigrateMotherShipInteriorDefinition(supplied, defaults, levelDefaults);
+        const interior = migratedInterior.definition;
         const suppliedStateDefaults = shuttle3dObjectValue(interior.stateDefaults);
 
         const locations = shuttle3dStringMap(interior.locations, defaults.locations);
@@ -4945,6 +5062,7 @@
         );
         const stateDefaults = {
           schema: defaults.schema,
+          stateVersion: interior.stateVersion || SHUTTLE3D_MOTHER_SHIP_INTERIOR_STATE_VERSION,
           location: locations[initialLocation] ? initialLocation : defaults.location,
           objectiveId: objectives[initialObjective] ? initialObjective : defaults.objectiveId,
           power: String(suppliedStateDefaults.power || interior.power || defaults.power),
@@ -4956,6 +5074,10 @@
         };
 
         const config = {
+          schema: interior.schema || SHUTTLE3D_MOTHER_SHIP_INTERIOR_SCHEMA,
+          definitionVersion: interior.definitionVersion || SHUTTLE3D_MOTHER_SHIP_INTERIOR_DEFINITION_VERSION,
+          stateVersion: stateDefaults.stateVersion,
+          migration: shuttle3dCloneJson(migratedInterior.report),
           enabled: interior.enabled !== false,
           initialLocation: stateDefaults.location,
           initialObjective: stateDefaults.objectiveId,

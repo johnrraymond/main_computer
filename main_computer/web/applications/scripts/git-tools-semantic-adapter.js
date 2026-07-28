@@ -4,7 +4,7 @@
 
     if (!global) return;
 
-    const VERSION = "git-tools-semantic-adapter-governed-push-v7";
+    const VERSION = "git-tools-semantic-adapter-gap-closure-v8";
     const APP_ID = "git-tools";
     const ADAPTER_ID = "git-tools-domain-adapter";
     const STATE_SCHEMA_VERSION = "git-tools-semantic-state-v1";
@@ -81,6 +81,33 @@
         label: "Run manual Git command",
         risk: "arbitrary-command-execution",
         mutates: "potential",
+        requiresGitRepo: true,
+        requiresRemote: false,
+        preflightRequired: true
+      }),
+      Object.freeze({
+        id: "commitSelectedFiles",
+        label: "Commit selected files",
+        risk: "local-repository-mutation",
+        mutates: true,
+        requiresGitRepo: true,
+        requiresRemote: false,
+        preflightRequired: true
+      }),
+      Object.freeze({
+        id: "prepareLocalGiteaTarget",
+        label: "Prepare Local Gitea target",
+        risk: "remote-target-mutation",
+        mutates: true,
+        requiresGitRepo: true,
+        requiresRemote: false,
+        preflightRequired: true
+      }),
+      Object.freeze({
+        id: "previewIgnoreRule",
+        label: "Preview ignore rule",
+        risk: "local-file-mutation",
+        mutates: true,
         requiresGitRepo: true,
         requiresRemote: false,
         preflightRequired: true
@@ -606,8 +633,25 @@
     }
 
     function intentCoverageStatus(definition) {
-      if (["refreshStatus", "pushCurrentBranch"].includes(definition.id)) return "executable";
+      if (!definition) return "declared-only";
       if (definition.id === "runManualCommand") return "prohibited";
+      if ([
+        "refreshStatus",
+        "inspectWorkingTree",
+        "inspectRemotes",
+        "inspectPatchInventory",
+        "preparePush",
+        "pushCurrentBranch"
+      ].includes(definition.id)) {
+        return "executable";
+      }
+      if ([
+        "commitSelectedFiles",
+        "prepareLocalGiteaTarget",
+        "previewIgnoreRule"
+      ].includes(definition.id)) {
+        return "preflight-only";
+      }
       if (definition.preflightRequired === true) return "preflight-only";
       return "declared-only";
     }
@@ -616,10 +660,22 @@
       if (definition.id === "refreshStatus" && status === "executable") {
         return "git-tools-status-api.fetchStatus";
       }
+      if (definition.id === "inspectWorkingTree" && status === "executable") {
+        return "git-tools-semantic-adapter.state.inspectWorkingTree";
+      }
+      if (definition.id === "inspectRemotes" && status === "executable") {
+        return "git-tools-semantic-adapter.state.inspectRemotes";
+      }
+      if (definition.id === "inspectPatchInventory" && status === "executable") {
+        return "git-tools-semantic-adapter.state.inspectPatchInventory";
+      }
+      if (definition.id === "preparePush" && status === "executable") {
+        return "mcel-preflight";
+      }
       if (definition.id === "pushCurrentBranch" && status === "executable") {
         return "git-tools-server-panel.serverPushLocal";
       }
-      if (status === "preflight-only") return "mcel-preflight";
+      if (status === "preflight-only") return "mcel-preflight-gap";
       if (status === "prohibited") return "policy-prohibited";
       return "not-registered";
     }
@@ -667,7 +723,11 @@
           entry.status === "executable"
       );
       const semanticRuntimeScope = governedPublishExecutable
-        ? "governed-publish-partial"
+        ? (
+          safeReadComplete
+            ? "governed-publish-gap-closed-partial"
+            : "governed-publish-partial"
+        )
         : (
           safeReadComplete
             ? "safe-read-complete"
@@ -1776,6 +1836,172 @@
       return storeReceipt(decoratedReceipt, options);
     }
 
+    function inspectionPayloadFor(intentId, state) {
+      const safeState = state && typeof state === "object" ? state : getState();
+      if (intentId === "inspectWorkingTree") {
+        return {
+          kind: "working-tree-inspection",
+          repository: safeState.gitRoot || safeState.repoDir || "",
+          branch: safeState.branch || "unknown",
+          dirty: safeState.dirty,
+          changedCount: safeState.changedCount,
+          untrackedCount: safeState.untrackedCount,
+          shortStatus: safeState.shortStatus || ""
+        };
+      }
+      if (intentId === "inspectRemotes") {
+        return {
+          kind: "remote-inspection",
+          repository: safeState.gitRoot || safeState.repoDir || "",
+          branch: safeState.branch || "unknown",
+          remoteCount: (safeState.remotes || []).length,
+          remotes: clonePlain(safeState.remotes || [])
+        };
+      }
+      if (intentId === "inspectPatchInventory") {
+        return {
+          kind: "patch-inventory-inspection",
+          repository: safeState.gitRoot || safeState.repoDir || "",
+          patching: clonePlain(safeState.patching || {}),
+          counts: clonePlain(safeState.patching?.counts || {})
+        };
+      }
+      return {
+        kind: "unknown-inspection",
+        repository: safeState.gitRoot || safeState.repoDir || ""
+      };
+    }
+
+    function buildInspectionExecutionReceipt(intentId, preflight, stateBefore, payload, options = {}) {
+      const definition = definitionFor(intentId);
+      receiptSequence += 1;
+      const createdAt = nowIso({
+        now: options.completedAt || options.now || new Date().toISOString()
+      });
+      const fingerprint = stateFingerprint(stateBefore || initialState());
+      const receipt = {
+        schemaVersion: RECEIPT_SCHEMA_VERSION,
+        receiptId: `${APP_ID}-receipt-${Date.parse(createdAt) || Date.now()}-${receiptSequence}`,
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        kind: "action-execution-receipt",
+        intentId,
+        risk: String(definition?.risk || preflight?.risk || "safe-read"),
+        status: "succeeded",
+        decision: "allow",
+        createdAt,
+        startedAt: String(options.startedAt || preflight?.evaluatedAt || createdAt),
+        completedAt: createdAt,
+        preflightId: String(preflight?.preflightId || ""),
+        stateObservedAt: String(stateBefore?.observedAt || ""),
+        stateFingerprint: fingerprint,
+        stateBeforeFingerprint: fingerprint,
+        stateAfterFingerprint: fingerprint,
+        blockers: clonePlain(preflight?.blockers || []),
+        warnings: clonePlain(preflight?.warnings || []),
+        executionAttempted: true,
+        executionBinding: intentExecutionBinding(definition),
+        result: {
+          status: "succeeded",
+          ...clonePlain(payload || {})
+        },
+        error: null,
+        recoveryClassified: false
+      };
+      const decoratedReceipt = decorateReceiptWithRecovery(
+        receipt,
+        stateBefore || getState(),
+        options
+      );
+
+      return storeReceipt(decoratedReceipt, options);
+    }
+
+    function blockedPreflightExecutionResult(intentId, preflight, stateBefore, options = {}) {
+      const receipt = buildReceipt(preflight, options);
+      return {
+        schemaVersion: "git-tools-execution-result-v1",
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        intentId,
+        status: "blocked",
+        decision: "block",
+        executionAttempted: false,
+        executionBinding: preflight.executionBinding || "not-registered",
+        blockers: clonePlain(preflight.blockers || []),
+        warnings: clonePlain(preflight.warnings || []),
+        preflight,
+        receipt,
+        stateBefore: canonicalStateSnapshot(stateBefore),
+        stateAfter: canonicalStateSnapshot(stateBefore),
+        error: null
+      };
+    }
+
+    async function executeInspectionIntent(intentId, options = {}) {
+      const stateBefore = getState();
+      const preflight = evaluatePreflight(intentId, stateBefore, options);
+      if (preflight.blocked) {
+        return blockedPreflightExecutionResult(intentId, preflight, stateBefore, options);
+      }
+      const payload = inspectionPayloadFor(intentId, stateBefore);
+      const receipt = buildInspectionExecutionReceipt(
+        intentId,
+        preflight,
+        stateBefore,
+        payload,
+        options
+      );
+      return {
+        schemaVersion: "git-tools-execution-result-v1",
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        intentId,
+        status: receipt.status,
+        decision: "allow",
+        executionAttempted: true,
+        executionBinding: receipt.executionBinding,
+        preflight,
+        receipt,
+        result: clonePlain(receipt.result || {}),
+        stateBefore: canonicalStateSnapshot(stateBefore),
+        stateAfter: canonicalStateSnapshot(stateBefore),
+        error: null
+      };
+    }
+
+    async function executePreparePushIntent(options = {}) {
+      const stateBefore = getState();
+      const preflight = preflightIntent("preparePush", stateBefore, options);
+      return {
+        schemaVersion: "git-tools-execution-result-v1",
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        intentId: "preparePush",
+        status: preflight.blocked ? "blocked" : "succeeded",
+        decision: preflight.decision,
+        executionAttempted: false,
+        executionBinding: preflight.executionBinding,
+        blockers: clonePlain(preflight.blockers || []),
+        warnings: clonePlain(preflight.warnings || []),
+        preflight,
+        receipt: clonePlain(preflight.receipt || null),
+        result: {
+          status: preflight.blocked ? "blocked" : "prepared",
+          preflightDecision: preflight.decision,
+          confirmationRequired: preflight.confirmationRequired === true,
+          executionAvailable: preflight.executionAvailable === true
+        },
+        stateBefore: canonicalStateSnapshot(stateBefore),
+        stateAfter: canonicalStateSnapshot(stateBefore),
+        error: null
+      };
+    }
+
     function preflightIntent(intentOrId, state = getState(), options = {}) {
       const preflight = evaluatePreflight(intentOrId, state, options);
       const receipt = buildReceipt(preflight, options);
@@ -2151,6 +2377,16 @@
       const intentId = normalizeIntentId(intentOrId);
       if (intentId === "refreshStatus") {
         return executeRefreshIntent(options);
+      }
+      if ([
+        "inspectWorkingTree",
+        "inspectRemotes",
+        "inspectPatchInventory"
+      ].includes(intentId)) {
+        return executeInspectionIntent(intentId, options);
+      }
+      if (intentId === "preparePush") {
+        return executePreparePushIntent(options);
       }
       if (intentId === "pushCurrentBranch") {
         return executePushIntent(options);

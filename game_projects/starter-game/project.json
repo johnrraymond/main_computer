@@ -1084,6 +1084,9 @@
           },
           "motherShipInterior": {
             "enabled": true,
+            "schema": "game.motherShipInterior.v1",
+            "definitionVersion": "game.motherShipInterior.definition.v2",
+            "stateVersion": "game.motherShipInterior.state.v1",
             "initialLocation": "bay.shuttle",
             "initialObjective": "objective.bay-ops",
             "power": "emergency",
@@ -2812,7 +2815,8 @@
               "requireSpawnInsideRoom": true,
               "requireOpenDoors": true,
               "requirePropTargets": true,
-              "requireInteractionEffects": true
+              "requireInteractionEffects": true,
+              "requireDefinitionVersion": true
             },
             "props": [
               {

@@ -752,3 +752,119 @@ class TestDurabilityErrorBoundaryHardening:
             tmp_path / "objects" / "sha256",
             tmp_path / "objects" / "sha256" / "ab",
         ]
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-018"],
+    operations=["MOTHER-OP-SYNC-STATE"],
+    functionalities=["MOTHER-OF-SYNC-005"],
+    modules=["MOTHER-OFM-CORE-011"],
+)
+class TestPostpublicationBoundaryClassification:
+    def test_durable_create_cleanup_failure_after_link_does_not_hide_success(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        target = tmp_path / "immutable"
+        real_unlink = Path.unlink
+        cleanup_attempts = 0
+
+        def deny_temp_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+            nonlocal cleanup_attempts
+            if path.name.endswith(".tmp"):
+                cleanup_attempts += 1
+                raise PermissionError("temporary cleanup denied")
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", deny_temp_unlink)
+
+        atomic_files.durable_create(
+            target,
+            b"published",
+            operation=_operation(),
+        )
+
+        assert cleanup_attempts >= 1
+        assert target.read_bytes() == b"published"
+
+    def test_absent_pointer_cas_cleanup_failure_preserves_durable_success(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        pointer = tmp_path / "current"
+        real_unlink = Path.unlink
+
+        def deny_temp_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+            if path.name.endswith(".tmp"):
+                raise PermissionError("temporary cleanup denied")
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", deny_temp_unlink)
+
+        changed = atomic_files.atomic_pointer_cas(
+            pointer,
+            expected=None,
+            replacement=b"generation-1\n",
+            operation=_operation(),
+        )
+
+        assert changed is True
+        assert pointer.read_bytes() == b"generation-1\n"
+
+    def test_explicit_unlock_failure_after_durable_replace_returns_success_when_close_succeeds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        target = tmp_path / "head.json"
+        target.write_bytes(b"old")
+
+        def fail_unlock(_fd: int) -> None:
+            raise PermissionError("explicit unlock denied")
+
+        monkeypatch.setattr(atomic_files, "_release_platform_lock", fail_unlock)
+
+        atomic_files.durable_replace(
+            target,
+            b"new",
+            operation=_operation(),
+        )
+
+        assert target.read_bytes() == b"new"
+
+    def test_stable_read_metadata_probe_failure_is_typed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        pointer = tmp_path / "head.json"
+        pointer.write_bytes(b"head")
+        real_exists = Path.exists
+
+        def denied_exists(path: Path) -> bool:
+            if path == pointer:
+                raise PermissionError("metadata denied")
+            return real_exists(path)
+
+        monkeypatch.setattr(Path, "exists", denied_exists)
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.stable_read(
+                pointer,
+                lambda value: value,
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_READ_FAILED",
+            retry_class="after-reobserve",
+            authority_effect="none",
+        )

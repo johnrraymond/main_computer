@@ -64,17 +64,72 @@ def _as_path(
     return path.absolute()
 
 
-def _first_symlink(path: Path) -> Path | None:
+def _durable_read_failed(
+    operation: OperationIdentity,
+    message: str,
+    cause: BaseException,
+) -> MotherError:
+    return _mother_error(
+        operation,
+        "MOTHER_STATE_DURABLE_READ_FAILED",
+        message,
+        retry_class="after-reobserve",
+        cause=cause,
+    )
+
+
+def _probe_exists(path: Path, operation: OperationIdentity) -> bool:
+    try:
+        return path.exists()
+    except OSError as exc:
+        raise _durable_read_failed(
+            operation,
+            f"failed to inspect path existence: {path}",
+            exc,
+        ) from exc
+
+
+def _probe_is_dir(path: Path, operation: OperationIdentity) -> bool:
+    try:
+        return path.is_dir()
+    except OSError as exc:
+        raise _durable_read_failed(
+            operation,
+            f"failed to inspect directory metadata: {path}",
+            exc,
+        ) from exc
+
+
+def _probe_is_file(path: Path, operation: OperationIdentity) -> bool:
+    try:
+        return path.is_file()
+    except OSError as exc:
+        raise _durable_read_failed(
+            operation,
+            f"failed to inspect regular-file metadata: {path}",
+            exc,
+        ) from exc
+
+
+def _probe_is_symlink(path: Path, operation: OperationIdentity) -> bool:
+    try:
+        return path.is_symlink()
+    except OSError as exc:
+        raise _durable_read_failed(
+            operation,
+            f"failed to inspect symlink metadata: {path}",
+            exc,
+        ) from exc
+
+
+def _first_symlink(path: Path, operation: OperationIdentity) -> Path | None:
     parts = path.parts
     if not parts:
         return None
     current = Path(parts[0])
     for part in parts[1:]:
         current = current / part
-        try:
-            if current.is_symlink():
-                return current
-        except OSError:
+        if _probe_is_symlink(current, operation):
             return current
     return None
 
@@ -94,10 +149,9 @@ def _unsafe_path(
 
 
 def _validate_no_symlink(path: Path, operation: OperationIdentity) -> None:
-    unsafe = _first_symlink(path)
+    unsafe = _first_symlink(path, operation)
     if unsafe is not None:
         raise _unsafe_path(operation, f"unsafe symlink path component: {unsafe}")
-
 
 def _root(
     value: str | os.PathLike[str],
@@ -107,7 +161,7 @@ def _root(
 ) -> Path:
     root = _as_path(value, "object-store root", operation)
     _validate_no_symlink(root, operation)
-    if root.exists() and not root.is_dir():
+    if _probe_exists(root, operation) and not _probe_is_dir(root, operation):
         raise _unsafe_path(
             operation,
             f"object-store root is not a directory: {root}",
@@ -120,7 +174,6 @@ def _root(
         )
         _validate_no_symlink(root, operation)
     return root
-
 
 def _content_hash(value: ContentHash, name: str = "reference") -> ContentHash:
     if not isinstance(value, ContentHash):
@@ -211,9 +264,9 @@ def _reconcile_existing_hierarchy(
         root / reference.algorithm / reference.digest[:2],
     ):
         _validate_no_symlink(directory, operation)
-        if not directory.exists():
+        if not _probe_exists(directory, operation):
             return
-        if not directory.is_dir():
+        if not _probe_is_dir(directory, operation):
             raise _unsafe_path(
                 operation,
                 f"object-store hierarchy component is not a directory: {directory}",
@@ -237,7 +290,6 @@ def _reconcile_existing_hierarchy(
                 cause=exc,
             ) from exc
 
-
 def _read_verified_locked(
     path: Path,
     reference: ContentHash,
@@ -245,16 +297,16 @@ def _read_verified_locked(
     *,
     expected: bytes | None = None,
 ) -> bytes:
-    with atomic_files._exclusive_target_lock(path, operation):
+    with atomic_files.synchronized_target(path, operation=operation):
         _validate_no_symlink(path, operation)
-        if not path.exists():
+        if not _probe_exists(path, operation):
             raise _mother_error(
                 operation,
                 "MOTHER_STATE_OBJECT_MISSING",
                 "requested immutable object is absent",
                 retry_class="after-reobserve",
             )
-        if not path.is_file():
+        if not _probe_is_file(path, operation):
             raise _unsafe_path(
                 operation,
                 "content-addressed object path is not a regular file",
@@ -270,12 +322,10 @@ def _read_verified_locked(
                 cause=exc,
             ) from exc
         except OSError as exc:
-            raise _mother_error(
+            raise _durable_read_failed(
                 operation,
-                "MOTHER_STATE_DURABLE_READ_FAILED",
                 "failed to read the immutable object",
-                retry_class="after-reobserve",
-                cause=exc,
+                exc,
             ) from exc
 
         actual = hashing.sha256(data)
@@ -294,7 +344,6 @@ def _read_verified_locked(
         except OSError as exc:
             raise _durability_unconfirmed(operation, path, reference, exc) from exc
         return data
-
 
 def put_immutable(
     root: str | os.PathLike[str],
@@ -345,7 +394,7 @@ def get_verified(
     op = _operation(operation)
     ref = _content_hash(reference)
     store_root = _root(root, create=False, operation=op)
-    if not store_root.exists():
+    if not _probe_exists(store_root, op):
         raise _mother_error(
             op,
             "MOTHER_STATE_OBJECT_MISSING",
@@ -509,8 +558,15 @@ def _validate_distinct_roots(
     destination: Path,
     operation: OperationIdentity,
 ) -> None:
-    source_resolved = source.resolve(strict=False)
-    destination_resolved = destination.resolve(strict=False)
+    try:
+        source_resolved = source.resolve(strict=False)
+        destination_resolved = destination.resolve(strict=False)
+    except OSError as exc:
+        raise _durable_read_failed(
+            operation,
+            "failed to resolve object-store roots",
+            exc,
+        ) from exc
     try:
         destination_resolved.relative_to(source_resolved)
     except ValueError:

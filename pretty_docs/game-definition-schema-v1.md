@@ -37,6 +37,39 @@ The schema is intentionally focused on the systems that have caused defects duri
 }
 ```
 
+## Versioning and migration
+
+Patch T adds explicit version/defaulting metadata for the mother-ship runtime
+shape. Current mother-ship project definitions should declare:
+
+```json
+{
+  "schema": "game.motherShipInterior.v1",
+  "definitionVersion": "game.motherShipInterior.definition.v2",
+  "stateVersion": "game.motherShipInterior.state.v1"
+}
+```
+
+The runtime migration pass accepts legacy or partially edited definitions, fills
+missing safe defaults, and records a load-time report:
+
+```json
+{
+  "migration": {
+    "schema": "game.motherShipInterior.migration.v1",
+    "sourceDefinitionVersion": "legacy-unversioned",
+    "targetDefinitionVersion": "game.motherShipInterior.definition.v2",
+    "stateVersion": "game.motherShipInterior.state.v1",
+    "migratedAtLoad": true,
+    "migrations": ["legacy-unversioned->game.motherShipInterior.definition.v2"],
+    "defaultsApplied": ["rooms", "props", "interactions"]
+  }
+}
+```
+
+This migration report is runtime/load metadata. It documents compatibility work;
+it does not imply that the raw project file was rewritten.
+
 ## Coordinates
 
 The current WebGL scene uses an X/Z floor plane. The schema keeps that convention.
@@ -396,6 +429,7 @@ A definition should declare which validators are expected to pass.
     "requireReachableInteractables": true,
     "requireInteractionHandlers": true,
     "requireInteractionEffects": true,
+    "requireDefinitionVersion": true,
     "requireObjectiveTargets": true,
     "requireSpawnInsideRoom": true,
     "requirePropTargets": true

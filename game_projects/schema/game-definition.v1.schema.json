@@ -171,6 +171,10 @@
         "requireInteractionEffects": {
           "type": "boolean",
           "default": true
+        },
+        "requireDefinitionVersion": {
+          "type": "boolean",
+          "default": true
         }
       },
       "default": {}
@@ -191,6 +195,17 @@
         }
       },
       "default": {}
+    },
+    "definitionVersion": {
+      "type": "string",
+      "description": "Runtime definition/migration target version, for example game.motherShipInterior.definition.v2."
+    },
+    "stateVersion": {
+      "type": "string",
+      "description": "Runtime state/default compatibility version, for example game.motherShipInterior.state.v1."
+    },
+    "migration": {
+      "$ref": "#/$defs/migrationReport"
     }
   },
   "$defs": {
@@ -1003,6 +1018,42 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/roomGeometry/properties/beams/items"
+          },
+          "default": []
+        }
+      },
+      "default": {}
+    },
+    "migrationReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "game.motherShipInterior.migration.v1"
+        },
+        "sourceDefinitionVersion": {
+          "type": "string"
+        },
+        "targetDefinitionVersion": {
+          "type": "string"
+        },
+        "stateVersion": {
+          "type": "string"
+        },
+        "migratedAtLoad": {
+          "type": "boolean"
+        },
+        "migrations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "defaultsApplied": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
           "default": []
         }

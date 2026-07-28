@@ -142,7 +142,7 @@ def test_git_tools_adapter_derives_state_objects_intents_and_preflight_capabilit
         {
             "id": "git-tools-domain-adapter",
             "appId": "git-tools",
-            "version": "git-tools-semantic-adapter-governed-push-v7",
+            "version": "git-tools-semantic-adapter-gap-closure-v8",
             "kind": "governed-push-execution-recovery-domain-adapter",
         }
     ]
@@ -158,20 +158,19 @@ def test_git_tools_adapter_derives_state_objects_intents_and_preflight_capabilit
     assert readiness["recoveryCoverageReady"] is True
     assert readiness["runtimeCoreReady"] is True
     assert readiness["fullApplicationSemanticReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-partial"
-    assert readiness["executableIntentCount"] == 2
-    assert readiness["preflightOnlyIntentCount"] == 1
-    assert readiness["declaredOnlyIntentCount"] == 3
+    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
+    assert readiness["executableIntentCount"] == 6
+    assert readiness["preflightOnlyIntentCount"] == 3
+    assert readiness["declaredOnlyIntentCount"] == 0
     assert readiness["prohibitedIntentCount"] == 1
-    assert readiness["blockedIntentCount"] == 4
-    assert readiness["totalIntentCount"] == 7
+    assert readiness["blockedIntentCount"] == 1
+    assert readiness["totalIntentCount"] == 10
     assert readiness["intentCoverageAuditReady"] is True
     assert readiness["intentCoverageReady"] is False
     assert readiness["missingApplicationSemantics"] == [
-        "inspectPatchInventory",
-        "inspectRemotes",
-        "inspectWorkingTree",
-        "preparePush",
+        "commitSelectedFiles",
+        "prepareLocalGiteaTarget",
+        "previewIgnoreRule",
     ]
     assert readiness["missingSemantics"] == []
 
@@ -271,7 +270,7 @@ def test_git_tools_adapter_promotes_only_after_verified_recovery_coverage() -> N
     assert readiness["semanticRuntimeReady"] is False
     assert readiness["runtimeCoreReady"] is True
     assert readiness["fullApplicationSemanticReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-partial"
+    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
     assert readiness["semanticRuntimeStatus"] == "scope-limited-semantic-runtime"
     assert readiness["adapterKind"] == "scope-limited-executable-semantic-workbench"
     assert readiness["adapterExecutable"] is True
@@ -1196,9 +1195,9 @@ def test_governed_local_gitea_push_executes_after_confirmation_and_revalidation(
     readiness = result["readiness"]
     assert readiness["semanticRuntimeReady"] is False
     assert readiness["runtimeCoreReady"] is True
-    assert readiness["semanticRuntimeScope"] == "governed-publish-partial"
-    assert readiness["executableIntentCount"] == 2
-    assert readiness["preflightOnlyIntentCount"] == 1
+    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
+    assert readiness["executableIntentCount"] == 6
+    assert readiness["preflightOnlyIntentCount"] == 3
 
 
 def test_governed_push_decline_and_changed_state_never_call_backend() -> None:
@@ -1436,3 +1435,183 @@ def test_governed_push_rejects_preflight_receipt_missing_from_ledger() -> None:
     assert "stored confirmation-required" in (
         result["execution"]["blockers"][0]["message"]
     )
+
+
+def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without_full_promotion() -> None:
+    registry_path = SCRIPTS / "mcel-domain-adapter-registry.js"
+    adapter_path = SCRIPTS / "git-tools-semantic-adapter.js"
+    script = textwrap.dedent(
+        f"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const storageData = new Map();
+        const sandbox = {{console}};
+        sandbox.window = sandbox;
+        sandbox.localStorage = {{
+          getItem(key) {{ return storageData.has(key) ? storageData.get(key) : null; }},
+          setItem(key, value) {{ storageData.set(key, String(value)); }},
+          removeItem(key) {{ storageData.delete(key); }}
+        }};
+        vm.runInNewContext(
+          fs.readFileSync({json.dumps(str(registry_path))}, "utf8"),
+          sandbox,
+          {{filename: "mcel-domain-adapter-registry.js"}}
+        );
+        vm.runInNewContext(
+          fs.readFileSync({json.dumps(str(adapter_path))}, "utf8"),
+          sandbox,
+          {{filename: "git-tools-semantic-adapter.js"}}
+        );
+
+        (async () => {{
+          const adapter = sandbox.GitToolsSemanticAdapter;
+          adapter.clearReceipts();
+          adapter.resetState();
+          await adapter.refreshState({{
+            repoDir: "C:/work/main_computer_test",
+            observedAt: "2026-07-15T23:30:00.000Z",
+            api: {{
+              async fetchStatus(options) {{
+                return {{
+                  ok: true,
+                  repo_dir: options.repoDir,
+                  git_root: "C:/work/main_computer_test",
+                  is_git_repo: true,
+                  has_head: true,
+                  branch: "main",
+                  ahead: 2,
+                  behind: 0,
+                  dirty: true,
+                  changed_count: 4,
+                  untracked_count: 1,
+                  short_status: "## main...origin/main [ahead 2]",
+                  remotes: [
+                    {{
+                      name: "local-gitea",
+                      fetch: "http://localhost:3000/local/main-computer.git",
+                      push: "http://localhost:3000/local/main-computer.git"
+                    }}
+                  ],
+                  patching: {{
+                    ok: true,
+                    counts: {{incoming: 2, applied: 1, archive: 0, dry_runs: 3}}
+                  }}
+                }};
+              }}
+            }}
+          }});
+
+          const workingTree = await adapter.executeIntent("inspectWorkingTree", {{
+            now: "2026-07-15T23:30:10.000Z"
+          }});
+          const remotes = await adapter.executeIntent("inspectRemotes", {{
+            now: "2026-07-15T23:30:11.000Z"
+          }});
+          const patchInventory = await adapter.executeIntent("inspectPatchInventory", {{
+            now: "2026-07-15T23:30:12.000Z"
+          }});
+          const preparePush = await adapter.executeIntent("preparePush", {{
+            now: "2026-07-15T23:30:13.000Z",
+            parameters: {{remote: "local-gitea"}}
+          }});
+          const commit = adapter.preflightIntent("commitSelectedFiles", adapter.getState(), {{
+            now: "2026-07-15T23:30:14.000Z"
+          }});
+          const localTarget = adapter.preflightIntent("prepareLocalGiteaTarget", adapter.getState(), {{
+            now: "2026-07-15T23:30:15.000Z"
+          }});
+          const ignoreRule = adapter.preflightIntent("previewIgnoreRule", adapter.getState(), {{
+            now: "2026-07-15T23:30:16.000Z"
+          }});
+          const readiness = sandbox.McelDomainAdapterRegistry.evaluateAdapterReadiness("git-tools");
+          process.stdout.write(JSON.stringify({{
+            workingTree,
+            remotes,
+            patchInventory,
+            preparePush,
+            futurePreflight: {{
+              commit: {{
+                decision: commit.decision,
+                executionAvailable: commit.executionAvailable,
+                executionBinding: commit.executionBinding
+              }},
+              localTarget: {{
+                decision: localTarget.decision,
+                executionAvailable: localTarget.executionAvailable,
+                executionBinding: localTarget.executionBinding
+              }},
+              ignoreRule: {{
+                decision: ignoreRule.decision,
+                executionAvailable: ignoreRule.executionAvailable,
+                executionBinding: ignoreRule.executionBinding
+              }}
+            }},
+            receipts: adapter.listReceipts(),
+            readiness
+          }}));
+        }})().catch((error) => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
+        """
+    )
+    result = run_node_json(script)
+
+    assert result["workingTree"]["status"] == "succeeded"
+    assert result["workingTree"]["executionAttempted"] is True
+    assert result["workingTree"]["result"]["kind"] == "working-tree-inspection"
+    assert result["workingTree"]["result"]["changedCount"] == 4
+
+    assert result["remotes"]["result"]["kind"] == "remote-inspection"
+    assert result["remotes"]["result"]["remoteCount"] == 1
+    assert result["patchInventory"]["result"]["kind"] == "patch-inventory-inspection"
+    assert result["patchInventory"]["result"]["counts"]["dryRuns"] == 3
+
+    assert result["preparePush"]["status"] == "succeeded"
+    assert result["preparePush"]["executionAttempted"] is False
+    assert result["preparePush"]["executionBinding"] == "mcel-preflight"
+    assert result["preparePush"]["receipt"]["kind"] == "preflight-decision-receipt"
+
+    assert result["futurePreflight"] == {
+        "commit": {
+            "decision": "allow",
+            "executionAvailable": False,
+            "executionBinding": "mcel-preflight-gap",
+        },
+        "localTarget": {
+            "decision": "allow",
+            "executionAvailable": False,
+            "executionBinding": "mcel-preflight-gap",
+        },
+        "ignoreRule": {
+            "decision": "allow",
+            "executionAvailable": False,
+            "executionBinding": "mcel-preflight-gap",
+        },
+    }
+
+    receipt_kinds = [(item["intentId"], item["kind"], item["executionAttempted"]) for item in result["receipts"]]
+    assert receipt_kinds == [
+        ("inspectWorkingTree", "action-execution-receipt", True),
+        ("inspectRemotes", "action-execution-receipt", True),
+        ("inspectPatchInventory", "action-execution-receipt", True),
+        ("preparePush", "preflight-decision-receipt", False),
+        ("commitSelectedFiles", "preflight-decision-receipt", False),
+        ("prepareLocalGiteaTarget", "preflight-decision-receipt", False),
+        ("previewIgnoreRule", "preflight-decision-receipt", False),
+    ]
+
+    readiness = result["readiness"]
+    assert readiness["runtimeCoreReady"] is True
+    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
+    assert readiness["executableIntentCount"] == 6
+    assert readiness["preflightOnlyIntentCount"] == 3
+    assert readiness["declaredOnlyIntentCount"] == 0
+    assert readiness["prohibitedIntentCount"] == 1
+    assert readiness["totalIntentCount"] == 10
+    assert readiness["missingApplicationSemantics"] == [
+        "commitSelectedFiles",
+        "prepareLocalGiteaTarget",
+        "previewIgnoreRule",
+    ]
