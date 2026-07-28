@@ -135,6 +135,12 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(interior["rooms"][-1]["location"], "bridge.deck")
         self.assertEqual(interior["rooms"][-1]["bounds"]["minZ"], -39.35)
         self.assertGreater(interior["rooms"][-1]["priority"], interior["rooms"][0]["priority"])
+        rooms_by_id = {room["id"]: room for room in interior["rooms"]}
+        trunk_geometry = rooms_by_id["corridor.trunk"]["geometry"]
+        self.assertEqual(len(trunk_geometry["boxes"]), 4)
+        self.assertEqual(len(trunk_geometry["beams"]), 5)
+        self.assertEqual(trunk_geometry["boxes"][0]["min"][0], -2.72)
+        self.assertEqual(trunk_geometry["beams"][1]["start"], [-2.46, 0.18, -25.6])
         self.assertEqual(interior["spawns"]["spawn.shuttle-bay"]["room"], "bay.shuttle")
         self.assertEqual(interior["spawns"]["spawn.shuttle-bay"]["position"], [0.24, 0.9, 4.3])
         self.assertEqual(interior["spawns"]["spawn.shuttle-bay"]["yaw"], 32)
@@ -156,6 +162,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(interior["terminals"]["terminal.bridge-tactical"]["location"], "bridge.deck")
         self.assertEqual(interior["terminals"]["terminal.bridge-tactical"]["state"], "ready")
         props_by_id = {prop["id"]: prop for prop in interior["props"]}
+        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["room"], "bridge.deck")
+        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["kind"], "viewscreen")
+        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["display"], "enemyShipTactical")
+        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["target"], "enemyShip")
         self.assertEqual(props_by_id["prop.marker.bay-ops-terminal"]["kind"], "map-marker")
         self.assertEqual(props_by_id["prop.marker.bay-ops-terminal"]["target"], "terminal.bay-ops")
         self.assertEqual(props_by_id["prop.marker.engineering-power"]["room"], "engineering.access")
@@ -488,6 +498,15 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("shuttle3dNormalizeMotherShipRoomGeometry", scene_viewer_script)
         self.assertIn("appendMotherShipRoomGeometry(builder, nowMs)", scene_viewer_script)
         self.assertIn("game-runtime-patch-O-room-geometry-extraction", scene_viewer_script)
+        self.assertIn("bayControlSuppressedKeys", scene_viewer_script)
+        self.assertIn("bayControlInputUnlockAtMs", scene_viewer_script)
+        self.assertIn("isMovementControlKey(code)", scene_viewer_script)
+        self.assertIn("Patch P renders content-defined viewscreens/displays from prop.display metadata", scene_viewer_script)
+        self.assertIn("appendMotherShipViewscreenDisplay(builder, prop, nowMs)", scene_viewer_script)
+        self.assertIn("appendEnemyShipTacticalDisplay(builder, prop, nowMs)", scene_viewer_script)
+        self.assertIn('kind === "viewscreen"', scene_viewer_script)
+        self.assertIn("prop.display.bridge-viewscreen", scene_viewer_script)
+        self.assertIn("game-runtime-patch-P-content-defined-viewscreens", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

@@ -6,6 +6,8 @@ import os
 from pathlib import Path, PureWindowsPath
 import re
 
+from .models import NetworkHeadPaths
+
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -72,7 +74,7 @@ class MotherPaths:
             self.networks_root / _identifier(network, "network")
         )
 
-    def resolve_network_head_paths(self, network: str) -> tuple[Path, Path]:
+    def resolve_network_head_paths(self, network: str) -> NetworkHeadPaths:
         """Return the canonical journal head and committed-state projection.
 
         The journal head is authoritative.  ``committed-state.json`` is the
@@ -88,7 +90,10 @@ class MotherPaths:
             root / "committed-state.json",
             expected_network=network,
         )
-        return head, committed_state
+        return NetworkHeadPaths(
+            journal_head=head,
+            committed_state=committed_state,
+        )
 
     def generation_root(self, network: str, generation: str) -> Path:
         return self.validate_contained(

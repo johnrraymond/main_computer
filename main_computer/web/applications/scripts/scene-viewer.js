@@ -3284,6 +3284,62 @@
                                                 "accentColor": "#67e8f9"
                                     },
                                     "walls": [],
+                                    "boxes": [
+                                      {
+                                        "min": [
+                                          -2.72,
+                                          -1.04,
+                                          -25.7
+                                        ],
+                                        "max": [
+                                          -2.54,
+                                          0.68,
+                                          -13.35
+                                        ],
+                                        "color": "#334155"
+                                      },
+                                      {
+                                        "min": [
+                                          2.54,
+                                          -1.04,
+                                          -25.7
+                                        ],
+                                        "max": [
+                                          2.72,
+                                          0.68,
+                                          -13.35
+                                        ],
+                                        "color": "#334155"
+                                      },
+                                      {
+                                        "min": [
+                                          -2.42,
+                                          -1.052,
+                                          -25.45
+                                        ],
+                                        "max": [
+                                          -2.18,
+                                          -0.94,
+                                          -13.55
+                                        ],
+                                        "color": "#38bdf8",
+                                        "emissive": true
+                                      },
+                                      {
+                                        "min": [
+                                          2.18,
+                                          -1.052,
+                                          -25.45
+                                        ],
+                                        "max": [
+                                          2.42,
+                                          -0.94,
+                                          -13.55
+                                        ],
+                                        "color": "#38bdf8",
+                                        "emissive": true
+                                      }
+                                    ],
                                     "openings": [
                                                 {
                                                             "id": "opening.trunk-hub",
@@ -3310,6 +3366,66 @@
                                                             "radius": 0.026,
                                                             "color": "#67e8f9",
                                                             "emissive": true
+                                                },
+                                                {
+                                                  "start": [
+                                                    -2.46,
+                                                    0.18,
+                                                    -25.6
+                                                  ],
+                                                  "end": [
+                                                    -2.46,
+                                                    0.18,
+                                                    -13.45
+                                                  ],
+                                                  "radius": 0.022,
+                                                  "color": "#38bdf8",
+                                                  "emissive": true
+                                                },
+                                                {
+                                                  "start": [
+                                                    2.46,
+                                                    0.18,
+                                                    -25.6
+                                                  ],
+                                                  "end": [
+                                                    2.46,
+                                                    0.18,
+                                                    -13.45
+                                                  ],
+                                                  "radius": 0.022,
+                                                  "color": "#38bdf8",
+                                                  "emissive": true
+                                                },
+                                                {
+                                                  "start": [
+                                                    -1.8,
+                                                    1.28,
+                                                    -25.4
+                                                  ],
+                                                  "end": [
+                                                    1.8,
+                                                    1.28,
+                                                    -25.4
+                                                  ],
+                                                  "radius": 0.026,
+                                                  "color": "#67e8f9",
+                                                  "emissive": true
+                                                },
+                                                {
+                                                  "start": [
+                                                    -1.8,
+                                                    1.28,
+                                                    -19.0
+                                                  ],
+                                                  "end": [
+                                                    1.8,
+                                                    1.28,
+                                                    -19.0
+                                                  ],
+                                                  "radius": 0.026,
+                                                  "color": "#67e8f9",
+                                                  "emissive": true
                                                 }
                                     ]
                         }
@@ -3755,6 +3871,19 @@
               color: "#f97316",
               emissive: true,
               label: "Tactical console marker"
+            },
+            {
+              id: "prop.display.bridge-viewscreen",
+              room: "bridge.deck",
+              kind: "viewscreen",
+              position: [0.0, -39.12],
+              size: [6.9, 2.1, 0.08],
+              color: "#38bdf8",
+              emissive: true,
+              facing: "north",
+              display: "enemyShipTactical",
+              target: "enemyShip",
+              label: "Bridge enemy ship tactical viewscreen"
             },
             {
               id: "prop.bridge-viewscreen-status",
@@ -4206,6 +4335,7 @@
               facing: String(raw.facing || fallback.facing || "north"),
               axis: String(raw.axis || fallback.axis || "x"),
               target: String(raw.target || fallback.target || ""),
+              display: String(raw.display || fallback.display || ""),
               label: String(raw.label || fallback.label || id)
             };
           })
@@ -4498,6 +4628,7 @@
         const supportedHandlers = shuttle3dMotherShipSupportedInteractionHandlers();
         const rules = shuttle3dNormalizeMotherShipValidationRules(rulesInput || config?.validationRules);
         const propSystemTargets = new Set(["enemyShip"]);
+        const propDisplayTargets = new Set(["enemyShipTactical"]);
         const propTargetIsKnown = (target) => {
           const targetId = String(target || "").trim();
           if (!targetId) return true;
@@ -4625,11 +4756,13 @@
           const x = Number(position[0]);
           const z = Number(position[1]);
           const target = String(prop?.target || "").trim();
+          const display = String(prop?.display || "").trim();
           if (rules.requireRenderableProps && !room) errors.push(`${id} points at missing room ${roomId}`);
           else if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`${id} is outside its room bounds`);
           if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`${id} is outside playable movement bounds`);
           if (rules.requireRenderableProps && !String(prop?.kind || "").trim()) errors.push(`${id} is missing a render kind`);
           if (rules.requirePropTargets && target && !propTargetIsKnown(target)) errors.push(`${id} targets missing content ${target}`);
+          if (rules.requirePropTargets && display && !propDisplayTargets.has(display)) errors.push(`${id} references missing display ${display}`);
         });
 
         Object.entries(config?.spawns || {}).forEach(([spawnId, spawn]) => {
@@ -5040,6 +5173,8 @@
             roll: 0,
             impulse: 0
           };
+          this.bayControlInputUnlockAtMs = 0;
+          this.bayControlSuppressedKeys = new Set();
           this.combatPauseStartedAtMs = null;
           this.lastPilotUiAt = -Infinity;
           this.lastShipUiAt = -Infinity;
@@ -5382,6 +5517,8 @@
             this.pilot.impulse = 0;
             this.pilot.roll = 0;
           }
+          this.bayControlInputUnlockAtMs = 0;
+          this.bayControlSuppressedKeys = new Set();
           this.combatPauseStartedAtMs = null;
           this.clearMovementKeys();
           this.emitPilotState?.(true);
@@ -5776,7 +5913,10 @@
           this.pilot.throttle = 0;
           this.pilot.impulse = 0;
           this.combatPauseStartedAtMs = null;
+          const suppressedBayKeys = new Set(this.movementKeys);
           this.clearMovementKeys();
+          this.bayControlSuppressedKeys = suppressedBayKeys;
+          this.bayControlInputUnlockAtMs = (Number.isFinite(this.lastFrameTime) ? this.lastFrameTime : performance.now()) + 650;
           this.setShipLocation("bay.shuttle", true);
           if (this.shipState?.flags) {
             this.shipState.flags.bayControlActive = true;
@@ -6457,7 +6597,6 @@
           builder.box([-0.36, -1.05, -35.9], [0.36, -0.58, -35.48], builder.color("#64748b"));
           builder.beam([-3.95, -0.78, -33.2], [-1.1, -0.78, -37.2], 0.024, blue);
           builder.beam([3.95, -0.78, -33.2], [1.1, -0.78, -37.2], 0.024, blue);
-          this.appendBridgeViewscreenEnemy(builder, nowMs);
           this.appendMotherShipRoomVisuals(builder, nowMs);
           this.appendMotherShipInteriorProps(builder, nowMs);
           this.appendMotherShipInteractableHotspots(builder, nowMs);
@@ -6618,12 +6757,18 @@
             }
             if (active) builder.beam([x - width / 2, -0.5, z], [x + width / 2, -0.5, z], 0.02 + pulse * 0.01, activeTrim);
           };
+          const drawViewscreen = (prop) => {
+            // Patch P renders content-defined viewscreens/displays from prop.display metadata.
+            // See pretty_docs/game-runtime-patch-P-content-defined-viewscreens.md for the content contract.
+            this.appendMotherShipViewscreenDisplay(builder, prop, nowMs);
+          };
           props.forEach((prop) => {
             const kind = String(prop.kind || "").toLowerCase();
             if (kind === "sign") drawSign(prop);
             else if (kind === "beacon") drawBeacon(prop);
             else if (kind === "light-strip") drawLightStrip(prop);
             else if (kind === "status-panel") drawStatusPanel(prop);
+            else if (kind === "viewscreen") drawViewscreen(prop);
             else if (kind === "terminal-console") drawTerminalConsole(prop);
             else if (kind === "map-marker") drawMapMarker(prop);
             else drawFloorMarker(prop);
@@ -6734,9 +6879,54 @@
           return {forward, right, up};
         }
 
-        appendBridgeViewscreenEnemy(builder, nowMs = 0) {
+        appendMotherShipViewscreenDisplay(builder, prop, nowMs = 0) {
+          // Patch P renders content-defined viewscreens/displays from prop.display metadata.
+          // The bridge viewscreen is now a normal motherShipInterior prop with display: "enemyShipTactical".
+          const display = String(prop?.display || "").toLowerCase();
+          if (display === "enemyshiptactical") {
+            this.appendEnemyShipTacticalDisplay(builder, prop, nowMs);
+            return;
+          }
+          const position = Array.isArray(prop?.position) ? prop.position.map(Number) : [0, -39.12];
+          const size = Array.isArray(prop?.size) ? prop.size.map(Number) : [6.9, 2.1, 0.08];
+          const centerX = Number.isFinite(position[0]) ? position[0] : 0;
+          const centerZ = Number.isFinite(position[1]) ? position[1] : -39.12;
+          const width = Math.max(1.0, Number.isFinite(size[0]) ? size[0] : 6.9);
+          const height = Math.max(0.65, Number.isFinite(size[1]) ? size[1] : 2.1);
+          const depth = Math.max(0.02, Number.isFinite(size[2]) ? size[2] : 0.08);
+          const glass = builder.color("#06111f");
+          const glow = builder.color(prop?.color || "#38bdf8", true);
+          const y0 = 0.18;
+          const y1 = y0 + height;
+          const x0 = centerX - width / 2;
+          const x1 = centerX + width / 2;
+          builder.box([x0, y0, centerZ - depth / 2], [x1, y1, centerZ + depth / 2], glass);
+          builder.beam([x0 + width * 0.04, y0 + height * 0.08, centerZ + depth], [x1 - width * 0.04, y0 + height * 0.08, centerZ + depth], 0.018, glow);
+          builder.beam([x0 + width * 0.04, y1 - height * 0.08, centerZ + depth], [x1 - width * 0.04, y1 - height * 0.08, centerZ + depth], 0.018, glow);
+          builder.beam([x0 + width * 0.04, y0 + height * 0.1, centerZ + depth], [x0 + width * 0.04, y1 - height * 0.1, centerZ + depth], 0.014, glow);
+          builder.beam([x1 - width * 0.04, y0 + height * 0.1, centerZ + depth], [x1 - width * 0.04, y1 - height * 0.1, centerZ + depth], 0.014, glow);
+        }
+
+        appendEnemyShipTacticalDisplay(builder, prop, nowMs = 0) {
+          const position = Array.isArray(prop?.position) ? prop.position.map(Number) : [0, -39.12];
+          const size = Array.isArray(prop?.size) ? prop.size.map(Number) : [6.9, 2.1, 0.08];
+          const centerX = Number.isFinite(position[0]) ? position[0] : 0;
+          const centerZ = Number.isFinite(position[1]) ? position[1] : -39.12;
+          const width = Math.max(1.0, Number.isFinite(size[0]) ? size[0] : 6.9);
+          const height = Math.max(0.65, Number.isFinite(size[1]) ? size[1] : 2.1);
+          const depth = Math.max(0.02, Number.isFinite(size[2]) ? size[2] : 0.08);
+          const x0 = centerX - width / 2;
+          const x1 = centerX + width / 2;
+          const y0 = 0.18;
+          const y1 = y0 + height;
+          const py = (ratio) => y0 + height * ratio;
+          const px = (ratio) => x0 + width * ratio;
+          const z = centerZ;
+          const frontZ = z + depth;
+          const tacticalZ = z + depth * 2;
+
           const screenGlass = builder.color("#06111f");
-          const screenGlow = builder.color("#38bdf8", true);
+          const screenGlow = builder.color(prop?.color || "#38bdf8", true);
           const tacticalGrid = builder.color("#0ea5e9", true);
           const hullPercent = this.enemyShipHullPercent();
           const disabled = this.enemyShipDisabled();
@@ -6752,63 +6942,64 @@
           const lockGlow = builder.color(disabled ? "#86efac" : tracking ? "#86efac" : "#fbbf24", true);
           const scanPulse = 0.5 + 0.5 * Math.sin((nowMs || 0) / 460);
           const lockPulse = 0.5 + 0.5 * Math.sin((nowMs || 0) / 170);
-          const z = -39.12;
 
-          // Bridge viewscreen surface mounted on the forward bulkhead.
-          builder.box([-3.45, 0.18, z - 0.04], [3.45, 2.28, z + 0.04], screenGlass);
-          builder.beam([-3.3, 0.34, z + 0.08], [3.3, 0.34, z + 0.08], 0.022, tacticalGrid);
-          builder.beam([-3.3, 2.1, z + 0.08], [3.3, 2.1, z + 0.08], 0.022, tacticalGrid);
-          builder.beam([-3.24, 0.42, z + 0.08], [-3.24, 2.0, z + 0.08], 0.018, screenGlow);
-          builder.beam([3.24, 0.42, z + 0.08], [3.24, 2.0, z + 0.08], 0.018, screenGlow);
-          [-2.1, 0, 2.1].forEach((x) => {
-            builder.beam([x, 0.42, z + 0.07], [x, 2.02, z + 0.07], 0.006, tacticalGrid);
+          // Data-defined viewscreen surface mounted on the forward bulkhead.
+          builder.box([x0, y0, z - depth / 2], [x1, y1, z + depth / 2], screenGlass);
+          builder.beam([px(0.022), py(0.076), frontZ], [px(0.978), py(0.076), frontZ], 0.022, tacticalGrid);
+          builder.beam([px(0.022), py(0.914), frontZ], [px(0.978), py(0.914), frontZ], 0.022, tacticalGrid);
+          builder.beam([px(0.03), py(0.114), frontZ], [px(0.03), py(0.867), frontZ], 0.018, screenGlow);
+          builder.beam([px(0.97), py(0.114), frontZ], [px(0.97), py(0.867), frontZ], 0.018, screenGlow);
+          [0.196, 0.5, 0.804].forEach((ratio) => {
+            builder.beam([px(ratio), py(0.114), frontZ * 0.999 + tacticalZ * 0.001], [px(ratio), py(0.876), frontZ * 0.999 + tacticalZ * 0.001], 0.006, tacticalGrid);
           });
-          [0.82, 1.28, 1.74].forEach((y) => {
-            builder.beam([-3.1, y, z + 0.07], [3.1, y, z + 0.07], 0.006, tacticalGrid);
+          [0.305, 0.524, 0.743].forEach((ratio) => {
+            builder.beam([px(0.051), py(ratio), frontZ * 0.999 + tacticalZ * 0.001], [px(0.949), py(ratio), frontZ * 0.999 + tacticalZ * 0.001], 0.006, tacticalGrid);
           });
 
-          // Enemy raider tactical image on the viewscreen.
-          builder.ellipsoid([0, 1.28, z + 0.16], [0.2, 0.42, 0.05], 14, 6, hostileDark);
-          builder.ellipsoid([-0.48, 1.28, z + 0.17], [0.5, 0.16, 0.05], 14, 5, hostileHull);
-          builder.ellipsoid([0.48, 1.28, z + 0.17], [0.5, 0.16, 0.05], 14, 5, hostileHull);
-          builder.box([-0.12, 1.12, z + 0.23], [0.12, 1.44, z + 0.29], hostileAlert);
-          builder.box([-0.88, 1.2, z + 0.21], [-0.58, 1.36, z + 0.28], hostileAlert);
-          builder.box([0.58, 1.2, z + 0.21], [0.88, 1.36, z + 0.28], hostileAlert);
-          builder.beam([-1.46, 0.68, z + 0.12], [1.46, 1.88, z + 0.12], 0.014 + scanPulse * 0.008, signal);
-          builder.beam([-1.46, 1.88, z + 0.12], [1.46, 0.68, z + 0.12], 0.014 + scanPulse * 0.008, signal);
-          builder.beam([-2.75, 0.6, z + 0.13], [-1.38, 0.6, z + 0.13], 0.016, hostileAlert);
-          builder.beam([1.38, 0.6, z + 0.13], [2.75, 0.6, z + 0.13], 0.016, hostileAlert);
-          builder.beam([-2.75, 1.96, z + 0.13], [-1.38, 1.96, z + 0.13], 0.016, hostileAlert);
-          builder.beam([1.38, 1.96, z + 0.13], [2.75, 1.96, z + 0.13], 0.016, hostileAlert);
+          // Enemy raider tactical image on the content-defined display.
+          builder.ellipsoid([centerX, py(0.524), tacticalZ], [width * 0.029, height * 0.2, depth * 0.62], 14, 6, hostileDark);
+          builder.ellipsoid([centerX - width * 0.07, py(0.524), tacticalZ + depth * 0.12], [width * 0.072, height * 0.076, depth * 0.62], 14, 5, hostileHull);
+          builder.ellipsoid([centerX + width * 0.07, py(0.524), tacticalZ + depth * 0.12], [width * 0.072, height * 0.076, depth * 0.62], 14, 5, hostileHull);
+          builder.box([centerX - width * 0.017, py(0.448), tacticalZ + depth * 0.88], [centerX + width * 0.017, py(0.6), tacticalZ + depth * 1.38], hostileAlert);
+          builder.box([centerX - width * 0.128, py(0.486), tacticalZ + depth * 0.62], [centerX - width * 0.084, py(0.562), tacticalZ + depth * 1.25], hostileAlert);
+          builder.box([centerX + width * 0.084, py(0.486), tacticalZ + depth * 0.62], [centerX + width * 0.128, py(0.562), tacticalZ + depth * 1.25], hostileAlert);
+          builder.beam([px(0.288), py(0.238), tacticalZ - depth * 0.5], [px(0.712), py(0.81), tacticalZ - depth * 0.5], 0.014 + scanPulse * 0.008, signal);
+          builder.beam([px(0.288), py(0.81), tacticalZ - depth * 0.5], [px(0.712), py(0.238), tacticalZ - depth * 0.5], 0.014 + scanPulse * 0.008, signal);
+          builder.beam([px(0.101), py(0.2), tacticalZ - depth * 0.38], [px(0.3), py(0.2), tacticalZ - depth * 0.38], 0.016, hostileAlert);
+          builder.beam([px(0.7), py(0.2), tacticalZ - depth * 0.38], [px(0.899), py(0.2), tacticalZ - depth * 0.38], 0.016, hostileAlert);
+          builder.beam([px(0.101), py(0.848), tacticalZ - depth * 0.38], [px(0.3), py(0.848), tacticalZ - depth * 0.38], 0.016, hostileAlert);
+          builder.beam([px(0.7), py(0.848), tacticalZ - depth * 0.38], [px(0.899), py(0.848), tacticalZ - depth * 0.38], 0.016, hostileAlert);
           if (tacticalFiring) {
             const impact = 1 - Math.min(1, shotAgeMs / 850);
-            builder.beam([2.86, 0.58, z + 0.22], [0.42, 1.2, z + 0.34], 0.018 + impact * 0.028, weaponGlow);
-            builder.beam([2.66, 0.72, z + 0.22], [-0.34, 1.36, z + 0.34], 0.014 + impact * 0.022, weaponGlow);
-            builder.box([-0.26, 1.1, z + 0.33], [0.26, 1.48, z + 0.42], hitGlow);
+            builder.beam([px(0.914), py(0.19), tacticalZ + depth * 0.75], [px(0.561), py(0.486), tacticalZ + depth * 2.25], 0.018 + impact * 0.028, weaponGlow);
+            builder.beam([px(0.886), py(0.257), tacticalZ + depth * 0.75], [px(0.451), py(0.562), tacticalZ + depth * 2.25], 0.014 + impact * 0.022, weaponGlow);
+            builder.box([centerX - width * 0.038, py(0.438), tacticalZ + depth * 2.12], [centerX + width * 0.038, py(0.619), tacticalZ + depth * 3.25], hitGlow);
           }
-          const hullBarWidth = 2.4 * Math.max(0, Math.min(1, hullPercent / 100));
-          builder.box([-1.2, 0.18, z + 0.18], [-1.2 + hullBarWidth, 0.25, z + 0.25], disabled ? lockGlow : hostileAlert);
+          const hullBarWidth = width * 0.348 * Math.max(0, Math.min(1, hullPercent / 100));
+          builder.box([centerX - width * 0.174, y0, tacticalZ + depth * 0.25], [centerX - width * 0.174 + hullBarWidth, y0 + height * 0.033, tacticalZ + depth * 1.12], disabled ? lockGlow : hostileAlert);
           if (disabled) {
-            builder.beam([-1.6, 1.28, z + 0.34], [1.6, 1.28, z + 0.34], 0.028, lockGlow);
-            builder.beam([0, 0.7, z + 0.34], [0, 1.86, z + 0.34], 0.028, lockGlow);
+            builder.beam([centerX - width * 0.232, py(0.524), tacticalZ + depth * 2.25], [centerX + width * 0.232, py(0.524), tacticalZ + depth * 2.25], 0.028, lockGlow);
+            builder.beam([centerX, py(0.248), tacticalZ + depth * 2.25], [centerX, py(0.8), tacticalZ + depth * 2.25], 0.028, lockGlow);
           }
 
           if (tracking) {
             const thickness = 0.018 + lockPulse * 0.014;
-            builder.beam([-1.12, 0.86, z + 0.18], [-0.54, 0.86, z + 0.18], thickness, lockGlow);
-            builder.beam([0.54, 0.86, z + 0.18], [1.12, 0.86, z + 0.18], thickness, lockGlow);
-            builder.beam([-1.12, 1.7, z + 0.18], [-0.54, 1.7, z + 0.18], thickness, lockGlow);
-            builder.beam([0.54, 1.7, z + 0.18], [1.12, 1.7, z + 0.18], thickness, lockGlow);
-            builder.beam([-1.12, 0.86, z + 0.18], [-1.12, 1.24, z + 0.18], thickness, lockGlow);
-            builder.beam([1.12, 0.86, z + 0.18], [1.12, 1.24, z + 0.18], thickness, lockGlow);
-            builder.beam([-1.12, 1.34, z + 0.18], [-1.12, 1.7, z + 0.18], thickness, lockGlow);
-            builder.beam([1.12, 1.34, z + 0.18], [1.12, 1.7, z + 0.18], thickness, lockGlow);
-            builder.beam([-2.95, 0.48, z + 0.16], [2.95, 0.48, z + 0.16], 0.014, lockGlow);
-            builder.beam([-2.95, 2.08, z + 0.16], [2.95, 2.08, z + 0.16], 0.014, lockGlow);
+            builder.beam([px(0.338), py(0.324), tacticalZ + depth * 0.25], [px(0.422), py(0.324), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.578), py(0.324), tacticalZ + depth * 0.25], [px(0.662), py(0.324), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.338), py(0.724), tacticalZ + depth * 0.25], [px(0.422), py(0.724), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.578), py(0.724), tacticalZ + depth * 0.25], [px(0.662), py(0.724), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.338), py(0.324), tacticalZ + depth * 0.25], [px(0.338), py(0.505), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.662), py(0.324), tacticalZ + depth * 0.25], [px(0.662), py(0.505), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.338), py(0.552), tacticalZ + depth * 0.25], [px(0.338), py(0.724), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.662), py(0.552), tacticalZ + depth * 0.25], [px(0.662), py(0.724), tacticalZ + depth * 0.25], thickness, lockGlow);
+            builder.beam([px(0.072), py(0.143), tacticalZ], [px(0.928), py(0.143), tacticalZ], 0.014, lockGlow);
+            builder.beam([px(0.072), py(0.905), tacticalZ], [px(0.928), py(0.905), tacticalZ], 0.014, lockGlow);
           } else {
-            builder.beam([-2.85 + scanPulse * 5.7, 0.48, z + 0.16], [-2.85 + scanPulse * 5.7, 2.08, z + 0.16], 0.012, signal);
+            const scanX = px(0.087 + scanPulse * 0.826);
+            builder.beam([scanX, py(0.143), tacticalZ], [scanX, py(0.905), tacticalZ], 0.012, signal);
           }
         }
+
 
         appendMotherShip(builder, center, scale = 1, docked = false) {
           const shipHull = builder.color("#aebdca");
@@ -7231,8 +7422,35 @@
           this.look = {yaw, pitch};
         }
 
+        isMovementControlKey(code) {
+          return code === "KeyW"
+            || code === "KeyA"
+            || code === "KeyS"
+            || code === "KeyD"
+            || code === "ArrowLeft"
+            || code === "ArrowRight"
+            || code === "ArrowUp"
+            || code === "ArrowDown"
+            || code === "ShiftLeft"
+            || code === "ShiftRight";
+        }
+
         setMovementKey(code, active) {
           if (!this.movement.enabled) return;
+          const isMovementControl = this.isMovementControlKey(code);
+          if (this.isShuttleBayPlayerControlActive() && isMovementControl) {
+            const suppressed = this.bayControlSuppressedKeys instanceof Set
+              ? this.bayControlSuppressedKeys
+              : new Set();
+            if (this.bayControlSuppressedKeys !== suppressed) this.bayControlSuppressedKeys = suppressed;
+            if (!active && suppressed.has(code)) {
+              suppressed.delete(code);
+              this.movementKeys.delete(code);
+              return;
+            }
+            const nowMs = performance.now();
+            if (active && (suppressed.has(code) || nowMs < this.bayControlInputUnlockAtMs)) return;
+          }
           if (active) this.movementKeys.add(code);
           else this.movementKeys.delete(code);
         }

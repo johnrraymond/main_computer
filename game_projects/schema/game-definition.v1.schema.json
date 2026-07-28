@@ -377,7 +377,7 @@
         "kind": {
           "type": "string",
           "minLength": 1,
-          "description": "Procedural content prop kind. Current renderer supports floor-marker, map-marker, sign, beacon, light-strip, status-panel, and terminal-console.",
+          "description": "Procedural content prop kind. Current renderer supports floor-marker, map-marker, sign, beacon, light-strip, status-panel, terminal-console, and viewscreen.",
           "examples": [
             "floor-marker",
             "map-marker",
@@ -385,7 +385,8 @@
             "beacon",
             "light-strip",
             "status-panel",
-            "terminal-console"
+            "terminal-console",
+            "viewscreen"
           ]
         },
         "position": {
@@ -403,7 +404,11 @@
           "maxItems": 3
         },
         "display": {
-          "type": "string"
+          "type": "string",
+          "description": "Optional content display program rendered by a prop. Patch P currently supports enemyShipTactical for viewscreen props.",
+          "examples": [
+            "enemyShipTactical"
+          ]
         },
         "color": {
           "type": "string"

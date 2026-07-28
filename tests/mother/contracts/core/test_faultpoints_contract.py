@@ -83,3 +83,23 @@ def test_faultpoint_never_mutates_context_or_suppresses_other_errors() -> None:
             controller = faultpoints.FaultpointController.production()
             controller.hit("unrelated", {})
             raise
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        {"pointer.before_cas": True},
+        {"pointer.before_cas": (True,)},
+        {"pointer.before_cas": (1, False)},
+    ],
+)
+def test_boolean_hit_counts_are_rejected(schedule) -> None:
+    faultpoints = _faultpoints()
+    with pytest.raises((TypeError, ValueError)):
+        faultpoints.FaultpointController.injected(schedule)
+
+
+def test_simulated_interruption_rejects_boolean_hit_number() -> None:
+    faultpoints = _faultpoints()
+    with pytest.raises((TypeError, ValueError)):
+        faultpoints.SimulatedInterruption("pointer.before_cas", True)
+

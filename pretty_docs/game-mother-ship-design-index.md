@@ -28,6 +28,8 @@ This is the entry point for the design documents that guide expansion of the cur
 - [Patch M: Terminal Console Props](game-runtime-patch-M-terminal-console-props.md)
 | `pretty_docs/game-runtime-patch-N-room-visual-metadata.md` | Patch N implementation note for room visual metadata and data-driven room boundary rendering |
 | `pretty_docs/game-runtime-patch-O-room-geometry-extraction.md` | Patch O implementation note for room geometry metadata and data-driven structural rendering |
+| `pretty_docs/game-runtime-patch-O1-docking-handoff-void-guard.md` | Patch O.1 corrective note for post-docking input suppression and visible corridor-trunk guard rails |
+| `pretty_docs/game-runtime-patch-P-content-defined-viewscreens.md` | Patch P implementation note for content-defined viewscreen props and state-driven display programs |
 | `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 | `pretty_docs/game-runtime-patch-C-rooms-and-movement.md` | Patch C implementation note for extracting mother-ship rooms, movement bounds, exits, and spawns into level data |
 | `pretty_docs/game-runtime-patch-D-interactables.md` | Patch D implementation note for extracting mother-ship terminals, prompts, ranges, and E-key action ids into interactable data |

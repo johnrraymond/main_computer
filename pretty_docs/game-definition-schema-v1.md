@@ -121,6 +121,11 @@ boxes
 beams
 lighting
 ```
+Patch O.1 uses the same `rooms[].geometry` contract for corridor-trunk recovery:
+`boxes` may define non-blocking visible rail/guide-strip affordances and `beams`
+may define long route lights. These entries are visual only; movement remains
+controlled by room bounds, movement colliders, and the no-locked-door rule.
+
 
 Example:
 
@@ -211,7 +216,7 @@ Props are non-interactive visual objects or rendered systems.
 
 A prop may have renderer-specific hints, but the core definition should remain stable.
 
-Patch H makes these props active in the mother-ship renderer. Patch I adds data-defined map markers so repeated console and route markers are authored as content instead of hardcoded renderer calls. Patch M adds `terminal-console` props so visible terminal and tactical console bodies can be authored as content data while E-key behavior still lives in interactables/interactions. The first supported procedural prop kinds are:
+Patch H makes these props active in the mother-ship renderer. Patch I adds data-defined map markers so repeated console and route markers are authored as content instead of hardcoded renderer calls. Patch M adds `terminal-console` props so visible terminal and tactical console bodies can be authored as content data while E-key behavior still lives in interactables/interactions. Patch P adds `viewscreen` props whose `display` value selects a state-driven display program such as `enemyShipTactical`. The first supported procedural prop kinds are:
 
 ```text
 floor-marker
@@ -221,11 +226,12 @@ beacon
 light-strip
 status-panel
 terminal-console
+viewscreen
 ```
 
-Validation should confirm each authored prop references an existing room, sits inside that room, remains inside playable movement bounds, and points any optional `target` at known content such as a room, terminal, door, interactable, objective, or allowed runtime system target.
+Validation should confirm each authored prop references an existing room, sits inside that room, remains inside playable movement bounds, points any optional `target` at known content such as a room, terminal, door, interactable, objective, or allowed runtime system target, and points any optional `display` at a supported display program.
 
-Patch J adds prop-target validation through `requirePropTargets` so map markers and status panels cannot silently point at missing content.
+Patch J adds prop-target validation through `requirePropTargets` so map markers and status panels cannot silently point at missing content. Patch P extends the same validation path to content-defined displays.
 
 ## Terminals
 

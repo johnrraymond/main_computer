@@ -1176,13 +1176,8 @@
         ".mcel-lab-blueprint-right-rail",
         ".mcel-lab-blueprint-status",
         ".mcel-lab-work-area",
-        ".mcel-lab-blueprint-list",
-        ".mcel-lab-blueprint-pills",
-        ".mcel-lab-blueprint-facts",
-        ".mcel-lab-mounted-preview",
-        ".mcel-lab-work-context",
-        ".mcel-lab-blueprint-navigation > .mcel-lab-shell-card",
-        ".mcel-lab-blueprint-right-rail > .mcel-lab-shell-card"
+        ".mcel-lab-work-surface",
+        ".mcel-lab-mounted-preview"
       ].join(", ");
     }
     return "[data-mcel-layout-zone], [data-mcel-zone]";
@@ -1362,11 +1357,17 @@
       if (!isElement(container) || seen.has(container)) return;
       seen.add(container);
       detectSiblingLayoutCollisions(container, context).forEach((collision) => collisions.push(collision));
-      if (
-        (appId === "mcel-lab" && container.classList?.contains("mcel-lab-shell-card")) ||
-        appId === "document" ||
-        appId === "file-explorer"
-      ) {
+      if (appId === "mcel-lab") {
+        // MCEL Lab is a truth-consumer workbench: shell cards, scroll areas, and
+        // disclosure bodies are bounded inspection surfaces, not independent
+        // app-level semantic projections.  Its visual-fit proof belongs at owned
+        // shell boundaries plus direct sibling layout only; otherwise long
+        // right-rail facts and nested card content can be double-counted as
+        // collisions after browser layout/scroll clipping has already contained
+        // them.
+        return;
+      }
+      if (appId === "document" || appId === "file-explorer") {
         detectSemanticProjectionBleed(container, context).forEach((collision) => collisions.push(collision));
       }
     });

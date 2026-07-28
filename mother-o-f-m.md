@@ -309,6 +309,7 @@ method-qualified section 7 chain together.
 | Type | Required fields |
 |---|---|
 | `ContentHash` | algorithm, lowercase digest |
+| `NetworkHeadPaths` | canonical journal-head path and committed-state projection path; named immutable value, never positional |
 | `HeadTuple` | journal identity, sequence, entry hash, authorization-bundle hash, state hash, head ID, head epoch |
 | `AuthorityGeneration` | predecessor head tuple or synthetic birth generation, current replicas, authority participants |
 | `ReplicaSets` | current, prospective, transition, desired, retiring, successor-authority |
@@ -376,6 +377,28 @@ boundary. Secret values MUST NOT appear in any error field.
 | `MOTHER_RECOVERY_*` | no unanimous candidate, invalid closure, reseal base mismatch |
 | `MOTHER_LIVE_*` | postcondition failure, unhealthy service, topology disagreement |
 | `MOTHER_OPEN_*` | implementation blocked by a parent `contract-open` decision |
+
+
+### 4.4 Normative exact error contracts
+
+Contract tests and public module implementations MAY assert an exact `MOTHER_*`
+code only when that code appears in this table. The retry class and authority
+effect are part of the code contract and MUST NOT be changed by adapters.
+
+| Exact code | Owning boundary | Retry class | Authority effect | Required meaning |
+|---|---|---|---|---|
+| `MOTHER_STATE_HASH_MISMATCH` | `MOTHER-OFM-CORE-002` shared typed envelope | `after-reobserve` | `none` | Recomputed content or state hash differs from the declared hash; no authority was changed by detection. |
+| `MOTHER_TRANSPORT_VENDOR_FAILURE` | `MOTHER-OFM-CORE-002` vendor-error wrapper for `MOTHER-OFM-XPORT-002` | `after-reobserve` | `live-state-maybe-changed` | A vendor/transport failure was wrapped without exposing secrets or discarding typed durable/evidence references. |
+| `MOTHER_STATE_UNSTABLE_READ` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The bounded read/load/reread sequence did not observe an identical pointer pair. |
+| `MOTHER_STATE_UNSTABLE_HEAD` | `MOTHER-OFM-STATE-001.read_stable_head` / `MOTHER-OF-OBS-001` | `after-reobserve` | `none` | The state-facing stable-head operation maps a causal `MOTHER_STATE_UNSTABLE_READ` from CORE-011 to this domain code while preserving the typed cause and classifications. |
+| `MOTHER_CONFLICT_DURABLE_TARGET_EXISTS` | `MOTHER-OFM-CORE-011.durable_create` | `after-reobserve` | `none` | Exclusive publication found an already-published target and did not overwrite it. |
+| `MOTHER_INPUT_UNSAFE_PATH` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `never` | `none` | A root, target, object path, or existing prefix is a symlink, escapes containment, or is otherwise unsafe for durable authority. |
+| `MOTHER_STATE_OBJECT_MISSING` | `MOTHER-OFM-CORE-012.get_verified` | `after-reobserve` | `none` | The requested content-addressed object is absent. |
+| `MOTHER_STATE_OBJECT_CORRUPT` | `MOTHER-OFM-CORE-012.put_immutable,get_verified` | `never` | `none` | Bytes at a content-addressed path do not hash to that path or conflict with the proposed exact bytes. |
+| `MOTHER_RECOVERY_INVALID_CLOSURE` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` | `never` | `none` | The declared transitive closure is missing, corrupt, cyclic where prohibited, substituted, incomplete, or contains unreachable rows. |
+| `MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` | `never` | `none` | Roots, expected members, or child-reference lists contain duplicate identities. |
+| `MOTHER_INPUT_OVERLAPPING_STORAGE_ROOTS` | `MOTHER-OFM-CORE-012.copy_verified_closure` | `never` | `none` | Source and destination object-store trees are equal or one contains the other. |
+
 
 ## 5. Stable module registry
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import multiprocessing as mp
 import os
 from pathlib import Path
 from threading import Barrier, Lock
@@ -9,6 +10,7 @@ from typing import Any, Iterable, Mapping
 import pytest
 
 from tests.mother.support.implementation import require_mother_module
+from tests.mother.support.wave1b_process_workers import object_put_worker
 
 
 def _object_store():
@@ -676,3 +678,104 @@ class TestVerifiedClosure:
                 retry_class="never",
                 authority_effect="none",
             )
+
+def _collect_object_process_results(processes, ready_queue, start_event, result_queue):
+    ready = [ready_queue.get(timeout=20) for _ in processes]
+    start_event.set()
+    results = [result_queue.get(timeout=20) for _ in processes]
+    for process in processes:
+        process.join(timeout=20)
+        assert process.exitcode == 0
+    return ready, results
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-027"],
+    operations=["MOTHER-OP-UPGRADE-HUB"],
+    functionalities=["MOTHER-OF-AUTH-004"],
+    modules=["MOTHER-OFM-CORE-012"],
+)
+class TestSpawnedImmutablePublication:
+    def _run(
+        self,
+        root: Path,
+        payloads: tuple[bytes, bytes],
+        *,
+        forced_digest: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        object_store = _object_store()
+        assert hasattr(object_store, "put_immutable")
+        context = mp.get_context("spawn")
+        ready_queue = context.Queue()
+        result_queue = context.Queue()
+        start_event = context.Event()
+        processes = [
+            context.Process(
+                target=object_put_worker,
+                args=(
+                    str(root),
+                    payload,
+                    forced_digest,
+                    ready_queue,
+                    start_event,
+                    result_queue,
+                ),
+            )
+            for payload in payloads
+        ]
+        for process in processes:
+            process.start()
+        return _collect_object_process_results(
+            processes,
+            ready_queue,
+            start_event,
+            result_queue,
+        )
+
+    def test_identical_bytes_converge_across_spawned_processes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        root = tmp_path / "objects"
+        payload = b"identical process payload"
+        ready, results = self._run(
+            root,
+            (payload, payload),
+            forced_digest=None,
+        )
+
+        assert ready == [{"ready": True}, {"ready": True}]
+        assert all(result["status"] == "ok" for result in results)
+        assert len({result["digest"] for result in results}) == 1
+        assert len(_regular_files(root)) == 1
+        assert _regular_files(root)[0].read_bytes() == payload
+
+    def test_conflicting_bytes_cannot_share_one_forced_address_across_processes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        root = tmp_path / "objects"
+        payloads = (b"process-first", b"process-second")
+        forced_digest = "f" * 64
+        ready, results = self._run(
+            root,
+            payloads,
+            forced_digest=forced_digest,
+        )
+
+        assert ready == [{"ready": True}, {"ready": True}]
+        winners = [result for result in results if result["status"] == "ok"]
+        losers = [result for result in results if result["status"] == "error"]
+        assert len(winners) == 1
+        assert len(losers) == 1
+        assert winners[0]["digest"] == forced_digest
+        assert losers[0] == {
+            "status": "error",
+            "code": "MOTHER_STATE_OBJECT_CORRUPT",
+            "retry_class": "never",
+            "authority_effect": "none",
+        }
+        stored = _regular_files(root)
+        assert len(stored) == 1
+        assert stored[0].read_bytes() == winners[0]["payload"]
+

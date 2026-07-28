@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+import re
+
 import pytest
 
 from tests.mother.support.traceability import (
@@ -36,3 +40,49 @@ def test_identifier_sequences_are_complete() -> None:
     docs = MotherDocuments.load()
     assert requirement_ids(docs) == [f"MOTHER-REQ-{i:03d}" for i in range(1, 28)]
     assert sorted(design_ids(docs)) == [f"MOTHER-DESIGN-{i:03d}" for i in range(1, 31)]
+
+_EXACT_ERROR_CODE_RE = re.compile(r"^MOTHER_[A-Z][A-Z0-9_]+$")
+_ERROR_ROW_RE = re.compile(
+    r"^\| `(MOTHER_[A-Z0-9_]+)` \| .*? \| "
+    r"`(never|same-request|after-reobserve|operator-decision)` \| "
+    r"`(none|ledger-only|live-state-maybe-changed|local-pointer-determined|network-head-determined)` \|"
+)
+
+
+def _contract_test_error_codes(root: Path) -> set[str]:
+    codes: set[str] = set()
+    for path in sorted((root / "tests" / "mother" / "contracts").rglob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and _EXACT_ERROR_CODE_RE.fullmatch(node.value)
+            ):
+                codes.add(node.value)
+    return codes
+
+
+def _normative_error_rows(modules_document: str) -> dict[str, tuple[str, str]]:
+    heading = "### 4.4 Normative exact error contracts"
+    end_heading = "## 5. Stable module registry"
+    assert heading in modules_document
+    section = modules_document.split(heading, 1)[1].split(end_heading, 1)[0]
+    rows: dict[str, tuple[str, str]] = {}
+    for line in section.splitlines():
+        match = _ERROR_ROW_RE.match(line)
+        if not match:
+            continue
+        code, retry_class, authority_effect = match.groups()
+        assert code not in rows, f"duplicate normative exact error row: {code}"
+        rows[code] = (retry_class, authority_effect)
+    return rows
+
+
+def test_contract_tests_use_only_normatively_documented_exact_error_codes() -> None:
+    docs = MotherDocuments.load()
+    documented = _normative_error_rows(docs.modules)
+    asserted = _contract_test_error_codes(docs.root)
+    assert asserted
+    assert asserted - set(documented) == set()
+

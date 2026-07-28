@@ -43,6 +43,9 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | L. Interactable visual metadata | Normalize per-interactable hotspot visual hints so terminal/access/door affordances can be styled from content data | Should preserve behavior while making hotspot presentation data-first |
 | M. Terminal console props | Render visible terminal/console bodies from `motherShipInterior.props` | Should preserve behavior while making console presentation data-first |
 | N. Room visual metadata | Render room boundary and wayfinding affordances from `motherShipInterior.rooms[].visual` | Should preserve behavior while making room presentation data-first |
+| O. Room geometry extraction | Render structural shells, walls, openings, panels, and beams from `motherShipInterior.rooms[].geometry` | Should preserve behavior while making room structure data-first |
+| O.1. Docking handoff void guard | Suppress held shuttle-flight movement keys after docking and add data-defined corridor trunk rails | Corrective only; no locked-door progression |
+| P. Content-defined viewscreens/displays | Render bridge viewscreen display from `motherShipInterior.props` using `kind: "viewscreen"` and `display: "enemyShipTactical"` | Should preserve bridge tracking/combat while making display presentation data-first |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -472,4 +475,8 @@ Patch M implementation note: terminal console bodies now flow through `motherShi
 Patch N implementation note: room boundary and wayfinding affordances now flow through `rooms[].visual`, `shuttle3dNormalizeMotherShipRoomVisual()`, and `appendMotherShipRoomVisuals(builder, nowMs)`.
 
 Patch O implementation note: mother-ship room shell, wall, opening, door-panel, and core corridor-throat geometry now flows through `rooms[].geometry`, `shuttle3dNormalizeMotherShipRoomGeometry()`, and `appendMotherShipRoomGeometry(builder, nowMs)`.
+
+Patch O.1 corrective note: docking handoff now suppresses movement keys held from shuttle flight until release, and `corridor.trunk.geometry` carries data-defined rails/guide strips/beams so a fast post-docking walk no longer reads as empty space. The no-locked-door rule remains unchanged.
+
+Patch P implementation note: bridge viewscreen rendering now flows through `motherShipInterior.props` with `kind: "viewscreen"` and `display: "enemyShipTactical"`. The renderer resolves the display through `appendMotherShipViewscreenDisplay(builder, prop, nowMs)` and validates authored display ids against supported display programs.
 

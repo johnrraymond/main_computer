@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import multiprocessing as mp
 import os
 from pathlib import Path
 from threading import Barrier, Lock
@@ -9,6 +10,10 @@ from typing import Any
 import pytest
 
 from tests.mother.support.implementation import require_mother_module
+from tests.mother.support.wave1b_process_workers import (
+    durable_create_worker,
+    pointer_cas_worker,
+)
 
 
 def _atomic_files():
@@ -438,3 +443,127 @@ class TestAtomicPointerCas:
         assert sum(changed for changed, _ in results) == 1
         assert pointer.read_bytes() in replacements
         assert [path for path in tmp_path.iterdir() if path != pointer] == []
+
+def _collect_spawned_results(processes, ready_queue, start_event, result_queue):
+    ready = [ready_queue.get(timeout=20) for _ in processes]
+    start_event.set()
+    results = [result_queue.get(timeout=20) for _ in processes]
+    for process in processes:
+        process.join(timeout=20)
+        assert process.exitcode == 0
+    return ready, results
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-018"],
+    operations=["MOTHER-OP-SYNC-STATE"],
+    functionalities=["MOTHER-OF-SYNC-005"],
+    modules=["MOTHER-OFM-CORE-011"],
+)
+class TestSpawnedDurableCreate:
+    def test_competing_processes_have_one_exclusive_publication_winner(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        atomic_files = _atomic_files()
+        assert hasattr(atomic_files, "durable_create")
+        target = tmp_path / "immutable"
+        context = mp.get_context("spawn")
+        ready_queue = context.Queue()
+        result_queue = context.Queue()
+        start_event = context.Event()
+        payloads = (b"process-first", b"process-second")
+        processes = [
+            context.Process(
+                target=durable_create_worker,
+                args=(
+                    str(target),
+                    payload,
+                    ready_queue,
+                    start_event,
+                    result_queue,
+                ),
+            )
+            for payload in payloads
+        ]
+        for process in processes:
+            process.start()
+
+        ready, results = _collect_spawned_results(
+            processes,
+            ready_queue,
+            start_event,
+            result_queue,
+        )
+
+        assert ready == [{"absent": True}, {"absent": True}]
+        winners = [result for result in results if result["status"] == "ok"]
+        losers = [result for result in results if result["status"] == "error"]
+        assert len(winners) == 1
+        assert len(losers) == 1
+        assert losers[0] == {
+            "status": "error",
+            "code": "MOTHER_CONFLICT_DURABLE_TARGET_EXISTS",
+            "retry_class": "after-reobserve",
+            "authority_effect": "none",
+        }
+        assert target.read_bytes() == winners[0]["payload"]
+        assert [path for path in tmp_path.iterdir() if path != target] == []
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-019"],
+    operations=["MOTHER-OP-REPAIR-PROJECTIONS"],
+    functionalities=["MOTHER-OF-PRJ-005"],
+    modules=["MOTHER-OFM-CORE-011"],
+)
+class TestSpawnedAtomicPointerCas:
+    def test_same_predecessor_has_exactly_one_cross_process_winner(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        atomic_files = _atomic_files()
+        assert hasattr(atomic_files, "atomic_pointer_cas")
+        pointer = tmp_path / "current"
+        predecessor = b"generation-1\n"
+        replacements = (b"generation-2\n", b"generation-3\n")
+        pointer.write_bytes(predecessor)
+
+        context = mp.get_context("spawn")
+        ready_queue = context.Queue()
+        result_queue = context.Queue()
+        start_event = context.Event()
+        processes = [
+            context.Process(
+                target=pointer_cas_worker,
+                args=(
+                    str(pointer),
+                    predecessor,
+                    replacement,
+                    ready_queue,
+                    start_event,
+                    result_queue,
+                ),
+            )
+            for replacement in replacements
+        ]
+        for process in processes:
+            process.start()
+
+        ready, results = _collect_spawned_results(
+            processes,
+            ready_queue,
+            start_event,
+            result_queue,
+        )
+
+        assert ready == [
+            {"observed": predecessor},
+            {"observed": predecessor},
+        ]
+        assert all(result["status"] == "ok" for result in results)
+        assert sum(bool(result["changed"]) for result in results) == 1
+        winning = next(result["replacement"] for result in results if result["changed"])
+        assert pointer.read_bytes() == winning
+        assert [path for path in tmp_path.iterdir() if path != pointer] == []
+

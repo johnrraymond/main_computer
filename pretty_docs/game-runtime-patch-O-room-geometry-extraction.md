@@ -88,3 +88,10 @@ use bridge viewscreen
 fire bridge tactical console
 disable enemy ship
 ```
+
+## Corrective follow-up
+
+Patch O.1 keeps this data-first geometry model and adds a docking handoff guard so
+held shuttle-flight movement keys do not carry the player down the mother-ship
+corridor immediately after arrival. It also enriches `corridor.trunk.geometry`
+with visual-only rails and route lights.

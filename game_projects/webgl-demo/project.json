@@ -1718,6 +1718,122 @@
                       "radius": 0.026,
                       "color": "#67e8f9",
                       "emissive": true
+                    },
+                    {
+                      "start": [
+                        -2.46,
+                        0.18,
+                        -25.6
+                      ],
+                      "end": [
+                        -2.46,
+                        0.18,
+                        -13.45
+                      ],
+                      "radius": 0.022,
+                      "color": "#38bdf8",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        2.46,
+                        0.18,
+                        -25.6
+                      ],
+                      "end": [
+                        2.46,
+                        0.18,
+                        -13.45
+                      ],
+                      "radius": 0.022,
+                      "color": "#38bdf8",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        -1.8,
+                        1.28,
+                        -25.4
+                      ],
+                      "end": [
+                        1.8,
+                        1.28,
+                        -25.4
+                      ],
+                      "radius": 0.026,
+                      "color": "#67e8f9",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        -1.8,
+                        1.28,
+                        -19.0
+                      ],
+                      "end": [
+                        1.8,
+                        1.28,
+                        -19.0
+                      ],
+                      "radius": 0.026,
+                      "color": "#67e8f9",
+                      "emissive": true
+                    }
+                  ],
+                  "boxes": [
+                    {
+                      "min": [
+                        -2.72,
+                        -1.04,
+                        -25.7
+                      ],
+                      "max": [
+                        -2.54,
+                        0.68,
+                        -13.35
+                      ],
+                      "color": "#334155"
+                    },
+                    {
+                      "min": [
+                        2.54,
+                        -1.04,
+                        -25.7
+                      ],
+                      "max": [
+                        2.72,
+                        0.68,
+                        -13.35
+                      ],
+                      "color": "#334155"
+                    },
+                    {
+                      "min": [
+                        -2.42,
+                        -1.052,
+                        -25.45
+                      ],
+                      "max": [
+                        -2.18,
+                        -0.94,
+                        -13.55
+                      ],
+                      "color": "#38bdf8",
+                      "emissive": true
+                    },
+                    {
+                      "min": [
+                        2.18,
+                        -1.052,
+                        -25.45
+                      ],
+                      "max": [
+                        2.42,
+                        -0.94,
+                        -13.55
+                      ],
+                      "color": "#38bdf8",
+                      "emissive": true
                     }
                   ]
                 }
@@ -2726,6 +2842,26 @@
                 "color": "#f97316",
                 "emissive": true,
                 "label": "Tactical console marker"
+              },
+              {
+                "id": "prop.display.bridge-viewscreen",
+                "room": "bridge.deck",
+                "kind": "viewscreen",
+                "position": [
+                  0.0,
+                  -39.12
+                ],
+                "size": [
+                  6.9,
+                  2.1,
+                  0.08
+                ],
+                "color": "#38bdf8",
+                "emissive": true,
+                "facing": "north",
+                "display": "enemyShipTactical",
+                "target": "enemyShip",
+                "label": "Bridge enemy ship tactical viewscreen"
               },
               {
                 "id": "prop.bridge-viewscreen-status",

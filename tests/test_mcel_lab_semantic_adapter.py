@@ -330,3 +330,23 @@ def test_mcel_lab_runtime_visual_fit_probe_ignores_mounted_preview_clone() -> No
     assert '[data-mcel-preview-clone]' in ignored_block
     assert "route-specific FLOG" in ignored_block
     assert ignored_block.index('appId === "mcel-lab"') < ignored_block.index('appId === "document"')
+
+def test_mcel_lab_runtime_visual_fit_probe_stays_at_owned_shell_boundaries() -> None:
+    source = SELF_DIAGNOSIS.read_text(encoding="utf-8")
+    detect_start = source.index("function detectLayoutCollisions")
+    detect_end = source.index("function contentFitCandidateSelector", detect_start)
+    detect_block = source[detect_start:detect_end]
+
+    assert 'if (appId === "mcel-lab")' in detect_block
+    assert "owned\n        // shell boundaries plus direct sibling layout only" in detect_block
+    assert "return;" in detect_block
+    assert detect_block.index('if (appId === "mcel-lab")') < detect_block.index('appId === "document"')
+    assert 'container.classList?.contains("mcel-lab-shell-card")' not in detect_block
+
+    selector_start = source.index("function layoutCollisionCandidateSelector")
+    selector_end = source.index("function layoutBleedDescendantSelector", selector_start)
+    selector_block = source[selector_start:selector_end]
+    assert '".mcel-lab-work-surface"' in selector_block
+    assert '".mcel-lab-blueprint-facts"' not in selector_block
+    assert '".mcel-lab-blueprint-pills"' not in selector_block
+    assert '".mcel-lab-blueprint-navigation > .mcel-lab-shell-card"' not in selector_block

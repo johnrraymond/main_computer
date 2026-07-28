@@ -17,6 +17,7 @@ pytestmark = pytest.mark.mother_contract(
 
 REQUIRED_MODEL_NAMES = {
     "ContentHash",
+    "NetworkHeadPaths",
     "HeadTuple",
     "AuthorityGeneration",
     "ReplicaSets",
@@ -184,3 +185,61 @@ def test_deserialization_rejects_invalid_primitive_field_types(
     models = _models()
     with pytest.raises(TypeError):
         models.deserialize_model(model_name, payload)
+
+def _valid_hash(models, character: str = "a"):
+    return models.ContentHash(algorithm="sha256", digest=character * 64)
+
+
+def test_direct_constructor_rejects_invalid_primitive_types() -> None:
+    models = _models()
+    with pytest.raises(TypeError):
+        models.ParticipantRequest(
+            request_id=123,
+            operation_id="operation-1",
+            participant="host-a",
+            method="POST",
+            path="/apply",
+        )
+
+    with pytest.raises((TypeError, ValueError)):
+        models.HeadTuple(
+            journal_identity="network-a",
+            sequence=True,
+            entry_hash=_valid_hash(models, "a"),
+            authorization_bundle_hash=_valid_hash(models, "b"),
+            state_hash=_valid_hash(models, "c"),
+            head_id="head-1",
+            head_epoch=1,
+        )
+
+
+def test_frozen_mapping_rejects_non_string_keys_recursively() -> None:
+    models = _models()
+    with pytest.raises(TypeError):
+        models.FrozenMapping({1: "value"})
+    with pytest.raises(TypeError):
+        models.FrozenMapping({"nested": {2: "value"}})
+
+
+@pytest.mark.parametrize("unordered", [{"b", "a"}, frozenset({"b", "a"})])
+def test_direct_constructor_rejects_unordered_collection_inputs(unordered) -> None:
+    models = _models()
+    with pytest.raises(TypeError):
+        models.OperationIntent(
+            operation_kind="MOTHER-OP-DIAGNOSE",
+            network="network-a",
+            explicit_targets=unordered,
+        )
+
+
+def test_network_head_paths_is_a_named_immutable_model(tmp_path) -> None:
+    models = _models()
+    value = models.NetworkHeadPaths(
+        journal_head=tmp_path / "head.json",
+        committed_state=tmp_path / "committed-state.json",
+    )
+    assert value.journal_head.name == "head.json"
+    assert value.committed_state.name == "committed-state.json"
+    with pytest.raises((FrozenInstanceError, AttributeError, TypeError)):
+        value.journal_head = tmp_path / "other.json"
+

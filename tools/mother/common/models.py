@@ -8,6 +8,8 @@ construction time.
 from __future__ import annotations
 
 from dataclasses import MISSING, dataclass, fields, is_dataclass
+from functools import wraps
+from pathlib import Path
 from enum import Enum
 from types import MappingProxyType
 from types import UnionType
@@ -51,7 +53,13 @@ class FrozenMapping(Mapping[str, Any]):
     __slots__ = ("_data", "_hash")
 
     def __init__(self, values: Mapping[str, Any] | None = None) -> None:
-        data = {str(key): _freeze(value) for key, value in (values or {}).items()}
+        if values is not None and not isinstance(values, Mapping):
+            raise TypeError("FrozenMapping values must be a mapping")
+        data: dict[str, Any] = {}
+        for key, value in (values or {}).items():
+            if not isinstance(key, str):
+                raise TypeError("FrozenMapping keys must be strings")
+            data[key] = _freeze(value)
         self._data = MappingProxyType(data)
         self._hash: int | None = None
 
@@ -88,7 +96,9 @@ def _freeze(value: Any) -> Any:
         return value
     if isinstance(value, Mapping):
         return FrozenMapping(value)
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, (set, frozenset)):
+        raise TypeError("unordered set values are not permitted in Mother models")
+    if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
     return value
 
@@ -126,6 +136,13 @@ class ContentHash:
 
 
 @dataclass(frozen=True, slots=True)
+class NetworkHeadPaths:
+    journal_head: Path
+    committed_state: Path
+    schema_version: ClassVar[int] = SCHEMA_VERSION
+
+
+@dataclass(frozen=True, slots=True)
 class HeadTuple:
     journal_identity: str
     sequence: int
@@ -138,9 +155,9 @@ class HeadTuple:
     def __post_init__(self) -> None:
         _require_text(self.journal_identity, "journal_identity")
         _require_text(self.head_id, "head_id")
-        if not isinstance(self.sequence, int) or self.sequence < 0:
+        if type(self.sequence) is not int or self.sequence < 0:
             raise ValueError("sequence must be a non-negative integer")
-        if not isinstance(self.head_epoch, int) or self.head_epoch < 0:
+        if type(self.head_epoch) is not int or self.head_epoch < 0:
             raise ValueError("head_epoch must be a non-negative integer")
 
 
@@ -252,7 +269,7 @@ class RollbackSelector:
         if self.selection not in ROLLBACK_SELECTOR_KINDS:
             raise ValueError(f"unknown rollback selector: {self.selection!r}")
         if self.selection == "count":
-            if not isinstance(self.count, int) or self.count <= 0:
+            if type(self.count) is not int or self.count <= 0:
                 raise ValueError("count selection requires a positive count")
         elif self.count is not None:
             raise ValueError("count is valid only for the count selector")
@@ -299,7 +316,7 @@ class CertificateRef:
     bound_entry_hash: ContentHash
 
     def __post_init__(self) -> None:
-        if not isinstance(self.schema_version, int) or self.schema_version <= 0:
+        if type(self.schema_version) is not int or self.schema_version <= 0:
             raise ValueError("schema_version must be positive")
 
 
@@ -427,7 +444,7 @@ class HubComponentReleaseState:
     release_generation: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.release_generation, int) or self.release_generation <= 0:
+        if type(self.release_generation) is not int or self.release_generation <= 0:
             raise ValueError("release_generation must be positive")
 
 
@@ -451,6 +468,7 @@ _MODEL_TYPES = {
     cls.__name__: cls
     for cls in (
         ContentHash,
+        NetworkHeadPaths,
         HeadTuple,
         ReplicaSets,
         AuthorityGeneration,
@@ -486,7 +504,11 @@ def _serialize(value: Any) -> Any:
     if isinstance(value, FrozenMapping):
         return {key: _serialize(item) for key, item in value.items()}
     if isinstance(value, Mapping):
-        return {str(key): _serialize(item) for key, item in value.items()}
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("mapping keys must be strings")
+        return {key: _serialize(item) for key, item in value.items()}
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, tuple):
         return [_serialize(item) for item in value]
     if isinstance(value, bytes):
@@ -521,7 +543,9 @@ def _decode_untyped(value: Any) -> Any:
                 return bytes.fromhex(encoded)
             except ValueError as exc:
                 raise ValueError("invalid hex-encoded bytes") from exc
-        return FrozenMapping({str(key): _decode_untyped(item) for key, item in value.items()})
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("mapping keys must be strings")
+        return FrozenMapping({key: _decode_untyped(item) for key, item in value.items()})
     return value
 
 
@@ -544,9 +568,11 @@ def _decode(annotation: Any, value: Any) -> Any:
         key_annotation, item_annotation = args if len(args) == 2 else (str, Any)
         decoded: dict[str, Any] = {}
         for key, item in value.items():
-            if key_annotation is str and not isinstance(key, str):
+            if not isinstance(key, str):
                 raise TypeError("mapping keys must be strings")
-            decoded[str(key)] = _decode(item_annotation, item)
+            if key_annotation not in (str, Any):
+                raise TypeError("Mother mappings support string keys only")
+            decoded[key] = _decode(item_annotation, item)
         return FrozenMapping(decoded)
 
     if origin in (UnionType,) or str(origin) == "typing.Union":
@@ -575,6 +601,11 @@ def _decode(annotation: Any, value: Any) -> Any:
             return bytes.fromhex(value["value"])
         except ValueError as exc:
             raise ValueError("invalid hex-encoded bytes") from exc
+
+    if annotation is Path:
+        if not isinstance(value, (str, Path)):
+            raise TypeError("path field requires a string or Path")
+        return Path(value)
 
     if isinstance(annotation, type) and is_dataclass(annotation):
         if isinstance(value, annotation):
@@ -661,6 +692,137 @@ def deserialize_model(model_name: str, payload: Mapping[str, Any]) -> Any:
     if not isinstance(payload, Mapping):
         raise TypeError("payload must be a mapping")
     return _deserialize_type(_MODEL_TYPES[model_name], payload)
+
+
+def _validate_untyped(value: Any, field_name: str) -> None:
+    if isinstance(value, (set, frozenset)):
+        raise TypeError(f"{field_name} may not contain unordered set values")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{field_name} mapping keys must be strings")
+            _validate_untyped(item, f"{field_name}[{key!r}]")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_untyped(item, f"{field_name}[{index}]")
+        return
+    if is_dataclass(value):
+        _validate_declared_fields(value)
+
+
+def _validate_value(annotation: Any, value: Any, field_name: str) -> None:
+    if annotation is Any:
+        _validate_untyped(value, field_name)
+        return
+
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+
+    if origin in (UnionType,) or str(origin) == "typing.Union":
+        for option in args:
+            if option is type(None) and value is None:
+                return
+            if option is type(None):
+                continue
+            try:
+                _validate_value(option, value, field_name)
+                return
+            except (TypeError, ValueError):
+                pass
+        raise TypeError(f"{field_name} does not match {annotation!r}")
+
+    if origin is tuple:
+        if not isinstance(value, tuple):
+            raise TypeError(f"{field_name} must be a tuple")
+        item_annotation = args[0] if args else Any
+        for index, item in enumerate(value):
+            _validate_value(item_annotation, item, f"{field_name}[{index}]")
+        return
+
+    if origin in (dict, Mapping, ABCMapping) or annotation in (
+        dict,
+        Mapping,
+        ABCMapping,
+        FrozenMapping,
+    ):
+        if not isinstance(value, Mapping):
+            raise TypeError(f"{field_name} must be a mapping")
+        key_annotation, item_annotation = args if len(args) == 2 else (str, Any)
+        if key_annotation not in (str, Any):
+            raise TypeError(f"{field_name} must use string keys")
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{field_name} mapping keys must be strings")
+            _validate_value(item_annotation, item, f"{field_name}[{key!r}]")
+        return
+
+    if annotation is str:
+        if type(value) is not str:
+            raise TypeError(f"{field_name} must be a string")
+        return
+    if annotation is bool:
+        if type(value) is not bool:
+            raise TypeError(f"{field_name} must be a boolean")
+        return
+    if annotation is int:
+        if type(value) is not int:
+            raise TypeError(f"{field_name} must be an integer")
+        return
+    if annotation is float:
+        if type(value) is not float:
+            raise TypeError(f"{field_name} must be a floating-point number")
+        return
+    if annotation is bytes:
+        if type(value) is not bytes:
+            raise TypeError(f"{field_name} must be bytes")
+        return
+    if annotation is Path:
+        if not isinstance(value, Path):
+            raise TypeError(f"{field_name} must be a Path")
+        return
+    if annotation is type(None):
+        if value is not None:
+            raise TypeError(f"{field_name} must be null")
+        return
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        if not isinstance(value, annotation):
+            raise TypeError(f"{field_name} must be {annotation.__name__}")
+        return
+    if isinstance(annotation, type) and is_dataclass(annotation):
+        if not isinstance(value, annotation):
+            raise TypeError(f"{field_name} must be {annotation.__name__}")
+        _validate_declared_fields(value)
+        return
+    if isinstance(annotation, type) and not isinstance(value, annotation):
+        raise TypeError(f"{field_name} must be {annotation.__name__}")
+
+    _validate_untyped(value, field_name)
+
+
+def _validate_declared_fields(instance: Any) -> None:
+    hints = get_type_hints(type(instance))
+    for field in fields(instance):
+        _validate_value(
+            hints.get(field.name, Any),
+            getattr(instance, field.name),
+            f"{type(instance).__name__}.{field.name}",
+        )
+
+
+def _install_constructor_validation(cls: type[Any]) -> None:
+    original_init = cls.__init__
+
+    @wraps(original_init)
+    def validated_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        _validate_declared_fields(self)
+
+    cls.__init__ = validated_init  # type: ignore[method-assign]
+
+
+for _model_type in _MODEL_TYPES.values():
+    _install_constructor_validation(_model_type)
 
 
 __all__ = sorted((*_MODEL_TYPES, "FrozenMapping", "serialize_model", "deserialize_model"))

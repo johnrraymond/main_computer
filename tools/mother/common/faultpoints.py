@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Iterable
-from copy import deepcopy
 from threading import Lock
 from typing import Any
 
@@ -13,6 +12,10 @@ class SimulatedInterruption(RuntimeError):
     """Test-only interruption at an exact named hit count."""
 
     def __init__(self, faultpoint: str, hit_number: int) -> None:
+        if not isinstance(faultpoint, str) or not faultpoint:
+            raise ValueError("faultpoint must be a non-empty string")
+        if type(hit_number) is not int or hit_number <= 0:
+            raise ValueError("hit_number must be a positive integer")
         self.faultpoint = faultpoint
         self.hit_number = hit_number
         super().__init__(f"simulated interruption at {faultpoint} hit {hit_number}")
@@ -31,8 +34,18 @@ class FaultpointController:
         for name, raw_hits in (schedule or {}).items():
             if not isinstance(name, str) or not name:
                 raise ValueError("faultpoint names must be non-empty strings")
-            hits = (raw_hits,) if isinstance(raw_hits, int) else tuple(raw_hits)
-            if not hits or any(not isinstance(hit, int) or hit <= 0 for hit in hits):
+            if type(raw_hits) is bool:
+                raise ValueError("faultpoint hit numbers must be positive integers")
+            if type(raw_hits) is int:
+                hits = (raw_hits,)
+            else:
+                try:
+                    hits = tuple(raw_hits)
+                except TypeError as exc:
+                    raise TypeError(
+                        "faultpoint schedule values must be an integer or iterable of integers"
+                    ) from exc
+            if not hits or any(type(hit) is not int or hit <= 0 for hit in hits):
                 raise ValueError("faultpoint hit numbers must be positive integers")
             if len(set(hits)) != len(hits):
                 raise ValueError("faultpoint schedules may not contain duplicates")
