@@ -22,6 +22,7 @@ REQUIRED_MODEL_NAMES = {
     "AuthorityGeneration",
     "ReplicaSets",
     "OperationIdentity",
+    "DurableEffectRef",
     "OperationIntent",
     "OperationRecord",
     "MutationScope",
@@ -243,3 +244,22 @@ def test_network_head_paths_is_a_named_immutable_model(tmp_path) -> None:
     with pytest.raises((FrozenInstanceError, AttributeError, TypeError)):
         value.journal_head = tmp_path / "other.json"
 
+
+
+def test_durable_effect_ref_is_typed_immutable_and_round_trips() -> None:
+    models = _models()
+    reference = models.DurableEffectRef(
+        effect_kind="immutable-object-publication",
+        target="/var/lib/mother/objects/sha256/ab/example",
+        content_hash=models.ContentHash(
+            algorithm="sha256",
+            digest="a" * 64,
+        ),
+    )
+
+    payload = models.serialize_model(reference)
+    restored = models.deserialize_model("DurableEffectRef", payload)
+
+    assert restored == reference
+    with pytest.raises(FrozenInstanceError):
+        restored.target = "changed"  # type: ignore[misc]

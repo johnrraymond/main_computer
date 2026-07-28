@@ -314,6 +314,7 @@ method-qualified section 7 chain together.
 | `AuthorityGeneration` | predecessor head tuple or synthetic birth generation, current replicas, authority participants |
 | `ReplicaSets` | current, prospective, transition, desired, retiring, successor-authority |
 | `OperationIdentity` | operation ID, request ID, network, operation kind |
+| `DurableEffectRef` | effect kind, canonical local target, exact content hash; identifies a completed or potentially completed local publication without claiming directory durability |
 | `OperationIntent` | operation kind, network, explicit targets, mode, options, reason, client request identity |
 | `OperationRecord` | identity, intent, frozen inputs, scopes, state, allowed commands, immutable evidence roots |
 | `MutationScope` | type, canonical resource identity, authority generation, owning operation |
@@ -392,7 +393,11 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_STATE_UNSTABLE_READ` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The bounded read/load/reread sequence did not observe an identical pointer pair. |
 | `MOTHER_STATE_UNSTABLE_HEAD` | `MOTHER-OFM-STATE-001.read_stable_head` / `MOTHER-OF-OBS-001` | `after-reobserve` | `none` | The state-facing stable-head operation maps a causal `MOTHER_STATE_UNSTABLE_READ` from CORE-011 to this domain code while preserving the typed cause and classifications. |
 | `MOTHER_CONFLICT_DURABLE_TARGET_EXISTS` | `MOTHER-OFM-CORE-011.durable_create` | `after-reobserve` | `none` | Exclusive publication found an already-published target and did not overwrite it. |
-| `MOTHER_INPUT_UNSAFE_PATH` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `never` | `none` | A root, target, object path, or existing prefix is a symlink, escapes containment, or is otherwise unsafe for durable authority. |
+| `MOTHER_STATE_DURABLE_TARGET_MISSING` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The required durable pointer or target is absent before any authority effect. |
+| `MOTHER_STATE_DURABLE_READ_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `none` | A host-filesystem read failed before a new authority effect; the typed cause is retained. |
+| `MOTHER_STATE_DURABLE_WRITE_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `same-request` | `none` | Temporary creation, complete write, file flush, reread verification, or publication failed before the target became authoritative. |
+| `MOTHER_STATE_DURABILITY_UNCONFIRMED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `local-pointer-determined` | A file, pointer, object, or directory entry exists after publication, but required parent-directory durability was not confirmed. The error carries at least one typed `DurableEffectRef`; reconciliation verifies the bytes and flushes the required directory before reporting success. |
+| `MOTHER_INPUT_UNSAFE_PATH` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `never` | `none` | A root, target, object path, existing prefix, or required directory position is a symlink, escapes containment, is occupied by a non-directory, or is otherwise unsafe for durable authority. |
 | `MOTHER_STATE_OBJECT_MISSING` | `MOTHER-OFM-CORE-012.get_verified` | `after-reobserve` | `none` | The requested content-addressed object is absent. |
 | `MOTHER_STATE_OBJECT_CORRUPT` | `MOTHER-OFM-CORE-012.put_immutable,get_verified` | `never` | `none` | Bytes at a content-addressed path do not hash to that path or conflict with the proposed exact bytes. |
 | `MOTHER_RECOVERY_INVALID_CLOSURE` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` | `never` | `none` | The declared transitive closure is missing, corrupt, cyclic where prohibited, substituted, incomplete, or contains unreachable rows. |
@@ -448,8 +453,8 @@ return `OperationCommandResult`.
 | `MOTHER-OFM-CORE-008` | `common/evidence.py` | `store_evidence`, `load_evidence`, `export_manifest`, `redact_copy` | immutable local writes only; content-addressed, flushed, secret-redacted export |
 | `MOTHER-OFM-CORE-009` | `common/reporting.py` | `render_json`, `render_text`, `render_allowed_commands`, and typed report builders | `derived-writer`; rendering never changes authority |
 | `MOTHER-OFM-CORE-010` | `common/compatibility.py` | `check_peer_compatibility`, `freeze_contract_versions` | `reader`; returns exact missing schema/capability evidence |
-| `MOTHER-OFM-CORE-011` | `common/atomic_files.py` | `stable_read`, `durable_create`, `durable_replace`, `atomic_pointer_cas` | local durable I/O; temp-write, file fsync, rename/replace, directory fsync; CAS mismatch never overwrites |
-| `MOTHER-OFM-CORE-012` | `common/object_store.py` | `put_immutable`, `get_verified`, `copy_verified_closure`, `verify_closure` | immutable local I/O; existing hash with different bytes is fatal corruption |
+| `MOTHER-OFM-CORE-011` | `common/atomic_files.py` | `stable_read(..., operation: OperationIdentity)`, `durable_create(..., operation: OperationIdentity)`, `durable_replace(..., operation: OperationIdentity)`, `atomic_pointer_cas(..., operation: OperationIdentity)` | local durable I/O; durable directory ancestry, temp-write, file fsync, byte reread, rename/replace, directory fsync; CAS mismatch never overwrites; every host-filesystem failure is translated to the exact typed contract |
+| `MOTHER-OFM-CORE-012` | `common/object_store.py` | `put_immutable(..., operation: OperationIdentity)`, `get_verified(..., operation: OperationIdentity)`, `copy_verified_closure(..., operation: OperationIdentity)`, `verify_closure(..., operation: OperationIdentity)` | immutable local I/O; publication and reads synchronize on the CORE-011 target lock; existing hash with different bytes is fatal corruption |
 | `MOTHER-OFM-CORE-013` | `common/faultpoints.py` | `hit(name, context)` and production no-op/test interruption implementations | `pure` in production; cannot mutate state, suppress errors, or select an alternate algorithm |
 
 ### 5.3 Observation and external adapter modules
@@ -1149,8 +1154,24 @@ environment variables or instantiate vendor clients directly.
 8. parent-directory flush;
 9. verified existing-object comparison on idempotent collision.
 
-The object is available only after step 8. Different bytes at an existing
-hash-derived path are fatal corruption.
+The object is available only after step 8. `put_immutable`, idempotent
+existing-object comparison, and `get_verified` synchronize on the same
+cross-process target lock. No caller MAY return object bytes or idempotent
+success while another publisher is between steps 7 and 8.
+
+Every newly created directory ancestor is created one level at a time and the
+parent of that new directory is flushed before the next level is created.
+A retry after `MOTHER_STATE_DURABILITY_UNCONFIRMED` reacquires the same target
+lock, verifies the exact published bytes, flushes the required parent
+directory, and only then reports success.
+
+Different bytes at an existing hash-derived path are fatal corruption.
+Every CORE-011/012 public call receives the real `OperationIdentity`. Host
+filesystem exceptions never cross these public boundaries untyped. A failure
+before publication has `authority_effect=none`; a failure after publication
+but before confirmed directory durability has
+`authority_effect=local-pointer-determined` and carries a typed
+`DurableEffectRef`.
 
 ### 10.2 Stable read
 

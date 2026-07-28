@@ -70,6 +70,17 @@ var McelAppSurfaceRegistry = (() => {
       requiredLayerIds: RUNTIME_LAYER_IDS,
       notes: "Blueprint inspection, registry truth consumption, contained preview evidence, annotation drafting, validation, and reviewable repair-context export are proven through the domain adapter and acceptance evidence; static authored-surface parity remains separately reported."
     },
+    "git-tools": {
+      appId: "git-tools",
+      label: "Git Tools",
+      state: "surface-aware",
+      conformanceRequired: true,
+      maturity: "runtime-baseline",
+      surfaceId: "git-tools.surface.workflow",
+      contractId: "git-tools.contract.default.app-health",
+      requiredLayerIds: RUNTIME_LAYER_IDS,
+      notes: "Repository workflow surface is enrolled for runtime ownership, visual fit, and diagnostic no-throw proof while the governed-publish adapter remains scope-limited and not full semantic-runtime."
+    },
     "code-editor": {
       appId: "code-editor",
       label: "Code Editor",
@@ -111,7 +122,6 @@ var McelAppSurfaceRegistry = (() => {
     "chat-console": {appId: "chat-console", label: "Chat Console", state: "legacy", conformanceRequired: false},
     conductor: {appId: "conductor", label: "Conductor", state: "legacy", conformanceRequired: false},
     email: {appId: "email", label: "Email", state: "legacy", conformanceRequired: false},
-    "git-tools": {appId: "git-tools", label: "Git Tools", state: "legacy", conformanceRequired: false},
     "layout-builder": {appId: "layout-builder", label: "Layout Builder", state: "legacy", conformanceRequired: false},
     onlyoffice: {appId: "onlyoffice", label: "OnlyOffice", state: "legacy", conformanceRequired: false},
     spreadsheet: {appId: "spreadsheet", label: "Spreadsheet", state: "legacy", conformanceRequired: false},

@@ -149,17 +149,17 @@ def test_registry_declares_the_first_required_surface_aware_apps() -> None:
         "code-editor",
         "document",
         "file-explorer",
+        "git-tools",
         "mcel-lab",
         "website-builder",
     ]
     for legacy_app in [
         "ai-control",
-        "git-tools",
         "terminal",
         "wallet",
     ]:
         assert legacy_app in data["legacy"]
-    assert data["summary"]["requiredCount"] == 6
+    assert data["summary"]["requiredCount"] == 7
     assert data["summary"]["legacyCount"] >= 9
 
 
@@ -172,7 +172,7 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
         const codeEditor = registry.getAppPolicy("code-editor");
         const websiteBuilder = registry.getAppPolicy("website-builder");
         const mcelLab = registry.getAppPolicy("mcel-lab");
-        const legacy = registry.getAppPolicy("git-tools");
+        const gitTools = registry.getAppPolicy("git-tools");
         const unknown = registry.getAppPolicy("made-up-app");
         process.stdout.write(JSON.stringify({
           fileExplorer,
@@ -181,7 +181,7 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
           codeEditor,
           websiteBuilder,
           mcelLab,
-          legacy,
+          gitTools,
           unknown
         }));
         """
@@ -246,8 +246,15 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
         "diagnostic-no-throw",
     ]
 
-    assert data["legacy"]["conformanceRequired"] is False
-    assert data["legacy"]["state"] == "legacy"
+    assert data["gitTools"]["conformanceRequired"] is True
+    assert data["gitTools"]["maturity"] == "runtime-baseline"
+    assert data["gitTools"]["surfaceId"] == "git-tools.surface.workflow"
+    assert data["gitTools"]["requiredLayerIds"] == [
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    ]
+
     assert data["unknown"]["conformanceRequired"] is False
     assert data["unknown"]["state"] == "unregistered"
 
@@ -292,7 +299,7 @@ def test_required_runtime_baseline_apps_can_pass_without_static_surface_yet() ->
     assert data["policyUnavailableLayerIds"] == []
 
 
-def test_legacy_apps_are_not_marked_broken_only_because_static_surface_is_absent() -> None:
+def test_git_tools_runtime_baseline_can_pass_without_static_surface_yet() -> None:
     report = healthy_runtime_report("git-tools", "git-tools.surface.workflow", "#git-project-workflow-surface")
     script = load_conformance_stack(
         f"""
@@ -312,10 +319,10 @@ def test_legacy_apps_are_not_marked_broken_only_because_static_surface_is_absent
     )
     data = run_node_json(script)
 
-    assert data["status"] == "not-required"
+    assert data["status"] == "pass"
     assert data["valid"] is True
-    assert data["conformanceRequired"] is False
-    assert data["registryState"] == "legacy"
+    assert data["conformanceRequired"] is True
+    assert data["registryState"] == "surface-aware"
     assert data["unavailableLayerIds"] == ["semantic-surface", "layout-grammar"]
     assert data["policyUnavailableLayerIds"] == []
 

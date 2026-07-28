@@ -4,6 +4,17 @@ from pathlib import Path
 from typing import Any
 
 
+def _operation():
+    from tools.mother.common import models
+
+    return models.OperationIdentity(
+        operation_id="MOTHER-TEST-WAVE1B-PROCESS-OPERATION",
+        request_id="MOTHER-TEST-WAVE1B-PROCESS-REQUEST",
+        network="test-network",
+        operation_kind="MOTHER-OP-SYNC-STATE",
+    )
+
+
 def _error_result(exc: BaseException) -> dict[str, Any]:
     return {
         "status": "error",
@@ -26,7 +37,7 @@ def durable_create_worker(
     ready_queue.put({"absent": not path.exists()})
     start_event.wait()
     try:
-        atomic_files.durable_create(path, payload)
+        atomic_files.durable_create(path, payload, operation=_operation())
     except errors.MotherError as exc:
         result_queue.put(_error_result(exc))
     else:
@@ -48,6 +59,7 @@ def pointer_cas_worker(
     start_event.wait()
     changed = atomic_files.atomic_pointer_cas(
         path,
+        operation=_operation(),
         expected=expected,
         replacement=replacement,
     )
@@ -77,7 +89,11 @@ def object_put_worker(
     ready_queue.put({"ready": True})
     start_event.wait()
     try:
-        reference = object_store.put_immutable(Path(root), payload)
+        reference = object_store.put_immutable(
+            Path(root),
+            payload,
+            operation=_operation(),
+        )
     except errors.MotherError as exc:
         result_queue.put(_error_result(exc))
     else:

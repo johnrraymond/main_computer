@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import multiprocessing as mp
 import os
 from pathlib import Path
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from typing import Any
 
 import pytest
@@ -40,6 +40,24 @@ def _faultpoints():
     )
 
 
+def _models():
+    return require_mother_module(
+        "common.models",
+        "MOTHER-OFM-CORE-001",
+        phase="WAVE1A",
+    )
+
+
+def _operation():
+    models = _models()
+    return models.OperationIdentity(
+        operation_id="MOTHER-TEST-WAVE1B-OPERATION",
+        request_id="MOTHER-TEST-WAVE1B-REQUEST",
+        network="test-network",
+        operation_kind="MOTHER-OP-SYNC-STATE",
+    )
+
+
 def _assert_error(
     caught: pytest.ExceptionInfo[BaseException],
     *,
@@ -52,6 +70,7 @@ def _assert_error(
     assert caught.value.code == code
     assert caught.value.retry_class == retry_class
     assert caught.value.authority_effect == authority_effect
+    assert caught.value.operation_id == _operation().operation_id
 
 
 @pytest.mark.mother_contract(
@@ -74,7 +93,7 @@ class TestStableRead:
             calls.append(pointer_bytes)
             return {"loaded_generation": 1}
 
-        result = atomic_files.stable_read(pointer, load, max_attempts=2)
+        result = atomic_files.stable_read(pointer, load, max_attempts=2, operation=_operation())
 
         assert result == {"loaded_generation": 1}
         assert calls == [b'{"generation":1}\n']
@@ -94,7 +113,7 @@ class TestStableRead:
                 pointer.write_bytes(b"generation-2\n")
             return b"objects-for:" + pointer_bytes
 
-        result = atomic_files.stable_read(pointer, load, max_attempts=3)
+        result = atomic_files.stable_read(pointer, load, max_attempts=3, operation=_operation())
 
         assert calls == [b"generation-1\n", b"generation-2\n"]
         assert result == b"objects-for:generation-2\n"
@@ -116,7 +135,7 @@ class TestStableRead:
             return b"partial:" + pointer_bytes
 
         with pytest.raises(errors.MotherError) as caught:
-            atomic_files.stable_read(pointer, load, max_attempts=2)
+            atomic_files.stable_read(pointer, load, max_attempts=2, operation=_operation())
 
         _assert_error(
             caught,
@@ -143,7 +162,7 @@ class TestDurableCreateAndReplace:
         target.write_bytes(b"predecessor")
 
         with pytest.raises(errors.MotherError) as caught:
-            atomic_files.durable_create(target, b"successor")
+            atomic_files.durable_create(target, b"successor", operation=_operation())
 
         _assert_error(
             caught,
@@ -160,7 +179,7 @@ class TestDurableCreateAndReplace:
         atomic_files = _atomic_files()
         target = tmp_path / "activation-prepared.json"
 
-        atomic_files.durable_create(target, b"exact-bytes\n")
+        atomic_files.durable_create(target, b"exact-bytes\n", operation=_operation())
 
         assert target.read_bytes() == b"exact-bytes\n"
         assert [path for path in tmp_path.iterdir() if path != target] == []
@@ -194,7 +213,7 @@ class TestDurableCreateAndReplace:
             recording_flush_directory,
         )
 
-        atomic_files.durable_replace(target, b"new")
+        atomic_files.durable_replace(target, b"new", operation=_operation())
 
         assert target.read_bytes() == b"new"
         assert [label for label, _ in events] == ["publish", "flush-directory"]
@@ -223,7 +242,8 @@ class TestDurableCreateAndReplace:
                 target,
                 b"successor",
                 faultpoints=controller,
-            )
+            operation=_operation(),
+        )
 
         assert caught.value.faultpoint == name
         assert caught.value.hit_number == 1
@@ -245,11 +265,12 @@ class TestDurableCreateAndReplace:
                 target,
                 b"successor",
                 faultpoints=controller,
-            )
+            operation=_operation(),
+        )
 
         assert caught.value.faultpoint == name
         assert target.read_bytes() == b"successor"
-        atomic_files.durable_replace(target, b"successor")
+        atomic_files.durable_replace(target, b"successor", operation=_operation())
         assert target.read_bytes() == b"successor"
 
     def test_durable_publication_uses_only_normative_faultpoint_sequence(
@@ -261,7 +282,7 @@ class TestDurableCreateAndReplace:
         target = tmp_path / "record.json"
         controller = faultpoints.FaultpointController.injected({})
 
-        atomic_files.durable_create(target, b"value", faultpoints=controller)
+        atomic_files.durable_create(target, b"value", faultpoints=controller, operation=_operation())
 
         assert controller.hit_count("immutable.after_temp_write") == 1
         assert controller.hit_count("immutable.after_file_fsync") == 1
@@ -280,7 +301,7 @@ class TestDurableCreateAndReplace:
         link.symlink_to(referent)
 
         with pytest.raises(errors.MotherError) as caught:
-            atomic_files.durable_replace(link, b"unsafe")
+            atomic_files.durable_replace(link, b"unsafe", operation=_operation())
 
         _assert_error(
             caught,
@@ -303,7 +324,7 @@ class TestDurableCreateAndReplace:
         def publish(payload: bytes) -> tuple[str, Any]:
             barrier.wait()
             try:
-                atomic_files.durable_create(target, payload)
+                atomic_files.durable_create(target, payload, operation=_operation())
                 return ("winner", payload)
             except errors.MotherError as exc:
                 return ("error", exc)
@@ -340,7 +361,8 @@ class TestAtomicPointerCas:
             pointer,
             expected=b"generation-1\n",
             replacement=b"generation-2\n",
-        )
+        operation=_operation(),
+    )
 
         assert changed is True
         assert pointer.read_bytes() == b"generation-2\n"
@@ -357,7 +379,8 @@ class TestAtomicPointerCas:
             pointer,
             expected=b"generation-1\n",
             replacement=b"generation-3\n",
-        )
+        operation=_operation(),
+    )
 
         assert changed is False
         assert pointer.read_bytes() == b"generation-2\n"
@@ -374,12 +397,14 @@ class TestAtomicPointerCas:
             pointer,
             expected=b"missing",
             replacement=b"generation-1\n",
+            operation=_operation(),
         ) is False
         assert not pointer.exists()
         assert atomic_files.atomic_pointer_cas(
             pointer,
             expected=None,
             replacement=b"generation-1\n",
+            operation=_operation(),
         ) is True
         assert pointer.read_bytes() == b"generation-1\n"
 
@@ -407,7 +432,8 @@ class TestAtomicPointerCas:
                 expected=b"generation-1\n",
                 replacement=b"generation-2\n",
                 faultpoints=controller,
-            )
+            operation=_operation(),
+        )
 
         assert caught.value.faultpoint == name
         if name == "pointer.before_cas":
@@ -431,7 +457,8 @@ class TestAtomicPointerCas:
                 pointer,
                 expected=b"generation-1\n",
                 replacement=replacement,
-            )
+            operation=_operation(),
+        )
             with result_lock:
                 observed = pointer.read_bytes()
             return changed, observed
@@ -567,3 +594,161 @@ class TestSpawnedAtomicPointerCas:
         assert pointer.read_bytes() == winning
         assert [path for path in tmp_path.iterdir() if path != pointer] == []
 
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-002"],
+    operations=["MOTHER-OP-DIAGNOSE"],
+    functionalities=["MOTHER-OF-OBS-001"],
+    modules=["MOTHER-OFM-CORE-011"],
+)
+class TestStableReadErrorBoundaryHardening:
+    def test_missing_pointer_is_typed_and_carries_real_operation_identity(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        pointer = tmp_path / "missing-head.json"
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.stable_read(
+                pointer,
+                lambda payload: payload,
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_TARGET_MISSING",
+            retry_class="after-reobserve",
+            authority_effect="none",
+        )
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-018"],
+    operations=["MOTHER-OP-SYNC-STATE"],
+    functionalities=["MOTHER-OF-SYNC-005"],
+    modules=["MOTHER-OFM-CORE-011"],
+)
+class TestDurabilityErrorBoundaryHardening:
+    def test_file_where_parent_directory_is_required_is_exact_unsafe_path(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        parent = tmp_path / "not-a-directory"
+        parent.write_bytes(b"occupied")
+        target = parent / "object"
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.durable_create(
+                target,
+                b"payload",
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_INPUT_UNSAFE_PATH",
+            retry_class="never",
+            authority_effect="none",
+        )
+        assert parent.read_bytes() == b"occupied"
+
+    def test_prepublication_host_failure_is_typed_with_no_authority_effect(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        target = tmp_path / "immutable"
+
+        def denied_link(*_args: Any, **_kwargs: Any) -> None:
+            raise PermissionError("publication denied")
+
+        monkeypatch.setattr(atomic_files.os, "link", denied_link)
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.durable_create(
+                target,
+                b"payload",
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_WRITE_FAILED",
+            retry_class="same-request",
+            authority_effect="none",
+        )
+        assert caught.value.durable_effect_refs == ()
+        assert not target.exists()
+
+    def test_postpublication_flush_failure_reports_typed_durable_effect(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        models = _models()
+        target = tmp_path / "head.json"
+        target.write_bytes(b"old")
+
+        def fail_flush(_path: os.PathLike[str] | str) -> None:
+            raise OSError("directory flush failed")
+
+        monkeypatch.setattr(atomic_files, "flush_directory", fail_flush)
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.durable_replace(
+                target,
+                b"new",
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABILITY_UNCONFIRMED",
+            retry_class="after-reobserve",
+            authority_effect="local-pointer-determined",
+        )
+        assert target.read_bytes() == b"new"
+        assert len(caught.value.durable_effect_refs) == 1
+        effect = caught.value.durable_effect_refs[0]
+        assert isinstance(effect, models.DurableEffectRef)
+        assert effect.effect_kind == "local-file-publication"
+        assert effect.target == str(target.absolute())
+        assert effect.content_hash.digest == atomic_files.hashlib.sha256(b"new").hexdigest()
+
+    def test_every_new_directory_ancestor_is_committed_through_its_parent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        target = tmp_path / "objects" / "sha256" / "ab" / "value"
+        flushed: list[Path] = []
+
+        def record_flush(path: os.PathLike[str] | str) -> None:
+            flushed.append(Path(path))
+
+        monkeypatch.setattr(atomic_files, "flush_directory", record_flush)
+
+        atomic_files.durable_create(
+            target,
+            b"payload",
+            operation=_operation(),
+        )
+
+        assert target.read_bytes() == b"payload"
+        assert flushed == [
+            tmp_path,
+            tmp_path / "objects",
+            tmp_path / "objects" / "sha256",
+            tmp_path / "objects" / "sha256" / "ab",
+        ]

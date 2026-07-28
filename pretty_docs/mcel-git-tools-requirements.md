@@ -4,12 +4,12 @@
 
 This is the documentation-first requirements contract for the Git Tools app.
 
-The current implementation already has a substantial Git Tools workbench, project cards, status APIs, patch inventory helpers, Git ignore/filter/secrets workbenches, project-level publishing plans, and a real MCEL semantic adapter for a governed push slice. It does **not** yet have full application semantic readiness through the MCEL adapter registry.
+The current implementation already has a substantial Git Tools workbench, project cards, status APIs, patch inventory helpers, Git ignore/filter/secrets workbenches, project-level publishing plans, and a real MCEL semantic adapter for a governed push slice. Patch 37 enrolls the live Git Tools workbench for runtime-baseline app-surface proof. It still does **not** claim full application semantic readiness through the MCEL adapter registry.
 
 So this document must be read as:
 
 ```text
-current: scope-limited semantic runtime for governed publishing
+current: runtime-baseline surface proof plus scope-limited semantic runtime for governed publishing
 planned: full Git Tools semantic runtime for repository inspection, project publishing, file triage, recovery, and advanced Git evidence
 ```
 

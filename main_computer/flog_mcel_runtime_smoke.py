@@ -174,9 +174,12 @@ FALLBACK_APP_SURFACE_POLICIES = {
     "git-tools": AppSurfacePolicy(
         app_id="git-tools",
         label="Git Tools",
-        state="legacy",
-        conformance_required=False,
-        maturity="legacy",
+        state="surface-aware",
+        conformance_required=True,
+        maturity="runtime-baseline",
+        surface_id="git-tools.surface.workflow",
+        contract_id="git-tools.contract.default.app-health",
+        required_layer_ids=RUNTIME_LAYER_IDS,
     ),
     "mcel-lab": AppSurfacePolicy(
         app_id="mcel-lab",

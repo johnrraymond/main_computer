@@ -192,6 +192,32 @@ class AuthorityGeneration:
         _freeze_fields(self, ("current_replicas", "authority_participants"))
 
 
+
+
+_DURABLE_EFFECT_KINDS = frozenset(
+    {
+        "local-directory-creation",
+        "local-file-publication",
+        "local-pointer-publication",
+        "immutable-object-publication",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DurableEffectRef:
+    """Typed identity for a completed or potentially completed local effect."""
+
+    effect_kind: str
+    target: str
+    content_hash: ContentHash
+
+    def __post_init__(self) -> None:
+        if self.effect_kind not in _DURABLE_EFFECT_KINDS:
+            raise ValueError(f"unknown durable effect kind: {self.effect_kind!r}")
+        _require_text(self.target, "target")
+
+
 @dataclass(frozen=True, slots=True)
 class OperationIdentity:
     operation_id: str
@@ -472,6 +498,7 @@ _MODEL_TYPES = {
         HeadTuple,
         ReplicaSets,
         AuthorityGeneration,
+        DurableEffectRef,
         OperationIdentity,
         OperationIntent,
         MutationScope,

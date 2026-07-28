@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import multiprocessing as mp
 import os
 from pathlib import Path
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from typing import Any, Iterable, Mapping
 
 import pytest
@@ -45,6 +45,24 @@ def _faultpoints():
     )
 
 
+def _models():
+    return require_mother_module(
+        "common.models",
+        "MOTHER-OFM-CORE-001",
+        phase="WAVE1A",
+    )
+
+
+def _operation():
+    models = _models()
+    return models.OperationIdentity(
+        operation_id="MOTHER-TEST-WAVE1B-OPERATION",
+        request_id="MOTHER-TEST-WAVE1B-REQUEST",
+        network="test-network",
+        operation_kind="MOTHER-OP-SYNC-STATE",
+    )
+
+
 def _regular_files(root: Path) -> list[Path]:
     if not root.exists():
         return []
@@ -71,6 +89,7 @@ def _assert_error(
     assert caught.value.code == code
     assert caught.value.retry_class == retry_class
     assert caught.value.authority_effect == authority_effect
+    assert caught.value.operation_id == _operation().operation_id
 
 
 @pytest.mark.mother_contract(
@@ -89,11 +108,11 @@ class TestImmutableObjects:
         root = tmp_path / "objects"
         payload = b"immutable\x00mother\n"
 
-        reference = object_store.put_immutable(root, payload)
+        reference = object_store.put_immutable(root, payload, operation=_operation())
 
         assert reference == hashing.sha256(payload)
         assert type(reference).__name__ == "ContentHash"
-        assert object_store.get_verified(root, reference) == payload
+        assert object_store.get_verified(root, reference, operation=_operation()) == payload
 
     def test_identical_put_is_idempotent_and_does_not_duplicate_storage(
         self,
@@ -103,9 +122,9 @@ class TestImmutableObjects:
         root = tmp_path / "objects"
         payload = b"same bytes"
 
-        first = object_store.put_immutable(root, payload)
+        first = object_store.put_immutable(root, payload, operation=_operation())
         files_after_first = _regular_files(root)
-        second = object_store.put_immutable(root, payload)
+        second = object_store.put_immutable(root, payload, operation=_operation())
 
         assert second == first
         assert _regular_files(root) == files_after_first
@@ -118,13 +137,13 @@ class TestImmutableObjects:
         errors = _errors()
         root = tmp_path / "objects"
         payload = b"authoritative bytes"
-        reference = object_store.put_immutable(root, payload)
+        reference = object_store.put_immutable(root, payload, operation=_operation())
         files = _regular_files(root)
         assert len(files) == 1
         files[0].write_bytes(b"substituted bytes")
 
         with pytest.raises(errors.MotherError) as put_error:
-            object_store.put_immutable(root, payload)
+            object_store.put_immutable(root, payload, operation=_operation())
         _assert_error(
             put_error,
             code="MOTHER_STATE_OBJECT_CORRUPT",
@@ -133,7 +152,7 @@ class TestImmutableObjects:
         )
 
         with pytest.raises(errors.MotherError) as get_error:
-            object_store.get_verified(root, reference)
+            object_store.get_verified(root, reference, operation=_operation())
         _assert_error(
             get_error,
             code="MOTHER_STATE_OBJECT_CORRUPT",
@@ -149,12 +168,12 @@ class TestImmutableObjects:
         hashing = _hashing()
         errors = _errors()
         root = tmp_path / "objects"
-        existing_ref = object_store.put_immutable(root, b"existing")
+        existing_ref = object_store.put_immutable(root, b"existing", operation=_operation())
         _regular_files(root)[0].write_bytes(b"corrupt")
         missing_ref = hashing.sha256(b"missing")
 
         with pytest.raises(errors.MotherError) as missing:
-            object_store.get_verified(root, missing_ref)
+            object_store.get_verified(root, missing_ref, operation=_operation())
         _assert_error(
             missing,
             code="MOTHER_STATE_OBJECT_MISSING",
@@ -163,7 +182,7 @@ class TestImmutableObjects:
         )
 
         with pytest.raises(errors.MotherError) as corrupt:
-            object_store.get_verified(root, existing_ref)
+            object_store.get_verified(root, existing_ref, operation=_operation())
         _assert_error(
             corrupt,
             code="MOTHER_STATE_OBJECT_CORRUPT",
@@ -190,7 +209,7 @@ class TestImmutableObjects:
             recording_create,
         )
 
-        object_store.put_immutable(tmp_path / "objects", b"payload")
+        object_store.put_immutable(tmp_path / "objects", b"payload", operation=_operation())
 
         assert len(calls) == 1
         assert calls[0][1] == b"payload"
@@ -210,12 +229,12 @@ class TestImmutableObjects:
         controller = faultpoints.FaultpointController.injected({name: 1})
 
         with pytest.raises(faultpoints.SimulatedInterruption) as interrupted:
-            object_store.put_immutable(root, payload, faultpoints=controller)
+            object_store.put_immutable(root, payload, faultpoints=controller, operation=_operation())
 
         assert interrupted.value.faultpoint == name
         assert interrupted.value.hit_number == 1
         with pytest.raises(errors.MotherError) as missing:
-            object_store.get_verified(root, expected)
+            object_store.get_verified(root, expected, operation=_operation())
         _assert_error(
             missing,
             code="MOTHER_STATE_OBJECT_MISSING",
@@ -236,7 +255,7 @@ class TestImmutableObjects:
         root_link = tmp_path / "root-link"
         root_link.symlink_to(outside, target_is_directory=True)
         with pytest.raises(errors.MotherError) as root_error:
-            object_store.put_immutable(root_link, b"payload")
+            object_store.put_immutable(root_link, b"payload", operation=_operation())
         _assert_error(
             root_error,
             code="MOTHER_INPUT_UNSAFE_PATH",
@@ -245,14 +264,14 @@ class TestImmutableObjects:
         )
 
         root = tmp_path / "objects"
-        reference = object_store.put_immutable(root, b"trusted")
+        reference = object_store.put_immutable(root, b"trusted", operation=_operation())
         object_path = _regular_files(root)[0]
         object_path.unlink()
         referent = tmp_path / "substitute"
         referent.write_bytes(b"trusted")
         object_path.symlink_to(referent)
         with pytest.raises(errors.MotherError) as path_error:
-            object_store.get_verified(root, reference)
+            object_store.get_verified(root, reference, operation=_operation())
         _assert_error(
             path_error,
             code="MOTHER_INPUT_UNSAFE_PATH",
@@ -288,7 +307,7 @@ class TestImmutableObjects:
 
         def put(_: int):
             barrier.wait()
-            return object_store.put_immutable(root, payload)
+            return object_store.put_immutable(root, payload, operation=_operation())
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             references = list(pool.map(put, (1, 2)))
@@ -314,7 +333,7 @@ class TestImmutableObjects:
         def put(payload: bytes) -> tuple[str, Any]:
             barrier.wait()
             try:
-                return ("ok", object_store.put_immutable(root, payload))
+                return ("ok", object_store.put_immutable(root, payload, operation=_operation()))
             except errors.MotherError as exc:
                 return ("error", exc)
 
@@ -344,9 +363,9 @@ class TestVerifiedClosure:
         object_store: Any,
         root: Path,
     ) -> tuple[Any, Any, Any, Mapping[Any, tuple[Any, ...]]]:
-        leaf = object_store.put_immutable(root, b"leaf")
-        child = object_store.put_immutable(root, b"child")
-        head = object_store.put_immutable(root, b"head")
+        leaf = object_store.put_immutable(root, b"leaf", operation=_operation())
+        child = object_store.put_immutable(root, b"child", operation=_operation())
+        head = object_store.put_immutable(root, b"head", operation=_operation())
         references = _graph(
             (head, (child,)),
             (child, (leaf,)),
@@ -367,7 +386,8 @@ class TestVerifiedClosure:
             roots=(head,),
             references=references,
             expected_members=(head, child, leaf),
-        )
+        operation=_operation(),
+    )
 
         assert tuple(verified) == (head, child, leaf)
 
@@ -379,7 +399,7 @@ class TestVerifiedClosure:
         hashing = _hashing()
         errors = _errors()
         root = tmp_path / "objects"
-        head = object_store.put_immutable(root, b"head")
+        head = object_store.put_immutable(root, b"head", operation=_operation())
         missing = hashing.sha256(b"missing")
         references = _graph((head, (missing,)), (missing, ()))
 
@@ -389,7 +409,8 @@ class TestVerifiedClosure:
                 roots=(head,),
                 references=references,
                 expected_members=(head, missing),
-            )
+            operation=_operation(),
+        )
         _assert_error(
             missing_error,
             code="MOTHER_RECOVERY_INVALID_CLOSURE",
@@ -413,7 +434,8 @@ class TestVerifiedClosure:
                 roots=(head,),
                 references=references,
                 expected_members=(head, child, leaf),
-            )
+            operation=_operation(),
+        )
         _assert_error(
             corrupt_error,
             code="MOTHER_RECOVERY_INVALID_CLOSURE",
@@ -451,7 +473,8 @@ class TestVerifiedClosure:
                 roots=roots,
                 references=references,
                 expected_members=expected,
-            )
+            operation=_operation(),
+        )
         _assert_error(
             caught,
             code="MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER",
@@ -467,7 +490,7 @@ class TestVerifiedClosure:
         errors = _errors()
         root = tmp_path / "objects"
         head, child, leaf, references = self._stored_graph(object_store, root)
-        extra = object_store.put_immutable(root, b"unreachable")
+        extra = object_store.put_immutable(root, b"unreachable", operation=_operation())
         references = dict(references)
         references[extra] = ()
 
@@ -477,7 +500,8 @@ class TestVerifiedClosure:
                 roots=(head,),
                 references=references,
                 expected_members=(head, child, leaf),
-            )
+            operation=_operation(),
+        )
         _assert_error(
             caught,
             code="MOTHER_RECOVERY_INVALID_CLOSURE",
@@ -498,7 +522,7 @@ class TestVerifiedClosure:
         expected = (head, child, leaf)
 
         if case == "extra-member":
-            extra = object_store.put_immutable(root, b"extra")
+            extra = object_store.put_immutable(root, b"extra", operation=_operation())
             expected = (*expected, extra)
         elif case == "omitted-member":
             expected = (head, child)
@@ -517,7 +541,8 @@ class TestVerifiedClosure:
                 roots=(head,),
                 references=references,
                 expected_members=expected,
-            )
+            operation=_operation(),
+        )
         _assert_error(
             caught,
             code="MOTHER_RECOVERY_INVALID_CLOSURE",
@@ -540,7 +565,8 @@ class TestVerifiedClosure:
             roots=(head,),
             references=references,
             expected_members=(head, child, leaf),
-        )
+        operation=_operation(),
+    )
 
         assert tuple(copied) == (head, child, leaf)
         assert tuple(
@@ -549,7 +575,8 @@ class TestVerifiedClosure:
                 roots=(head,),
                 references=references,
                 expected_members=(head, child, leaf),
-            )
+            operation=_operation(),
+        )
         ) == (head, child, leaf)
 
     def test_interrupted_copy_is_not_accepted_and_retry_completes(
@@ -573,7 +600,8 @@ class TestVerifiedClosure:
                 references=references,
                 expected_members=(head, child, leaf),
                 faultpoints=controller,
-            )
+            operation=_operation(),
+        )
         assert interrupted.value.faultpoint == name
 
         with pytest.raises(errors.MotherError) as incomplete:
@@ -582,7 +610,8 @@ class TestVerifiedClosure:
                 roots=(head,),
                 references=references,
                 expected_members=(head, child, leaf),
-            )
+            operation=_operation(),
+        )
         _assert_error(
             incomplete,
             code="MOTHER_RECOVERY_INVALID_CLOSURE",
@@ -596,14 +625,16 @@ class TestVerifiedClosure:
             roots=(head,),
             references=references,
             expected_members=(head, child, leaf),
-        )
+        operation=_operation(),
+    )
         assert tuple(
             object_store.verify_closure(
                 destination,
                 roots=(head,),
                 references=references,
                 expected_members=(head, child, leaf),
-            )
+            operation=_operation(),
+        )
         ) == (head, child, leaf)
 
     @pytest.mark.parametrize("layout", ["same", "destination-inside-source", "source-inside-destination"])
@@ -633,7 +664,8 @@ class TestVerifiedClosure:
                 roots=(head,),
                 references=references,
                 expected_members=(head, child, leaf),
-            )
+            operation=_operation(),
+        )
         _assert_error(
             caught,
             code="MOTHER_INPUT_OVERLAPPING_STORAGE_ROOTS",
@@ -671,7 +703,8 @@ class TestVerifiedClosure:
                     roots=(head,),
                     references=references,
                     expected_members=(head, child, leaf),
-                )
+                operation=_operation(),
+            )
             _assert_error(
                 caught,
                 code="MOTHER_INPUT_UNSAFE_PATH",
@@ -779,3 +812,241 @@ class TestSpawnedImmutablePublication:
         assert len(stored) == 1
         assert stored[0].read_bytes() == winners[0]["payload"]
 
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-027"],
+    operations=["MOTHER-OP-UPGRADE-HUB"],
+    functionalities=["MOTHER-OF-AUTH-004"],
+    modules=["MOTHER-OFM-CORE-012"],
+)
+class TestImmutableDurabilityBoundaryHardening:
+    def test_identical_put_waits_until_directory_durability_is_confirmed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        root = tmp_path / "objects"
+        payload = b"synchronized publication"
+        reference = _hashing().sha256(payload)
+        target = root / reference.algorithm / reference.digest[:2] / reference.digest
+        entered_flush = Event()
+        release_flush = Event()
+        real_flush = object_store.atomic_files.flush_directory
+
+        def blocking_flush(path: os.PathLike[str] | str) -> None:
+            directory = Path(path)
+            if directory == target.parent and target.exists() and not entered_flush.is_set():
+                entered_flush.set()
+                assert release_flush.wait(timeout=10)
+            real_flush(path)
+
+        monkeypatch.setattr(
+            object_store.atomic_files,
+            "flush_directory",
+            blocking_flush,
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(
+                object_store.put_immutable,
+                root,
+                payload,
+                operation=_operation(),
+            )
+            assert entered_flush.wait(timeout=10)
+            second = pool.submit(
+                object_store.put_immutable,
+                root,
+                payload,
+                operation=_operation(),
+            )
+            assert not second.done()
+            release_flush.set()
+            assert first.result(timeout=10) == reference
+            assert second.result(timeout=10) == reference
+
+    def test_get_verified_waits_until_directory_durability_is_confirmed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        root = tmp_path / "objects"
+        payload = b"reader waits"
+        reference = _hashing().sha256(payload)
+        target = root / reference.algorithm / reference.digest[:2] / reference.digest
+        entered_flush = Event()
+        release_flush = Event()
+        real_flush = object_store.atomic_files.flush_directory
+
+        def blocking_flush(path: os.PathLike[str] | str) -> None:
+            directory = Path(path)
+            if directory == target.parent and target.exists() and not entered_flush.is_set():
+                entered_flush.set()
+                assert release_flush.wait(timeout=10)
+            real_flush(path)
+
+        monkeypatch.setattr(
+            object_store.atomic_files,
+            "flush_directory",
+            blocking_flush,
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            writer = pool.submit(
+                object_store.put_immutable,
+                root,
+                payload,
+                operation=_operation(),
+            )
+            assert entered_flush.wait(timeout=10)
+            reader = pool.submit(
+                object_store.get_verified,
+                root,
+                reference,
+                operation=_operation(),
+            )
+            assert not reader.done()
+            release_flush.set()
+            assert writer.result(timeout=10) == reference
+            assert reader.result(timeout=10) == payload
+
+    def test_corrupted_flushed_temp_is_rejected_before_publication(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        object_store = _object_store()
+        errors = _errors()
+        root = tmp_path / "objects"
+        payload = b"verified temporary bytes"
+
+        class CorruptAfterFsync:
+            def hit(self, name: str, context: Any = None) -> None:
+                if name != "immutable.after_file_fsync":
+                    return
+                temps = list(root.rglob("*.tmp"))
+                assert len(temps) == 1
+                temps[0].write_bytes(b"corrupted temporary bytes")
+
+        with pytest.raises(errors.MotherError) as caught:
+            object_store.put_immutable(
+                root,
+                payload,
+                operation=_operation(),
+                faultpoints=CorruptAfterFsync(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_WRITE_FAILED",
+            retry_class="same-request",
+            authority_effect="none",
+        )
+        reference = _hashing().sha256(payload)
+        target = root / reference.algorithm / reference.digest[:2] / reference.digest
+        assert not target.exists()
+        assert _regular_files(root) == []
+
+    def test_object_store_root_file_is_exact_unsafe_path(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        object_store = _object_store()
+        errors = _errors()
+        root = tmp_path / "objects"
+        root.write_bytes(b"occupied")
+
+        with pytest.raises(errors.MotherError) as caught:
+            object_store.put_immutable(
+                root,
+                b"payload",
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_INPUT_UNSAFE_PATH",
+            retry_class="never",
+            authority_effect="none",
+        )
+        assert root.read_bytes() == b"occupied"
+
+    def test_object_flush_failure_reports_object_typed_durable_effect(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        errors = _errors()
+        models = _models()
+        root = tmp_path / "objects"
+        payload = b"published but not confirmed"
+        reference = _hashing().sha256(payload)
+        target = root / reference.algorithm / reference.digest[:2] / reference.digest
+        real_flush = object_store.atomic_files.flush_directory
+
+        def fail_final_flush(path: os.PathLike[str] | str) -> None:
+            if Path(path) == target.parent and target.exists():
+                raise OSError("object directory flush failed")
+            real_flush(path)
+
+        monkeypatch.setattr(
+            object_store.atomic_files,
+            "flush_directory",
+            fail_final_flush,
+        )
+
+        with pytest.raises(errors.MotherError) as caught:
+            object_store.put_immutable(
+                root,
+                payload,
+                operation=_operation(),
+            )
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABILITY_UNCONFIRMED",
+            retry_class="after-reobserve",
+            authority_effect="local-pointer-determined",
+        )
+        assert target.read_bytes() == payload
+        assert len(caught.value.durable_effect_refs) == 1
+        effect = caught.value.durable_effect_refs[0]
+        assert isinstance(effect, models.DurableEffectRef)
+        assert effect.effect_kind == "immutable-object-publication"
+        assert effect.target == str(target.absolute())
+        assert effect.content_hash == reference
+
+    def test_fresh_object_hierarchy_flushes_every_new_directory_parent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        root = tmp_path / "objects"
+        payload = b"directory ancestry"
+        reference = _hashing().sha256(payload)
+        prefix = root / reference.algorithm / reference.digest[:2]
+        flushed: list[Path] = []
+
+        def record_flush(path: os.PathLike[str] | str) -> None:
+            flushed.append(Path(path))
+
+        monkeypatch.setattr(
+            object_store.atomic_files,
+            "flush_directory",
+            record_flush,
+        )
+
+        assert object_store.put_immutable(
+            root,
+            payload,
+            operation=_operation(),
+        ) == reference
+
+        assert root.parent in flushed
+        assert root in flushed
+        assert root / reference.algorithm in flushed
+        assert prefix in flushed

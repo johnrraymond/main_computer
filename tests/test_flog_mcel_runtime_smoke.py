@@ -209,6 +209,7 @@ def test_build_scenarios_uses_app_surface_registry_required_policies(flog):
         "code-editor.default-load",
         "document.default-load",
         "file-explorer.default-load",
+        "git-tools.default-load",
         "mcel-lab.default-load",
         "website-builder.default-load",
     }
@@ -222,6 +223,12 @@ def test_build_scenarios_uses_app_surface_registry_required_policies(flog):
     )
     assert by_id["website-builder.default-load"].maturity == "semantic-runtime"
     assert by_id["website-builder.default-load"].required_layer_ids == (
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    )
+    assert by_id["git-tools.default-load"].maturity == "runtime-baseline"
+    assert by_id["git-tools.default-load"].required_layer_ids == (
         "runtime-ownership",
         "runtime-visual-fit",
         "diagnostic-no-throw",
@@ -253,13 +260,21 @@ def test_build_scenarios_can_filter_by_app_and_scenario(flog):
     assert [scenario.id for scenario in scenarios] == ["code-editor.default-load"]
 
 
-def test_build_scenarios_can_run_legacy_apps_explicitly_without_requiring_conformance(flog):
+def test_build_scenarios_enrolls_git_tools_as_runtime_baseline(flog):
     scenarios = flog.build_scenarios(REPO_ROOT, apps=["git-tools"])
 
     assert [scenario.id for scenario in scenarios] == ["git-tools.default-load"]
     assert scenarios[0].route == "/applications/git-tools"
-    assert scenarios[0].conformance_required is False
-    assert scenarios[0].registry_state == "legacy"
+    assert scenarios[0].conformance_required is True
+    assert scenarios[0].registry_state == "surface-aware"
+    assert scenarios[0].maturity == "runtime-baseline"
+    assert scenarios[0].surface_id == "git-tools.surface.workflow"
+    assert scenarios[0].contract_id == "git-tools.contract.default.app-health"
+    assert scenarios[0].required_layer_ids == (
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    )
 
 
 def test_build_scenarios_rejects_unknown_scenario(flog):

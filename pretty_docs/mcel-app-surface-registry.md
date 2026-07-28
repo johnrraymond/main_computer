@@ -12,9 +12,11 @@ Required app-surface entries:
 ```text
 file-explorer    semantic-runtime
 document         semantic-runtime
-website-builder  runtime-baseline
-code-editor      host-workbench
+website-builder  semantic-runtime
+code-editor      semantic-runtime
 calculator       semantic-runtime
+mcel-lab         semantic-runtime
+git-tools        runtime-baseline
 ```
 
 File Explorer, Document Editor, and Calculator require the full five-layer baseline because they now have
@@ -28,7 +30,7 @@ runtime-visual-fit
 diagnostic-no-throw
 ```
 
-Website Builder and Code Editor are required app-surface entries too, but their current policy requires the runtime layers first:
+Git Tools is enrolled as a runtime-baseline app-surface entry first. Its current policy requires only the runtime layers while the governed-publish adapter remains scope-limited and does not yet claim full semantic-runtime coverage:
 
 ```text
 runtime-ownership
@@ -46,7 +48,7 @@ required runtime baseline
 full semantic-runtime conversion
 ```
 
-Legacy apps remain declared as not-required so diagnostics and tests can
+Other legacy apps remain declared as not-required so diagnostics and tests can
 distinguish:
 
 ```text

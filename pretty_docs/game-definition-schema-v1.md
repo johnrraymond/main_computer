@@ -433,6 +433,14 @@ Patch R adds `tests/test_game_definition_validator_harness.py`, a direct Python-
 The harness treats location aliases as valid when at least one authored room id or `location` matches the reference. For point-bearing content, the point must be inside one of the rooms matched by that id/location alias.
 
 
+
+
+### Patch S renderer module split
+
+Patch S does not change the schema. It changes where existing renderer code lives. Room geometry still comes from `rooms[].geometry`, and content-defined viewscreens still come from `props[]` entries such as `kind: "viewscreen"` and `display: "enemyShipTactical"`.
+
+The browser runtime now loads a small `MainComputerShuttle3DRendererModules` registry before `scene-viewer.js`, allowing room-geometry and viewscreen rendering to live in separate files without requiring ES modules or a bundler.
+
 ## Versioning rule
 
 Schema v1 should be append-only where possible. New optional fields may be added, but existing field meanings should not change without a new schema id.
