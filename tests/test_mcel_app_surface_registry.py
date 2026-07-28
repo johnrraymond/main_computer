@@ -170,6 +170,7 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
         const documentEditor = registry.getAppPolicy("document");
         const calculator = registry.getAppPolicy("calculator");
         const codeEditor = registry.getAppPolicy("code-editor");
+        const websiteBuilder = registry.getAppPolicy("website-builder");
         const legacy = registry.getAppPolicy("git-tools");
         const unknown = registry.getAppPolicy("made-up-app");
         process.stdout.write(JSON.stringify({
@@ -177,6 +178,7 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
           documentEditor,
           calculator,
           codeEditor,
+          websiteBuilder,
           legacy,
           unknown
         }));
@@ -223,6 +225,16 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
         "runtime-visual-fit",
         "diagnostic-no-throw",
     ]
+
+    assert data["websiteBuilder"]["conformanceRequired"] is True
+    assert data["websiteBuilder"]["maturity"] == "semantic-runtime"
+    assert data["websiteBuilder"]["surfaceId"] == "website-builder.surface.preview"
+    assert data["websiteBuilder"]["requiredLayerIds"] == [
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    ]
+
 
     assert data["legacy"]["conformanceRequired"] is False
     assert data["legacy"]["state"] == "legacy"

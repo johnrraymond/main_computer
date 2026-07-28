@@ -4,16 +4,16 @@
 
 This is the documentation-first requirements contract for Website Builder and the saved websites under `runtime/websites/<site-id>`.
 
-The current implementation already has a Website Builder app, selectable saved sites, a GrapesJS design surface, draft/local/dev/remote preview lanes, local server publishing, remote Coolify publishing controls, blog/runtime setup, Directus/SQLite integration, site manifests, generated site server runtime files, and tests around website projects, publish targets, generated compose files, blog runtime setup, and golden website path smokes. It does **not** yet have a dedicated Website Builder semantic adapter registered with the MCEL domain-adapter registry.
+The current implementation already has a Website Builder app, selectable saved sites, a GrapesJS design surface, draft/local/dev/remote preview lanes, local server publishing, remote Coolify publishing controls, blog/runtime setup, Directus/SQLite integration, site manifests, generated site server runtime files, and tests around website projects, publish targets, generated compose files, blog runtime setup, and golden website path smokes. It now has a dedicated Website Builder semantic adapter registered with the MCEL domain-adapter registry for the bounded WebsiteProject authoring, runtime setup, publish-lane preflight, and Git Tools handoff scope.
 
 So this document must be read as:
 
 ```text
-current: working Website Builder + saved website project manifests + local/dev/remote publish lanes
-planned: full Website Builder semantic runtime for site editing, runtime configuration, publishing, website evidence, and Git Tools handoff
+current: semantic-runtime Website Builder + saved website project manifests + local/dev/remote publish lanes
+proven scope: site authoring, runtime configuration, publish-lane preflight/receipts, website evidence, and Git Tools handoff preparation
 ```
 
-The purpose of this document is to make website requirements stable enough that MCEL Lab can later parse them, compare them with the live Website Builder app and saved website folders, generate finding candidates, and drive code/test updates without relying on loose prose.
+The purpose of this document is to keep website requirements stable enough that MCEL Lab can parse them, compare them with the live Website Builder app and saved website folders, generate finding candidates, and drive code/test updates without relying on loose prose.
 
 ## Roadmap use cases
 
@@ -26,7 +26,7 @@ A user opens Website Builder, selects a saved site such as `hub-site` or `johnrr
 ```mcel-use-case
 id: website-builder.use-case.edit-preview-saved-site
 app: website-builder
-status: partially-implemented
+status: specified
 type: roadmap-use-case
 primary_object: WebsiteProject
 user_goal: >
@@ -60,7 +60,7 @@ A user enables or inspects the blog/runtime layer for a website, understands whi
 ```mcel-use-case
 id: website-builder.use-case.configure-blog-runtime
 app: website-builder
-status: partially-implemented
+status: specified
 type: roadmap-use-case
 primary_object: WebsiteRuntimeContract
 user_goal: >
@@ -95,7 +95,7 @@ A user has saved a site and wants to publish it to a lane: local server, dev, or
 ```mcel-use-case
 id: website-builder.use-case.publish-selected-lane
 app: website-builder
-status: partially-implemented
+status: specified
 type: roadmap-use-case
 primary_object: WebsitePublishPlan
 user_goal: >
@@ -131,7 +131,7 @@ A website edit changes repository files. The user should be able to hand those w
 ```mcel-use-case
 id: website-builder.use-case.git-tools-handoff
 app: website-builder
-status: planned
+status: specified
 type: roadmap-use-case
 primary_object: WebsiteChangeSet
 user_goal: >
@@ -142,11 +142,11 @@ current_support:
   - Website Builder has Git history/review controls.
   - Git Tools already has a governed local-Gitea push workflow.
   - website project files live under repository-relative runtime/websites/<site-id>.
-planned_support:
-  - website-scoped changed-file basket
-  - explicit handoff from Website Builder to Git Tools
-  - Git Tools commit workflow for selected website files
-  - Git Tools governed push receipt linked back to the website project
+current_support:
+  - website-scoped changed-file basket evidence
+  - explicit handoff preparation from Website Builder to Git Tools
+  - Git Tools remains the owner for commit and governed push execution
+  - Git Tools governed push receipt can be linked back to the website project
 acceptance:
   - Website Builder does not silently commit or push when saving a site.
   - Website-scoped changes can be filtered to runtime/websites/<site-id>.
@@ -163,8 +163,8 @@ layout_implications:
 id: website-builder
 title: Website Builder and Websites
 status: specified
-current_runtime_status: working-app-plus-site-project-model
-current_semantic_runtime_scope: none
+current_runtime_status: fullApplicationSemanticReady
+current_semantic_runtime_scope: website-builder-site-authoring-publish-handoff-v1
 target_runtime_status: full-application-semantic-runtime
 dominant_object: WebsiteProject
 primary_user_goal: >
@@ -183,7 +183,7 @@ current_sources:
   - runtime/websites/johnrraymond/site.json
   - runtime/websites/johnrraymond/builder.json
   - runtime/websites/johnrraymond/index.html
-planned_adapter:
+current_adapter:
   - main_computer/web/applications/scripts/website-builder-semantic-adapter.js
 verification:
   - tests/test_website_builder_app.py
@@ -775,7 +775,7 @@ app: website-builder
 status: specified
 intent: listSites
 risk: read-only
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 requires:
   - repository root
@@ -791,7 +791,7 @@ app: website-builder
 status: specified
 intent: selectSite
 risk: local-state
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 requires:
   - site id
@@ -808,7 +808,7 @@ app: website-builder
 status: specified
 intent: editDraft
 risk: local-state
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 requires:
   - selected site
@@ -824,7 +824,7 @@ app: website-builder
 status: specified
 intent: saveSite
 risk: local-file-mutation
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 requires:
   - selected site
@@ -844,7 +844,7 @@ app: website-builder
 status: specified
 intent: previewDraft
 risk: read-only
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 requires:
   - selected site
@@ -860,7 +860,7 @@ app: website-builder
 status: specified
 intent: configureBlogRuntime
 risk: local-file-mutation
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 confirmation: required
 requires:
@@ -883,7 +883,7 @@ app: website-builder
 status: specified
 intent: publishLocalServer
 risk: local-state
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 confirmation: required
 requires:
@@ -906,7 +906,7 @@ app: website-builder
 status: specified
 intent: publishDev
 risk: remote-mutation
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 confirmation: required
 requires:
@@ -928,7 +928,7 @@ app: website-builder
 status: specified
 intent: publishRemoteProduction
 risk: remote-mutation
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 confirmation: required
 requires:
@@ -954,7 +954,7 @@ app: website-builder
 status: specified
 intent: openVisitUrl
 risk: read-only
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 requires:
   - selected lane
@@ -969,7 +969,7 @@ app: website-builder
 status: planned
 intent: prepareGitToolsHandoff
 risk: read-only
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 requires:
   - selected site
@@ -986,7 +986,7 @@ app: website-builder
 status: specified
 intent: applyGeneratedWebsiteEdit
 risk: local-file-mutation
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 confirmation: required
 requires:
@@ -1059,13 +1059,13 @@ requires:
 ```mcel-acceptance
 id: website-builder.acceptance.semantic-runtime
 app: website-builder
-status: planned
+status: specified
 type: acceptance
 requires:
   - Website Builder domain adapter derives selected site state
   - adapter exposes read, draft, save, preview, runtime setup, publish, and Git handoff intents
   - remote publish intents require confirmation and recovery receipts
-  - MCEL truth gate should eventually report fullApplicationSemanticReady only after every required intent is covered
+  - MCEL truth gate reports fullApplicationSemanticReady only after every required intent is covered
 ```
 
 ## MCEL Lab findings this document should generate

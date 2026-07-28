@@ -2785,7 +2785,8 @@
           ],
           // Patch H makes ship visual content data-first. Patch I also moves
           // repeated map/console markers into props so room decoration can
-          // evolve without adding more one-off renderer calls.
+          // evolve without adding more one-off renderer calls. Patch M moves
+          // visible terminal console bodies into data-defined props.
           props: [
             {
               id: "prop.route.bridge-marker",
@@ -2860,6 +2861,54 @@
               emissive: true,
               target: "enemyShip",
               label: "Enemy ship status panel"
+            },
+            {
+              id: "prop.console.bay-ops-terminal",
+              room: "bay.ops",
+              kind: "terminal-console",
+              position: [3.86, -6.42],
+              size: [0.82, 0.48, 0.72],
+              color: "#38bdf8",
+              emissive: true,
+              facing: "west",
+              target: "terminal.bay-ops",
+              label: "Bay Operations terminal console"
+            },
+            {
+              id: "prop.console.engineering-power",
+              room: "engineering.access",
+              kind: "terminal-console",
+              position: [7.35, -20.75],
+              size: [0.9, 0.5, 0.78],
+              color: "#86efac",
+              emissive: true,
+              facing: "west",
+              target: "terminal.engineering-power",
+              label: "Engineering power console body"
+            },
+            {
+              id: "prop.console.bridge-viewscreen",
+              room: "bridge.deck",
+              kind: "terminal-console",
+              position: [0.0, -37.15],
+              size: [1.25, 0.42, 0.74],
+              color: "#ef4444",
+              emissive: true,
+              facing: "south",
+              target: "terminal.bridge-viewscreen",
+              label: "Bridge viewscreen control console"
+            },
+            {
+              id: "prop.console.bridge-tactical",
+              room: "bridge.deck",
+              kind: "terminal-console",
+              position: [2.85, -36.7],
+              size: [0.95, 0.54, 0.82],
+              color: "#f97316",
+              emissive: true,
+              facing: "west",
+              target: "terminal.bridge-tactical",
+              label: "Bridge tactical console body"
             },
             {
               id: "prop.marker.bay-ops-terminal",
@@ -3265,6 +3314,75 @@
           .filter(Boolean);
       }
 
+      function shuttle3dInteractableVisualDefaults(kind) {
+        // Patch L: in-world E-key affordances can now be styled by content data.
+        // See pretty_docs/game-runtime-patch-L-interactable-visual-metadata.md for authoring intent.
+        const normalizedKind = String(kind || "").toLowerCase();
+        if (normalizedKind === "terminal") {
+          return {
+            color: "#38bdf8",
+            activeColor: "#fef3c7",
+            radiusScale: 0.34,
+            height: 0.58,
+            activeHeight: 0.88,
+            baseSize: 0.18,
+            terminalPanel: true,
+            routeBeam: false
+          };
+        }
+        if (normalizedKind === "access") {
+          return {
+            color: "#86efac",
+            activeColor: "#fef3c7",
+            radiusScale: 0.38,
+            height: 0.66,
+            activeHeight: 0.96,
+            baseSize: 0.22,
+            terminalPanel: false,
+            routeBeam: true
+          };
+        }
+        if (normalizedKind === "door") {
+          return {
+            color: "#fbbf24",
+            activeColor: "#fef3c7",
+            radiusScale: 0.31,
+            height: 0.52,
+            activeHeight: 0.82,
+            baseSize: 0.18,
+            terminalPanel: false,
+            routeBeam: true
+          };
+        }
+        return {
+          color: "#a78bfa",
+          activeColor: "#fef3c7",
+          radiusScale: 0.34,
+          height: 0.54,
+          activeHeight: 0.84,
+          baseSize: 0.18,
+          terminalPanel: false,
+          routeBeam: false
+        };
+      }
+
+      function shuttle3dNormalizeMotherShipInteractableVisual(value, fallbackValue, kind) {
+        const defaults = shuttle3dInteractableVisualDefaults(kind);
+        const fallback = shuttle3dObjectValue(fallbackValue);
+        const raw = shuttle3dObjectValue(value);
+        const source = {...defaults, ...fallback, ...raw};
+        return {
+          color: String(source.color || defaults.color),
+          activeColor: String(source.activeColor || defaults.activeColor),
+          radiusScale: Math.max(0.08, shuttle3dNumberValue(source.radiusScale, defaults.radiusScale)),
+          height: Math.max(0.12, shuttle3dNumberValue(source.height, defaults.height)),
+          activeHeight: Math.max(0.12, shuttle3dNumberValue(source.activeHeight, defaults.activeHeight)),
+          baseSize: Math.max(0.08, shuttle3dNumberValue(source.baseSize, defaults.baseSize)),
+          terminalPanel: source.terminalPanel !== false,
+          routeBeam: source.routeBeam === true
+        };
+      }
+
       function shuttle3dNormalizeMotherShipInteractables(value, fallbackInteractables, terminals, doors) {
         const source = Array.isArray(value) && value.length ? value : fallbackInteractables;
         return source
@@ -3291,7 +3409,8 @@
               position: [x, z],
               range,
               action: String(raw.action || raw.interaction || fallback.action || fallback.interaction || ""),
-              prompt: String(raw.prompt || fallback.prompt || "")
+              prompt: String(raw.prompt || fallback.prompt || ""),
+              visual: shuttle3dNormalizeMotherShipInteractableVisual(raw.visual, fallback.visual, kind)
             };
           })
           .filter(Boolean);
@@ -5391,12 +5510,39 @@
             builder.box([x - width / 2, 0.28, z - 0.04], [x + width / 2, 0.28 + height, z + 0.04], color);
             builder.beam([x - width / 2, 0.28 + height + 0.1, z], [x + width / 2, 0.28 + height + 0.1, z], 0.014 + pulse * 0.006, color);
           };
+          const drawTerminalConsole = (prop) => {
+            // Patch M renders visible terminal console bodies from data-defined props.
+            // See pretty_docs/game-runtime-patch-M-terminal-console-props.md for authoring intent.
+            const [x, z] = prop.position;
+            const width = Math.max(0.24, prop.size?.[0] || 0.82);
+            const depth = Math.max(0.18, prop.size?.[1] || 0.48);
+            const height = Math.max(0.28, prop.size?.[2] || 0.72);
+            const facing = String(prop.facing || "north").toLowerCase();
+            const body = builder.color("#0f172a");
+            const trim = materialFor(prop, "#38bdf8", true);
+            const activeTarget = this.shipInteractionTarget();
+            const active = activeTarget && String(activeTarget.id || "") === String(prop.target || "");
+            const activeTrim = active ? builder.color("#fef3c7", true) : trim;
+            builder.box([x - width / 2, -1.05, z - depth / 2], [x + width / 2, -0.66, z + depth / 2], body);
+            builder.box([x - width * 0.42, -0.64, z - depth * 0.42], [x + width * 0.42, -0.54, z + depth * 0.42], activeTrim);
+            if (facing === "east" || facing === "west") {
+              const sx = x + (facing === "east" ? width / 2 + 0.035 : -width / 2 - 0.035);
+              builder.box([sx - 0.035, -0.48, z - width * 0.34], [sx + 0.035, -0.48 + height, z + width * 0.34], activeTrim);
+              builder.beam([sx, -0.36 + height, z - width * 0.34], [sx, -0.36 + height, z + width * 0.34], 0.012 + pulse * 0.006, activeTrim);
+            } else {
+              const sz = z + (facing === "south" ? -depth / 2 - 0.035 : depth / 2 + 0.035);
+              builder.box([x - width * 0.34, -0.48, sz - 0.035], [x + width * 0.34, -0.48 + height, sz + 0.035], activeTrim);
+              builder.beam([x - width * 0.34, -0.36 + height, sz], [x + width * 0.34, -0.36 + height, sz], 0.012 + pulse * 0.006, activeTrim);
+            }
+            if (active) builder.beam([x - width / 2, -0.5, z], [x + width / 2, -0.5, z], 0.02 + pulse * 0.01, activeTrim);
+          };
           props.forEach((prop) => {
             const kind = String(prop.kind || "").toLowerCase();
             if (kind === "sign") drawSign(prop);
             else if (kind === "beacon") drawBeacon(prop);
             else if (kind === "light-strip") drawLightStrip(prop);
             else if (kind === "status-panel") drawStatusPanel(prop);
+            else if (kind === "terminal-console") drawTerminalConsole(prop);
             else if (kind === "map-marker") drawMapMarker(prop);
             else drawFloorMarker(prop);
           });
@@ -5405,41 +5551,45 @@
 
         appendMotherShipInteractableHotspots(builder, nowMs = 0) {
           // Patch K renders E-key affordances from motherShipInterior.interactables.
+          // Patch L lets content style those hotspots with normalized interactable visual metadata.
           // If a prompt exists, the player should also see a matching in-world hotspot.
           const interactables = Array.isArray(this.interiorConfig?.interactables) ? this.interiorConfig.interactables : [];
           if (!interactables.length) return;
           const activeTarget = this.shipInteractionTarget();
           const activeId = activeTarget?.id || "";
           const pulse = 0.46 + 0.54 * Math.sin((nowMs || 0) / 260);
+          const hotspotVisual = (target) => target.visual || shuttle3dInteractableVisualDefaults(target.kind);
           const hotspotColor = (target) => {
-            if (target.id === activeId) return builder.color("#fef3c7", true);
-            const kind = String(target.kind || "").toLowerCase();
-            if (kind === "terminal") return builder.color("#38bdf8", true);
-            if (kind === "access") return builder.color("#86efac", true);
-            if (kind === "door") return builder.color("#fbbf24", true);
-            return builder.color("#a78bfa", true);
+            const visual = hotspotVisual(target);
+            if (target.id === activeId) return builder.color(visual.activeColor || "#fef3c7", true);
+            return builder.color(visual.color || "#a78bfa", true);
           };
           interactables.forEach((target) => {
             if (!Array.isArray(target.position) || target.position.length < 2) return;
             const x = Number(target.position[0]);
             const z = Number(target.position[1]);
             if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+            const visual = hotspotVisual(target);
             const color = hotspotColor(target);
             const kind = String(target.kind || "").toLowerCase();
-            const radius = Math.max(0.28, Math.min(1.08, Number(target.range || 1.2) * 0.34));
-            const height = target.id === activeId ? 0.82 : 0.52;
+            const radiusScale = Math.max(0.08, Math.min(1.2, Number(visual.radiusScale || 0.34)));
+            const radius = Math.max(0.24, Math.min(1.28, Number(target.range || 1.2) * radiusScale));
+            const baseSize = Math.max(0.08, Math.min(0.34, Number(visual.baseSize || 0.18)));
+            const height = target.id === activeId
+              ? Number(visual.activeHeight || visual.height || 0.82)
+              : Number(visual.height || 0.52);
             const y = -0.83;
 
-            builder.box([x - 0.18, -1.048, z - 0.18], [x + 0.18, -0.965, z + 0.18], color);
+            builder.box([x - baseSize, -1.048, z - baseSize], [x + baseSize, -0.965, z + baseSize], color);
             builder.beam([x - radius, y, z - radius], [x + radius, y, z - radius], 0.012 + pulse * 0.006, color);
             builder.beam([x + radius, y, z - radius], [x + radius, y, z + radius], 0.012 + pulse * 0.006, color);
             builder.beam([x + radius, y, z + radius], [x - radius, y, z + radius], 0.012 + pulse * 0.006, color);
             builder.beam([x - radius, y, z + radius], [x - radius, y, z - radius], 0.012 + pulse * 0.006, color);
-            builder.beam([x, -0.78, z], [x, -0.78 + height, z], 0.014 + pulse * 0.008, color);
+            builder.beam([x, -0.78, z], [x, -0.78 + Math.max(0.12, height), z], 0.014 + pulse * 0.008, color);
 
-            if (kind === "terminal") {
+            if (kind === "terminal" && visual.terminalPanel !== false) {
               builder.box([x - 0.24, -0.44, z - 0.08], [x + 0.24, -0.28, z + 0.08], color);
-            } else if (kind === "access" || kind === "door") {
+            } else if ((kind === "access" || kind === "door") && visual.routeBeam !== false) {
               builder.beam([x - 0.36, -0.48, z], [x + 0.36, -0.48, z], 0.016 + pulse * 0.006, color);
             }
           });

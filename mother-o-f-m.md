@@ -6,13 +6,13 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 59f840c71425efc094e79ba9d318898297aad9ad7d7df1e1563798c293617d7e
+SHA-256: 7ad760806a866d8ee47b1b57425d891906545316110af5508ef54541f9806694
 
 mother-o.md
-SHA-256: 5b7eb9387605f8fdf5ca5c171af24224987e5baf4052bd4f7a4f292c8cf95880
+SHA-256: 0a8521841319cd04a890a118bc00c6c627c8d8d27532ae60d1e40dfb385c9c22
 
 mother-o-f.md
-SHA-256: 5cb31c484564cadc82f6c9ca3712b09f0191ce52ba7627c99906fc7d1350d5af
+SHA-256: ce588bb7dbc7a84bfa709b5f43237e60f17aa00aba66475942c4004ea8d3722b
 ```
 
 ## 1. Purpose and authority
@@ -265,6 +265,41 @@ boundary invokes the named `MOTHER-OFM-CORE-013` faultpoint hook. These
 dependencies are implicit in each row and MUST NOT be implemented as alternate
 paths around the owning module.
 
+#### 3.3.1 Explicit CORE-013 faultpoint-bearing functionalities
+
+CORE-013 ancestry is granted only to the functionality IDs in this table. Each
+listed functionality contains at least one method-qualified durability,
+dispatch, live-mutation, pointer, or protocol-transition boundary in its
+section 7 chain. Merely referencing a module whose overall authority class is
+`writer`, `live-adapter`, or `transport` does not grant CORE-013 ancestry.
+
+| Family | Faultpoint-bearing functionalities |
+|---|---|
+| `AUTH` | `MOTHER-OF-AUTH-001` through `013`, `MOTHER-OF-AUTH-015` through `020` |
+| `CTL` | `MOTHER-OF-CTL-004`, `MOTHER-OF-CTL-007`, `MOTHER-OF-CTL-011`, `MOTHER-OF-CTL-012`, `MOTHER-OF-CTL-014` through `016` |
+| `HUB` | `MOTHER-OF-HUB-003`, `MOTHER-OF-HUB-005` |
+| `ID` | `MOTHER-OF-ID-003` |
+| `MEM` | `MOTHER-OF-MEM-001` through `013` |
+| `MIG` | `MOTHER-OF-MIG-002`, `MOTHER-OF-MIG-005`, `MOTHER-OF-MIG-006`, `MOTHER-OF-MIG-008` |
+| `OBS` | `MOTHER-OF-OBS-018` |
+| `PRJ` | `MOTHER-OF-PRJ-003`, `MOTHER-OF-PRJ-005`, `MOTHER-OF-PRJ-006` |
+| `QBFT` | `MOTHER-OF-QBFT-002` through `005`, `MOTHER-OF-QBFT-007` |
+| `RB` | `MOTHER-OF-RB-001` through `006`, `MOTHER-OF-RB-008` through `010` |
+| `REC` | `MOTHER-OF-REC-003`, `MOTHER-OF-REC-004`, `MOTHER-OF-REC-007`, `MOTHER-OF-REC-008` |
+| `REL` | `MOTHER-OF-REL-002` through `004`, `MOTHER-OF-REL-007` through `009`, `MOTHER-OF-REL-011`, `MOTHER-OF-REL-012` |
+| `ROT` | `MOTHER-OF-ROT-001`, `MOTHER-OF-ROT-005`, `MOTHER-OF-ROT-010`, `MOTHER-OF-ROT-011` |
+| `RPC` | `MOTHER-OF-RPC-003`, `MOTHER-OF-RPC-005` |
+| `RSL` | `MOTHER-OF-RSL-001`, `MOTHER-OF-RSL-005`, `MOTHER-OF-RSL-006`, `MOTHER-OF-RSL-008` through `015` |
+| `SVC` | `MOTHER-OF-SVC-003` through `005`, `MOTHER-OF-SVC-007`, `MOTHER-OF-SVC-008` |
+| `SYNC` | `MOTHER-OF-SYNC-001` through `003`, `MOTHER-OF-SYNC-005` through `008` |
+| `XPORT` | `MOTHER-OF-XPORT-003`, `MOTHER-OF-XPORT-004` |
+
+A read-only call on a writer-capable module is not a faultpoint boundary.
+Specifically, `MOTHER-OF-OBS-001` and `MOTHER-OF-OBS-013` do not receive
+implicit CORE-013 ancestry. Adding or removing a faultpoint-bearing
+functionality requires changing this table and the corresponding
+method-qualified section 7 chain together.
+
 ## 4. Shared type and error contract
 
 ### 4.1 Required typed values
@@ -291,7 +326,10 @@ paths around the owning module.
 | `ParticipantResult` | durable state, result hash, target rejection, transport observation |
 | `StateGeneration` | generation ID, immutable root, manifest hash, active-pointer predecessor |
 | `EvidenceRef` | object hash, schema, redaction policy, source and observation time |
-| `HubReleaseDescriptor` | immutable manifest/platform digests, provenance/signature refs, signer-policy ref, runtime/API/schema contracts, compatibility sets, capabilities, health assertions |
+| `HubReleaseDescriptorPayload` | target-controlled release ID, immutable manifest/platform digests, provenance, runtime/API/schema contracts, compatibility sets, capabilities, and health assertions; no signature-envelope or signer-policy field |
+| `HubReleaseSignatureEnvelope` | descriptor-payload hash, exact manifest/platform digest set, signer identity, signature algorithm, and detached signature bytes |
+| `HubReleaseAuthorization` | descriptor-payload hash, signature-envelope hash, and independently resolved validated signer-policy hash |
+| `HubComponentReleaseState` | complete retained Hub release authorization tuple, participant-release-map root, and release generation |
 | `AuthoritativeDelta` | closed operation-kind-specific predecessor/successor dimensions and unchanged-dimension assertions |
 
 Every cross-module value MUST use these models or a versioned schema-owned
@@ -430,7 +468,7 @@ return `OperationCommandResult`.
 |---|---|---|---|
 | `MOTHER-OFM-XPORT-001` | `common/endpoints.py` | `resolve_private_endpoint`, `authorize_target` | `pure` plus inventory read; rejects public, unowned, unapproved method/path/host tuples |
 | `MOTHER-OFM-XPORT-002` | `common/call_runner.py` | `dispatch`, `query_status`, `fetch_result` | transport adapter only; never claims target success without durable request evidence |
-| `MOTHER-OFM-XPORT-003` | `common/request_journal.py` | `get_or_create_request`, `record_observation`, `resolve_state`, `classify_failure` | `ledger-writer`; same request/body is idempotent, request/body mismatch is fatal |
+| `MOTHER-OFM-XPORT-003` | `common/request_journal.py` | `get_or_create_request`, `record_observation`, `resolve_state`, `classify_failure` | `ledger-writer`; same request/body is idempotent and request/body mismatch is fatal; `resolve_state` idempotently persists the state derived from durable observations, permits same-state retries, and rejects conflicting terminal resolution |
 
 ### 5.7 Authority and finalization modules
 
@@ -441,7 +479,7 @@ return `OperationCommandResult`.
 | `MOTHER-OFM-AUTH-003` | `common/authorization.py` | `build_bundle`, `validate_bundle`, `derive_certificate_refs` | replicated-authority object construction; bundle binds existing entry and post-entry evidence only |
 | `MOTHER-OFM-AUTH-004` | `common/head_commit.py` | `commit_entry_bundle_pair`, `read_commit_outcome` | sole network-head pointer writer; immutable entry and bundle fsync precede atomic pair commit |
 | `MOTHER-OFM-AUTH-005` | `common/replication.py` | `replicate_closure`, `verify_replica`, `resync_exact_head`, `collect_acknowledgements` | distributed authority transport; exact closure and replayed state verification |
-| `MOTHER-OFM-AUTH-006` | `common/finalization.py` | `prepare_intent`, `validate_authoritative_delta`, `build_finalization_entry`, `apply_typed_delta`, `verify_terminal_membership`, `complete_release` | finalization protocol; closed operation-kind-specific deltas change only declared dimensions; commit and replication-pending states remain distinct |
+| `MOTHER-OFM-AUTH-006` | `common/finalization.py` | `prepare_intent`, `validate_preparatory_progress_transition`, `validate_authoritative_delta`, `build_finalization_entry`, `apply_typed_delta`, `verify_terminal_membership`, `complete_release` | finalization protocol; closed operation-kind-specific deltas change only declared dimensions; commit and replication-pending states remain distinct |
 | `MOTHER-OFM-AUTH-007` | `common/reconciliation.py` | `reconcile_head_commit`, `reconcile_replication`, `reconcile_cancellation` | `reader` with ledger reconciliation; durable pointer/evidence decides, never timing |
 | `MOTHER-OFM-AUTH-008` | `common/bootstrap_authority.py` | `claim_birth_authority`, `accept_birth_entry`, `roll_to_ordinary_authority` | replicated authority writer for the synthetic predecessor only |
 
@@ -468,7 +506,7 @@ return `OperationCommandResult`.
 | Module ID | Path | Public API | Effect and failure contract |
 |---|---|---|---|
 | `MOTHER-OFM-ID-001` | `common/identity.py` | `resolve_identity`, `install_reserved`, `verify_derivation`, `verify_ownership`, `recovery_material_ref` | secret-aware identity adapter; never regenerates reserved material |
-| `MOTHER-OFM-SVC-001` | `common/services.py` | `resolve_service`, `capture_service_prestate`, `create_or_repair`, `establish_private_candidate`, `detach_or_remove`, `verify_policy`, `restore`, `enforce_standby`, `observe_release`, `stage_release_artifacts`, `drain_and_apply_prepared_release`, `verify_release`, `restore_release`, `restore_eligibility` | sole prepared Coolify/service-effect adapter over `MOTHER-OFM-OBS-002`; exact artifact, request, prestate, and frame inputs required |
+| `MOTHER-OFM-SVC-001` | `common/services.py` | `resolve_service`, `capture_service_prestate`, `create_or_repair`, `establish_private_candidate`, `detach_or_remove`, `verify_policy`, `restore`, `enforce_standby`, `observe_release`, `stage_release_artifacts`, `drain_and_apply_prepared_release`, `drain_for_restore`, `verify_release`, `restore_release`, `restore_eligibility` | sole prepared Coolify/service-effect adapter over `MOTHER-OFM-OBS-002`; exact artifact, request, prestate, and frame inputs required |
 | `MOTHER-OFM-SVC-002` | `common/hub_release.py` | `validate_descriptor_payload`, `validate_detached_signature`, `validate_signer_policy`, `build_prepared_artifact_stage_request`, `build_prepared_participant_request`, `observe_participant_map`, `validate_legacy_baseline`, `verify_artifact_closures`, `evaluate_compatibility`, `plan_rollout`, `derive_rollout_convergence_and_delta`, `verify_unchanged_dimensions` | `pure`; detached descriptor/signature validation, baseline, compatibility, request construction, rollout policy, and deterministic authoritative-release-state calculation only; performs no deployment or external effect |
 | `MOTHER-OFM-NET-001` | `common/qbft.py` | `observe_sets`, `calculate_desired`, `bootstrap`, `reactivate`, `soft_vote`, `hard_transition`, `verify_convergence`, `restore` | prepared QBFT live adapter; no vote/config mutation without frame checkpoint |
 | `MOTHER-OFM-NET-002` | `common/routing.py` | `observe_owned_graph`, `calculate_desired`, `apply_transition`, `verify_hosts`, `restore` | prepared typed route adapter; cannot alter unowned routes |
@@ -673,7 +711,7 @@ boundaries.
 | `MOTHER-OF-AUTH-017` | `MOTHER-OFM-AUTH-008.claim_birth_authority,accept_birth_entry` → `MOTHER-OFM-MEM-004.build_birth_checkpoint` | Accepted sequence-1 birth checkpoint under synthetic predecessor authority |
 | `MOTHER-OF-AUTH-018` | `MOTHER-OFM-RB-004.verify_restored` → `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable` | Exact rollback-progress/completed entry matching verified restored state, ready for the parent reservation/certificate/bundle/commit functions |
 | `MOTHER-OF-AUTH-019` | `MOTHER-OFM-RB-002.load_promoted` → `MOTHER-OFM-OBS-007.verify_assertion_evidence` → `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable` | Exact pending-action progress entry for the verified promoted phase, ready for the parent authority functions |
-| `MOTHER-OF-AUTH-020` | `MOTHER-OFM-CORE-012.verify_closure` → `MOTHER-OFM-OBS-007.verify_assertion_evidence` → `MOTHER-OFM-AUTH-006.validate_authoritative_delta` → `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable` | Exact preparatory pending-action progress entry from immutable evidence bound to the frozen prepared contract; no promoted rollback frame is required |
+| `MOTHER-OF-AUTH-020` | `MOTHER-OFM-CORE-012.verify_closure` → `MOTHER-OFM-OBS-007.verify_assertion_evidence` → `MOTHER-OFM-AUTH-006.validate_preparatory_progress_transition` → `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable` | Exact retry-idempotent preparatory progress entry: active pending action and prepared-operation hash match, artifact evidence satisfies the frozen contract, only null-to-exact-root or exact-root-to-same-root is permitted, all unrelated fields and the authoritative delta remain byte-identical, and no rollback frame is required or consulted |
 
 ### 7.5 Prestate and rollback
 
@@ -763,7 +801,7 @@ boundaries.
 | `MOTHER-OF-REL-008` | `MOTHER-OFM-RB-002.checkpoint_before_dispatch` → `MOTHER-OFM-SVC-002.build_prepared_participant_request` → `MOTHER-OFM-XPORT-003.get_or_create_request` → `MOTHER-OFM-XPORT-002.dispatch(target_handler=MOTHER-OFM-SVC-001.drain_and_apply_prepared_release)` → `MOTHER-OFM-XPORT-003.record_observation` | The exact drain/deployment request exists durably before dispatch invokes the sole service-effect handler on the target |
 | `MOTHER-OF-REL-009` | `MOTHER-OFM-XPORT-003.resolve_state,classify_failure` → `MOTHER-OFM-SVC-001.observe_release` → `MOTHER-OFM-OBS-007.run_assertion_set` | Unknown deployment outcome resolved from durable request evidence, exact observed digest, and release assertions without alternate artifact selection |
 | `MOTHER-OF-REL-010` | `MOTHER-OFM-SVC-001.verify_release,restore_eligibility` → `MOTHER-OFM-OBS-007.run_assertion_set` | One participant matches its exact target digest, configuration, runtime/API, FDB, health, availability, and prepared-eligibility contract |
-| `MOTHER-OF-REL-011` | `MOTHER-OFM-RB-001.load_verified` → `MOTHER-OFM-SVC-001.drain_and_apply_prepared_release,restore_release,verify_release,restore_eligibility` → `MOTHER-OFM-RB-004.verify_restored` | Exact captured artifact, configuration, eligibility, and traffic restored |
+| `MOTHER-OF-REL-011` | `MOTHER-OFM-RB-001.load_verified` → `MOTHER-OFM-SVC-001.drain_for_restore` → `MOTHER-OFM-SVC-001.restore_release` → `MOTHER-OFM-SVC-001.verify_release` against the exact predecessor or accepted legacy baseline in the verified frame → `MOTHER-OFM-SVC-001.restore_eligibility` → `MOTHER-OFM-RB-004.verify_restored` | Exact captured artifact, configuration, eligibility, and traffic restored; the forward deployment handler is prohibited |
 | `MOTHER-OF-REL-012` | fresh full-set `MOTHER-OFM-SVC-001.observe_release` → `MOTHER-OFM-SVC-002.observe_participant_map,verify_unchanged_dimensions,derive_rollout_convergence_and_delta` → `MOTHER-OFM-CORE-004.set_root` → `MOTHER-OFM-OBS-007.run_assertion_set` → `MOTHER-OFM-CORE-008.store_evidence` | One deterministic convergence proof and exact typed Hub release delta derived solely from fresh full-set observations and the frozen prepared contract; repeated execution MUST be byte-identical |
 
 `MOTHER-OFM-SVC-002` is pure and MUST NOT call Coolify, a registry, a remote
@@ -1235,6 +1273,14 @@ successor claims begin. Topology operations advance only topology authority.
 `upgrade-hub` advances only Hub component-release authority and leaves topology,
 topology epoch, schemas, configuration, membership, identities, and secrets
 unchanged.
+
+`MOTHER-OFM-AUTH-006.validate_preparatory_progress_transition` is a separate
+transition validator. It MUST prove the active pending-action identity and
+prepared-operation hash, validate the evidence against the frozen
+artifact-availability contract, allow only `null -> exact root` or an
+idempotent `exact root -> same exact root`, reject a different retry root, keep
+the authoritative delta and every unrelated pending-action field byte-identical,
+and require or consult no rollback frame.
 
 Rollback remains available before the atomic finalization head-pair commit and
 is closed permanently after it. Replication failure after that commit never

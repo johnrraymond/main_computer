@@ -150,6 +150,16 @@
         "tests/test_website_builder_blog_install_wizard.py"
       ],
       "notes": "Covers dependency order, Directus/SQLite choices, generated runtime controls, persisted install intent, and deploy preflight evidence."
+    },
+    {
+      "id": "website-builder.binding.acceptance.semantic-runtime",
+      "appId": "website-builder",
+      "acceptanceContractId": "website-builder.acceptance.semantic-runtime",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_website_builder_semantic_adapter.py"
+      ],
+      "notes": "Covers the registered Website Builder domain adapter, executable site catalog/selection/draft/save/preview/runtime setup/publish/visit/Git handoff/generated edit intents, lane-specific preflight and receipts, recovery coverage, and Git commit/push delegation."
     }
   ]
 }

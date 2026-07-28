@@ -371,14 +371,15 @@
         "kind": {
           "type": "string",
           "minLength": 1,
-          "description": "Procedural content prop kind. Current renderer supports floor-marker, map-marker, sign, beacon, light-strip, and status-panel.",
+          "description": "Procedural content prop kind. Current renderer supports floor-marker, map-marker, sign, beacon, light-strip, status-panel, and terminal-console.",
           "examples": [
             "floor-marker",
             "map-marker",
             "sign",
             "beacon",
             "light-strip",
-            "status-panel"
+            "status-panel",
+            "terminal-console"
           ]
         },
         "position": {
@@ -644,6 +645,9 @@
         },
         "statusKey": {
           "type": "string"
+        },
+        "visual": {
+          "$ref": "#/$defs/interactableVisual"
         }
       }
     },
@@ -651,6 +655,43 @@
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/interaction"
+      },
+      "default": {}
+    },
+    "interactableVisual": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "type": "string",
+          "minLength": 1
+        },
+        "activeColor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "radiusScale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "activeHeight": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "baseSize": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "terminalPanel": {
+          "type": "boolean"
+        },
+        "routeBeam": {
+          "type": "boolean"
+        }
       },
       "default": {}
     }

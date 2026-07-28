@@ -1485,7 +1485,17 @@
                 ],
                 "range": 2.05,
                 "action": "enterBayOpsAccess",
-                "prompt": "Press E to enter through Starboard Interior Access."
+                "prompt": "Press E to enter through Starboard Interior Access.",
+                "visual": {
+                  "color": "#86efac",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.38,
+                  "height": 0.66,
+                  "activeHeight": 0.96,
+                  "baseSize": 0.22,
+                  "terminalPanel": false,
+                  "routeBeam": true
+                }
               },
               {
                 "id": "terminal.bay-ops",
@@ -1498,7 +1508,17 @@
                 ],
                 "range": 1.75,
                 "action": "activateBayOperationsTerminal",
-                "prompt": "Press E to use Bay Operations Terminal."
+                "prompt": "Press E to use Bay Operations Terminal.",
+                "visual": {
+                  "color": "#38bdf8",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.34,
+                  "height": 0.58,
+                  "activeHeight": 0.88,
+                  "baseSize": 0.18,
+                  "terminalPanel": true,
+                  "routeBeam": false
+                }
               },
               {
                 "id": "terminal.engineering-power",
@@ -1511,7 +1531,17 @@
                 ],
                 "range": 1.9,
                 "action": "restoreEngineeringPower",
-                "prompt": "Press E to use Engineering Power Console."
+                "prompt": "Press E to use Engineering Power Console.",
+                "visual": {
+                  "color": "#38bdf8",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.34,
+                  "height": 0.58,
+                  "activeHeight": 0.88,
+                  "baseSize": 0.18,
+                  "terminalPanel": true,
+                  "routeBeam": false
+                }
               },
               {
                 "id": "door.bay-inner",
@@ -1524,7 +1554,17 @@
                 ],
                 "range": 1.75,
                 "action": "inspectOpenDoorRoute",
-                "prompt": "Press E to inspect Inner Shuttle Bay Door."
+                "prompt": "Press E to inspect Inner Shuttle Bay Door.",
+                "visual": {
+                  "color": "#fbbf24",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.31,
+                  "height": 0.52,
+                  "activeHeight": 0.82,
+                  "baseSize": 0.18,
+                  "terminalPanel": false,
+                  "routeBeam": true
+                }
               },
               {
                 "id": "door.security-hub",
@@ -1537,7 +1577,17 @@
                 ],
                 "range": 1.65,
                 "action": "inspectOpenDoorRoute",
-                "prompt": "Press E to inspect Security Checkpoint Door."
+                "prompt": "Press E to inspect Security Checkpoint Door.",
+                "visual": {
+                  "color": "#fbbf24",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.31,
+                  "height": 0.52,
+                  "activeHeight": 0.82,
+                  "baseSize": 0.18,
+                  "terminalPanel": false,
+                  "routeBeam": true
+                }
               },
               {
                 "id": "door.engineering-access",
@@ -1550,7 +1600,17 @@
                 ],
                 "range": 1.85,
                 "action": "inspectOpenDoorRoute",
-                "prompt": "Press E to inspect Engineering Access Door."
+                "prompt": "Press E to inspect Engineering Access Door.",
+                "visual": {
+                  "color": "#fbbf24",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.31,
+                  "height": 0.52,
+                  "activeHeight": 0.82,
+                  "baseSize": 0.18,
+                  "terminalPanel": false,
+                  "routeBeam": true
+                }
               },
               {
                 "id": "door.medbay",
@@ -1563,7 +1623,17 @@
                 ],
                 "range": 1.85,
                 "action": "inspectOpenDoorRoute",
-                "prompt": "Press E to inspect Medbay Door."
+                "prompt": "Press E to inspect Medbay Door.",
+                "visual": {
+                  "color": "#fbbf24",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.31,
+                  "height": 0.52,
+                  "activeHeight": 0.82,
+                  "baseSize": 0.18,
+                  "terminalPanel": false,
+                  "routeBeam": true
+                }
               },
               {
                 "id": "door.science",
@@ -1576,7 +1646,17 @@
                 ],
                 "range": 1.85,
                 "action": "inspectOpenDoorRoute",
-                "prompt": "Press E to inspect Science/Ops Door."
+                "prompt": "Press E to inspect Science/Ops Door.",
+                "visual": {
+                  "color": "#fbbf24",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.31,
+                  "height": 0.52,
+                  "activeHeight": 0.82,
+                  "baseSize": 0.18,
+                  "terminalPanel": false,
+                  "routeBeam": true
+                }
               },
               {
                 "id": "door.bridge",
@@ -1589,7 +1669,17 @@
                 ],
                 "range": 1.95,
                 "action": "inspectOpenDoorRoute",
-                "prompt": "Press E to inspect Bridge Command Door."
+                "prompt": "Press E to inspect Bridge Command Door.",
+                "visual": {
+                  "color": "#fbbf24",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.31,
+                  "height": 0.52,
+                  "activeHeight": 0.82,
+                  "baseSize": 0.18,
+                  "terminalPanel": false,
+                  "routeBeam": true
+                }
               },
               {
                 "id": "terminal.bridge-tactical",
@@ -1602,7 +1692,17 @@
                 ],
                 "range": 1.85,
                 "action": "fireBridgeTacticalConsole",
-                "prompt": "Press E to fire Bridge Tactical Console."
+                "prompt": "Press E to fire Bridge Tactical Console.",
+                "visual": {
+                  "color": "#f97316",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.38,
+                  "height": 0.72,
+                  "activeHeight": 1.02,
+                  "baseSize": 0.2,
+                  "terminalPanel": true,
+                  "routeBeam": false
+                }
               },
               {
                 "id": "terminal.bridge-viewscreen",
@@ -1615,7 +1715,17 @@
                 ],
                 "range": 2.45,
                 "action": "trackEnemyShipOnViewscreen",
-                "prompt": "Press E to use Bridge Viewscreen."
+                "prompt": "Press E to use Bridge Viewscreen.",
+                "visual": {
+                  "color": "#22d3ee",
+                  "activeColor": "#fef3c7",
+                  "radiusScale": 0.32,
+                  "height": 0.66,
+                  "activeHeight": 0.96,
+                  "baseSize": 0.2,
+                  "terminalPanel": true,
+                  "routeBeam": false
+                }
               }
             ],
             "interactions": {
@@ -1779,6 +1889,82 @@
                 "emissive": true,
                 "target": "enemyShip",
                 "label": "Enemy ship status panel"
+              },
+              {
+                "id": "prop.console.bay-ops-terminal",
+                "room": "bay.ops",
+                "kind": "terminal-console",
+                "position": [
+                  3.86,
+                  -6.42
+                ],
+                "size": [
+                  0.82,
+                  0.48,
+                  0.72
+                ],
+                "color": "#38bdf8",
+                "emissive": true,
+                "facing": "west",
+                "target": "terminal.bay-ops",
+                "label": "Bay Operations terminal console"
+              },
+              {
+                "id": "prop.console.engineering-power",
+                "room": "engineering.access",
+                "kind": "terminal-console",
+                "position": [
+                  7.35,
+                  -20.75
+                ],
+                "size": [
+                  0.9,
+                  0.5,
+                  0.78
+                ],
+                "color": "#86efac",
+                "emissive": true,
+                "facing": "west",
+                "target": "terminal.engineering-power",
+                "label": "Engineering power console body"
+              },
+              {
+                "id": "prop.console.bridge-viewscreen",
+                "room": "bridge.deck",
+                "kind": "terminal-console",
+                "position": [
+                  0.0,
+                  -37.15
+                ],
+                "size": [
+                  1.25,
+                  0.42,
+                  0.74
+                ],
+                "color": "#ef4444",
+                "emissive": true,
+                "facing": "south",
+                "target": "terminal.bridge-viewscreen",
+                "label": "Bridge viewscreen control console"
+              },
+              {
+                "id": "prop.console.bridge-tactical",
+                "room": "bridge.deck",
+                "kind": "terminal-console",
+                "position": [
+                  2.85,
+                  -36.7
+                ],
+                "size": [
+                  0.95,
+                  0.54,
+                  0.82
+                ],
+                "color": "#f97316",
+                "emissive": true,
+                "facing": "west",
+                "target": "terminal.bridge-tactical",
+                "label": "Bridge tactical console body"
               },
               {
                 "id": "prop.marker.bay-ops-terminal",

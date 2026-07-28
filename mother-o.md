@@ -3,7 +3,7 @@
 Status: operator-facing companion to `mother.md`
 
 Source reviewed: `mother.md` SHA-256
-`59f840c71425efc094e79ba9d318898297aad9ad7d7df1e1563798c293617d7e`
+`7ad760806a866d8ee47b1b57425d891906545316110af5508ef54541f9806694`
 
 ## 1. Purpose and authority
 
@@ -585,6 +585,7 @@ Conceptual commands:
 ```text
 mother upgrade-hub prep <network> \
   --release-descriptor <path-or-content-hash> \
+  --signature-envelope <path-or-content-hash> \
   [--signer-policy <path-or-content-hash>] \
   [--availability continuous|operator-approved-outage]
 
@@ -596,17 +597,19 @@ mother rollback <network> --all --operation-id <operation-id>
 `continuous` is the default. `operator-approved-outage` MUST be explicit during
 `prep`; it cannot be added during `do`.
 
-The signer policy MUST come from already authoritative Mother/network policy or
-from the explicit `--signer-policy` input. The release descriptor payload MUST
-NOT contain or select its own signer policy. `prep` freezes the validated policy
-hash independently from the descriptor-payload hash and detached signature
-envelope hash.
+The detached signature envelope is a separate required input. The signer policy
+MUST come from already authoritative Mother/network policy or from the explicit
+`--signer-policy` input. The release descriptor payload MUST NOT contain or
+select its own signature envelope or signer policy. `prep` freezes the validated
+policy hash independently from the descriptor-payload hash and detached
+signature-envelope hash.
 
 `prep`:
 
 1. proves coherent ordinary D026 authority and an unchanged Hub participant set;
-2. resolves and verifies the signed immutable release descriptor and separately
-   frozen signer policy;
+2. resolves the descriptor payload and detached signature envelope, verifies
+   their exact signed digest set, and freezes the independently resolved signer
+   policy;
 3. observes the exact participant-release map and canonical service
    configuration;
 4. establishes an explicit operator-accepted legacy rollback baseline when no
@@ -619,7 +622,7 @@ envelope hash.
    reverse-order restoration.
 
 `do` opens and replicates the pending action through ordinary D026, stages and
-verifies the exact target and rollback closures, and commits an AUTH-019
+verifies the exact target and rollback closures, and commits an AUTH-020
 artifact-availability progress successor before the first live mutation. For
 each frozen participant it then captures and arms exact prestate,
 drains or gates the service, applies the exact platform digest, reconciles

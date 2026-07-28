@@ -6,10 +6,10 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 59f840c71425efc094e79ba9d318898297aad9ad7d7df1e1563798c293617d7e
+SHA-256: 7ad760806a866d8ee47b1b57425d891906545316110af5508ef54541f9806694
 
 mother-o.md
-SHA-256: 5b7eb9387605f8fdf5ca5c171af24224987e5baf4052bd4f7a4f292c8cf95880
+SHA-256: 0a8521841319cd04a890a118bc00c6c627c8d8d27532ae60d1e40dfb385c9c22
 ```
 
 ## 1. Purpose and authority
@@ -185,7 +185,7 @@ and context.
 | `MOTHER-OF-AUTH-017` | Obtain and accept bootstrap authority for the exact birth entry |
 | `MOTHER-OF-AUTH-018` | Construct the exact certified rollback-progress or rollback-completed successor from verified restored state |
 | `MOTHER-OF-AUTH-019` | Construct the exact pending-action progress successor from a verified promoted phase |
-| `MOTHER-OF-AUTH-020` | Construct an exact preparatory pending-action progress successor from verified immutable evidence bound to the prepared operation contract |
+| `MOTHER-OF-AUTH-020` | Validate and construct the exact retry-idempotent preparatory pending-action progress successor from immutable evidence bound to the active prepared operation, without a rollback frame or final authoritative-delta validation |
 
 ### 3.5 Prestate and rollback
 
@@ -275,7 +275,7 @@ and context.
 | `MOTHER-OF-REL-008` | Drain and deploy the exact prepared platform artifact |
 | `MOTHER-OF-REL-009` | Reconcile an ambiguous deployment outcome from durable request evidence and observed digest |
 | `MOTHER-OF-REL-010` | Verify one participant's exact release and restore its prepared eligibility |
-| `MOTHER-OF-REL-011` | Restore the exact captured artifact, configuration, eligibility, and traffic state |
+| `MOTHER-OF-REL-011` | Drain through the restoration-only path, restore the exact captured artifact, configuration, eligibility, and traffic state, and verify the complete restored frame |
 | `MOTHER-OF-REL-012` | Derive the complete rollout-convergence proof and exact typed Hub release delta from fresh full-set observations and the frozen prepared contract |
 
 ### 3.10 Local adoption, recovery, and reseal
@@ -1391,7 +1391,7 @@ changes.
 |---:|---|---|
 | 1 | `MOTHER-OF-OBS-001` through `MOTHER-OF-OBS-017` | Coherent ordinary authority, complete current Hub participants, release observations, and no conflicting recovery state |
 | 2 | `MOTHER-OF-CTL-001` through `MOTHER-OF-CTL-004` | Explicit target descriptor, availability intent, predecessor head, authority generation, and unchanged participant set frozen |
-| 3 | `MOTHER-OF-REL-001` | Signed immutable target descriptor verified against a separately frozen signer policy |
+| 3 | `MOTHER-OF-REL-001` | Descriptor payload and separately supplied detached signature envelope verified against an independently resolved signer policy |
 | 4 | `MOTHER-OF-REL-002` | Complete current participant-release map and canonical service configuration frozen |
 | 5 | `MOTHER-OF-REL-003` | When release authority is absent, explicit legacy rollback baseline accepted without initializing finalized release authority |
 | 6 | `MOTHER-OF-REL-005` | Mixed-version compatibility and preservation of topology, schemas, configuration, identity, secrets, and membership proven |

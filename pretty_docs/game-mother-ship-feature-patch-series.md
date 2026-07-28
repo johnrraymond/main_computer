@@ -40,6 +40,8 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | I. Content marker extraction | Move repeated Bay Ops, department, bridge access, and viewscreen map markers into `motherShipInterior.props` | Should preserve behavior while removing one-off marker draw calls |
 | J. Prop target validation | Validate that content prop `target` values resolve to known rooms, terminals, doors, interactables, objectives, or supported runtime systems | No gameplay change |
 | K. Interactable hotspot render pass | Render visible E-key affordances from `motherShipInterior.interactables` so prompts match physical hotspots | Should preserve behavior while making interactions clearer |
+| L. Interactable visual metadata | Normalize per-interactable hotspot visual hints so terminal/access/door affordances can be styled from content data | Should preserve behavior while making hotspot presentation data-first |
+| M. Terminal console props | Render visible terminal/console bodies from `motherShipInterior.props` | Should preserve behavior while making console presentation data-first |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -62,6 +64,8 @@ Patch I implementation note: repeated Bay Ops, department, bridge access, and br
 Patch J implementation note: data-defined props with `target` now flow through `requirePropTargets` validation so map markers and status panels cannot point at missing content.
 
 Patch K implementation note: every data-defined E-key target now also flows through `appendMotherShipInteractableHotspots(builder, nowMs)`, giving terminals, doors, and access points a visible in-world hotspot derived from `motherShipInterior.interactables`.
+
+Patch L implementation note: interactable hotspots now use normalized `visual` metadata through `shuttle3dNormalizeMotherShipInteractableVisual()`, so hotspot colors, radius scaling, height, base size, terminal panels, and route beams can be authored in content data.
 
 ## Patch series overview
 
@@ -461,3 +465,5 @@ Acceptance checks:
 Patch G implementation note: renderer bootstrapping now has behavior-preserving seams (`initializeRendererFrameState`, `initializeGameplaySubsystems`, `initializeCombatRuntimeState`, `initializeGeometryBuffers`, and `initializeCanvasLifecycle`) so later patches can move gameplay, geometry, and lifecycle systems out of the monolithic renderer safely.
 
 Patch I implementation note: repeated mother-ship room/terminal map markers now flow through `motherShipInterior.props` using `kind: "map-marker"` and `appendMotherShipInteriorProps(builder, nowMs)`.
+
+Patch M implementation note: terminal console bodies now flow through `motherShipInterior.props` with `kind: "terminal-console"`, while prompts and actions remain in interactables/interactions.

@@ -6547,25 +6547,33 @@ required_capabilities: []
 health_assertion_set_hash: "sha256:..."
 ```
 
-The detached construction is acyclic and mandatory:
+The detached construction is acyclic and mandatory. `prep` receives the
+descriptor payload and detached envelope as separate inputs, including an
+explicit `--signature-envelope <path-or-content-hash>` input at the operator
+surface:
 
 ```text
 canonical descriptor payload bytes without signature-envelope or signer-policy fields
 -> descriptor_payload_hash
--> detached signature envelope signs descriptor_payload_hash and the exact
-   manifest/platform artifact digest set
+-> separately supplied detached signature envelope signs descriptor_payload_hash
+   and the exact manifest/platform artifact digest set
+-> independently resolve authoritative or explicit signer policy
+-> validate the detached envelope against that policy
 -> prepared operation binds descriptor_payload_hash, signature_envelope_hash,
-   and an independently supplied validated_signer_policy_hash
+   and validated_signer_policy_hash
 ```
 
 `source_commit` is provenance information. The signed manifest and platform
 artifact digests are deployment authority. Mutable image tags, branch names, or
 live container labels MUST NOT authorize deployment.
 
-The target payload MUST NOT contain rollback-specific state or choose the trust
-policy used to validate itself. `validated_signer_policy_hash` MUST resolve from
-already authoritative Mother/network policy or from an explicit
+The target payload MUST NOT contain rollback-specific state, a signature-envelope
+reference, or any signer-policy field. `validated_signer_policy_hash` MUST
+resolve from already authoritative Mother/network policy or from an explicit
 `--signer-policy <path-or-content-hash>` operator input frozen during `prep`.
+The detached envelope is supplied independently through
+`--signature-envelope <path-or-content-hash>` and cannot modify the payload it
+authorizes.
 
 The prepared operation separately binds the exact artifact identities and
 availability contract, not a future staging result:
@@ -6589,6 +6597,14 @@ After the pending action is authoritative, `do` stages the exact closures and
 commits a progress successor that replaces the null availability-evidence field
 with the canonical actual `artifact_availability_evidence_root`. No service
 drain or deployment MAY occur before that progress successor is authoritative.
+
+AUTH-020 validates a preparatory pending-action transition, not the final
+authoritative delta. It MUST prove that the active pending action and
+prepared-operation hash match, the evidence satisfies the frozen
+artifact-availability contract, the evidence field changes only from null to
+the exact root or already equals that root on retry, the authoritative delta and
+every unrelated pending-action field remain byte-identical, and no rollback
+frame is required or consulted.
 
 #### Authoritative release state and typed delta
 
@@ -6712,7 +6728,8 @@ introduced or widened during `do`.
 prove coherent ordinary authority and no unresolved recovery condition
 freeze the exact current Hub participant set and service identities
 observe the participant-release map and canonical configuration
-resolve and verify the signed target descriptor
+resolve the descriptor payload and detached signature-envelope inputs
+independently resolve signer policy and validate the exact signed digest set
 establish an explicit legacy baseline when release authority is absent
 prove schema, configuration, identity, secret, topology, and membership preservation
 prove old/new and mixed-version compatibility
@@ -6734,6 +6751,7 @@ Before the first participant is drained, Mother:
 commits pending-action-opened through ordinary D026
 -> replicates the exact head
 -> stages and verifies the exact target and rollback artifact closures
+-> validates the preparatory progress transition against the active prepared operation
 -> commits and replicates an AUTH-020 preparatory artifact-availability progress successor
 ```
 
@@ -6791,12 +6809,17 @@ Before that commit, rollback restores promoted frames in strict reverse rollout
 order:
 
 ```text
-drain participant
+load the verified rollback frame
+drain_for_restore without invoking the forward deployment handler
 restore exact captured artifact and canonical configuration
-verify predecessor/legacy release and FDB compatibility
+verify the predecessor or accepted legacy-baseline release and FDB compatibility
 restore captured eligibility and traffic
+verify the complete restored frame
 commit rollback progress through ordinary D026
 ```
+
+`drain_and_apply_prepared_release` is a forward-only target handler and MUST
+appear only in REL-008. REL-011 MUST use the separate restoration drain path.
 
 Rollback MUST restore exact captured digests; it MUST NOT resolve a mutable tag
 or infer a prior release by name. A legacy-baseline rollback leaves Hub release
@@ -6841,8 +6864,9 @@ Implementations MUST test at least:
 ```text
 immutable descriptor-payload hashing and mutable-tag rejection
 detached signature construction with no descriptor/signature dependency cycle
+required independent signature-envelope input and missing-envelope rejection
 signature and provenance validation against separately frozen signer policy
-target payload containing or choosing its own signer policy rejected
+target payload containing a signature reference or choosing its own signer policy rejected
 platform digest selection and wrong-platform rejection
 legacy baseline homogeneous and explicitly compatible acceptance
 legacy baseline operator acceptance without artifact closure rejected
@@ -6858,6 +6882,8 @@ single-Hub continuous mode rejected when zero availability would occur
 explicit operator-approved outage fencing and restoration
 ambiguous deployment outcome reconciliation
 AUTH-020 artifact-availability progress without any promoted rollback frame
+AUTH-020 null-to-exact-root and same-root retry acceptance plus different-root rejection
+AUTH-020 preservation of the authoritative delta and unrelated pending-action fields
 participant progress successor after each promoted frame through AUTH-019
 REL-012 deterministic byte equality between end-of-do and finalization runs
 request identity persisted before REL-004 artifact staging dispatch
@@ -6865,6 +6891,7 @@ request identity persisted before REL-008 drain/deployment dispatch
 crash before drain, after drain, after dispatch, after verification, after frame
   promotion, after progress-head commit, before finalization, and after finalization
 strict reverse-order rollback to exact captured artifacts
+rollback never invoking the forward drain-and-apply handler
 no D028 or D029 evidence or certificate kind in upgrade-hub
 finalization changes only Hub component-release authority
 post-finalization replication and release completing forward

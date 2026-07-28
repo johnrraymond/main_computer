@@ -53,11 +53,11 @@ var McelAppSurfaceRegistry = (() => {
       label: "Website Builder",
       state: "surface-aware",
       conformanceRequired: true,
-      maturity: "runtime-baseline",
+      maturity: "semantic-runtime",
       surfaceId: "website-builder.surface.preview",
       contractId: "website-builder.contract.default.app-health",
       requiredLayerIds: RUNTIME_LAYER_IDS,
-      notes: "Runtime surface conformance is required now; full static semantic/layout parity remains a later conversion step."
+      notes: "Website project authoring, runtime setup, publish-lane preflight, and Git Tools handoff semantics are proven through the domain adapter and acceptance evidence; static authored-surface parity remains separately reported."
     },
     "code-editor": {
       appId: "code-editor",

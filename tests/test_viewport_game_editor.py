@@ -470,6 +470,15 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("appendMotherShipInteractableHotspots(builder, nowMs)", scene_viewer_script)
         self.assertIn("activeTarget = this.shipInteractionTarget()", scene_viewer_script)
         self.assertIn("kind === \"terminal\"", scene_viewer_script)
+        self.assertIn("Patch L lets content style those hotspots with normalized interactable visual metadata", scene_viewer_script)
+        self.assertIn("shuttle3dNormalizeMotherShipInteractableVisual", scene_viewer_script)
+        self.assertIn("shuttle3dInteractableVisualDefaults", scene_viewer_script)
+        self.assertIn("target.visual", scene_viewer_script)
+        self.assertIn("Patch M renders visible terminal console bodies from data-defined props", scene_viewer_script)
+        self.assertIn('kind === "terminal-console"', scene_viewer_script)
+        self.assertIn("drawTerminalConsole(prop)", scene_viewer_script)
+        self.assertIn("prop.console.bridge-tactical", scene_viewer_script)
+        self.assertIn("game-runtime-patch-M-terminal-console-props", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

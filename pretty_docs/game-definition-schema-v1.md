@@ -152,7 +152,7 @@ Props are non-interactive visual objects or rendered systems.
 
 A prop may have renderer-specific hints, but the core definition should remain stable.
 
-Patch H makes these props active in the mother-ship renderer. Patch I adds data-defined map markers so repeated console and route markers are authored as content instead of hardcoded renderer calls. The first supported procedural prop kinds are:
+Patch H makes these props active in the mother-ship renderer. Patch I adds data-defined map markers so repeated console and route markers are authored as content instead of hardcoded renderer calls. Patch M adds `terminal-console` props so visible terminal and tactical console bodies can be authored as content data while E-key behavior still lives in interactables/interactions. The first supported procedural prop kinds are:
 
 ```text
 floor-marker
@@ -161,6 +161,7 @@ sign
 beacon
 light-strip
 status-panel
+terminal-console
 ```
 
 Validation should confirm each authored prop references an existing room, sits inside that room, remains inside playable movement bounds, and points any optional `target` at known content such as a room, terminal, door, interactable, objective, or allowed runtime system target.
@@ -290,13 +291,23 @@ An interactable is the gameplay target that actually produces a prompt and recei
   "radius": 1.85,
   "label": "Bridge Tactical Console",
   "prompt": "Press E to fire Bridge Tactical Console.",
-  "action": "fireBridgeTacticalConsole"
+  "action": "fireBridgeTacticalConsole",
+  "visual": {
+    "color": "#f97316",
+    "activeColor": "#fef3c7",
+    "radiusScale": 0.38,
+    "height": 0.72,
+    "activeHeight": 1.02,
+    "baseSize": 0.2,
+    "terminalPanel": true,
+    "routeBeam": false
+  }
 }
 ```
 
-Patch D extracts current mother-ship E-key targets into `motherShipInterior.interactables`. Patch E resolves each interactable `action` through `motherShipInterior.interactions` before invoking a safe runtime handler. A later schema migration can map that nested project metadata directly into top-level `interactables` and `interactions`.
+Patch D extracts current mother-ship E-key targets into `motherShipInterior.interactables`. Patch E resolves each interactable `action` through `motherShipInterior.interactions` before invoking a safe runtime handler. Patch K renders those interactables as in-world hotspots. Patch L adds optional `visual` metadata so the authored content can style hotspot color, active color, radius scaling, height, base size, terminal-panel decoration, and access/door route beams. A later schema migration can map that nested project metadata directly into top-level `interactables` and `interactions`.
 
-Validators should confirm that every interactable is inside a reachable room, has a non-empty prompt, and points to a registered action handler.
+Validators should confirm that every interactable is inside a reachable room, has a non-empty prompt, points to a registered action handler, and leaves visual metadata as presentation-only data.
 
 ## Validation profile
 

@@ -439,8 +439,7 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     assert report["summary"]["appCount"] == 21
     assert report["summary"]["declaredLevelCounts"] == {
         "legacy": 16,
-        "runtime-baseline": 1,
-        "semantic-runtime": 4,
+        "semantic-runtime": 5,
     }
     assert report["authorities"] == {
         "requirementsRegistry": True,

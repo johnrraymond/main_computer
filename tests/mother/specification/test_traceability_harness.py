@@ -133,8 +133,11 @@ def test_core013_is_functionality_specific_not_module_class_inferred() -> None:
     docs = MotherDocuments.load()
     declared = faultpoint_bearing_functionalities(docs)
     assert "MOTHER-OF-AUTH-004" in declared
+    assert "MOTHER-OF-AUTH-016" in declared
+    assert "MOTHER-OF-SYNC-007" in declared
     assert "MOTHER-OF-REL-004" in declared
     assert "MOTHER-OF-REL-008" in declared
+    assert "MOTHER-OF-REL-009" in declared
     assert "MOTHER-OF-OBS-001" not in declared
     assert "MOTHER-OF-OBS-013" not in declared
 
@@ -158,4 +161,26 @@ def test_core013_is_functionality_specific_not_module_class_inferred() -> None:
         modules=("MOTHER-OFM-CORE-013",),
     )
     assert validate_contract_trace(boundary_trace, docs) == []
+
+@pytest.mark.parametrize(
+    ("requirement", "operation", "functionality"),
+    (
+        ("MOTHER-REQ-023", "MOTHER-OP-RESEAL-STATE", "MOTHER-OF-AUTH-016"),
+        ("MOTHER-REQ-018", "MOTHER-OP-SYNC-STATE", "MOTHER-OF-SYNC-007"),
+        ("MOTHER-REQ-027", "MOTHER-OP-UPGRADE-HUB", "MOTHER-OF-REL-009"),
+    ),
+)
+def test_documented_reconciliation_transitions_accept_core013(
+    requirement: str,
+    operation: str,
+    functionality: str,
+) -> None:
+    docs = MotherDocuments.load()
+    trace = ContractTrace(
+        requirements=(requirement,),
+        operations=(operation,),
+        functionalities=(functionality,),
+        modules=("MOTHER-OFM-CORE-013",),
+    )
+    assert validate_contract_trace(trace, docs) == []
 

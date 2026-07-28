@@ -53,7 +53,7 @@ def test_current_catalog_references_real_requirements_contracts() -> None:
 
     by_id = {block.block_id: block for block in contracts}
     assert metadata["schema"] == runner.BINDING_SCHEMA
-    assert metadata["bindingCount"] == 14
+    assert metadata["bindingCount"] == 15
     assert set(bindings) <= set(by_id)
     assert all(
         str(by_id[contract_id].status).lower() in runner.ENFORCEABLE_STATUSES
@@ -76,6 +76,10 @@ def test_current_catalog_references_real_requirements_contracts() -> None:
         assert selectors
         assert all("::test_" in selector for selector in selectors)
         assert "tests/test_website_builder_app.py" not in selectors
+    assert "website-builder.acceptance.semantic-runtime" in bindings
+    assert bindings["website-builder.acceptance.semantic-runtime"].selectors == (
+        "tests/test_mcel_website_builder_semantic_adapter.py",
+    )
 
 
 def test_planned_contract_is_visible_but_not_due() -> None:
