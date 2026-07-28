@@ -29,8 +29,10 @@ from typing import Any, Iterable, Mapping, Sequence
 
 try:
     from .mcel_evidence_provenance import build_repository_provenance
+    from .mcel_node_runtime import prepend_node_to_path, resolve_node_executable
 except ImportError:  # Direct script execution from the repository root.
     from mcel_evidence_provenance import build_repository_provenance
+    from mcel_node_runtime import prepend_node_to_path, resolve_node_executable
 
 
 REPORT_SCHEMA = "mcel-acceptance-evidence-report-v1"
@@ -237,6 +239,20 @@ def parse_pytest_summary(output: str) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def build_pytest_environment(
+    *,
+    base_env: Mapping[str, str] | None = None,
+    node_executable: str | os.PathLike[str] | None = None,
+) -> tuple[dict[str, str], str | None]:
+    """Build a pytest environment with Node available when it can be discovered."""
+
+    env = dict(os.environ if base_env is None else base_env)
+    resolved_node = resolve_node_executable(node_executable)
+    if resolved_node:
+        env = prepend_node_to_path(env, resolved_node)
+    return env, resolved_node
+
+
 def run_pytest_binding(
     *,
     binding: Binding,
@@ -254,7 +270,9 @@ def run_pytest_binding(
         "-q",
         *extra_pytest_args,
     ]
+    node_executable = None
     try:
+        pytest_env, node_executable = build_pytest_environment()
         completed = subprocess.run(
             command,
             cwd=repo,
@@ -262,6 +280,7 @@ def run_pytest_binding(
             capture_output=True,
             check=False,
             timeout=max(1.0, float(timeout_seconds)),
+            env=pytest_env,
         )
         return_code = int(completed.returncode)
         stdout = completed.stdout
@@ -303,6 +322,7 @@ def run_pytest_binding(
         "durationMs": duration_ms,
         "returnCode": return_code,
         "command": command,
+        "nodeExecutable": node_executable or "",
         "summary": summary,
         "testCount": collected,
         "stdout": stdout[-12000:],

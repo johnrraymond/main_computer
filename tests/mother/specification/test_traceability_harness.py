@@ -33,7 +33,7 @@ def test_existing_but_unrelated_identifiers_are_rejected() -> None:
         requirements=("MOTHER-REQ-026",),
         operations=("MOTHER-OP-DIAGNOSE",),
         functionalities=("MOTHER-OF-RSL-015",),
-        modules=("MOTHER-OFM-CORE-001",),
+        modules=("MOTHER-OFM-CORE-003",),
     )
     errors = validate_contract_trace(trace, docs)
     assert any("not in any claimed operation pipeline" in error for error in errors)
@@ -105,3 +105,25 @@ def test_contract_open_guard_rejects_any_side_effect() -> None:
     guard.record_lock_acquisition()
     with pytest.raises(AssertionError, match="acquired 1 lock"):
         guard.verify()
+
+
+def test_documented_shared_core_dependencies_are_valid_ancestry() -> None:
+    docs = MotherDocuments.load()
+    observation_trace = ContractTrace(
+        requirements=("MOTHER-REQ-002",),
+        operations=("MOTHER-OP-DIAGNOSE",),
+        functionalities=("MOTHER-OF-OBS-001",),
+        modules=(
+            "MOTHER-OFM-CORE-001",
+            "MOTHER-OFM-CORE-002",
+            "MOTHER-OFM-CORE-005",
+        ),
+    )
+    authority_trace = ContractTrace(
+        requirements=("MOTHER-REQ-005",),
+        operations=("MOTHER-OP-ADD-NODE",),
+        functionalities=("MOTHER-OF-AUTH-004",),
+        modules=("MOTHER-OFM-CORE-013",),
+    )
+    assert validate_contract_trace(observation_trace, docs) == []
+    assert validate_contract_trace(authority_trace, docs) == []

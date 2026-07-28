@@ -5,6 +5,10 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
+from main_computer.mcel_node_runtime import resolve_node_executable
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_APP = PROJECT_ROOT / "main_computer/web/applications"
@@ -12,8 +16,11 @@ SCRIPTS = WEB_APP / "scripts"
 
 
 def run_node_json(script: str) -> dict:
+    node = resolve_node_executable()
+    if not node:
+        pytest.skip("node is unavailable; Git Tools semantic-adapter tests cannot run")
     completed = subprocess.run(
-        ["node", "-e", script],
+        [node, "-e", script],
         cwd=PROJECT_ROOT,
         check=True,
         capture_output=True,

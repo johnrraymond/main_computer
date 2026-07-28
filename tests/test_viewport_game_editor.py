@@ -438,6 +438,13 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("validationReport", scene_viewer_script)
         self.assertIn("this.shipDefinitionValidation", scene_viewer_script)
         self.assertIn("requireOpenDoors", scene_viewer_script)
+        self.assertIn("Patch G: keep renderer bootstrapping in named seams", scene_viewer_script)
+        self.assertIn("initializeRendererFrameState(scene)", scene_viewer_script)
+        self.assertIn("initializeGameplaySubsystems(scene)", scene_viewer_script)
+        self.assertIn("initializeCombatRuntimeState()", scene_viewer_script)
+        self.assertIn("initializeGeometryBuffers()", scene_viewer_script)
+        self.assertIn("initializeCanvasLifecycle(canvas)", scene_viewer_script)
+        self.assertIn("rendererSubsystems", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

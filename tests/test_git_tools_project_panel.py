@@ -4,6 +4,10 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from main_computer.mcel_node_runtime import resolve_node_executable
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "main_computer" / "web"
@@ -132,7 +136,10 @@ vm.runInContext(fs.readFileSync({json.dumps(str(project_panel))}, "utf8"), conte
   process.exit(1);
 }});
 """
-    result = subprocess.run(["node", "-e", node_script], check=True, text=True, capture_output=True)
+    node = resolve_node_executable()
+    if not node:
+        pytest.skip("node is unavailable; Git Tools project panel tests cannot run")
+    result = subprocess.run([node, "-e", node_script], check=True, text=True, capture_output=True)
     return json.loads(result.stdout)
 
 

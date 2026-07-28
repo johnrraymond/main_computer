@@ -3649,6 +3649,27 @@
             premultipliedAlpha: false
           });
           if (!this.gl) throw new Error("WebGL is unavailable for the shuttle vertex renderer.");
+
+          // Patch G: keep renderer bootstrapping in named seams so future patches can
+          // move gameplay, geometry, and lifecycle systems out of this class safely.
+          this.initializeRendererFrameState(scene);
+          this.compile();
+          this.initializeGameplaySubsystems(scene);
+          this.initializeCombatRuntimeState();
+          this.initializeGeometryBuffers();
+          this.initializeCanvasLifecycle(canvas);
+          this.resize();
+          this.draw = this.draw.bind(this);
+          this.animationFrame = requestAnimationFrame(this.draw);
+        }
+
+        initializeRendererFrameState(scene) {
+          this.rendererSubsystems = {
+            frameState: "scene-viewer.shuttle3d.frame-state.v1",
+            gameplay: "scene-viewer.shuttle3d.gameplay-subsystems.v1",
+            geometry: "scene-viewer.shuttle3d.geometry-buffers.v1",
+            lifecycle: "scene-viewer.shuttle3d.canvas-lifecycle.v1"
+          };
           this.disposed = false;
           this.animationFrame = 0;
           this.look = {yaw: 0, pitch: -2};
@@ -3659,7 +3680,9 @@
           this.lastFrameTime = null;
           this.onCameraMoved = null;
           this.maxDpr = 2;
-          this.compile();
+        }
+
+        initializeGameplaySubsystems(scene) {
           this.starfield = shuttle3dStarfieldConfig(scene);
           this.combat = shuttle3dCombatConfig(scene);
           this.flightConfig = shuttle3dFlightConfig(scene);
@@ -3685,6 +3708,9 @@
           this.onPilotChanged = null;
           this.onBayControlStarted = null;
           this.onShipStateChanged = null;
+        }
+
+        initializeCombatRuntimeState() {
           this.playerHealth = this.combat.player.startingHealth;
           this.aliens = [];
           this.transportSequence = 0;
@@ -3696,6 +3722,9 @@
           this.phaserBeam = null;
           this.lastCombatUiAt = -Infinity;
           this.onCombatChanged = null;
+        }
+
+        initializeGeometryBuffers() {
           this.geometry = this.buildGeometry();
           this.worldVertexCount = this.geometry.length / 10;
           this.starGeometry = this.buildStarfieldGeometry();
@@ -3712,6 +3741,9 @@
           this.dynamicBuffer = this.gl.createBuffer();
           this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.dynamicBuffer);
           this.gl.bufferData(this.gl.ARRAY_BUFFER, this.dynamicGeometry, this.gl.DYNAMIC_DRAW);
+        }
+
+        initializeCanvasLifecycle(canvas) {
           this.resizeObserver = typeof ResizeObserver === "function"
             ? new ResizeObserver(() => this.resize())
             : null;
@@ -3720,9 +3752,6 @@
             event.preventDefault();
             this.dispose();
           });
-          this.resize();
-          this.draw = this.draw.bind(this);
-          this.animationFrame = requestAnimationFrame(this.draw);
         }
 
         compile() {

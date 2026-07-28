@@ -448,6 +448,11 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
         "appSurfaceRegistry": True,
         "appTruthGate": True,
     }
+    core_paths = [
+        item["path"] for item in report["sourceInventory"]["coreAuthorities"]
+    ]
+    assert "main_computer/web/applications/scripts/mcel-semantic-adapter-toolkit.js" in core_paths
+
     adapter_paths = [
         item["path"] for item in report["sourceInventory"]["domainAdapters"]
     ]

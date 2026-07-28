@@ -443,3 +443,5 @@ Purpose:
 Acceptance checks:
 - both side rooms have basic modeling and one simple interaction;
 - route-to-bridge completion still works if the player ignores side rooms unless a later objective explicitly requires them.
+
+Patch G implementation note: renderer bootstrapping now has behavior-preserving seams (`initializeRendererFrameState`, `initializeGameplaySubsystems`, `initializeCombatRuntimeState`, `initializeGeometryBuffers`, and `initializeCanvasLifecycle`) so later patches can move gameplay, geometry, and lifecycle systems out of the monolithic renderer safely.

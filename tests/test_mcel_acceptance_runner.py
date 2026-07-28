@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -143,6 +144,25 @@ def test_pytest_binding_passes_only_after_collecting_a_passing_test(tmp_path: Pa
     assert result["passed"] is True
     assert result["testCount"] == 1
     assert result["summary"]["passed"] == 1
+
+
+def test_pytest_environment_prepends_resolved_node(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "node-bin"
+    bin_dir.mkdir()
+    node_name = "node.exe" if os.name == "nt" else "node"
+    fake_node = bin_dir / node_name
+    fake_node.write_text("", encoding="utf-8")
+    if os.name != "nt":
+        fake_node.chmod(0o755)
+
+    env, resolved = runner.build_pytest_environment(
+        base_env={"PATH": ""},
+        node_executable=str(fake_node),
+    )
+
+    assert resolved == str(fake_node.resolve())
+    assert env["MCEL_NODE_EXECUTABLE"] == str(fake_node.resolve())
+    assert env["PATH"].split(os.pathsep)[0] == str(bin_dir.resolve())
 
 
 def test_pytest_binding_does_not_treat_zero_tests_as_pass(tmp_path: Path) -> None:

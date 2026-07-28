@@ -73,6 +73,7 @@ CORE_SCRIPT_NAMES = (
     "mcel-domain-adapter-registry.js",
     "mcel-app-surface-registry.js",
     "mcel-app-truth-gate.js",
+    "mcel-semantic-adapter-toolkit.js",
 )
 
 DECLARED_LEVELS = ("legacy", "runtime-baseline", "semantic-runtime")

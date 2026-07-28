@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+
+from main_computer.mcel_node_runtime import resolve_node_executable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +19,7 @@ SHELL = ROOT / "main_computer" / "web" / "applications.html"
 
 
 def run_node_json(script: str) -> dict:
-    node = shutil.which("node")
+    node = resolve_node_executable()
     if not node:
         pytest.skip("node is unavailable; File Explorer semantic-adapter tests cannot run")
     completed = subprocess.run(
@@ -44,14 +45,16 @@ def adapter_prelude(body: str) -> str:
 def test_file_explorer_adapter_is_loaded_before_truth_consumers_and_ui_uses_it() -> None:
     shell = SHELL.read_text(encoding="utf-8")
     registry_include = "<!-- @include applications/scripts/mcel-domain-adapter-registry.js -->"
+    toolkit_include = "<!-- @include applications/scripts/mcel-semantic-adapter-toolkit.js -->"
     adapter_include = "<!-- @include applications/scripts/file-explorer-semantic-adapter.js -->"
     truth_include = "<!-- @include applications/scripts/mcel-app-truth-gate.js -->"
     planner_include = "<!-- @include applications/scripts/mcel-specimen-planner.js -->"
 
-    for include in (registry_include, adapter_include, truth_include, planner_include):
+    for include in (registry_include, toolkit_include, adapter_include, truth_include, planner_include):
         assert include in shell
 
-    assert shell.index(registry_include) < shell.index(adapter_include)
+    assert shell.index(registry_include) < shell.index(toolkit_include)
+    assert shell.index(toolkit_include) < shell.index(adapter_include)
     assert shell.index(adapter_include) < shell.index(planner_include)
 
     source = FILE_EXPLORER.read_text(encoding="utf-8")

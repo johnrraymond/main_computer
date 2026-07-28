@@ -17,6 +17,13 @@
     const INTENT_COVERAGE_SCHEMA_VERSION = "calculator-intent-coverage-v1";
     const SEMANTIC_RUNTIME_SCOPE = "calculator-compute-and-helper-lanes-v1";
     const MAX_RECEIPTS = 100;
+    const ADAPTER_TOOLKIT = global.McelSemanticAdapterToolkit || (
+      typeof require === "function" ? require("./mcel-semantic-adapter-toolkit.js") : null
+    );
+
+    if (!ADAPTER_TOOLKIT) {
+      throw new Error("McelSemanticAdapterToolkit must be loaded before CalculatorSemanticAdapter.");
+    }
 
     const INTENT_DEFINITIONS = Object.freeze([
       Object.freeze({
@@ -240,28 +247,21 @@
     ]));
 
     function clonePlain(value) {
-      if (value == null || typeof value !== "object") return value;
-      if (Array.isArray(value)) return value.map(clonePlain);
-      return Object.fromEntries(
-        Object.entries(value)
-          .filter(([, entry]) => typeof entry !== "function")
-          .map(([key, entry]) => [key, clonePlain(entry)])
-      );
+      return ADAPTER_TOOLKIT.clonePlain(value);
     }
 
     function nowIso(options = {}) {
-      const value = typeof options.now === "function" ? options.now() : options.now;
-      if (value instanceof Date) return value.toISOString();
-      if (typeof value === "string" && value.trim()) return value;
-      return new Date().toISOString();
+      return ADAPTER_TOOLKIT.nowIso(options);
     }
 
     function safeString(value) {
-      return String(value == null ? "" : value).trim();
+      return ADAPTER_TOOLKIT.safeString(value);
     }
 
     function intentDefinition(intentId) {
-      return INTENT_DEFINITIONS.find((intent) => intent.id === safeString(intentId)) || null;
+      return ADAPTER_TOOLKIT.intentDefinitionFor(INTENT_DEFINITIONS, intentId, {
+        normalizeIntentId: safeString
+      });
     }
 
     function initialState() {
@@ -342,10 +342,11 @@
     }
 
     function listIntents() {
-      return INTENT_DEFINITIONS.map((intent) => ({
-        ...clonePlain(intent),
-        semanticStatus: intent.status
-      }));
+      return ADAPTER_TOOLKIT.listIntentDefinitions(INTENT_DEFINITIONS, {
+        mapDefinition(intent) {
+          return {semanticStatus: intent.status};
+        }
+      });
     }
 
     function listObjects() {
@@ -526,7 +527,16 @@
     }
 
     function getRecoveryCoverage() {
-      const requiredFailureClasses = Object.keys(FAILURE_DEFINITIONS).sort();
+      const audit = ADAPTER_TOOLKIT.recoveryCoverageAudit({
+        failureDefinitions: FAILURE_DEFINITIONS,
+        checks() {
+          return {
+            coverageReady: true,
+            classificationReady: true,
+            guidanceReady: true
+          };
+        }
+      });
       return {
         schema: RECOVERY_COVERAGE_VERSION,
         appId: APP_ID,
@@ -535,9 +545,9 @@
         coverageReady: true,
         classificationReady: true,
         guidanceReady: true,
-        requiredFailureClasses,
-        coveredFailureClasses: [...requiredFailureClasses],
-        unverifiedFailureClasses: [],
+        requiredFailureClasses: audit.requiredFailureClasses,
+        coveredFailureClasses: audit.coveredFailureClasses,
+        unverifiedFailureClasses: audit.unverifiedFailureClasses,
         verification: {
           passed: true,
           classifierMethod: "classifyFailure",
@@ -613,12 +623,11 @@
     }
 
     function storeReceipt(receipt) {
-      receiptLedger.push(receipt);
-      if (receiptLedger.length > MAX_RECEIPTS) {
-        receiptLedger.splice(0, receiptLedger.length - MAX_RECEIPTS);
-      }
+      const storedReceipt = ADAPTER_TOOLKIT.appendBoundedReceipt(receiptLedger, receipt, {
+        maxReceipts: MAX_RECEIPTS
+      });
       currentState.lastReceiptId = receipt.receiptId;
-      return clonePlain(receipt);
+      return storedReceipt;
     }
 
     function updateStateForSuccess(intentId, payload = {}, result = {}, observedAt = "") {
@@ -722,12 +731,16 @@
       };
 
       try {
-        const result = await Promise.resolve(
-          runtimeBindings[definition.runtimeMethod](clonePlain(payload), {
+        const result = await ADAPTER_TOOLKIT.dispatchAction(
+          runtimeBindings,
+          intentId,
+          clonePlain(payload),
+          {
+            methodName: definition.runtimeMethod,
             intentId,
             lane: definition.lane,
             adapterId: ADAPTER_ID
-          })
+          }
         );
 
         if (result && typeof result === "object" && result.ok === false) {
@@ -804,7 +817,7 @@
     }
 
     function listReceipts() {
-      return clonePlain(receiptLedger);
+      return ADAPTER_TOOLKIT.listBoundedReceipts(receiptLedger);
     }
 
     function mapEvidence(state = getState()) {
@@ -892,6 +905,7 @@
       RECOVERY_COVERAGE_VERSION,
       INTENT_COVERAGE_SCHEMA_VERSION,
       SEMANTIC_RUNTIME_SCOPE,
+      TOOLKIT_VERSION: ADAPTER_TOOLKIT.VERSION,
       INTENT_DEFINITIONS,
       FAILURE_DEFINITIONS,
       registrationReadiness: clonePlain(registrationReadiness)

@@ -17,6 +17,13 @@
     const INTENT_COVERAGE_SCHEMA_VERSION = "file-explorer-intent-coverage-v1";
     const SEMANTIC_RUNTIME_SCOPE = "bounded-read-only-file-explorer-v1";
     const MAX_RECEIPTS = 100;
+    const ADAPTER_TOOLKIT = global.McelSemanticAdapterToolkit || (
+      typeof require === "function" ? require("./mcel-semantic-adapter-toolkit.js") : null
+    );
+
+    if (!ADAPTER_TOOLKIT) {
+      throw new Error("McelSemanticAdapterToolkit must be loaded before FileExplorerSemanticAdapter.");
+    }
 
     const ENDPOINTS = Object.freeze({
       inspectRoots: "/api/applications/file-explorer/roots",
@@ -208,21 +215,15 @@
     });
 
     function clonePlain(value) {
-      if (value == null || typeof value !== "object") return value;
-      if (Array.isArray(value)) return value.map(clonePlain);
-      return Object.fromEntries(
-        Object.entries(value)
-          .filter(([, entry]) => typeof entry !== "function")
-          .map(([key, entry]) => [key, clonePlain(entry)])
-      );
+      return ADAPTER_TOOLKIT.clonePlain(value);
     }
 
     function nowIso(options = {}) {
-      return String(options.now || new Date().toISOString());
+      return ADAPTER_TOOLKIT.nowIso(options, {literalOptionsNow: true});
     }
 
     function safeString(value) {
-      return value == null ? "" : String(value);
+      return ADAPTER_TOOLKIT.safeString(value, {trim: false});
     }
 
     function normalizeIntentId(intentOrId) {
@@ -340,10 +341,11 @@
     }
 
     function definitionFor(intentOrId) {
-      const intentId = normalizeIntentId(intentOrId);
-      return CURRENT_INTENT_DEFINITIONS.find((entry) => entry.id === intentId) ||
-        PLANNED_INTENT_DEFINITIONS.find((entry) => entry.id === intentId) ||
-        null;
+      return ADAPTER_TOOLKIT.intentDefinitionFor(
+        [...CURRENT_INTENT_DEFINITIONS, ...PLANNED_INTENT_DEFINITIONS],
+        intentOrId,
+        {normalizeIntentId}
+      );
     }
 
     function rootKnown(rootId, state = currentState) {
@@ -479,25 +481,24 @@
 
     function listIntents(state = getState()) {
       const safeState = state && typeof state === "object" ? state : getState();
-      return [...CURRENT_INTENT_DEFINITIONS, ...PLANNED_INTENT_DEFINITIONS].map((definition) => {
-        const semanticStatus = definition.status === "planned"
-          ? "preflight-only"
-          : definition.status;
-        const parameters = {};
-        if (["listDirectory", "navigateUp", "searchCurrentFolder", "previewEntry"].includes(definition.id)) {
-          parameters.rootId = safeState.selectedRootId;
-          parameters.relativePath = safeState.relativePath;
+      return ADAPTER_TOOLKIT.listIntentDefinitions(CURRENT_INTENT_DEFINITIONS, {
+        plannedDefinitions: PLANNED_INTENT_DEFINITIONS,
+        mapDefinition(definition) {
+          const parameters = {};
+          if (["listDirectory", "navigateUp", "searchCurrentFolder", "previewEntry"].includes(definition.id)) {
+            parameters.rootId = safeState.selectedRootId;
+            parameters.relativePath = safeState.relativePath;
+          }
+          const preflight = preflightIntent(definition.id, safeState, {parameters});
+          return {
+            semanticStatus: ADAPTER_TOOLKIT.semanticStatusFor(definition),
+            executable: definition.status === "executable",
+            prohibited: definition.status === "prohibited",
+            planned: definition.status === "planned",
+            available: definition.id === "inspectRoots" || preflight.allowed,
+            blockedReason: preflight.blockers.map((item) => item.message).join(" ")
+          };
         }
-        const preflight = preflightIntent(definition.id, safeState, {parameters});
-        return {
-          ...clonePlain(definition),
-          semanticStatus,
-          executable: definition.status === "executable",
-          prohibited: definition.status === "prohibited",
-          planned: definition.status === "planned",
-          available: definition.id === "inspectRoots" || preflight.allowed,
-          blockedReason: preflight.blockers.map((item) => item.message).join(" ")
-        };
       });
     }
 
@@ -564,15 +565,14 @@
     }
 
     function storeReceipt(receipt) {
-      receiptLedger.push(clonePlain(receipt));
-      if (receiptLedger.length > MAX_RECEIPTS) {
-        receiptLedger = receiptLedger.slice(-MAX_RECEIPTS);
-      }
+      const storedReceipt = ADAPTER_TOOLKIT.appendBoundedReceipt(receiptLedger, clonePlain(receipt), {
+        maxReceipts: MAX_RECEIPTS
+      });
       currentState = {
         ...currentState,
         lastReceiptId: receipt.receiptId || currentState.lastReceiptId
       };
-      return clonePlain(receipt);
+      return storedReceipt;
     }
 
     function buildReceipt(intentOrId, preflight = {}, result = {}, options = {}) {
@@ -703,42 +703,40 @@
     }
 
     function getRecoveryCoverage() {
-      const requiredFailureClasses = Object.keys(FAILURE_DEFINITIONS).sort();
-      const coveredFailureClasses = requiredFailureClasses.filter(
-        (failureClass) => recoveryOptionsFor(failureClass).length > 0
-      );
-      const unverifiedFailureClasses = requiredFailureClasses.filter(
-        (failureClass) => !coveredFailureClasses.includes(failureClass)
-      );
-      const checks = {
-        definitionsComplete: requiredFailureClasses.every((failureClass) => {
-          const definition = FAILURE_DEFINITIONS[failureClass];
-          return Boolean(
-            definition &&
-            safeString(definition.severity) &&
-            typeof definition.retrySafe === "boolean" &&
-            typeof definition.refreshRequired === "boolean" &&
-            safeString(definition.message) &&
-            safeString(definition.nextStep)
-          );
-        }),
-        guidanceComplete: unverifiedFailureClasses.length === 0,
-        prohibitedMutationFallbackDeclared: true
-      };
-      const passed = Object.values(checks).every(Boolean);
+      const audit = ADAPTER_TOOLKIT.recoveryCoverageAudit({
+        failureDefinitions: FAILURE_DEFINITIONS,
+        isCovered: (failureClass) => recoveryOptionsFor(failureClass).length > 0,
+        checks({requiredFailureClasses, unverifiedFailureClasses}) {
+          return {
+            definitionsComplete: requiredFailureClasses.every((failureClass) => {
+              const definition = FAILURE_DEFINITIONS[failureClass];
+              return Boolean(
+                definition &&
+                safeString(definition.severity) &&
+                typeof definition.retrySafe === "boolean" &&
+                typeof definition.refreshRequired === "boolean" &&
+                safeString(definition.message) &&
+                safeString(definition.nextStep)
+              );
+            }),
+            guidanceComplete: unverifiedFailureClasses.length === 0,
+            prohibitedMutationFallbackDeclared: true
+          };
+        }
+      });
       return {
         version: RECOVERY_COVERAGE_VERSION,
         source: "file-explorer-recovery-coverage-audit-v1",
         verificationMode: "derived-runtime-audit",
-        classificationReady: checks.definitionsComplete,
-        guidanceReady: checks.guidanceComplete,
-        coverageReady: passed,
-        requiredFailureClasses,
-        coveredFailureClasses,
-        unverifiedFailureClasses,
+        classificationReady: audit.checks.definitionsComplete,
+        guidanceReady: audit.checks.guidanceComplete,
+        coverageReady: audit.passed,
+        requiredFailureClasses: audit.requiredFailureClasses,
+        coveredFailureClasses: audit.coveredFailureClasses,
+        unverifiedFailureClasses: audit.unverifiedFailureClasses,
         verification: {
-          passed,
-          checks
+          passed: audit.passed,
+          checks: audit.checks
         }
       };
     }
@@ -1019,7 +1017,7 @@
     }
 
     function listReceipts() {
-      return clonePlain(receiptLedger);
+      return ADAPTER_TOOLKIT.listBoundedReceipts(receiptLedger);
     }
 
     function mapEvidence(state = getState()) {
@@ -1106,6 +1104,7 @@
       RECOVERY_COVERAGE_VERSION,
       INTENT_COVERAGE_SCHEMA_VERSION,
       SEMANTIC_RUNTIME_SCOPE,
+      TOOLKIT_VERSION: ADAPTER_TOOLKIT.VERSION,
       ENDPOINTS,
       CURRENT_INTENT_DEFINITIONS,
       PLANNED_INTENT_DEFINITIONS,
