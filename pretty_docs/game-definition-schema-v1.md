@@ -152,6 +152,18 @@ Props are non-interactive visual objects or rendered systems.
 
 A prop may have renderer-specific hints, but the core definition should remain stable.
 
+Patch H makes these props active in the mother-ship renderer. The first supported procedural prop kinds are:
+
+```text
+floor-marker
+sign
+beacon
+light-strip
+status-panel
+```
+
+Validation should confirm each authored prop references an existing room, sits inside that room, and remains inside playable movement bounds.
+
 ## Terminals
 
 Terminals are interactable props. Their behavior is named by interaction id.

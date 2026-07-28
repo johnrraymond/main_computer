@@ -159,6 +159,10 @@
         "requireOpenDoors": {
           "type": "boolean",
           "default": true
+        },
+        "requireRenderableProps": {
+          "type": "boolean",
+          "default": true
         }
       },
       "default": {}

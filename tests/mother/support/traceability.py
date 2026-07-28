@@ -211,11 +211,14 @@ def module_ids(docs: MotherDocuments) -> list[str]:
 
 
 def _operation_blocks(docs: MotherDocuments) -> list[tuple[str, str, str]]:
-    heading = re.compile(r"^## (?P<number>\d+)\. Operation:", re.MULTILINE)
-    matches = list(heading.finditer(docs.functionalities))
+    operation_heading = re.compile(
+        r"^## (?P<number>\d+)\. Operation:", re.MULTILINE
+    )
+    top_level_heading = re.compile(r"^## \d+\.", re.MULTILINE)
     blocks: list[tuple[str, str, str]] = []
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(docs.functionalities)
+    for match in operation_heading.finditer(docs.functionalities):
+        next_heading = top_level_heading.search(docs.functionalities, match.end())
+        end = next_heading.start() if next_heading else len(docs.functionalities)
         block = docs.functionalities[match.start() : end]
         op = OP_RE.search(block)
         if op:
@@ -337,62 +340,11 @@ def functionality_module_rows(docs: MotherDocuments) -> dict[str, tuple[str, ...
     return rows
 
 
-def functionality_module_ancestry(
-    docs: MotherDocuments,
-) -> dict[str, tuple[str, ...]]:
-    """Return explicit chains plus shared dependencies declared by the module spec."""
-
-    explicit = functionality_module_rows(docs)
-    records = module_records(docs)
-    persistent_families = {"STATE", "CTL", "AUTH", "RB", "MEM", "REC", "MAINT", "XPORT"}
-    durable_boundary_modules = {
-        "MOTHER-OFM-CORE-011",
-        "MOTHER-OFM-CORE-012",
-    }
-
-    result: dict[str, tuple[str, ...]] = {}
-    for functionality, chain in explicit.items():
-        dependencies: list[str] = [
-            "MOTHER-OFM-CORE-001",
-            "MOTHER-OFM-CORE-002",
-        ]
-
-        uses_persistent_path = any(
-            module in durable_boundary_modules
-            or module.split("-")[2] in persistent_families
-            for module in chain
-        )
-        if uses_persistent_path:
-            dependencies.append("MOTHER-OFM-CORE-005")
-
-        uses_faultpoint_boundary = any(
-            module in durable_boundary_modules
-            or any(
-                token in records.get(module, ModuleRecord(module, "", "")).contract.lower()
-                for token in (
-                    "durable",
-                    "dispatch",
-                    "live mutation",
-                    "protocol transition",
-                    "pointer",
-                )
-            )
-            for module in chain
-        )
-        if uses_faultpoint_boundary:
-            dependencies.append("MOTHER-OFM-CORE-013")
-
-        ordered = tuple(dict.fromkeys((*dependencies, *chain)))
-        result[functionality] = ordered
-
-    return result
-
-
 def requirement_coverage(docs: MotherDocuments) -> dict[str, RequirementCoverage]:
     function_section = section(
         docs.functionalities,
-        "## 24. Requirement-to-functionality coverage",
-        "## 25.",
+        "## 25. Requirement-to-functionality coverage",
+        "## 26.",
     )
     module_section = section(
         docs.modules,
@@ -678,7 +630,7 @@ def validate_contract_trace(
                 f"functionalities are out of order for {operation}: {claimed}"
             )
 
-    function_modules = functionality_module_ancestry(docs)
+    function_modules = functionality_module_rows(docs)
     entry_modules = operation_entry_modules(docs)
     claimed_entries = {
         entry_modules[operation]

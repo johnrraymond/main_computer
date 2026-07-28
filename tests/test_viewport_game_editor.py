@@ -445,6 +445,12 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("initializeGeometryBuffers()", scene_viewer_script)
         self.assertIn("initializeCanvasLifecycle(canvas)", scene_viewer_script)
         self.assertIn("rendererSubsystems", scene_viewer_script)
+        self.assertIn("Patch H makes ship visual content data-first", scene_viewer_script)
+        self.assertIn("shuttle3dNormalizeMotherShipProps", scene_viewer_script)
+        self.assertIn("appendMotherShipInteriorProps(builder, nowMs)", scene_viewer_script)
+        self.assertIn("requireRenderableProps", scene_viewer_script)
+        self.assertIn("prop.bridge-tactical-marker", scene_viewer_script)
+        self.assertIn("prop.bridge-viewscreen-status", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

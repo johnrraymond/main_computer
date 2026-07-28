@@ -2783,6 +2783,85 @@
             {id: "exit.corridor-bridge", from: "corridor.main", to: "bridge.access", door: "door.bridge", bounds: {minX: -1.6, maxX: 1.6, minZ: -25.9, maxZ: -25.35}},
             {id: "exit.bridge-deck", from: "bridge.access", to: "bridge.deck", bounds: {minX: -2.9, maxX: 2.9, minZ: -32.25, maxZ: -31.25}}
           ],
+          // Patch H makes ship visual content data-first. These props are
+          // rendered by appendMotherShipInteriorProps() instead of being
+          // another one-off hardcoded room expansion.
+          props: [
+            {
+              id: "prop.route.bridge-marker",
+              room: "corridor.trunk",
+              kind: "floor-marker",
+              position: [0.0, -23.35],
+              size: [1.35, 0.5],
+              color: "#38bdf8",
+              emissive: true,
+              label: "Bridge route marker"
+            },
+            {
+              id: "prop.sign.bridge",
+              room: "corridor.main",
+              kind: "sign",
+              position: [0.0, -16.85],
+              size: [2.1, 0.62],
+              color: "#38bdf8",
+              emissive: true,
+              facing: "south",
+              label: "Bridge"
+            },
+            {
+              id: "prop.sign.medbay",
+              room: "corridor.main",
+              kind: "sign",
+              position: [-4.42, -17.55],
+              size: [1.65, 0.54],
+              color: "#fca5a5",
+              emissive: true,
+              facing: "east",
+              label: "Medbay"
+            },
+            {
+              id: "prop.sign.engineering",
+              room: "corridor.main",
+              kind: "sign",
+              position: [4.42, -17.55],
+              size: [1.65, 0.54],
+              color: "#fbbf24",
+              emissive: true,
+              facing: "west",
+              label: "Engineering"
+            },
+            {
+              id: "prop.bridge-access-beacon",
+              room: "bridge.access",
+              kind: "beacon",
+              position: [0.0, -29.15],
+              size: [0.42, 1.55],
+              color: "#86efac",
+              emissive: true,
+              label: "Bridge access beacon"
+            },
+            {
+              id: "prop.bridge-tactical-marker",
+              room: "bridge.deck",
+              kind: "floor-marker",
+              position: [2.85, -36.7],
+              size: [1.05, 0.52],
+              color: "#f97316",
+              emissive: true,
+              label: "Tactical console marker"
+            },
+            {
+              id: "prop.bridge-viewscreen-status",
+              room: "bridge.deck",
+              kind: "status-panel",
+              position: [-3.68, -36.62],
+              size: [0.92, 0.56],
+              color: "#38bdf8",
+              emissive: true,
+              target: "enemyShip",
+              label: "Enemy ship status panel"
+            }
+          ],
           // Patch D makes E-key targets data-driven so prompts, ranges, and actions stay together.
           interactables: [
             {
@@ -3001,6 +3080,48 @@
         }), fallback);
       }
 
+      function shuttle3dNormalizeMotherShipProps(value, fallbackProps, rooms) {
+        const fallbackById = new Map((Array.isArray(fallbackProps) ? fallbackProps : [])
+          .map((prop) => [String(prop?.id || ""), prop]));
+        const roomById = new Map((Array.isArray(rooms) ? rooms : [])
+          .map((room) => [String(room?.id || ""), room]));
+        const source = Array.isArray(value) && value.length ? value : (Array.isArray(fallbackProps) ? fallbackProps : []);
+        return source
+          .map((prop, index) => {
+            const raw = shuttle3dObjectValue(prop);
+            const fallback = shuttle3dObjectValue(fallbackById.get(String(raw.id || "")) || (Array.isArray(fallbackProps) ? fallbackProps[index] : null));
+            const id = String(raw.id || fallback.id || "").trim();
+            if (!id) return null;
+            const room = String(raw.room || raw.location || fallback.room || fallback.location || "").trim();
+            const roomInfo = roomById.get(room);
+            const positionSource = Array.isArray(raw.position) ? raw.position : fallback.position;
+            const x = shuttle3dNumberValue(positionSource?.[0], NaN);
+            const z = shuttle3dNumberValue(positionSource?.[1], NaN);
+            if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+            const sizeSource = Array.isArray(raw.size) ? raw.size : fallback.size;
+            const size = [
+              Math.max(0.05, Math.abs(shuttle3dNumberValue(sizeSource?.[0], 0.7))),
+              Math.max(0.05, Math.abs(shuttle3dNumberValue(sizeSource?.[1], 0.35))),
+              Math.max(0.05, Math.abs(shuttle3dNumberValue(sizeSource?.[2], 0.5)))
+            ];
+            return {
+              id,
+              room,
+              location: String(raw.location || fallback.location || roomInfo?.location || room || "").trim(),
+              kind: String(raw.kind || fallback.kind || "floor-marker").trim(),
+              position: [x, z],
+              size,
+              color: String(raw.color || fallback.color || "#38bdf8"),
+              emissive: raw.emissive === true || fallback.emissive === true,
+              facing: String(raw.facing || fallback.facing || "north"),
+              axis: String(raw.axis || fallback.axis || "x"),
+              target: String(raw.target || fallback.target || ""),
+              label: String(raw.label || fallback.label || id)
+            };
+          })
+          .filter(Boolean);
+      }
+
       function shuttle3dNormalizeMotherShipMovement(value, fallbackMovement, rooms) {
         const supplied = shuttle3dObjectValue(value);
         const fallback = shuttle3dObjectValue(fallbackMovement);
@@ -3158,6 +3279,7 @@
           requireInteractionHandlers: supplied.requireInteractionHandlers !== false,
           requireObjectiveTargets: supplied.requireObjectiveTargets !== false,
           requireSpawnInsideRoom: supplied.requireSpawnInsideRoom !== false,
+          requireRenderableProps: supplied.requireRenderableProps !== false,
           requireOpenDoors: supplied.requireOpenDoors !== false
         };
       }
@@ -3296,6 +3418,19 @@
           if (id.startsWith("door.") && !doors[id]) warnings.push(`${id} has no matching door state entry`);
         });
 
+        (Array.isArray(config?.props) ? config.props : []).forEach((prop) => {
+          const id = String(prop?.id || "prop");
+          const roomId = String(prop?.room || prop?.location || "");
+          const room = config?.roomMap?.[roomId] || shuttle3dRoomForLocation(config, roomId);
+          const position = Array.isArray(prop?.position) ? prop.position : [];
+          const x = Number(position[0]);
+          const z = Number(position[1]);
+          if (rules.requireRenderableProps && !room) errors.push(`${id} points at missing room ${roomId}`);
+          else if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`${id} is outside its room bounds`);
+          if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`${id} is outside playable movement bounds`);
+          if (rules.requireRenderableProps && !String(prop?.kind || "").trim()) errors.push(`${id} is missing a render kind`);
+        });
+
         Object.entries(config?.spawns || {}).forEach(([spawnId, spawn]) => {
           const room = shuttle3dRoomForLocation(config, spawn?.room || spawn?.location);
           const [x, z] = shuttle3dPositionFromSpawn(spawn);
@@ -3328,6 +3463,7 @@
         const exits = shuttle3dNormalizeMotherShipExits(interior.exits, levelDefaults.exits);
         const movement = shuttle3dNormalizeMotherShipMovement(interior.movement, levelDefaults.movement, rooms);
         const spawns = shuttle3dNormalizeMotherShipSpawns(interior.spawns, levelDefaults.spawns, locations);
+        const props = shuttle3dNormalizeMotherShipProps(interior.props, levelDefaults.props, rooms);
         const doors = shuttle3dNormalizeMotherShipDoors({
           ...defaults.doors,
           ...shuttle3dObjectValue(interior.doors),
@@ -3392,6 +3528,7 @@
           exits: shuttle3dCloneJson(exits),
           movement: shuttle3dCloneJson(movement),
           spawns: shuttle3dCloneJson(spawns),
+          props: shuttle3dCloneJson(props),
           interactables: shuttle3dCloneJson(interactables),
           interactions: shuttle3dCloneJson(interactions),
           doors: shuttle3dCloneJson(stateDefaults.doors),
@@ -5116,6 +5253,78 @@
           builder.beam([-3.7, 2.3, -38.9], [3.7, 2.3, -38.9], 0.018, light);
           this.appendBridgeViewscreenEnemy(builder, nowMs);
           mapMarker(0, -37.15, red);
+          this.appendMotherShipInteriorProps(builder, nowMs);
+        }
+
+        appendMotherShipInteriorProps(builder, nowMs = 0) {
+          // Patch H: render data-defined ship content from motherShipInterior.props.
+          // This is the first content-first render pass for future room expansion.
+          const props = Array.isArray(this.interiorConfig?.props) ? this.interiorConfig.props : [];
+          if (!props.length) return;
+          const pulse = 0.48 + 0.52 * Math.sin((nowMs || 0) / 360);
+          const materialFor = (prop, fallback = "#38bdf8", forceGlow = false) => builder.color(
+            prop.color || fallback,
+            forceGlow || prop.emissive === true
+          );
+          const drawFloorMarker = (prop) => {
+            const [x, z] = prop.position;
+            const [width, depth] = prop.size;
+            const color = materialFor(prop, "#38bdf8", prop.emissive);
+            builder.box([x - width / 2, -1.052, z - depth / 2], [x + width / 2, -0.935, z + depth / 2], color);
+            if (prop.emissive) builder.beam([x - width / 2, -0.76, z], [x + width / 2, -0.76, z], 0.014 + pulse * 0.008, color);
+          };
+          const drawSign = (prop) => {
+            const [x, z] = prop.position;
+            const [width, height] = prop.size;
+            const color = materialFor(prop, "#38bdf8", true);
+            const facing = String(prop.facing || "north").toLowerCase();
+            const y0 = 1.14;
+            const y1 = y0 + height;
+            if (facing === "east" || facing === "west") {
+              const x0 = x + (facing === "east" ? -0.035 : 0.035);
+              builder.box([x0 - 0.035, y0, z - width / 2], [x0 + 0.035, y1, z + width / 2], color);
+              builder.beam([x0, y1 + 0.08, z - width / 2], [x0, y1 + 0.08, z + width / 2], 0.012 + pulse * 0.006, color);
+            } else {
+              const z0 = z + (facing === "south" ? -0.035 : 0.035);
+              builder.box([x - width / 2, y0, z0 - 0.035], [x + width / 2, y1, z0 + 0.035], color);
+              builder.beam([x - width / 2, y1 + 0.08, z0], [x + width / 2, y1 + 0.08, z0], 0.012 + pulse * 0.006, color);
+            }
+          };
+          const drawBeacon = (prop) => {
+            const [x, z] = prop.position;
+            const [width, height] = prop.size;
+            const color = materialFor(prop, "#86efac", true);
+            builder.box([x - width / 2, -1.045, z - width / 2], [x + width / 2, -0.9, z + width / 2], color);
+            builder.beam([x, -0.82, z], [x, -0.82 + height, z], 0.02 + pulse * 0.014, color);
+          };
+          const drawLightStrip = (prop) => {
+            const [x, z] = prop.position;
+            const [length] = prop.size;
+            const color = materialFor(prop, "#38bdf8", true);
+            const y = 2.44;
+            if (String(prop.axis || "x").toLowerCase() === "z") {
+              builder.beam([x, y, z - length / 2], [x, y, z + length / 2], 0.018 + pulse * 0.004, color);
+            } else {
+              builder.beam([x - length / 2, y, z], [x + length / 2, y, z], 0.018 + pulse * 0.004, color);
+            }
+          };
+          const drawStatusPanel = (prop) => {
+            const [x, z] = prop.position;
+            const [width, height] = prop.size;
+            const hull = this.enemyShipHullPercent();
+            const disabled = this.enemyShipDisabled();
+            const color = builder.color(disabled ? "#86efac" : hull < 45 ? "#f97316" : (prop.color || "#38bdf8"), true);
+            builder.box([x - width / 2, 0.28, z - 0.04], [x + width / 2, 0.28 + height, z + 0.04], color);
+            builder.beam([x - width / 2, 0.28 + height + 0.1, z], [x + width / 2, 0.28 + height + 0.1, z], 0.014 + pulse * 0.006, color);
+          };
+          props.forEach((prop) => {
+            const kind = String(prop.kind || "").toLowerCase();
+            if (kind === "sign") drawSign(prop);
+            else if (kind === "beacon") drawBeacon(prop);
+            else if (kind === "light-strip") drawLightStrip(prop);
+            else if (kind === "status-panel") drawStatusPanel(prop);
+            else drawFloorMarker(prop);
+          });
         }
 
         appendPilotStationHighlights(builder, nowMs) {

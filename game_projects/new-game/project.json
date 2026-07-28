@@ -1661,7 +1661,125 @@
               "requireObjectiveTargets": true,
               "requireSpawnInsideRoom": true,
               "requireOpenDoors": true
-            }
+            },
+            "props": [
+              {
+                "id": "prop.route.bridge-marker",
+                "room": "corridor.trunk",
+                "kind": "floor-marker",
+                "position": [
+                  0.0,
+                  -23.35
+                ],
+                "size": [
+                  1.35,
+                  0.5
+                ],
+                "color": "#38bdf8",
+                "emissive": true,
+                "label": "Bridge route marker"
+              },
+              {
+                "id": "prop.sign.bridge",
+                "room": "corridor.main",
+                "kind": "sign",
+                "position": [
+                  0.0,
+                  -16.85
+                ],
+                "size": [
+                  2.1,
+                  0.62
+                ],
+                "color": "#38bdf8",
+                "emissive": true,
+                "facing": "south",
+                "label": "Bridge"
+              },
+              {
+                "id": "prop.sign.medbay",
+                "room": "corridor.main",
+                "kind": "sign",
+                "position": [
+                  -4.42,
+                  -17.55
+                ],
+                "size": [
+                  1.65,
+                  0.54
+                ],
+                "color": "#fca5a5",
+                "emissive": true,
+                "facing": "east",
+                "label": "Medbay"
+              },
+              {
+                "id": "prop.sign.engineering",
+                "room": "corridor.main",
+                "kind": "sign",
+                "position": [
+                  4.42,
+                  -17.55
+                ],
+                "size": [
+                  1.65,
+                  0.54
+                ],
+                "color": "#fbbf24",
+                "emissive": true,
+                "facing": "west",
+                "label": "Engineering"
+              },
+              {
+                "id": "prop.bridge-access-beacon",
+                "room": "bridge.access",
+                "kind": "beacon",
+                "position": [
+                  0.0,
+                  -29.15
+                ],
+                "size": [
+                  0.42,
+                  1.55
+                ],
+                "color": "#86efac",
+                "emissive": true,
+                "label": "Bridge access beacon"
+              },
+              {
+                "id": "prop.bridge-tactical-marker",
+                "room": "bridge.deck",
+                "kind": "floor-marker",
+                "position": [
+                  2.85,
+                  -36.7
+                ],
+                "size": [
+                  1.05,
+                  0.52
+                ],
+                "color": "#f97316",
+                "emissive": true,
+                "label": "Tactical console marker"
+              },
+              {
+                "id": "prop.bridge-viewscreen-status",
+                "room": "bridge.deck",
+                "kind": "status-panel",
+                "position": [
+                  -3.68,
+                  -36.62
+                ],
+                "size": [
+                  0.92,
+                  0.56
+                ],
+                "color": "#38bdf8",
+                "emissive": true,
+                "target": "enemyShip",
+                "label": "Enemy ship status panel"
+              }
+            ]
           }
         },
         "combatEnabled": true,

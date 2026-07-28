@@ -20,6 +20,7 @@ This is the entry point for the design documents that guide expansion of the cur
 | `game_projects/schema/game-definition.v1.schema.json` | Machine-readable JSON Schema for future game definition data |
 | `pretty_docs/game-runtime-patch-F-definition-validators.md` | Patch F implementation note for validating room reachability, interactables, objectives, handlers, and no-locked-door consistency |
 | `pretty_docs/game-runtime-patch-G-renderer-decomposition.md` | Patch G implementation note for behavior-preserving renderer constructor seams and future subsystem extraction |
+| `pretty_docs/game-runtime-patch-H-content-props.md` | Patch H implementation note for data-defined mother-ship content props and prop reachability validation |
 | `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 | `pretty_docs/game-runtime-patch-C-rooms-and-movement.md` | Patch C implementation note for extracting mother-ship rooms, movement bounds, exits, and spawns into level data |
 | `pretty_docs/game-runtime-patch-D-interactables.md` | Patch D implementation note for extracting mother-ship terminals, prompts, ranges, and E-key action ids into interactable data |

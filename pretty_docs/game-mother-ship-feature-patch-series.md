@@ -36,6 +36,7 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | E. Interaction registry | Route E-key handling through named safe handlers | Should preserve behavior with cleaner dispatch |
 | F. Definition validators | Add tests for reachability, prompt handlers, objective targets, and spawn placement | No gameplay change |
 | G. Renderer decomposition | Split drawing primitives from gameplay state and interaction logic | Should preserve behavior |
+| H. Content props render pass | Render non-interactive ship signage, route markers, beacons, and status panels from `motherShipInterior.props` | Should preserve behavior while making visual content data-first |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -48,6 +49,10 @@ Patch D implementation note: terminals, prompts, ranges, and action ids now flow
 Patch E implementation note: action ids now flow through `motherShipInterior.interactions`, `shuttle3dNormalizeMotherShipInteractions()`, and `createShipInteractionRegistry()` before invoking safe runtime handlers.
 
 Patch F implementation note: mother-ship definitions now produce `validationRules`, `validationReport`, and `this.shipDefinitionValidation` through `shuttle3dValidateMotherShipInteriorConfig()`, checking reachability, prompts, handlers, objective targets, spawn placement, and the no-locked-door rule.
+
+Patch G implementation note: renderer bootstrapping now has named initialization seams through `initializeRendererFrameState()`, `initializeGameplaySubsystems()`, `initializeCombatRuntimeState()`, `initializeGeometryBuffers()`, and `initializeCanvasLifecycle()`.
+
+Patch H implementation note: non-interactive mother-ship visual content now flows through `motherShipInterior.props`, `shuttle3dNormalizeMotherShipProps()`, and `appendMotherShipInteriorProps(builder, nowMs)`, with `requireRenderableProps` validation.
 
 ## Patch series overview
 
