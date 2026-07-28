@@ -9,8 +9,8 @@ The current implementation already has a live MCEL-style workbench, authored lay
 So this document must be read as:
 
 ```text
-current: structural MWSL workbench + domain-enrichment behavior
-planned: executable Code Editor semantic adapter and evidence-backed repair workflow
+current: source-safe Code Editor semantic runtime + evidence-backed repair workflow
+planned: execution adapter and broader static authored-surface parity
 ```
 
 The purpose of this document is to make Code Editor requirements stable enough that MCEL Lab can later parse them, compare them with the live app, generate finding candidates, and drive code/test updates without relying on loose prose.
@@ -19,8 +19,8 @@ The purpose of this document is to make Code Editor requirements stable enough t
 id: code-editor
 title: Code Editor / MCEL Code Studio
 status: specified
-current_runtime_status: structural-workbench-with-domain-enrichment
-target_runtime_status: full-application-semantic-runtime
+current_runtime_status: fullApplicationSemanticReady
+target_runtime_status: fullApplicationSemanticReady
 dominant_object: SourceWorkspace
 primary_user_goal: >
   Inspect, edit, preview, and safely change project source with AI assistance
@@ -37,7 +37,7 @@ current_sources:
   - main_computer/web/applications/scripts/code-editor-file-map.js
   - main_computer/web/applications/scripts/code-editor-documentation-viewport.js
   - main_computer/web/applications/scripts/code-editor-scm-manifest.js
-planned_adapter:
+current_adapter:
   - main_computer/web/applications/scripts/code-editor-semantic-adapter.js
 verification:
   - tests/test_mcel_code_studio_app.py
@@ -757,12 +757,15 @@ acceptance:
 
 ## Acceptance criteria for implementation completeness
 
-Code Editor should not be called a full MCEL semantic runtime until these are true.
+Code Editor can be called a source-safe MCEL semantic runtime for bounded
+workspace inspection, source draft editing, explicit save, Aider plan preview,
+and reviewed patch application. Command execution remains outside scope until a
+separate execution adapter exists.
 
 ```mcel-acceptance
 id: code-editor.acceptance.full-semantic-runtime
 app: code-editor
-status: planned
+status: specified
 requires:
   - Code Editor has a registered domain adapter.
   - inspectWorkspace, openFile, and editDraft are executable safe/local-draft intents.

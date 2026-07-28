@@ -8,6 +8,7 @@ from tests.mother.support.fixtures import OpenContractGuard
 from tests.mother.support.traceability import (
     ContractTrace,
     MotherDocuments,
+    faultpoint_bearing_functionalities,
     functionality_module_rows,
     validate_contract_trace,
 )
@@ -127,3 +128,34 @@ def test_documented_shared_core_dependencies_are_valid_ancestry() -> None:
     )
     assert validate_contract_trace(observation_trace, docs) == []
     assert validate_contract_trace(authority_trace, docs) == []
+
+def test_core013_is_functionality_specific_not_module_class_inferred() -> None:
+    docs = MotherDocuments.load()
+    declared = faultpoint_bearing_functionalities(docs)
+    assert "MOTHER-OF-AUTH-004" in declared
+    assert "MOTHER-OF-REL-004" in declared
+    assert "MOTHER-OF-REL-008" in declared
+    assert "MOTHER-OF-OBS-001" not in declared
+    assert "MOTHER-OF-OBS-013" not in declared
+
+    read_only_trace = ContractTrace(
+        requirements=("MOTHER-REQ-002",),
+        operations=("MOTHER-OP-DIAGNOSE",),
+        functionalities=("MOTHER-OF-OBS-013",),
+        modules=("MOTHER-OFM-CORE-013",),
+    )
+    errors = validate_contract_trace(read_only_trace, docs)
+    assert any(
+        "unsupported implicit core ancestry for MOTHER-OF-OBS-013" in error
+        or "not in any claimed functionality chain" in error
+        for error in errors
+    )
+
+    boundary_trace = ContractTrace(
+        requirements=("MOTHER-REQ-005",),
+        operations=("MOTHER-OP-ADD-NODE",),
+        functionalities=("MOTHER-OF-AUTH-004",),
+        modules=("MOTHER-OFM-CORE-013",),
+    )
+    assert validate_contract_trace(boundary_trace, docs) == []
+

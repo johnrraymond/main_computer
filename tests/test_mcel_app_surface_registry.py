@@ -169,12 +169,14 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
         const fileExplorer = registry.getAppPolicy("file-explorer");
         const documentEditor = registry.getAppPolicy("document");
         const calculator = registry.getAppPolicy("calculator");
+        const codeEditor = registry.getAppPolicy("code-editor");
         const legacy = registry.getAppPolicy("git-tools");
         const unknown = registry.getAppPolicy("made-up-app");
         process.stdout.write(JSON.stringify({
           fileExplorer,
           documentEditor,
           calculator,
+          codeEditor,
           legacy,
           unknown
         }));
@@ -208,6 +210,15 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
     assert data["calculator"]["requiredLayerIds"] == [
         "semantic-surface",
         "layout-grammar",
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    ]
+
+    assert data["codeEditor"]["conformanceRequired"] is True
+    assert data["codeEditor"]["maturity"] == "semantic-runtime"
+    assert data["codeEditor"]["surfaceId"] == "code-editor.surface.monaco-selected-file-editor"
+    assert data["codeEditor"]["requiredLayerIds"] == [
         "runtime-ownership",
         "runtime-visual-fit",
         "diagnostic-no-throw",

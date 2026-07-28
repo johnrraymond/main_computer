@@ -39,6 +39,7 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | H. Content props render pass | Render non-interactive ship signage, route markers, beacons, and status panels from `motherShipInterior.props` | Should preserve behavior while making visual content data-first |
 | I. Content marker extraction | Move repeated Bay Ops, department, bridge access, and viewscreen map markers into `motherShipInterior.props` | Should preserve behavior while removing one-off marker draw calls |
 | J. Prop target validation | Validate that content prop `target` values resolve to known rooms, terminals, doors, interactables, objectives, or supported runtime systems | No gameplay change |
+| K. Interactable hotspot render pass | Render visible E-key affordances from `motherShipInterior.interactables` so prompts match physical hotspots | Should preserve behavior while making interactions clearer |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -59,6 +60,8 @@ Patch H implementation note: non-interactive mother-ship visual content now flow
 Patch I implementation note: repeated Bay Ops, department, bridge access, and bridge viewscreen markers now use data-defined `map-marker` props.
 
 Patch J implementation note: data-defined props with `target` now flow through `requirePropTargets` validation so map markers and status panels cannot point at missing content.
+
+Patch K implementation note: every data-defined E-key target now also flows through `appendMotherShipInteractableHotspots(builder, nowMs)`, giving terminals, doors, and access points a visible in-world hotspot derived from `motherShipInterior.interactables`.
 
 ## Patch series overview
 

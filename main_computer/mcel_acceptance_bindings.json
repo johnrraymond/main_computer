@@ -36,6 +36,16 @@
       "notes": "Covers disabled-by-default path mounts, configured drive browsing, aliases, root boundaries, and read-only behavior."
     },
     {
+      "id": "code-editor.binding.acceptance.full-semantic-runtime",
+      "appId": "code-editor",
+      "acceptanceContractId": "code-editor.acceptance.full-semantic-runtime",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_code_editor_semantic_adapter.py"
+      ],
+      "notes": "Covers the registered source-safe Code Editor domain adapter, executable workspace inspection/open/edit/save/Aider-preview/reviewed-patch intents, explicit preflight and receipts, hidden mutation blocking, recovery coverage, and prohibited runCode."
+    },
+    {
       "id": "git-tools.binding.acceptance.semantic-readiness",
       "appId": "git-tools",
       "acceptanceContractId": "git-tools.acceptance.semantic-readiness",

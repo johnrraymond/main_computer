@@ -483,26 +483,19 @@ def external_effect_owner_ids(docs: MotherDocuments) -> tuple[str, ...]:
     return tuple(owners)
 
 
-def faultpoint_boundary_module_ids(docs: MotherDocuments) -> set[str]:
-    """Return modules whose documented class owns a faultpoint boundary."""
+def faultpoint_bearing_functionalities(docs: MotherDocuments) -> set[str]:
+    """Return the explicit CORE-013 functionality set documented in section 3.3.1."""
 
-    assignment = section(
+    declared = section(
         docs.modules,
-        "### 5.13 Authority-class assignment",
-        "## 6.",
-    )
-    boundary_terms = (
-        "writer",
-        "live-adapter",
-        "transport",
+        "#### 3.3.1 Explicit CORE-013 faultpoint-bearing functionalities",
+        "## 4. Shared type and error contract",
     )
     result: set[str] = set()
-    for line in assignment.splitlines():
+    for line in declared.splitlines():
         if not line.startswith("|"):
             continue
-        lowered = line.lower()
-        if any(term in lowered for term in boundary_terms):
-            result.update(module_references(line))
+        result.update(functionality_references(line))
     return result
 
 
@@ -513,8 +506,9 @@ def implicit_shared_core_modules(
 ) -> set[str]:
     """Return only the shared-core ancestry explicitly documented in section 3.3."""
 
+    del chain  # Explicit functionality authority, not broad module-class inference.
     implicit = {"MOTHER-OFM-CORE-001", "MOTHER-OFM-CORE-002"}
-    if set(chain) & faultpoint_boundary_module_ids(docs):
+    if functionality in faultpoint_bearing_functionalities(docs):
         implicit.add("MOTHER-OFM-CORE-013")
     return implicit
 

@@ -439,8 +439,8 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     assert report["summary"]["appCount"] == 21
     assert report["summary"]["declaredLevelCounts"] == {
         "legacy": 16,
-        "runtime-baseline": 2,
-        "semantic-runtime": 3,
+        "runtime-baseline": 1,
+        "semantic-runtime": 4,
     }
     assert report["authorities"] == {
         "requirementsRegistry": True,
@@ -456,6 +456,7 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     adapter_paths = [
         item["path"] for item in report["sourceInventory"]["domainAdapters"]
     ]
+    assert "main_computer/web/applications/scripts/code-editor-semantic-adapter.js" in adapter_paths
     assert "main_computer/web/applications/scripts/git-tools-semantic-adapter.js" in adapter_paths
 
 

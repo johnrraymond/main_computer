@@ -466,6 +466,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("propTargetIsKnown", scene_viewer_script)
         self.assertIn("targets missing content", scene_viewer_script)
         self.assertIn("game-runtime-patch-J-prop-target-validation", scene_viewer_script)
+        self.assertIn("Patch K renders E-key affordances from motherShipInterior.interactables", scene_viewer_script)
+        self.assertIn("appendMotherShipInteractableHotspots(builder, nowMs)", scene_viewer_script)
+        self.assertIn("activeTarget = this.shipInteractionTarget()", scene_viewer_script)
+        self.assertIn("kind === \"terminal\"", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

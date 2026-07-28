@@ -34,6 +34,10 @@ REQUIRED_MODEL_NAMES = {
     "ParticipantResult",
     "StateGeneration",
     "EvidenceRef",
+    "HubReleaseDescriptorPayload",
+    "HubReleaseSignatureEnvelope",
+    "HubReleaseAuthorization",
+    "HubComponentReleaseState",
 }
 
 

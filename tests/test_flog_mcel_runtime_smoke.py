@@ -213,6 +213,12 @@ def test_build_scenarios_uses_app_surface_registry_required_policies(flog):
     }
     assert by_id["website-builder.default-load"].route == "/applications/website-builder/hub-site"
     assert by_id["document.default-load"].route == "/applications/document"
+    assert by_id["code-editor.default-load"].maturity == "semantic-runtime"
+    assert by_id["code-editor.default-load"].required_layer_ids == (
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    )
     assert by_id["document.default-load"].maturity == "semantic-runtime"
     assert by_id["document.default-load"].required_layer_ids == (
         "semantic-surface",
@@ -404,14 +410,14 @@ def test_classify_diagnosis_respects_runtime_baseline_policy_scope(flog):
             "id": "semantic-surface",
             "status": "unavailable",
             "valid": False,
-            "finding": "Static semantic extraction is not required for this host-workbench smoke.",
+            "finding": "Static semantic extraction is not required for this runtime-policy smoke.",
             "detail": {},
         },
         {
             "id": "layout-grammar",
             "status": "unavailable",
             "valid": False,
-            "finding": "Static layout extraction is not required for this host-workbench smoke.",
+            "finding": "Static layout extraction is not required for this runtime-policy smoke.",
             "detail": {},
         },
         *conformance["layers"],

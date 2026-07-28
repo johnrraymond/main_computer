@@ -53,7 +53,7 @@ def test_current_catalog_references_real_requirements_contracts() -> None:
 
     by_id = {block.block_id: block for block in contracts}
     assert metadata["schema"] == runner.BINDING_SCHEMA
-    assert metadata["bindingCount"] == 13
+    assert metadata["bindingCount"] == 14
     assert set(bindings) <= set(by_id)
     assert all(
         str(by_id[contract_id].status).lower() in runner.ENFORCEABLE_STATUSES
@@ -62,6 +62,10 @@ def test_current_catalog_references_real_requirements_contracts() -> None:
     assert "calculator.acceptance.no-hidden-mutation" in bindings
     assert bindings["calculator.acceptance.no-hidden-mutation"].selectors == (
         "tests/test_mcel_calculator_acceptance.py",
+    )
+    assert "code-editor.acceptance.full-semantic-runtime" in bindings
+    assert bindings["code-editor.acceptance.full-semantic-runtime"].selectors == (
+        "tests/test_mcel_code_editor_semantic_adapter.py",
     )
     for contract_id in (
         "website-builder.acceptance.website-project-model",

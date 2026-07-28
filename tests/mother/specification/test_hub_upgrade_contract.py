@@ -105,11 +105,17 @@ def test_artifact_staging_and_deployment_create_request_before_dispatch() -> Non
     assert "target_handler=MOTHER-OFM-SVC-001.drain_and_apply_prepared_release" in rel008
 
 
-def test_preparatory_progress_does_not_require_a_promoted_frame() -> None:
+def test_preparatory_progress_uses_its_own_transition_validator() -> None:
     docs = MotherDocuments.load()
     rows = functionality_module_rows(docs)
+    auth020 = docs.modules[
+        docs.modules.index("| `MOTHER-OF-AUTH-020`"):
+        docs.modules.index("\n", docs.modules.index("| `MOTHER-OF-AUTH-020`"))
+    ]
     assert "MOTHER-OFM-RB-002" not in rows["MOTHER-OF-AUTH-020"]
     assert "MOTHER-OFM-CORE-012" in rows["MOTHER-OF-AUTH-020"]
+    assert "validate_preparatory_progress_transition" in auth020
+    assert "validate_authoritative_delta" not in auth020
     assert "MOTHER-OFM-RB-002" in rows["MOTHER-OF-AUTH-019"]
 
 
@@ -135,6 +141,7 @@ def test_detached_signature_construction_is_acyclic_and_policy_is_independent() 
     assert "descriptor payload bytes without signature-envelope or signer-policy fields" in design
     assert "descriptor_payload_hash" in design
     assert "detached signature envelope signs descriptor_payload_hash" in design
+    assert "--signature-envelope <path-or-content-hash>" in design
     assert "--signer-policy <path-or-content-hash>" in design
     payload_block = design[
         design.index("schema: mother.hub-release-descriptor.v1"):
@@ -142,3 +149,51 @@ def test_detached_signature_construction_is_acyclic_and_policy_is_independent() 
     ]
     assert "signature_envelope_hash" not in payload_block
     assert "signer_policy" not in payload_block
+
+def test_upgrade_hub_cli_requires_detached_signature_envelope() -> None:
+    docs = MotherDocuments.load()
+    operation = docs.operations[
+        docs.operations.index("## 12. Hub release upgrade"):
+    ]
+    assert "--release-descriptor <path-or-content-hash>" in operation
+    assert "--signature-envelope <path-or-content-hash>" in operation
+    assert "[--signature-envelope" not in operation
+
+
+def test_rel011_uses_only_the_restoration_handler_chain() -> None:
+    docs = MotherDocuments.load()
+    rel008 = docs.modules[
+        docs.modules.index("| `MOTHER-OF-REL-008`"):
+        docs.modules.index("\n", docs.modules.index("| `MOTHER-OF-REL-008`"))
+    ]
+    rel011 = docs.modules[
+        docs.modules.index("| `MOTHER-OF-REL-011`"):
+        docs.modules.index("\n", docs.modules.index("| `MOTHER-OF-REL-011`"))
+    ]
+
+    assert "drain_and_apply_prepared_release" in rel008
+    assert "drain_and_apply_prepared_release" not in rel011
+    assert rel011.index("drain_for_restore") < rel011.index("restore_release")
+    assert rel011.index("restore_release") < rel011.index("verify_release")
+    assert rel011.index("verify_release") < rel011.index("restore_eligibility")
+    assert rel011.index("restore_eligibility") < rel011.index("verify_restored")
+
+
+def test_release_types_separate_payload_signature_authorization_and_state() -> None:
+    docs = MotherDocuments.load()
+    required_types = (
+        "HubReleaseDescriptorPayload",
+        "HubReleaseSignatureEnvelope",
+        "HubReleaseAuthorization",
+        "HubComponentReleaseState",
+    )
+    for name in required_types:
+        assert f"| `{name}` |" in docs.modules
+
+    payload_row = next(
+        line for line in docs.modules.splitlines()
+        if line.startswith("| `HubReleaseDescriptorPayload` |")
+    )
+    assert "no signature-envelope or signer-policy field" in payload_row
+    assert "| `HubReleaseDescriptor` |" not in docs.modules
+

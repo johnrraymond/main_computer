@@ -5319,6 +5319,7 @@
           builder.beam([-3.7, 2.3, -38.9], [3.7, 2.3, -38.9], 0.018, light);
           this.appendBridgeViewscreenEnemy(builder, nowMs);
           this.appendMotherShipInteriorProps(builder, nowMs);
+          this.appendMotherShipInteractableHotspots(builder, nowMs);
         }
 
         appendMotherShipInteriorProps(builder, nowMs = 0) {
@@ -5400,6 +5401,50 @@
             else drawFloorMarker(prop);
           });
         }
+
+
+        appendMotherShipInteractableHotspots(builder, nowMs = 0) {
+          // Patch K renders E-key affordances from motherShipInterior.interactables.
+          // If a prompt exists, the player should also see a matching in-world hotspot.
+          const interactables = Array.isArray(this.interiorConfig?.interactables) ? this.interiorConfig.interactables : [];
+          if (!interactables.length) return;
+          const activeTarget = this.shipInteractionTarget();
+          const activeId = activeTarget?.id || "";
+          const pulse = 0.46 + 0.54 * Math.sin((nowMs || 0) / 260);
+          const hotspotColor = (target) => {
+            if (target.id === activeId) return builder.color("#fef3c7", true);
+            const kind = String(target.kind || "").toLowerCase();
+            if (kind === "terminal") return builder.color("#38bdf8", true);
+            if (kind === "access") return builder.color("#86efac", true);
+            if (kind === "door") return builder.color("#fbbf24", true);
+            return builder.color("#a78bfa", true);
+          };
+          interactables.forEach((target) => {
+            if (!Array.isArray(target.position) || target.position.length < 2) return;
+            const x = Number(target.position[0]);
+            const z = Number(target.position[1]);
+            if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+            const color = hotspotColor(target);
+            const kind = String(target.kind || "").toLowerCase();
+            const radius = Math.max(0.28, Math.min(1.08, Number(target.range || 1.2) * 0.34));
+            const height = target.id === activeId ? 0.82 : 0.52;
+            const y = -0.83;
+
+            builder.box([x - 0.18, -1.048, z - 0.18], [x + 0.18, -0.965, z + 0.18], color);
+            builder.beam([x - radius, y, z - radius], [x + radius, y, z - radius], 0.012 + pulse * 0.006, color);
+            builder.beam([x + radius, y, z - radius], [x + radius, y, z + radius], 0.012 + pulse * 0.006, color);
+            builder.beam([x + radius, y, z + radius], [x - radius, y, z + radius], 0.012 + pulse * 0.006, color);
+            builder.beam([x - radius, y, z + radius], [x - radius, y, z - radius], 0.012 + pulse * 0.006, color);
+            builder.beam([x, -0.78, z], [x, -0.78 + height, z], 0.014 + pulse * 0.008, color);
+
+            if (kind === "terminal") {
+              builder.box([x - 0.24, -0.44, z - 0.08], [x + 0.24, -0.28, z + 0.08], color);
+            } else if (kind === "access" || kind === "door") {
+              builder.beam([x - 0.36, -0.48, z], [x + 0.36, -0.48, z], 0.016 + pulse * 0.006, color);
+            }
+          });
+        }
+
 
         appendPilotStationHighlights(builder, nowMs) {
           if (!this.pilotStations.length) return;

@@ -23,6 +23,7 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-runtime-patch-H-content-props.md` | Patch H implementation note for data-defined mother-ship content props and prop reachability validation |
 | `pretty_docs/game-runtime-patch-I-content-markers.md` | Patch I implementation note for data-defined map markers that replace repeated hardcoded room marker calls |
 | `pretty_docs/game-runtime-patch-J-prop-target-validation.md` | Patch J implementation note for validating map marker, status panel, and route prop targets |
+| `pretty_docs/game-runtime-patch-K-interactable-hotspots.md` | Patch K implementation note for rendering E-key interaction hotspots directly from data-defined interactables |
 | `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 | `pretty_docs/game-runtime-patch-C-rooms-and-movement.md` | Patch C implementation note for extracting mother-ship rooms, movement bounds, exits, and spawns into level data |
 | `pretty_docs/game-runtime-patch-D-interactables.md` | Patch D implementation note for extracting mother-ship terminals, prompts, ranges, and E-key action ids into interactable data |

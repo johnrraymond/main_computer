@@ -64,11 +64,11 @@ var McelAppSurfaceRegistry = (() => {
       label: "Code Editor",
       state: "surface-aware",
       conformanceRequired: true,
-      maturity: "host-workbench",
+      maturity: "semantic-runtime",
       surfaceId: "code-editor.surface.monaco-selected-file-editor",
       contractId: "code-editor.contract.authoring.monaco-golden-path",
       requiredLayerIds: RUNTIME_LAYER_IDS,
-      notes: "First MCEL host/workbench; runtime conformance is required while authored-surface pathway checks remain separately reported."
+      notes: "Source-safe Code Editor semantic runtime is proven through the domain adapter and acceptance evidence; static authored-surface parity remains separately reported."
     },
     calculator: {
       appId: "calculator",
