@@ -128,6 +128,48 @@ def test_website_manifest_loader_seeds_hub_and_blog_runtime_projects(tmp_path: P
     assert hub_data["local_platform"]["lanes"]["dev"]["service"] == "hub-dev"
 
 
+def test_listing_current_default_websites_does_not_rewrite_manifests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    list_website_projects(tmp_path)
+    manifest_path = tmp_path / "runtime" / "websites" / "hub-site" / "site.json"
+    before = manifest_path.read_bytes()
+    before_data = json.loads(before.decode("utf-8"))
+
+    monkeypatch.setattr(
+        website_project_manifest,
+        "utc_now",
+        lambda: "2099-01-01T00:00:00+00:00",
+    )
+    list_website_projects(tmp_path)
+
+    assert manifest_path.read_bytes() == before
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["updated_at"] == before_data["updated_at"]
+
+
+def test_listing_default_websites_persists_real_manifest_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    list_website_projects(tmp_path)
+    manifest_path = tmp_path / "runtime" / "websites" / "hub-site" / "site.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("site_model")
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        website_project_manifest,
+        "utc_now",
+        lambda: "2099-01-01T00:00:00+00:00",
+    )
+    list_website_projects(tmp_path)
+
+    normalized = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert normalized["site_model"] == website_project_manifest.CURRENT_SITE_MODEL
+    assert normalized["updated_at"] == "2099-01-01T00:00:00+00:00"
+
+
 def test_website_manifest_supports_arbitrary_site_creation_and_safe_save(tmp_path: Path) -> None:
     project = create_website_project(tmp_path, "portfolio-site", "Portfolio Site")
     assert project.id == "portfolio-site"

@@ -2998,7 +2998,21 @@ def ensure_website_project_artifacts(
         name=name,
         kind=kind,
     )
-    write_json(manifest_path, data)
+
+    should_write_manifest = overwrite or existing_manifest is None
+    if existing_manifest is not None and not overwrite:
+        # Listing an existing website is a read operation. Normalization may
+        # supply a fresh ``updated_at`` value, but that timestamp alone must not
+        # rewrite a tracked manifest or invalidate repository-bound evidence.
+        comparable = dict(data)
+        if "updated_at" in existing_manifest:
+            comparable["updated_at"] = existing_manifest["updated_at"]
+        should_write_manifest = comparable != existing_manifest
+        if not should_write_manifest:
+            data = existing_manifest
+
+    if should_write_manifest:
+        write_json(manifest_path, data)
 
     index_path = site_dir / "index.html"
     if overwrite or not index_path.exists():

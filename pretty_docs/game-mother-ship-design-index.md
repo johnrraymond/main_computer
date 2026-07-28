@@ -18,6 +18,7 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-definition-schema-v1.md` | Human-readable guide to the first game definition schema |
 | `pretty_docs/game-patch-aware-content-architecture.md` | Patch-aware content tiers, metadata, acceptance checks, and validation loop |
 | `game_projects/schema/game-definition.v1.schema.json` | Machine-readable JSON Schema for future game definition data |
+| `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 
 ## Intended use
 
@@ -62,4 +63,4 @@ Each future implementation patch should:
 
 The mother-ship content has reached the point where new features should be planned against the data-driven runtime architecture instead of continuing to add one-off renderer branches. Future implementation patches should preserve the existing playable route while moving state, rooms, interactables, objectives, and validation into explicit game-definition data.
 
-Patch A for that transition is documentation/schema only. It does not change runtime behavior.
+Patch A for that transition is documentation/schema only. It does not change runtime behavior. Patch B centralizes current mother-ship state defaults into one runtime factory while preserving the current bridge route, viewscreen, tactical console, and no-locked-door behavior.

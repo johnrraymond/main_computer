@@ -6,10 +6,10 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 7bcb507b4acecdba3c16c801f5da222261ef6f11d9e0b94a94d7f9eb3cfc5e28
+SHA-256: f140d2b2f27979757146d1baf53820fcfb8bcdde30e18518a295eee2b26c2364
 
 mother-o.md
-SHA-256: fa2420013238e664d14e4c38554d4b3574b8cbabdc84764803e39a67daade63e
+SHA-256: 39c676c61b8a09ea2a4194cc315a56a9bda1d753dc1deadeeab0136546c56211
 ```
 
 ## 1. Purpose and authority
@@ -180,7 +180,7 @@ and context.
 | `MOTHER-OF-AUTH-012` | Collect replay-verified durable participant acknowledgements |
 | `MOTHER-OF-AUTH-013` | Construct the full-set acknowledgement certificate |
 | `MOTHER-OF-AUTH-014` | Validate terminal membership activation or retirement evidence |
-| `MOTHER-OF-AUTH-015` | Release reservations and scopes after terminal proof |
+| `MOTHER-OF-AUTH-015` | Release D026 reservations and authority-protocol fencing after terminal proof |
 | `MOTHER-OF-AUTH-016` | Reconcile ambiguous head status from durable local evidence |
 | `MOTHER-OF-AUTH-017` | Obtain and accept bootstrap authority for the exact birth entry |
 | `MOTHER-OF-AUTH-018` | Construct the exact certified rollback-progress or rollback-completed successor from verified restored state |
@@ -287,12 +287,14 @@ and context.
 | `MOTHER-OF-RSL-005` | Construct the prepared authority-reseal intent |
 | `MOTHER-OF-RSL-006` | Construct the successor authoritative checkpoint |
 | `MOTHER-OF-RSL-007` | Construct and unanimously accept the authority-reset proposal |
-| `MOTHER-OF-RSL-008` | Construct the authority-reseal certificate and obtain completed-certificate acceptances only at the correct pure-D029 or D029+D028 boundary |
-| `MOTHER-OF-RSL-009` | Compose membership-changing authority reseal with D028 readiness, transition acceptance, and transition decision before D029 completed-certificate acceptance |
+| `MOTHER-OF-RSL-008` | Construct the authority-reseal certificate from the full proposal-acceptance set |
+| `MOTHER-OF-RSL-009` | Freeze and validate the D029+D028 readiness contract and structural composition |
 | `MOTHER-OF-RSL-010` | Build and persist the authority-reseal authorization bundle |
 | `MOTHER-OF-RSL-011` | Atomically commit the authority-reseal entry-and-bundle head |
 | `MOTHER-OF-RSL-012` | Replicate, acknowledge, complete the reseal forward, and prove committed-fence rollover |
-| `MOTHER-OF-RSL-013` | Prepare, complete, or abort reseal cancellation while retaining composed D028 fences until terminal cancellation proof |
+| `MOTHER-OF-RSL-013` | Prepare full-set D029 cancellation while retaining every active D029 fence |
+| `MOTHER-OF-RSL-014` | Collect full-set completed-certificate acceptances at the correct pure-D029 or D029+D028 boundary |
+| `MOTHER-OF-RSL-015` | Commit or abort D029 cancellation only after any composed D028 cancellation is terminal |
 
 Release responsibility is single-owned by layer: `MOTHER-OF-AUTH-015`
 releases D026 reservations and authority-protocol fencing only; `MOTHER-OF-RB-010`
@@ -536,8 +538,8 @@ therefore do not participate in the checkpoint entry hash.
 | 13 | `MOTHER-OF-AUTH-011` | Replicate or resynchronize exact final head |
 | 14 | `MOTHER-OF-AUTH-012` and `MOTHER-OF-AUTH-013` | Collect acknowledgements and construct certificate |
 | 15 | `MOTHER-OF-MEM-009` | Activate prospective replica when a prospective host is present |
-| 16 | `MOTHER-OF-AUTH-014` and `MOTHER-OF-AUTH-015` | Complete membership, release reservations, and release scopes |
-| 17 | `MOTHER-OF-RB-010` and `MOTHER-OF-CTL-016` | Release rollback and operation ownership after terminal proof |
+| 16 | `MOTHER-OF-AUTH-014` and `MOTHER-OF-AUTH-015` | Complete membership and release D026 reservations and authority-protocol fencing |
+| 17 | `MOTHER-OF-RB-010` and `MOTHER-OF-CTL-016` | Close rollback ownership, then release logical scopes and current-operation ownership after terminal proof |
 
 ### 7.4 `rollback` functionalities
 
@@ -995,29 +997,34 @@ preserves or carries every unresolved obligation.
 | 6 | `MOTHER-OF-RSL-003` | Build observed, valid, and narrowly superseded head sets |
 | 7 | `MOTHER-OF-RSL-004` | Preserve, carry as remediation-required, or block on every obligation |
 | 8 | `MOTHER-OF-ID-005` | Prove private state and recovery closure are preserved or explicitly carried |
-| 9 | `MOTHER-OF-MEM-001` | Freeze membership sets when inclusion or exclusion is requested |
-| 10 | `MOTHER-OF-MEM-002` through `MOTHER-OF-MEM-006` | When inclusion is requested, stage prospective hosts, transfer the private/recovery closure, and commit the prospective-readiness root before the D029 intent exists |
-| 11 | `MOTHER-OF-RSL-009` | Prove D029+D028 membership composition is legal and that the readiness root is available when required |
-| 12 | `MOTHER-OF-CTL-007` through `MOTHER-OF-CTL-010` | Own scopes and freeze rollback/capabilities |
-| 13 | `MOTHER-OF-RSL-005` | Construct prepared intent using only pre-entry facts, including the committed prospective-readiness root when D028 applies |
-| 14 | `MOTHER-OF-CTL-011` and `MOTHER-OF-CTL-012` | Record plan and legal next commands |
+| 9 | `MOTHER-OF-MEM-001` | Freeze the current, prospective, transition, desired, retained, retiring, and successor-authority sets when membership composition is requested |
+| 10 | `MOTHER-OF-RSL-009` | Freeze the readiness contract: prospective participant set, expected generation identity, required recovery closure and schemas, readiness receipt contract/version, expected membership sets, and structural legality of D029+D028 composition |
+| 11 | `MOTHER-OF-CTL-007` through `MOTHER-OF-CTL-010` | Acquire logical scopes and freeze rollback/capabilities before any prospective participant mutation |
+| 12 | `MOTHER-OF-CTL-011` and `MOTHER-OF-CTL-012` | Record the frozen operation plan and legal next commands |
+
+`prep` freezes the readiness contract, not a readiness result. It MUST NOT
+create a prospective generation, transfer private recovery material, acquire a
+prospective readiness fence, commit readiness receipts, construct the D029
+prepared intent, or dispatch an authority-reset proposal.
 
 Any unreachable base-authority replica, absent common base, absent
-replay-valid predecessor, or missing prospective-readiness root required by a
-membership-changing reseal blocks the operation.
+replay-valid predecessor, or structurally illegal membership composition blocks
+the operation during `prep`.
 
 ### 14.2 `do` functionalities
 
 | Order | Functionality | Placement |
 |---:|---|---|
-| 1 | `MOTHER-OF-CTL-013` | Revalidate base authority, reports, selected predecessor, obligations, and any prepared D028 readiness root |
-| 1a | `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Govern every proposal, acceptance, staging, and participant request |
-| 2 | `MOTHER-OF-RSL-006` | Construct exact successor authoritative checkpoint binding prepared-intent hash |
-| 3 | `MOTHER-OF-RSL-007` | Construct proposal binding intent and successor entry; obtain unanimous proposal acceptance and D029 fences |
-| 4 | `MOTHER-OF-RSL-008` | Construct the authority-reseal certificate from the full proposal-acceptance set, without membership-mode completed-certificate acceptance yet |
-| 5 | `MOTHER-OF-RSL-009` plus `MOTHER-OF-MEM-007` and `MOTHER-OF-MEM-008` | When membership changes, obtain D028 transition acceptances for that exact D029 certificate and persist the D028 commit-in-progress decision |
-| 6 | `MOTHER-OF-RSL-008` | Obtain full base-authority completed-certificate acceptances; membership-mode acceptances bind the exact D028 transition-acceptance root and transition-decision hash |
-| 7 | `MOTHER-OF-CTL-014` | Enter ready-to-finalize with all future-object cycles excluded |
+| 1 | `MOTHER-OF-CTL-013` | Revalidate base authority, reports, selected predecessor, obligations, frozen membership sets, readiness contract, and owned scopes |
+| 1a | `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Govern every staging, proposal, acceptance, and participant request |
+| 2 | `MOTHER-OF-MEM-002` through `MOTHER-OF-MEM-006` | When inclusion is requested, stage prospective hosts, transfer the private/recovery closure, obtain readiness receipts, and commit the canonical prospective-readiness root |
+| 3 | `MOTHER-OF-RSL-005` | Construct the prepared D029 intent from pre-entry facts, including the actual committed readiness root when D028 applies |
+| 4 | `MOTHER-OF-RSL-006` | Construct exact successor authoritative checkpoint binding prepared-intent hash |
+| 5 | `MOTHER-OF-RSL-007` | Construct proposal binding intent and successor entry; obtain unanimous proposal acceptance and D029 fences |
+| 6 | `MOTHER-OF-RSL-008` | Construct the authority-reseal certificate from the full proposal-acceptance set |
+| 7 | `MOTHER-OF-MEM-007` and `MOTHER-OF-MEM-008` | When membership changes, obtain D028 transition acceptances for that exact D029 certificate and persist the D028 commit-in-progress decision |
+| 8 | `MOTHER-OF-RSL-014` | Obtain full base-authority completed-certificate acceptances; membership-mode acceptances bind the exact D028 transition-acceptance root and transition-decision hash |
+| 9 | `MOTHER-OF-CTL-014` | Enter ready-to-finalize with all future-object cycles excluded |
 
 The successor checkpoint does not contain the proposal hash, certificate hash,
 authorization-bundle hash, certificate-acceptance root, or post-entry membership
@@ -1045,27 +1052,41 @@ commit-in-progress decision are durable.
 
 ### 14.4 `rollback` functionalities
 
+Before selecting a cancellation branch, the controller MUST reconcile ambiguous
+proposal dispatch against every base-authority replica. Absence of a local
+proposal acceptance is not proof that no remote acceptance exists.
+
 Before the atomic entry-and-bundle pointer commit:
 
-1. `MOTHER-OF-RSL-013` prepares full-set D029 cancellation and proves that no
+1. when prospective readiness exists and reconciliation proves that no
+   base-authority replica accepted the D029 proposal, `MOTHER-OF-MEM-011`
+   cancels and tombstones D028 readiness, readiness receipts, and readiness
+   locks while preserving immutable evidence; no D029 cancellation certificate
+   is required;
+2. when any base-authority replica accepted the D029 proposal,
+   `MOTHER-OF-RSL-013` prepares full-set D029 cancellation and proves that no
    base-authority replica accepted the completed D029 certificate;
-2. when membership is composed, the active D029 fence remains installed while
-   the local D028 commit-in-progress decision is converted to
-   cancellation-authorized using that exact D029 cancellation-prepare
-   certificate;
-3. when membership is composed, `MOTHER-OF-MEM-011` completes the full D028
-   cancellation protocol, including terminal cancellation of every transition
-   acceptance and readiness lock;
-4. only after any composed D028 cancellation is terminal, `MOTHER-OF-RSL-013`
-   commits or aborts D029 cancellation and tombstones the D029 fence;
-5. `MOTHER-OF-RB-008` records cancellation and rollback evidence;
-6. `MOTHER-OF-CTL-016` releases logical mutation scopes and current-operation
+3. for membership-changing D029+D028 after proposal acceptance, the active D029
+   fence remains installed while the local D028 commit-in-progress decision is
+   converted to cancellation-authorized using that exact D029
+   cancellation-prepare certificate;
+4. `MOTHER-OF-MEM-011` then completes the full D028 cancellation protocol,
+   including terminal cancellation of every transition acceptance, readiness
+   receipt, readiness lock, and prospective generation;
+5. only after any composed D028 cancellation is terminal,
+   `MOTHER-OF-RSL-015` commits or aborts D029 cancellation and tombstones the
+   D029 proposal, certificate attempt, and authority fence;
+6. if any completed-certificate acceptance exists, cancellation is prohibited
+   and the exact operation completes forward;
+7. `MOTHER-OF-RB-008` records cancellation and rollback evidence;
+8. `MOTHER-OF-CTL-016` releases logical mutation scopes and current-operation
    ownership only after every required cancellation protocol is terminal.
 
 No D026 successor, unrelated D029 proposal, operation-scope release, or
-network-scope release MAY begin while D029 cancellation is prepared but D028
-cancellation is not terminal. After the pointer commit, rollback to a divergent
-lineage is prohibited and `MOTHER-OF-RSL-011` completes forward.
+network-scope release MAY begin while prospective readiness, a D029 fence, D028
+transition acceptance, or either cancellation protocol remains nonterminal.
+After the pointer commit, rollback to a divergent lineage is prohibited and
+`MOTHER-OF-RSL-011` completes forward.
 
 ## 15. Operation: ordinary replica enrollment
 
@@ -1354,7 +1375,7 @@ remains explicitly nonterminal with exact unresolved evidence.
 | 3 | `MOTHER-OF-OBS-012` | Resolve provisional frame and requested pop range |
 | 4 | `MOTHER-OF-OBS-016` | Verify restore capabilities and schemas |
 | 5 | `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Govern every distributed cancellation and restore request |
-| 6 | `MOTHER-OF-AUTH-003`, `MOTHER-OF-MEM-011`, or `MOTHER-OF-RSL-013` | Cancel the exact uncommitted authority protocol when required |
+| 6 | `MOTHER-OF-AUTH-003`, `MOTHER-OF-MEM-011`, `MOTHER-OF-RSL-013`, or `MOTHER-OF-RSL-015` | Cancel the exact uncommitted authority protocol at the applicable prepare or terminal-commit boundary |
 | 7 | `MOTHER-OF-RB-005` | Restore or reconcile the provisional frame |
 | 8 | `MOTHER-OF-RB-006` | Pop selected promoted frames in strict LIFO order |
 | 9 | Operation-specific restore functionality | Restore QBFT, RPC, Hub/FDB, service, membership, or staged state |
@@ -1420,7 +1441,8 @@ After local commit:
 
 - use `MOTHER-OF-AUTH-016` to prove the exact committed successor;
 - use `MOTHER-OF-AUTH-011` through `MOTHER-OF-AUTH-015` to resynchronize,
-  acknowledge, activate or retire, release reservations, and release scopes;
+  acknowledge, activate or retire, and release D026 reservations and
+  authority-protocol fencing;
 - never reopen rollback or create an opposite successor.
 
 ## 22. Shared staged-operation functionality
@@ -1666,7 +1688,7 @@ for the owning requirement text.
 | `MOTHER-REQ-023` | `MOTHER-OF-AUTH-001` through `MOTHER-OF-AUTH-007`, `MOTHER-OF-AUTH-011` through `MOTHER-OF-AUTH-019` | Every ordinary successor, retry, cancellation, rollback, and release |
 | `MOTHER-REQ-024` | `MOTHER-OF-MEM-001` through `MOTHER-OF-MEM-014`, `MOTHER-OF-AUTH-017` | Enrollment, retirement, `add-node initial`, zero-validator continuity |
 | `MOTHER-REQ-025` | `MOTHER-OF-AUTH-010` through `MOTHER-OF-AUTH-015`, `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Every post-commit finalization completion |
-| `MOTHER-REQ-026` | `MOTHER-OF-RSL-001` through `MOTHER-OF-RSL-013`, `MOTHER-OF-AUTH-008` through `MOTHER-OF-AUTH-015`, `MOTHER-OF-MEM-002`, `MOTHER-OF-MEM-003` when membership changes | `reseal-state` authority restoration |
+| `MOTHER-REQ-026` | `MOTHER-OF-RSL-001` through `MOTHER-OF-RSL-015`, `MOTHER-OF-AUTH-008` through `MOTHER-OF-AUTH-015`, `MOTHER-OF-MEM-002`, `MOTHER-OF-MEM-003` when membership changes | `reseal-state` authority restoration |
 
 ## 25. Functional coverage and acceptance gaps
 
@@ -1705,8 +1727,11 @@ Every implementation unit and test MUST be traceable through:
 mother.md requirement or design contract
   → mother-o.md operation
     → mother-o-f.md functionality
-      → implementation unit
-        → executable test and retained evidence
+      → mother-o-f-m.md module and public seam
+        → normative-reviewed api_registry.yaml callable contract
+          → module contract test
+            → implementation unit
+              → retained execution evidence
 ```
 
 For every functionality occurrence in an operation, acceptance evidence MUST
@@ -1732,7 +1757,9 @@ functionality placement.
 An implementation MAY group private helpers differently inside the module
 boundaries defined by `mother-o-f-m.md`, but it MUST NOT move a declared module
 path, change a public seam, or reorder this functional composition without
-updating `mother-o-f-m.md` and the traceability registry.
+updating `mother-o-f-m.md` and, once populated and reviewed, the callable-interface
+registry. An absent or draft registry is not an authority source and blocks
+module contract tests rather than allowing implementation-defined interfaces.
 
 One module MAY implement several functionalities. One functionality MAY span
 several modules or APIs only as declared by `mother-o-f-m.md`. Neither fact changes:

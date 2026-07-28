@@ -6465,7 +6465,6 @@ Recommended layout:
 tools/mother/
   mother.py
   diagnose.py
-  probe_topology.py
   plan.py
   add_node.py
   remove_node.py
@@ -9416,9 +9415,10 @@ Mother SHOULD be implemented in this order:
      existing host runner;
    - uses structured local-call envelopes instead of a general remote shell.
 
-4. `tools/mother/diagnose.py` and `tools/mother/probe_topology.py`
+4. `tools/mother/diagnose.py`
    - read-only;
    - no locks;
+   - includes topology probing as part of the registered diagnosis operation;
    - reports services, guards, validators, QBFT sets, route state, lifecycle
      markers, active operations, observed topology, finalized-topology drift,
      replicated pending action state, and the current operation ID.

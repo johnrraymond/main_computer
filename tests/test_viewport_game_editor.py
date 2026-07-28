@@ -399,6 +399,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("data-gpu-forge-atlas", editor_style)
         self.assertIn("scene-gpu-forge-storm-lash", editor_style)
         self.assertIn("scene-gpu-forge-atlas-play", editor_style)
+        self.assertIn("shuttle3dMotherShipInteriorStateDefaults()", scene_viewer_script)
+        self.assertIn("game.motherShipInterior.stateDefaults.v1", scene_viewer_script)
+        self.assertIn("createShipStateFromDefaults()", scene_viewer_script)
+        self.assertIn("Patch B keeps the no-locked-door rule centralized", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

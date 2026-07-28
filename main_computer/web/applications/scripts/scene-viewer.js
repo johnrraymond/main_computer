@@ -2463,158 +2463,160 @@
         };
       }
 
-      function shuttle3dMotherShipInteriorConfig(scene) {
-        const supplied = scene?.metadata?.shuttle3d?.motherShipInterior;
-        const interior = supplied && typeof supplied === "object" ? supplied : {};
-        const cloneObject = (value, fallback = {}) => (
-          value && typeof value === "object" && !Array.isArray(value)
-            ? JSON.parse(JSON.stringify(value))
-            : JSON.parse(JSON.stringify(fallback))
+      function shuttle3dCloneJson(value, fallback = {}) {
+        const source = value !== undefined ? value : fallback;
+        if (source && typeof source === "object") {
+          return JSON.parse(JSON.stringify(source));
+        }
+        if (fallback && typeof fallback === "object") {
+          return JSON.parse(JSON.stringify(fallback));
+        }
+        return source;
+      }
+
+      function shuttle3dObjectValue(value) {
+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      }
+
+      function shuttle3dStringMap(value, fallback = {}) {
+        const supplied = shuttle3dObjectValue(value);
+        const source = {...fallback, ...supplied};
+        return Object.fromEntries(Object.entries(source).map(([key, entry]) => [String(key), String(entry)]));
+      }
+
+      function shuttle3dObjectMap(value, fallback = {}) {
+        const supplied = shuttle3dObjectValue(value);
+        const source = {...fallback, ...supplied};
+        return Object.fromEntries(
+          Object.entries(source)
+            .filter(([key]) => String(key).trim())
+            .map(([key, entry]) => [String(key), shuttle3dCloneJson(entry)])
         );
-        const stringMap = (value, fallback = {}) => {
-          const supplied = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-          const source = {...fallback, ...supplied};
-          return Object.fromEntries(Object.entries(source).map(([key, entry]) => [String(key), String(entry)]));
-        };
-        const objectMap = (value, fallback = {}) => {
-          const supplied = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-          const source = {...fallback, ...supplied};
-          return Object.fromEntries(
-            Object.entries(source)
-              .filter(([key]) => String(key).trim())
-              .map(([key, entry]) => [String(key), cloneObject(entry)])
-          );
-        };
-        const defaultLocations = {
-          "bay.shuttle": "Mother Ship Shuttle Bay",
-          "bay.ops": "Bay Operations",
-          "security.checkpoint": "Security Checkpoint",
-          "corridor.main": "Main Corridor Hub",
-          "engineering.access": "Engineering Access",
-          "medbay.stub": "Medbay Triage",
-          "science.ops.stub": "Science/Ops Lab",
-          "bridge.access": "Bridge Access",
-          "bridge.deck": "Bridge Deck"
-        };
-        const defaultObjectives = {
-          "objective.bay-ops": {
-            label: "Use the starboard interior access and bring Bay Operations online.",
-            location: "bay.shuttle"
-          },
-          "objective.enter-corridor": {
-            label: "Enter the main corridor.",
-            location: "bay.ops"
-          },
-          "objective.restore-power": {
-            label: "Reach Engineering Access and restore main power.",
-            location: "corridor.main"
-          },
-          "objective.survey-departments": {
-            label: "Survey medbay and science, then proceed to the bridge.",
-            location: "engineering.access"
-          },
-          "objective.bridge-access": {
-            label: "Proceed to the bridge and identify the enemy ship on the viewscreen.",
-            location: "corridor.main"
-          },
-          "objective.bridge-screen": {
-            label: "Use the bridge viewscreen to track the enemy ship.",
-            location: "bridge.deck"
-          },
-          "objective.enemy-track": {
-            label: "Enemy ship tracked on the bridge tactical display.",
-            location: "bridge.deck"
-          },
-          "objective.enemy-attack": {
-            label: "Use the bridge tactical console to fire on the enemy ship.",
-            location: "bridge.deck"
-          },
-          "objective.enemy-disabled": {
-            label: "Enemy raider disabled. Hold the bridge and await next orders.",
-            location: "bridge.deck"
-          }
-        };
-        const defaultDoors = {
-          "door.bay-access": {
-            label: "Starboard Interior Access",
-            from: "bay.shuttle",
-            to: "bay.ops",
-            state: "open"
-          },
-          "door.bay-inner": {
-            label: "Inner Shuttle Bay Door",
-            from: "bay.ops",
-            to: "security.checkpoint",
-            state: "open"
-          },
-          "door.security-hub": {
-            label: "Security Checkpoint Door",
-            from: "security.checkpoint",
-            to: "corridor.main",
-            state: "open"
-          },
-          "door.engineering-access": {
-            label: "Engineering Access Door",
-            from: "corridor.main",
-            to: "engineering.access",
-            state: "open"
-          },
-          "door.medbay": {
-            label: "Medbay Door",
-            from: "corridor.main",
-            to: "medbay.stub",
-            state: "open"
-          },
-          "door.science": {
-            label: "Science/Ops Door",
-            from: "corridor.main",
-            to: "science.ops.stub",
-            state: "open"
-          },
-          "door.bridge": {
-            label: "Bridge Command Door",
-            from: "corridor.main",
-            to: "bridge.deck",
-            state: "open"
-          }
-        };
-        const defaultTerminals = {
-          "terminal.bay-ops": {
-            label: "Bay Operations Terminal",
-            location: "bay.ops",
-            state: "offline"
-          },
-          "terminal.engineering-power": {
-            label: "Engineering Power Console",
-            location: "engineering.access",
-            state: "offline"
-          },
-          "terminal.bridge-viewscreen": {
-            label: "Bridge Viewscreen",
-            location: "bridge.deck",
-            state: "standby"
-          },
-          "terminal.bridge-tactical": {
-            label: "Bridge Tactical Console",
-            location: "bridge.deck",
-            state: "ready"
-          }
-        };
-        const locations = stringMap(interior.locations, defaultLocations);
-        const objectives = objectMap(interior.objectives, defaultObjectives);
-        const initialLocation = String(interior.initialLocation || interior.location || "bay.shuttle");
-        const initialObjective = String(interior.initialObjective || interior.objectiveId || "objective.bay-ops");
+      }
+
+      function shuttle3dMotherShipInteriorStateDefaults() {
         return {
-          enabled: interior.enabled !== false,
-          initialLocation: locations[initialLocation] ? initialLocation : "bay.shuttle",
-          initialObjective: objectives[initialObjective] ? initialObjective : "objective.bay-ops",
-          power: String(interior.power || "emergency"),
-          security: String(interior.security || "quarantine"),
-          locations,
-          objectives,
-          doors: objectMap(interior.doors, defaultDoors),
-          terminals: objectMap(interior.terminals, defaultTerminals),
-          flags: cloneObject(interior.flags, {
+          schema: "game.motherShipInterior.stateDefaults.v1",
+          location: "bay.shuttle",
+          objectiveId: "objective.bay-ops",
+          power: "emergency",
+          security: "quarantine",
+          locations: {
+            "bay.shuttle": "Mother Ship Shuttle Bay",
+            "bay.ops": "Bay Operations",
+            "security.checkpoint": "Security Checkpoint",
+            "corridor.main": "Main Corridor Hub",
+            "engineering.access": "Engineering Access",
+            "medbay.stub": "Medbay Triage",
+            "science.ops.stub": "Science/Ops Lab",
+            "bridge.access": "Bridge Access",
+            "bridge.deck": "Bridge Deck"
+          },
+          objectives: {
+            "objective.bay-ops": {
+              label: "Use the starboard interior access and bring Bay Operations online.",
+              location: "bay.shuttle"
+            },
+            "objective.enter-corridor": {
+              label: "Enter the main corridor.",
+              location: "bay.ops"
+            },
+            "objective.restore-power": {
+              label: "Reach Engineering Access and restore main power.",
+              location: "corridor.main"
+            },
+            "objective.survey-departments": {
+              label: "Survey medbay and science, then proceed to the bridge.",
+              location: "engineering.access"
+            },
+            "objective.bridge-access": {
+              label: "Proceed to the bridge and identify the enemy ship on the viewscreen.",
+              location: "corridor.main"
+            },
+            "objective.bridge-screen": {
+              label: "Use the bridge viewscreen to track the enemy ship.",
+              location: "bridge.deck"
+            },
+            "objective.enemy-track": {
+              label: "Enemy ship tracked on the bridge tactical display.",
+              location: "bridge.deck"
+            },
+            "objective.enemy-attack": {
+              label: "Use the bridge tactical console to fire on the enemy ship.",
+              location: "bridge.deck"
+            },
+            "objective.enemy-disabled": {
+              label: "Enemy raider disabled. Hold the bridge and await next orders.",
+              location: "bridge.deck"
+            }
+          },
+          doors: {
+            "door.bay-access": {
+              label: "Starboard Interior Access",
+              from: "bay.shuttle",
+              to: "bay.ops",
+              state: "open"
+            },
+            "door.bay-inner": {
+              label: "Inner Shuttle Bay Door",
+              from: "bay.ops",
+              to: "security.checkpoint",
+              state: "open"
+            },
+            "door.security-hub": {
+              label: "Security Checkpoint Door",
+              from: "security.checkpoint",
+              to: "corridor.main",
+              state: "open"
+            },
+            "door.engineering-access": {
+              label: "Engineering Access Door",
+              from: "corridor.main",
+              to: "engineering.access",
+              state: "open"
+            },
+            "door.medbay": {
+              label: "Medbay Door",
+              from: "corridor.main",
+              to: "medbay.stub",
+              state: "open"
+            },
+            "door.science": {
+              label: "Science/Ops Door",
+              from: "corridor.main",
+              to: "science.ops.stub",
+              state: "open"
+            },
+            "door.bridge": {
+              label: "Bridge Command Door",
+              from: "corridor.main",
+              to: "bridge.deck",
+              state: "open"
+            }
+          },
+          terminals: {
+            "terminal.bay-ops": {
+              label: "Bay Operations Terminal",
+              location: "bay.ops",
+              state: "offline"
+            },
+            "terminal.engineering-power": {
+              label: "Engineering Power Console",
+              location: "engineering.access",
+              state: "offline"
+            },
+            "terminal.bridge-viewscreen": {
+              label: "Bridge Viewscreen",
+              location: "bridge.deck",
+              state: "standby"
+            },
+            "terminal.bridge-tactical": {
+              label: "Bridge Tactical Console",
+              location: "bridge.deck",
+              state: "ready"
+            }
+          },
+          flags: {
             bayControlActive: true,
             boardersPausedAfterDocking: true,
             bridgeViewscreenTrackingActive: false,
@@ -2623,7 +2625,97 @@
             bridgeTacticalLastFireAtMs: 0,
             enemyShipHullPercent: 100,
             enemyShipDisabled: false
-          })
+          }
+        };
+      }
+
+      function shuttle3dNormalizeMotherShipFlags(value) {
+        const defaults = shuttle3dMotherShipInteriorStateDefaults().flags;
+        const flags = {...defaults, ...shuttle3dObjectValue(value)};
+        if (!Number.isFinite(Number(flags.enemyShipHullPercent))) flags.enemyShipHullPercent = defaults.enemyShipHullPercent;
+        flags.enemyShipHullPercent = Math.max(0, Math.min(100, Number(flags.enemyShipHullPercent)));
+        if (!Number.isFinite(Number(flags.bridgeTacticalShotsFired))) flags.bridgeTacticalShotsFired = defaults.bridgeTacticalShotsFired;
+        flags.bridgeTacticalShotsFired = Math.max(0, Number(flags.bridgeTacticalShotsFired));
+        if (!Number.isFinite(Number(flags.bridgeTacticalLastFireAtMs))) flags.bridgeTacticalLastFireAtMs = defaults.bridgeTacticalLastFireAtMs;
+        flags.bridgeTacticalLastFireAtMs = Math.max(0, Number(flags.bridgeTacticalLastFireAtMs));
+        if (typeof flags.bridgeTacticalArmed !== "boolean") flags.bridgeTacticalArmed = Boolean(defaults.bridgeTacticalArmed);
+        if (typeof flags.bridgeViewscreenTrackingActive !== "boolean") flags.bridgeViewscreenTrackingActive = Boolean(defaults.bridgeViewscreenTrackingActive);
+        if (typeof flags.bayControlActive !== "boolean") flags.bayControlActive = Boolean(defaults.bayControlActive);
+        if (typeof flags.boardersPausedAfterDocking !== "boolean") flags.boardersPausedAfterDocking = Boolean(defaults.boardersPausedAfterDocking);
+        if (typeof flags.enemyShipDisabled !== "boolean") flags.enemyShipDisabled = flags.enemyShipHullPercent <= 0;
+        return flags;
+      }
+
+      function shuttle3dNormalizeMotherShipDoors(value) {
+        const doors = shuttle3dObjectMap(value, {});
+        Object.values(doors).forEach((door) => {
+          if (!door || typeof door !== "object") return;
+          // Patch B keeps the no-locked-door rule centralized with the default state factory.
+          if (String(door.state || "").toLowerCase() === "locked") door.state = "open";
+        });
+        return doors;
+      }
+
+      function shuttle3dMotherShipInteriorConfig(scene) {
+        const supplied = scene?.metadata?.shuttle3d?.motherShipInterior;
+        const interior = supplied && typeof supplied === "object" ? supplied : {};
+        const defaults = shuttle3dMotherShipInteriorStateDefaults();
+        const suppliedStateDefaults = shuttle3dObjectValue(interior.stateDefaults);
+
+        const locations = shuttle3dStringMap(interior.locations, defaults.locations);
+        const objectives = shuttle3dObjectMap(interior.objectives, defaults.objectives);
+        const doors = shuttle3dNormalizeMotherShipDoors({
+          ...defaults.doors,
+          ...shuttle3dObjectValue(interior.doors),
+          ...shuttle3dObjectValue(suppliedStateDefaults.doors)
+        });
+        const terminals = shuttle3dObjectMap({
+          ...defaults.terminals,
+          ...shuttle3dObjectValue(interior.terminals),
+          ...shuttle3dObjectValue(suppliedStateDefaults.terminals)
+        });
+        const flags = shuttle3dNormalizeMotherShipFlags({
+          ...defaults.flags,
+          ...shuttle3dObjectValue(interior.flags),
+          ...shuttle3dObjectValue(suppliedStateDefaults.flags)
+        });
+
+        const initialLocation = String(
+          suppliedStateDefaults.location
+          || interior.initialLocation
+          || interior.location
+          || defaults.location
+        );
+        const initialObjective = String(
+          suppliedStateDefaults.objectiveId
+          || interior.initialObjective
+          || interior.objectiveId
+          || defaults.objectiveId
+        );
+        const stateDefaults = {
+          schema: defaults.schema,
+          location: locations[initialLocation] ? initialLocation : defaults.location,
+          objectiveId: objectives[initialObjective] ? initialObjective : defaults.objectiveId,
+          power: String(suppliedStateDefaults.power || interior.power || defaults.power),
+          security: String(suppliedStateDefaults.security || interior.security || defaults.security),
+          doors: shuttle3dCloneJson(doors),
+          terminals: shuttle3dCloneJson(terminals),
+          flags: shuttle3dCloneJson(flags),
+          lastInteractionStatus: ""
+        };
+
+        return {
+          enabled: interior.enabled !== false,
+          initialLocation: stateDefaults.location,
+          initialObjective: stateDefaults.objectiveId,
+          power: stateDefaults.power,
+          security: stateDefaults.security,
+          locations,
+          objectives,
+          doors: shuttle3dCloneJson(stateDefaults.doors),
+          terminals: shuttle3dCloneJson(stateDefaults.terminals),
+          flags: shuttle3dCloneJson(stateDefaults.flags),
+          stateDefaults
         };
       }
 
@@ -3140,31 +3232,33 @@
           };
         }
 
-        createShipState() {
+        createShipStateFromDefaults() {
           const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
-          const doors = JSON.parse(JSON.stringify(config.doors || {}));
-          Object.values(doors).forEach((door) => {
-            if (!door || typeof door !== "object") return;
-            if (String(door.state || "").toLowerCase() === "locked") door.state = "open";
-          });
-          const flags = JSON.parse(JSON.stringify(config.flags || {}));
-          if (!Number.isFinite(Number(flags.enemyShipHullPercent))) flags.enemyShipHullPercent = 100;
-          flags.enemyShipHullPercent = Math.max(0, Math.min(100, Number(flags.enemyShipHullPercent)));
-          if (!Number.isFinite(Number(flags.bridgeTacticalShotsFired))) flags.bridgeTacticalShotsFired = 0;
-          if (!Number.isFinite(Number(flags.bridgeTacticalLastFireAtMs))) flags.bridgeTacticalLastFireAtMs = 0;
-          if (typeof flags.bridgeTacticalArmed !== "boolean") flags.bridgeTacticalArmed = false;
-          if (typeof flags.enemyShipDisabled !== "boolean") flags.enemyShipDisabled = flags.enemyShipHullPercent <= 0;
-          return {
-            enabled: Boolean(config.enabled),
+          const defaults = config.stateDefaults || {
             location: config.initialLocation,
+            objectiveId: config.initialObjective,
             power: config.power,
             security: config.security,
-            objectiveId: config.initialObjective,
-            doors,
-            terminals: JSON.parse(JSON.stringify(config.terminals || {})),
-            flags,
+            doors: config.doors,
+            terminals: config.terminals,
+            flags: config.flags,
             lastInteractionStatus: ""
           };
+          return {
+            enabled: Boolean(config.enabled),
+            location: String(defaults.location || config.initialLocation || "bay.shuttle"),
+            power: String(defaults.power || config.power || "emergency"),
+            security: String(defaults.security || config.security || "quarantine"),
+            objectiveId: String(defaults.objectiveId || config.initialObjective || "objective.bay-ops"),
+            doors: shuttle3dNormalizeMotherShipDoors(defaults.doors || config.doors || {}),
+            terminals: shuttle3dCloneJson(defaults.terminals || config.terminals || {}),
+            flags: shuttle3dNormalizeMotherShipFlags(defaults.flags || config.flags || {}),
+            lastInteractionStatus: String(defaults.lastInteractionStatus || "")
+          };
+        }
+
+        createShipState() {
+          return this.createShipStateFromDefaults();
         }
 
         shipLocationLabel(locationId = this.shipState?.location) {

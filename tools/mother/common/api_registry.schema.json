@@ -1,0 +1,292 @@
+{
+  "$id": "mother.api_registry.schema.v2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "normative-reviewed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "governance": {
+            "properties": {
+              "schema_validation_complete": {
+                "const": true
+              },
+              "semantic_validation_complete": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "governance": {
+      "additionalProperties": false,
+      "properties": {
+        "authored_from_specification": {
+          "const": true
+        },
+        "generated_from_implementation": {
+          "const": false
+        },
+        "implementation_may_rewrite_registry": {
+          "const": false
+        },
+        "owner_document": {
+          "const": "mother-o-f-m.md"
+        },
+        "reviewed_source_hashes": {
+          "additionalProperties": false,
+          "properties": {
+            "mother-o-f-m.md": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "mother-o-f.md": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "mother-o.md": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "mother.md": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mother.md",
+            "mother-o.md",
+            "mother-o-f.md",
+            "mother-o-f-m.md"
+          ],
+          "type": "object"
+        },
+        "schema_validation_complete": {
+          "type": "boolean"
+        },
+        "semantic_validation_complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "owner_document",
+        "authored_from_specification",
+        "generated_from_implementation",
+        "implementation_may_rewrite_registry",
+        "schema_validation_complete",
+        "semantic_validation_complete",
+        "reviewed_source_hashes"
+      ],
+      "type": "object"
+    },
+    "modules": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "authority_class": {
+            "enum": [
+              "orchestrator",
+              "pure",
+              "reader",
+              "ledger-writer",
+              "derived-writer",
+              "live-adapter",
+              "local-authority-writer",
+              "replicated-authority-writer"
+            ]
+          },
+          "effect_contract": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "durable_effect_types": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "durable_path_templates": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "enum_fields": {
+                  "type": "object"
+                },
+                "error_codes": {
+                  "items": {
+                    "pattern": "^(?!.*\\*).+$",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "idempotency_key_fields": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "input_fields": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "type",
+                      "required"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "input_type": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "method": {
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "type": "string"
+                },
+                "optional_fields": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "required_lock_inputs": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "retry_classification": {
+                  "enum": [
+                    "never",
+                    "same-request",
+                    "after-reobserve",
+                    "operator-decision"
+                  ]
+                },
+                "return_type": {
+                  "type": "string"
+                },
+                "returned_evidence_types": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "signature": {
+                  "minLength": 3,
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "specified",
+                    "surface-open",
+                    "contract-open",
+                    "conditional"
+                  ]
+                }
+              },
+              "required": [
+                "method",
+                "signature",
+                "input_type",
+                "input_fields",
+                "return_type",
+                "optional_fields",
+                "enum_fields",
+                "durable_path_templates",
+                "error_codes",
+                "retry_classification",
+                "idempotency_key_fields",
+                "required_lock_inputs",
+                "returned_evidence_types",
+                "durable_effect_types",
+                "status"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "module_id": {
+            "pattern": "^MOTHER-OFM-[A-Z]+-[0-9]{3}$",
+            "type": "string"
+          },
+          "source_path": {
+            "pattern": "^tools/mother/",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id",
+          "source_path",
+          "authority_class",
+          "effect_contract",
+          "methods"
+        ],
+        "type": "object"
+      },
+      "minItems": 80,
+      "type": "array"
+    },
+    "registry_version": {
+      "const": 2
+    },
+    "source_documents": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 4,
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "normative-reviewed"
+      ]
+    },
+    "type_contract": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "registry_version",
+    "status",
+    "governance",
+    "source_documents",
+    "type_contract",
+    "modules"
+  ],
+  "type": "object"
+}

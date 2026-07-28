@@ -6,13 +6,13 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 7bcb507b4acecdba3c16c801f5da222261ef6f11d9e0b94a94d7f9eb3cfc5e28
+SHA-256: f140d2b2f27979757146d1baf53820fcfb8bcdde30e18518a295eee2b26c2364
 
 mother-o.md
-SHA-256: fa2420013238e664d14e4c38554d4b3574b8cbabdc84764803e39a67daade63e
+SHA-256: 39c676c61b8a09ea2a4194cc315a56a9bda1d753dc1deadeeab0136546c56211
 
 mother-o-f.md
-SHA-256: 67bc258d47ff3ea24148969131f74f530250b64d81b4e591e1e07bf8fd5d92ff
+SHA-256: 6413f4f9739a8013af330bc9c52b4727e99c3f35027027d29fa9170a12ce0a3b
 ```
 
 ## 1. Purpose and authority
@@ -475,7 +475,7 @@ return `OperationCommandResult`.
 |---|---|---|---|
 | `MOTHER-OFM-REC-001` | `common/state_sync.py` | `pin_candidate`, `download_to_staging`, `verify_staging`, `prepare_activation`, `switch_pointer`, `reconcile`, `discard` | local-authority writer; never changes network head ID, epoch, or lineage |
 | `MOTHER-OFM-REC-002` | `common/recovery.py` | `load_descriptor`, `prove_unanimous_candidate`, `fetch_objects`, `restore_state_root`, `replay_and_verify`, `activate_replacement_identity`, `replicate_activation` | local then replicated recovery protocol; exact expected set required |
-| `MOTHER-OFM-REC-003` | `common/authority_reseal.py` | `collect_base_reports`, `prove_common_base`, `calculate_head_sets`, `classify_obligations`, `build_intent`, `build_checkpoint`, `build_proposal`, `collect_proposal_acceptances`, `build_certificate`, `compose_membership`, `collect_completed_certificate_acceptances`, `build_bundle`, `commit`, `complete_forward`, `commit_fence_rollover`, `prepare_cancel`, `commit_or_abort_cancel` | D029 authority protocol; all current replicas reachable and accepting; membership-changing mode composes with D028 before completed-certificate acceptance |
+| `MOTHER-OFM-REC-003` | `common/authority_reseal.py` | `collect_base_reports`, `prove_common_base`, `calculate_head_sets`, `classify_obligations`, `freeze_readiness_contract`, `build_intent`, `build_checkpoint`, `build_proposal`, `collect_proposal_acceptances`, `build_certificate`, `compose_membership`, `collect_completed_certificate_acceptances`, `build_bundle`, `commit`, `complete_forward`, `commit_fence_rollover`, `reconcile_proposal_dispatch`, `prepare_cancel`, `commit_or_abort_cancel` | D029 authority protocol; `freeze_readiness_contract` and `compose_membership` freeze and validate structural composition during `prep` only; membership-changing mode invokes the ordinary D028 functionality chains during `do` before completed-certificate acceptance and distinguishes pre-fence readiness cancellation from fenced D029 cancellation |
 
 ### 5.12 Maintenance modules
 
@@ -775,15 +775,67 @@ boundaries.
 | `MOTHER-OF-RSL-002` | `MOTHER-OFM-STATE-001.validate_lineage,replay_forward` → `MOTHER-OFM-REC-003.prove_common_base` | Common old authority generation and replay-valid selected predecessor |
 | `MOTHER-OF-RSL-003` | `MOTHER-OFM-REC-003.calculate_head_sets` → `MOTHER-OFM-CORE-004.set_root` | Observed valid head set and superseded set equal to observed valid heads minus selected predecessor |
 | `MOTHER-OF-RSL-004` | `MOTHER-OFM-CTL-003.inspect_active` → `MOTHER-OFM-RB-003.replay` → `MOTHER-OFM-AUTH-001.resume` → `MOTHER-OFM-AUTH-006.verify_terminal_membership` → `MOTHER-OFM-MEM-003.validate_decision` → `MOTHER-OFM-REC-003.classify_obligations` | Each unresolved obligation preserved, carried as remediation-required, or blocks |
-| `MOTHER-OF-RSL-005` | `MOTHER-OFM-REC-003.build_intent` → `MOTHER-OFM-CORE-003.canonical_json` → `MOTHER-OFM-CORE-012.put_immutable` | Prepared intent containing only pre-entry facts and separate obligation/closure roots |
+| `MOTHER-OF-RSL-005` | `MOTHER-OFM-REC-003.build_intent` → `MOTHER-OFM-CORE-003.canonical_json` → `MOTHER-OFM-CORE-012.put_immutable` | Prepared intent is constructed during `do`, after any actual prospective-readiness root exists, and contains only pre-entry facts plus separate obligation/closure roots |
 | `MOTHER-OF-RSL-006` | `MOTHER-OFM-REC-003.build_checkpoint` → `MOTHER-OFM-STATE-002.build_checkpoint,validate_checkpoint` → `MOTHER-OFM-CORE-012.put_immutable` | Exact successor checkpoint binding `prepared_intent_hash`, not future proposal/certificate hashes |
 | `MOTHER-OF-RSL-007` | `MOTHER-OFM-REC-003.build_proposal,collect_proposal_acceptances` → `MOTHER-OFM-AUTH-002.validate_acceptances` | Proposal binds intent plus entry and is accepted exactly once by every base-authority replica, installing the D029 fence |
-| `MOTHER-OF-RSL-008` | `MOTHER-OFM-REC-003.build_certificate` → conditional `MOTHER-OFM-REC-003.collect_completed_certificate_acceptances` → `MOTHER-OFM-CORE-012.put_immutable` | Certificate is built after proposal acceptance; completed-certificate acceptance is immediate for pure D029 but, for membership-changing D029+D028, occurs only after RSL-009 creates the D028 transition-acceptance root and transition-decision hash |
-| `MOTHER-OF-RSL-009` | `MOTHER-OFM-REC-003.compose_membership` → `MOTHER-OFM-MEM-002` readiness APIs → `MOTHER-OFM-MEM-003` transition-acceptance/decision APIs | D028 readiness, transition-acceptance root, and transition decision are durable before membership-mode D029 completed-certificate acceptance |
+| `MOTHER-OF-RSL-008` | `MOTHER-OFM-REC-003.build_certificate` → `MOTHER-OFM-CORE-012.put_immutable` | Authority-reseal certificate constructed from the full proposal-acceptance set; no completed-certificate acceptance occurs in this functionality |
+| `MOTHER-OF-RSL-009` | `MOTHER-OFM-MEM-001.calculate_sets,freeze_sets` → `MOTHER-OFM-REC-003.freeze_readiness_contract,compose_membership` → `MOTHER-OFM-CORE-008.store_evidence` | Freeze the prospective set, expected generation, required closure and schemas, readiness-receipt contract/version, expected membership sets, and structural legality during `prep`; this functionality performs no participant mutation and creates no readiness or transition result |
 | `MOTHER-OF-RSL-010` | `MOTHER-OFM-REC-003.build_bundle` → `MOTHER-OFM-AUTH-003.build_bundle,validate_bundle` → `MOTHER-OFM-CORE-012.put_immutable` | `authority-reseal` bundle with D028 roots when membership changes |
 | `MOTHER-OF-RSL-011` | `MOTHER-OFM-REC-003.commit` → `MOTHER-OFM-AUTH-004.commit_entry_bundle_pair` → `MOTHER-OFM-AUTH-007.reconcile_head_commit` | Atomic authority-reseal entry/bundle head commit |
 | `MOTHER-OF-RSL-012` | `MOTHER-OFM-REC-003.complete_forward` → `MOTHER-OFM-AUTH-005.replicate_closure,collect_acknowledgements` → `MOTHER-OFM-AUTH-002.build_ack_certificate` → `MOTHER-OFM-MEM-001.validate_terminal_evidence` and conditional `activate`/`retire` → `MOTHER-OFM-REC-003.commit_fence_rollover` | Reseal replicated, acknowledged, membership-completed, and D029/D028 protocol ownership closed; logical scope release remains owned by `MOTHER-OF-CTL-016` |
-| `MOTHER-OF-RSL-013` | `MOTHER-OFM-REC-003.prepare_cancel` → conditional `MOTHER-OFM-MEM-003.cancel_decision` → conditional `MOTHER-OFM-MEM-002.cancel_and_tombstone` → `MOTHER-OFM-REC-003.commit_or_abort_cancel` | D029 cancellation keeps the D029 fence installed until any composed D028 full-set cancellation is terminal; logical scope release remains owned by `MOTHER-OF-CTL-016` |
+| `MOTHER-OF-RSL-013` | `MOTHER-OFM-REC-003.reconcile_proposal_dispatch` → `MOTHER-OFM-REC-003.prepare_cancel` | Full-set D029 cancellation prepare only; the D029 fence remains active and this functionality does not execute D028 cancellation or tombstone the D029 fence |
+| `MOTHER-OF-RSL-014` | `MOTHER-OFM-REC-003.collect_completed_certificate_acceptances` → `MOTHER-OFM-CORE-004.set_root` → `MOTHER-OFM-CORE-012.put_immutable` | Full base-authority completed-certificate acceptance; pure D029 runs immediately after RSL-008, while membership-changing D029 runs only after `MOTHER-OF-MEM-007` and `MOTHER-OF-MEM-008` have made the exact D028 transition evidence durable |
+| `MOTHER-OF-RSL-015` | `MOTHER-OFM-REC-003.commit_or_abort_cancel` | D029 cancellation commits or aborts only after any composed D028 full-set cancellation is terminal; logical scope release remains owned by `MOTHER-OF-CTL-016` |
+
+For membership-changing D029+D028, the functionality expansion is stage-bound
+and mechanically contiguous:
+
+```text
+prep:
+  RSL-009
+  → acquire logical scopes
+  → record the frozen operation plan
+
+do:
+  MOTHER-OF-MEM-002 through MOTHER-OF-MEM-006
+  → RSL-005
+  → RSL-006
+  → RSL-007
+  → RSL-008
+  → MOTHER-OF-MEM-007
+  → MOTHER-OF-MEM-008
+  → RSL-014
+```
+
+`MOTHER-OF-RSL-009` is invoked exactly once and has no `do` portion. No
+`MOTHER-OFM-MEM-002` mutating readiness API or
+`MOTHER-OFM-REC-003.build_intent` call is valid during `prep`.
+
+Cancellation expands by durable evidence:
+
+```text
+readiness exists; no D029 proposal acceptance anywhere:
+  reconcile proposal dispatch across every base-authority replica
+  → MOTHER-OFM-MEM-002.cancel_and_tombstone
+  → preserve readiness evidence
+  → no D029 cancellation certificate
+
+D029 proposal acceptance exists anywhere:
+  RSL-013
+  → retain D029 fence
+  → MOTHER-OFM-MEM-003.cancel_decision when a D028 decision exists
+  → MOTHER-OFM-MEM-002.cancel_and_tombstone
+  → prove D028 cancellation terminal
+  → RSL-015
+
+completed-certificate acceptance exists anywhere:
+  cancellation prohibited
+  → complete the exact operation forward
+```
+
+Absence of a local acceptance is not evidence that the pre-fence branch applies.
+The dispatch reconciliation report MUST cover every base-authority replica.
+
 
 ### 7.12 Schema migration
 
@@ -1165,12 +1217,17 @@ reopens rollback.
 | Projection head changed before publish | Discard and bounded-retry from the new pinned head |
 
 Cancellation modules accept the same authority-generation lock and exact
-prepared object identity as acceptance. For membership-changing D029+D028,
-D029 cancellation prepare and D028 cancellation are distinct terminal protocols:
-the D029 fence remains installed until D028 cancellation is fully proven and the
-D029 cancellation commit or abort is recorded. `MOTHER-OF-CTL-016` performs
-logical scope and current-operation release only after durable cancellation or
-terminal forward proof on every required participant.
+prepared object identity as acceptance. Before any D029 proposal acceptance,
+prospective readiness MAY be canceled directly through the complete D028
+readiness-cancellation path only after full base-authority dispatch
+reconciliation proves that no proposal acceptance exists. After any D029
+proposal acceptance, D029 cancellation prepare and D028 cancellation are
+distinct terminal protocols: the D029 fence remains installed until D028
+cancellation is fully proven and `MOTHER-OF-RSL-015` records the D029
+cancellation commit or abort. Any completed-certificate acceptance prohibits
+cancellation and requires exact forward completion. `MOTHER-OF-CTL-016`
+performs logical scope and current-operation release only after durable
+cancellation or terminal forward proof on every required participant.
 
 ## 13. Requirement-to-module coverage
 
@@ -1308,28 +1365,82 @@ chain or safety contract.
 No module implementation MAY fill these gaps by choosing a convenient local
 pointer, using live facts as authority, or reusing an unrelated successor kind.
 
-## 16. Public callable interface appendix
+## 16. Public callable interface registry gate
 
-Before contract tests are written, the implementation MUST materialize the
-public module seams from sections 5 and 7 into a checked registry at
-`tools/mother/common/api_registry.yaml` or an equivalent generated artifact. The
-registry is the callable-interface source of truth for tests; prose tables are
-the human-readable source.
+No checked-in `tools/mother/common/api_registry.yaml` is authoritative merely
+because it exists. A missing registry or a registry whose top-level status is
+not `normative-reviewed` is specification-incomplete and MUST block module
+contract tests and production module implementation. It MUST NOT be used for
+code generation, interface selection, path ownership, error selection, or lock
+selection.
 
-Each public method entry MUST contain:
+The callable registry is authored as specification work from this document,
+not generated from implementation. The governance order is:
+
+```text
+mother-o-f-m.md behavior and module ownership
+→ specification-authored api_registry.yaml, dependency layer by dependency layer
+→ JSON Schema validation and semantic consistency validation
+→ explicit specification review and status: normative-reviewed
+→ contract tests
+→ implementation
+```
+
+The required authoring order is:
+
+```text
+core types and primitives
+→ state models and canonical paths
+→ control, operation ledger, and locks
+→ authority, finalization, and rollback
+→ membership, recovery, sync, and reseal
+→ external adapters
+→ operation entry modules
+```
+
+Code MAY consume only a `normative-reviewed` registry to generate adapters,
+stubs, fixtures, or tests. Generated or production code MUST NOT create,
+rewrite, normalize, or backfill the registry from implemented interfaces.
+
+`tools/mother/common/api_registry.schema.json` and
+`tools/mother/common/validate_api_registry.py` are registry-authoring gates.
+Schema success is necessary but not sufficient. The validator MUST apply the
+JSON Schema, reject a missing or draft registry for contract-test readiness, and
+MUST NOT report semantic validity merely from counts, duplicate checks, or key
+presence.
+
+Before a registry can receive `normative-reviewed`, specification review and
+validation MUST establish:
+
+1. exact agreement with the operation shell in section 8.1;
+2. exact documented signatures for primitives such as
+   `canonical_json(value) -> bytes` and `sha256(data: bytes) -> ContentHash`;
+3. no scope locks, operation-record writes, or durable effects for pure and
+   read-only calls;
+4. no direct persistent-path ownership for orchestrators;
+5. canonical path templates and one exclusive writer for every persistent path;
+6. exact public error codes, with no namespace wildcards;
+7. concrete definitions for every request, result, enum, evidence, and durable
+   effect type named by a public method;
+8. operation and module status agreement, including `surface-open` methods;
+9. `contract-open` mutations failing before locks, staging, or durable effects;
+10. method-specific idempotency, required-lock, evidence, effect, and retry
+    semantics.
+
+Each reviewed public method entry MUST contain exact, method-specific values for:
 
 ```yaml
 module_id: MOTHER-OFM-...
 source_path: tools/mother/...
 method: method_name
-signature: "method_name(ctx: MotherContext, input: TypedInput, *, idempotency_key: IdempotencyKey, locks: LockSet) -> TypedResult"
-input_type: TypedInput
-return_type: TypedResult
+signature: "exact documented callable signature"
+input_type: ConcreteInputType
+return_type: ConcreteResultType
 optional_fields: []
 enum_fields: {}
 durable_path_templates: []
 error_codes: []
-retry_classification: fatal | retry_same_request | reconcile | blocked_open_contract
+retry_classification: never | same-request | after-reobserve | operator-decision
 idempotency_key_fields: []
 required_lock_inputs: []
 returned_evidence_types: []
@@ -1337,15 +1448,12 @@ durable_effect_types: []
 status: specified | surface-open | contract-open | conditional
 ```
 
-Operation entry modules use the exact shell from section 8.1. Lower-level module
-methods MAY use more specific typed input and result models, but they MUST NOT
-accept untyped dictionaries for authoritative mutation and MUST NOT perform a
-side effect unless the registry lists the required locks, idempotency key,
-durable path ownership, returned evidence type, and retry classification.
-
-For `contract-open` paths, the registry MUST expose only read-only preparation,
-diagnosis, or planning calls plus disabled mutating calls that fail before their
-first side effect with the corresponding `MOTHER_OPEN_*` error.
+Generic request/result placeholders, empty enum maps where an enum is required,
+wildcard error namespaces, invented path templates, or templated lock/effect
+claims MUST fail review. For `contract-open` paths, the registry MAY expose
+read-only preparation, diagnosis, or planning calls and disabled mutating calls
+that return the exact `MOTHER_OPEN_*` error before their first lock or side
+effect.
 
 ## 17. Implementation order
 
@@ -1398,8 +1506,8 @@ Before production code is considered conformant:
 
 ## 19. Machine-checkable traceability
 
-The implementation repository MUST maintain a registry generated from or
-validated against this document with:
+Before module contract tests begin, the specification repository MUST contain a
+reviewed registry authored from and validated against this document with:
 
 ```text
 module_id
@@ -1446,8 +1554,9 @@ mother.md requirement
   -> mother-o.md operation
     -> mother-o-f.md functionality placement
       -> mother-o-f-m.md module call
-        -> module contract test
-          -> implementation
+        -> normative-reviewed api_registry.yaml callable contract
+          -> module contract test
+            -> implementation
 ```
 
 Tests and implementations are not alternative requirements sources.

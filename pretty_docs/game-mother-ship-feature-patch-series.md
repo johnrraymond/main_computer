@@ -39,6 +39,8 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
+Patch B implementation note: mother-ship state defaults should now flow through `shuttle3dMotherShipInteriorStateDefaults()`, `stateDefaults`, and `createShipStateFromDefaults()` before later patches extract rooms and interactables into data.
+
 ## Patch series overview
 
 | Patch | Working name | Player-facing result |
