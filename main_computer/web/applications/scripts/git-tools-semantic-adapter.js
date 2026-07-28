@@ -4,7 +4,7 @@
 
     if (!global) return;
 
-    const VERSION = "git-tools-semantic-adapter-gap-closure-v8";
+    const VERSION = "git-tools-semantic-adapter-ignore-preview-v9";
     const APP_ID = "git-tools";
     const ADAPTER_ID = "git-tools-domain-adapter";
     const STATE_SCHEMA_VERSION = "git-tools-semantic-state-v1";
@@ -106,8 +106,8 @@
       Object.freeze({
         id: "previewIgnoreRule",
         label: "Preview ignore rule",
-        risk: "local-file-mutation",
-        mutates: true,
+        risk: "safe-read",
+        mutates: false,
         requiresGitRepo: true,
         requiresRemote: false,
         preflightRequired: true
@@ -641,14 +641,14 @@
         "inspectRemotes",
         "inspectPatchInventory",
         "preparePush",
-        "pushCurrentBranch"
+        "pushCurrentBranch",
+        "previewIgnoreRule"
       ].includes(definition.id)) {
         return "executable";
       }
       if ([
         "commitSelectedFiles",
-        "prepareLocalGiteaTarget",
-        "previewIgnoreRule"
+        "prepareLocalGiteaTarget"
       ].includes(definition.id)) {
         return "preflight-only";
       }
@@ -674,6 +674,9 @@
       }
       if (definition.id === "pushCurrentBranch" && status === "executable") {
         return "git-tools-server-panel.serverPushLocal";
+      }
+      if (definition.id === "previewIgnoreRule" && status === "executable") {
+        return "git-tools-semantic-adapter.previewIgnoreRule";
       }
       if (status === "preflight-only") return "mcel-preflight-gap";
       if (status === "prohibited") return "policy-prohibited";
@@ -722,10 +725,19 @@
           entry.intentId === "pushCurrentBranch" &&
           entry.status === "executable"
       );
+      const ignoreRulePreviewExecutable = entries.some(
+        (entry) =>
+          entry.intentId === "previewIgnoreRule" &&
+          entry.status === "executable"
+      );
       const semanticRuntimeScope = governedPublishExecutable
         ? (
           safeReadComplete
-            ? "governed-publish-gap-closed-partial"
+            ? (
+              ignoreRulePreviewExecutable
+                ? "governed-publish-ignore-preview-partial"
+                : "governed-publish-gap-closed-partial"
+            )
             : "governed-publish-partial"
         )
         : (
@@ -864,6 +876,38 @@
     function normalizeIntentParameters(intentOrId, input = {}) {
       const intentId = normalizeIntentId(intentOrId);
       const safeInput = input && typeof input === "object" ? input : {};
+      if (intentId === "previewIgnoreRule") {
+        const rule = String(
+          safeInput.rule ??
+          safeInput.ignoreRule ??
+          safeInput.pattern ??
+          safeInput.path ??
+          safeInput.targetPath ??
+          ""
+        ).trim();
+        return {
+          repoDir: String(
+            safeInput.repoDir ??
+            safeInput.repo_dir ??
+            ""
+          ).trim(),
+          rule,
+          targetPath: String(
+            safeInput.targetPath ??
+            safeInput.path ??
+            ""
+          ).trim(),
+          source: String(safeInput.source || "semantic-adapter").trim(),
+          generatedRisk:
+            safeInput.generatedRisk === true ||
+            safeInput.generated_risk === true ||
+            safeInput.classification === "generated",
+          secretRisk:
+            safeInput.secretRisk === true ||
+            safeInput.secret_risk === true ||
+            safeInput.classification === "secret"
+        };
+      }
       if (intentId !== "pushCurrentBranch" && intentId !== "preparePush") {
         return {};
       }
@@ -882,6 +926,48 @@
         repo: String(safeInput.repo ?? safeInput.repoName ?? "").trim(),
         protocol: String(safeInput.protocol ?? "http").trim().toLowerCase() || "http",
         switchOrigin: safeInput.switchOrigin === true || safeInput.switch_origin === true
+      };
+    }
+
+    function ignoreRulePreviewPayload(parameters = {}, state = getState()) {
+      const rule = String(parameters.rule || "").trim();
+      const safeState = state && typeof state === "object" ? state : getState();
+      const normalizedRule = rule.replace(/^[./\\]+/, "");
+      const escapedRule = normalizedRule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const anchoredRegex = normalizedRule
+        ? `(^|/)${escapedRule}($|/)`
+        : "";
+      return {
+        kind: "ignore-rule-preview",
+        repository: safeState.gitRoot || safeState.repoDir || "",
+        branch: safeState.branch || "unknown",
+        rule,
+        normalizedRule,
+        targetPath: String(parameters.targetPath || ""),
+        proposedLine: rule,
+        wouldWriteGitignore: false,
+        wouldRunGitCommand: false,
+        wouldCommit: false,
+        diffPreview: rule
+          ? {
+              path: ".gitignore",
+              operation: "append-preview",
+              addedLines: [rule],
+              removedLines: [],
+              writeRequired: false
+            }
+          : null,
+        affectedFileExplanation: rule
+          ? `Files matching "${rule}" would be ignored after an explicit apply action.`
+          : "No ignore rule was supplied.",
+        rollbackGuidance: rule
+          ? `Remove the "${rule}" line from .gitignore if a later explicit apply action is reverted.`
+          : "No rollback is needed because no ignore rule was supplied.",
+        classification: {
+          generatedRisk: parameters.generatedRisk === true,
+          secretRisk: parameters.secretRisk === true
+        },
+        matcher: anchoredRegex
       };
     }
 
@@ -1434,6 +1520,49 @@
       }
 
       if (
+        definition?.id === "previewIgnoreRule" &&
+        blockers.length === 0
+      ) {
+        const rule = String(parameters.rule || "").trim();
+        if (!rule) {
+          addBlocker(
+            blockers,
+            "ignore-rule-missing",
+            "A candidate ignore rule or target path is required for preview."
+          );
+        } else if (/[\r\n]/.test(rule)) {
+          addBlocker(
+            blockers,
+            "ignore-rule-multiline",
+            "Ignore rule previews must be a single .gitignore line."
+          );
+        } else if (/\0/.test(rule)) {
+          addBlocker(
+            blockers,
+            "ignore-rule-invalid",
+            "Ignore rule previews must not contain NUL characters."
+          );
+        }
+
+        if (parameters.generatedRisk === true) {
+          addWarning(
+            warnings,
+            "ignore-rule-generated-risk",
+            "The candidate appears to target generated content; verify it does not hide source files.",
+            {rule}
+          );
+        }
+        if (parameters.secretRisk === true) {
+          addWarning(
+            warnings,
+            "ignore-rule-secret-risk",
+            "The candidate may hide secret material; rotate exposed secrets instead of only ignoring them.",
+            {rule}
+          );
+        }
+      }
+
+      if (
         definition &&
         (definition.id === "preparePush" || definition.id === "pushCurrentBranch") &&
         blockers.length === 0
@@ -1918,6 +2047,52 @@
       return storeReceipt(decoratedReceipt, options);
     }
 
+    function buildPreviewIgnoreRuleExecutionReceipt(preflight, stateBefore, preview, options = {}) {
+      const definition = definitionFor("previewIgnoreRule");
+      receiptSequence += 1;
+      const createdAt = nowIso({
+        now: options.completedAt || options.now || new Date().toISOString()
+      });
+      const fingerprint = stateFingerprint(stateBefore || initialState());
+      const receipt = {
+        schemaVersion: RECEIPT_SCHEMA_VERSION,
+        receiptId: `${APP_ID}-receipt-${Date.parse(createdAt) || Date.now()}-${receiptSequence}`,
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        kind: "action-execution-receipt",
+        intentId: "previewIgnoreRule",
+        risk: String(definition?.risk || preflight?.risk || "safe-read"),
+        status: "succeeded",
+        decision: "allow",
+        createdAt,
+        startedAt: String(options.startedAt || preflight?.evaluatedAt || createdAt),
+        completedAt: createdAt,
+        preflightId: String(preflight?.preflightId || ""),
+        stateObservedAt: String(stateBefore?.observedAt || ""),
+        stateFingerprint: fingerprint,
+        stateBeforeFingerprint: fingerprint,
+        stateAfterFingerprint: fingerprint,
+        parameters: clonePlain(preflight?.parameters || {}),
+        blockers: clonePlain(preflight?.blockers || []),
+        warnings: clonePlain(preflight?.warnings || []),
+        executionAttempted: true,
+        executionBinding: "git-tools-semantic-adapter.previewIgnoreRule",
+        result: {
+          status: "succeeded",
+          ...clonePlain(preview || {})
+        },
+        error: null,
+        recoveryClassified: false
+      };
+      const decoratedReceipt = decorateReceiptWithRecovery(
+        receipt,
+        stateBefore || getState(),
+        options
+      );
+      return storeReceipt(decoratedReceipt, options);
+    }
+
     function blockedPreflightExecutionResult(intentId, preflight, stateBefore, options = {}) {
       const receipt = buildReceipt(preflight, options);
       return {
@@ -1996,6 +2171,45 @@
           confirmationRequired: preflight.confirmationRequired === true,
           executionAvailable: preflight.executionAvailable === true
         },
+        stateBefore: canonicalStateSnapshot(stateBefore),
+        stateAfter: canonicalStateSnapshot(stateBefore),
+        error: null
+      };
+    }
+
+    async function executePreviewIgnoreRuleIntent(options = {}) {
+      const stateBefore = getState();
+      const preflight = evaluatePreflight("previewIgnoreRule", stateBefore, options);
+      if (preflight.blocked) {
+        return blockedPreflightExecutionResult(
+          "previewIgnoreRule",
+          preflight,
+          stateBefore,
+          options
+        );
+      }
+      const preview = ignoreRulePreviewPayload(preflight.parameters, stateBefore);
+      const receipt = buildPreviewIgnoreRuleExecutionReceipt(
+        preflight,
+        stateBefore,
+        preview,
+        options
+      );
+      return {
+        schemaVersion: "git-tools-execution-result-v1",
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        intentId: "previewIgnoreRule",
+        status: receipt.status,
+        decision: "allow",
+        executionAttempted: true,
+        executionBinding: receipt.executionBinding,
+        blockers: clonePlain(preflight.blockers || []),
+        warnings: clonePlain(preflight.warnings || []),
+        preflight,
+        receipt,
+        result: clonePlain(receipt.result || {}),
         stateBefore: canonicalStateSnapshot(stateBefore),
         stateAfter: canonicalStateSnapshot(stateBefore),
         error: null
@@ -2388,6 +2602,9 @@
       if (intentId === "preparePush") {
         return executePreparePushIntent(options);
       }
+      if (intentId === "previewIgnoreRule") {
+        return executePreviewIgnoreRuleIntent(options);
+      }
       if (intentId === "pushCurrentBranch") {
         return executePushIntent(options);
       }
@@ -2514,6 +2731,7 @@
       DEFAULT_MAX_STATE_AGE_MS,
       normalizeStatus,
       evaluatePreflight,
+      ignoreRulePreviewPayload,
       stateContentFingerprint,
       buildExecutionReceipt,
       buildPushExecutionReceipt,

@@ -395,6 +395,7 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_CONFLICT_DURABLE_TARGET_EXISTS` | `MOTHER-OFM-CORE-011.durable_create` | `after-reobserve` | `none` | Exclusive publication found an already-published target and did not overwrite it. |
 | `MOTHER_STATE_DURABLE_TARGET_MISSING` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The required durable pointer or target is absent before any authority effect. |
 | `MOTHER_STATE_DURABLE_READ_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `none` | A host-filesystem read failed before a new authority effect; the typed cause is retained. |
+| `MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `none` | No publication occurred, or the call was read-only, but target-lock handle cleanup could not be confirmed. The caller reobserves the target and lock state before retrying. |
 | `MOTHER_STATE_DURABLE_WRITE_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `same-request` | `none` | Temporary creation, complete write, file flush, reread verification, or publication failed before the target became authoritative. |
 | `MOTHER_STATE_DURABILITY_UNCONFIRMED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `local-pointer-determined` | A file, pointer, object, or directory entry exists after publication, but required parent-directory durability was not confirmed. The error carries at least one typed `DurableEffectRef`; reconciliation verifies the bytes and flushes the required directory before reporting success. |
 | `MOTHER_STATE_POSTPUBLICATION_CLEANUP_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `local-pointer-determined` | Directory durability is confirmed, but lock-handle closure or another post-publication cleanup step is unconfirmed. The durable authority result remains controlling and the error carries its typed `DurableEffectRef`. Failure of an explicit unlock MAY be ignored only when handle closure succeeds, because closure releases the operating-system lock. |
@@ -1168,8 +1169,14 @@ directory, and only then reports success.
 
 Different bytes at an existing hash-derived path are fatal corruption.
 Every CORE-011/012 public call receives the real `OperationIdentity`. Host
-filesystem exceptions, including metadata probes and cleanup, never cross
-these public boundaries untyped. CORE-011 tracks the exact stage
+filesystem exceptions, including absolute-path resolution, temporary-file
+descriptor wrapping, complete write, flush, file `fsync`, descriptor closure,
+metadata probes, and cleanup, never cross these public boundaries untyped.
+A temporary-file failure before publication uses
+`MOTHER_STATE_DURABLE_WRITE_FAILED`. A target-lock cleanup failure when no
+publication occurred, or after a read-only synchronized call, uses
+`MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED` with `authority_effect=none`.
+CORE-011 tracks the exact stage
 `prepublication`, `published-unflushed`, or `durable`. A failure before
 publication has `authority_effect=none`; a failure after publication but before
 confirmed directory durability has `authority_effect=local-pointer-determined`
@@ -1184,7 +1191,11 @@ Failure of an explicit platform unlock MAY return success only when closing the
 lock handle succeeds, because successful handle closure releases the
 operating-system lock. CORE-012 MUST synchronize through the public
 `MOTHER-OFM-CORE-011.synchronized_target` seam and MUST NOT call private lock
-helpers.
+helpers. CORE-012 translates CORE-011 cleanup errors at its public boundary:
+post-publication cleanup retains `MOTHER_STATE_POSTPUBLICATION_CLEANUP_FAILED`
+but carries an `immutable-object-publication` effect reference owned by
+CORE-012; read-only or prepublication lock cleanup uses
+`MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED` with no authority effect.
 
 ### 10.2 Stable read
 

@@ -77,6 +77,22 @@ def _as_path(value: str | os.PathLike[str]) -> Path:
     return path.absolute()
 
 
+def _normalized_path(
+    value: str | os.PathLike[str],
+    operation: OperationIdentity,
+) -> Path:
+    try:
+        return _as_path(value)
+    except ValueError as exc:
+        raise _unsafe_path(operation, str(exc), exc) from exc
+    except OSError as exc:
+        raise _durable_read_failed(
+            operation,
+            "failed to resolve the absolute durable path",
+            exc,
+        ) from exc
+
+
 def _durable_read_failed(
     operation: OperationIdentity,
     message: str,
@@ -316,9 +332,9 @@ class _ExclusiveTargetLock:
         if self._stage is _PublicationStage.PREPUBLICATION:
             return _mother_error(
                 self._operation,
-                "MOTHER_STATE_DURABLE_WRITE_FAILED",
-                "failed to close the durable-target lock before publication",
-                retry_class="same-request",
+                "MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED",
+                "failed to close the durable-target lock without publication",
+                retry_class="after-reobserve",
                 cause=cause,
             )
         if self._stage is _PublicationStage.PUBLISHED_UNFLUSHED:
@@ -375,10 +391,7 @@ def synchronized_target(
     """Synchronize a target across Mother threads and spawned processes."""
 
     op = _operation(operation)
-    try:
-        target = _as_path(path)
-    except ValueError as exc:
-        raise _unsafe_path(op, str(exc), exc) from exc
+    target = _normalized_path(path, op)
     _validate_safe_path(target, op)
     return _ExclusiveTargetLock(target, op)
 
@@ -463,7 +476,7 @@ def ensure_durable_directory(
     """Create each missing directory level and durably commit each parent entry."""
 
     op = _operation(operation)
-    directory = _as_path(path)
+    directory = _normalized_path(path, op)
     _validate_safe_path(directory, op)
 
     missing: list[Path] = []
@@ -530,28 +543,66 @@ def _prepare_temp(
     controller: Any,
     operation: OperationIdentity,
 ) -> Path:
+    raw_fd: int | None = None
+    temp_path: Path | None = None
     try:
-        fd, raw_path = tempfile.mkstemp(
-            prefix=f".{target_name}.mother-",
-            suffix=".tmp",
-            dir=parent,
-        )
-    except OSError as exc:
-        raise _mother_error(
-            operation,
-            "MOTHER_STATE_DURABLE_WRITE_FAILED",
-            "failed to create the same-directory temporary file",
-            retry_class="same-request",
-            cause=exc,
-        ) from exc
+        try:
+            raw_fd, raw_path = tempfile.mkstemp(
+                prefix=f".{target_name}.mother-",
+                suffix=".tmp",
+                dir=parent,
+            )
+        except OSError as exc:
+            raise _mother_error(
+                operation,
+                "MOTHER_STATE_DURABLE_WRITE_FAILED",
+                "failed to create the same-directory temporary file",
+                retry_class="same-request",
+                cause=exc,
+            ) from exc
 
-    temp_path = Path(raw_path)
-    try:
-        with os.fdopen(fd, "wb", closefd=True) as handle:
-            handle.write(data)
-            handle.flush()
-            _faultpoint(controller, "immutable.after_temp_write")
-            os.fsync(handle.fileno())
+        temp_path = Path(raw_path)
+        try:
+            handle = os.fdopen(raw_fd, "wb", closefd=True)
+        except OSError as exc:
+            close_error: OSError | None = None
+            try:
+                os.close(raw_fd)
+            except OSError as caught:
+                close_error = caught
+            finally:
+                raw_fd = None
+            cause = close_error if close_error is not None else exc
+            raise _mother_error(
+                operation,
+                "MOTHER_STATE_DURABLE_WRITE_FAILED",
+                "failed to wrap or close the temporary-file descriptor",
+                retry_class="same-request",
+                cause=cause,
+            ) from exc
+
+        # Ownership transferred to the file object. Its context-manager close is
+        # part of the prepublication write boundary and must also be translated.
+        raw_fd = None
+        try:
+            with handle:
+                written = handle.write(data)
+                if written != len(data):
+                    raise OSError(
+                        f"short temporary-file write: {written} of {len(data)} bytes"
+                    )
+                handle.flush()
+                _faultpoint(controller, "immutable.after_temp_write")
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise _mother_error(
+                operation,
+                "MOTHER_STATE_DURABLE_WRITE_FAILED",
+                "failed to write, flush, fsync, or close the temporary file",
+                retry_class="same-request",
+                cause=exc,
+            ) from exc
+
         _faultpoint(controller, "immutable.after_file_fsync")
         try:
             reread = temp_path.read_bytes()
@@ -570,13 +621,19 @@ def _prepare_temp(
                 "flushed temporary bytes failed exact reread/hash verification",
                 retry_class="same-request",
             )
+        return temp_path
     except BaseException:
-        try:
-            temp_path.unlink()
-        except OSError:
-            pass
+        if raw_fd is not None:
+            try:
+                os.close(raw_fd)
+            except OSError:
+                pass
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
         raise
-    return temp_path
 
 
 def _publication_unconfirmed(
@@ -612,10 +669,7 @@ def stable_read(
         raise TypeError("load must be callable")
     if type(max_attempts) is not int or max_attempts <= 0:
         raise ValueError("max_attempts must be a positive integer")
-    try:
-        path = _as_path(pointer)
-    except ValueError as exc:
-        raise _unsafe_path(op, str(exc), exc) from exc
+    path = _normalized_path(pointer, op)
     _validate_safe_path(path, op)
     if _probe_exists(path, op) and not _probe_is_file(path, op):
         raise _unsafe_path(op, f"stable-read target is not a regular file: {path}")
@@ -668,10 +722,7 @@ def durable_create(
     """Publish exact bytes only when the target is absent."""
 
     op = _operation(operation)
-    try:
-        path = _as_path(target)
-    except ValueError as exc:
-        raise _unsafe_path(op, str(exc), exc) from exc
+    path = _normalized_path(target, op)
     payload = _bytes(data, "data")
     _validate_safe_path(path, op)
     ensure_durable_directory(path.parent, operation=op)
@@ -746,10 +797,7 @@ def durable_replace(
     """Atomically replace or create a durable target with exact bytes."""
 
     op = _operation(operation)
-    try:
-        path = _as_path(target)
-    except ValueError as exc:
-        raise _unsafe_path(op, str(exc), exc) from exc
+    path = _normalized_path(target, op)
     payload = _bytes(data, "data")
     _validate_safe_path(path, op)
     ensure_durable_directory(path.parent, operation=op)
@@ -809,10 +857,7 @@ def atomic_pointer_cas(
     """Replace a pointer iff its current exact bytes equal ``expected``."""
 
     op = _operation(operation)
-    try:
-        path = _as_path(pointer)
-    except ValueError as exc:
-        raise _unsafe_path(op, str(exc), exc) from exc
+    path = _normalized_path(pointer, op)
     expected_bytes = None if expected is None else _bytes(expected, "expected")
     replacement_bytes = _bytes(replacement, "replacement")
     _validate_safe_path(path, op)

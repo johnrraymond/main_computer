@@ -4,12 +4,12 @@
 
 This is the documentation-first requirements contract for the Git Tools app.
 
-The current implementation already has a substantial Git Tools workbench, project cards, status APIs, patch inventory helpers, Git ignore/filter/secrets workbenches, project-level publishing plans, and a real MCEL semantic adapter for a governed push slice. Patch 37 enrolled the live Git Tools workbench for runtime-baseline app-surface proof. Patch 38 closes the adapter coverage gap for read-only inspection and push preparation while still not claiming full application semantic readiness through the MCEL adapter registry.
+The current implementation already has a substantial Git Tools workbench, project cards, status APIs, patch inventory helpers, Git ignore/filter/secrets workbenches, project-level publishing plans, and a real MCEL semantic adapter for a governed push slice. Patch 37 enrolled the live Git Tools workbench for runtime-baseline app-surface proof. Patch 38 closed the adapter coverage gap for read-only inspection and push preparation. Patch 39 makes ignore-rule preview executable as evidence-only semantic execution while still not claiming full application semantic readiness through the MCEL adapter registry.
 
 So this document must be read as:
 
 ```text
-current: runtime-baseline surface proof plus gap-closed semantic adapter coverage for governed publishing and read-only inspection
+current: runtime-baseline surface proof plus gap-closed semantic adapter coverage for governed publishing, read-only inspection, and evidence-only ignore-rule preview
 planned: full Git Tools semantic runtime for repository inspection, project publishing, file triage, recovery, and advanced Git evidence
 ```
 
@@ -19,23 +19,28 @@ The purpose of this document is to make Git Tools requirements stable enough tha
 id: git-tools
 title: Git Tools
 status: specified
-current_runtime_status: runtime-baseline-with-gap-closed-semantic-adapter
-current_semantic_runtime_scope: governed-publish-gap-closed-partial
+current_runtime_status: runtime-baseline-with-ignore-preview-semantic-adapter
+current_semantic_runtime_scope: governed-publish-ignore-preview-partial
 target_runtime_status: full-application-semantic-runtime
-patch_38_gap_closure:
+patch_39_gap_closure:
   executable_now:
     - inspectWorkingTree
     - inspectRemotes
     - inspectPatchInventory
     - preparePush
+    - previewIgnoreRule
   intentionally_preflight_only:
     - commitSelectedFiles
     - prepareLocalGiteaTarget
-    - previewIgnoreRule
+  evidence_only_execution:
+    previewIgnoreRule: >
+      Generates a .gitignore diff preview, affected-file explanation, risk
+      classification, rollback guidance, and receipt without writing .gitignore,
+      running Git commands, committing, pushing, or preparing Local Gitea state.
   still_not_semantic_runtime_reason: >
-    Commit creation, Local Gitea target mutation, and ignore-rule mutation remain
-    preflight-only gap intents until their backend execution lanes have bounded
-    receipts and recovery proof.
+    Commit creation and Local Gitea target mutation remain preflight-only gap
+    intents until their backend execution lanes have bounded receipts and
+    recovery proof.
 dominant_object: RepositoryProject
 primary_user_goal: >
   Inspect repository state, triage files, create safe commits, and publish
@@ -879,17 +884,23 @@ receipt: git-tools-prepare-local-gitea-target-receipt
 id: git-tools.intent.preview-ignore-rule
 app: git-tools
 intent: previewIgnoreRule
-status: planned
-current_adapter_status: preflight-only
-risk: local-file-mutation
-default_execution: preflight-required
+status: implemented
+current_adapter_status: executable
+risk: read-only
+default_execution: executable-preview
 requires:
-  - selected file or pattern
-  - generated/secret-risk classification
+  - fresh repository state
+  - selected file, pattern, or candidate ignore rule
+  - generated/secret-risk classification when available
 produces:
-  - .gitignore preview
+  - .gitignore diff preview
   - affected-file explanation
   - rollback guidance
+  - evidence-only execution receipt
+constraints:
+  - Must not write .gitignore.
+  - Must not run Git commands.
+  - Must not create commits, push remotes, or prepare Local Gitea targets.
 receipt: git-tools-preview-ignore-rule-receipt
 ```
 

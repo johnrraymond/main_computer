@@ -48,20 +48,29 @@ def _as_path(
     name: str,
     operation: OperationIdentity,
 ) -> Path:
-    if isinstance(value, str):
-        if "\x00" in value:
-            raise _mother_error(
-                operation,
-                "MOTHER_INPUT_UNSAFE_PATH",
-                f"{name} contains a NUL byte",
-                retry_class="never",
-            )
-        path = Path(value)
-    elif isinstance(value, os.PathLike):
-        path = Path(value)
-    else:
-        raise TypeError(f"{name} must be a string or path-like value")
-    return path.absolute()
+    try:
+        if isinstance(value, str):
+            if "\x00" in value:
+                raise _mother_error(
+                    operation,
+                    "MOTHER_INPUT_UNSAFE_PATH",
+                    f"{name} contains a NUL byte",
+                    retry_class="never",
+                )
+            path = Path(value)
+        elif isinstance(value, os.PathLike):
+            path = Path(value)
+        else:
+            raise TypeError(f"{name} must be a string or path-like value")
+        return path.absolute()
+    except MotherError:
+        raise
+    except OSError as exc:
+        raise _durable_read_failed(
+            operation,
+            f"failed to resolve the absolute {name}",
+            exc,
+        ) from exc
 
 
 def _durable_read_failed(
@@ -236,6 +245,37 @@ def _durability_unconfirmed(
     )
 
 
+def _postpublication_cleanup_failed(
+    operation: OperationIdentity,
+    path: Path,
+    reference: ContentHash,
+    cause: BaseException,
+) -> MotherError:
+    return _mother_error(
+        operation,
+        "MOTHER_STATE_POSTPUBLICATION_CLEANUP_FAILED",
+        "immutable-object publication is durable but target-lock cleanup is unconfirmed",
+        retry_class="after-reobserve",
+        authority_effect="local-pointer-determined",
+        durable_effect_refs=(_object_effect(path, reference),),
+        cause=cause,
+    )
+
+
+def _target_lock_cleanup_failed(
+    operation: OperationIdentity,
+    message: str,
+    cause: BaseException,
+) -> MotherError:
+    return _mother_error(
+        operation,
+        "MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED",
+        message,
+        retry_class="after-reobserve",
+        cause=cause,
+    )
+
+
 def _ensure_object_hierarchy(
     root: Path,
     reference: ContentHash,
@@ -297,53 +337,66 @@ def _read_verified_locked(
     *,
     expected: bytes | None = None,
 ) -> bytes:
-    with atomic_files.synchronized_target(path, operation=operation):
-        _validate_no_symlink(path, operation)
-        if not _probe_exists(path, operation):
-            raise _mother_error(
+    try:
+        with atomic_files.synchronized_target(path, operation=operation):
+            _validate_no_symlink(path, operation)
+            if not _probe_exists(path, operation):
+                raise _mother_error(
+                    operation,
+                    "MOTHER_STATE_OBJECT_MISSING",
+                    "requested immutable object is absent",
+                    retry_class="after-reobserve",
+                )
+            if not _probe_is_file(path, operation):
+                raise _unsafe_path(
+                    operation,
+                    "content-addressed object path is not a regular file",
+                )
+            try:
+                data = path.read_bytes()
+            except FileNotFoundError as exc:
+                raise _mother_error(
+                    operation,
+                    "MOTHER_STATE_OBJECT_MISSING",
+                    "requested immutable object disappeared during verification",
+                    retry_class="after-reobserve",
+                    cause=exc,
+                ) from exc
+            except OSError as exc:
+                raise _durable_read_failed(
+                    operation,
+                    "failed to read the immutable object",
+                    exc,
+                ) from exc
+
+            actual = hashing.sha256(data)
+            if actual != reference:
+                raise _object_corrupt(
+                    operation,
+                    "content-addressed object bytes do not match their declared hash",
+                )
+            if expected is not None and data != expected:
+                raise _object_corrupt(
+                    operation,
+                    "existing content-addressed path contains different exact bytes",
+                )
+            try:
+                atomic_files.flush_directory(path.parent)
+            except OSError as exc:
+                raise _durability_unconfirmed(operation, path, reference, exc) from exc
+            return data
+    except MotherError as exc:
+        if (
+            exc.module_id == "MOTHER-OFM-CORE-011"
+            and exc.code == "MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED"
+        ):
+            raise _target_lock_cleanup_failed(
                 operation,
-                "MOTHER_STATE_OBJECT_MISSING",
-                "requested immutable object is absent",
-                retry_class="after-reobserve",
-            )
-        if not _probe_is_file(path, operation):
-            raise _unsafe_path(
-                operation,
-                "content-addressed object path is not a regular file",
-            )
-        try:
-            data = path.read_bytes()
-        except FileNotFoundError as exc:
-            raise _mother_error(
-                operation,
-                "MOTHER_STATE_OBJECT_MISSING",
-                "requested immutable object disappeared during verification",
-                retry_class="after-reobserve",
-                cause=exc,
-            ) from exc
-        except OSError as exc:
-            raise _durable_read_failed(
-                operation,
-                "failed to read the immutable object",
+                "immutable-object target-lock cleanup failed after a read-only verification",
                 exc,
             ) from exc
+        raise
 
-        actual = hashing.sha256(data)
-        if actual != reference:
-            raise _object_corrupt(
-                operation,
-                "content-addressed object bytes do not match their declared hash",
-            )
-        if expected is not None and data != expected:
-            raise _object_corrupt(
-                operation,
-                "existing content-addressed path contains different exact bytes",
-            )
-        try:
-            atomic_files.flush_directory(path.parent)
-        except OSError as exc:
-            raise _durability_unconfirmed(operation, path, reference, exc) from exc
-        return data
 
 def put_immutable(
     root: str | os.PathLike[str],
@@ -379,6 +432,14 @@ def put_immutable(
             return reference
         if exc.code == "MOTHER_STATE_DURABILITY_UNCONFIRMED":
             raise _durability_unconfirmed(op, path, reference, exc) from exc
+        if exc.code == "MOTHER_STATE_POSTPUBLICATION_CLEANUP_FAILED":
+            raise _postpublication_cleanup_failed(op, path, reference, exc) from exc
+        if exc.code == "MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED":
+            raise _target_lock_cleanup_failed(
+                op,
+                "immutable-object publication target-lock cleanup failed before publication",
+                exc,
+            ) from exc
         raise
     return reference
 

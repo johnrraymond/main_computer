@@ -868,3 +868,192 @@ class TestPostpublicationBoundaryClassification:
             retry_class="after-reobserve",
             authority_effect="none",
         )
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-018"],
+    operations=["MOTHER-OP-SYNC-STATE"],
+    functionalities=["MOTHER-OF-SYNC-005"],
+    modules=["MOTHER-OFM-CORE-011"],
+)
+class TestFinalCore011ErrorEnvelope:
+    def test_temporary_file_write_failure_is_exact_typed_prepublication_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        target = tmp_path / "immutable"
+        real_fdopen = atomic_files.os.fdopen
+
+        class FailingWriter:
+            def __init__(self, handle: Any) -> None:
+                self._handle = handle
+
+            def __enter__(self) -> "FailingWriter":
+                return self
+
+            def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+                self._handle.close()
+
+            def write(self, _data: bytes) -> int:
+                raise PermissionError("temporary write denied")
+
+            def flush(self) -> None:
+                self._handle.flush()
+
+            def fileno(self) -> int:
+                return self._handle.fileno()
+
+        def failing_fdopen(fd: int, *args: Any, **kwargs: Any) -> FailingWriter:
+            return FailingWriter(real_fdopen(fd, *args, **kwargs))
+
+        monkeypatch.setattr(atomic_files.os, "fdopen", failing_fdopen)
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.durable_create(target, b"payload", operation=_operation())
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_WRITE_FAILED",
+            retry_class="same-request",
+            authority_effect="none",
+        )
+        assert caught.value.module_id == "MOTHER-OFM-CORE-011"
+        assert caught.value.cause_class == "PermissionError"
+        assert not target.exists()
+
+    def test_temporary_file_fsync_failure_is_exact_typed_prepublication_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        target = tmp_path / "immutable"
+
+        def denied_fsync(_fd: int) -> None:
+            raise OSError("temporary fsync denied")
+
+        monkeypatch.setattr(atomic_files.os, "fsync", denied_fsync)
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.durable_create(target, b"payload", operation=_operation())
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_WRITE_FAILED",
+            retry_class="same-request",
+            authority_effect="none",
+        )
+        assert caught.value.module_id == "MOTHER-OFM-CORE-011"
+        assert caught.value.cause_class == "OSError"
+        assert not target.exists()
+
+    def test_fdopen_failure_closes_original_mkstemp_descriptor(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        target = tmp_path / "immutable"
+        real_mkstemp = atomic_files.tempfile.mkstemp
+        real_close = atomic_files.os.close
+        created_fds: list[int] = []
+        closed_fds: list[int] = []
+
+        def recording_mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+            fd, path = real_mkstemp(*args, **kwargs)
+            created_fds.append(fd)
+            return fd, path
+
+        def denied_fdopen(_fd: int, *_args: Any, **_kwargs: Any) -> Any:
+            raise PermissionError("fdopen denied")
+
+        def recording_close(fd: int) -> None:
+            closed_fds.append(fd)
+            real_close(fd)
+
+        monkeypatch.setattr(atomic_files.tempfile, "mkstemp", recording_mkstemp)
+        monkeypatch.setattr(atomic_files.os, "fdopen", denied_fdopen)
+        monkeypatch.setattr(atomic_files.os, "close", recording_close)
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.durable_create(target, b"payload", operation=_operation())
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_WRITE_FAILED",
+            retry_class="same-request",
+            authority_effect="none",
+        )
+        assert len(created_fds) == 1
+        assert created_fds[0] in closed_fds
+        with pytest.raises(OSError):
+            os.fstat(created_fds[0])
+        assert not target.exists()
+
+    def test_absolute_path_resolution_failure_is_typed_read_boundary(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        target = tmp_path / "immutable"
+
+        def denied_absolute(_path: Path) -> Path:
+            raise PermissionError("absolute path resolution denied")
+
+        monkeypatch.setattr(Path, "absolute", denied_absolute)
+
+        with pytest.raises(errors.MotherError) as caught:
+            atomic_files.durable_create(target, b"payload", operation=_operation())
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_READ_FAILED",
+            retry_class="after-reobserve",
+            authority_effect="none",
+        )
+        assert caught.value.module_id == "MOTHER-OFM-CORE-011"
+        assert caught.value.cause_class == "PermissionError"
+
+    def test_read_only_target_lock_close_failure_has_no_publication_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        atomic_files = _atomic_files()
+        errors = _errors()
+        target = tmp_path / "target"
+        target.write_bytes(b"stable")
+        lock = atomic_files.synchronized_target(target, operation=_operation())
+        lock.__enter__()
+        lock_fd = lock._fd
+        assert isinstance(lock_fd, int)
+        real_close = atomic_files.os.close
+
+        def denied_lock_close(fd: int) -> None:
+            if fd == lock_fd:
+                raise PermissionError("lock descriptor close denied")
+            real_close(fd)
+
+        monkeypatch.setattr(atomic_files.os, "close", denied_lock_close)
+        try:
+            with pytest.raises(errors.MotherError) as caught:
+                lock.__exit__(None, None, None)
+        finally:
+            monkeypatch.setattr(atomic_files.os, "close", real_close)
+            real_close(lock_fd)
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED",
+            retry_class="after-reobserve",
+            authority_effect="none",
+        )
+        assert caught.value.module_id == "MOTHER-OFM-CORE-011"
+        assert caught.value.durable_effect_refs == ()

@@ -22,6 +22,14 @@ def _object_store():
     )
 
 
+def _atomic_files():
+    return require_mother_module(
+        "common.atomic_files",
+        "MOTHER-OFM-CORE-011",
+        phase="WAVE1B",
+    )
+
+
 def _hashing():
     return require_mother_module(
         "common.hashing",
@@ -1097,3 +1105,148 @@ class TestObjectStoreTypedMetadataAndSynchronizationSeam:
 
         assert "atomic_files.synchronized_target(" in source
         assert "atomic_files._exclusive_target_lock(" not in source
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-027"],
+    operations=["MOTHER-OP-UPGRADE-HUB"],
+    functionalities=["MOTHER-OF-AUTH-004"],
+    modules=["MOTHER-OFM-CORE-012"],
+)
+class TestFinalCore012ErrorEnvelope:
+    def test_absolute_root_resolution_failure_is_typed_core_012_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        errors = _errors()
+        root = tmp_path / "objects"
+
+        def denied_absolute(_path: Path) -> Path:
+            raise PermissionError("absolute root resolution denied")
+
+        monkeypatch.setattr(Path, "absolute", denied_absolute)
+
+        with pytest.raises(errors.MotherError) as caught:
+            object_store.put_immutable(root, b"payload", operation=_operation())
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_DURABLE_READ_FAILED",
+            retry_class="after-reobserve",
+            authority_effect="none",
+        )
+        assert caught.value.module_id == "MOTHER-OFM-CORE-012"
+        assert caught.value.cause_class == "PermissionError"
+
+    def test_postpublication_lock_close_failure_is_remapped_to_immutable_effect(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        atomic_files = _atomic_files()
+        errors = _errors()
+        models = _models()
+        root = tmp_path / "objects"
+        payload = b"durable object"
+        lock_fds: list[int] = []
+        failed_fds: list[int] = []
+        real_enter = atomic_files._ExclusiveTargetLock.__enter__
+        real_close = atomic_files.os.close
+
+        def recording_enter(lock: Any) -> Any:
+            result = real_enter(lock)
+            assert isinstance(lock._fd, int)
+            lock_fds.append(lock._fd)
+            return result
+
+        def denied_lock_close(fd: int) -> None:
+            if fd in lock_fds and fd not in failed_fds:
+                failed_fds.append(fd)
+                raise PermissionError("publication lock close denied")
+            real_close(fd)
+
+        monkeypatch.setattr(
+            atomic_files._ExclusiveTargetLock,
+            "__enter__",
+            recording_enter,
+        )
+        monkeypatch.setattr(atomic_files.os, "close", denied_lock_close)
+        try:
+            with pytest.raises(errors.MotherError) as caught:
+                object_store.put_immutable(root, payload, operation=_operation())
+        finally:
+            monkeypatch.setattr(atomic_files.os, "close", real_close)
+            for fd in failed_fds:
+                real_close(fd)
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_POSTPUBLICATION_CLEANUP_FAILED",
+            retry_class="after-reobserve",
+            authority_effect="local-pointer-determined",
+        )
+        assert caught.value.module_id == "MOTHER-OFM-CORE-012"
+        assert len(caught.value.durable_effect_refs) == 1
+        effect = caught.value.durable_effect_refs[0]
+        assert isinstance(effect, models.DurableEffectRef)
+        assert effect.effect_kind == "immutable-object-publication"
+        assert effect.content_hash == _hashing().sha256(payload)
+        assert Path(effect.target).read_bytes() == payload
+
+    def test_get_verified_lock_close_failure_is_typed_read_only_cleanup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        object_store = _object_store()
+        atomic_files = _atomic_files()
+        errors = _errors()
+        root = tmp_path / "objects"
+        payload = b"verified object"
+        reference = object_store.put_immutable(
+            root,
+            payload,
+            operation=_operation(),
+        )
+        lock_fds: list[int] = []
+        failed_fds: list[int] = []
+        real_enter = atomic_files._ExclusiveTargetLock.__enter__
+        real_close = atomic_files.os.close
+
+        def recording_enter(lock: Any) -> Any:
+            result = real_enter(lock)
+            assert isinstance(lock._fd, int)
+            lock_fds.append(lock._fd)
+            return result
+
+        def denied_lock_close(fd: int) -> None:
+            if fd in lock_fds and fd not in failed_fds:
+                failed_fds.append(fd)
+                raise PermissionError("read lock close denied")
+            real_close(fd)
+
+        monkeypatch.setattr(
+            atomic_files._ExclusiveTargetLock,
+            "__enter__",
+            recording_enter,
+        )
+        monkeypatch.setattr(atomic_files.os, "close", denied_lock_close)
+        try:
+            with pytest.raises(errors.MotherError) as caught:
+                object_store.get_verified(root, reference, operation=_operation())
+        finally:
+            monkeypatch.setattr(atomic_files.os, "close", real_close)
+            for fd in failed_fds:
+                real_close(fd)
+
+        _assert_error(
+            caught,
+            code="MOTHER_STATE_TARGET_LOCK_CLEANUP_FAILED",
+            retry_class="after-reobserve",
+            authority_effect="none",
+        )
+        assert caught.value.module_id == "MOTHER-OFM-CORE-012"
+        assert caught.value.durable_effect_refs == ()

@@ -142,7 +142,7 @@ def test_git_tools_adapter_derives_state_objects_intents_and_preflight_capabilit
         {
             "id": "git-tools-domain-adapter",
             "appId": "git-tools",
-            "version": "git-tools-semantic-adapter-gap-closure-v8",
+            "version": "git-tools-semantic-adapter-ignore-preview-v9",
             "kind": "governed-push-execution-recovery-domain-adapter",
         }
     ]
@@ -158,9 +158,9 @@ def test_git_tools_adapter_derives_state_objects_intents_and_preflight_capabilit
     assert readiness["recoveryCoverageReady"] is True
     assert readiness["runtimeCoreReady"] is True
     assert readiness["fullApplicationSemanticReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
-    assert readiness["executableIntentCount"] == 6
-    assert readiness["preflightOnlyIntentCount"] == 3
+    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-partial"
+    assert readiness["executableIntentCount"] == 7
+    assert readiness["preflightOnlyIntentCount"] == 2
     assert readiness["declaredOnlyIntentCount"] == 0
     assert readiness["prohibitedIntentCount"] == 1
     assert readiness["blockedIntentCount"] == 1
@@ -170,7 +170,6 @@ def test_git_tools_adapter_derives_state_objects_intents_and_preflight_capabilit
     assert readiness["missingApplicationSemantics"] == [
         "commitSelectedFiles",
         "prepareLocalGiteaTarget",
-        "previewIgnoreRule",
     ]
     assert readiness["missingSemantics"] == []
 
@@ -270,7 +269,7 @@ def test_git_tools_adapter_promotes_only_after_verified_recovery_coverage() -> N
     assert readiness["semanticRuntimeReady"] is False
     assert readiness["runtimeCoreReady"] is True
     assert readiness["fullApplicationSemanticReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
+    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-partial"
     assert readiness["semanticRuntimeStatus"] == "scope-limited-semantic-runtime"
     assert readiness["adapterKind"] == "scope-limited-executable-semantic-workbench"
     assert readiness["adapterExecutable"] is True
@@ -1195,9 +1194,9 @@ def test_governed_local_gitea_push_executes_after_confirmation_and_revalidation(
     readiness = result["readiness"]
     assert readiness["semanticRuntimeReady"] is False
     assert readiness["runtimeCoreReady"] is True
-    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
-    assert readiness["executableIntentCount"] == 6
-    assert readiness["preflightOnlyIntentCount"] == 3
+    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-partial"
+    assert readiness["executableIntentCount"] == 7
+    assert readiness["preflightOnlyIntentCount"] == 2
 
 
 def test_governed_push_decline_and_changed_state_never_call_backend() -> None:
@@ -1520,8 +1519,13 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
           const localTarget = adapter.preflightIntent("prepareLocalGiteaTarget", adapter.getState(), {{
             now: "2026-07-15T23:30:15.000Z"
           }});
-          const ignoreRule = adapter.preflightIntent("previewIgnoreRule", adapter.getState(), {{
-            now: "2026-07-15T23:30:16.000Z"
+          const ignoreRule = await adapter.executeIntent("previewIgnoreRule", {{
+            now: "2026-07-15T23:30:16.000Z",
+            parameters: {{
+              rule: "runtime/*.log",
+              targetPath: "runtime/example.log",
+              generatedRisk: true
+            }}
           }});
           const readiness = sandbox.McelDomainAdapterRegistry.evaluateAdapterReadiness("git-tools");
           process.stdout.write(JSON.stringify({{
@@ -1529,6 +1533,7 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
             remotes,
             patchInventory,
             preparePush,
+            ignoreRule,
             futurePreflight: {{
               commit: {{
                 decision: commit.decision,
@@ -1539,11 +1544,6 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
                 decision: localTarget.decision,
                 executionAvailable: localTarget.executionAvailable,
                 executionBinding: localTarget.executionBinding
-              }},
-              ignoreRule: {{
-                decision: ignoreRule.decision,
-                executionAvailable: ignoreRule.executionAvailable,
-                executionBinding: ignoreRule.executionBinding
               }}
             }},
             receipts: adapter.listReceipts(),
@@ -1572,6 +1572,26 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
     assert result["preparePush"]["executionBinding"] == "mcel-preflight"
     assert result["preparePush"]["receipt"]["kind"] == "preflight-decision-receipt"
 
+    ignore_rule = result["ignoreRule"]
+    assert ignore_rule["status"] == "succeeded"
+    assert ignore_rule["executionAttempted"] is True
+    assert ignore_rule["executionBinding"] == "git-tools-semantic-adapter.previewIgnoreRule"
+    assert ignore_rule["result"]["kind"] == "ignore-rule-preview"
+    assert ignore_rule["result"]["rule"] == "runtime/*.log"
+    assert ignore_rule["result"]["wouldWriteGitignore"] is False
+    assert ignore_rule["result"]["wouldRunGitCommand"] is False
+    assert ignore_rule["result"]["wouldCommit"] is False
+    assert ignore_rule["result"]["diffPreview"] == {
+        "path": ".gitignore",
+        "operation": "append-preview",
+        "addedLines": ["runtime/*.log"],
+        "removedLines": [],
+        "writeRequired": False,
+    }
+    assert "ignore-rule-generated-risk" in {
+        warning["code"] for warning in ignore_rule["warnings"]
+    }
+
     assert result["futurePreflight"] == {
         "commit": {
             "decision": "allow",
@@ -1579,11 +1599,6 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
             "executionBinding": "mcel-preflight-gap",
         },
         "localTarget": {
-            "decision": "allow",
-            "executionAvailable": False,
-            "executionBinding": "mcel-preflight-gap",
-        },
-        "ignoreRule": {
             "decision": "allow",
             "executionAvailable": False,
             "executionBinding": "mcel-preflight-gap",
@@ -1598,20 +1613,110 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
         ("preparePush", "preflight-decision-receipt", False),
         ("commitSelectedFiles", "preflight-decision-receipt", False),
         ("prepareLocalGiteaTarget", "preflight-decision-receipt", False),
-        ("previewIgnoreRule", "preflight-decision-receipt", False),
+        ("previewIgnoreRule", "action-execution-receipt", True),
     ]
 
     readiness = result["readiness"]
     assert readiness["runtimeCoreReady"] is True
     assert readiness["semanticRuntimeReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-gap-closed-partial"
-    assert readiness["executableIntentCount"] == 6
-    assert readiness["preflightOnlyIntentCount"] == 3
+    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-partial"
+    assert readiness["executableIntentCount"] == 7
+    assert readiness["preflightOnlyIntentCount"] == 2
     assert readiness["declaredOnlyIntentCount"] == 0
     assert readiness["prohibitedIntentCount"] == 1
     assert readiness["totalIntentCount"] == 10
     assert readiness["missingApplicationSemantics"] == [
         "commitSelectedFiles",
         "prepareLocalGiteaTarget",
-        "previewIgnoreRule",
+    ]
+
+
+def test_git_tools_preview_ignore_rule_blocks_missing_or_multiline_rule_without_writes() -> None:
+    registry_path = SCRIPTS / "mcel-domain-adapter-registry.js"
+    adapter_path = SCRIPTS / "git-tools-semantic-adapter.js"
+    script = textwrap.dedent(
+        f"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const sandbox = {{console}};
+        sandbox.window = sandbox;
+        vm.runInNewContext(
+          fs.readFileSync({json.dumps(str(registry_path))}, "utf8"),
+          sandbox,
+          {{filename: "mcel-domain-adapter-registry.js"}}
+        );
+        vm.runInNewContext(
+          fs.readFileSync({json.dumps(str(adapter_path))}, "utf8"),
+          sandbox,
+          {{filename: "git-tools-semantic-adapter.js"}}
+        );
+
+        (async () => {{
+          const adapter = sandbox.GitToolsSemanticAdapter;
+          adapter.clearReceipts();
+          await adapter.refreshState({{
+            repoDir: "C:/work/main_computer_test",
+            observedAt: "2026-07-15T23:40:00.000Z",
+            api: {{
+              async fetchStatus(options) {{
+                return {{
+                  ok: true,
+                  repo_dir: options.repoDir,
+                  git_root: "C:/work/main_computer_test",
+                  is_git_repo: true,
+                  has_head: true,
+                  branch: "main",
+                  ahead: 0,
+                  behind: 0,
+                  dirty: true,
+                  changed_count: 1,
+                  untracked_count: 1,
+                  remotes: []
+                }};
+              }}
+            }}
+          }});
+          const missing = await adapter.executeIntent("previewIgnoreRule", {{
+            now: "2026-07-15T23:40:10.000Z"
+          }});
+          const multiline = await adapter.executeIntent("previewIgnoreRule", {{
+            now: "2026-07-15T23:40:11.000Z",
+            parameters: {{rule: "runtime/*.log\\nsecrets.env"}}
+          }});
+          process.stdout.write(JSON.stringify({{
+            missing,
+            multiline,
+            receipts: adapter.listReceipts(),
+            readiness: sandbox.McelDomainAdapterRegistry.evaluateAdapterReadiness("git-tools")
+          }}));
+        }})().catch((error) => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
+        """
+    )
+    result = run_node_json(script)
+
+    assert result["missing"]["status"] == "blocked"
+    assert result["missing"]["executionAttempted"] is False
+    assert "ignore-rule-missing" in {
+        blocker["code"] for blocker in result["missing"]["blockers"]
+    }
+
+    assert result["multiline"]["status"] == "blocked"
+    assert result["multiline"]["executionAttempted"] is False
+    assert "ignore-rule-multiline" in {
+        blocker["code"] for blocker in result["multiline"]["blockers"]
+    }
+
+    assert [(item["intentId"], item["kind"], item["executionAttempted"]) for item in result["receipts"]] == [
+        ("previewIgnoreRule", "preflight-decision-receipt", False),
+        ("previewIgnoreRule", "preflight-decision-receipt", False),
+    ]
+    assert result["readiness"]["semanticRuntimeReady"] is False
+    assert result["readiness"]["executableIntentCount"] == 7
+    assert result["readiness"]["preflightOnlyIntentCount"] == 2
+    assert result["readiness"]["missingApplicationSemantics"] == [
+        "commitSelectedFiles",
+        "prepareLocalGiteaTarget",
     ]
