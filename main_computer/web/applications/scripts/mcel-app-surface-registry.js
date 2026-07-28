@@ -59,6 +59,17 @@ var McelAppSurfaceRegistry = (() => {
       requiredLayerIds: RUNTIME_LAYER_IDS,
       notes: "Website project authoring, runtime setup, publish-lane preflight, and Git Tools handoff semantics are proven through the domain adapter and acceptance evidence; static authored-surface parity remains separately reported."
     },
+    "mcel-lab": {
+      appId: "mcel-lab",
+      label: "MCEL Lab",
+      state: "surface-aware",
+      conformanceRequired: true,
+      maturity: "semantic-runtime",
+      surfaceId: "mcel-lab.form.work-surface.blueprint-inspection",
+      contractId: "mcel-lab.contract.default.blueprint-studio-health",
+      requiredLayerIds: RUNTIME_LAYER_IDS,
+      notes: "Blueprint inspection, registry truth consumption, contained preview evidence, annotation drafting, validation, and reviewable repair-context export are proven through the domain adapter and acceptance evidence; static authored-surface parity remains separately reported."
+    },
     "code-editor": {
       appId: "code-editor",
       label: "Code Editor",
@@ -102,7 +113,6 @@ var McelAppSurfaceRegistry = (() => {
     email: {appId: "email", label: "Email", state: "legacy", conformanceRequired: false},
     "git-tools": {appId: "git-tools", label: "Git Tools", state: "legacy", conformanceRequired: false},
     "layout-builder": {appId: "layout-builder", label: "Layout Builder", state: "legacy", conformanceRequired: false},
-    "mcel-lab": {appId: "mcel-lab", label: "MCEL Lab", state: "legacy", conformanceRequired: false},
     onlyoffice: {appId: "onlyoffice", label: "OnlyOffice", state: "legacy", conformanceRequired: false},
     spreadsheet: {appId: "spreadsheet", label: "Spreadsheet", state: "legacy", conformanceRequired: false},
     "spreadsheet-smoke": {appId: "spreadsheet-smoke", label: "Spreadsheet Smoke", state: "legacy", conformanceRequired: false},

@@ -71,7 +71,16 @@ Required fields:
   "location": "bridge.deck",
   "bounds": { "minX": -4.8, "maxX": 4.8, "minZ": -39.65, "maxZ": -31.0 },
   "kind": "bridge",
-  "priority": 110
+  "priority": 110,
+  "visual": {
+    "color": "#ef4444",
+    "edgeColor": "#f97316",
+    "labelColor": "#fee2e2",
+    "boundary": true,
+    "floorBand": true,
+    "label": true,
+    "labelHeight": 0.42
+  }
 }
 ```
 
@@ -87,6 +96,56 @@ engineering.access
 bridge.access
 bridge.deck
 ```
+
+Patch N adds room visual metadata. The renderer uses `rooms[].visual` for a data-driven room boundary pass, so visual wayfinding can follow the same room bounds used by movement and location detection. Supported visual fields are:
+
+```text
+color
+edgeColor
+labelColor
+boundary
+floorBand
+label
+labelHeight
+```
+
+Patch O adds room geometry metadata. The renderer uses `rooms[].geometry` for the reusable structural room pass before bespoke set dressing. Supported geometry fields are:
+
+```text
+schema
+shell
+walls
+openings
+doorPanels
+boxes
+beams
+lighting
+```
+
+Example:
+
+```json
+{
+  "id": "bridge.deck",
+  "geometry": {
+    "schema": "game.room.geometry.v1",
+    "shell": {
+      "bounds": { "minX": -4.8, "maxX": 4.8, "minZ": -39.5, "maxZ": -31.25 },
+      "accentColor": "#0ea5e9"
+    },
+    "walls": [
+      { "axis": "x", "x": -4.8, "minZ": -39.5, "maxZ": -31.25 },
+      { "axis": "z", "z": -39.5, "minX": -4.8, "maxX": 4.8 }
+    ],
+    "openings": [
+      { "id": "opening.bridge-deck-throat", "exit": "exit.bridge-deck" }
+    ],
+    "doorPanels": []
+  }
+}
+```
+
+Geometry openings document traversal gaps and may reference exits or doors. They do not imply locked-door progression.
 
 ## Exits
 

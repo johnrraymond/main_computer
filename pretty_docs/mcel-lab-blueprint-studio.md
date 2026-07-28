@@ -2,7 +2,7 @@
 
 ## Status
 
-Design and requirements document for redesigning MCEL Lab into a self-hosting app-aspect inspector and blueprint studio.
+Semantic-runtime requirements document for MCEL Lab as a self-hosting app-aspect inspector and blueprint studio.
 
 This document is intentionally product-facing and implementation-facing. It defines what MCEL Lab must do for users, what app operations it must support, how it must use generic MCEL elements, and how it must prove that MCEL can help generate good-looking, solid applications.
 
@@ -85,7 +85,7 @@ the requirements registry, Lab comparison payload, and runtime checks can read.
 id: mcel-lab
 title: MCEL Lab Blueprint Studio
 status: specified
-current_runtime_status: structural-only
+current_runtime_status: scope-limited-semantic-runtime
 target_runtime_status: scope-limited-semantic-runtime
 dominant_object: AppBlueprint
 primary_user_goal: >
@@ -95,10 +95,12 @@ primary_user_goal: >
 current_sources:
   - main_computer/web/applications/apps/mcel-lab.html
   - main_computer/web/applications/scripts/mcel-lab.js
+  - main_computer/web/applications/scripts/mcel-lab-semantic-adapter.js
   - main_computer/web/applications/scripts/mcel-app-blueprints-core.js
   - main_computer/web/applications/styles/mcel-lab.css
   - main_computer/web/applications/mcel/annotations/mcel-lab.json
 verification:
+  - tests/test_mcel_lab_semantic_adapter.py
   - tests/test_mcel_lab_app.py
   - tests/test_mcel_lab_blueprint_studio_documentation.py
   - tests/test_mcel_lab_phase2_shell.py
@@ -262,7 +264,7 @@ constraints:
 ```mcel-use-case
 id: mcel-lab.use-case.inspect-blueprint-from-doc-contract
 app: mcel-lab
-status: planned
+status: specified
 type: roadmap-use-case
 primary_object: AppBlueprint
 user_goal: >
@@ -277,7 +279,7 @@ acceptance:
 ```mcel-use-case
 id: mcel-lab.use-case.self-host-refactor-context
 app: mcel-lab
-status: planned
+status: specified
 type: roadmap-use-case
 primary_object: AppBlueprint
 user_goal: >
@@ -482,7 +484,7 @@ produces:
 ```mcel-intent
 id: mcel-lab.intent.mount-app-preview
 app: mcel-lab
-status: planned
+status: specified
 intent: Mount or refresh a contained preview of the selected app as implementation evidence.
 risk: local-state
 requires:
@@ -496,7 +498,7 @@ produces:
 ```mcel-intent
 id: mcel-lab.intent.inspect-rendered-element
 app: mcel-lab
-status: planned
+status: specified
 intent: Enable point inspection and capture selected rendered element evidence from the mounted preview.
 risk: local-state
 requires:
@@ -510,7 +512,7 @@ produces:
 ```mcel-intent
 id: mcel-lab.intent.annotate-refactor-candidate
 app: mcel-lab
-status: planned
+status: specified
 intent: Save a draft annotation describing whether a rendered element should be removed, reworked, moved, hidden, merged, investigated, or kept.
 risk: local-state
 requires:
@@ -524,7 +526,7 @@ produces:
 ```mcel-intent
 id: mcel-lab.intent.validate-blueprint-contract
 app: mcel-lab
-status: planned
+status: specified
 intent: Validate the selected AppBlueprint against required primitives, regions, evidence, tests, and safety boundaries.
 risk: read-only
 requires:
@@ -539,7 +541,7 @@ produces:
 ```mcel-intent
 id: mcel-lab.intent.export-repair-context
 app: mcel-lab
-status: planned
+status: specified
 intent: Export AI-readable repair context from selected findings, annotations, source bindings, test bindings, and safety boundaries.
 risk: local-state
 requires:
@@ -552,21 +554,23 @@ produces:
 ```
 
 ```mcel-acceptance
-id: mcel-lab.acceptance.semantic-app-form-first-slice
+id: mcel-lab.acceptance.semantic-runtime
 app: mcel-lab
-status: planned
+status: specified
 requires:
-  - MCEL Lab has a parsed mcel-app contract.
-  - MCEL Lab declares semantic form primitives before layout projections.
+  - MCEL Lab has a registered domain adapter.
+  - selectAppBlueprint and inspectAspect are executable read-only intents.
+  - mountAppPreview, inspectRenderedElement, annotateRefactorCandidate, validateBlueprintContract, and exportRepairContext are current-scope executable intents with preflight, receipts, and recovery guidance.
+  - applySelfMutation remains prohibited and directs users to an external new_patch.py workflow.
   - The requirements registry payload includes mcel-lab and its primitive summaries.
   - Runtime checks can identify the Lab's primary blueprint inspection work surface.
-  - Implementation work is not marked verified until the Lab renders primitive evidence from the registry.
+  - Exported repair context is reviewable and never applies itself to live Lab source.
 ```
 
 ```mcel-finding
 id: mcel-lab.finding.form-primitives-not-yet-first-class-ui
 app: mcel-lab
-status: open
+status: specified
 aspect: semantic-form
 severity: warning
 problem: MCEL Lab has prose and hardcoded blueprint aspects, but its UI does not yet render parsed mcel-form-primitive blocks as a first-class app aspect.

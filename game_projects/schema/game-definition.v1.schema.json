@@ -274,6 +274,12 @@
         },
         "priority": {
           "type": "number"
+        },
+        "visual": {
+          "$ref": "#/$defs/roomVisual"
+        },
+        "geometry": {
+          "$ref": "#/$defs/roomGeometry"
         }
       }
     },
@@ -691,6 +697,281 @@
         },
         "routeBeam": {
           "type": "boolean"
+        }
+      },
+      "default": {}
+    },
+    "roomVisual": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "type": "string",
+          "minLength": 1
+        },
+        "edgeColor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "labelColor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boundary": {
+          "type": "boolean"
+        },
+        "floorBand": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "boolean"
+        },
+        "labelHeight": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "default": {}
+    },
+    "roomGeometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "room": {
+          "$ref": "#/$defs/id"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "accentColor": {
+          "type": "string"
+        },
+        "shell": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "bounds": {
+                  "$ref": "#/$defs/bounds"
+                },
+                "accentColor": {
+                  "type": "string"
+                },
+                "floor": {
+                  "type": "boolean"
+                },
+                "ceiling": {
+                  "type": "boolean"
+                },
+                "floorMinY": {
+                  "type": "number"
+                },
+                "floorMaxY": {
+                  "type": "number"
+                },
+                "ceilingMinY": {
+                  "type": "number"
+                },
+                "ceilingMaxY": {
+                  "type": "number"
+                },
+                "accentBeams": {
+                  "type": "boolean"
+                }
+              }
+            }
+          ]
+        },
+        "walls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "axis": {
+                "enum": [
+                  "x",
+                  "z"
+                ]
+              },
+              "x": {
+                "type": "number"
+              },
+              "z": {
+                "type": "number"
+              },
+              "minX": {
+                "type": "number"
+              },
+              "maxX": {
+                "type": "number"
+              },
+              "minZ": {
+                "type": "number"
+              },
+              "maxZ": {
+                "type": "number"
+              },
+              "color": {
+                "type": "string"
+              },
+              "emissive": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "axis"
+            ]
+          },
+          "default": []
+        },
+        "openings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "exit": {
+                "$ref": "#/$defs/id"
+              },
+              "door": {
+                "$ref": "#/$defs/id"
+              },
+              "edge": {
+                "type": "string"
+              },
+              "bounds": {
+                "$ref": "#/$defs/bounds"
+              }
+            }
+          },
+          "default": []
+        },
+        "doorPanels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "door": {
+                "$ref": "#/$defs/id"
+              },
+              "center": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "centerX": {
+                "type": "number"
+              },
+              "centerZ": {
+                "type": "number"
+              },
+              "width": {
+                "type": "number"
+              },
+              "vertical": {
+                "type": "boolean"
+              }
+            }
+          },
+          "default": []
+        },
+        "boxes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "min": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "max": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "color": {
+                "type": "string"
+              },
+              "emissive": {
+                "type": "boolean"
+              }
+            }
+          },
+          "default": []
+        },
+        "beams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "end": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "radius": {
+                "type": "number"
+              },
+              "color": {
+                "type": "string"
+              },
+              "emissive": {
+                "type": "boolean"
+              },
+              "pulse": {
+                "type": "boolean"
+              }
+            }
+          },
+          "default": []
+        },
+        "lighting": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/roomGeometry/properties/beams/items"
+          },
+          "default": []
         }
       },
       "default": {}

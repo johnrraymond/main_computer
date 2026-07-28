@@ -2693,86 +2693,990 @@
           },
           rooms: [
             {
-              id: "bay.shuttle",
-              name: "Mother Ship Shuttle Bay",
-              location: "bay.shuttle",
-              kind: "shuttle-bay",
-              priority: 100,
-              bounds: {minX: -4.72, maxX: 4.72, minZ: -4.62, maxZ: 5.12}
+                        "id": "bay.shuttle",
+                        "name": "Mother Ship Shuttle Bay",
+                        "location": "bay.shuttle",
+                        "kind": "shuttle-bay",
+                        "priority": 100,
+                        "bounds": {
+                                    "minX": -4.72,
+                                    "maxX": 4.72,
+                                    "minZ": -4.62,
+                                    "maxZ": 5.12
+                        },
+                        "visual": {
+                                    "color": "#38bdf8",
+                                    "edgeColor": "#60a5fa",
+                                    "labelColor": "#bfdbfe",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -5.2,
+                                                            "maxX": 5.2,
+                                                            "minZ": -5.25,
+                                                            "maxZ": 6.2
+                                                },
+                                                "accentColor": "#67e8f9"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": -5.2,
+                                                            "minZ": -5.25,
+                                                            "maxZ": 6.2
+                                                },
+                                                {
+                                                            "axis": "x",
+                                                            "x": 5.2,
+                                                            "minZ": -5.25,
+                                                            "maxZ": 6.2
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": 5.72,
+                                                            "minX": -5.25,
+                                                            "maxX": -2.75
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": 5.72,
+                                                            "minX": 2.75,
+                                                            "maxX": 5.25
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": 5.72,
+                                                            "minX": -1.65,
+                                                            "maxX": 1.65
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -5.05,
+                                                            "minX": -5.2,
+                                                            "maxX": -0.82
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -5.05,
+                                                            "minX": 0.82,
+                                                            "maxX": 2.15
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -5.05,
+                                                            "minX": 4.45,
+                                                            "maxX": 5.2
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.bay-aft-port",
+                                                            "edge": "aft",
+                                                            "bounds": {
+                                                                        "minX": -2.75,
+                                                                        "maxX": -1.65,
+                                                                        "minZ": 5.55,
+                                                                        "maxZ": 5.9
+                                                            }
+                                                },
+                                                {
+                                                            "id": "opening.bay-aft-starboard",
+                                                            "edge": "aft",
+                                                            "bounds": {
+                                                                        "minX": 1.65,
+                                                                        "maxX": 2.75,
+                                                                        "minZ": 5.55,
+                                                                        "maxZ": 5.9
+                                                            }
+                                                },
+                                                {
+                                                            "id": "opening.bay-access",
+                                                            "exit": "exit.bay-access",
+                                                            "door": "door.bay-access"
+                                                }
+                                    ],
+                                    "doorPanels": [
+                                                {
+                                                            "door": "door.bay-access",
+                                                            "center": [
+                                                                        3.3,
+                                                                        -5.04
+                                                            ],
+                                                            "width": 2.22,
+                                                            "vertical": false
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "bay.ops",
-              name: "Bay Operations",
-              location: "bay.ops",
-              kind: "operations",
-              priority: 60,
-              bounds: {minX: -2.25, maxX: 4.9, minZ: -9.45, maxZ: -4.2}
+                        "id": "bay.ops",
+                        "name": "Bay Operations",
+                        "location": "bay.ops",
+                        "kind": "operations",
+                        "priority": 60,
+                        "bounds": {
+                                    "minX": -2.25,
+                                    "maxX": 4.9,
+                                    "minZ": -9.45,
+                                    "maxZ": -4.2
+                        },
+                        "visual": {
+                                    "color": "#38bdf8",
+                                    "edgeColor": "#22d3ee",
+                                    "labelColor": "#bae6fd",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -2.35,
+                                                            "maxX": 5.05,
+                                                            "minZ": -9.65,
+                                                            "maxZ": -4.35
+                                                },
+                                                "accentColor": "#38bdf8"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": 5.05,
+                                                            "minZ": -9.65,
+                                                            "maxZ": -4.35
+                                                },
+                                                {
+                                                            "axis": "x",
+                                                            "x": -2.35,
+                                                            "minZ": -9.65,
+                                                            "maxZ": -8.1
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -9.65,
+                                                            "minX": -2.35,
+                                                            "maxX": -1.14
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -9.65,
+                                                            "minX": 1.14,
+                                                            "maxX": 5.05
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -4.35,
+                                                            "minX": -2.35,
+                                                            "maxX": 2.12
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -4.35,
+                                                            "minX": 4.45,
+                                                            "maxX": 5.05
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.bay-inner",
+                                                            "exit": "exit.bay-inner",
+                                                            "door": "door.bay-inner"
+                                                },
+                                                {
+                                                            "id": "opening.bay-ops-to-bay",
+                                                            "exit": "exit.bay-access",
+                                                            "door": "door.bay-access"
+                                                }
+                                    ],
+                                    "boxes": [
+                                                {
+                                                            "min": [
+                                                                        -1.18,
+                                                                        -1.06,
+                                                                        -9.72
+                                                            ],
+                                                            "max": [
+                                                                        1.18,
+                                                                        -0.92,
+                                                                        -8.62
+                                                            ],
+                                                            "color": "#243244",
+                                                            "emissive": false
+                                                },
+                                                {
+                                                            "min": [
+                                                                        -1.42,
+                                                                        -1.04,
+                                                                        -9.76
+                                                            ],
+                                                            "max": [
+                                                                        -1.16,
+                                                                        2.12,
+                                                                        -8.58
+                                                            ],
+                                                            "color": "#475569",
+                                                            "emissive": false
+                                                },
+                                                {
+                                                            "min": [
+                                                                        1.16,
+                                                                        -1.04,
+                                                                        -9.76
+                                                            ],
+                                                            "max": [
+                                                                        1.42,
+                                                                        2.12,
+                                                                        -8.58
+                                                            ],
+                                                            "color": "#475569",
+                                                            "emissive": false
+                                                },
+                                                {
+                                                            "min": [
+                                                                        -1.42,
+                                                                        2.12,
+                                                                        -9.76
+                                                            ],
+                                                            "max": [
+                                                                        1.42,
+                                                                        2.48,
+                                                                        -8.58
+                                                            ],
+                                                            "color": "#475569",
+                                                            "emissive": false
+                                                }
+                                    ],
+                                    "beams": [
+                                                {
+                                                            "start": [
+                                                                        -1.04,
+                                                                        -0.72,
+                                                                        -9.42
+                                                            ],
+                                                            "end": [
+                                                                        1.04,
+                                                                        -0.72,
+                                                                        -9.42
+                                                            ],
+                                                            "radius": 0.026,
+                                                            "color": "#38bdf8",
+                                                            "emissive": true
+                                                },
+                                                {
+                                                            "start": [
+                                                                        -1.04,
+                                                                        -0.72,
+                                                                        -8.86
+                                                            ],
+                                                            "end": [
+                                                                        1.04,
+                                                                        -0.72,
+                                                                        -8.86
+                                                            ],
+                                                            "radius": 0.026,
+                                                            "color": "#38bdf8",
+                                                            "emissive": true
+                                                },
+                                                {
+                                                            "start": [
+                                                                        -1.08,
+                                                                        1.74,
+                                                                        -9.54
+                                                            ],
+                                                            "end": [
+                                                                        1.08,
+                                                                        1.74,
+                                                                        -9.54
+                                                            ],
+                                                            "radius": 0.028,
+                                                            "color": "#67e8f9",
+                                                            "emissive": true
+                                                },
+                                                {
+                                                            "start": [
+                                                                        -1.08,
+                                                                        0.4,
+                                                                        -9.55
+                                                            ],
+                                                            "end": [
+                                                                        -1.08,
+                                                                        0.4,
+                                                                        -8.72
+                                                            ],
+                                                            "radius": 0.022,
+                                                            "color": "#86efac",
+                                                            "emissive": true
+                                                },
+                                                {
+                                                            "start": [
+                                                                        1.08,
+                                                                        0.4,
+                                                                        -9.55
+                                                            ],
+                                                            "end": [
+                                                                        1.08,
+                                                                        0.4,
+                                                                        -8.72
+                                                            ],
+                                                            "radius": 0.022,
+                                                            "color": "#86efac",
+                                                            "emissive": true
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "security.checkpoint",
-              name: "Security Checkpoint",
-              location: "security.checkpoint",
-              kind: "checkpoint",
-              priority: 75,
-              bounds: {minX: -3.2, maxX: 3.2, minZ: -13.55, maxZ: -8.75}
+                        "id": "security.checkpoint",
+                        "name": "Security Checkpoint",
+                        "location": "security.checkpoint",
+                        "kind": "checkpoint",
+                        "priority": 75,
+                        "bounds": {
+                                    "minX": -3.2,
+                                    "maxX": 3.2,
+                                    "minZ": -13.55,
+                                    "maxZ": -8.75
+                        },
+                        "visual": {
+                                    "color": "#f59e0b",
+                                    "edgeColor": "#fbbf24",
+                                    "labelColor": "#fef3c7",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -3.25,
+                                                            "maxX": 3.25,
+                                                            "minZ": -13.65,
+                                                            "maxZ": -8.75
+                                                },
+                                                "accentColor": "#fbbf24"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": -3.25,
+                                                            "minZ": -13.65,
+                                                            "maxZ": -8.75
+                                                },
+                                                {
+                                                            "axis": "x",
+                                                            "x": 3.25,
+                                                            "minZ": -13.65,
+                                                            "maxZ": -8.75
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -8.85,
+                                                            "minX": -3.25,
+                                                            "maxX": -0.82
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -8.85,
+                                                            "minX": 0.82,
+                                                            "maxX": 3.25
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.security-bay-inner",
+                                                            "exit": "exit.bay-inner",
+                                                            "door": "door.bay-inner"
+                                                },
+                                                {
+                                                            "id": "opening.security-hub",
+                                                            "exit": "exit.security-hub",
+                                                            "door": "door.security-hub"
+                                                }
+                                    ],
+                                    "doorPanels": [
+                                                {
+                                                            "door": "door.bay-inner",
+                                                            "center": [
+                                                                        0,
+                                                                        -8.88
+                                                            ],
+                                                            "width": 1.64,
+                                                            "vertical": false
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "corridor.main",
-              name: "Main Corridor Hub",
-              location: "corridor.main",
-              kind: "corridor",
-              priority: 40,
-              bounds: {minX: -6.55, maxX: 6.55, minZ: -18.75, maxZ: -13.25}
+                        "id": "corridor.main",
+                        "name": "Main Corridor Hub",
+                        "location": "corridor.main",
+                        "kind": "corridor",
+                        "priority": 40,
+                        "bounds": {
+                                    "minX": -6.55,
+                                    "maxX": 6.55,
+                                    "minZ": -18.75,
+                                    "maxZ": -13.25
+                        },
+                        "visual": {
+                                    "color": "#94a3b8",
+                                    "edgeColor": "#64748b",
+                                    "labelColor": "#e2e8f0",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -6.75,
+                                                            "maxX": 6.75,
+                                                            "minZ": -18.9,
+                                                            "maxZ": -13.25
+                                                },
+                                                "accentColor": "#67e8f9"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": -6.75,
+                                                            "minZ": -18.9,
+                                                            "maxZ": -13.25
+                                                },
+                                                {
+                                                            "axis": "x",
+                                                            "x": 6.75,
+                                                            "minZ": -18.9,
+                                                            "maxZ": -13.25
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -13.35,
+                                                            "minX": -6.75,
+                                                            "maxX": -0.8
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -13.35,
+                                                            "minX": 0.8,
+                                                            "maxX": 6.75
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.corridor-security",
+                                                            "exit": "exit.security-hub",
+                                                            "door": "door.security-hub"
+                                                },
+                                                {
+                                                            "id": "opening.corridor-engineering",
+                                                            "exit": "exit.corridor-engineering",
+                                                            "door": "door.engineering-access"
+                                                },
+                                                {
+                                                            "id": "opening.corridor-medbay",
+                                                            "exit": "exit.corridor-medbay",
+                                                            "door": "door.medbay"
+                                                },
+                                                {
+                                                            "id": "opening.corridor-science",
+                                                            "exit": "exit.corridor-science",
+                                                            "door": "door.science"
+                                                },
+                                                {
+                                                            "id": "opening.corridor-bridge",
+                                                            "exit": "exit.corridor-bridge",
+                                                            "door": "door.bridge"
+                                                }
+                                    ],
+                                    "doorPanels": [
+                                                {
+                                                            "door": "door.security-hub",
+                                                            "center": [
+                                                                        0,
+                                                                        -13.36
+                                                            ],
+                                                            "width": 1.6,
+                                                            "vertical": false
+                                                },
+                                                {
+                                                            "door": "door.engineering-access",
+                                                            "center": [
+                                                                        3.18,
+                                                                        -17.85
+                                                            ],
+                                                            "width": 2.1,
+                                                            "vertical": true
+                                                },
+                                                {
+                                                            "door": "door.medbay",
+                                                            "center": [
+                                                                        -3.18,
+                                                                        -17.85
+                                                            ],
+                                                            "width": 2.1,
+                                                            "vertical": true
+                                                }
+                                    ],
+                                    "beams": [
+                                                {
+                                                            "start": [
+                                                                        -5.65,
+                                                                        -0.88,
+                                                                        -16.3
+                                                            ],
+                                                            "end": [
+                                                                        5.65,
+                                                                        -0.88,
+                                                                        -16.3
+                                                            ],
+                                                            "radius": 0.026,
+                                                            "color": "#67e8f9",
+                                                            "emissive": true
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "corridor.trunk",
-              name: "Main Corridor Trunk",
-              location: "corridor.main",
-              kind: "corridor",
-              priority: 45,
-              bounds: {minX: -2.55, maxX: 2.55, minZ: -25.85, maxZ: -13.25}
+                        "id": "corridor.trunk",
+                        "name": "Main Corridor Trunk",
+                        "location": "corridor.main",
+                        "kind": "corridor",
+                        "priority": 45,
+                        "bounds": {
+                                    "minX": -2.55,
+                                    "maxX": 2.55,
+                                    "minZ": -25.85,
+                                    "maxZ": -13.25
+                        },
+                        "visual": {
+                                    "color": "#94a3b8",
+                                    "edgeColor": "#64748b",
+                                    "labelColor": "#e2e8f0",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -2.55,
+                                                            "maxX": 2.55,
+                                                            "minZ": -25.85,
+                                                            "maxZ": -13.25
+                                                },
+                                                "floor": true,
+                                                "ceiling": false,
+                                                "accentColor": "#67e8f9"
+                                    },
+                                    "walls": [],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.trunk-hub",
+                                                            "exit": "exit.security-hub"
+                                                },
+                                                {
+                                                            "id": "opening.trunk-bridge",
+                                                            "exit": "exit.corridor-bridge",
+                                                            "door": "door.bridge"
+                                                }
+                                    ],
+                                    "beams": [
+                                                {
+                                                            "start": [
+                                                                        0,
+                                                                        -0.88,
+                                                                        -13.7
+                                                            ],
+                                                            "end": [
+                                                                        0,
+                                                                        -0.88,
+                                                                        -25.6
+                                                            ],
+                                                            "radius": 0.026,
+                                                            "color": "#67e8f9",
+                                                            "emissive": true
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "engineering.access",
-              name: "Engineering Access",
-              location: "engineering.access",
-              kind: "engineering",
-              priority: 80,
-              bounds: {minX: 2.0, maxX: 9.8, minZ: -24.25, maxZ: -17.15}
+                        "id": "engineering.access",
+                        "name": "Engineering Access",
+                        "location": "engineering.access",
+                        "kind": "engineering",
+                        "priority": 80,
+                        "bounds": {
+                                    "minX": 2.0,
+                                    "maxX": 9.8,
+                                    "minZ": -24.25,
+                                    "maxZ": -17.15
+                        },
+                        "visual": {
+                                    "color": "#fbbf24",
+                                    "edgeColor": "#f59e0b",
+                                    "labelColor": "#fde68a",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": 2.0,
+                                                            "maxX": 9.9,
+                                                            "minZ": -24.35,
+                                                            "maxZ": -17.05
+                                                },
+                                                "accentColor": "#86efac"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": 9.9,
+                                                            "minZ": -24.35,
+                                                            "maxZ": -17.05
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -24.35,
+                                                            "minX": 2.0,
+                                                            "maxX": 9.9
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.engineering-corridor",
+                                                            "exit": "exit.corridor-engineering",
+                                                            "door": "door.engineering-access"
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "medbay.stub",
-              name: "Medbay Triage",
-              location: "medbay.stub",
-              kind: "medbay",
-              priority: 80,
-              bounds: {minX: -9.8, maxX: -2.0, minZ: -24.25, maxZ: -17.15}
+                        "id": "medbay.stub",
+                        "name": "Medbay Triage",
+                        "location": "medbay.stub",
+                        "kind": "medbay",
+                        "priority": 80,
+                        "bounds": {
+                                    "minX": -9.8,
+                                    "maxX": -2.0,
+                                    "minZ": -24.25,
+                                    "maxZ": -17.15
+                        },
+                        "visual": {
+                                    "color": "#fca5a5",
+                                    "edgeColor": "#f87171",
+                                    "labelColor": "#fee2e2",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -9.9,
+                                                            "maxX": -2.0,
+                                                            "minZ": -24.35,
+                                                            "maxZ": -17.05
+                                                },
+                                                "accentColor": "#fca5a5"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": -9.9,
+                                                            "minZ": -24.35,
+                                                            "maxZ": -17.05
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -24.35,
+                                                            "minX": -9.9,
+                                                            "maxX": -2.0
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.medbay-corridor",
+                                                            "exit": "exit.corridor-medbay",
+                                                            "door": "door.medbay"
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "science.ops.stub",
-              name: "Science/Ops Lab",
-              location: "science.ops.stub",
-              kind: "science",
-              priority: 80,
-              bounds: {minX: -9.8, maxX: -2.0, minZ: -31.5, maxZ: -24.0}
+                        "id": "science.ops.stub",
+                        "name": "Science/Ops Lab",
+                        "location": "science.ops.stub",
+                        "kind": "science",
+                        "priority": 80,
+                        "bounds": {
+                                    "minX": -9.8,
+                                    "maxX": -2.0,
+                                    "minZ": -31.5,
+                                    "maxZ": -24.0
+                        },
+                        "visual": {
+                                    "color": "#a78bfa",
+                                    "edgeColor": "#8b5cf6",
+                                    "labelColor": "#ede9fe",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -9.9,
+                                                            "maxX": -2.0,
+                                                            "minZ": -31.5,
+                                                            "maxZ": -24.0
+                                                },
+                                                "accentColor": "#a78bfa"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": -9.9,
+                                                            "minZ": -31.5,
+                                                            "maxZ": -24.0
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -31.5,
+                                                            "minX": -9.9,
+                                                            "maxX": -2.0
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.science-corridor",
+                                                            "exit": "exit.corridor-science",
+                                                            "door": "door.science"
+                                                }
+                                    ],
+                                    "doorPanels": [
+                                                {
+                                                            "door": "door.science",
+                                                            "center": [
+                                                                        -3.18,
+                                                                        -25.0
+                                                            ],
+                                                            "width": 2.1,
+                                                            "vertical": true
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "bridge.access",
-              name: "Bridge Access",
-              location: "bridge.access",
-              kind: "bridge-access",
-              priority: 90,
-              bounds: {minX: -2.9, maxX: 2.9, minZ: -32.25, maxZ: -25.45}
+                        "id": "bridge.access",
+                        "name": "Bridge Access",
+                        "location": "bridge.access",
+                        "kind": "bridge-access",
+                        "priority": 90,
+                        "bounds": {
+                                    "minX": -2.9,
+                                    "maxX": 2.9,
+                                    "minZ": -32.25,
+                                    "maxZ": -25.45
+                        },
+                        "visual": {
+                                    "color": "#86efac",
+                                    "edgeColor": "#22c55e",
+                                    "labelColor": "#dcfce7",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -2.95,
+                                                            "maxX": 2.95,
+                                                            "minZ": -32.25,
+                                                            "maxZ": -25.35
+                                                },
+                                                "accentColor": "#fbbf24"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": -2.95,
+                                                            "minZ": -32.25,
+                                                            "maxZ": -25.35
+                                                },
+                                                {
+                                                            "axis": "x",
+                                                            "x": 2.95,
+                                                            "minZ": -32.25,
+                                                            "maxZ": -25.35
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -32.25,
+                                                            "minX": -2.95,
+                                                            "maxX": -1.12
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -32.25,
+                                                            "minX": 1.12,
+                                                            "maxX": 2.95
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.bridge-door",
+                                                            "exit": "exit.corridor-bridge",
+                                                            "door": "door.bridge"
+                                                },
+                                                {
+                                                            "id": "opening.bridge-throat",
+                                                            "exit": "exit.bridge-deck"
+                                                }
+                                    ],
+                                    "doorPanels": [
+                                                {
+                                                            "door": "door.bridge",
+                                                            "center": [
+                                                                        0,
+                                                                        -25.72
+                                                            ],
+                                                            "width": 2.5,
+                                                            "vertical": false
+                                                }
+                                    ]
+                        }
             },
             {
-              id: "bridge.deck",
-              name: "Bridge Deck",
-              location: "bridge.deck",
-              kind: "bridge",
-              priority: 110,
-              bounds: {minX: -4.65, maxX: 4.65, minZ: -39.35, maxZ: -31.25}
+                        "id": "bridge.deck",
+                        "name": "Bridge Deck",
+                        "location": "bridge.deck",
+                        "kind": "bridge",
+                        "priority": 110,
+                        "bounds": {
+                                    "minX": -4.65,
+                                    "maxX": 4.65,
+                                    "minZ": -39.35,
+                                    "maxZ": -31.25
+                        },
+                        "visual": {
+                                    "color": "#ef4444",
+                                    "edgeColor": "#f97316",
+                                    "labelColor": "#fee2e2",
+                                    "boundary": true,
+                                    "floorBand": true,
+                                    "label": true,
+                                    "labelHeight": 0.42
+                        },
+                        "geometry": {
+                                    "schema": "game.room.geometry.v1",
+                                    "shell": {
+                                                "bounds": {
+                                                            "minX": -4.8,
+                                                            "maxX": 4.8,
+                                                            "minZ": -39.5,
+                                                            "maxZ": -31.25
+                                                },
+                                                "accentColor": "#0ea5e9"
+                                    },
+                                    "walls": [
+                                                {
+                                                            "axis": "x",
+                                                            "x": -4.8,
+                                                            "minZ": -39.5,
+                                                            "maxZ": -31.25
+                                                },
+                                                {
+                                                            "axis": "x",
+                                                            "x": 4.8,
+                                                            "minZ": -39.5,
+                                                            "maxZ": -31.25
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -31.25,
+                                                            "minX": -4.8,
+                                                            "maxX": -1.12
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -31.25,
+                                                            "minX": 1.12,
+                                                            "maxX": 4.8
+                                                },
+                                                {
+                                                            "axis": "z",
+                                                            "z": -39.5,
+                                                            "minX": -4.8,
+                                                            "maxX": 4.8
+                                                }
+                                    ],
+                                    "openings": [
+                                                {
+                                                            "id": "opening.bridge-deck-throat",
+                                                            "exit": "exit.bridge-deck"
+                                                }
+                                    ],
+                                    "beams": [
+                                                {
+                                                            "start": [
+                                                                        -3.7,
+                                                                        2.3,
+                                                                        -32.0
+                                                            ],
+                                                            "end": [
+                                                                        3.7,
+                                                                        2.3,
+                                                                        -32.0
+                                                            ],
+                                                            "radius": 0.018,
+                                                            "color": "#67e8f9",
+                                                            "emissive": true
+                                                },
+                                                {
+                                                            "start": [
+                                                                        -3.7,
+                                                                        2.3,
+                                                                        -38.9
+                                                            ],
+                                                            "end": [
+                                                                        3.7,
+                                                                        2.3,
+                                                                        -38.9
+                                                            ],
+                                                            "radius": 0.018,
+                                                            "color": "#67e8f9",
+                                                            "emissive": true
+                                                }
+                                    ]
+                        }
             }
-          ],
+],
           exits: [
             {id: "exit.bay-access", from: "bay.shuttle", to: "bay.ops", door: "door.bay-access", bounds: {minX: 2.05, maxX: 4.55, minZ: -5.2, maxZ: -4.2}},
             {id: "exit.bay-inner", from: "bay.ops", to: "security.checkpoint", door: "door.bay-inner", bounds: {minX: -1.2, maxX: 1.2, minZ: -9.65, maxZ: -8.75}},
@@ -2786,7 +3690,8 @@
           // Patch H makes ship visual content data-first. Patch I also moves
           // repeated map/console markers into props so room decoration can
           // evolve without adding more one-off renderer calls. Patch M moves
-          // visible terminal console bodies into data-defined props.
+          // visible terminal console bodies into data-defined props. Patch N
+          // adds room visual metadata for the data-driven room boundary pass.
           props: [
             {
               id: "prop.route.bridge-marker",
@@ -3157,6 +4062,74 @@
         );
       }
 
+      function shuttle3dRoomVisualDefaults(kind) {
+        // Patch N: room visuals are authored in motherShipInterior.rooms[].visual.
+        // These defaults let old projects get the same data-driven room boundary pass.
+        const normalizedKind = String(kind || "room").toLowerCase();
+        const palette = {
+          "shuttle-bay": {color: "#38bdf8", edgeColor: "#60a5fa", labelColor: "#bfdbfe"},
+          operations: {color: "#38bdf8", edgeColor: "#22d3ee", labelColor: "#bae6fd"},
+          checkpoint: {color: "#f59e0b", edgeColor: "#fbbf24", labelColor: "#fef3c7"},
+          corridor: {color: "#94a3b8", edgeColor: "#64748b", labelColor: "#e2e8f0"},
+          engineering: {color: "#fbbf24", edgeColor: "#f59e0b", labelColor: "#fde68a"},
+          medbay: {color: "#fca5a5", edgeColor: "#f87171", labelColor: "#fee2e2"},
+          science: {color: "#a78bfa", edgeColor: "#8b5cf6", labelColor: "#ede9fe"},
+          "bridge-access": {color: "#86efac", edgeColor: "#22c55e", labelColor: "#dcfce7"},
+          bridge: {color: "#ef4444", edgeColor: "#f97316", labelColor: "#fee2e2"}
+        };
+        const defaults = palette[normalizedKind] || {color: "#38bdf8", edgeColor: "#64748b", labelColor: "#e2e8f0"};
+        return {
+          color: defaults.color,
+          edgeColor: defaults.edgeColor,
+          labelColor: defaults.labelColor,
+          boundary: true,
+          floorBand: true,
+          label: true,
+          labelHeight: 0.42
+        };
+      }
+
+      function shuttle3dNormalizeMotherShipRoomVisual(value, fallbackValue, kind) {
+        const defaults = shuttle3dRoomVisualDefaults(kind);
+        const raw = shuttle3dObjectValue(value);
+        const fallback = shuttle3dObjectValue(fallbackValue);
+        return {
+          color: String(raw.color || fallback.color || defaults.color),
+          edgeColor: String(raw.edgeColor || fallback.edgeColor || defaults.edgeColor),
+          labelColor: String(raw.labelColor || fallback.labelColor || defaults.labelColor),
+          boundary: raw.boundary === false || fallback.boundary === false ? false : defaults.boundary,
+          floorBand: raw.floorBand === false || fallback.floorBand === false ? false : defaults.floorBand,
+          label: raw.label === false || fallback.label === false ? false : defaults.label,
+          labelHeight: Math.max(0.08, Math.min(1.2, shuttle3dNumberValue(raw.labelHeight, shuttle3dNumberValue(fallback.labelHeight, defaults.labelHeight))))
+        };
+      }
+
+      function shuttle3dNormalizeMotherShipRoomGeometry(value, fallbackValue, roomBounds, roomId) {
+        // Patch O keeps mother-ship room shell/wall/opening geometry in rooms[].geometry
+        // instead of hardcoding every room frame inside appendShuttleBayScene.
+        const raw = shuttle3dObjectValue(value);
+        const fallback = shuttle3dObjectValue(fallbackValue);
+        const source = Object.keys(raw).length ? raw : fallback;
+        const geometry = shuttle3dCloneJson(source, {});
+        const bounds = shuttle3dBoundsValue(geometry?.shell?.bounds, roomBounds);
+        if (!geometry.schema) geometry.schema = "game.room.geometry.v1";
+        if (!geometry.shell || typeof geometry.shell !== "object") {
+          geometry.shell = {
+            bounds,
+            accentColor: geometry.accentColor || "#67e8f9"
+          };
+        } else {
+          geometry.shell.bounds = bounds;
+        }
+        if (!Array.isArray(geometry.walls)) geometry.walls = [];
+        if (!Array.isArray(geometry.openings)) geometry.openings = [];
+        if (!Array.isArray(geometry.doorPanels)) geometry.doorPanels = [];
+        if (!Array.isArray(geometry.boxes)) geometry.boxes = [];
+        if (!Array.isArray(geometry.beams)) geometry.beams = [];
+        geometry.room = String(geometry.room || roomId || "");
+        return geometry;
+      }
+
       function shuttle3dNormalizeMotherShipRooms(value, fallbackRooms, locations) {
         const source = Array.isArray(value) && value.length ? value : fallbackRooms;
         return source
@@ -3174,7 +4147,9 @@
               location,
               kind: String(raw.kind || fallback.kind || "room"),
               priority: shuttle3dNumberValue(raw.priority, shuttle3dNumberValue(fallback.priority, index)),
-              bounds
+              bounds,
+              visual: shuttle3dNormalizeMotherShipRoomVisual(raw.visual, fallback.visual, raw.kind || fallback.kind || "room"),
+              geometry: shuttle3dNormalizeMotherShipRoomGeometry(raw.geometry, fallback.geometry, bounds, id)
             };
           })
           .filter(Boolean);
@@ -3518,6 +4493,8 @@
         const terminals = shuttle3dObjectValue(config?.terminals);
         const interactions = shuttle3dObjectValue(config?.interactions);
         const objectives = shuttle3dObjectValue(config?.objectives);
+        const exits = Array.isArray(config?.exits) ? config.exits : [];
+        const exitIds = new Set(exits.map((exit) => String(exit?.id || "")).filter(Boolean));
         const supportedHandlers = shuttle3dMotherShipSupportedInteractionHandlers();
         const rules = shuttle3dNormalizeMotherShipValidationRules(rulesInput || config?.validationRules);
         const propSystemTargets = new Set(["enemyShip"]);
@@ -3547,6 +4524,30 @@
           else if (rules.requireRoomBoundsInsideMovement && !shuttle3dBoundsContainBounds(movementBounds, room.bounds)) {
             errors.push(`room ${room.id} is outside mother-ship movement bounds`);
           }
+          const geometry = shuttle3dObjectValue(room.geometry);
+          if (Object.keys(geometry).length) {
+            // Patch O validates room-local geometry metadata without making doors into traversal locks.
+            if (geometry.room && String(geometry.room) !== String(room.id)) {
+              errors.push(`room ${room.id} geometry points at mismatched room ${geometry.room}`);
+            }
+            (Array.isArray(geometry.walls) ? geometry.walls : []).forEach((wall, wallIndex) => {
+              const axis = String(wall?.axis || "").toLowerCase();
+              if (!["x", "z"].includes(axis)) errors.push(`room ${room.id} geometry wall[${wallIndex}] has invalid axis`);
+              if (axis === "x" && !Number.isFinite(Number(wall?.x))) errors.push(`room ${room.id} geometry wall[${wallIndex}] has invalid x`);
+              if (axis === "z" && !Number.isFinite(Number(wall?.z))) errors.push(`room ${room.id} geometry wall[${wallIndex}] has invalid z`);
+            });
+            (Array.isArray(geometry.openings) ? geometry.openings : []).forEach((opening) => {
+              const openingId = String(opening?.id || "opening");
+              const exitId = String(opening?.exit || "").trim();
+              const doorId = String(opening?.door || "").trim();
+              if (exitId && !exitIds.has(exitId)) errors.push(`room ${room.id} geometry ${openingId} references missing exit ${exitId}`);
+              if (doorId && !doors[doorId]) errors.push(`room ${room.id} geometry ${openingId} references missing door ${doorId}`);
+            });
+            (Array.isArray(geometry.doorPanels) ? geometry.doorPanels : []).forEach((panel, panelIndex) => {
+              const doorId = String(panel?.door || "").trim();
+              if (doorId && !doors[doorId]) errors.push(`room ${room.id} geometry doorPanel[${panelIndex}] references missing door ${doorId}`);
+            });
+          }
         });
 
         Object.entries(config?.locations || {}).forEach(([location]) => {
@@ -3574,7 +4575,7 @@
           }
         });
 
-        (Array.isArray(config?.exits) ? config.exits : []).forEach((exit) => {
+        exits.forEach((exit) => {
           const id = String(exit?.id || "exit");
           if (rules.requireConnectedRooms && !shuttle3dRoomForLocation(config, exit?.from)) errors.push(`${id} starts at missing room/location ${exit?.from}`);
           if (rules.requireConnectedRooms && !shuttle3dRoomForLocation(config, exit?.to)) errors.push(`${id} ends at missing room/location ${exit?.to}`);
@@ -5230,45 +6231,88 @@
         }
 
 
-        appendShuttleBayScene(builder, nowMs = 0) {
+        appendMotherShipRoomGeometry(builder, nowMs = 0) {
+          // Patch O renders room shell/wall/opening geometry from rooms[].geometry.
+          // Bay Ops interior transit spine now renders from rooms[].geometry boxes/beams.
+          // See pretty_docs/game-runtime-patch-O-room-geometry-extraction.md for the content contract.
+          // This keeps traversal metadata, room visuals, and structural affordances on the same data model.
+          const rooms = Array.isArray(this.interiorConfig?.rooms) ? this.interiorConfig.rooms : [];
+          if (!rooms.length) return;
+          const pulse = 0.55 + 0.45 * Math.sin((nowMs || 0) / 320);
           const deck = builder.color("#1e293b");
           const deckDark = builder.color("#0f172a");
-          const wall = builder.color("#334155");
-          const bulkhead = builder.color("#475569");
-          const rail = builder.color("#64748b");
-          const light = builder.color("#67e8f9", true);
-          const green = builder.color("#86efac", true);
-          const amber = builder.color("#fbbf24", true);
-          const red = builder.color("#ef4444", true);
-          const blue = builder.color("#38bdf8", true);
-          const screenGlow = builder.color("#0ea5e9", true);
-          const med = builder.color("#fca5a5", true);
-          const sci = builder.color("#a78bfa", true);
-          const terminal = builder.color("#0f766e");
+          const wallMaterial = builder.color("#334155");
           const doorMaterial = builder.color("#475569");
           const openDoor = builder.color("#22c55e", true);
           const closedDoor = builder.color("#f59e0b", true);
           const attentionDoor = builder.color("#f59e0b", true);
-          const pulse = 0.55 + 0.45 * Math.sin((nowMs || 0) / 320);
-
-          const roomShell = (minX, maxX, minZ, maxZ, accent = light) => {
-            builder.box([minX, -1.2, minZ], [maxX, -1.12, maxZ], deck);
-            builder.box([minX, 2.72, minZ], [maxX, 3.02, maxZ], deckDark);
-            builder.beam([minX + 0.45, 2.56, minZ + 0.42], [maxX - 0.45, 2.56, minZ + 0.42], 0.018, accent);
-            builder.beam([minX + 0.45, 2.56, maxZ - 0.42], [maxX - 0.45, 2.56, maxZ - 0.42], 0.018, accent);
+          const valueNumber = (value, fallback) => {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : fallback;
           };
-
-          const wallX = (x, minZ, maxZ) => builder.box([x - 0.15, -1.2, minZ], [x + 0.15, 2.85, maxZ], wall);
-          const wallZ = (z, minX, maxX) => builder.box([minX, -1.2, z - 0.15], [maxX, 2.85, z + 0.15], wall);
+          const colorFor = (value, fallback = "#67e8f9", emissive = false) => builder.color(String(value || fallback), emissive);
+          const boundsFor = (room, shell) => {
+            const bounds = shell?.bounds || room?.bounds || {};
+            return {
+              minX: valueNumber(bounds.minX, valueNumber(room?.bounds?.minX, -1)),
+              maxX: valueNumber(bounds.maxX, valueNumber(room?.bounds?.maxX, 1)),
+              minZ: valueNumber(bounds.minZ, valueNumber(room?.bounds?.minZ, -1)),
+              maxZ: valueNumber(bounds.maxZ, valueNumber(room?.bounds?.maxZ, 1))
+            };
+          };
+          const drawShell = (room, geometry) => {
+            const shell = geometry.shell && typeof geometry.shell === "object" ? geometry.shell : {};
+            if (geometry.shell === false || shell.enabled === false) return;
+            const bounds = boundsFor(room, shell);
+            const floorEnabled = shell.floor !== false;
+            const ceilingEnabled = shell.ceiling !== false;
+            const floorMinY = valueNumber(shell.floorMinY, -1.2);
+            const floorMaxY = valueNumber(shell.floorMaxY, -1.12);
+            const ceilingMinY = valueNumber(shell.ceilingMinY, 2.72);
+            const ceilingMaxY = valueNumber(shell.ceilingMaxY, 3.02);
+            if (floorEnabled) builder.box([bounds.minX, floorMinY, bounds.minZ], [bounds.maxX, floorMaxY, bounds.maxZ], deck);
+            if (ceilingEnabled) builder.box([bounds.minX, ceilingMinY, bounds.minZ], [bounds.maxX, ceilingMaxY, bounds.maxZ], deckDark);
+            const accent = colorFor(shell.accentColor || geometry.accentColor || room?.visual?.edgeColor, "#67e8f9", true);
+            if (shell.accentBeams !== false) {
+              builder.beam([bounds.minX + 0.45, 2.56, bounds.minZ + 0.42], [bounds.maxX - 0.45, 2.56, bounds.minZ + 0.42], 0.018, accent);
+              builder.beam([bounds.minX + 0.45, 2.56, bounds.maxZ - 0.42], [bounds.maxX - 0.45, 2.56, bounds.maxZ - 0.42], 0.018, accent);
+            }
+          };
+          const drawWall = (wall) => {
+            const axis = String(wall?.axis || "").toLowerCase();
+            const material = colorFor(wall?.color, "#334155", wall?.emissive === true);
+            if (axis === "x") {
+              const x = valueNumber(wall.x, NaN);
+              const minZ = valueNumber(wall.minZ, NaN);
+              const maxZ = valueNumber(wall.maxZ, NaN);
+              if ([x, minZ, maxZ].every(Number.isFinite)) {
+                builder.box([x - 0.15, -1.2, minZ], [x + 0.15, 2.85, maxZ], material || wallMaterial);
+              }
+            } else if (axis === "z") {
+              const z = valueNumber(wall.z, NaN);
+              const minX = valueNumber(wall.minX, NaN);
+              const maxX = valueNumber(wall.maxX, NaN);
+              if ([z, minX, maxX].every(Number.isFinite)) {
+                builder.box([minX, -1.2, z - 0.15], [maxX, 2.85, z + 0.15], material || wallMaterial);
+              }
+            }
+          };
           const doorStateColor = (doorId) => {
             const state = this.shipDoorState(doorId);
             if (state === "open") return openDoor;
             if (state === "closed") return attentionDoor;
             return closedDoor;
           };
-          const doorPanel = (doorId, centerX, centerZ, width, vertical = false) => {
+          const drawDoorPanel = (panel) => {
+            const doorId = String(panel?.door || panel?.id || "");
+            const center = Array.isArray(panel?.center) ? panel.center : [panel?.centerX, panel?.centerZ];
+            const centerX = valueNumber(center[0], NaN);
+            const centerZ = valueNumber(center[1], NaN);
+            const width = Math.max(0.2, valueNumber(panel?.width, 1.6));
+            if (![centerX, centerZ, width].every(Number.isFinite)) return;
             const color = doorStateColor(doorId);
             const state = this.shipDoorState(doorId);
+            const vertical = panel?.vertical === true;
             if (vertical) {
               if (state !== "open") builder.box([centerX - 0.12, -1.05, centerZ - width / 2], [centerX + 0.12, 2.42, centerZ + width / 2], doorMaterial);
               builder.beam([centerX, 0.35, centerZ - width / 2], [centerX, 0.35, centerZ + width / 2], 0.03, color);
@@ -5279,6 +6323,48 @@
               builder.beam([centerX - width / 2, 2.02, centerZ], [centerX + width / 2, 2.02, centerZ], 0.03, color);
             }
           };
+          const drawBox = (box) => {
+            const min = Array.isArray(box?.min) ? box.min.map(Number) : [];
+            const max = Array.isArray(box?.max) ? box.max.map(Number) : [];
+            if (min.length === 3 && max.length === 3 && min.every(Number.isFinite) && max.every(Number.isFinite)) {
+              builder.box(min, max, colorFor(box?.color, "#475569", box?.emissive === true));
+            }
+          };
+          const drawBeam = (beam) => {
+            const start = Array.isArray(beam?.start) ? beam.start.map(Number) : [];
+            const end = Array.isArray(beam?.end) ? beam.end.map(Number) : [];
+            if (start.length === 3 && end.length === 3 && start.every(Number.isFinite) && end.every(Number.isFinite)) {
+              const radius = Math.max(0.004, valueNumber(beam?.radius, 0.018));
+              builder.beam(start, end, radius + (beam?.pulse === true ? pulse * 0.006 : 0), colorFor(beam?.color, "#67e8f9", beam?.emissive !== false));
+            }
+          };
+
+          rooms.forEach((room) => {
+            const geometry = room?.geometry && typeof room.geometry === "object" ? room.geometry : {};
+            if (!Object.keys(geometry).length || geometry.enabled === false) return;
+            drawShell(room, geometry);
+            (Array.isArray(geometry.walls) ? geometry.walls : []).forEach(drawWall);
+            (Array.isArray(geometry.boxes) ? geometry.boxes : []).forEach(drawBox);
+            (Array.isArray(geometry.beams) ? geometry.beams : []).forEach(drawBeam);
+            (Array.isArray(geometry.lighting) ? geometry.lighting : []).forEach(drawBeam);
+            (Array.isArray(geometry.doorPanels) ? geometry.doorPanels : []).forEach(drawDoorPanel);
+          });
+        }
+
+
+        appendShuttleBayScene(builder, nowMs = 0) {
+          const deck = builder.color("#1e293b");
+          const bulkhead = builder.color("#475569");
+          const rail = builder.color("#64748b");
+          const light = builder.color("#67e8f9", true);
+          const green = builder.color("#86efac", true);
+          const amber = builder.color("#fbbf24", true);
+          const blue = builder.color("#38bdf8", true);
+          const med = builder.color("#fca5a5", true);
+          const sci = builder.color("#a78bfa", true);
+          const terminal = builder.color("#0f766e");
+          const pulse = 0.55 + 0.45 * Math.sin((nowMs || 0) / 320);
+
           const terminalBlock = (terminalId, centerX, centerZ, color = blue) => {
             const state = String(this.shipState?.terminals?.[terminalId]?.state || "").toLowerCase();
             const online = state === "online" || state === "tracking";
@@ -5287,17 +6373,9 @@
             builder.box([centerX - 0.36, 0.16, centerZ - 0.32], [centerX + 0.36, 0.5, centerZ + 0.1], glow);
             builder.beam([centerX - 0.48, 0.62, centerZ - 0.42], [centerX + 0.48, 0.62, centerZ - 0.42], 0.02 + pulse * 0.01, glow);
           };
+          this.appendMotherShipRoomGeometry(builder, nowMs);
+
           // Mother Ship Shuttle Bay
-          roomShell(-5.2, 5.2, -5.25, 6.2, light);
-          wallX(-5.2, -5.25, 6.2);
-          wallX(5.2, -5.25, 6.2);
-          wallZ(5.72, -5.25, -2.75);
-          wallZ(5.72, 2.75, 5.25);
-          wallZ(5.72, -1.65, 1.65);
-          wallZ(-5.05, -5.2, -0.82);
-          wallZ(-5.05, 0.82, 2.15);
-          wallZ(-5.05, 4.45, 5.2);
-          doorPanel("door.bay-access", 3.3, -5.04, 2.22, false);
           builder.box([2.18, -1.06, -5.36], [4.42, -0.93, -4.72], blue);
           builder.beam([2.24, -0.78, -5.28], [4.36, -0.78, -5.28], 0.03, green);
           builder.beam([2.24, 1.42, -5.2], [4.36, 1.42, -5.2], 0.026, light);
@@ -5323,26 +6401,9 @@
 
           // Bay Operations on the shipside/right side of the bay.
           // Keep the access vestibule, visible corridor, and walkable bounds aligned so players never step into an unrendered void.
-          roomShell(-2.35, 5.05, -9.65, -4.35, blue);
-          wallX(5.05, -9.65, -4.35);
-          wallX(-2.35, -9.65, -8.1);
           // Segment the forward Bay Ops bulkhead so the central transit spine is a real visible opening.
-          wallZ(-9.65, -2.35, -1.14);
-          wallZ(-9.65, 1.14, 5.05);
-          wallZ(-4.35, -2.35, 2.12);
-          wallZ(-4.35, 4.45, 5.05);
           builder.box([2.12, -1.055, -6.95], [4.45, -0.96, -5.15], builder.color("#1d4ed8"));
           builder.box([-1.9, -1.055, -9.12], [1.12, -0.96, -5.05], deck);
-          // Bay Ops interior transit spine: this replaces the previous black void with a modeled corridor throat.
-          builder.box([-1.18, -1.06, -9.72], [1.18, -0.92, -8.62], builder.color("#243244"));
-          builder.box([-1.42, -1.04, -9.76], [-1.16, 2.12, -8.58], bulkhead);
-          builder.box([1.16, -1.04, -9.76], [1.42, 2.12, -8.58], bulkhead);
-          builder.box([-1.42, 2.12, -9.76], [1.42, 2.48, -8.58], bulkhead);
-          builder.beam([-1.04, -0.72, -9.42], [1.04, -0.72, -9.42], 0.026, blue);
-          builder.beam([-1.04, -0.72, -8.86], [1.04, -0.72, -8.86], 0.026, blue);
-          builder.beam([-1.08, 1.74, -9.54], [1.08, 1.74, -9.54], 0.028, light);
-          builder.beam([-1.08, 0.4, -9.55], [-1.08, 0.4, -8.72], 0.022, green);
-          builder.beam([1.08, 0.4, -9.55], [1.08, 0.4, -8.72], 0.022, green);
           builder.box([-0.72, -1.052, -9.38], [0.72, -0.93, -9.2], green);
           builder.box([-0.72, -1.052, -8.98], [0.72, -0.93, -8.8], green);
           builder.beam([2.34, -0.72, -5.42], [4.28, -0.72, -6.82], 0.024, blue);
@@ -5354,72 +6415,34 @@
           builder.beam([2.0, 0.1, -5.15], [4.55, 0.1, -5.15], 0.024, blue);
           builder.beam([-1.12, 0.14, -8.82], [1.12, 0.14, -8.82], 0.024, amber);
           // Security checkpoint and inner bay door.
-          roomShell(-3.25, 3.25, -13.65, -8.75, amber);
-          wallX(-3.25, -13.65, -8.75);
-          wallX(3.25, -13.65, -8.75);
-          wallZ(-8.85, -3.25, -0.82);
-          wallZ(-8.85, 0.82, 3.25);
-          doorPanel("door.bay-inner", 0, -8.88, 1.64, false);
           builder.box([-2.62, -1.05, -12.3], [-1.48, 0.2, -11.7], bulkhead);
           builder.box([1.48, -1.05, -12.3], [2.62, 0.2, -11.7], bulkhead);
           builder.beam([-2.55, 0.55, -12.0], [2.55, 0.55, -12.0], 0.03, amber);
 
           // Main corridor hub.
-          roomShell(-6.75, 6.75, -18.9, -13.25, light);
-          wallX(-6.75, -18.9, -13.25);
-          wallX(6.75, -18.9, -13.25);
-          wallZ(-13.35, -6.75, -0.8);
-          wallZ(-13.35, 0.8, 6.75);
-          doorPanel("door.security-hub", 0, -13.36, 1.6, false);
-          builder.beam([-5.65, -0.88, -16.3], [5.65, -0.88, -16.3], 0.026, light);
-          builder.beam([0, -0.88, -13.7], [0, -0.88, -25.6], 0.026, light);
-          doorPanel("door.engineering-access", 3.18, -17.85, 2.1, true);
-          doorPanel("door.medbay", -3.18, -17.85, 2.1, true);
 
           // Engineering access.
-          roomShell(2.0, 9.9, -24.35, -17.05, green);
-          wallX(9.9, -24.35, -17.05);
-          wallZ(-24.35, 2.0, 9.9);
           terminalBlock("terminal.engineering-power", 7.35, -20.75, green);
           builder.ellipsoid([5.4, 0.05, -21.1], [0.74, 1.15, 0.74], 14, 8, builder.color("#115e59"));
           builder.beam([5.4, 1.15, -21.1], [5.4, 2.45, -21.1], 0.06, this.shipState?.power === "online" ? green : amber);
           builder.beam([3.0, 0.3, -18.3], [8.8, 0.3, -23.0], 0.02, green);
           // Medbay triage.
-          roomShell(-9.9, -2.0, -24.35, -17.05, med);
-          wallX(-9.9, -24.35, -17.05);
-          wallZ(-24.35, -9.9, -2.0);
           builder.box([-8.65, -1.04, -22.9], [-6.65, -0.62, -21.7], builder.color("#e2e8f0"));
           builder.box([-5.7, -1.04, -22.9], [-3.7, -0.62, -21.7], builder.color("#e2e8f0"));
           builder.beam([-8.45, -0.34, -22.28], [-6.85, -0.34, -22.28], 0.035, med);
           builder.beam([-5.5, -0.34, -22.28], [-3.9, -0.34, -22.28], 0.035, med);
           // Science/Ops lab.
-          roomShell(-9.9, -2.0, -31.5, -24.0, sci);
-          wallX(-9.9, -31.5, -24.0);
-          wallZ(-31.5, -9.9, -2.0);
-          doorPanel("door.science", -3.18, -25.0, 2.1, true);
           builder.consoleWedge(-7.8, -28.6, 1.3, 0.82, -1.08, -0.28, 0.18, builder.color("#312e81"));
           builder.consoleWedge(-4.8, -28.6, 1.3, 0.82, -1.08, -0.28, 0.18, builder.color("#312e81"));
           builder.ellipsoid([-6.28, 0.45, -26.25], [0.75, 0.48, 0.75], 14, 8, sci);
           builder.beam([-8.45, 0.62, -28.95], [-3.55, 0.62, -28.95], 0.025, sci);
           // Bridge command door, command vestibule, and bridge deck.
-          roomShell(-2.95, 2.95, -32.25, -25.35, amber);
-          wallX(-2.95, -32.25, -25.35);
-          wallX(2.95, -32.25, -25.35);
           // Leave the forward bridge throat open so the vestibule visibly connects to the bridge deck.
-          wallZ(-32.25, -2.95, -1.12);
-          wallZ(-32.25, 1.12, 2.95);
-          doorPanel("door.bridge", 0, -25.72, 2.5, false);
           builder.consoleWedge(0, -29.25, 1.8, 0.9, -1.08, -0.32, 0.26, builder.color("#1e3a8a"));
           builder.beam([-1.2, 0.62, -29.68], [1.2, 0.62, -29.68], 0.028, green);
           builder.box([-0.78, -1.052, -31.98], [0.78, -0.93, -31.65], green);
           builder.beam([-1.04, 0.1, -31.88], [1.04, 0.1, -31.88], 0.024, light);
           // Bridge deck with forward viewscreen showing the enemy ship.
-          roomShell(-4.8, 4.8, -39.5, -31.25, screenGlow);
-          wallX(-4.8, -39.5, -31.25);
-          wallX(4.8, -39.5, -31.25);
-          wallZ(-31.25, -4.8, -1.12);
-          wallZ(-31.25, 1.12, 4.8);
-          wallZ(-39.5, -4.8, 4.8);
           builder.beam([-1.08, 0.35, -31.48], [1.08, 0.35, -31.48], 0.026, green);
           builder.box([-2.35, -1.06, -34.15], [-1.22, -0.5, -33.3], builder.color("#1e3a8a"));
           builder.box([1.22, -1.06, -34.15], [2.35, -0.5, -33.3], builder.color("#1e3a8a"));
@@ -5434,12 +6457,71 @@
           builder.box([-0.36, -1.05, -35.9], [0.36, -0.58, -35.48], builder.color("#64748b"));
           builder.beam([-3.95, -0.78, -33.2], [-1.1, -0.78, -37.2], 0.024, blue);
           builder.beam([3.95, -0.78, -33.2], [1.1, -0.78, -37.2], 0.024, blue);
-          builder.beam([-3.7, 2.3, -32.0], [3.7, 2.3, -32.0], 0.018, light);
-          builder.beam([-3.7, 2.3, -38.9], [3.7, 2.3, -38.9], 0.018, light);
           this.appendBridgeViewscreenEnemy(builder, nowMs);
+          this.appendMotherShipRoomVisuals(builder, nowMs);
           this.appendMotherShipInteriorProps(builder, nowMs);
           this.appendMotherShipInteractableHotspots(builder, nowMs);
         }
+
+        appendMotherShipRoomVisuals(builder, nowMs = 0) {
+          // Patch N renders room boundary/wayfinding affordances from room visual metadata.
+          // See pretty_docs/game-runtime-patch-N-room-visual-metadata.md for the content contract.
+          // The pass is intentionally additive so it can validate room data without changing collision.
+          const rooms = Array.isArray(this.interiorConfig?.rooms) ? this.interiorConfig.rooms : [];
+          if (!rooms.length) return;
+          const pulse = 0.42 + 0.58 * Math.sin((nowMs || 0) / 520);
+          rooms.forEach((room) => {
+            const bounds = room?.bounds || {};
+            const minX = Number(bounds.minX);
+            const maxX = Number(bounds.maxX);
+            const minZ = Number(bounds.minZ);
+            const maxZ = Number(bounds.maxZ);
+            if (![minX, maxX, minZ, maxZ].every(Number.isFinite) || maxX <= minX || maxZ <= minZ) return;
+            const visual = room.visual || shuttle3dRoomVisualDefaults(room.kind);
+            const edge = builder.color(visual.edgeColor || visual.color || "#64748b", true);
+            const fill = builder.color(visual.color || "#38bdf8", true);
+            const labelColor = builder.color(visual.labelColor || visual.color || "#e2e8f0", true);
+            const centerX = (minX + maxX) / 2;
+            const centerZ = (minZ + maxZ) / 2;
+            const width = maxX - minX;
+            const depth = maxZ - minZ;
+            const y = -0.885;
+            const beamRadius = 0.007 + pulse * 0.004;
+
+            if (visual.boundary !== false) {
+              builder.beam([minX, y, minZ], [maxX, y, minZ], beamRadius, edge);
+              builder.beam([maxX, y, minZ], [maxX, y, maxZ], beamRadius, edge);
+              builder.beam([maxX, y, maxZ], [minX, y, maxZ], beamRadius, edge);
+              builder.beam([minX, y, maxZ], [minX, y, minZ], beamRadius, edge);
+            }
+            if (visual.floorBand !== false) {
+              const longAxisIsZ = depth >= width;
+              if (longAxisIsZ) {
+                const bandWidth = Math.min(0.32, Math.max(0.12, width * 0.08));
+                builder.box(
+                  [centerX - bandWidth / 2, -1.051, minZ + Math.min(0.32, depth * 0.08)],
+                  [centerX + bandWidth / 2, -0.985, maxZ - Math.min(0.32, depth * 0.08)],
+                  fill
+                );
+              } else {
+                const bandDepth = Math.min(0.32, Math.max(0.12, depth * 0.08));
+                builder.box(
+                  [minX + Math.min(0.32, width * 0.08), -1.051, centerZ - bandDepth / 2],
+                  [maxX - Math.min(0.32, width * 0.08), -0.985, centerZ + bandDepth / 2],
+                  fill
+                );
+              }
+            }
+            if (visual.label !== false) {
+              const labelHeight = Math.max(0.08, Math.min(1.2, Number(visual.labelHeight || 0.42)));
+              const plateWidth = Math.max(0.55, Math.min(1.75, width * 0.28));
+              const z = maxZ - 0.16;
+              builder.box([centerX - plateWidth / 2, 0.06, z - 0.035], [centerX + plateWidth / 2, 0.06 + labelHeight, z + 0.035], labelColor);
+              builder.beam([centerX - plateWidth / 2, 0.14 + labelHeight, z], [centerX + plateWidth / 2, 0.14 + labelHeight, z], 0.009 + pulse * 0.004, labelColor);
+            }
+          });
+        }
+
 
         appendMotherShipInteriorProps(builder, nowMs = 0) {
           // Patch H: render data-defined ship content from motherShipInterior.props.

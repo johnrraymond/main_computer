@@ -181,9 +181,12 @@ FALLBACK_APP_SURFACE_POLICIES = {
     "mcel-lab": AppSurfacePolicy(
         app_id="mcel-lab",
         label="MCEL Lab",
-        state="legacy",
-        conformance_required=False,
-        maturity="legacy",
+        state="surface-aware",
+        conformance_required=True,
+        maturity="semantic-runtime",
+        surface_id="mcel-lab.form.work-surface.blueprint-inspection",
+        contract_id="mcel-lab.contract.default.blueprint-studio-health",
+        required_layer_ids=RUNTIME_LAYER_IDS,
     ),
 }
 

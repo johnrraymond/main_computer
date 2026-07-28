@@ -42,6 +42,7 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | K. Interactable hotspot render pass | Render visible E-key affordances from `motherShipInterior.interactables` so prompts match physical hotspots | Should preserve behavior while making interactions clearer |
 | L. Interactable visual metadata | Normalize per-interactable hotspot visual hints so terminal/access/door affordances can be styled from content data | Should preserve behavior while making hotspot presentation data-first |
 | M. Terminal console props | Render visible terminal/console bodies from `motherShipInterior.props` | Should preserve behavior while making console presentation data-first |
+| N. Room visual metadata | Render room boundary and wayfinding affordances from `motherShipInterior.rooms[].visual` | Should preserve behavior while making room presentation data-first |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -467,3 +468,8 @@ Patch G implementation note: renderer bootstrapping now has behavior-preserving 
 Patch I implementation note: repeated mother-ship room/terminal map markers now flow through `motherShipInterior.props` using `kind: "map-marker"` and `appendMotherShipInteriorProps(builder, nowMs)`.
 
 Patch M implementation note: terminal console bodies now flow through `motherShipInterior.props` with `kind: "terminal-console"`, while prompts and actions remain in interactables/interactions.
+
+Patch N implementation note: room boundary and wayfinding affordances now flow through `rooms[].visual`, `shuttle3dNormalizeMotherShipRoomVisual()`, and `appendMotherShipRoomVisuals(builder, nowMs)`.
+
+Patch O implementation note: mother-ship room shell, wall, opening, door-panel, and core corridor-throat geometry now flows through `rooms[].geometry`, `shuttle3dNormalizeMotherShipRoomGeometry()`, and `appendMotherShipRoomGeometry(builder, nowMs)`.
+

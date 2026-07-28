@@ -62,7 +62,7 @@
     },
     "mcel-lab": {
       "app": "mcel-lab",
-      "current_runtime_status": "structural-only",
+      "current_runtime_status": "scope-limited-semantic-runtime",
       "declared_form_primitive_count": 9,
       "mutation_intent_count": 4,
       "prohibited_intent_count": 0,
@@ -1047,7 +1047,7 @@
         "mcel-use-case": 2
       },
       "contract_complete": true,
-      "current_runtime_status": "structural-only",
+      "current_runtime_status": "scope-limited-semantic-runtime",
       "dominant_object": "AppBlueprint",
       "first_regions": [
         {
@@ -1240,7 +1240,7 @@
         "read-only": 3
       },
       "mutation_intent_count": 4,
-      "open_finding_count": 1,
+      "open_finding_count": 0,
       "planned_or_open_count": 31,
       "primary_user_goal": "Select an app blueprint, inspect its semantic form and implementation evidence, annotate rendered elements, validate findings, and export repair context without directly rewriting live implementation files.",
       "prohibited_intent_count": 0,
@@ -1281,17 +1281,15 @@
         }
       ],
       "source": {
-        "end_line": 109,
+        "end_line": 111,
         "file": "pretty_docs/mcel-lab-blueprint-studio.md",
         "start_line": 84
       },
       "status": "specified",
       "status_counts": {
         "implemented": 4,
-        "open": 1,
         "partially-implemented": 3,
-        "planned": 8,
-        "specified": 22
+        "specified": 31
       },
       "target_runtime_status": "scope-limited-semantic-runtime",
       "title": "MCEL Lab Blueprint Studio",
@@ -1299,12 +1297,12 @@
         {
           "goal": "Select an app, inspect its semantic form primitives, compare the declared contract with implementation evidence, and identify gaps before changing code.",
           "id": "mcel-lab.use-case.inspect-blueprint-from-doc-contract",
-          "status": "planned"
+          "status": "specified"
         },
         {
           "goal": "Inspect MCEL Lab itself, annotate rendered elements, distinguish user intent from verified facts, and export reviewable repair context without directly rewriting the live Lab implementation.",
           "id": "mcel-lab.use-case.self-host-refactor-context",
-          "status": "planned"
+          "status": "specified"
         }
       ]
     },
@@ -2500,7 +2498,7 @@
         "mcel-use-case": 2
       },
       "contract_complete": true,
-      "current_runtime_status": "structural-only",
+      "current_runtime_status": "scope-limited-semantic-runtime",
       "dominant_object": "AppBlueprint",
       "first_regions": [
         {
@@ -2693,7 +2691,7 @@
         "read-only": 3
       },
       "mutation_intent_count": 4,
-      "open_finding_count": 1,
+      "open_finding_count": 0,
       "planned_or_open_count": 31,
       "primary_user_goal": "Select an app blueprint, inspect its semantic form and implementation evidence, annotate rendered elements, validate findings, and export repair context without directly rewriting live implementation files.",
       "prohibited_intent_count": 0,
@@ -2734,17 +2732,15 @@
         }
       ],
       "source": {
-        "end_line": 109,
+        "end_line": 111,
         "file": "pretty_docs/mcel-lab-blueprint-studio.md",
         "start_line": 84
       },
       "status": "specified",
       "status_counts": {
         "implemented": 4,
-        "open": 1,
         "partially-implemented": 3,
-        "planned": 8,
-        "specified": 22
+        "specified": 31
       },
       "target_runtime_status": "scope-limited-semantic-runtime",
       "title": "MCEL Lab Blueprint Studio",
@@ -2752,12 +2748,12 @@
         {
           "goal": "Select an app, inspect its semantic form primitives, compare the declared contract with implementation evidence, and identify gaps before changing code.",
           "id": "mcel-lab.use-case.inspect-blueprint-from-doc-contract",
-          "status": "planned"
+          "status": "specified"
         },
         {
           "goal": "Inspect MCEL Lab itself, annotate rendered elements, distinguish user intent from verified facts, and export reviewable repair context without directly rewriting the live Lab implementation.",
           "id": "mcel-lab.use-case.self-host-refactor-context",
-          "status": "planned"
+          "status": "specified"
         }
       ]
     },
@@ -4121,9 +4117,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 597,
+                "end_line": 601,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 576
+                "start_line": 580
               },
               "source_binding": "",
               "status": "specified",
@@ -4194,9 +4190,9 @@
               ],
               "severity": "error",
               "source": {
-                "end_line": 624,
+                "end_line": 628,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 599
+                "start_line": 603
               },
               "source_binding": "",
               "status": "specified",
@@ -4242,9 +4238,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 679,
+                "end_line": 683,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 655
+                "start_line": 659
               },
               "source_binding": "",
               "status": "specified",
@@ -4293,9 +4289,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 653,
+                "end_line": 657,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 626
+                "start_line": 630
               },
               "source_binding": "",
               "status": "specified",
@@ -4628,7 +4624,7 @@
     "error_count": 0,
     "pretty_docs_root": "pretty_docs",
     "registry_version": "mcel-requirements-registry-v1",
-    "repo_root": "/mnt/data/work_patch35/main_computer_test",
+    "repo_root": "/mnt/data/work_patch36/main_computer_test",
     "strict_schema_ready": true,
     "total_blocks": 304,
     "valid": true,

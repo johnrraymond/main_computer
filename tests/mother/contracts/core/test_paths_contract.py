@@ -100,3 +100,22 @@ def test_wrong_generation_substitution_is_rejected(tmp_path) -> None:
             expected_network="network-a",
             expected_generation="generation-b",
         )
+
+
+def test_resolve_network_head_paths_returns_canonical_contained_paths(tmp_path) -> None:
+    paths = _paths()
+    resolver = _resolver(paths, tmp_path)
+
+    head_path, committed_state_path = resolver.resolve_network_head_paths("network-a")
+
+    network_root = resolver.network_root("network-a")
+    assert head_path == network_root / "journal" / "head.json"
+    assert committed_state_path == network_root / "committed-state.json"
+    assert resolver.validate_network_path(
+        head_path,
+        expected_network="network-a",
+    ) == head_path
+    assert resolver.validate_network_path(
+        committed_state_path,
+        expected_network="network-a",
+    ) == committed_state_path

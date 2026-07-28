@@ -106,3 +106,81 @@ def test_unknown_operation_kind_is_rejected() -> None:
             network="network-a",
             operation_kind="not-a-mother-operation",
         )
+
+
+@pytest.mark.parametrize(
+    ("model_name", "payload"),
+    [
+        (
+            "ParticipantRequest",
+            {
+                "schema_version": 1,
+                "request_id": 7,
+                "operation_id": "operation-1",
+                "participant": "host-a",
+                "method": "POST",
+                "path": "/apply",
+                "body_hash": None,
+            },
+        ),
+        (
+            "HeadTuple",
+            {
+                "schema_version": 1,
+                "journal_identity": "network-a",
+                "sequence": True,
+                "entry_hash": {
+                    "schema_version": 1,
+                    "algorithm": "sha256",
+                    "digest": "a" * 64,
+                },
+                "authorization_bundle_hash": {
+                    "schema_version": 1,
+                    "algorithm": "sha256",
+                    "digest": "b" * 64,
+                },
+                "state_hash": {
+                    "schema_version": 1,
+                    "algorithm": "sha256",
+                    "digest": "c" * 64,
+                },
+                "head_id": "head-1",
+                "head_epoch": 1,
+            },
+        ),
+        (
+            "HubReleaseDescriptorPayload",
+            {
+                "schema_version": 1,
+                "release_id": "release-1",
+                "image_manifest_digest": {
+                    "schema_version": 1,
+                    "algorithm": "sha256",
+                    "digest": "d" * 64,
+                },
+                "platform_image_digests": {},
+                "source_commit": "commit",
+                "provenance_attestation_hash": {
+                    "schema_version": 1,
+                    "algorithm": "sha256",
+                    "digest": "e" * 64,
+                },
+                "runtime_contract_version": "1",
+                "hub_api_version": "1",
+                "fdb_schema_version": "1",
+                "data_schema_change": "false",
+                "compatible_from_releases": [],
+                "compatible_mixed_release_sets": [],
+                "required_capabilities": [],
+                "health_assertion_set_hash": None,
+            },
+        ),
+    ],
+)
+def test_deserialization_rejects_invalid_primitive_field_types(
+    model_name: str,
+    payload: dict[str, object],
+) -> None:
+    models = _models()
+    with pytest.raises(TypeError):
+        models.deserialize_model(model_name, payload)

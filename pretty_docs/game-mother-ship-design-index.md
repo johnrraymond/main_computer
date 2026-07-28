@@ -26,6 +26,8 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-runtime-patch-K-interactable-hotspots.md` | Patch K implementation note for rendering E-key interaction hotspots directly from data-defined interactables |
 | `pretty_docs/game-runtime-patch-L-interactable-visual-metadata.md` | Patch L implementation note for styling E-key interaction hotspots through normalized interactable visual metadata |
 - [Patch M: Terminal Console Props](game-runtime-patch-M-terminal-console-props.md)
+| `pretty_docs/game-runtime-patch-N-room-visual-metadata.md` | Patch N implementation note for room visual metadata and data-driven room boundary rendering |
+| `pretty_docs/game-runtime-patch-O-room-geometry-extraction.md` | Patch O implementation note for room geometry metadata and data-driven structural rendering |
 | `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 | `pretty_docs/game-runtime-patch-C-rooms-and-movement.md` | Patch C implementation note for extracting mother-ship rooms, movement bounds, exits, and spawns into level data |
 | `pretty_docs/game-runtime-patch-D-interactables.md` | Patch D implementation note for extracting mother-ship terminals, prompts, ranges, and E-key action ids into interactable data |

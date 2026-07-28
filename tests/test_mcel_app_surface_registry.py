@@ -149,17 +149,17 @@ def test_registry_declares_the_first_required_surface_aware_apps() -> None:
         "code-editor",
         "document",
         "file-explorer",
+        "mcel-lab",
         "website-builder",
     ]
     for legacy_app in [
         "ai-control",
         "git-tools",
-        "mcel-lab",
         "terminal",
         "wallet",
     ]:
         assert legacy_app in data["legacy"]
-    assert data["summary"]["requiredCount"] == 5
+    assert data["summary"]["requiredCount"] == 6
     assert data["summary"]["legacyCount"] >= 9
 
 
@@ -171,6 +171,7 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
         const calculator = registry.getAppPolicy("calculator");
         const codeEditor = registry.getAppPolicy("code-editor");
         const websiteBuilder = registry.getAppPolicy("website-builder");
+        const mcelLab = registry.getAppPolicy("mcel-lab");
         const legacy = registry.getAppPolicy("git-tools");
         const unknown = registry.getAppPolicy("made-up-app");
         process.stdout.write(JSON.stringify({
@@ -179,6 +180,7 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
           calculator,
           codeEditor,
           websiteBuilder,
+          mcelLab,
           legacy,
           unknown
         }));
@@ -235,6 +237,14 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
         "diagnostic-no-throw",
     ]
 
+    assert data["mcelLab"]["conformanceRequired"] is True
+    assert data["mcelLab"]["maturity"] == "semantic-runtime"
+    assert data["mcelLab"]["surfaceId"] == "mcel-lab.form.work-surface.blueprint-inspection"
+    assert data["mcelLab"]["requiredLayerIds"] == [
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    ]
 
     assert data["legacy"]["conformanceRequired"] is False
     assert data["legacy"]["state"] == "legacy"

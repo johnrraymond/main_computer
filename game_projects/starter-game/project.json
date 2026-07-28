@@ -634,7 +634,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Mouse over console + E pilot • W/S throttle flies to Mother Ship • after docking use W/A/S/D to explore ship decks • E operates ship doors and terminals",
+          "controlsHint": "Mouse over console + E pilot \u2022 W/S throttle flies to Mother Ship \u2022 after docking use W/A/S/D to explore ship decks \u2022 E operates ship doors and terminals",
           "systems": {
             "shuttleBayTwiddle": {
               "enabled": true,
@@ -1111,6 +1111,115 @@
                   "maxX": 4.72,
                   "minZ": -4.62,
                   "maxZ": 5.12
+                },
+                "visual": {
+                  "color": "#38bdf8",
+                  "edgeColor": "#60a5fa",
+                  "labelColor": "#bfdbfe",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -5.2,
+                      "maxX": 5.2,
+                      "minZ": -5.25,
+                      "maxZ": 6.2
+                    },
+                    "accentColor": "#67e8f9"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": -5.2,
+                      "minZ": -5.25,
+                      "maxZ": 6.2
+                    },
+                    {
+                      "axis": "x",
+                      "x": 5.2,
+                      "minZ": -5.25,
+                      "maxZ": 6.2
+                    },
+                    {
+                      "axis": "z",
+                      "z": 5.72,
+                      "minX": -5.25,
+                      "maxX": -2.75
+                    },
+                    {
+                      "axis": "z",
+                      "z": 5.72,
+                      "minX": 2.75,
+                      "maxX": 5.25
+                    },
+                    {
+                      "axis": "z",
+                      "z": 5.72,
+                      "minX": -1.65,
+                      "maxX": 1.65
+                    },
+                    {
+                      "axis": "z",
+                      "z": -5.05,
+                      "minX": -5.2,
+                      "maxX": -0.82
+                    },
+                    {
+                      "axis": "z",
+                      "z": -5.05,
+                      "minX": 0.82,
+                      "maxX": 2.15
+                    },
+                    {
+                      "axis": "z",
+                      "z": -5.05,
+                      "minX": 4.45,
+                      "maxX": 5.2
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.bay-aft-port",
+                      "edge": "aft",
+                      "bounds": {
+                        "minX": -2.75,
+                        "maxX": -1.65,
+                        "minZ": 5.55,
+                        "maxZ": 5.9
+                      }
+                    },
+                    {
+                      "id": "opening.bay-aft-starboard",
+                      "edge": "aft",
+                      "bounds": {
+                        "minX": 1.65,
+                        "maxX": 2.75,
+                        "minZ": 5.55,
+                        "maxZ": 5.9
+                      }
+                    },
+                    {
+                      "id": "opening.bay-access",
+                      "exit": "exit.bay-access",
+                      "door": "door.bay-access"
+                    }
+                  ],
+                  "doorPanels": [
+                    {
+                      "door": "door.bay-access",
+                      "center": [
+                        3.3,
+                        -5.04
+                      ],
+                      "width": 2.22,
+                      "vertical": false
+                    }
+                  ]
                 }
               },
               {
@@ -1124,6 +1233,212 @@
                   "maxX": 4.9,
                   "minZ": -9.45,
                   "maxZ": -4.2
+                },
+                "visual": {
+                  "color": "#38bdf8",
+                  "edgeColor": "#22d3ee",
+                  "labelColor": "#bae6fd",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -2.35,
+                      "maxX": 5.05,
+                      "minZ": -9.65,
+                      "maxZ": -4.35
+                    },
+                    "accentColor": "#38bdf8"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": 5.05,
+                      "minZ": -9.65,
+                      "maxZ": -4.35
+                    },
+                    {
+                      "axis": "x",
+                      "x": -2.35,
+                      "minZ": -9.65,
+                      "maxZ": -8.1
+                    },
+                    {
+                      "axis": "z",
+                      "z": -9.65,
+                      "minX": -2.35,
+                      "maxX": -1.14
+                    },
+                    {
+                      "axis": "z",
+                      "z": -9.65,
+                      "minX": 1.14,
+                      "maxX": 5.05
+                    },
+                    {
+                      "axis": "z",
+                      "z": -4.35,
+                      "minX": -2.35,
+                      "maxX": 2.12
+                    },
+                    {
+                      "axis": "z",
+                      "z": -4.35,
+                      "minX": 4.45,
+                      "maxX": 5.05
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.bay-inner",
+                      "exit": "exit.bay-inner",
+                      "door": "door.bay-inner"
+                    },
+                    {
+                      "id": "opening.bay-ops-to-bay",
+                      "exit": "exit.bay-access",
+                      "door": "door.bay-access"
+                    }
+                  ],
+                  "boxes": [
+                    {
+                      "min": [
+                        -1.18,
+                        -1.06,
+                        -9.72
+                      ],
+                      "max": [
+                        1.18,
+                        -0.92,
+                        -8.62
+                      ],
+                      "color": "#243244",
+                      "emissive": false
+                    },
+                    {
+                      "min": [
+                        -1.42,
+                        -1.04,
+                        -9.76
+                      ],
+                      "max": [
+                        -1.16,
+                        2.12,
+                        -8.58
+                      ],
+                      "color": "#475569",
+                      "emissive": false
+                    },
+                    {
+                      "min": [
+                        1.16,
+                        -1.04,
+                        -9.76
+                      ],
+                      "max": [
+                        1.42,
+                        2.12,
+                        -8.58
+                      ],
+                      "color": "#475569",
+                      "emissive": false
+                    },
+                    {
+                      "min": [
+                        -1.42,
+                        2.12,
+                        -9.76
+                      ],
+                      "max": [
+                        1.42,
+                        2.48,
+                        -8.58
+                      ],
+                      "color": "#475569",
+                      "emissive": false
+                    }
+                  ],
+                  "beams": [
+                    {
+                      "start": [
+                        -1.04,
+                        -0.72,
+                        -9.42
+                      ],
+                      "end": [
+                        1.04,
+                        -0.72,
+                        -9.42
+                      ],
+                      "radius": 0.026,
+                      "color": "#38bdf8",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        -1.04,
+                        -0.72,
+                        -8.86
+                      ],
+                      "end": [
+                        1.04,
+                        -0.72,
+                        -8.86
+                      ],
+                      "radius": 0.026,
+                      "color": "#38bdf8",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        -1.08,
+                        1.74,
+                        -9.54
+                      ],
+                      "end": [
+                        1.08,
+                        1.74,
+                        -9.54
+                      ],
+                      "radius": 0.028,
+                      "color": "#67e8f9",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        -1.08,
+                        0.4,
+                        -9.55
+                      ],
+                      "end": [
+                        -1.08,
+                        0.4,
+                        -8.72
+                      ],
+                      "radius": 0.022,
+                      "color": "#86efac",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        1.08,
+                        0.4,
+                        -9.55
+                      ],
+                      "end": [
+                        1.08,
+                        0.4,
+                        -8.72
+                      ],
+                      "radius": 0.022,
+                      "color": "#86efac",
+                      "emissive": true
+                    }
+                  ]
                 }
               },
               {
@@ -1137,6 +1452,76 @@
                   "maxX": 3.2,
                   "minZ": -13.55,
                   "maxZ": -8.75
+                },
+                "visual": {
+                  "color": "#f59e0b",
+                  "edgeColor": "#fbbf24",
+                  "labelColor": "#fef3c7",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -3.25,
+                      "maxX": 3.25,
+                      "minZ": -13.65,
+                      "maxZ": -8.75
+                    },
+                    "accentColor": "#fbbf24"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": -3.25,
+                      "minZ": -13.65,
+                      "maxZ": -8.75
+                    },
+                    {
+                      "axis": "x",
+                      "x": 3.25,
+                      "minZ": -13.65,
+                      "maxZ": -8.75
+                    },
+                    {
+                      "axis": "z",
+                      "z": -8.85,
+                      "minX": -3.25,
+                      "maxX": -0.82
+                    },
+                    {
+                      "axis": "z",
+                      "z": -8.85,
+                      "minX": 0.82,
+                      "maxX": 3.25
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.security-bay-inner",
+                      "exit": "exit.bay-inner",
+                      "door": "door.bay-inner"
+                    },
+                    {
+                      "id": "opening.security-hub",
+                      "exit": "exit.security-hub",
+                      "door": "door.security-hub"
+                    }
+                  ],
+                  "doorPanels": [
+                    {
+                      "door": "door.bay-inner",
+                      "center": [
+                        0,
+                        -8.88
+                      ],
+                      "width": 1.64,
+                      "vertical": false
+                    }
+                  ]
                 }
               },
               {
@@ -1150,6 +1535,126 @@
                   "maxX": 6.55,
                   "minZ": -18.75,
                   "maxZ": -13.25
+                },
+                "visual": {
+                  "color": "#94a3b8",
+                  "edgeColor": "#64748b",
+                  "labelColor": "#e2e8f0",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -6.75,
+                      "maxX": 6.75,
+                      "minZ": -18.9,
+                      "maxZ": -13.25
+                    },
+                    "accentColor": "#67e8f9"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": -6.75,
+                      "minZ": -18.9,
+                      "maxZ": -13.25
+                    },
+                    {
+                      "axis": "x",
+                      "x": 6.75,
+                      "minZ": -18.9,
+                      "maxZ": -13.25
+                    },
+                    {
+                      "axis": "z",
+                      "z": -13.35,
+                      "minX": -6.75,
+                      "maxX": -0.8
+                    },
+                    {
+                      "axis": "z",
+                      "z": -13.35,
+                      "minX": 0.8,
+                      "maxX": 6.75
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.corridor-security",
+                      "exit": "exit.security-hub",
+                      "door": "door.security-hub"
+                    },
+                    {
+                      "id": "opening.corridor-engineering",
+                      "exit": "exit.corridor-engineering",
+                      "door": "door.engineering-access"
+                    },
+                    {
+                      "id": "opening.corridor-medbay",
+                      "exit": "exit.corridor-medbay",
+                      "door": "door.medbay"
+                    },
+                    {
+                      "id": "opening.corridor-science",
+                      "exit": "exit.corridor-science",
+                      "door": "door.science"
+                    },
+                    {
+                      "id": "opening.corridor-bridge",
+                      "exit": "exit.corridor-bridge",
+                      "door": "door.bridge"
+                    }
+                  ],
+                  "doorPanels": [
+                    {
+                      "door": "door.security-hub",
+                      "center": [
+                        0,
+                        -13.36
+                      ],
+                      "width": 1.6,
+                      "vertical": false
+                    },
+                    {
+                      "door": "door.engineering-access",
+                      "center": [
+                        3.18,
+                        -17.85
+                      ],
+                      "width": 2.1,
+                      "vertical": true
+                    },
+                    {
+                      "door": "door.medbay",
+                      "center": [
+                        -3.18,
+                        -17.85
+                      ],
+                      "width": 2.1,
+                      "vertical": true
+                    }
+                  ],
+                  "beams": [
+                    {
+                      "start": [
+                        -5.65,
+                        -0.88,
+                        -16.3
+                      ],
+                      "end": [
+                        5.65,
+                        -0.88,
+                        -16.3
+                      ],
+                      "radius": 0.026,
+                      "color": "#67e8f9",
+                      "emissive": true
+                    }
+                  ]
                 }
               },
               {
@@ -1163,6 +1668,58 @@
                   "maxX": 2.55,
                   "minZ": -25.85,
                   "maxZ": -13.25
+                },
+                "visual": {
+                  "color": "#94a3b8",
+                  "edgeColor": "#64748b",
+                  "labelColor": "#e2e8f0",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -2.55,
+                      "maxX": 2.55,
+                      "minZ": -25.85,
+                      "maxZ": -13.25
+                    },
+                    "floor": true,
+                    "ceiling": false,
+                    "accentColor": "#67e8f9"
+                  },
+                  "walls": [],
+                  "openings": [
+                    {
+                      "id": "opening.trunk-hub",
+                      "exit": "exit.security-hub"
+                    },
+                    {
+                      "id": "opening.trunk-bridge",
+                      "exit": "exit.corridor-bridge",
+                      "door": "door.bridge"
+                    }
+                  ],
+                  "beams": [
+                    {
+                      "start": [
+                        0,
+                        -0.88,
+                        -13.7
+                      ],
+                      "end": [
+                        0,
+                        -0.88,
+                        -25.6
+                      ],
+                      "radius": 0.026,
+                      "color": "#67e8f9",
+                      "emissive": true
+                    }
+                  ]
                 }
               },
               {
@@ -1176,6 +1733,48 @@
                   "maxX": 9.8,
                   "minZ": -24.25,
                   "maxZ": -17.15
+                },
+                "visual": {
+                  "color": "#fbbf24",
+                  "edgeColor": "#f59e0b",
+                  "labelColor": "#fde68a",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": 2.0,
+                      "maxX": 9.9,
+                      "minZ": -24.35,
+                      "maxZ": -17.05
+                    },
+                    "accentColor": "#86efac"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": 9.9,
+                      "minZ": -24.35,
+                      "maxZ": -17.05
+                    },
+                    {
+                      "axis": "z",
+                      "z": -24.35,
+                      "minX": 2.0,
+                      "maxX": 9.9
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.engineering-corridor",
+                      "exit": "exit.corridor-engineering",
+                      "door": "door.engineering-access"
+                    }
+                  ]
                 }
               },
               {
@@ -1189,6 +1788,48 @@
                   "maxX": -2.0,
                   "minZ": -24.25,
                   "maxZ": -17.15
+                },
+                "visual": {
+                  "color": "#fca5a5",
+                  "edgeColor": "#f87171",
+                  "labelColor": "#fee2e2",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -9.9,
+                      "maxX": -2.0,
+                      "minZ": -24.35,
+                      "maxZ": -17.05
+                    },
+                    "accentColor": "#fca5a5"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": -9.9,
+                      "minZ": -24.35,
+                      "maxZ": -17.05
+                    },
+                    {
+                      "axis": "z",
+                      "z": -24.35,
+                      "minX": -9.9,
+                      "maxX": -2.0
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.medbay-corridor",
+                      "exit": "exit.corridor-medbay",
+                      "door": "door.medbay"
+                    }
+                  ]
                 }
               },
               {
@@ -1202,6 +1843,59 @@
                   "maxX": -2.0,
                   "minZ": -31.5,
                   "maxZ": -24.0
+                },
+                "visual": {
+                  "color": "#a78bfa",
+                  "edgeColor": "#8b5cf6",
+                  "labelColor": "#ede9fe",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -9.9,
+                      "maxX": -2.0,
+                      "minZ": -31.5,
+                      "maxZ": -24.0
+                    },
+                    "accentColor": "#a78bfa"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": -9.9,
+                      "minZ": -31.5,
+                      "maxZ": -24.0
+                    },
+                    {
+                      "axis": "z",
+                      "z": -31.5,
+                      "minX": -9.9,
+                      "maxX": -2.0
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.science-corridor",
+                      "exit": "exit.corridor-science",
+                      "door": "door.science"
+                    }
+                  ],
+                  "doorPanels": [
+                    {
+                      "door": "door.science",
+                      "center": [
+                        -3.18,
+                        -25.0
+                      ],
+                      "width": 2.1,
+                      "vertical": true
+                    }
+                  ]
                 }
               },
               {
@@ -1215,6 +1909,75 @@
                   "maxX": 2.9,
                   "minZ": -32.25,
                   "maxZ": -25.45
+                },
+                "visual": {
+                  "color": "#86efac",
+                  "edgeColor": "#22c55e",
+                  "labelColor": "#dcfce7",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -2.95,
+                      "maxX": 2.95,
+                      "minZ": -32.25,
+                      "maxZ": -25.35
+                    },
+                    "accentColor": "#fbbf24"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": -2.95,
+                      "minZ": -32.25,
+                      "maxZ": -25.35
+                    },
+                    {
+                      "axis": "x",
+                      "x": 2.95,
+                      "minZ": -32.25,
+                      "maxZ": -25.35
+                    },
+                    {
+                      "axis": "z",
+                      "z": -32.25,
+                      "minX": -2.95,
+                      "maxX": -1.12
+                    },
+                    {
+                      "axis": "z",
+                      "z": -32.25,
+                      "minX": 1.12,
+                      "maxX": 2.95
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.bridge-door",
+                      "exit": "exit.corridor-bridge",
+                      "door": "door.bridge"
+                    },
+                    {
+                      "id": "opening.bridge-throat",
+                      "exit": "exit.bridge-deck"
+                    }
+                  ],
+                  "doorPanels": [
+                    {
+                      "door": "door.bridge",
+                      "center": [
+                        0,
+                        -25.72
+                      ],
+                      "width": 2.5,
+                      "vertical": false
+                    }
+                  ]
                 }
               },
               {
@@ -1228,6 +1991,97 @@
                   "maxX": 4.65,
                   "minZ": -39.35,
                   "maxZ": -31.25
+                },
+                "visual": {
+                  "color": "#ef4444",
+                  "edgeColor": "#f97316",
+                  "labelColor": "#fee2e2",
+                  "boundary": true,
+                  "floorBand": true,
+                  "label": true,
+                  "labelHeight": 0.42
+                },
+                "geometry": {
+                  "schema": "game.room.geometry.v1",
+                  "shell": {
+                    "bounds": {
+                      "minX": -4.8,
+                      "maxX": 4.8,
+                      "minZ": -39.5,
+                      "maxZ": -31.25
+                    },
+                    "accentColor": "#0ea5e9"
+                  },
+                  "walls": [
+                    {
+                      "axis": "x",
+                      "x": -4.8,
+                      "minZ": -39.5,
+                      "maxZ": -31.25
+                    },
+                    {
+                      "axis": "x",
+                      "x": 4.8,
+                      "minZ": -39.5,
+                      "maxZ": -31.25
+                    },
+                    {
+                      "axis": "z",
+                      "z": -31.25,
+                      "minX": -4.8,
+                      "maxX": -1.12
+                    },
+                    {
+                      "axis": "z",
+                      "z": -31.25,
+                      "minX": 1.12,
+                      "maxX": 4.8
+                    },
+                    {
+                      "axis": "z",
+                      "z": -39.5,
+                      "minX": -4.8,
+                      "maxX": 4.8
+                    }
+                  ],
+                  "openings": [
+                    {
+                      "id": "opening.bridge-deck-throat",
+                      "exit": "exit.bridge-deck"
+                    }
+                  ],
+                  "beams": [
+                    {
+                      "start": [
+                        -3.7,
+                        2.3,
+                        -32.0
+                      ],
+                      "end": [
+                        3.7,
+                        2.3,
+                        -32.0
+                      ],
+                      "radius": 0.018,
+                      "color": "#67e8f9",
+                      "emissive": true
+                    },
+                    {
+                      "start": [
+                        -3.7,
+                        2.3,
+                        -38.9
+                      ],
+                      "end": [
+                        3.7,
+                        2.3,
+                        -38.9
+                      ],
+                      "radius": 0.018,
+                      "color": "#67e8f9",
+                      "emissive": true
+                    }
+                  ]
                 }
               }
             ],

@@ -100,3 +100,48 @@ def test_error_string_never_reveals_secret_bearing_values() -> None:
     secret = "do-not-print"
     with pytest.raises((TypeError, ValueError)):
         _make_error(errors, message=f"credential={secret}", secret_values=(secret,))
+
+
+def test_vendor_wrapper_redacts_supplied_secrets_from_allowed_actions() -> None:
+    errors = _errors()
+    secret = "operator-token-value"
+    wrapped = errors.wrap_vendor_error(
+        RuntimeError("vendor failure"),
+        code="MOTHER_TRANSPORT_VENDOR_FAILURE",
+        operation_id="operation-1",
+        module_id="MOTHER-OFM-XPORT-002",
+        retry_class="after-reobserve",
+        authority_effect="live-state-maybe-changed",
+        allowed_next_actions=(f"retry --token={secret}",),
+        secret_values=(secret,),
+    )
+    assert secret not in wrapped.allowed_next_actions[0]
+    assert "[REDACTED]" in wrapped.allowed_next_actions[0]
+
+
+def test_vendor_wrapper_preserves_typed_durable_and_evidence_references() -> None:
+    errors = _errors()
+    from tools.mother.common import models
+
+    durable_ref = models.ContentHash(algorithm="sha256", digest="a" * 64)
+    evidence_ref = models.EvidenceRef(
+        object_hash=models.ContentHash(algorithm="sha256", digest="b" * 64),
+        schema="mother.evidence.v1",
+        redaction_policy="public",
+        source="contract-test",
+        observation_time="2026-07-28T00:00:00Z",
+    )
+    wrapped = errors.wrap_vendor_error(
+        RuntimeError("vendor failure"),
+        code="MOTHER_TRANSPORT_VENDOR_FAILURE",
+        operation_id="operation-1",
+        module_id="MOTHER-OFM-XPORT-002",
+        retry_class="after-reobserve",
+        authority_effect="live-state-maybe-changed",
+        durable_effect_refs=(durable_ref,),
+        evidence_refs=(evidence_ref,),
+    )
+    assert wrapped.durable_effect_refs == (durable_ref,)
+    assert wrapped.evidence_refs == (evidence_ref,)
+    assert isinstance(wrapped.durable_effect_refs[0], models.ContentHash)
+    assert isinstance(wrapped.evidence_refs[0], models.EvidenceRef)

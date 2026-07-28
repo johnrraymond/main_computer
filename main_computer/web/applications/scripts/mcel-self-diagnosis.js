@@ -1240,6 +1240,14 @@
 
   function isLayoutProbeIgnoredElement(el, appId) {
     if (!isElement(el)) return false;
+    if (appId === "mcel-lab") {
+      try {
+        // MCEL Lab owns the blueprint shell, not the mounted application's cloned
+        // internals.  The cloned preview is inert inspection evidence; its own
+        // layout conformance is proven by that app's route-specific FLOG.
+        if (el.closest?.("[data-mcel-preview-clone]")) return true;
+      } catch {}
+    }
     if (appId === "document") {
       try {
         if (isDocumentFloatingMenuElement(el, appId)) return true;

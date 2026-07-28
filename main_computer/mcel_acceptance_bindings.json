@@ -160,6 +160,16 @@
         "tests/test_mcel_website_builder_semantic_adapter.py"
       ],
       "notes": "Covers the registered Website Builder domain adapter, executable site catalog/selection/draft/save/preview/runtime setup/publish/visit/Git handoff/generated edit intents, lane-specific preflight and receipts, recovery coverage, and Git commit/push delegation."
+    },
+    {
+      "id": "mcel-lab.binding.acceptance.semantic-runtime",
+      "appId": "mcel-lab",
+      "acceptanceContractId": "mcel-lab.acceptance.semantic-runtime",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_lab_semantic_adapter.py"
+      ],
+      "notes": "Covers the registered MCEL Lab domain adapter, executable blueprint/aspect/preview/inspection/annotation/validation/export intents, self-hosting mutation prohibition, receipts, recovery coverage, and truth-consumer boundaries."
     }
   ]
 }

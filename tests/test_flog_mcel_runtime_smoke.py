@@ -209,6 +209,7 @@ def test_build_scenarios_uses_app_surface_registry_required_policies(flog):
         "code-editor.default-load",
         "document.default-load",
         "file-explorer.default-load",
+        "mcel-lab.default-load",
         "website-builder.default-load",
     }
     assert by_id["website-builder.default-load"].route == "/applications/website-builder/hub-site"
@@ -221,6 +222,12 @@ def test_build_scenarios_uses_app_surface_registry_required_policies(flog):
     )
     assert by_id["website-builder.default-load"].maturity == "semantic-runtime"
     assert by_id["website-builder.default-load"].required_layer_ids == (
+        "runtime-ownership",
+        "runtime-visual-fit",
+        "diagnostic-no-throw",
+    )
+    assert by_id["mcel-lab.default-load"].maturity == "semantic-runtime"
+    assert by_id["mcel-lab.default-load"].required_layer_ids == (
         "runtime-ownership",
         "runtime-visual-fit",
         "diagnostic-no-throw",
@@ -247,10 +254,10 @@ def test_build_scenarios_can_filter_by_app_and_scenario(flog):
 
 
 def test_build_scenarios_can_run_legacy_apps_explicitly_without_requiring_conformance(flog):
-    scenarios = flog.build_scenarios(REPO_ROOT, apps=["mcel-lab"])
+    scenarios = flog.build_scenarios(REPO_ROOT, apps=["git-tools"])
 
-    assert [scenario.id for scenario in scenarios] == ["mcel-lab.default-load"]
-    assert scenarios[0].route == "/applications/mcel-lab"
+    assert [scenario.id for scenario in scenarios] == ["git-tools.default-load"]
+    assert scenarios[0].route == "/applications/git-tools"
     assert scenarios[0].conformance_required is False
     assert scenarios[0].registry_state == "legacy"
 

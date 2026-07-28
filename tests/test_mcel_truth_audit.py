@@ -438,8 +438,8 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     assert report["schema"] == "mcel-repository-truth-audit-v1"
     assert report["summary"]["appCount"] == 21
     assert report["summary"]["declaredLevelCounts"] == {
-        "legacy": 16,
-        "semantic-runtime": 5,
+        "legacy": 15,
+        "semantic-runtime": 6,
     }
     assert report["authorities"] == {
         "requirementsRegistry": True,
@@ -480,7 +480,7 @@ def test_check_can_require_fresh_runtime_without_calling_missing_evidence_broken
 
     assert completed.returncode == 1
     assert "status: fail" in completed.stdout
-    assert "blocking_apps: 5" in completed.stdout
+    assert "blocking_apps: 6" in completed.stdout
 
 
 def test_explicit_missing_evidence_is_an_operator_error(tmp_path: Path) -> None:

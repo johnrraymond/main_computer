@@ -479,6 +479,15 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("drawTerminalConsole(prop)", scene_viewer_script)
         self.assertIn("prop.console.bridge-tactical", scene_viewer_script)
         self.assertIn("game-runtime-patch-M-terminal-console-props", scene_viewer_script)
+        self.assertIn("Patch N renders room boundary/wayfinding affordances from room visual metadata", scene_viewer_script)
+        self.assertIn("shuttle3dNormalizeMotherShipRoomVisual", scene_viewer_script)
+        self.assertIn("shuttle3dRoomVisualDefaults", scene_viewer_script)
+        self.assertIn("appendMotherShipRoomVisuals(builder, nowMs)", scene_viewer_script)
+        self.assertIn("game-runtime-patch-N-room-visual-metadata", scene_viewer_script)
+        self.assertIn("Patch O renders room shell/wall/opening geometry from rooms[].geometry", scene_viewer_script)
+        self.assertIn("shuttle3dNormalizeMotherShipRoomGeometry", scene_viewer_script)
+        self.assertIn("appendMotherShipRoomGeometry(builder, nowMs)", scene_viewer_script)
+        self.assertIn("game-runtime-patch-O-room-geometry-extraction", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(
