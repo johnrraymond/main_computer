@@ -69,6 +69,7 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-024` | Replica membership, prospective enrollment, zero-validator continuity, and first network birth use explicit authority boundaries and the common entry/bundle commit model | [Replica enrollment, de-enrollment, zero-validator continuity, and network birth](#replica-enrollment-de-enrollment-zero-validator-continuity-and-network-birth) | Enrollment, retirement, zero-validator, bootstrap bundle, retry/tombstone, pointer-only commit, secret-exposure, and crash-boundary tests | — | Implementable |
 | `MOTHER-REQ-025` | Finalization commits one exact terminal entry/authorization-bundle head locally, resynchronizes sealed replicas, acknowledges outside the journal, and releases ownership only from full-set proof | [Finalization resynchronization and full-set acknowledgement](#finalization-resynchronization-and-full-set-acknowledgement) | Local pair-pointer crash-boundary, monotonic replica retry, closure transfer, acknowledgement, partial-release, and unreachable-participant block tests | — | Implementable |
 | `MOTHER-REQ-026` | Authority-restoring reseal is safety-first: reachable divergent replicas require full base-authority proposal and completed-certificate acceptance, while unreachable base-authority replicas block exclusion and reseal | [Authority-restoring reseal and rectification](#authority-restoring-reseal-and-rectification) | Divergent-lineage, common-base, one-proposal, cancellation, checkpoint, pointer-commit, and unreachable-block tests | `MOTHER-REQ-023`, `MOTHER-REQ-024`, `MOTHER-REQ-025` | Specified |
+| `MOTHER-REQ-027` | Hub application code upgrades deploy immutable signed releases through ordinary D026 authority, preserve topology and schemas, and retain exact rollback artifacts until typed release-state finalization | [Authoritative Hub release rollout](#authoritative-hub-release-rollout) | Legacy-baseline, signature, artifact-closure, mixed-version, outage-policy, progress, rollback, and typed-delta finalization tests | `MOTHER-REQ-005`, `MOTHER-REQ-007`, `MOTHER-REQ-009`, `MOTHER-REQ-022`, `MOTHER-REQ-023`, `MOTHER-REQ-025` | Specified |
 
 `mother` is the replacement control surface for validator lifecycle operations that
 have outgrown `tools/allfather_control.py`. Allfather remains useful reference
@@ -848,8 +849,9 @@ at least:
 
 ```text
 finalized topology and finalized topology epoch
+independently versioned finalized component-release authority, when initialized
 zero or one network-scoped pending distributed action
-pending desired topology
+closed typed authoritative delta and its predecessor/successor dimensions
 currently applied and verified distributed phases
 participant and receipt references
 active writer operation and active-head authorization-bundle hash
@@ -1945,7 +1947,8 @@ atomic transaction. Every durable fact has exactly one owning journal and one
 commit point:
 
 ```text
-network-visible durable transition, pending-action state, and accepted topology:
+network-visible durable transition, pending-action state, and accepted
+authoritative network dimensions:
   owned by the network journal
 
 forward action stage, verified step, remediation decision, and finalize preparation:
@@ -1966,10 +1969,13 @@ uses a three-journal protocol:
 1. Mother appends `frame-close-prepared` records to the rollback journal for
    every still-active promoted frame.
 2. Mother commits `finalization-prepared` to the action journal, referencing the
-   exact rollback-journal head, closure records, desired finalized topology,
-   frozen transition participants, current pending network-journal
+   exact rollback-journal head, closure records, the closed typed authoritative
+   delta, frozen transition participants, current pending network-journal
    entry/authorization-bundle head, finalization transition intent, and expected
-   resulting-state hash.
+   resulting-state hash. A topology operation's delta names the exact desired
+   topology and next topology epoch. A component-release operation's delta names
+   only the exact predecessor/successor release authority and leaves topology
+   unchanged.
 3. Mother constructs and hashes the immutable `pending-action-finalized`
    successor using only facts already known before successor claims.
 4. Mother obtains the full-set successor certificate for that exact entry hash,
@@ -1995,15 +2001,24 @@ pair for the full-set-certified `pending-action-finalized` successor establishes
 the irreversible boundary for the network-scoped action. The certificate
 authorizes that one successor; it
 does not make a remote sealed-state replica an independent topology authority.
-In one replay transition the certified successor:
+In one replay transition the certified successor validates and applies the
+pending action's closed typed `authoritative_delta`:
 
 ```text
-sets finalized_topology to the pending desired topology
-advances finalized_topology_epoch
+changes only the authoritative dimensions declared by the operation kind
+requires every undeclared authoritative dimension to remain byte-for-byte unchanged
+for a topology delta, sets finalized_topology and advances finalized_topology_epoch
+for a Hub release delta, leaves topology and topology epoch unchanged and advances
+  only the Hub release generation and participant-release-map authority
 records the action as finalized
 clears the active pending_action field
 makes the referenced rollback frames permanently non-executable
 ```
+
+The authoritative-delta schema is closed and operation-kind-specific. An
+operation MUST NOT add an arbitrary field to create a new authoritative
+dimension. The finalization successor MUST be rejected when its resulting state
+changes any dimension not authorized by the exact typed delta.
 
 Mother MAY then append an `action-finalized` mirror entry to the action journal
 that references the exact local network-journal finalization entry and rebuild
@@ -2447,9 +2462,11 @@ all replicas agree on the pending resulting state
 Only the atomic active-local-head commit of the exact full-set-certified
 network-journal `pending-action-finalized` successor closes the complete
 distributed rollback stack. Network-visible phase events are appended and
-replicated as pending-action transitions when they occur; finalization promotes
-the pending desired topology to finalized topology and closes the pending action
-according to the cross-journal protocol. Remote replication begins only after
+replicated as pending-action transitions when they occur; finalization applies
+the pending action's closed typed authoritative delta and closes the pending
+action according to the cross-journal protocol. Topology operations promote the
+pending desired topology; component-release operations leave topology unchanged.
+Remote replication begins only after
 that local commit and cannot create a second authority boundary. A command after
 finalization is a new action with new prestates; it cannot reopen the old
 rollback layers.
@@ -2587,12 +2604,20 @@ has this conceptual shape:
 network_key: mainnet
 finalized_topology_epoch: 42
 finalized_topology: {}
+component_releases:
+  hub: null
 pending_action:
   action_id: add-node-mainneta-super4-001
   kind: add-node
   status: applying
-  desired_topology_epoch: 43
-  desired_topology: {}
+  authoritative_delta:
+    topology:
+      disposition: replace
+      predecessor_epoch: 42
+      successor_epoch: 43
+      desired_topology: {}
+    component_releases:
+      disposition: unchanged
   participant_manifest:
     hosts: []
     nodes: []
@@ -2613,10 +2638,13 @@ pending_action:
 replica_hosts: []
 ```
 
-`finalized_topology` is the last topology accepted by `finalize`.
+`finalized_topology` is the last topology accepted by a topology-changing
+`finalize`. `component_releases` records independently versioned authoritative
+release dimensions, including Hub release authority when initialized.
 `pending_action` is the complete durable description of the reversible
-distributed work currently changing or already reflected in live network facts.
-The complete state hash covers both.
+distributed work currently changing or already reflected in live network facts,
+including its closed typed `authoritative_delta`. The complete state hash covers
+all finalized authoritative dimensions and the pending action.
 
 The network journal commits a pending-action transition whenever the distributed
 action state meaningfully changes. Required transition classes include:
@@ -2625,6 +2653,7 @@ action state meaningfully changes. Required transition classes include:
 enrollment-readiness-accepted
 bootstrap-readiness-accepted
 pending-action-opened
+artifact-availability-accepted
 participant-manifest-accepted
 distributed-layer-armed
 distributed-layer-applied-verified-and-promoted
@@ -2673,20 +2702,30 @@ pending action and records the verified physical facts. A failed phase records
 `remediation-required`; retry, partial rollback, full rollback, or rectification
 then advances the same pending action rather than creating an unrelated lineage.
 
-Full rollback commits `pending-action-rolled-back`. That transition verifies the
-original finalized topology is again true, preserves the complete action history,
-and clears `pending_action` without advancing the finalized topology epoch.
+Full rollback commits `pending-action-rolled-back`. That transition verifies
+every predecessor authoritative dimension named by the pending action is again
+true, preserves the complete action history, and clears `pending_action` without
+advancing any finalized generation or epoch. For a legacy Hub baseline, rollback
+restores the exact operator-accepted participant-release map while leaving Hub
+release authority uninitialized.
 
 Finalization commits `pending-action-finalized` through the cross-journal
 protocol in `MOTHER-DESIGN-014`. That single network-journal transition:
 
 ```text
-copies pending_action.desired_topology to finalized_topology
-advances finalized_topology_epoch
+validates the closed operation-kind-specific authoritative_delta
+changes only the dimensions explicitly declared by that delta
+requires every other authoritative dimension to remain unchanged
 records the finalized action and evidence references
 clears pending_action
 closes the referenced rollback rights
 ```
+
+Topology operations use a topology delta that replaces `finalized_topology` and
+advances `finalized_topology_epoch`. `upgrade-hub` uses a component-release delta
+that leaves topology and topology epoch unchanged, advances only the Hub release
+generation, and installs the exact successor descriptor and participant-map
+root.
 
 The term `committed` MUST therefore be interpreted precisely:
 
@@ -2694,8 +2733,8 @@ The term `committed` MUST therefore be interpreted precisely:
 committed journal transition:
   durably part of the active journal lineage
 
-finalized topology:
-  operator-accepted topology produced by pending-action-finalized
+finalized authoritative dimension:
+  operator-accepted state produced by the exact typed pending-action-finalized delta
 ```
 
 A pending validator-set, RPC, or Hub/FDB change MAY be committed to the journal
@@ -6445,6 +6484,393 @@ projection-only damage routed to repair-projections rather than reseal
 ```
 
 
+### Authoritative Hub release rollout
+
+`MOTHER-DESIGN-030: authoritative-schema-preserving-hub-release-rollout`
+
+`MOTHER-REQ-027` is resolved by adding one ordinary authoritative operation,
+`upgrade-hub`, for immutable Hub application releases. The operation deploys a
+prebuilt signed release across the unchanged authoritative Hub participant set.
+It uses the ordinary D026 pending-action, progress-successor, rollback, and
+finalization machinery. It does not create a new certificate kind and MUST NOT
+invoke D028 or D029.
+
+This contract concerns deployed Hub application code. Repository source editing,
+image building, and release publication happen outside Mother. Mother accepts
+only a prepared immutable release descriptor and exact content-addressed
+artifacts.
+
+#### Narrow first-version boundary
+
+The first implemented version permits only:
+
+```text
+unchanged Hub participant set
+unchanged service identities
+unchanged Hub/FDB topology and finalized_topology_epoch
+unchanged FDB schema and application-data schema
+unchanged canonical service configuration
+unchanged identity and secret material
+explicitly compatible runtime and Hub API versions
+immutable signed artifacts
+continuous rollout or an explicitly approved outage
+```
+
+The operation MUST block when it would combine release rollout with membership,
+topology, schema, canonical service configuration, identity, secret, QBFT, or
+permanent route changes. Those changes belong to their owning operation.
+`data_schema_change: true`, an unknown schema relationship, or an unproven
+mixed-version combination MUST block before any live mutation.
+
+#### Release descriptor and trust authority
+
+A Hub release descriptor payload describes only the target release. The
+target-controlled payload excludes any signature-envelope hash and signer-policy
+hash and has at least:
+
+```yaml
+schema: mother.hub-release-descriptor.v1
+release_id: "hub-release-..."
+image_manifest_digest: "sha256:..."
+platform_image_digests:
+  linux-amd64: "sha256:..."
+  linux-arm64: "sha256:..."
+source_commit: "..."
+provenance_attestation_hash: "sha256:..."
+runtime_contract_version: "..."
+hub_api_version: "..."
+fdb_schema_version: "..."
+data_schema_change: false
+compatible_from_releases: []
+compatible_mixed_release_sets: []
+required_capabilities: []
+health_assertion_set_hash: "sha256:..."
+```
+
+The detached construction is acyclic and mandatory:
+
+```text
+canonical descriptor payload bytes without signature-envelope or signer-policy fields
+-> descriptor_payload_hash
+-> detached signature envelope signs descriptor_payload_hash and the exact
+   manifest/platform artifact digest set
+-> prepared operation binds descriptor_payload_hash, signature_envelope_hash,
+   and an independently supplied validated_signer_policy_hash
+```
+
+`source_commit` is provenance information. The signed manifest and platform
+artifact digests are deployment authority. Mutable image tags, branch names, or
+live container labels MUST NOT authorize deployment.
+
+The target payload MUST NOT contain rollback-specific state or choose the trust
+policy used to validate itself. `validated_signer_policy_hash` MUST resolve from
+already authoritative Mother/network policy or from an explicit
+`--signer-policy <path-or-content-hash>` operator input frozen during `prep`.
+
+The prepared operation separately binds the exact artifact identities and
+availability contract, not a future staging result:
+
+```yaml
+descriptor_payload_hash: "sha256:..."
+signature_envelope_hash: "sha256:..."
+validated_signer_policy_hash: "sha256:..."
+predecessor_descriptor_payload_hash: "sha256:..."  # null for a legacy baseline
+baseline_participant_release_map_root: "sha256:..."
+target_artifact_closure_root: "sha256:..."
+rollback_artifact_closure_root: "sha256:..."
+artifact_availability_contract_hash: "sha256:..."
+artifact_availability_evidence_root: null
+availability_policy: "continuous | operator-approved-outage"
+availability_policy_evidence_root: "sha256:..."
+rollout_order_root: "sha256:..."
+```
+
+After the pending action is authoritative, `do` stages the exact closures and
+commits a progress successor that replaces the null availability-evidence field
+with the canonical actual `artifact_availability_evidence_root`. No service
+drain or deployment MAY occur before that progress successor is authoritative.
+
+#### Authoritative release state and typed delta
+
+The replayed network state contains an independently versioned Hub release
+dimension:
+
+```yaml
+component_releases:
+  hub:
+    descriptor_payload_hash: "sha256:..."
+    signature_envelope_hash: "sha256:..."
+    validated_signer_policy_hash: "sha256:..."
+    participant_release_map_root: "sha256:..."
+    release_generation: 7
+```
+
+The participant map binds each authoritative Hub service identity to its host,
+role, exact deployed platform digest, canonical service-configuration hash,
+runtime/API contract versions, and verification evidence root.
+
+`upgrade-hub` opens a pending action with a closed typed delta:
+
+```yaml
+pending_action:
+  kind: upgrade-hub
+  authoritative_delta:
+    topology:
+      disposition: unchanged
+    component_releases:
+      hub:
+        disposition: replace
+        predecessor_descriptor_payload_hash: "sha256:..."
+        successor_descriptor_payload_hash: "sha256:..."
+        successor_signature_envelope_hash: "sha256:..."
+        successor_validated_signer_policy_hash: "sha256:..."
+        successor_participant_map_root: "sha256:..."
+        predecessor_release_generation: 6
+        successor_release_generation: 7
+```
+
+For the first successful upgrade from a legacy baseline,
+`predecessor_descriptor_payload_hash` and `predecessor_release_generation` are
+null and `successor_release_generation` is `1`.
+
+The finalization transition MUST apply only the declared Hub release delta.
+`finalized_topology`, `finalized_topology_epoch`, membership, identities,
+secrets, schemas, canonical service configuration, and every other undeclared
+authoritative dimension MUST remain unchanged. Any mismatch blocks the
+finalization successor before D026 claims begin.
+
+#### Legacy release-authority baseline
+
+An existing network MAY have running Hub containers but no authoritative Hub
+release descriptor. Live facts MUST NOT silently become authority. The first
+`upgrade-hub` operation therefore has an explicit legacy-baseline mode:
+
+```text
+observe every authoritative Hub participant
+-> identify the exact manifest/platform artifact and canonical configuration
+-> require a homogeneous or explicitly compatible current release set
+-> construct the complete participant-release map
+-> freeze the exact rollback-artifact closure identity and availability contract
+-> obtain explicit operator acceptance of the map as rollback baseline
+-> commit that accepted baseline only inside the prepared operation
+-> open the ordinary D026 pending action
+-> durably pin target and rollback closures and commit actual availability evidence
+```
+
+The accepted map is operation-scoped immutable rollback prestate. It does not
+initialize finalized Hub release authority during `prep` or pending-action
+opening. Successful finalization establishes Hub release generation `1`.
+Complete rollback restores the exact accepted baseline, clears the pending
+action, and leaves `component_releases.hub` uninitialized.
+
+Operator acceptance MUST NOT waive missing artifact identity, signature
+validation, incompatible current participants, or an incomplete rollback-closure
+contract. If any exact legacy artifact cannot be identified during `prep`, or
+cannot be durably pinned during `do`, the operation blocks before the first live
+service mutation.
+
+#### Artifact closure and availability
+
+Before the first live service mutation, Mother MUST:
+
+1. resolve the exact manifest and platform-specific target image digests;
+2. validate signatures and provenance against the frozen signer policy;
+3. durably pin the complete target manifest, layers, and required artifacts;
+4. durably pin every predecessor/legacy rollback manifest, layer, and required
+   artifact;
+5. prove that every participant that MAY need an artifact can obtain the exact
+   pinned bytes;
+6. commit the canonical artifact-availability evidence root into the active
+   pending action through an ordinary D026 progress successor.
+
+Actual artifact staging occurs during `do`, after `pending-action-opened` is
+authoritative and replicated, and before any participant is drained. `prep`
+freezes the exact closure identities, required participant set, and availability
+receipt contract only; it MUST NOT perform participant staging.
+
+A successful registry lookup, mutable retention promise, or currently running
+container is not durable artifact availability. Existing content with the same
+claimed digest but different bytes is fatal corruption.
+
+#### Availability policy
+
+`continuous` is the default. Every rollout step MUST preserve the frozen
+healthy-role and participant-count rule, including old/new compatibility.
+
+`operator-approved-outage` permits temporary zero-Hub availability only when
+the prepared intent explicitly records that decision. Before the outage,
+Mother MUST prove that all Hub ingress is drained or fenced, no in-flight
+request remains unaccounted for, FDB and data integrity remain verifiable, and
+the exact rollback closure remains available. The outage decision cannot be
+introduced or widened during `do`.
+
+#### Preparation and scopes
+
+`prep` MUST:
+
+```text
+prove coherent ordinary authority and no unresolved recovery condition
+freeze the exact current Hub participant set and service identities
+observe the participant-release map and canonical configuration
+resolve and verify the signed target descriptor
+establish an explicit legacy baseline when release authority is absent
+prove schema, configuration, identity, secret, topology, and membership preservation
+prove old/new and mixed-version compatibility
+freeze exact target/rollback closure identities and the availability receipt contract
+freeze deterministic rollout order and availability policy
+freeze exact service, release, topology-fence, traffic/drain, and operation scopes
+build strict reverse-order restoration contracts
+write the immutable prepared operation
+```
+
+The topology fence prevents node, replica, Hub/FDB topology, or conflicting
+release operations from changing the participant set while rollout is active.
+
+#### Pending action and participant rollout
+
+Before the first participant is drained, Mother:
+
+```text
+commits pending-action-opened through ordinary D026
+-> replicates the exact head
+-> stages and verifies the exact target and rollback artifact closures
+-> commits and replicates an AUTH-020 preparatory artifact-availability progress successor
+```
+
+For each participant in the frozen order, `do` then performs:
+
+```text
+revalidate authority, scopes, participant map, pinned artifact closure, and availability
+capture exact service, artifact, process, eligibility, and traffic prestate
+arm and flush the rollback frame
+drain or place the participant in prepared private standby
+dispatch the exact platform artifact digest using durable request identity
+reconcile timeout or unknown outcome from request evidence and observed digest
+verify artifact digest, canonical configuration, runtime/API contract, health,
+  FDB connectivity, and mixed-version invariants
+restore prepared eligibility or traffic
+promote the rollback frame
+commit and replicate an AUTH-019 pending-action progress successor through D026
+```
+
+A step MUST NOT advance to the next participant until the frozen availability
+policy still holds and the current participant's promoted frame and progress
+successor are authoritative.
+
+After the last participant, `MOTHER-OF-REL-012` derives one deterministic
+complete rollout-convergence proof and exact typed Hub release delta from fresh
+full-set observations and the frozen prepared contract:
+
+```text
+every intended participant runs its exact target platform digest
+every participant reports the expected runtime and Hub API contract
+the participant-release map matches the prepared target
+Hub/FDB topology and topology epoch are unchanged
+FDB and application-data schema versions are unchanged
+canonical service configuration, identities, and secrets are unchanged
+no unintended participant remains drained or eligible
+the complete health assertion set passes
+```
+
+The `do` stage stores the resulting canonical bytes. During `finalize`, Mother
+runs the identical REL-012 calculation again from fresh full-set observations
+and MUST require byte-for-byte equality with the stored convergence proof and
+typed delta. REL-012 has one calculation contract; it does not have separate
+construct and revalidate modes.
+
+#### Finalization, rollback, and recovery
+
+Finalization uses the ordinary D014/D017 cross-journal protocol and D026
+certificate/bundle chain. The atomic local `pending-action-finalized`
+entry/bundle pointer commit is the irreversible boundary. It installs the exact
+descriptor-payload hash, detached signature-envelope hash, validated
+signer-policy hash, participant-map root, and next release generation while
+leaving topology unchanged.
+
+Before that commit, rollback restores promoted frames in strict reverse rollout
+order:
+
+```text
+drain participant
+restore exact captured artifact and canonical configuration
+verify predecessor/legacy release and FDB compatibility
+restore captured eligibility and traffic
+commit rollback progress through ordinary D026
+```
+
+Rollback MUST restore exact captured digests; it MUST NOT resolve a mutable tag
+or infer a prior release by name. A legacy-baseline rollback leaves Hub release
+authority uninitialized.
+
+After the finalization pointer commit, rollback is prohibited. Replication,
+acknowledgement, projection rebuild, reservation release, rollback-ownership
+release, and operation-scope release complete forward under D025.
+
+Failure routing is:
+
+```text
+target or rollback closure unavailable before mutation:
+  block with no live effects
+
+signature, provenance, signer-policy, digest, schema, configuration, or
+compatibility proof fails:
+  block
+
+deployment outcome unknown:
+  reconcile the durable request and observed exact digest; do not redispatch a
+  different artifact
+
+participant verification fails before finalization:
+  retain rollback ownership; retry exact prepared step or roll back
+
+controller interruption after partial rollout:
+  replay authoritative progress and exact frames; continue or roll back the same
+  operation
+
+all participants upgraded but finalization not committed:
+  remain rollback-capable
+
+finalization pointer committed:
+  complete forward
+```
+
+#### Required tests
+
+Implementations MUST test at least:
+
+```text
+immutable descriptor-payload hashing and mutable-tag rejection
+detached signature construction with no descriptor/signature dependency cycle
+signature and provenance validation against separately frozen signer policy
+target payload containing or choosing its own signer policy rejected
+platform digest selection and wrong-platform rejection
+legacy baseline homogeneous and explicitly compatible acceptance
+legacy baseline operator acceptance without artifact closure rejected
+legacy rollback leaving release authority uninitialized
+target and rollback manifest/layer closure pinning after pending-action opening and before mutation
+artifact disappearance after pinning
+unchanged topology, topology epoch, schemas, configuration, identity, and secrets
+closed authoritative-delta schema and undeclared-dimension mutation rejection
+first successful release generation equal to 1
+later release generation monotonic successor
+continuous availability on single- and multi-Hub networks
+single-Hub continuous mode rejected when zero availability would occur
+explicit operator-approved outage fencing and restoration
+ambiguous deployment outcome reconciliation
+AUTH-020 artifact-availability progress without any promoted rollback frame
+participant progress successor after each promoted frame through AUTH-019
+REL-012 deterministic byte equality between end-of-do and finalization runs
+request identity persisted before REL-004 artifact staging dispatch
+request identity persisted before REL-008 drain/deployment dispatch
+crash before drain, after drain, after dispatch, after verification, after frame
+  promotion, after progress-head commit, before finalization, and after finalization
+strict reverse-order rollback to exact captured artifacts
+no D028 or D029 evidence or certificate kind in upgrade-hub
+finalization changes only Hub component-release authority
+post-finalization replication and release completing forward
+```
+
+
 
 ### Remaining open design nodes
 
@@ -9519,8 +9945,11 @@ Mother SHOULD be implemented in this order:
    - construct the finalization successor from pre-claim facts, obtain its
      exact-successor certificate and D028 evidence, then build the immutable
      authorization bundle;
-   - network-journal promotion from pending desired topology to finalized
-     topology through one atomic active-local-head entry/bundle commit;
+   - network-journal application of the closed operation-kind-specific
+     authoritative delta through one atomic active-local-head entry/bundle commit;
+   - topology operations promote pending desired topology and advance only the
+     topology epoch, while component-release operations change only their declared
+     release generation and participant-map authority;
    - close the rollback window at that exact local commit;
    - classify interrupted local commit from the durable local head pointer and
      route unreadable or unprovable local authority to `recover-head` or reseal;
@@ -9646,7 +10075,27 @@ Mother SHOULD be implemented in this order:
    - reject unreachable base-authority replicas, unprovable common bases,
      invalid selected predecessors, and all quorum or remaining-host shortcuts.
 
-22. Finalization replication-state reconciler
+22. Hub release rollout
+   - implement `MOTHER-DESIGN-030` and `MOTHER-OP-UPGRADE-HUB`;
+   - resolve only immutable signed manifest/platform digests and validate them
+     against a separately frozen signer policy;
+   - establish an explicit operator-accepted legacy rollback baseline when Hub
+     release authority is absent, without silently initializing authority;
+   - durably pin the complete target and rollback artifact closures before the
+     first live mutation;
+   - support continuous availability by default and an explicitly prepared
+     operator-approved outage for single-Hub networks;
+   - preserve participant set, service identities, Hub/FDB topology and epoch,
+     schemas, canonical service configuration, identities, and secrets;
+   - commit participant progress through ordinary D026 AUTH-019 successors;
+   - apply a closed typed component-release delta at ordinary finalization while
+     leaving topology unchanged;
+   - restore exact captured artifact digests in strict reverse rollout order
+     before finalization;
+   - prohibit D028, D029, mutable tags, and bundled topology/schema/identity
+     changes.
+
+23. Finalization replication-state reconciler
    - implement the exact-status inspection, certified-head resynchronization,
      immutable-object transfer, replay verification, durable acknowledgement,
      full-set acknowledgement-certificate, terminal-release, and
@@ -9654,7 +10103,7 @@ Mother SHOULD be implemented in this order:
    - add crash and interleaving tests at every certificate, head, acknowledgement,
      and release durability boundary.
 
-23. Requirements-language lint
+24. Requirements-language lint
    - parse Markdown prose separately from fenced examples and quotations;
    - normalize each logical prose paragraph across Markdown line wrapping before
      evaluating modal constructions, so a split phrase such as `MUST` followed by

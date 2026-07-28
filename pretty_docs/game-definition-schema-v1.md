@@ -152,17 +152,20 @@ Props are non-interactive visual objects or rendered systems.
 
 A prop may have renderer-specific hints, but the core definition should remain stable.
 
-Patch H makes these props active in the mother-ship renderer. The first supported procedural prop kinds are:
+Patch H makes these props active in the mother-ship renderer. Patch I adds data-defined map markers so repeated console and route markers are authored as content instead of hardcoded renderer calls. The first supported procedural prop kinds are:
 
 ```text
 floor-marker
+map-marker
 sign
 beacon
 light-strip
 status-panel
 ```
 
-Validation should confirm each authored prop references an existing room, sits inside that room, and remains inside playable movement bounds.
+Validation should confirm each authored prop references an existing room, sits inside that room, remains inside playable movement bounds, and points any optional `target` at known content such as a room, terminal, door, interactable, objective, or allowed runtime system target.
+
+Patch J adds prop-target validation through `requirePropTargets` so map markers and status panels cannot silently point at missing content.
 
 ## Terminals
 
@@ -307,7 +310,8 @@ A definition should declare which validators are expected to pass.
     "requireReachableInteractables": true,
     "requireInteractionHandlers": true,
     "requireObjectiveTargets": true,
-    "requireSpawnInsideRoom": true
+    "requireSpawnInsideRoom": true,
+    "requirePropTargets": true
   }
 }
 ```
@@ -328,6 +332,7 @@ all interactables reference registered actions
 all terminals reference registered interactions
 all objective targets exist
 all spawns are inside room bounds
+all prop targets point to known rooms, terminals, doors, interactables, objectives, or supported runtime systems
 the room graph connects start.room to bridge.deck
 the bridge viewscreen and tactical console are reachable
 ```

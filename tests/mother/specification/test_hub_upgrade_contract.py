@@ -32,14 +32,13 @@ def test_upgrade_hub_rollout_order_is_authority_then_artifacts_then_frames() -> 
 
     pending_commit = sequence.index("MOTHER-OF-AUTH-006")
     artifact_stage = sequence.index("MOTHER-OF-REL-004")
-    availability_progress = sequence.index(
-        "MOTHER-OF-AUTH-019", artifact_stage
-    )
+    availability_progress = sequence.index("MOTHER-OF-AUTH-020")
     prestate = sequence.index("MOTHER-OF-REL-007")
     deploy = sequence.index("MOTHER-OF-REL-008")
     verify = sequence.index("MOTHER-OF-REL-010")
     promote = sequence.index("MOTHER-OF-RB-004")
     participant_progress = sequence.index("MOTHER-OF-AUTH-019", promote)
+    convergence = sequence.index("MOTHER-OF-REL-012")
 
     assert (
         pending_commit
@@ -50,7 +49,10 @@ def test_upgrade_hub_rollout_order_is_authority_then_artifacts_then_frames() -> 
         < verify
         < promote
         < participant_progress
+        < convergence
     )
+    assert sequence.count("MOTHER-OF-AUTH-020") == 1
+    assert sequence.count("MOTHER-OF-REL-010") == 1
 
 
 def test_upgrade_hub_finalization_is_typed_and_topology_preserving() -> None:
@@ -62,6 +64,9 @@ def test_upgrade_hub_finalization_is_typed_and_topology_preserving() -> None:
         "legacy-baseline",
         "rollback_artifact_closure_root",
         "operator-approved-outage",
+        "descriptor_payload_hash",
+        "signature_envelope_hash",
+        "validated_signer_policy_hash",
     )
     for term in required:
         assert term in docs.mother
@@ -76,6 +81,64 @@ def test_release_policy_is_pure_and_service_effects_have_one_owner() -> None:
     assert "sole prepared Coolify/service-effect adapter" in records["MOTHER-OFM-SVC-001"].contract
 
     rows = functionality_module_rows(docs)
-    for functionality in ("MOTHER-OF-REL-008", "MOTHER-OF-REL-011"):
+    for functionality in ("MOTHER-OF-REL-004", "MOTHER-OF-REL-008", "MOTHER-OF-REL-011"):
         assert "MOTHER-OFM-SVC-001" in rows[functionality]
-        assert "MOTHER-OFM-SVC-002" not in rows[functionality]
+    assert "MOTHER-OFM-XPORT-002" in rows["MOTHER-OF-REL-004"]
+    assert "MOTHER-OFM-XPORT-002" in rows["MOTHER-OF-REL-008"]
+
+
+def test_artifact_staging_and_deployment_create_request_before_dispatch() -> None:
+    docs = MotherDocuments.load()
+    rows = functionality_module_rows(docs)
+
+    for functionality in ("MOTHER-OF-REL-004", "MOTHER-OF-REL-008"):
+        chain = rows[functionality]
+        request = chain.index("MOTHER-OFM-XPORT-003")
+        dispatch = chain.index("MOTHER-OFM-XPORT-002")
+        service = chain.index("MOTHER-OFM-SVC-001")
+        assert request < dispatch < service
+
+    rel008 = docs.modules[
+        docs.modules.index("| `MOTHER-OF-REL-008`"):
+        docs.modules.index("\n", docs.modules.index("| `MOTHER-OF-REL-008`"))
+    ]
+    assert "target_handler=MOTHER-OFM-SVC-001.drain_and_apply_prepared_release" in rel008
+
+
+def test_preparatory_progress_does_not_require_a_promoted_frame() -> None:
+    docs = MotherDocuments.load()
+    rows = functionality_module_rows(docs)
+    assert "MOTHER-OFM-RB-002" not in rows["MOTHER-OF-AUTH-020"]
+    assert "MOTHER-OFM-CORE-012" in rows["MOTHER-OF-AUTH-020"]
+    assert "MOTHER-OFM-RB-002" in rows["MOTHER-OF-AUTH-019"]
+
+
+def test_rel012_is_one_deterministic_calculation_reused_at_finalize() -> None:
+    docs = MotherDocuments.load()
+    sequence = operation_functionality_references(docs)["MOTHER-OP-UPGRADE-HUB"]
+    assert sequence.count("MOTHER-OF-REL-012") == 2
+    row = docs.modules[
+        docs.modules.index("| `MOTHER-OF-REL-012`"):
+        docs.modules.index("\n", docs.modules.index("| `MOTHER-OF-REL-012`"))
+    ]
+    assert "derive_rollout_convergence_and_delta" in row
+    assert "repeated execution MUST be byte-identical" in row
+    assert "construct or revalidate" not in row.lower()
+
+
+def test_detached_signature_construction_is_acyclic_and_policy_is_independent() -> None:
+    docs = MotherDocuments.load()
+    design = docs.mother[
+        docs.mother.index("#### Release descriptor and trust authority"):
+        docs.mother.index("#### Authoritative release state and typed delta")
+    ]
+    assert "descriptor payload bytes without signature-envelope or signer-policy fields" in design
+    assert "descriptor_payload_hash" in design
+    assert "detached signature envelope signs descriptor_payload_hash" in design
+    assert "--signer-policy <path-or-content-hash>" in design
+    payload_block = design[
+        design.index("schema: mother.hub-release-descriptor.v1"):
+        design.index("```", design.index("schema: mother.hub-release-descriptor.v1"))
+    ]
+    assert "signature_envelope_hash" not in payload_block
+    assert "signer_policy" not in payload_block

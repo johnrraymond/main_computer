@@ -2783,9 +2783,9 @@
             {id: "exit.corridor-bridge", from: "corridor.main", to: "bridge.access", door: "door.bridge", bounds: {minX: -1.6, maxX: 1.6, minZ: -25.9, maxZ: -25.35}},
             {id: "exit.bridge-deck", from: "bridge.access", to: "bridge.deck", bounds: {minX: -2.9, maxX: 2.9, minZ: -32.25, maxZ: -31.25}}
           ],
-          // Patch H makes ship visual content data-first. These props are
-          // rendered by appendMotherShipInteriorProps() instead of being
-          // another one-off hardcoded room expansion.
+          // Patch H makes ship visual content data-first. Patch I also moves
+          // repeated map/console markers into props so room decoration can
+          // evolve without adding more one-off renderer calls.
           props: [
             {
               id: "prop.route.bridge-marker",
@@ -2860,6 +2860,72 @@
               emissive: true,
               target: "enemyShip",
               label: "Enemy ship status panel"
+            },
+            {
+              id: "prop.marker.bay-ops-terminal",
+              room: "bay.ops",
+              kind: "map-marker",
+              position: [3.86, -6.42],
+              size: [0.36, 0.66],
+              color: "#38bdf8",
+              emissive: true,
+              target: "terminal.bay-ops",
+              label: "Bay Ops terminal marker"
+            },
+            {
+              id: "prop.marker.engineering-power",
+              room: "engineering.access",
+              kind: "map-marker",
+              position: [7.35, -20.75],
+              size: [0.36, 0.66],
+              color: "#86efac",
+              emissive: true,
+              target: "terminal.engineering-power",
+              label: "Engineering power marker"
+            },
+            {
+              id: "prop.marker.medbay",
+              room: "medbay.stub",
+              kind: "map-marker",
+              position: [-6.3, -20.4],
+              size: [0.36, 0.66],
+              color: "#fca5a5",
+              emissive: true,
+              target: "medbay.stub",
+              label: "Medbay marker"
+            },
+            {
+              id: "prop.marker.science-ops",
+              room: "science.ops.stub",
+              kind: "map-marker",
+              position: [-6.28, -26.25],
+              size: [0.36, 0.66],
+              color: "#a78bfa",
+              emissive: true,
+              target: "science.ops.stub",
+              label: "Science/Ops marker"
+            },
+            {
+              id: "prop.marker.bridge-access",
+              room: "bridge.access",
+              kind: "map-marker",
+              position: [0.0, -25.72],
+              size: [0.36, 0.66],
+              color: "#86efac",
+              emissive: true,
+              target: "door.bridge",
+              label: "Bridge access marker"
+            },
+            {
+              id: "prop.marker.bridge-viewscreen",
+              room: "bridge.deck",
+              kind: "map-marker",
+              position: [0.0, -37.15],
+              size: [0.36, 0.66],
+              color: "#ef4444",
+              emissive: true,
+              target: "terminal.bridge-viewscreen",
+              label: "Bridge viewscreen marker"
             }
           ],
           // Patch D makes E-key targets data-driven so prompts, ranges, and actions stay together.
@@ -3272,6 +3338,7 @@
 
       function shuttle3dNormalizeMotherShipValidationRules(value) {
         const supplied = shuttle3dObjectValue(value);
+        // See pretty_docs/game-runtime-patch-J-prop-target-validation.md for prop target validation intent.
         return {
           requireRoomBoundsInsideMovement: supplied.requireRoomBoundsInsideMovement !== false,
           requireConnectedRooms: supplied.requireConnectedRooms !== false,
@@ -3280,6 +3347,7 @@
           requireObjectiveTargets: supplied.requireObjectiveTargets !== false,
           requireSpawnInsideRoom: supplied.requireSpawnInsideRoom !== false,
           requireRenderableProps: supplied.requireRenderableProps !== false,
+          requirePropTargets: supplied.requirePropTargets !== false,
           requireOpenDoors: supplied.requireOpenDoors !== false
         };
       }
@@ -3333,6 +3401,16 @@
         const objectives = shuttle3dObjectValue(config?.objectives);
         const supportedHandlers = shuttle3dMotherShipSupportedInteractionHandlers();
         const rules = shuttle3dNormalizeMotherShipValidationRules(rulesInput || config?.validationRules);
+        const propSystemTargets = new Set(["enemyShip"]);
+        const propTargetIsKnown = (target) => {
+          const targetId = String(target || "").trim();
+          if (!targetId) return true;
+          if (propSystemTargets.has(targetId)) return true;
+          if (roomIds.has(targetId) || roomLocations.has(targetId)) return true;
+          if (terminals[targetId] || doors[targetId] || objectives[targetId]) return true;
+          return (Array.isArray(config?.interactables) ? config.interactables : [])
+            .some((interactable) => String(interactable?.id || "") === targetId);
+        };
 
         if (rules.requireRoomBoundsInsideMovement && !shuttle3dBoundsAreUsable(movementBounds)) {
           errors.push("mother-ship movement bounds are invalid");
@@ -3419,16 +3497,19 @@
         });
 
         (Array.isArray(config?.props) ? config.props : []).forEach((prop) => {
+          // Patch J keeps data-defined visual content honest by validating prop targets.
           const id = String(prop?.id || "prop");
           const roomId = String(prop?.room || prop?.location || "");
           const room = config?.roomMap?.[roomId] || shuttle3dRoomForLocation(config, roomId);
           const position = Array.isArray(prop?.position) ? prop.position : [];
           const x = Number(position[0]);
           const z = Number(position[1]);
+          const target = String(prop?.target || "").trim();
           if (rules.requireRenderableProps && !room) errors.push(`${id} points at missing room ${roomId}`);
           else if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, room.bounds)) errors.push(`${id} is outside its room bounds`);
           if (rules.requireRenderableProps && !shuttle3dPointInsideBounds(x, z, movementBounds)) errors.push(`${id} is outside playable movement bounds`);
           if (rules.requireRenderableProps && !String(prop?.kind || "").trim()) errors.push(`${id} is missing a render kind`);
+          if (rules.requirePropTargets && target && !propTargetIsKnown(target)) errors.push(`${id} targets missing content ${target}`);
         });
 
         Object.entries(config?.spawns || {}).forEach(([spawnId, spawn]) => {
@@ -5087,11 +5168,6 @@
             builder.box([centerX - 0.36, 0.16, centerZ - 0.32], [centerX + 0.36, 0.5, centerZ + 0.1], glow);
             builder.beam([centerX - 0.48, 0.62, centerZ - 0.42], [centerX + 0.48, 0.62, centerZ - 0.42], 0.02 + pulse * 0.01, glow);
           };
-          const mapMarker = (x, z, color) => {
-            builder.box([x - 0.18, -1.055, z - 0.18], [x + 0.18, -0.94, z + 0.18], color);
-            builder.beam([x, -0.82, z], [x, -0.16, z], 0.018, color);
-          };
-
           // Mother Ship Shuttle Bay
           roomShell(-5.2, 5.2, -5.25, 6.2, light);
           wallX(-5.2, -5.25, 6.2);
@@ -5158,8 +5234,6 @@
           terminalBlock("terminal.bay-ops", 3.86, -6.42, blue);
           builder.beam([2.0, 0.1, -5.15], [4.55, 0.1, -5.15], 0.024, blue);
           builder.beam([-1.12, 0.14, -8.82], [1.12, 0.14, -8.82], 0.024, amber);
-          mapMarker(3.86, -6.42, blue);
-
           // Security checkpoint and inner bay door.
           roomShell(-3.25, 3.25, -13.65, -8.75, amber);
           wallX(-3.25, -13.65, -8.75);
@@ -5191,8 +5265,6 @@
           builder.ellipsoid([5.4, 0.05, -21.1], [0.74, 1.15, 0.74], 14, 8, builder.color("#115e59"));
           builder.beam([5.4, 1.15, -21.1], [5.4, 2.45, -21.1], 0.06, this.shipState?.power === "online" ? green : amber);
           builder.beam([3.0, 0.3, -18.3], [8.8, 0.3, -23.0], 0.02, green);
-          mapMarker(7.35, -20.75, green);
-
           // Medbay triage.
           roomShell(-9.9, -2.0, -24.35, -17.05, med);
           wallX(-9.9, -24.35, -17.05);
@@ -5201,8 +5273,6 @@
           builder.box([-5.7, -1.04, -22.9], [-3.7, -0.62, -21.7], builder.color("#e2e8f0"));
           builder.beam([-8.45, -0.34, -22.28], [-6.85, -0.34, -22.28], 0.035, med);
           builder.beam([-5.5, -0.34, -22.28], [-3.9, -0.34, -22.28], 0.035, med);
-          mapMarker(-6.3, -20.4, med);
-
           // Science/Ops lab.
           roomShell(-9.9, -2.0, -31.5, -24.0, sci);
           wallX(-9.9, -31.5, -24.0);
@@ -5212,8 +5282,6 @@
           builder.consoleWedge(-4.8, -28.6, 1.3, 0.82, -1.08, -0.28, 0.18, builder.color("#312e81"));
           builder.ellipsoid([-6.28, 0.45, -26.25], [0.75, 0.48, 0.75], 14, 8, sci);
           builder.beam([-8.45, 0.62, -28.95], [-3.55, 0.62, -28.95], 0.025, sci);
-          mapMarker(-6.28, -26.25, sci);
-
           // Bridge command door, command vestibule, and bridge deck.
           roomShell(-2.95, 2.95, -32.25, -25.35, amber);
           wallX(-2.95, -32.25, -25.35);
@@ -5226,8 +5294,6 @@
           builder.beam([-1.2, 0.62, -29.68], [1.2, 0.62, -29.68], 0.028, green);
           builder.box([-0.78, -1.052, -31.98], [0.78, -0.93, -31.65], green);
           builder.beam([-1.04, 0.1, -31.88], [1.04, 0.1, -31.88], 0.024, light);
-          mapMarker(0, -25.72, green);
-
           // Bridge deck with forward viewscreen showing the enemy ship.
           roomShell(-4.8, 4.8, -39.5, -31.25, screenGlow);
           wallX(-4.8, -39.5, -31.25);
@@ -5252,7 +5318,6 @@
           builder.beam([-3.7, 2.3, -32.0], [3.7, 2.3, -32.0], 0.018, light);
           builder.beam([-3.7, 2.3, -38.9], [3.7, 2.3, -38.9], 0.018, light);
           this.appendBridgeViewscreenEnemy(builder, nowMs);
-          mapMarker(0, -37.15, red);
           this.appendMotherShipInteriorProps(builder, nowMs);
         }
 
@@ -5272,6 +5337,14 @@
             const color = materialFor(prop, "#38bdf8", prop.emissive);
             builder.box([x - width / 2, -1.052, z - depth / 2], [x + width / 2, -0.935, z + depth / 2], color);
             if (prop.emissive) builder.beam([x - width / 2, -0.76, z], [x + width / 2, -0.76, z], 0.014 + pulse * 0.008, color);
+          };
+          const drawMapMarker = (prop) => {
+            const [x, z] = prop.position;
+            const width = Math.max(0.08, prop.size?.[0] || 0.36);
+            const height = Math.max(0.12, prop.size?.[1] || 0.66);
+            const color = materialFor(prop, "#38bdf8", true);
+            builder.box([x - width / 2, -1.055, z - width / 2], [x + width / 2, -0.94, z + width / 2], color);
+            builder.beam([x, -0.82, z], [x, -0.82 + height, z], 0.018 + pulse * 0.006, color);
           };
           const drawSign = (prop) => {
             const [x, z] = prop.position;
@@ -5323,6 +5396,7 @@
             else if (kind === "beacon") drawBeacon(prop);
             else if (kind === "light-strip") drawLightStrip(prop);
             else if (kind === "status-panel") drawStatusPanel(prop);
+            else if (kind === "map-marker") drawMapMarker(prop);
             else drawFloorMarker(prop);
           });
         }

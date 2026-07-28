@@ -634,7 +634,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Mouse over console + E pilot \u2022 W/S throttle flies to Mother Ship \u2022 after docking use W/A/S/D to explore ship decks \u2022 E operates ship doors and terminals",
+          "controlsHint": "Mouse over console + E pilot • W/S throttle flies to Mother Ship • after docking use W/A/S/D to explore ship decks • E operates ship doors and terminals",
           "systems": {
             "shuttleBayTwiddle": {
               "enabled": true,
@@ -1660,7 +1660,8 @@
               "requireInteractionHandlers": true,
               "requireObjectiveTargets": true,
               "requireSpawnInsideRoom": true,
-              "requireOpenDoors": true
+              "requireOpenDoors": true,
+              "requirePropTargets": true
             },
             "props": [
               {
@@ -1778,6 +1779,108 @@
                 "emissive": true,
                 "target": "enemyShip",
                 "label": "Enemy ship status panel"
+              },
+              {
+                "id": "prop.marker.bay-ops-terminal",
+                "room": "bay.ops",
+                "kind": "map-marker",
+                "position": [
+                  3.86,
+                  -6.42
+                ],
+                "size": [
+                  0.36,
+                  0.66
+                ],
+                "color": "#38bdf8",
+                "emissive": true,
+                "target": "terminal.bay-ops",
+                "label": "Bay Ops terminal marker"
+              },
+              {
+                "id": "prop.marker.engineering-power",
+                "room": "engineering.access",
+                "kind": "map-marker",
+                "position": [
+                  7.35,
+                  -20.75
+                ],
+                "size": [
+                  0.36,
+                  0.66
+                ],
+                "color": "#86efac",
+                "emissive": true,
+                "target": "terminal.engineering-power",
+                "label": "Engineering power marker"
+              },
+              {
+                "id": "prop.marker.medbay",
+                "room": "medbay.stub",
+                "kind": "map-marker",
+                "position": [
+                  -6.3,
+                  -20.4
+                ],
+                "size": [
+                  0.36,
+                  0.66
+                ],
+                "color": "#fca5a5",
+                "emissive": true,
+                "target": "medbay.stub",
+                "label": "Medbay marker"
+              },
+              {
+                "id": "prop.marker.science-ops",
+                "room": "science.ops.stub",
+                "kind": "map-marker",
+                "position": [
+                  -6.28,
+                  -26.25
+                ],
+                "size": [
+                  0.36,
+                  0.66
+                ],
+                "color": "#a78bfa",
+                "emissive": true,
+                "target": "science.ops.stub",
+                "label": "Science/Ops marker"
+              },
+              {
+                "id": "prop.marker.bridge-access",
+                "room": "bridge.access",
+                "kind": "map-marker",
+                "position": [
+                  0.0,
+                  -25.72
+                ],
+                "size": [
+                  0.36,
+                  0.66
+                ],
+                "color": "#86efac",
+                "emissive": true,
+                "target": "door.bridge",
+                "label": "Bridge access marker"
+              },
+              {
+                "id": "prop.marker.bridge-viewscreen",
+                "room": "bridge.deck",
+                "kind": "map-marker",
+                "position": [
+                  0.0,
+                  -37.15
+                ],
+                "size": [
+                  0.36,
+                  0.66
+                ],
+                "color": "#ef4444",
+                "emissive": true,
+                "target": "terminal.bridge-viewscreen",
+                "label": "Bridge viewscreen marker"
               }
             ]
           }

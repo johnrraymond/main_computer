@@ -3,7 +3,7 @@
 Status: operator-facing companion to `mother.md`
 
 Source reviewed: `mother.md` SHA-256
-`f140d2b2f27979757146d1baf53820fcfb8bcdde30e18518a295eee2b26c2364`
+`59f840c71425efc094e79ba9d318898297aad9ad7d7df1e1563798c293617d7e`
 
 ## 1. Purpose and authority
 
@@ -91,6 +91,7 @@ The key rules are:
 | `MOTHER-OP-SCHEMA-MIGRATION` | Schema migration | Move durable Mother state between explicitly supported schema versions | Authoritative migration | Journaled staged operation | Contract-open; mutating entry points disabled |
 | `MOTHER-OP-IDENTITY-ROTATION` | Identity or secret rotation | Replace private material after explicit operator intent or loss of trust | Authoritative corrective action | Journaled staged operation | Contract-open; mutating entry points disabled |
 | `MOTHER-OP-REPAIR-PROJECTIONS` | `repair-projections` | Rebuild derived local projections from the pinned authoritative local journal | Non-authoritative maintenance | One shot | Operation defined; CLI spelling not frozen |
+| `MOTHER-OP-UPGRADE-HUB` | `upgrade-hub` | Roll an immutable signed Hub release across the unchanged authoritative Hub participant set | Authoritative release | `prep` / `do` / `finalize` / generic `rollback` | Defined |
 | active operation identity | `rollback` | Reverse an active staged operation before its commit boundary | Lifecycle control | One shot or retry | Defined |
 | active operation identity | Retry/resume | Continue the exact active operation after interruption or recognized partial completion | Lifecycle control | Repeat the same `do` or `finalize` | Defined |
 
@@ -572,9 +573,77 @@ rollback rights, or remote lineage.
 It refuses to run while `sync-state`, `recover-head`, or reseal work owns the
 local-adoption scope.
 
-## 12. Lifecycle controls
 
-### 12.1 Prep
+## 12. Hub release upgrade
+
+`MOTHER-OP-UPGRADE-HUB` deploys an immutable, prebuilt, signed Hub application
+release without changing service identities, Hub/FDB topology, replica or node
+membership, schemas, canonical service configuration, identities, or secrets.
+
+Conceptual commands:
+
+```text
+mother upgrade-hub prep <network> \
+  --release-descriptor <path-or-content-hash> \
+  [--signer-policy <path-or-content-hash>] \
+  [--availability continuous|operator-approved-outage]
+
+mother upgrade-hub do <network> --operation-id <operation-id>
+mother upgrade-hub finalize <network> --operation-id <operation-id>
+mother rollback <network> --all --operation-id <operation-id>
+```
+
+`continuous` is the default. `operator-approved-outage` MUST be explicit during
+`prep`; it cannot be added during `do`.
+
+The signer policy MUST come from already authoritative Mother/network policy or
+from the explicit `--signer-policy` input. The release descriptor payload MUST
+NOT contain or select its own signer policy. `prep` freezes the validated policy
+hash independently from the descriptor-payload hash and detached signature
+envelope hash.
+
+`prep`:
+
+1. proves coherent ordinary D026 authority and an unchanged Hub participant set;
+2. resolves and verifies the signed immutable release descriptor and separately
+   frozen signer policy;
+3. observes the exact participant-release map and canonical service
+   configuration;
+4. establishes an explicit operator-accepted legacy rollback baseline when no
+   Hub release authority exists;
+5. proves unchanged schemas, topology, configuration, identity, secrets, and
+   membership plus old/new and mixed-version compatibility;
+6. freezes the exact target/rollback closure identities and availability
+   receipt contract without staging participants;
+7. freezes deterministic rollout order, availability policy, scopes, and
+   reverse-order restoration.
+
+`do` opens and replicates the pending action through ordinary D026, stages and
+verifies the exact target and rollback closures, and commits an AUTH-019
+artifact-availability progress successor before the first live mutation. For
+each frozen participant it then captures and arms exact prestate,
+drains or gates the service, applies the exact platform digest, reconciles
+ambiguous outcomes, verifies the release and mixed-version invariants, restores
+eligibility, promotes the rollback frame, and commits a D026 pending-action
+progress successor.
+
+`finalize` verifies complete release convergence and commits a typed Hub
+component-release delta. It advances only the Hub release generation and
+participant-release-map authority. It MUST leave finalized topology and topology
+epoch unchanged.
+
+Rollback restores exact captured artifact digests and traffic state in strict
+reverse rollout order. A rollback from the first legacy-baseline upgrade leaves
+Hub release authority uninitialized.
+
+The operation blocks before live mutation when it would require a topology,
+membership, schema, canonical configuration, identity, secret, QBFT, or
+permanent route change. It uses neither D028 nor D029 and introduces no new
+certificate kind.
+
+## 13. Lifecycle controls
+
+### 13.1 Prep
 
 `prep`:
 
@@ -587,7 +656,7 @@ local-adoption scope.
 
 It does not perform live infrastructure mutation.
 
-### 12.2 Do
+### 13.2 Do
 
 `do`:
 
@@ -603,7 +672,7 @@ If a step fails or cannot be verified, rerun the same `do` to retry/resume the
 same frame, or roll back. Do not create a replacement operation over the same
 scope.
 
-### 12.3 Finalize
+### 13.3 Finalize
 
 `finalize` freshly verifies the complete desired result and commits the exact
 final state.
@@ -613,7 +682,7 @@ rolled back. After the local commit, rollback is closed. If replication,
 acknowledgement, activation, retirement, or release is incomplete, rerun the
 exact same `finalize` until all frozen participants complete forward.
 
-### 12.4 Rollback
+### 13.4 Rollback
 
 Mother resolves the active operation automatically unless an operation ID is
 provided.
@@ -637,7 +706,7 @@ layers in strict reverse order.
 A rollback that cannot prove restoration remains open as `rollback-failed` or
 `remediation-required`; it does not claim success.
 
-### 12.5 Retry and resume
+### 13.5 Retry and resume
 
 Retry uses the same operation ID, frozen intent, participant sets, reservation,
 and rollback frames.
@@ -656,7 +725,7 @@ Rerun `do` for a failed or interrupted live step. Rerun `finalize` for:
 After a successful `finalized` or `rolled-back` terminal state, any opposite or
 additional change is a new operation.
 
-## 13. Allowed next action by state
+## 14. Allowed next action by state
 
 | State | Operator actions |
 |---|---|
@@ -692,7 +761,7 @@ authority.
 | `sync-rolling-back` | Rollback retry |
 | `sync-rolled-back` | Terminal |
 
-## 14. Fast operation selector
+## 15. Fast operation selector
 
 | What the operator wants or observes | Use |
 |---|---|
@@ -704,6 +773,7 @@ authority.
 | Remove a node while keeping at least one validator | `remove-node --mode soft / hard` |
 | Deliberately remove the final validator | `remove-node ... --allow-zero-validators` |
 | Repair only a missing/damaged Coolify service | `restore-service` |
+| Deploy an immutable Hub application release without topology/schema change | `upgrade-hub` |
 | Repair QBFT files/topology on existing services | `reseal-qbft` |
 | Repair only RPC routes | `rpc-propagate` |
 | Local state is stale and all replicas agree | `sync-state` |
@@ -717,9 +787,9 @@ authority.
 | Undo an unfinished operation before commit | `rollback` |
 | Complete a post-commit interrupted finalization | Retry the exact `finalize` |
 
-## 15. Canonical examples
+## 16. Canonical examples
 
-### 15.1 First node
+### 16.1 First node
 
 ```text
 mother diagnose mainnet
@@ -731,7 +801,7 @@ mother add-node do mainnet
 mother add-node finalize mainnet
 ```
 
-### 15.2 Second node on a new replica host
+### 16.2 Second node on a new replica host
 
 ```text
 mother add-node prep mainnet \
@@ -744,7 +814,7 @@ mother add-node finalize mainnet
 
 The same operation stages and activates `coolify-c` as a replica.
 
-### 15.3 Remove a node but retain the host replica
+### 16.3 Remove a node but retain the host replica
 
 ```text
 mother remove-node prep mainnet \
@@ -757,7 +827,7 @@ mother remove-node finalize mainnet
 `coolify-a` remains a Mother replica until a separate membership operation
 retires it.
 
-### 15.4 Intentional zero-validator state
+### 16.4 Intentional zero-validator state
 
 ```text
 mother remove-node prep mainnet \
@@ -768,7 +838,7 @@ mother remove-node do mainnet
 mother remove-node finalize mainnet
 ```
 
-### 15.5 Reactivate a born zero-validator network
+### 16.5 Reactivate a born zero-validator network
 
 ```text
 mother add-node prep mainnet \
@@ -779,7 +849,7 @@ mother add-node do mainnet
 mother add-node finalize mainnet
 ```
 
-### 15.6 Resume or roll back an interrupted operation
+### 16.6 Resume or roll back an interrupted operation
 
 ```text
 mother diagnose mainnet
@@ -789,7 +859,7 @@ mother add-node do mainnet
 mother rollback mainnet --all
 ```
 
-### 15.7 Complete finalization after a participant returns
+### 16.7 Complete finalization after a participant returns
 
 ```text
 mother diagnose mainnet
@@ -799,7 +869,7 @@ mother <kind> finalize mainnet --operation-id <id>
 This advances the exact already-committed finalization head. It does not create
 a new topology decision.
 
-## 16. Operator safety rules
+## 17. Operator safety rules
 
 1. Diagnose before acting and after every ambiguous result.
 2. Follow `allowed_next_commands`; do not infer legality from the last process
@@ -819,12 +889,12 @@ a new topology decision.
 12. If Mother cannot prove the current head, participant set, prestate, or
     rollback closure, stop and use the diagnosis-directed recovery path.
 
-## 17. Remaining open items
+## 18. Remaining open items
 
 This catalog is the operation-ID authority, but not every public surface or
 mutating contract is closed.
 
-### 17.1 Surface-open items
+### 18.1 Surface-open items
 
 The following items have defined safety boundaries, but still need final CLI
 spelling, options, or presentation:
@@ -839,7 +909,7 @@ spelling, options, or presentation:
 Surface work MUST preserve the authority, participant, staging, rollback, and
 irreversible-boundary contracts already defined by `mother.md`.
 
-### 17.2 Contract-open items
+### 18.2 Contract-open items
 
 The following operations do not yet have enough product contract to implement
 their mutating paths:

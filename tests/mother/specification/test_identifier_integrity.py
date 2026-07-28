@@ -22,7 +22,7 @@ pytestmark = pytest.mark.mother_specification
         (requirement_ids, 27),
         (design_ids, 30),
         (operation_ids, 17),
-        (functionality_ids, 180),
+        (functionality_ids, 182),
         (module_ids, 82),
     ),
 )

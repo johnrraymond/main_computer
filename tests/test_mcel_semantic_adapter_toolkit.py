@@ -17,6 +17,7 @@ REGISTRY = SCRIPTS / "mcel-domain-adapter-registry.js"
 CALCULATOR_ADAPTER = SCRIPTS / "calculator-semantic-adapter.js"
 FILE_EXPLORER_ADAPTER = SCRIPTS / "file-explorer-semantic-adapter.js"
 SHELL = ROOT / "main_computer" / "web" / "applications.html"
+TOOLKIT_DOC = ROOT / "pretty_docs" / "mcel-shared-semantic-adapter-toolkit.md"
 
 
 def run_node_json(script: str) -> dict:
@@ -168,3 +169,86 @@ def test_proven_adapters_delegate_common_work_to_toolkit() -> None:
         assert "ADAPTER_TOOLKIT.listBoundedReceipts" in source
 
     assert "ADAPTER_TOOLKIT.dispatchAction" in calculator_source
+
+
+def test_toolkit_conformance_contract_is_explicit_and_self_validating() -> None:
+    result = run_node_json(
+        textwrap.dedent(
+            f"""
+            const toolkit = require({json.dumps(str(TOOLKIT))});
+            const contract = toolkit.buildConformanceContract();
+            const report = toolkit.validateToolkitConformance();
+            const intentionallyIncomplete = {{
+              ...toolkit,
+              INTENT_STATUSES: ["executable"],
+              dispatchAction: undefined
+            }};
+            const incompleteReport = toolkit.validateToolkitConformance(intentionallyIncomplete);
+            process.stdout.write(JSON.stringify({{
+              contract,
+              report,
+              incompleteReport
+            }}));
+            """
+        )
+    )
+
+    contract = result["contract"]
+    report = result["report"]
+    incomplete = result["incompleteReport"]
+
+    assert contract["id"] == "mcel.semantic-adapter-toolkit.conformance.v1"
+    assert contract["version"] == "mcel-semantic-adapter-toolkit-conformance-v1"
+    assert contract["toolkitVersion"] == "mcel-semantic-adapter-toolkit-v1"
+    assert "dispatchAction" in contract["requiredPublicApi"]
+    assert "validateToolkitConformance" in contract["requiredPublicApi"]
+    assert {clause["id"] for clause in contract["clauses"]} == {
+        "mcel.semantic-adapter-toolkit.clone-plain.v1",
+        "mcel.semantic-adapter-toolkit.intent-declaration.v1",
+        "mcel.semantic-adapter-toolkit.preflight-receipt.v1",
+        "mcel.semantic-adapter-toolkit.dispatch.v1",
+        "mcel.semantic-adapter-toolkit.recovery-coverage.v1",
+    }
+
+    assert report["schema"] == "mcel-semantic-adapter-toolkit-conformance-report-v1"
+    assert report["contractId"] == contract["id"]
+    assert report["passed"] is True
+    assert report["missingPublicApi"] == []
+    assert report["missingIntentStatuses"] == []
+    assert report["failedClauseIds"] == []
+    assert all(clause["status"] == "pass" for clause in report["clauses"])
+
+    assert incomplete["passed"] is False
+    assert "dispatchAction" in incomplete["missingPublicApi"]
+    assert "planned" in incomplete["missingIntentStatuses"]
+    assert "mcel.semantic-adapter-toolkit.dispatch.v1" in incomplete["failedClauseIds"]
+
+
+def test_toolkit_contract_documentation_matches_exported_contract() -> None:
+    result = run_node_json(
+        textwrap.dedent(
+            f"""
+            const toolkit = require({json.dumps(str(TOOLKIT))});
+            process.stdout.write(JSON.stringify(toolkit.buildConformanceContract()));
+            """
+        )
+    )
+    doc = TOOLKIT_DOC.read_text(encoding="utf-8")
+
+    assert "# MCEL Shared Semantic Adapter Toolkit" in doc
+    assert result["id"] in doc
+    assert result["version"] in doc
+    assert result["toolkitVersion"] in doc
+    assert "does not grant semantic-runtime proof by itself" in doc
+    assert "replace runtime FLOG evidence" in doc
+    assert "replace acceptance evidence" in doc
+    assert "python main_computer/mcel_truth_audit.py --release-gate" in doc
+
+    for api_name in result["requiredPublicApi"]:
+        assert api_name in doc
+
+    for status in result["intentStatuses"]:
+        assert status in doc
+
+    for clause in result["clauses"]:
+        assert clause["id"] in doc or clause["category"] in doc

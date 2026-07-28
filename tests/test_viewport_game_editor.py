@@ -155,6 +155,13 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(interior["terminals"]["terminal.bridge-viewscreen"]["state"], "standby")
         self.assertEqual(interior["terminals"]["terminal.bridge-tactical"]["location"], "bridge.deck")
         self.assertEqual(interior["terminals"]["terminal.bridge-tactical"]["state"], "ready")
+        props_by_id = {prop["id"]: prop for prop in interior["props"]}
+        self.assertEqual(props_by_id["prop.marker.bay-ops-terminal"]["kind"], "map-marker")
+        self.assertEqual(props_by_id["prop.marker.bay-ops-terminal"]["target"], "terminal.bay-ops")
+        self.assertEqual(props_by_id["prop.marker.engineering-power"]["room"], "engineering.access")
+        self.assertEqual(props_by_id["prop.marker.bridge-viewscreen"]["room"], "bridge.deck")
+        self.assertEqual(props_by_id["prop.marker.bridge-viewscreen"]["kind"], "map-marker")
+        self.assertEqual(props_by_id["prop.marker.bridge-viewscreen"]["target"], "terminal.bridge-viewscreen")
         self.assertEqual(interior["interactions"]["trackEnemyShipOnViewscreen"]["handler"], "trackEnemyShipOnViewscreen")
         self.assertEqual(interior["interactions"]["fireBridgeTacticalConsole"]["handler"], "fireBridgeTacticalConsole")
         self.assertEqual(interior["interactions"]["inspectOpenDoorRoute"]["handler"], "inspectOpenDoorRoute")
@@ -451,6 +458,14 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("requireRenderableProps", scene_viewer_script)
         self.assertIn("prop.bridge-tactical-marker", scene_viewer_script)
         self.assertIn("prop.bridge-viewscreen-status", scene_viewer_script)
+        self.assertIn("Patch I also moves", scene_viewer_script)
+        self.assertIn('kind === "map-marker"', scene_viewer_script)
+        self.assertIn("prop.marker.bridge-viewscreen", scene_viewer_script)
+        self.assertIn("Patch J keeps data-defined visual content honest by validating prop targets", scene_viewer_script)
+        self.assertIn("requirePropTargets", scene_viewer_script)
+        self.assertIn("propTargetIsKnown", scene_viewer_script)
+        self.assertIn("targets missing content", scene_viewer_script)
+        self.assertIn("game-runtime-patch-J-prop-target-validation", scene_viewer_script)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(

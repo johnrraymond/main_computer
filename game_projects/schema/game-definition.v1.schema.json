@@ -163,6 +163,10 @@
         "requireRenderableProps": {
           "type": "boolean",
           "default": true
+        },
+        "requirePropTargets": {
+          "type": "boolean",
+          "default": true
         }
       },
       "default": {}
@@ -366,7 +370,16 @@
         },
         "kind": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Procedural content prop kind. Current renderer supports floor-marker, map-marker, sign, beacon, light-strip, and status-panel.",
+          "examples": [
+            "floor-marker",
+            "map-marker",
+            "sign",
+            "beacon",
+            "light-strip",
+            "status-panel"
+          ]
         },
         "position": {
           "$ref": "#/$defs/position"
@@ -383,6 +396,21 @@
           "maxItems": 3
         },
         "display": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "emissive": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string"
+        },
+        "facing": {
+          "type": "string"
+        },
+        "axis": {
           "type": "string"
         }
       }

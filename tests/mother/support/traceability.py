@@ -483,6 +483,42 @@ def external_effect_owner_ids(docs: MotherDocuments) -> tuple[str, ...]:
     return tuple(owners)
 
 
+def faultpoint_boundary_module_ids(docs: MotherDocuments) -> set[str]:
+    """Return modules whose documented class owns a faultpoint boundary."""
+
+    assignment = section(
+        docs.modules,
+        "### 5.13 Authority-class assignment",
+        "## 6.",
+    )
+    boundary_terms = (
+        "writer",
+        "live-adapter",
+        "transport",
+    )
+    result: set[str] = set()
+    for line in assignment.splitlines():
+        if not line.startswith("|"):
+            continue
+        lowered = line.lower()
+        if any(term in lowered for term in boundary_terms):
+            result.update(module_references(line))
+    return result
+
+
+def implicit_shared_core_modules(
+    docs: MotherDocuments,
+    functionality: str,
+    chain: Sequence[str],
+) -> set[str]:
+    """Return only the shared-core ancestry explicitly documented in section 3.3."""
+
+    implicit = {"MOTHER-OFM-CORE-001", "MOTHER-OFM-CORE-002"}
+    if set(chain) & faultpoint_boundary_module_ids(docs):
+        implicit.add("MOTHER-OFM-CORE-013")
+    return implicit
+
+
 def module_layer(module_id: str) -> str:
     family = module_id.split("-")[2]
     if family == "APP":
@@ -643,22 +679,47 @@ def validate_contract_trace(
         parents = [
             functionality
             for functionality in trace.functionalities
-            if module in function_modules.get(functionality, ())
+            if (
+                module in function_modules.get(functionality, ())
+                or module
+                in implicit_shared_core_modules(
+                    docs,
+                    functionality,
+                    function_modules.get(functionality, ()),
+                )
+            )
         ]
         if not parents:
             errors.append(
                 f"{module} is not in any claimed functionality chain and is not "
-                "the claimed operation entry module"
+                "an explicitly documented shared-core dependency or the claimed "
+                "operation entry module"
             )
 
     for functionality in trace.functionalities:
-        claimed = [
+        canonical_chain = function_modules[functionality]
+        implicit = implicit_shared_core_modules(docs, functionality, canonical_chain)
+        claimed_explicit = [
             module
             for module in trace.modules
-            if module in function_modules.get(functionality, ())
+            if module in canonical_chain
         ]
-        if claimed and not _is_subsequence(claimed, function_modules[functionality]):
-            errors.append(f"modules are out of order for {functionality}: {claimed}")
+        if claimed_explicit and not _is_subsequence(claimed_explicit, canonical_chain):
+            errors.append(
+                f"modules are out of order for {functionality}: {claimed_explicit}"
+            )
+        unsupported_implicit = [
+            module
+            for module in trace.modules
+            if module.startswith("MOTHER-OFM-CORE-")
+            and module not in canonical_chain
+            and module not in implicit
+        ]
+        if unsupported_implicit:
+            errors.append(
+                f"unsupported implicit core ancestry for {functionality}: "
+                f"{unsupported_implicit}"
+            )
 
     coverage = requirement_coverage(docs)
     for requirement in trace.requirements:

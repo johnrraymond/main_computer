@@ -37,6 +37,8 @@ The game has outgrown the one-renderer-knows-everything model. Before large new 
 | F. Definition validators | Add tests for reachability, prompt handlers, objective targets, and spawn placement | No gameplay change |
 | G. Renderer decomposition | Split drawing primitives from gameplay state and interaction logic | Should preserve behavior |
 | H. Content props render pass | Render non-interactive ship signage, route markers, beacons, and status panels from `motherShipInterior.props` | Should preserve behavior while making visual content data-first |
+| I. Content marker extraction | Move repeated Bay Ops, department, bridge access, and viewscreen map markers into `motherShipInterior.props` | Should preserve behavior while removing one-off marker draw calls |
+| J. Prop target validation | Validate that content prop `target` values resolve to known rooms, terminals, doors, interactables, objectives, or supported runtime systems | No gameplay change |
 
 Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
 
@@ -53,6 +55,10 @@ Patch F implementation note: mother-ship definitions now produce `validationRule
 Patch G implementation note: renderer bootstrapping now has named initialization seams through `initializeRendererFrameState()`, `initializeGameplaySubsystems()`, `initializeCombatRuntimeState()`, `initializeGeometryBuffers()`, and `initializeCanvasLifecycle()`.
 
 Patch H implementation note: non-interactive mother-ship visual content now flows through `motherShipInterior.props`, `shuttle3dNormalizeMotherShipProps()`, and `appendMotherShipInteriorProps(builder, nowMs)`, with `requireRenderableProps` validation.
+
+Patch I implementation note: repeated Bay Ops, department, bridge access, and bridge viewscreen markers now use data-defined `map-marker` props.
+
+Patch J implementation note: data-defined props with `target` now flow through `requirePropTargets` validation so map markers and status panels cannot point at missing content.
 
 ## Patch series overview
 
@@ -450,3 +456,5 @@ Acceptance checks:
 - route-to-bridge completion still works if the player ignores side rooms unless a later objective explicitly requires them.
 
 Patch G implementation note: renderer bootstrapping now has behavior-preserving seams (`initializeRendererFrameState`, `initializeGameplaySubsystems`, `initializeCombatRuntimeState`, `initializeGeometryBuffers`, and `initializeCanvasLifecycle`) so later patches can move gameplay, geometry, and lifecycle systems out of the monolithic renderer safely.
+
+Patch I implementation note: repeated mother-ship room/terminal map markers now flow through `motherShipInterior.props` using `kind: "map-marker"` and `appendMotherShipInteriorProps(builder, nowMs)`.

@@ -12,6 +12,76 @@
       "prohibited",
       "planned"
     ]);
+    const CONTRACT_ID = "mcel.semantic-adapter-toolkit.conformance.v1";
+    const CONTRACT_VERSION = "mcel-semantic-adapter-toolkit-conformance-v1";
+    const REQUIRED_PUBLIC_API = Object.freeze([
+      "VERSION",
+      "INTENT_STATUSES",
+      "CONTRACT_ID",
+      "CONTRACT_VERSION",
+      "clonePlain",
+      "nowIso",
+      "safeString",
+      "normalizedId",
+      "semanticStatusFor",
+      "cloneIntentDeclaration",
+      "intentDefinitionFor",
+      "listIntentDefinitions",
+      "recoveryCoverageAudit",
+      "appendBoundedReceipt",
+      "listBoundedReceipts",
+      "preflightResult",
+      "dispatchAction",
+      "listConformanceClauses",
+      "buildConformanceContract",
+      "validateToolkitConformance"
+    ]);
+    const CONFORMANCE_CLAUSES = Object.freeze([
+      Object.freeze({
+        id: "mcel.semantic-adapter-toolkit.clone-plain.v1",
+        category: "state-snapshot",
+        requires: Object.freeze(["clonePlain"]),
+        guarantee: "Shared helpers must clone plain adapter data without leaking callable runtime bindings.",
+        evidence: Object.freeze(["tests/test_mcel_semantic_adapter_toolkit.py"])
+      }),
+      Object.freeze({
+        id: "mcel.semantic-adapter-toolkit.intent-declaration.v1",
+        category: "intent-declaration",
+        requires: Object.freeze([
+          "semanticStatusFor",
+          "cloneIntentDeclaration",
+          "intentDefinitionFor",
+          "listIntentDefinitions"
+        ]),
+        guarantee: "Adapters classify current, planned, prohibited, and declared intents with stable semantic statuses.",
+        evidence: Object.freeze(["tests/test_mcel_semantic_adapter_toolkit.py"])
+      }),
+      Object.freeze({
+        id: "mcel.semantic-adapter-toolkit.preflight-receipt.v1",
+        category: "preflight-and-receipts",
+        requires: Object.freeze([
+          "preflightResult",
+          "appendBoundedReceipt",
+          "listBoundedReceipts"
+        ]),
+        guarantee: "Shared preflight and receipt helpers preserve explicit allow/block decisions and bounded evidence ledgers.",
+        evidence: Object.freeze(["tests/test_mcel_semantic_adapter_toolkit.py"])
+      }),
+      Object.freeze({
+        id: "mcel.semantic-adapter-toolkit.dispatch.v1",
+        category: "execution-dispatch",
+        requires: Object.freeze(["dispatchAction"]),
+        guarantee: "Dispatch reports unavailable or failing runtime bindings as explicit failed semantic receipts instead of throwing.",
+        evidence: Object.freeze(["tests/test_mcel_semantic_adapter_toolkit.py"])
+      }),
+      Object.freeze({
+        id: "mcel.semantic-adapter-toolkit.recovery-coverage.v1",
+        category: "recovery-coverage",
+        requires: Object.freeze(["recoveryCoverageAudit"]),
+        guarantee: "Recovery coverage remains derived from declared failure classes and cannot pass with uncovered required classes.",
+        evidence: Object.freeze(["tests/test_mcel_semantic_adapter_toolkit.py"])
+      })
+    ]);
 
     function clonePlain(value) {
       if (value == null || typeof value !== "object") return value;
@@ -171,9 +241,94 @@
       }
     }
 
+    function listConformanceClauses() {
+      return clonePlain(CONFORMANCE_CLAUSES);
+    }
+
+    function buildConformanceContract() {
+      return {
+        id: CONTRACT_ID,
+        version: CONTRACT_VERSION,
+        toolkitVersion: VERSION,
+        requiredPublicApi: clonePlain(REQUIRED_PUBLIC_API),
+        intentStatuses: clonePlain(INTENT_STATUSES),
+        clauses: listConformanceClauses(),
+        nonGoals: [
+          "does-not-define-application-domain-vocabulary",
+          "does-not-authorize-new-semantic-runtime-scope",
+          "does-not-execute-hidden-file-git-shell-package-or-publish-actions",
+          "does-not-replace-runtime-or-acceptance-evidence"
+        ]
+      };
+    }
+
+    function validateToolkitConformance(candidateApi) {
+      const target = candidateApi || api;
+      const requiredApi = REQUIRED_PUBLIC_API.map((methodName) => ({
+        name: methodName,
+        present: Object.prototype.hasOwnProperty.call(target, methodName),
+        callable:
+          methodName === "VERSION" ||
+          methodName === "INTENT_STATUSES" ||
+          methodName === "CONTRACT_ID" ||
+          methodName === "CONTRACT_VERSION"
+            ? true
+            : typeof target[methodName] === "function"
+      }));
+      const missingPublicApi = requiredApi
+        .filter((entry) => entry.present !== true || entry.callable !== true)
+        .map((entry) => entry.name);
+      const requiredStatusVocabulary = [
+        "executable",
+        "preflight-only",
+        "declared-only",
+        "prohibited",
+        "planned"
+      ];
+      const statusVocabulary = requiredStatusVocabulary.map((status) => ({
+        status,
+        present: Array.isArray(target.INTENT_STATUSES) && target.INTENT_STATUSES.includes(status)
+      }));
+      const missingIntentStatuses = statusVocabulary
+        .filter((entry) => entry.present !== true)
+        .map((entry) => entry.status);
+      const clauses = CONFORMANCE_CLAUSES.map((clause) => {
+        const missingRequirements = clause.requires.filter(
+          (methodName) => typeof target[methodName] !== "function"
+        );
+        return {
+          ...clonePlain(clause),
+          missingRequirements,
+          status: missingRequirements.length === 0 ? "pass" : "fail"
+        };
+      });
+      const failedClauseIds = clauses
+        .filter((clause) => clause.status !== "pass")
+        .map((clause) => clause.id);
+      return {
+        schema: "mcel-semantic-adapter-toolkit-conformance-report-v1",
+        contractId: CONTRACT_ID,
+        contractVersion: CONTRACT_VERSION,
+        toolkitVersion: safeString(target.VERSION),
+        passed:
+          safeString(target.VERSION) === VERSION &&
+          missingPublicApi.length === 0 &&
+          missingIntentStatuses.length === 0 &&
+          failedClauseIds.length === 0,
+        requiredApi,
+        missingPublicApi,
+        statusVocabulary,
+        missingIntentStatuses,
+        clauses,
+        failedClauseIds
+      };
+    }
+
     const api = Object.freeze({
       VERSION,
       INTENT_STATUSES,
+      CONTRACT_ID,
+      CONTRACT_VERSION,
       clonePlain,
       nowIso,
       safeString,
@@ -186,7 +341,10 @@
       appendBoundedReceipt,
       listBoundedReceipts,
       preflightResult,
-      dispatchAction
+      dispatchAction,
+      listConformanceClauses,
+      buildConformanceContract,
+      validateToolkitConformance
     });
 
     global.McelSemanticAdapterToolkit = api;

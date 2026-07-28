@@ -6,10 +6,10 @@ Sources:
 
 ```text
 mother.md
-SHA-256: f140d2b2f27979757146d1baf53820fcfb8bcdde30e18518a295eee2b26c2364
+SHA-256: 59f840c71425efc094e79ba9d318898297aad9ad7d7df1e1563798c293617d7e
 
 mother-o.md
-SHA-256: 39c676c61b8a09ea2a4194cc315a56a9bda1d753dc1deadeeab0136546c56211
+SHA-256: 5b7eb9387605f8fdf5ca5c171af24224987e5baf4052bd4f7a4f292c8cf95880
 ```
 
 ## 1. Purpose and authority
@@ -185,6 +185,7 @@ and context.
 | `MOTHER-OF-AUTH-017` | Obtain and accept bootstrap authority for the exact birth entry |
 | `MOTHER-OF-AUTH-018` | Construct the exact certified rollback-progress or rollback-completed successor from verified restored state |
 | `MOTHER-OF-AUTH-019` | Construct the exact pending-action progress successor from a verified promoted phase |
+| `MOTHER-OF-AUTH-020` | Construct an exact preparatory pending-action progress successor from verified immutable evidence bound to the prepared operation contract |
 
 ### 3.5 Prestate and rollback
 
@@ -260,7 +261,24 @@ and context.
 | `MOTHER-OF-HUB-004` | Verify every affected node at the desired topology epoch |
 | `MOTHER-OF-HUB-005` | Restore captured Hub/FDB prestate |
 
-### 3.9 Local adoption, recovery, and reseal
+### 3.9 Hub release rollout
+
+| Functionality ID | Canonical responsibility |
+|---|---|
+| `MOTHER-OF-REL-001` | Resolve and verify the signed immutable Hub release descriptor |
+| `MOTHER-OF-REL-002` | Observe and freeze the current participant-release map |
+| `MOTHER-OF-REL-003` | Establish an explicit operator-accepted legacy rollback baseline when Hub release authority is absent |
+| `MOTHER-OF-REL-004` | Prefetch, durably pin, and verify target and rollback artifact closures |
+| `MOTHER-OF-REL-005` | Prove compatibility plus schema, topology, configuration, identity, secret, and membership preservation |
+| `MOTHER-OF-REL-006` | Calculate deterministic rollout order and continuous or operator-approved-outage availability policy |
+| `MOTHER-OF-REL-007` | Capture complete service, artifact, process, eligibility, and traffic prestate |
+| `MOTHER-OF-REL-008` | Drain and deploy the exact prepared platform artifact |
+| `MOTHER-OF-REL-009` | Reconcile an ambiguous deployment outcome from durable request evidence and observed digest |
+| `MOTHER-OF-REL-010` | Verify one participant's exact release and restore its prepared eligibility |
+| `MOTHER-OF-REL-011` | Restore the exact captured artifact, configuration, eligibility, and traffic state |
+| `MOTHER-OF-REL-012` | Derive the complete rollout-convergence proof and exact typed Hub release delta from fresh full-set observations and the frozen prepared contract |
+
+### 3.10 Local adoption, recovery, and reseal
 
 | Functionality ID | Canonical responsibility |
 |---|---|
@@ -303,7 +321,7 @@ reseal protocol ownership only; and `MOTHER-OF-CTL-016` releases logical mutatio
 scopes and current-operation ownership only after the lower-layer terminal proof
 exists.
 
-### 3.10 Migration, rotation, and projections
+### 3.11 Migration, rotation, and projections
 
 | Functionality ID | Canonical responsibility |
 |---|---|
@@ -1357,7 +1375,89 @@ No functionality in this operation MAY change journal entries, bundles, heads,
 private state, head authority, topology, pending actions, rollback rights, or
 remote lineage.
 
-## 20. Lifecycle control: `rollback`
+## 20. Operation: `upgrade-hub`
+
+Operation ID: `MOTHER-OP-UPGRADE-HUB`
+
+This ordinary D026 staged operation deploys a prebuilt immutable signed Hub
+release across the unchanged authoritative Hub participant set. It MUST NOT
+invoke D028 or D029 or combine deployment with topology, membership, schema,
+canonical service-configuration, identity, secret, QBFT, or permanent-route
+changes.
+
+### 20.1 `prep` functionalities
+
+| Order | Functionality | Result |
+|---:|---|---|
+| 1 | `MOTHER-OF-OBS-001` through `MOTHER-OF-OBS-017` | Coherent ordinary authority, complete current Hub participants, release observations, and no conflicting recovery state |
+| 2 | `MOTHER-OF-CTL-001` through `MOTHER-OF-CTL-004` | Explicit target descriptor, availability intent, predecessor head, authority generation, and unchanged participant set frozen |
+| 3 | `MOTHER-OF-REL-001` | Signed immutable target descriptor verified against a separately frozen signer policy |
+| 4 | `MOTHER-OF-REL-002` | Complete current participant-release map and canonical service configuration frozen |
+| 5 | `MOTHER-OF-REL-003` | When release authority is absent, explicit legacy rollback baseline accepted without initializing finalized release authority |
+| 6 | `MOTHER-OF-REL-005` | Mixed-version compatibility and preservation of topology, schemas, configuration, identity, secrets, and membership proven |
+| 7 | `MOTHER-OF-REL-006` | Deterministic participant order and availability policy frozen |
+| 8 | `MOTHER-OF-CTL-005` through `MOTHER-OF-CTL-010` | Closed typed Hub release delta, dependency order, scopes, conflicts, strict reverse restoration, and compatibility requirements frozen |
+| 9 | `MOTHER-OF-CTL-011` and `MOTHER-OF-CTL-012` | Immutable prepared operation and allowed commands published |
+
+`prep` MUST block if any exact legacy or predecessor artifact cannot be
+identified or its exact closure identity and availability contract cannot be
+frozen. Actual participant staging and availability evidence occur only during
+`do`, after the pending action is authoritative. Operator acceptance cannot
+waive either the identity or later pinning requirement.
+
+### 20.2 `do` functionalities
+
+| Order | Functionality | Result |
+|---:|---|---|
+| 1 | `MOTHER-OF-CTL-013`, `MOTHER-OF-REL-005`, and `MOTHER-OF-REL-006` | Frozen head, participants, closure identities, preservation proofs, rollout order, and availability policy revalidated |
+| 2 | `MOTHER-OF-AUTH-004`, `MOTHER-OF-AUTH-001`, `MOTHER-OF-AUTH-002`, `MOTHER-OF-AUTH-005`, `MOTHER-OF-AUTH-006`, and `MOTHER-OF-AUTH-007` | Exact `upgrade-hub` pending action committed and replicated through ordinary D026 before participant staging |
+| 3 | `MOTHER-OF-REL-004` | Exact target and rollback artifact closures staged, durably pinned, and verified on every required participant |
+| 4 | `MOTHER-OF-AUTH-020`, `MOTHER-OF-AUTH-001`, `MOTHER-OF-AUTH-002`, `MOTHER-OF-AUTH-005`, `MOTHER-OF-AUTH-006`, and `MOTHER-OF-AUTH-007` | Actual artifact-availability evidence root committed and replicated before live service mutation |
+| 5 | `MOTHER-OF-REL-007`, `MOTHER-OF-RB-001`, `MOTHER-OF-RB-002`, and `MOTHER-OF-RB-003` | Exact next-participant release, service, eligibility, and traffic prestate captured and armed |
+| 6 | `MOTHER-OF-REL-008` | Participant drained or gated and exact prepared platform digest dispatched |
+| 7 | `MOTHER-OF-REL-009` | Any timeout or unknown outcome reconciled without choosing a different artifact |
+| 8 | `MOTHER-OF-REL-010` and `MOTHER-OF-RB-004` | One participant's digest, configuration, runtime/API, FDB, health, availability, and prepared eligibility verified and frame promoted |
+| 9 | `MOTHER-OF-AUTH-019`, `MOTHER-OF-AUTH-001`, `MOTHER-OF-AUTH-002`, `MOTHER-OF-AUTH-005`, `MOTHER-OF-AUTH-006`, and `MOTHER-OF-AUTH-007` | Exact participant progress committed and replicated before the next participant |
+| 10 | Repeat orders 5 through 9 in the frozen order | Every participant processed under the same prepared operation |
+| 11 | `MOTHER-OF-REL-012` and `MOTHER-OF-OBS-017` | Fresh full-set observations deterministically produce the complete convergence proof and exact typed Hub release delta; both are stored for finalization |
+
+`continuous` MUST preserve the frozen healthy-role/count rule at every step.
+`operator-approved-outage` MUST use the exact prep-time outage authorization and
+prove ingress fencing, in-flight accounting, data integrity, and rollback
+availability before temporary zero-Hub availability.
+
+### 20.3 `finalize` functionalities
+
+| Order | Functionality | Result |
+|---:|---|---|
+| 1 | `MOTHER-OF-CTL-013`, `MOTHER-OF-REL-012`, and `MOTHER-OF-OBS-017` | The identical deterministic REL-012 chain runs from fresh full-set observations and MUST produce bytes equal to the stored convergence proof and typed Hub release delta |
+| 2 | `MOTHER-OF-RB-009` and `MOTHER-OF-AUTH-008` | Rollback closure and typed Hub release finalization intent persisted |
+| 3 | `MOTHER-OF-AUTH-009`, `MOTHER-OF-AUTH-001`, `MOTHER-OF-AUTH-002`, and `MOTHER-OF-AUTH-005` | Exact finalization successor and ordinary D026 bundle constructed |
+| 4 | `MOTHER-OF-AUTH-010` | Atomic final entry/bundle head commit applies only the Hub component-release delta |
+| 5 | `MOTHER-OF-AUTH-011` through `MOTHER-OF-AUTH-013` | Exact finalization head resynchronized and fully acknowledged |
+| 6 | `MOTHER-OF-AUTH-015`, `MOTHER-OF-RB-010`, and `MOTHER-OF-CTL-016` | D026 fencing, rollback ownership, logical scopes, and current-operation ownership released from terminal proof |
+
+The finalization successor leaves `finalized_topology`,
+`finalized_topology_epoch`, schemas, canonical configuration, identities,
+secrets, and membership unchanged. It advances Hub release generation to `1`
+from an accepted legacy baseline or by exactly one from established authority.
+
+### 20.4 `rollback` functionalities
+
+Rollback remains available until the atomic local finalization entry/bundle
+commit.
+
+| Order | Functionality | Result |
+|---:|---|---|
+| 1 | `MOTHER-OF-REL-011` and `MOTHER-OF-RB-005` through `MOTHER-OF-RB-008` | Exact captured participant artifacts, configuration, eligibility, and traffic restored in strict reverse rollout order |
+| 2 | `MOTHER-OF-AUTH-018`, `MOTHER-OF-AUTH-001`, `MOTHER-OF-AUTH-002`, `MOTHER-OF-AUTH-005`, `MOTHER-OF-AUTH-006`, and `MOTHER-OF-AUTH-007` | Rollback progress and completion committed and replicated through ordinary D026 |
+| 3 | `MOTHER-OF-AUTH-015`, `MOTHER-OF-RB-010`, and `MOTHER-OF-CTL-016` | Protocol, rollback, scope, and operation ownership released after complete restoration proof |
+
+Rollback restores exact captured content digests and MUST NOT resolve a mutable
+tag. A complete rollback from legacy-baseline mode leaves Hub release authority
+uninitialized.
+
+## 21. Lifecycle control: `rollback`
 
 Control ID: `MOTHER-CTL-ROLLBACK`
 
@@ -1366,7 +1466,7 @@ Class: operation control
 Outcome: the active operation returns to its proven pre-operation state, or
 remains explicitly nonterminal with exact unresolved evidence.
 
-### 20.1 Functional pipeline
+### 21.1 Functional pipeline
 
 | Order | Functionality | Placement |
 |---:|---|---|
@@ -1385,7 +1485,7 @@ remains explicitly nonterminal with exact unresolved evidence.
 | 13 | `MOTHER-OF-RB-008` | Persist every rollback result or failure |
 | 14 | `MOTHER-OF-RB-010` and `MOTHER-OF-CTL-016` | Release rollback and operation scopes after full-set terminal proof |
 
-### 20.2 Range semantics
+### 21.2 Range semantics
 
 | Operator form | Functional selection |
 |---|---|
@@ -1403,7 +1503,7 @@ keeps the pending action open and the operation remains
 remaining and the exact rolled-back head proven on every expected replica, MAY
 enter `rolled-back` and release the successor reservation.
 
-## 21. Lifecycle control: retry/resume
+## 22. Lifecycle control: retry/resume
 
 Control ID: `MOTHER-CTL-RETRY-RESUME`
 
@@ -1412,7 +1512,7 @@ Class: operation control
 Outcome: the exact existing operation advances without new intent, new scope,
 new prestate, or a second competing successor.
 
-### 21.1 `do` retry functionalities
+### 22.1 `do` retry functionalities
 
 1. `MOTHER-OF-OBS-011` resolves the exact active operation.
 2. `MOTHER-OF-CTL-015` restores the original request and idempotency identity.
@@ -1428,7 +1528,7 @@ new prestate, or a second competing successor.
 9. If neither prestate nor recognized partial/desired state can be proven, retry
    refuses and reports rectification.
 
-### 21.2 `finalize` retry functionalities
+### 22.2 `finalize` retry functionalities
 
 Before local commit:
 
@@ -1445,12 +1545,12 @@ After local commit:
   authority-protocol fencing;
 - never reopen rollback or create an opposite successor.
 
-## 22. Shared staged-operation functionality
+## 23. Shared staged-operation functionality
 
 The following placement applies to every ordinary authoritative staged
 operation unless its operation section defines a stricter specialized path.
 
-### 22.1 Common `prep`
+### 23.1 Common `prep`
 
 ```text
 diagnose
@@ -1475,7 +1575,7 @@ MOTHER-OF-CTL-001 through MOTHER-OF-CTL-012
 MOTHER-OF-MEM-001 when membership MAY change
 ```
 
-### 22.2 Common pending-action opening
+### 23.2 Common pending-action opening
 
 Every ordinary authoritative operation MUST establish its pending action in this
 acyclic order before live mutation:
@@ -1512,7 +1612,7 @@ certified.
 No entry MAY contain a hash of a certificate, acceptance root, decision record,
 or authorization bundle that can exist only after that entry is hashed.
 
-### 22.3 Common live mutation step
+### 23.3 Common live mutation step
 
 ```text
 capture complete typed prestate
@@ -1546,8 +1646,10 @@ MOTHER-OF-AUTH-019
 → MOTHER-OF-AUTH-007
 ```
 
-This successor advances replicated pending state; it does not advance finalized
-topology or close rollback.
+This successor advances replicated pending state; it does not apply the
+operation's typed authoritative delta or close rollback. A topology operation
+therefore does not advance finalized topology here, and `upgrade-hub` does not
+advance Hub release authority here.
 
 Older script-boundary phase lists for service, validator, RPC, and Hub/FDB work
 execute inside this common pending-action authority shell. They are not
@@ -1557,7 +1659,13 @@ successor fencing, rollback-frame, or finalization contracts.
 No live mutation functionality MAY run before the pending action is
 authoritative and replicated to the required set.
 
-### 22.4 Common ordinary finalization
+### 23.4 Common ordinary finalization
+
+Before finalization construction, the operation MUST validate a closed
+operation-kind-specific `authoritative_delta`. The resulting successor changes
+only the named authoritative dimensions. Topology operations replace topology
+and advance the topology epoch. `upgrade-hub` leaves topology unchanged and
+advances only the Hub component-release generation and participant-map root.
 
 ```text
 revalidate
@@ -1602,7 +1710,7 @@ MOTHER-OF-RB-010
 MOTHER-OF-CTL-016
 ```
 
-### 22.5 State-transition functionality
+### 23.5 State-transition functionality
 
 `MOTHER-OF-CTL-014` owns durable operation-stage changes, but it MAY publish a
 state only after the functionality that establishes that state is durable:
@@ -1629,7 +1737,7 @@ interruption makes the apparent stage ambiguous.
 `sync-state` uses the same `MOTHER-OF-CTL-014` capability with its specialized
 states and pointer-determined commit semantics.
 
-## 23. Operation-to-functionality domain matrix
+## 24. Operation-to-functionality domain matrix
 
 This matrix is a coverage check. Detailed ordering remains in the operation
 sections.
@@ -1652,10 +1760,11 @@ sections.
 | schema migration | ✓ | ✓ | ✓ | open | open | preserve | migrate if scoped | migrate if scoped | migrate if scoped | migrate if scoped | — | ✓ | rebuild |
 | identity rotation | ✓ | ✓ | ✓ | open | open | preserve/change only if specified | ✓ | conditional | conditional | conditional | — | ✓ | rebuild |
 | `repair-projections` | ✓ | conflict check | none | none | disposable staging | none | none | none | none | none | none | — | ✓ |
+| `upgrade-hub` | ✓ | ✓ | ✓ | ✓ | ✓ | unchanged | release | unchanged | unchanged | unchanged | — | — | — |
 | `rollback` | inspect | control | ✓ | cancel only | ✓ | conditional | conditional | conditional | conditional | conditional | specialized | conditional | staged cleanup |
 | retry/resume | inspect | control | ✓ | reuse exact | preserve | preserve | preserve | preserve | preserve | preserve | specialized | preserve | preserve |
 
-## 24. Requirement-to-functionality coverage
+## 25. Requirement-to-functionality coverage
 
 This table proves that the top-level requirement index in `mother.md` reaches
 the operation/functionality layer. It is a traceability map, not a replacement
@@ -1671,7 +1780,7 @@ for the owning requirement text.
 | `MOTHER-REQ-006` | `MOTHER-OF-CTL-007`, `MOTHER-OF-CTL-008`, `MOTHER-OF-AUTH-001` | All authoritative staged operations |
 | `MOTHER-REQ-007` | `MOTHER-OF-RB-009`, `MOTHER-OF-AUTH-005`, `MOTHER-OF-AUTH-008` through `MOTHER-OF-AUTH-010` | Ordinary finalization and `reseal-state` |
 | `MOTHER-REQ-008` | `MOTHER-OF-CTL-003`, `MOTHER-OF-MEM-002` through `MOTHER-OF-MEM-008` | `add-node`, replica enrollment, network birth |
-| `MOTHER-REQ-009` | `MOTHER-OF-RB-001` through `MOTHER-OF-RB-010`, `MOTHER-OF-AUTH-018`, `MOTHER-OF-AUTH-019` | Every reversible staged operation and `rollback` |
+| `MOTHER-REQ-009` | `MOTHER-OF-RB-001` through `MOTHER-OF-RB-010`, `MOTHER-OF-AUTH-018` through `MOTHER-OF-AUTH-020` | Every reversible staged operation and `rollback` |
 | `MOTHER-REQ-010` | `MOTHER-OF-RPC-001` through `MOTHER-OF-RPC-005` | `add-node`, `remove-node`, `rpc-propagate` |
 | `MOTHER-REQ-011` | `MOTHER-OF-HUB-001` through `MOTHER-OF-HUB-005` | `add-node`, `remove-node` |
 | `MOTHER-REQ-012` | Complete `MOTHER-OP-ADD-NODE` pipeline | `add-node` |
@@ -1685,14 +1794,15 @@ for the owning requirement text.
 | `MOTHER-REQ-020` | `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Every operation that contacts remote participants |
 | `MOTHER-REQ-021` | `MOTHER-OF-CTL-007`, `MOTHER-OF-CTL-008`, `MOTHER-OF-CTL-016` | Every scoped staged operation |
 | `MOTHER-REQ-022` | `MOTHER-OF-RB-009`, `MOTHER-OF-AUTH-008` through `MOTHER-OF-AUTH-010` | Every ordinary authoritative finalization |
-| `MOTHER-REQ-023` | `MOTHER-OF-AUTH-001` through `MOTHER-OF-AUTH-007`, `MOTHER-OF-AUTH-011` through `MOTHER-OF-AUTH-019` | Every ordinary successor, retry, cancellation, rollback, and release |
+| `MOTHER-REQ-023` | `MOTHER-OF-AUTH-001` through `MOTHER-OF-AUTH-007`, `MOTHER-OF-AUTH-011` through `MOTHER-OF-AUTH-020` | Every ordinary successor, retry, cancellation, rollback, preparatory progress, and release |
 | `MOTHER-REQ-024` | `MOTHER-OF-MEM-001` through `MOTHER-OF-MEM-014`, `MOTHER-OF-AUTH-017` | Enrollment, retirement, `add-node initial`, zero-validator continuity |
 | `MOTHER-REQ-025` | `MOTHER-OF-AUTH-010` through `MOTHER-OF-AUTH-015`, `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Every post-commit finalization completion |
 | `MOTHER-REQ-026` | `MOTHER-OF-RSL-001` through `MOTHER-OF-RSL-015`, `MOTHER-OF-AUTH-008` through `MOTHER-OF-AUTH-015`, `MOTHER-OF-MEM-002`, `MOTHER-OF-MEM-003` when membership changes | `reseal-state` authority restoration |
+| `MOTHER-REQ-027` | `MOTHER-OF-REL-001` through `MOTHER-OF-REL-012`, `MOTHER-OF-AUTH-004` through `MOTHER-OF-AUTH-020`, `MOTHER-OF-RB-001` through `MOTHER-OF-RB-010` | `upgrade-hub` |
 
-## 25. Functional coverage and acceptance gaps
+## 26. Functional coverage and acceptance gaps
 
-### 25.1 Surface-open items
+### 26.1 Surface-open items
 
 The functionality is defined, but the public interface remains to be frozen:
 
@@ -1706,7 +1816,7 @@ The functionality is defined, but the public interface remains to be frozen:
 | `MOTHER-OF-GAP-006` | replica retirement | Canonical standalone operation name and options |
 | `MOTHER-OF-GAP-007` | `repair-projections` | Canonical CLI spelling |
 
-### 25.2 Contract-open items
+### 26.2 Contract-open items
 
 These are not merely naming gaps:
 
@@ -1719,7 +1829,7 @@ These are not merely naming gaps:
 An implementation MUST NOT mark an affected operation complete by selecting
 convenient behavior for a `contract-open` item.
 
-## 26. Traceability and acceptance requirements
+## 27. Traceability and acceptance requirements
 
 Every implementation unit and test MUST be traceable through:
 
@@ -1753,7 +1863,7 @@ prove:
 9. finalization or rollback released scopes only after terminal proof;
 10. no functionality belonging to another operation was invoked implicitly.
 
-## 27. Implementation rule
+## 28. Implementation rule
 
 `mother-o-f-m.md` is the canonical source for module layout, package paths, and
 public module seams. This document remains canonical for operation, stage, and
