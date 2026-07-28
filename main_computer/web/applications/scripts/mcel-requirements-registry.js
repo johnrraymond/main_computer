@@ -6,11 +6,11 @@
   "app_comparison_seeds": {
     "calculator": {
       "app": "calculator",
-      "current_runtime_status": "domain-ready-planner-plus-domain-pack",
+      "current_runtime_status": "fullApplicationSemanticReady",
       "declared_form_primitive_count": 6,
       "mutation_intent_count": 1,
       "prohibited_intent_count": 0,
-      "required_intent_count": 10,
+      "required_intent_count": 11,
       "required_region_count": 11,
       "required_use_case_count": 1,
       "requirements_contract_complete": true,
@@ -92,8 +92,8 @@
   "app_contracts": {
     "calculator": {
       "adapter_status_counts": {
-        "current_adapter_status:not-registered": 10,
-        "target_adapter_status:executable": 10
+        "current_adapter_status:executable": 11,
+        "target_adapter_status:executable": 11
       },
       "app": "calculator",
       "block_type_counts": {
@@ -101,14 +101,14 @@
         "mcel-app": 1,
         "mcel-finding": 3,
         "mcel-form-primitive": 6,
-        "mcel-intent": 10,
+        "mcel-intent": 11,
         "mcel-region": 11,
         "mcel-requirement": 10,
         "mcel-runtime-check": 3,
         "mcel-use-case": 1
       },
       "contract_complete": true,
-      "current_runtime_status": "domain-ready-planner-plus-domain-pack",
+      "current_runtime_status": "fullApplicationSemanticReady",
       "dominant_object": "CalculationSession",
       "first_regions": [
         {
@@ -247,13 +247,13 @@
         }
       ],
       "id": "calculator",
-      "intent_count": 10,
+      "intent_count": 11,
       "intent_risk_counts": {
         "local-state": 1,
-        "read-only": 9
+        "read-only": 10
       },
       "mutation_intent_count": 1,
-      "open_finding_count": 3,
+      "open_finding_count": 2,
       "planned_or_open_count": 47,
       "primary_user_goal": "Enter arithmetic expressions, inspect results, draw graphs, run explicit symbolic evaluations, and ask contextual questions without hidden filesystem, remote-sync, or command-execution side effects.",
       "prohibited_intent_count": 0,
@@ -286,16 +286,17 @@
         }
       ],
       "source": {
-        "end_line": 96,
+        "end_line": 101,
         "file": "pretty_docs/mcel-calculator-requirements.md",
-        "start_line": 71
+        "start_line": 75
       },
       "status": "specified",
       "status_counts": {
         "draft": 1,
-        "open": 3,
+        "open": 2,
         "planned": 2,
-        "specified": 41
+        "specified": 42,
+        "verified": 1
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Calculator",
@@ -1545,8 +1546,8 @@
   "apps": [
     {
       "adapter_status_counts": {
-        "current_adapter_status:not-registered": 10,
-        "target_adapter_status:executable": 10
+        "current_adapter_status:executable": 11,
+        "target_adapter_status:executable": 11
       },
       "app": "calculator",
       "block_type_counts": {
@@ -1554,14 +1555,14 @@
         "mcel-app": 1,
         "mcel-finding": 3,
         "mcel-form-primitive": 6,
-        "mcel-intent": 10,
+        "mcel-intent": 11,
         "mcel-region": 11,
         "mcel-requirement": 10,
         "mcel-runtime-check": 3,
         "mcel-use-case": 1
       },
       "contract_complete": true,
-      "current_runtime_status": "domain-ready-planner-plus-domain-pack",
+      "current_runtime_status": "fullApplicationSemanticReady",
       "dominant_object": "CalculationSession",
       "first_regions": [
         {
@@ -1700,13 +1701,13 @@
         }
       ],
       "id": "calculator",
-      "intent_count": 10,
+      "intent_count": 11,
       "intent_risk_counts": {
         "local-state": 1,
-        "read-only": 9
+        "read-only": 10
       },
       "mutation_intent_count": 1,
-      "open_finding_count": 3,
+      "open_finding_count": 2,
       "planned_or_open_count": 47,
       "primary_user_goal": "Enter arithmetic expressions, inspect results, draw graphs, run explicit symbolic evaluations, and ask contextual questions without hidden filesystem, remote-sync, or command-execution side effects.",
       "prohibited_intent_count": 0,
@@ -1739,16 +1740,17 @@
         }
       ],
       "source": {
-        "end_line": 96,
+        "end_line": 101,
         "file": "pretty_docs/mcel-calculator-requirements.md",
-        "start_line": 71
+        "start_line": 75
       },
       "status": "specified",
       "status_counts": {
         "draft": 1,
-        "open": 3,
+        "open": 2,
         "planned": 2,
-        "specified": 41
+        "specified": 42,
+        "verified": 1
       },
       "target_runtime_status": "full-application-semantic-runtime",
       "title": "Calculator",
@@ -3045,9 +3047,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 1071,
+                "end_line": 1098,
                 "file": "pretty_docs/mcel-calculator-requirements.md",
-                "start_line": 1048
+                "start_line": 1075
               },
               "source_binding": "calculator.binding.route-and-ui",
               "status": "specified",
@@ -3086,9 +3088,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 1016,
+                "end_line": 1043,
                 "file": "pretty_docs/mcel-calculator-requirements.md",
-                "start_line": 994
+                "start_line": 1021
               },
               "source_binding": "calculator.binding.route-and-ui",
               "status": "specified",
@@ -3158,9 +3160,9 @@
               ],
               "severity": "critical",
               "source": {
-                "end_line": 1046,
+                "end_line": 1073,
                 "file": "pretty_docs/mcel-calculator-requirements.md",
-                "start_line": 1018
+                "start_line": 1045
               },
               "source_binding": "calculator.binding.route-and-ui",
               "status": "specified",
@@ -4603,7 +4605,7 @@
       "website-builder"
     ],
     "app_counts": {
-      "calculator": 47,
+      "calculator": 48,
       "code-editor": 44,
       "file-explorer": 44,
       "git-tools": 51,
@@ -4616,7 +4618,7 @@
       "mcel-finding": 18,
       "mcel-form-primitive": 40,
       "mcel-grammar": 18,
-      "mcel-intent": 57,
+      "mcel-intent": 58,
       "mcel-layout-pattern": 1,
       "mcel-region": 50,
       "mcel-requirement": 55,
@@ -4628,9 +4630,9 @@
     "error_count": 0,
     "pretty_docs_root": "pretty_docs",
     "registry_version": "mcel-requirements-registry-v1",
-    "repo_root": "/mnt/data/work_patch29/main_computer_test",
+    "repo_root": "/mnt/data/patch30_work/main_computer_test",
     "strict_schema_ready": true,
-    "total_blocks": 303,
+    "total_blocks": 304,
     "valid": true,
     "warning_count": 0
   },

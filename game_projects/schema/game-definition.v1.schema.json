@@ -84,6 +84,13 @@
       },
       "default": []
     },
+    "interactables": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/interactable"
+      },
+      "default": []
+    },
     "interactions": {
       "type": "array",
       "items": {
@@ -122,6 +129,10 @@
           "type": "boolean",
           "default": true
         },
+        "requireReachableInteractables": {
+          "type": "boolean",
+          "default": true
+        },
         "requireInteractionHandlers": {
           "type": "boolean",
           "default": true
@@ -133,6 +144,23 @@
         "requireSpawnInsideRoom": {
           "type": "boolean",
           "default": true
+        }
+      },
+      "default": {}
+    },
+    "movement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "colliders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/collider"
+          },
+          "default": []
         }
       },
       "default": {}
@@ -217,6 +245,12 @@
           "type": "object",
           "additionalProperties": true,
           "default": {}
+        },
+        "location": {
+          "$ref": "#/$defs/id"
+        },
+        "priority": {
+          "type": "number"
         }
       }
     },
@@ -249,6 +283,9 @@
           "type": "object",
           "additionalProperties": true,
           "default": {}
+        },
+        "door": {
+          "$ref": "#/$defs/id"
         }
       }
     },
@@ -269,13 +306,26 @@
           "$ref": "#/$defs/id"
         },
         "position": {
-          "$ref": "#/$defs/position"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/position"
+            },
+            {
+              "$ref": "#/$defs/position3"
+            }
+          ]
         },
         "yaw": {
           "type": "number"
         },
         "label": {
           "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/id"
+        },
+        "pitch": {
+          "type": "number"
         }
       }
     },
@@ -438,6 +488,106 @@
         "defaults": {
           "type": "object",
           "additionalProperties": true
+        }
+      }
+    },
+    "position3": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "collider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "minX",
+        "maxX",
+        "minZ",
+        "maxZ"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "minX": {
+          "type": "number"
+        },
+        "maxX": {
+          "type": "number"
+        },
+        "minZ": {
+          "type": "number"
+        },
+        "maxZ": {
+          "type": "number"
+        }
+      }
+    },
+    "interactable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "room",
+        "position",
+        "radius",
+        "label",
+        "prompt",
+        "action"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "access",
+            "door",
+            "terminal",
+            "prop"
+          ]
+        },
+        "room": {
+          "$ref": "#/$defs/id"
+        },
+        "position": {
+          "$ref": "#/$defs/position"
+        },
+        "radius": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "$ref": "#/$defs/id"
+        },
+        "target": {
+          "type": "string"
+        },
+        "statusKey": {
+          "type": "string"
         }
       }
     }

@@ -35,9 +35,27 @@
     <!-- @include applications/styles/mcel-diagnostics-counter-widget.css -->
     <!-- @include applications/styles/status-and-responsive.css -->
     <!-- @include applications/styles/activity-dock.css -->
+    /* Royal Shadow single-page color trial.
+       Keep this scoped to applications.html while testing #10061d as the app black. */
+    body[data-color-trial="royal-shadow"] {
+      --shell: #10061d;
+      --panel: #10061d;
+      background: #10061d;
+    }
+
+    body[data-color-trial="royal-shadow"] header,
+    body[data-color-trial="royal-shadow"] .launcher::before,
+    body[data-color-trial="royal-shadow"] .app-card,
+    body[data-color-trial="royal-shadow"] .stage-advanced-toggle,
+    body[data-color-trial="royal-shadow"] .stage-advanced-pane,
+    body[data-color-trial="royal-shadow"] .stage-advanced-close,
+    body[data-color-trial="royal-shadow"] .stage-advanced-code {
+      background: #10061d;
+    }
+
   </style>
 </head>
-<body data-has-app-taskbar="true">
+<body data-has-app-taskbar="true" data-color-trial="royal-shadow">
   <div class="viewport" data-mc-component-id="main-computer.applications" data-mc-component-kind="workspace" data-mc-component-label="Applications">
     <header>
       <h1>Main Computer Applications</h1>
@@ -419,6 +437,7 @@
     <!-- @include applications/scripts/mcel-supercut-core.js -->
     <!-- @include applications/scripts/mcel-supercut.js -->
     <!-- @include applications/scripts/mcel-domain-adapter-registry.js -->
+    <!-- @include applications/scripts/calculator-semantic-adapter.js -->
     <!-- @include applications/scripts/file-explorer-semantic-adapter.js -->
     <!-- @include applications/scripts/mcel-semantic-surface-ridges.js -->
     <!-- @include applications/scripts/mcel-semantic-surface-ir.js -->

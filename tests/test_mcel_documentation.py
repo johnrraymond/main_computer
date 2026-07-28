@@ -394,8 +394,8 @@ def test_calculator_requirements_are_registered_and_machine_readable() -> None:
     text = CALCULATOR_REQUIREMENTS_DOC.read_text(encoding="utf-8")
     required_phrases = [
         "documentation-first requirements contract",
-        "current: domain-ready calculator planner + domain pack",
-        "planned: full Calculator semantic runtime",
+        "local arithmetic: deterministic browser evaluation",
+        "hidden file/Git/shell/package/publish mutation: prohibited",
         "Calculator should be the small reference app",
         "Roadmap use case: compare monthly costs",
         "calculator.use-case.compare-monthly-costs",
@@ -408,9 +408,10 @@ def test_calculator_requirements_are_registered_and_machine_readable() -> None:
         "calculator.intent.evaluate-expression",
         "calculator.intent.draw-graph",
         "calculator.intent.evaluate-mathics",
-        "current_adapter_status: not-registered",
+        "current_adapter_status: executable",
         "target_adapter_status: executable",
-        "MCEL truth gate should eventually report fullApplicationSemanticReady",
+        "askModelForMathicsExpression",
+        "fullApplicationSemanticReady",
     ]
     for phrase in required_phrases:
         assert phrase in text
@@ -444,8 +445,8 @@ def test_file_explorer_requirements_are_registered_and_machine_readable() -> Non
     text = FILE_EXPLORER_REQUIREMENTS_DOC.read_text(encoding="utf-8")
     required_phrases = [
         "documentation-first requirements contract",
-        "current: domain-ready read-only File Explorer planner + domain pack",
-        "planned: full File Explorer semantic runtime",
+        "current: full bounded read-only File Explorer semantic runtime",
+        "planned: governed cross-app handoff",
         "navigation + list + preview",
         "Roadmap use case: inspect a project file safely",
         "file-explorer.use-case.inspect-project-file-safely",
@@ -462,7 +463,7 @@ def test_file_explorer_requirements_are_registered_and_machine_readable() -> Non
         "file-explorer.intent.inspect-roots",
         "file-explorer.intent.preview-entry",
         "file-explorer.intent.delete-file",
-        "current_adapter_status: not-registered",
+        "current_adapter_status: executable",
         "target_adapter_status: executable",
         "MCEL truth gate reports File Explorer fullApplicationSemanticReady",
     ]

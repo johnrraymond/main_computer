@@ -4,13 +4,17 @@
 
 This is the documentation-first requirements contract for the Calculator app.
 
-The current implementation already has a calculator route, a rich calculator DOM, arithmetic input/result controls, scientific graphing controls, a graph canvas, Mathics symbolic panels, result Q&A, an embedded calculator chat panel, a calculator MCEL domain pack, and a planner entry that marks Calculator as domain-ready. It does **not** yet have a dedicated Calculator semantic adapter registered with the MCEL domain-adapter registry.
+The current implementation has a calculator route, a rich calculator DOM, arithmetic input/result controls, scientific graphing controls, a graph canvas, Mathics symbolic panels, result Q&A, an embedded calculator chat panel, a calculator MCEL domain pack, and a dedicated Calculator semantic adapter registered with the MCEL domain-adapter registry.
 
-So this document must be read as:
+The current semantic runtime is intentionally lane-explicit:
 
 ```text
-current: domain-ready calculator planner + domain pack
-planned: full Calculator semantic runtime for deterministic local compute, graphing, symbolic evaluation, result explanation, and layout ownership
+local arithmetic: deterministic browser evaluation
+local graphing: deterministic parser and canvas rendering
+Mathics: explicit symbolic backend request
+model arithmetic/graph/Mathics: explicit provider requests
+result Q&A: explicit provider request over a visible calculator context snapshot
+hidden file/Git/shell/package/publish mutation: prohibited
 ```
 
 The purpose of this document is to make Calculator requirements stable enough that MCEL Lab can later parse them, compare them with the live app, generate finding candidates, and drive code/test updates without relying on loose prose. Calculator should be the small reference app for proving a complete MCEL semantic runtime because its core workflows are deterministic, low-risk, and easy to verify.
@@ -72,8 +76,8 @@ layout_implications:
 id: calculator
 title: Calculator
 status: specified
-current_runtime_status: domain-ready-planner-plus-domain-pack
-current_semantic_runtime_scope: none
+current_runtime_status: fullApplicationSemanticReady
+current_semantic_runtime_scope: calculator-compute-and-helper-lanes-v1
 target_runtime_status: full-application-semantic-runtime
 dominant_object: CalculationSession
 primary_user_goal: >
@@ -83,11 +87,12 @@ primary_user_goal: >
 current_sources:
   - main_computer/web/applications/apps/calculator.html
   - main_computer/web/applications/scripts/calculator.js
+  - main_computer/web/applications/scripts/calculator-semantic-adapter.js
   - main_computer/web/applications/scripts/dom-bindings/calculator.js
   - main_computer/web/applications/scripts/mcel-supercut-packs-calculator.js
   - main_computer/web/applications/styles/calculator.css
   - main_computer/web/applications/scripts/mcel-specimen-planner.js
-planned_adapter:
+semantic_adapter:
   - main_computer/web/applications/scripts/calculator-semantic-adapter.js
 verification:
   - tests/test_viewport_app_routes.py
@@ -673,7 +678,7 @@ app: calculator
 status: specified
 intent: switchMode
 object: CalculationMode
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 requires:
@@ -693,7 +698,7 @@ app: calculator
 status: specified
 intent: enterToken
 object: ArithmeticExpression
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 requires:
@@ -712,7 +717,7 @@ app: calculator
 status: specified
 intent: clearExpression
 object: ArithmeticExpression
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 requires:
@@ -731,7 +736,7 @@ app: calculator
 status: specified
 intent: evaluateExpression
 object: ArithmeticExpression
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 requires:
@@ -752,7 +757,7 @@ app: calculator
 status: specified
 intent: drawGraph
 object: GraphExpression
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 requires:
@@ -774,7 +779,7 @@ app: calculator
 status: specified
 intent: resetGraph
 object: GraphSurface
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 risk: read-only
 requires:
@@ -793,7 +798,7 @@ app: calculator
 status: specified
 intent: askModelForExpression
 object: ModelSuggestion
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 adapter_boundary: provider-boundary
 risk: read-only
@@ -816,7 +821,7 @@ app: calculator
 status: specified
 intent: askModelForGraphExpression
 object: ModelSuggestion
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 adapter_boundary: provider-boundary
 risk: read-only
@@ -834,12 +839,35 @@ evidence:
 ```
 
 ```mcel-intent
+id: calculator.intent.ask-model-mathics
+app: calculator
+status: specified
+intent: askModelForMathicsExpression
+object: ModelSuggestion
+current_adapter_status: executable
+target_adapter_status: executable
+adapter_boundary: provider-boundary
+risk: read-only
+requires:
+  - user supplied a symbolic request
+  - model provider is available
+produces:
+  - suggested Mathics expression is returned
+  - Mathics expression is populated visibly
+evidence:
+  - user prompt
+  - returned Mathics expression
+  - provider status
+  - no arithmetic, graph, file, Git, shell, package, or publish mutation
+```
+
+```mcel-intent
 id: calculator.intent.evaluate-mathics
 app: calculator
 status: specified
 intent: evaluateMathics
 object: SymbolicExpression
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 adapter_boundary: backend-boundary
 risk: local-state
@@ -861,7 +889,7 @@ app: calculator
 status: specified
 intent: askResultQuestion
 object: ResultQuestion
-current_adapter_status: not-registered
+current_adapter_status: executable
 target_adapter_status: executable
 adapter_boundary: provider-boundary
 risk: read-only
@@ -921,17 +949,16 @@ requires:
 ```mcel-finding
 id: calculator.finding.no-domain-adapter
 app: calculator
-status: open
+status: verified
 aspect: semantic-runtime
 severity: medium
 problem: >
-  Calculator has a domain-ready planner entry and calculator MCEL domain pack,
-  but no dedicated Calculator semantic adapter is registered with the MCEL
-  domain-adapter registry.
+  The earlier Calculator runtime had a domain-ready planner entry and domain pack
+  but no dedicated adapter registered with the MCEL domain-adapter registry.
 desired_behavior: >
-  Add a small Calculator semantic adapter that derives state, classifies intents,
-  executes deterministic local actions, records receipts, and lets the truth
-  gate evaluate fullApplicationSemanticReady.
+  Keep the Calculator semantic adapter registered, lane-explicit, receipt-backed,
+  and fully classified so the truth gate can verify fullApplicationSemanticReady
+  without allowing hidden mutation or lane fallback.
 source_candidates:
   - main_computer/web/applications/scripts/calculator.js
   - main_computer/web/applications/scripts/calculator-semantic-adapter.js

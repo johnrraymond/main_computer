@@ -12,7 +12,7 @@ mother-o.md
 SHA-256: 39c676c61b8a09ea2a4194cc315a56a9bda1d753dc1deadeeab0136546c56211
 
 mother-o-f.md
-SHA-256: 6413f4f9739a8013af330bc9c52b4727e99c3f35027027d29fa9170a12ce0a3b
+SHA-256: 492f81972c4d3cd8fcb38fc4927e0e2eb03625fabb36fead03e97d40d82d9d3a
 ```
 
 ## 1. Purpose and authority
@@ -42,8 +42,8 @@ governs. This document MUST NOT invent a weaker authority, rollback,
 membership, bootstrap, recovery, or finalization model.
 
 This document describes the required `tools/mother/` implementation surface.
-A module listed here is a specified implementation target until production code,
-tests, and registry evidence prove that the module exists and conforms.
+A module listed here is a specified implementation target until traced contract
+tests and retained execution evidence prove that the module exists and conforms.
 
 ## 2. Module decomposition rules
 
@@ -1322,20 +1322,32 @@ reseal.after_head_commit
 A faultpoint MUST raise a typed simulated interruption and MUST NOT alter the
 production algorithm or provide a second write path.
 
-### 14.3 Module test naming
+### 14.3 Mother test hierarchy and naming
 
-Tests later use:
+Mother tests mirror the dependency and protocol structure rather than the
+production source tree:
 
 ```text
-tests/mother/unit/test_<module_name>.py
-tests/mother/contract/test_<module_name>_contract.py
-tests/mother/fault/test_<protocol>_faults.py
-tests/mother/operations/test_<operation>_pipeline.py
+tests/mother/
+  specification/
+  contracts/<dependency-layer>/
+  protocols/
+  operations/
+  fault_injection/
+  integration/
+  support/
 ```
 
-Every module ID appears in test metadata. Every functionality test records the
-ordered module IDs observed. Every operation test records operation ID, stage,
-functionality ID, module ID, request ID, and durable evidence refs.
+Specification tests verify this document graph without requiring production
+modules. Contract tests use `test_<module_name>_contract.py`; protocol and fault
+tests use `test_<protocol>_protocol.py` and
+`test_<protocol>_faults.py`; operation tests use
+`test_<operation>_pipeline.py`.
+
+Every Mother contract test carries explicit `mother_contract` metadata naming
+its requirement, operation, functionality, and module ancestry. Functionality
+tests record the ordered module IDs observed. Operation tests additionally
+record stage, request identity, and retained durable evidence references.
 
 ## 15. Open boundaries inherited from the parent
 
@@ -1365,95 +1377,67 @@ chain or safety contract.
 No module implementation MAY fill these gaps by choosing a convenient local
 pointer, using live facts as authority, or reusing an unrelated successor kind.
 
-## 16. Public callable interface registry gate
+## 16. Test-first contract governance
 
-No checked-in `tools/mother/common/api_registry.yaml` is authoritative merely
-because it exists. A missing registry or a registry whose top-level status is
-not `normative-reviewed` is specification-incomplete and MUST block module
-contract tests and production module implementation. It MUST NOT be used for
-code generation, interface selection, path ownership, error selection, or lock
-selection.
-
-The callable registry is authored as specification work from this document,
-not generated from implementation. The governance order is:
+The governing authority chain is:
 
 ```text
-mother-o-f-m.md behavior and module ownership
-→ specification-authored api_registry.yaml, dependency layer by dependency layer
-→ JSON Schema validation and semantic consistency validation
-→ explicit specification review and status: normative-reviewed
-→ contract tests
+mother.md
+→ mother-o.md
+→ mother-o-f.md
+→ mother-o-f-m.md
+→ traced contract tests
 → implementation
 ```
 
-The required authoring order is:
+Tests are executable verification of this document. They are not a separate
+requirements source. When a test needs a signature, state transition, path
+owner, error, retry rule, or side-effect answer that this hierarchy does not
+provide, specification and implementation work MUST stop. The highest affected
+`mother*.md` file MUST be corrected first, its downstream source-hash pins MUST
+be updated, and only then MAY the test and implementation continue.
 
-```text
-core types and primitives
-→ state models and canonical paths
-→ control, operation ledger, and locks
-→ authority, finalization, and rollback
-→ membership, recovery, sync, and reseal
-→ external adapters
-→ operation entry modules
+Each Mother contract test MUST carry explicit metadata equivalent to:
+
+```python
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-..."],
+    operations=["MOTHER-OP-..."],
+    functionalities=["MOTHER-OF-..."],
+    modules=["MOTHER-OFM-..."],
+)
 ```
 
-Code MAY consume only a `normative-reviewed` registry to generate adapters,
-stubs, fixtures, or tests. Generated or production code MUST NOT create,
-rewrite, normalize, or backfill the registry from implemented interfaces.
+The Mother collection hook MUST reject:
 
-`tools/mother/common/api_registry.schema.json` and
-`tools/mother/common/validate_api_registry.py` are registry-authoring gates.
-Schema success is necessary but not sufficient. The validator MUST apply the
-JSON Schema, reject a missing or draft registry for contract-test readiness, and
-MUST NOT report semantic validity merely from counts, duplicate checks, or key
-presence.
+1. unknown requirement, operation, functionality, or module identifiers;
+2. contract tests with no module identifier;
+3. references that present a documented `MOTHER-OF-GAP-*` item as resolved;
+4. a mutating test for a `contract-open` operation or module unless the test
+   proves the exact `MOTHER_OPEN_*` failure occurs before lock acquisition,
+   staging, or any durable or external effect;
+5. traceability metadata that conflicts with the canonical identifiers and open
+   boundaries in the four governing documents.
 
-Before a registry can receive `normative-reviewed`, specification review and
-validation MUST establish:
+Specification-conformance tests MAY use a separate `mother_specification`
+marker because they verify the document graph itself rather than a single
+module seam.
 
-1. exact agreement with the operation shell in section 8.1;
-2. exact documented signatures for primitives such as
-   `canonical_json(value) -> bytes` and `sha256(data: bytes) -> ContentHash`;
-3. no scope locks, operation-record writes, or durable effects for pure and
-   read-only calls;
-4. no direct persistent-path ownership for orchestrators;
-5. canonical path templates and one exclusive writer for every persistent path;
-6. exact public error codes, with no namespace wildcards;
-7. concrete definitions for every request, result, enum, evidence, and durable
-   effect type named by a public method;
-8. operation and module status agreement, including `surface-open` methods;
-9. `contract-open` mutations failing before locks, staging, or durable effects;
-10. method-specific idempotency, required-lock, evidence, effect, and retry
-    semantics.
+An API registry MUST NOT be required to collect, execute, or pass tests. An API
+registry MUST NOT be required to implement or invoke Mother code. Runtime Mother
+code MUST NOT read an API registry. CI MUST NOT treat registry absence as a
+failure.
 
-Each reviewed public method entry MUST contain exact, method-specific values for:
+A future API registry MAY exist only as a disposable report derived from the
+governing documents, traced tests, and implemented public contracts. A derived
+registry MUST NOT override documentation, tests, or code contracts and MUST NOT
+become an input to runtime behavior, test collection, interface selection, path
+ownership, error selection, or lock selection.
 
-```yaml
-module_id: MOTHER-OFM-...
-source_path: tools/mother/...
-method: method_name
-signature: "exact documented callable signature"
-input_type: ConcreteInputType
-return_type: ConcreteResultType
-optional_fields: []
-enum_fields: {}
-durable_path_templates: []
-error_codes: []
-retry_classification: never | same-request | after-reobserve | operator-decision
-idempotency_key_fields: []
-required_lock_inputs: []
-returned_evidence_types: []
-durable_effect_types: []
-status: specified | surface-open | contract-open | conditional
-```
-
-Generic request/result placeholders, empty enum maps where an enum is required,
-wildcard error namespaces, invented path templates, or templated lock/effect
-claims MUST fail review. For `contract-open` paths, the registry MAY expose
-read-only preparation, diagnosis, or planning calls and disabled mutating calls
-that return the exact `MOTHER_OPEN_*` error before their first lock or side
-effect.
+Contract-open behavior is verified positively: the corresponding tests pass by
+proving that the exact documented `MOTHER_OPEN_*` error is returned before the
+first lock, staging action, durable write, or external effect. Specified
+behavior MUST NOT be hidden behind `xfail`.
 
 ## 17. Implementation order
 
@@ -1506,44 +1490,42 @@ Before production code is considered conformant:
 
 ## 19. Machine-checkable traceability
 
-Before module contract tests begin, the specification repository MUST contain a
-reviewed registry authored from and validated against this document with:
+Machine-checkable traceability is supplied by explicit test metadata and
+documentation-conformance tests. The tests MUST parse the canonical tables and
+contracts in the four governing documents; they MUST NOT maintain a parallel
+requirements or interface database.
+
+The conformance suite MUST verify at least:
+
+- 26 unique requirement IDs and 29 unique design IDs in `mother.md`;
+- 16 unique operation IDs in `mother-o.md`;
+- 169 unique non-gap functionality IDs in `mother-o-f.md`;
+- 80 unique module IDs in this document;
+- every operation has a functionality sequence;
+- every non-gap functionality expands to exactly one declared module chain;
+- every referenced module exists;
+- module dependency direction follows section 3.2;
+- every persistent path has one documented direct owner;
+- every external effect has one adapter owner;
+- `contract-open` modules remain disabled before locks and effects;
+- operation-stage ordering agrees across all four documents;
+- every parent source-hash pin matches the exact reviewed bytes;
+- Markdown fences and normative-language rules remain valid.
+
+Each traced contract test records:
 
 ```text
-module_id
-source_path
-public_api
-exact_public_signatures
-input_types
-return_types
-optional_fields
-enum_fields
-durable_path_templates
-error_codes
-retry_classifications
-idempotency_key_fields
-required_lock_inputs
-returned_evidence_types
-durable_effect_types
-authority_class
-owned_paths
-dependency_module_ids
-functionality_ids
-operation_ids
-status
+requirements
+operations
+functionalities
+modules
 ```
 
-The conformance check fails on:
-
-- an unknown or duplicate module ID;
-- a functionality ID with no module chain;
-- a module used but absent from the registry;
-- a registered mutating module with no owned state or adapter boundary;
-- a source file writing a path owned by another module;
-- an operation importing a vendor client directly;
-- a dependency edge that violates section 3.2;
-- a `contract-open` call reachable past its side-effect gate;
-- a parent source hash mismatch without an explicit review of this document.
+Protocol and operation tests additionally record stage, request identity,
+durable evidence references, and the ordered functionality/module calls they
+observed. Collection fails immediately on unknown identifiers, missing module
+ancestry, prohibited gap references, or an invalid contract-open mutation test.
+These are collection errors, not delayed runtime assertions.
 
 ## 20. Final implementation rule
 
@@ -1553,13 +1535,12 @@ Code follows the chain:
 mother.md requirement
   -> mother-o.md operation
     -> mother-o-f.md functionality placement
-      -> mother-o-f-m.md module call
-        -> normative-reviewed api_registry.yaml callable contract
-          -> module contract test
-            -> implementation
+      -> mother-o-f-m.md module contract
+        -> traced contract test
+          -> implementation
 ```
 
-Tests and implementations are not alternative requirements sources.
-When code pressure exposes an ambiguity, work stops at the highest affected
-document, that contract is corrected, and downstream traceability is
-regenerated before implementation continues.
+Tests and implementations are not alternative requirements sources. When test
+or implementation pressure exposes an ambiguity, work stops at the highest
+affected document. That contract is corrected and its downstream source-hash
+pins and traced tests are updated before implementation continues.

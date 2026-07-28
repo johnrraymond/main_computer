@@ -2656,14 +2656,439 @@
         return doors;
       }
 
+
+      function shuttle3dMotherShipInteriorLevelDefaults() {
+        return {
+          schema: "game.motherShipInterior.level.v1",
+          movement: {
+            // Patch C keeps the playable movement envelope in level data.
+            // It must cover every room, including the bridge deck and viewscreen.
+            bounds: {
+              minX: -9.8,
+              maxX: 9.8,
+              minZ: -39.65,
+              maxZ: 5.12
+            },
+            colliders: [
+              {
+                id: "docked-shuttle-hull",
+                minX: -1.36,
+                maxX: 1.36,
+                minZ: -1.42,
+                maxZ: 1.44
+              }
+            ]
+          },
+          spawns: {
+            "spawn.shuttle-bay": {
+              id: "spawn.shuttle-bay",
+              room: "bay.shuttle",
+              label: "Mother Ship Shuttle Bay arrival",
+              position: [0.24, 0.9, 4.3],
+              // Face into the mother ship and toward the starboard/right side of the bay.
+              // In bay coordinates, shipside is negative Z and bay-right is positive X.
+              yaw: 32,
+              pitch: -4
+            }
+          },
+          rooms: [
+            {
+              id: "bay.shuttle",
+              name: "Mother Ship Shuttle Bay",
+              location: "bay.shuttle",
+              kind: "shuttle-bay",
+              priority: 100,
+              bounds: {minX: -4.72, maxX: 4.72, minZ: -4.62, maxZ: 5.12}
+            },
+            {
+              id: "bay.ops",
+              name: "Bay Operations",
+              location: "bay.ops",
+              kind: "operations",
+              priority: 60,
+              bounds: {minX: -2.25, maxX: 4.9, minZ: -9.45, maxZ: -4.2}
+            },
+            {
+              id: "security.checkpoint",
+              name: "Security Checkpoint",
+              location: "security.checkpoint",
+              kind: "checkpoint",
+              priority: 75,
+              bounds: {minX: -3.2, maxX: 3.2, minZ: -13.55, maxZ: -8.75}
+            },
+            {
+              id: "corridor.main",
+              name: "Main Corridor Hub",
+              location: "corridor.main",
+              kind: "corridor",
+              priority: 40,
+              bounds: {minX: -6.55, maxX: 6.55, minZ: -18.75, maxZ: -13.25}
+            },
+            {
+              id: "corridor.trunk",
+              name: "Main Corridor Trunk",
+              location: "corridor.main",
+              kind: "corridor",
+              priority: 45,
+              bounds: {minX: -2.55, maxX: 2.55, minZ: -25.85, maxZ: -13.25}
+            },
+            {
+              id: "engineering.access",
+              name: "Engineering Access",
+              location: "engineering.access",
+              kind: "engineering",
+              priority: 80,
+              bounds: {minX: 2.0, maxX: 9.8, minZ: -24.25, maxZ: -17.15}
+            },
+            {
+              id: "medbay.stub",
+              name: "Medbay Triage",
+              location: "medbay.stub",
+              kind: "medbay",
+              priority: 80,
+              bounds: {minX: -9.8, maxX: -2.0, minZ: -24.25, maxZ: -17.15}
+            },
+            {
+              id: "science.ops.stub",
+              name: "Science/Ops Lab",
+              location: "science.ops.stub",
+              kind: "science",
+              priority: 80,
+              bounds: {minX: -9.8, maxX: -2.0, minZ: -31.5, maxZ: -24.0}
+            },
+            {
+              id: "bridge.access",
+              name: "Bridge Access",
+              location: "bridge.access",
+              kind: "bridge-access",
+              priority: 90,
+              bounds: {minX: -2.9, maxX: 2.9, minZ: -32.25, maxZ: -25.45}
+            },
+            {
+              id: "bridge.deck",
+              name: "Bridge Deck",
+              location: "bridge.deck",
+              kind: "bridge",
+              priority: 110,
+              bounds: {minX: -4.65, maxX: 4.65, minZ: -39.35, maxZ: -31.25}
+            }
+          ],
+          exits: [
+            {id: "exit.bay-access", from: "bay.shuttle", to: "bay.ops", door: "door.bay-access", bounds: {minX: 2.05, maxX: 4.55, minZ: -5.2, maxZ: -4.2}},
+            {id: "exit.bay-inner", from: "bay.ops", to: "security.checkpoint", door: "door.bay-inner", bounds: {minX: -1.2, maxX: 1.2, minZ: -9.65, maxZ: -8.75}},
+            {id: "exit.security-hub", from: "security.checkpoint", to: "corridor.main", door: "door.security-hub", bounds: {minX: -1.35, maxX: 1.35, minZ: -13.65, maxZ: -13.25}},
+            {id: "exit.corridor-engineering", from: "corridor.main", to: "engineering.access", door: "door.engineering-access", bounds: {minX: 1.95, maxX: 3.85, minZ: -18.8, maxZ: -17.05}},
+            {id: "exit.corridor-medbay", from: "corridor.main", to: "medbay.stub", door: "door.medbay", bounds: {minX: -3.85, maxX: -1.95, minZ: -18.8, maxZ: -17.05}},
+            {id: "exit.corridor-science", from: "corridor.main", to: "science.ops.stub", door: "door.science", bounds: {minX: -3.85, maxX: -1.95, minZ: -25.2, maxZ: -23.95}},
+            {id: "exit.corridor-bridge", from: "corridor.main", to: "bridge.access", door: "door.bridge", bounds: {minX: -1.6, maxX: 1.6, minZ: -25.9, maxZ: -25.35}},
+            {id: "exit.bridge-deck", from: "bridge.access", to: "bridge.deck", bounds: {minX: -2.9, maxX: 2.9, minZ: -32.25, maxZ: -31.25}}
+          ],
+          // Patch D makes E-key targets data-driven so prompts, ranges, and actions stay together.
+          interactables: [
+            {
+              id: "door.bay-access",
+              kind: "access",
+              label: "Starboard Interior Access",
+              location: "bay.shuttle",
+              position: [3.18, -4.62],
+              range: 2.05,
+              action: "enterBayOpsAccess",
+              prompt: "Press E to enter through Starboard Interior Access."
+            },
+            {
+              id: "terminal.bay-ops",
+              kind: "terminal",
+              label: "Bay Operations Terminal",
+              location: "bay.ops",
+              position: [3.86, -6.42],
+              range: 1.75,
+              action: "activateBayOperationsTerminal",
+              prompt: "Press E to use Bay Operations Terminal."
+            },
+            {
+              id: "terminal.engineering-power",
+              kind: "terminal",
+              label: "Engineering Power Console",
+              location: "engineering.access",
+              position: [7.35, -20.75],
+              range: 1.9,
+              action: "restoreEngineeringPower",
+              prompt: "Press E to use Engineering Power Console."
+            },
+            {
+              id: "door.bay-inner",
+              kind: "door",
+              label: "Inner Shuttle Bay Door",
+              location: "bay.ops",
+              position: [0.0, -8.92],
+              range: 1.75,
+              action: "inspectOpenDoorRoute",
+              prompt: "Press E to inspect Inner Shuttle Bay Door."
+            },
+            {
+              id: "door.security-hub",
+              kind: "door",
+              label: "Security Checkpoint Door",
+              location: "security.checkpoint",
+              position: [0.0, -13.36],
+              range: 1.65,
+              action: "inspectOpenDoorRoute",
+              prompt: "Press E to inspect Security Checkpoint Door."
+            },
+            {
+              id: "door.engineering-access",
+              kind: "door",
+              label: "Engineering Access Door",
+              location: "corridor.main",
+              position: [3.25, -17.8],
+              range: 1.85,
+              action: "inspectOpenDoorRoute",
+              prompt: "Press E to inspect Engineering Access Door."
+            },
+            {
+              id: "door.medbay",
+              kind: "door",
+              label: "Medbay Door",
+              location: "corridor.main",
+              position: [-3.25, -17.8],
+              range: 1.85,
+              action: "inspectOpenDoorRoute",
+              prompt: "Press E to inspect Medbay Door."
+            },
+            {
+              id: "door.science",
+              kind: "door",
+              label: "Science/Ops Door",
+              location: "corridor.main",
+              position: [-3.25, -25.0],
+              range: 1.85,
+              action: "inspectOpenDoorRoute",
+              prompt: "Press E to inspect Science/Ops Door."
+            },
+            {
+              id: "door.bridge",
+              kind: "door",
+              label: "Bridge Command Door",
+              location: "corridor.main",
+              position: [0.0, -25.72],
+              range: 1.95,
+              action: "inspectOpenDoorRoute",
+              prompt: "Press E to inspect Bridge Command Door."
+            },
+            {
+              id: "terminal.bridge-tactical",
+              kind: "terminal",
+              label: "Bridge Tactical Console",
+              location: "bridge.deck",
+              position: [2.85, -36.7],
+              range: 1.85,
+              action: "fireBridgeTacticalConsole",
+              prompt: "Press E to fire Bridge Tactical Console."
+            },
+            {
+              id: "terminal.bridge-viewscreen",
+              kind: "terminal",
+              label: "Bridge Viewscreen",
+              location: "bridge.deck",
+              position: [0.0, -37.15],
+              range: 2.45,
+              action: "trackEnemyShipOnViewscreen",
+              prompt: "Press E to use Bridge Viewscreen."
+            }
+          ]
+        };
+      }
+
+      function shuttle3dNumberValue(value, fallback) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      }
+
+      function shuttle3dBoundsValue(value, fallback) {
+        const source = shuttle3dObjectValue(value);
+        const base = fallback && typeof fallback === "object" ? fallback : {};
+        return {
+          minX: shuttle3dNumberValue(source.minX, shuttle3dNumberValue(base.minX, -1)),
+          maxX: shuttle3dNumberValue(source.maxX, shuttle3dNumberValue(base.maxX, 1)),
+          minZ: shuttle3dNumberValue(source.minZ, shuttle3dNumberValue(base.minZ, -1)),
+          maxZ: shuttle3dNumberValue(source.maxZ, shuttle3dNumberValue(base.maxZ, 1))
+        };
+      }
+
+      function shuttle3dBoundsAreUsable(bounds) {
+        return (
+          bounds
+          && Number.isFinite(bounds.minX)
+          && Number.isFinite(bounds.maxX)
+          && Number.isFinite(bounds.minZ)
+          && Number.isFinite(bounds.maxZ)
+          && bounds.minX <= bounds.maxX
+          && bounds.minZ <= bounds.maxZ
+        );
+      }
+
+      function shuttle3dNormalizeMotherShipRooms(value, fallbackRooms, locations) {
+        const source = Array.isArray(value) && value.length ? value : fallbackRooms;
+        return source
+          .map((room, index) => {
+            const raw = shuttle3dObjectValue(room);
+            const fallback = shuttle3dObjectValue(fallbackRooms[index]);
+            const id = String(raw.id || fallback.id || "").trim();
+            if (!id) return null;
+            const location = String(raw.location || fallback.location || id).trim();
+            const bounds = shuttle3dBoundsValue(raw.bounds, fallback.bounds);
+            if (!shuttle3dBoundsAreUsable(bounds)) return null;
+            return {
+              id,
+              name: String(raw.name || fallback.name || locations?.[location] || id),
+              location,
+              kind: String(raw.kind || fallback.kind || "room"),
+              priority: shuttle3dNumberValue(raw.priority, shuttle3dNumberValue(fallback.priority, index)),
+              bounds
+            };
+          })
+          .filter(Boolean);
+      }
+
+      function shuttle3dRoomMap(rooms) {
+        return Object.fromEntries(rooms.map((room) => [room.id, shuttle3dCloneJson(room)]));
+      }
+
+      function shuttle3dMovementBoundsFromRooms(rooms, fallbackBounds) {
+        const fallback = shuttle3dBoundsValue(fallbackBounds, {});
+        if (!Array.isArray(rooms) || !rooms.length) return fallback;
+        return rooms.reduce((bounds, room) => ({
+          minX: Math.min(bounds.minX, room.bounds.minX),
+          maxX: Math.max(bounds.maxX, room.bounds.maxX),
+          minZ: Math.min(bounds.minZ, room.bounds.minZ),
+          maxZ: Math.max(bounds.maxZ, room.bounds.maxZ)
+        }), fallback);
+      }
+
+      function shuttle3dNormalizeMotherShipMovement(value, fallbackMovement, rooms) {
+        const supplied = shuttle3dObjectValue(value);
+        const fallback = shuttle3dObjectValue(fallbackMovement);
+        const bounds = shuttle3dBoundsValue(supplied.bounds, shuttle3dMovementBoundsFromRooms(rooms, fallback.bounds));
+        const colliders = (
+          Array.isArray(supplied.colliders)
+            ? supplied.colliders
+            : Array.isArray(fallback.colliders)
+              ? fallback.colliders
+              : []
+        )
+          .map((collider, index) => {
+            const raw = shuttle3dObjectValue(collider);
+            const normalized = shuttle3dBoundsValue(raw, {});
+            if (!shuttle3dBoundsAreUsable(normalized)) return null;
+            return {
+              id: String(raw.id || `ship-collider-${index}`),
+              ...normalized
+            };
+          })
+          .filter(Boolean);
+        return {bounds, colliders};
+      }
+
+      function shuttle3dNormalizeMotherShipSpawns(value, fallbackSpawns, locations) {
+        const supplied = shuttle3dObjectValue(value);
+        const source = Object.keys(supplied).length ? supplied : fallbackSpawns;
+        return Object.fromEntries(
+          Object.entries(source)
+            .map(([spawnId, spawn]) => {
+              const raw = shuttle3dObjectValue(spawn);
+              const id = String(raw.id || spawnId || "").trim();
+              const location = String(raw.location || raw.room || "bay.shuttle").trim();
+              const fallbackPosition = Array.isArray(raw.position) ? raw.position : [0.24, 0.9, 4.3];
+              const position = (
+                Array.isArray(fallbackPosition)
+                && fallbackPosition.length === 3
+                && fallbackPosition.every((entry) => Number.isFinite(Number(entry)))
+              )
+                ? fallbackPosition.map(Number)
+                : [0.24, 0.9, 4.3];
+              if (!id) return null;
+              return [id, {
+                id,
+                room: location,
+                location,
+                label: String(raw.label || locations?.[location] || id),
+                position,
+                yaw: shuttle3dNumberValue(raw.yaw, 32),
+                pitch: shuttle3dNumberValue(raw.pitch, -4)
+              }];
+            })
+            .filter(Boolean)
+        );
+      }
+
+      function shuttle3dNormalizeMotherShipExits(value, fallbackExits) {
+        const source = Array.isArray(value) && value.length ? value : fallbackExits;
+        return source
+          .map((exit, index) => {
+            const raw = shuttle3dObjectValue(exit);
+            const fallback = shuttle3dObjectValue(fallbackExits[index]);
+            const id = String(raw.id || fallback.id || "").trim();
+            if (!id) return null;
+            const bounds = shuttle3dBoundsValue(raw.bounds, fallback.bounds);
+            if (!shuttle3dBoundsAreUsable(bounds)) return null;
+            return {
+              id,
+              from: String(raw.from || fallback.from || ""),
+              to: String(raw.to || fallback.to || ""),
+              door: String(raw.door || fallback.door || ""),
+              bounds
+            };
+          })
+          .filter(Boolean);
+      }
+
+      function shuttle3dNormalizeMotherShipInteractables(value, fallbackInteractables, terminals, doors) {
+        const source = Array.isArray(value) && value.length ? value : fallbackInteractables;
+        return source
+          .map((interactable, index) => {
+            const raw = shuttle3dObjectValue(interactable);
+            const fallback = shuttle3dObjectValue(fallbackInteractables[index]);
+            const id = String(raw.id || fallback.id || "").trim();
+            if (!id) return null;
+            const positionSource = Array.isArray(raw.position) ? raw.position : fallback.position;
+            if (!Array.isArray(positionSource) || positionSource.length < 2) return null;
+            const x = shuttle3dNumberValue(positionSource[0], NaN);
+            const z = shuttle3dNumberValue(positionSource[1], NaN);
+            if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+            const range = Math.max(0.1, shuttle3dNumberValue(raw.range, shuttle3dNumberValue(raw.radius, shuttle3dNumberValue(fallback.range, 1.5))));
+            const terminal = terminals?.[id] || null;
+            const door = doors?.[id] || null;
+            const kind = String(raw.kind || fallback.kind || (terminal ? "terminal" : door ? "door" : "access"));
+            const label = String(raw.label || fallback.label || terminal?.label || door?.label || id);
+            return {
+              id,
+              kind,
+              label,
+              location: String(raw.location || fallback.location || terminal?.location || door?.from || ""),
+              position: [x, z],
+              range,
+              action: String(raw.action || raw.interaction || fallback.action || fallback.interaction || ""),
+              prompt: String(raw.prompt || fallback.prompt || "")
+            };
+          })
+          .filter(Boolean);
+      }
+
+
       function shuttle3dMotherShipInteriorConfig(scene) {
         const supplied = scene?.metadata?.shuttle3d?.motherShipInterior;
         const interior = supplied && typeof supplied === "object" ? supplied : {};
         const defaults = shuttle3dMotherShipInteriorStateDefaults();
+        const levelDefaults = shuttle3dMotherShipInteriorLevelDefaults();
         const suppliedStateDefaults = shuttle3dObjectValue(interior.stateDefaults);
 
         const locations = shuttle3dStringMap(interior.locations, defaults.locations);
         const objectives = shuttle3dObjectMap(interior.objectives, defaults.objectives);
+        const rooms = shuttle3dNormalizeMotherShipRooms(interior.rooms, levelDefaults.rooms, locations);
+        const roomMap = shuttle3dRoomMap(rooms);
+        const exits = shuttle3dNormalizeMotherShipExits(interior.exits, levelDefaults.exits);
+        const movement = shuttle3dNormalizeMotherShipMovement(interior.movement, levelDefaults.movement, rooms);
+        const spawns = shuttle3dNormalizeMotherShipSpawns(interior.spawns, levelDefaults.spawns, locations);
         const doors = shuttle3dNormalizeMotherShipDoors({
           ...defaults.doors,
           ...shuttle3dObjectValue(interior.doors),
@@ -2674,6 +3099,12 @@
           ...shuttle3dObjectValue(interior.terminals),
           ...shuttle3dObjectValue(suppliedStateDefaults.terminals)
         });
+        const interactables = shuttle3dNormalizeMotherShipInteractables(
+          interior.interactables,
+          levelDefaults.interactables,
+          terminals,
+          doors
+        );
         const flags = shuttle3dNormalizeMotherShipFlags({
           ...defaults.flags,
           ...shuttle3dObjectValue(interior.flags),
@@ -2712,6 +3143,12 @@
           security: stateDefaults.security,
           locations,
           objectives,
+          rooms: shuttle3dCloneJson(rooms),
+          roomMap: shuttle3dCloneJson(roomMap),
+          exits: shuttle3dCloneJson(exits),
+          movement: shuttle3dCloneJson(movement),
+          spawns: shuttle3dCloneJson(spawns),
+          interactables: shuttle3dCloneJson(interactables),
           doors: shuttle3dCloneJson(stateDefaults.doors),
           terminals: shuttle3dCloneJson(stateDefaults.terminals),
           flags: shuttle3dCloneJson(stateDefaults.flags),
@@ -3347,52 +3784,45 @@
         }
 
         shuttleBayPlayerSpawn() {
+          const fallback = shuttle3dMotherShipInteriorLevelDefaults().spawns["spawn.shuttle-bay"];
+          const spawn = this.interiorConfig?.spawns?.["spawn.shuttle-bay"] || fallback;
+          const position = Array.isArray(spawn.position) && spawn.position.length === 3
+            ? spawn.position.map(Number)
+            : fallback.position.slice();
           return {
-            position: [0.24, 0.9, 4.3],
-            // Face into the mother ship and toward the starboard/right side of the bay.
-            // In bay coordinates, shipside is negative Z and bay-right is positive X.
-            yaw: 32,
-            pitch: -4
+            position,
+            yaw: shuttle3dNumberValue(spawn.yaw, fallback.yaw),
+            pitch: shuttle3dNumberValue(spawn.pitch, fallback.pitch)
           };
         }
 
         shuttleBayMovementConfig() {
+          const fallback = shuttle3dMotherShipInteriorLevelDefaults().movement;
+          const movement = this.interiorConfig?.movement || fallback;
           return {
             ...this.movement,
-            // Keep global mother-ship movement bounds aligned with every
-            // walkable region; the bridge deck extends to z -39.35 and the
-            // bridge viewscreen terminal lives inside that space.
-            bounds: {
-              minX: -9.8,
-              maxX: 9.8,
-              minZ: -39.65,
-              maxZ: 5.12
-            },
-            colliders: [
-              {
-                id: "docked-shuttle-hull",
-                minX: -1.36,
-                maxX: 1.36,
-                minZ: -1.42,
-                maxZ: 1.44
-              }
-            ]
+            // Patch C: mother-ship movement bounds now come from the level definition
+            // instead of a local hardcoded envelope.
+            bounds: shuttle3dBoundsValue(movement.bounds, fallback.bounds),
+            colliders: Array.isArray(movement.colliders)
+              ? movement.colliders.map((collider) => ({...collider}))
+              : fallback.colliders.map((collider) => ({...collider}))
           };
         }
 
         motherShipWalkableRegions() {
-          return [
-            {id: "bay.shuttle", minX: -4.72, maxX: 4.72, minZ: -4.62, maxZ: 5.12},
-            {id: "bay.ops", minX: -2.25, maxX: 4.9, minZ: -9.45, maxZ: -4.2},
-            {id: "security.checkpoint", minX: -3.2, maxX: 3.2, minZ: -13.55, maxZ: -8.75},
-            {id: "corridor.main", minX: -6.55, maxX: 6.55, minZ: -18.75, maxZ: -13.25},
-            {id: "corridor.trunk", minX: -2.55, maxX: 2.55, minZ: -25.85, maxZ: -13.25},
-            {id: "engineering.access", minX: 2.0, maxX: 9.8, minZ: -24.25, maxZ: -17.15},
-            {id: "medbay.stub", minX: -9.8, maxX: -2.0, minZ: -24.25, maxZ: -17.15},
-            {id: "science.ops.stub", minX: -9.8, maxX: -2.0, minZ: -31.5, maxZ: -24.0},
-            {id: "bridge.access", minX: -2.9, maxX: 2.9, minZ: -32.25, maxZ: -25.45},
-            {id: "bridge.deck", minX: -4.65, maxX: 4.65, minZ: -39.35, maxZ: -31.25}
-          ];
+          const fallback = shuttle3dMotherShipInteriorLevelDefaults().rooms;
+          const rooms = Array.isArray(this.interiorConfig?.rooms) && this.interiorConfig.rooms.length
+            ? this.interiorConfig.rooms
+            : fallback;
+          return rooms.map((room) => ({
+            id: room.id,
+            location: room.location || room.id,
+            name: room.name || room.id,
+            kind: room.kind || "room",
+            priority: shuttle3dNumberValue(room.priority, 0),
+            ...shuttle3dBoundsValue(room.bounds, {})
+          }));
         }
 
         isInsideMotherShipWalkable(x, z) {
@@ -3476,14 +3906,17 @@
         }
 
         shipLocationForPosition(x, z) {
-          if (z > -4.65) return "bay.shuttle";
-          if (x >= -2.25 && x <= 4.9 && z > -9.65) return "bay.ops";
-          if (z > -13.6) return "security.checkpoint";
-          if (x > 1.95 && z > -24.35 && z < -17.05) return "engineering.access";
-          if (x < -1.95 && z > -24.35 && z < -17.05) return "medbay.stub";
-          if (x < -1.95 && z <= -24.0) return "science.ops.stub";
-          if (Math.abs(x) <= 4.75 && z <= -31.35) return "bridge.deck";
-          if (Math.abs(x) <= 3.05 && z <= -25.35) return "bridge.access";
+          const matches = this.motherShipWalkableRegions()
+            .filter((region) => (
+              x >= region.minX
+              && x <= region.maxX
+              && z >= region.minZ
+              && z <= region.maxZ
+            ))
+            .sort((left, right) => (
+              shuttle3dNumberValue(right.priority, 0) - shuttle3dNumberValue(left.priority, 0)
+            ));
+          if (matches.length) return matches[0].location || matches[0].id;
           return "corridor.main";
         }
 
@@ -3559,96 +3992,9 @@
         }
 
         shipInteractionZones() {
-          return [
-            {
-              id: "door.bay-access",
-              kind: "access",
-              label: "Starboard Interior Access",
-              location: "bay.shuttle",
-              position: [3.18, -4.62],
-              range: 2.05
-            },
-            {
-              id: "terminal.bay-ops",
-              kind: "terminal",
-              label: "Bay Operations Terminal",
-              location: "bay.ops",
-              position: [3.86, -6.42],
-              range: 1.75
-            },
-            {
-              id: "terminal.engineering-power",
-              kind: "terminal",
-              label: "Engineering Power Console",
-              location: "engineering.access",
-              position: [7.35, -20.75],
-              range: 1.9
-            },
-            {
-              id: "door.bay-inner",
-              kind: "door",
-              label: "Inner Shuttle Bay Door",
-              location: "bay.ops",
-              position: [0.0, -8.92],
-              range: 1.75
-            },
-            {
-              id: "door.security-hub",
-              kind: "door",
-              label: "Security Checkpoint Door",
-              location: "security.checkpoint",
-              position: [0.0, -13.36],
-              range: 1.65
-            },
-            {
-              id: "door.engineering-access",
-              kind: "door",
-              label: "Engineering Access Door",
-              location: "corridor.main",
-              position: [3.25, -17.8],
-              range: 1.85
-            },
-            {
-              id: "door.medbay",
-              kind: "door",
-              label: "Medbay Door",
-              location: "corridor.main",
-              position: [-3.25, -17.8],
-              range: 1.85
-            },
-            {
-              id: "door.science",
-              kind: "door",
-              label: "Science/Ops Door",
-              location: "corridor.main",
-              position: [-3.25, -25.0],
-              range: 1.85
-            },
-            {
-              id: "door.bridge",
-              kind: "door",
-              label: "Bridge Command Door",
-              location: "corridor.main",
-              position: [0.0, -25.72],
-              range: 1.95
-            },
-            {
-              id: "terminal.bridge-tactical",
-              kind: "terminal",
-              label: "Bridge Tactical Console",
-              location: "bridge.deck",
-              position: [2.85, -36.7],
-              range: 1.85
-            },
-            {
-              id: "terminal.bridge-viewscreen",
-              kind: "terminal",
-              label: "Bridge Viewscreen",
-              location: "bridge.deck",
-              position: [0.0, -37.15],
-              range: 2.45
-            }
-          ];
+          const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
+          // Patch D: prompts, ranges, and E-key action ids come from the interior definition.
+          return Array.isArray(config.interactables) ? config.interactables : [];
         }
 
         shipInteractionTarget() {
@@ -3671,28 +4017,25 @@
 
         shipInteractionHint(target = this.shipInteractionTarget()) {
           if (!target) return "";
+          if (target.prompt) return String(target.prompt);
           if (target.kind === "access") return `Press E to enter through ${target.label}.`;
           if (target.kind === "terminal") return `Press E to use ${target.label}.`;
           return `Press E to inspect ${target.label}.`;
         }
 
-        interactWithShip() {
-          const target = this.shipInteractionTarget();
-          if (!target) return false;
-          if (target.kind === "access") {
-            if (target.id === "door.bay-access") return this.enterBayOpsAccess();
-            return false;
-          }
-          if (target.kind === "terminal") {
-            if (target.id === "terminal.bay-ops") {
+        performShipInteractionAction(target) {
+          const action = String(target?.action || target?.interaction || "");
+          switch (action) {
+            case "enterBayOpsAccess":
+              return this.enterBayOpsAccess();
+            case "activateBayOperationsTerminal":
               this.setShipTerminalState("terminal.bay-ops", "online");
               this.setShipDoorState("door.bay-inner", "open");
               this.setShipObjective("objective.enter-corridor");
               if (this.shipState?.flags) this.shipState.flags.bayOpsTerminalUsed = true;
               this.setShipInteractionStatus("Bay Operations online. Route to Security Checkpoint is available.");
               return true;
-            }
-            if (target.id === "terminal.engineering-power") {
+            case "restoreEngineeringPower":
               this.setShipTerminalState("terminal.engineering-power", "online");
               this.shipState.power = "online";
               this.shipState.security = "yellow-alert";
@@ -3701,8 +4044,7 @@
               if (this.shipState?.flags) this.shipState.flags.engineeringPowerRestored = true;
               this.setShipInteractionStatus("Engineering restored main power. Bridge route confirmed open.");
               return true;
-            }
-            if (target.id === "terminal.bridge-viewscreen") {
+            case "trackEnemyShipOnViewscreen":
               this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
               this.setShipObjective(this.enemyShipDisabled() ? "objective.enemy-disabled" : "objective.enemy-attack", true);
               if (this.shipState?.flags) {
@@ -3713,21 +4055,24 @@
               this.setShipInteractionStatus("Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.");
               this.emitShipState(true);
               return true;
-            }
-            if (target.id === "terminal.bridge-tactical") {
+            case "fireBridgeTacticalConsole":
               return this.fireBridgeTacticalConsole();
-            }
+            case "inspectOpenDoorRoute":
+              if (this.shipDoorState(target.id) !== "open") this.setShipDoorState(target.id, "open");
+              if (target.id === "door.bay-inner" || target.id === "door.security-hub") this.setShipObjective("objective.restore-power");
+              if (target.id === "door.engineering-access" || target.id === "door.medbay" || target.id === "door.science") this.setShipObjective("objective.survey-departments");
+              if (target.id === "door.bridge") this.setShipObjective("objective.bridge-screen");
+              this.setShipInteractionStatus(`${target.label} route is open. No door lock is required.`);
+              return true;
+            default:
+              return false;
           }
+        }
 
-          if (target.kind === "door") {
-            if (this.shipDoorState(target.id) !== "open") this.setShipDoorState(target.id, "open");
-            if (target.id === "door.bay-inner" || target.id === "door.security-hub") this.setShipObjective("objective.restore-power");
-            if (target.id === "door.engineering-access" || target.id === "door.medbay" || target.id === "door.science") this.setShipObjective("objective.survey-departments");
-            if (target.id === "door.bridge") this.setShipObjective("objective.bridge-screen");
-            this.setShipInteractionStatus(`${target.label} route is open. No door lock is required.`);
-            return true;
-          }
-          return false;
+        interactWithShip() {
+          const target = this.shipInteractionTarget();
+          if (!target) return false;
+          return this.performShipInteractionAction(target);
         }
 
         enterShuttleBayPlayerControl(force = false) {

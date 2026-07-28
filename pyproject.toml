@@ -38,4 +38,6 @@ main_computer = ["config/*.json", "web/**/*.html", "web/**/*.css", "web/**/*.js"
 markers = [
   "installed_functional: opt-in tests that build/install the package and drive the browser UI",
   "onlyoffice_functional: installed-package ONLYOFFICE browser golden paths",
+  "mother_specification: Mother documentation-graph and conformance verification",
+  "mother_contract: traced Mother module, protocol, or operation contract test",
 ]

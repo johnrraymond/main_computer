@@ -64,7 +64,7 @@
       if (!result.expression) {
         calculatorDisplay.value = "0";
         calculatorResult.textContent = "ready";
-        return;
+        return {ok: false, expression: "", result: "ready", code: "expression-required", error: "enter an expression"};
       }
       if (result.ok) {
         calculatorResult.textContent = String(result.value);
@@ -72,6 +72,12 @@
       } else {
         calculatorResult.textContent = result.error || "check expression";
       }
+      return {
+        ...result,
+        result: calculatorResult.textContent,
+        statusText: result.ok ? "ready" : "error",
+        code: result.ok ? "" : "expression-invalid"
+      };
     }
     const calculatorGraphFunctions = {
       sin: Math.sin,
@@ -393,11 +399,31 @@
         }
         canvasContext.stroke();
         calculatorGraphStatus.textContent = `graphed ${normalizeGraphExpression(calculatorGraphExpression.value)} | ${finiteCount} visible samples`;
+        return {
+          ok: true,
+          expression: normalizeGraphExpression(calculatorGraphExpression.value),
+          range,
+          finiteCount,
+          statusText: calculatorGraphStatus.textContent
+        };
       } catch (error) {
         canvasContext.fillStyle = "#ff8f70";
         canvasContext.font = "700 14px Arial, Helvetica, sans-serif";
         canvasContext.fillText("Graph error", 14, 28);
         calculatorGraphStatus.textContent = `graph error: ${error.message || error}`;
+        return {
+          ok: false,
+          expression: normalizeGraphExpression(calculatorGraphExpression.value),
+          range: {
+            xMin: Number(calculatorGraphXMin.value),
+            xMax: Number(calculatorGraphXMax.value),
+            yMin: Number(calculatorGraphYMin.value),
+            yMax: Number(calculatorGraphYMax.value)
+          },
+          statusText: calculatorGraphStatus.textContent,
+          code: /range/i.test(error.message || "") ? "graph-range-invalid" : "graph-expression-required",
+          error: error.message || String(error)
+        };
       }
     }
     function resetCalculatorGraphView() {
@@ -405,7 +431,7 @@
       calculatorGraphXMax.value = "10";
       calculatorGraphYMin.value = "-5";
       calculatorGraphYMax.value = "5";
-      drawCalculatorGraph();
+      return drawCalculatorGraph();
     }
     async function askCalculatorModel() {
       const problem = calculatorPrompt.value.trim();
@@ -440,9 +466,16 @@
         }
         calculatorDisplay.value = expression;
         calculatorModelStatus.textContent = `model expression: ${expression}`;
-        calculateExpression();
+        const evaluation = calculateExpression();
+        return {
+          ok: true,
+          expression,
+          result: calculatorResult.textContent,
+          evaluation
+        };
       } catch (error) {
         calculatorModelStatus.textContent = error.message || "model prompt failed";
+        return {ok: false, code: "provider-request-failed", error: error.message || "model prompt failed"};
       } finally {
         calculatorAskModel.disabled = false;
       }
@@ -473,8 +506,10 @@
         calculatorMathicsExpression.value = data.expression || "";
         calculatorMathicsModelStatus.textContent = `mathics expression: ${data.expression || ""}`;
         calculatorMathicsExpression.focus();
+        return {ok: true, expression: data.expression || ""};
       } catch (error) {
         calculatorMathicsModelStatus.textContent = error.message || "mathics model prompt failed";
+        return {ok: false, code: "provider-request-failed", error: error.message || "mathics model prompt failed"};
       } finally {
         calculatorMathicsAskModel.disabled = false;
       }
@@ -502,9 +537,22 @@
         }
         calculatorMathicsEvaluationStatus.textContent = "Mathics result ready";
         setCalculatorMathicsOutput(data.result_text || "(no result)", "ready");
+        return {
+          ok: true,
+          expression,
+          output: data.result_text || "(no result)",
+          statusText: "ready"
+        };
       } catch (error) {
         calculatorMathicsEvaluationStatus.textContent = error.message || "Mathics evaluation failed";
         setCalculatorMathicsOutput(error.message || "Mathics evaluation failed", "error");
+        return {
+          ok: false,
+          expression,
+          code: "mathics-evaluation-failed",
+          error: error.message || "Mathics evaluation failed",
+          statusText: "error"
+        };
       } finally {
         calculatorMathicsEvaluate.disabled = false;
       }
@@ -559,39 +607,172 @@
         }
         calculatorQaStatus.textContent = "result Q&A answered";
         setCalculatorQaAnswer(data.answer || "(no answer returned)", "ready");
+        return {
+          ok: true,
+          question,
+          answer: data.answer || "(no answer returned)",
+          statusText: "ready"
+        };
       } catch (error) {
         const message = error.message || "calculator Q&A failed";
         calculatorQaStatus.textContent = message;
         setCalculatorQaAnswer(message, "error");
+        return {ok: false, question, code: "result-qa-failed", error: message, statusText: "error"};
       } finally {
         calculatorQaAsk.disabled = false;
       }
     }
+
+    function calculatorSemanticAdapter() {
+      return window.CalculatorSemanticAdapter || null;
+    }
+
+    function executeCalculatorSemanticIntent(intentId, payload, fallback) {
+      const adapter = calculatorSemanticAdapter();
+      if (!adapter || typeof adapter.executeIntent !== "function") {
+        try {
+          return Promise.resolve(typeof fallback === "function" ? fallback() : null);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      }
+      return adapter.executeIntent(intentId, payload || {}).then((execution) => {
+        if (!execution?.ok && execution?.failure) {
+          console.warn(
+            `Calculator semantic intent ${intentId} ${execution.status}:`,
+            execution.failure.message || execution.failure.failureClass
+          );
+        }
+        return execution;
+      });
+    }
+
+    function applyCalculatorToken(key) {
+      if (calculatorDisplay.value === "0" && /\d/.test(key)) {
+        calculatorDisplay.value = key;
+      } else {
+        calculatorDisplay.value += key;
+      }
+      calculatorResult.textContent = "ready";
+      calculatorDisplay.focus();
+      return {
+        ok: true,
+        expression: calculatorDisplay.value,
+        result: calculatorResult.textContent,
+        statusText: "ready"
+      };
+    }
+
+    function clearCalculatorExpression() {
+      calculatorDisplay.value = "0";
+      calculatorResult.textContent = "ready";
+      calculatorDisplay.focus();
+      return {
+        ok: true,
+        expression: calculatorDisplay.value,
+        result: calculatorResult.textContent,
+        statusText: "ready"
+      };
+    }
+
+    function calculatorGraphIntentPayload() {
+      return {
+        expression: calculatorGraphExpression.value,
+        range: {
+          xMin: Number(calculatorGraphXMin.value),
+          xMax: Number(calculatorGraphXMax.value),
+          yMin: Number(calculatorGraphYMin.value),
+          yMax: Number(calculatorGraphYMax.value)
+        }
+      };
+    }
+
+    window.MainComputerCalculatorRuntime = Object.freeze({
+      snapshot: calculatorEmbeddedChatContextSnapshot,
+      switchMode({mode} = {}) {
+        setCalculatorMode(mode);
+        return {
+          ok: true,
+          mode,
+          expression: calculatorDisplay.value,
+          graphExpression: calculatorGraphExpression.value
+        };
+      },
+      enterToken({token} = {}) {
+        return applyCalculatorToken(String(token || ""));
+      },
+      clearExpression() {
+        return clearCalculatorExpression();
+      },
+      evaluateExpression({expression} = {}) {
+        if (typeof expression === "string") calculatorDisplay.value = expression;
+        return calculateExpression();
+      },
+      drawGraph({expression, range} = {}) {
+        if (typeof expression === "string") calculatorGraphExpression.value = expression;
+        if (range && typeof range === "object") {
+          if (Number.isFinite(Number(range.xMin))) calculatorGraphXMin.value = String(range.xMin);
+          if (Number.isFinite(Number(range.xMax))) calculatorGraphXMax.value = String(range.xMax);
+          if (Number.isFinite(Number(range.yMin))) calculatorGraphYMin.value = String(range.yMin);
+          if (Number.isFinite(Number(range.yMax))) calculatorGraphYMax.value = String(range.yMax);
+        }
+        return drawCalculatorGraph();
+      },
+      resetGraph() {
+        return resetCalculatorGraphView();
+      },
+      async askModelForExpression({prompt} = {}) {
+        if (typeof prompt === "string") calculatorPrompt.value = prompt;
+        return askCalculatorModel();
+      },
+      async askModelForGraphExpression({prompt} = {}) {
+        if (typeof prompt === "string") calculatorScientificPrompt.value = prompt;
+        return askScientificCalculatorModel();
+      },
+      async askModelForMathicsExpression({prompt} = {}) {
+        if (typeof prompt === "string") calculatorMathicsPrompt.value = prompt;
+        return askCalculatorMathicsModel();
+      },
+      async evaluateMathics({expression} = {}) {
+        if (typeof expression === "string") calculatorMathicsExpression.value = expression;
+        return evaluateCalculatorMathics();
+      },
+      async askResultQuestion({question} = {}) {
+        if (typeof question === "string") calculatorQaPrompt.value = question;
+        return askCalculatorQa();
+      }
+    });
+
     document.querySelectorAll("[data-calc-key]").forEach((button) => {
       button.addEventListener("click", () => {
         const key = button.dataset.calcKey;
-        if (calculatorDisplay.value === "0" && /\d/.test(key)) {
-          calculatorDisplay.value = key;
-        } else {
-          calculatorDisplay.value += key;
-        }
-        calculatorResult.textContent = "ready";
-        calculatorDisplay.focus();
+        executeCalculatorSemanticIntent(
+          "enterToken",
+          {token: key},
+          () => applyCalculatorToken(key)
+        );
       });
     });
     document.querySelectorAll("[data-calc-action]").forEach((button) => {
       button.addEventListener("click", () => {
         const action = button.dataset.calcAction;
         if (action === "clear") {
-          calculatorDisplay.value = "0";
-          calculatorResult.textContent = "ready";
+          executeCalculatorSemanticIntent(
+            "clearExpression",
+            {},
+            clearCalculatorExpression
+          );
         } else if (action === "backspace") {
           calculatorDisplay.value = calculatorDisplay.value.slice(0, -1) || "0";
           calculatorResult.textContent = "ready";
+          calculatorDisplay.focus();
         } else if (action === "equals") {
-          calculateExpression();
+          executeCalculatorSemanticIntent(
+            "evaluateExpression",
+            {expression: calculatorDisplay.value},
+            calculateExpression
+          );
         }
-        calculatorDisplay.focus();
       });
     });
     calculatorDisplay.addEventListener("input", () => {
@@ -600,32 +781,72 @@
     calculatorDisplay.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        calculateExpression();
+        executeCalculatorSemanticIntent(
+          "evaluateExpression",
+          {expression: calculatorDisplay.value},
+          calculateExpression
+        );
       }
     });
-    calculatorModeBasic.addEventListener("click", () => setCalculatorMode("basic"));
-    calculatorModeGraphing.addEventListener("click", () => setCalculatorMode("graphing"));
-    calculatorGraphDraw.addEventListener("click", drawCalculatorGraph);
-    calculatorGraphReset.addEventListener("click", resetCalculatorGraphView);
+    calculatorModeBasic.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "switchMode",
+      {mode: "basic"},
+      () => setCalculatorMode("basic")
+    ));
+    calculatorModeGraphing.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "switchMode",
+      {mode: "graphing"},
+      () => setCalculatorMode("graphing")
+    ));
+    calculatorGraphDraw.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "drawGraph",
+      calculatorGraphIntentPayload(),
+      drawCalculatorGraph
+    ));
+    calculatorGraphReset.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "resetGraph",
+      {},
+      resetCalculatorGraphView
+    ));
     calculatorGraphExpression.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        drawCalculatorGraph();
+        executeCalculatorSemanticIntent(
+          "drawGraph",
+          calculatorGraphIntentPayload(),
+          drawCalculatorGraph
+        );
       }
     });
-    calculatorMathicsAskModel.addEventListener("click", askCalculatorMathicsModel);
-    calculatorMathicsEvaluate.addEventListener("click", evaluateCalculatorMathics);
+    calculatorMathicsAskModel.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "askModelForMathicsExpression",
+      {prompt: calculatorMathicsPrompt.value},
+      askCalculatorMathicsModel
+    ));
+    calculatorMathicsEvaluate.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "evaluateMathics",
+      {expression: calculatorMathicsExpression.value},
+      evaluateCalculatorMathics
+    ));
     calculatorMathicsClear.addEventListener("click", clearCalculatorMathics);
     calculatorMathicsPrompt.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        askCalculatorMathicsModel();
+        executeCalculatorSemanticIntent(
+          "askModelForMathicsExpression",
+          {prompt: calculatorMathicsPrompt.value},
+          askCalculatorMathicsModel
+        );
       }
     });
     calculatorMathicsExpression.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        evaluateCalculatorMathics();
+        executeCalculatorSemanticIntent(
+          "evaluateMathics",
+          {expression: calculatorMathicsExpression.value},
+          evaluateCalculatorMathics
+        );
       }
     });
     document.querySelectorAll("[data-mathics-example]").forEach((button) => {
@@ -665,25 +886,49 @@
         calculatorGraphExpression.focus();
       });
     });
-    calculatorAskModel.addEventListener("click", askCalculatorModel);
-    calculatorScientificAskModel.addEventListener("click", () => askScientificCalculatorModel());
-    calculatorQaAsk?.addEventListener("click", askCalculatorQa);
+    calculatorAskModel.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "askModelForExpression",
+      {prompt: calculatorPrompt.value},
+      askCalculatorModel
+    ));
+    calculatorScientificAskModel.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "askModelForGraphExpression",
+      {prompt: calculatorScientificPrompt.value},
+      askScientificCalculatorModel
+    ));
+    calculatorQaAsk?.addEventListener("click", () => executeCalculatorSemanticIntent(
+      "askResultQuestion",
+      {question: calculatorQaPrompt.value},
+      askCalculatorQa
+    ));
     calculatorPrompt.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        askCalculatorModel();
+        executeCalculatorSemanticIntent(
+          "askModelForExpression",
+          {prompt: calculatorPrompt.value},
+          askCalculatorModel
+        );
       }
     });
     calculatorScientificPrompt.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        askScientificCalculatorModel();
+        executeCalculatorSemanticIntent(
+          "askModelForGraphExpression",
+          {prompt: calculatorScientificPrompt.value},
+          askScientificCalculatorModel
+        );
       }
     });
     calculatorQaPrompt?.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        askCalculatorQa();
+        executeCalculatorSemanticIntent(
+          "askResultQuestion",
+          {question: calculatorQaPrompt.value},
+          askCalculatorQa
+        );
       }
     });
     async function askScientificCalculatorModel(options = {}) {
@@ -720,9 +965,16 @@
         }
         calculatorGraphExpression.value = expression;
         calculatorScientificModelStatus.textContent = `f(x): ${expression}`;
-        drawCalculatorGraph();
+        const graph = drawCalculatorGraph();
+        return {
+          ok: graph?.ok !== false,
+          expression,
+          statusText: calculatorScientificModelStatus.textContent,
+          graph
+        };
       } catch (error) {
         calculatorScientificModelStatus.textContent = error.message || "scientific model prompt failed";
+        return {ok: false, code: "provider-request-failed", error: error.message || "scientific model prompt failed"};
       } finally {
         calculatorScientificAskModel.disabled = false;
       }

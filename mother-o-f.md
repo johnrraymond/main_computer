@@ -1728,11 +1728,16 @@ mother.md requirement or design contract
   → mother-o.md operation
     → mother-o-f.md functionality
       → mother-o-f-m.md module and public seam
-        → normative-reviewed api_registry.yaml callable contract
-          → module contract test
-            → implementation unit
-              → retained execution evidence
+        → traced contract test
+          → implementation unit
+            → retained execution evidence
 ```
+
+Contract tests are executable verification of the documented module contract.
+They MUST NOT become an independent requirements source. When a test needs an
+answer that the governing documents do not provide, work stops and the highest
+affected `mother*.md` contract is corrected before the test or implementation
+continues.
 
 For every functionality occurrence in an operation, acceptance evidence MUST
 prove:
@@ -1757,9 +1762,11 @@ functionality placement.
 An implementation MAY group private helpers differently inside the module
 boundaries defined by `mother-o-f-m.md`, but it MUST NOT move a declared module
 path, change a public seam, or reorder this functional composition without
-updating `mother-o-f-m.md` and, once populated and reviewed, the callable-interface
-registry. An absent or draft registry is not an authority source and blocks
-module contract tests rather than allowing implementation-defined interfaces.
+updating `mother-o-f-m.md` and the traced contract tests that verify it.
+
+No API registry participates in this authority chain. A future interface
+inventory MAY exist only as a disposable derived report and MUST NOT override
+the governing documents, traced tests, or implemented public contracts.
 
 One module MAY implement several functionalities. One functionality MAY span
 several modules or APIs only as declared by `mother-o-f-m.md`. Neither fact changes:

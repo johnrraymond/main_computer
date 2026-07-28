@@ -25,8 +25,10 @@ The schema is intentionally focused on the systems that have caused defects duri
   "rooms": [],
   "exits": [],
   "spawns": [],
+  "movement": {},
   "props": [],
   "terminals": [],
+  "interactables": [],
   "interactions": [],
   "objectives": [],
   "encounters": [],
@@ -66,8 +68,10 @@ Required fields:
 {
   "id": "bridge.deck",
   "name": "Bridge Deck",
+  "location": "bridge.deck",
   "bounds": { "minX": -4.8, "maxX": 4.8, "minZ": -39.65, "maxZ": -31.0 },
-  "kind": "bridge"
+  "kind": "bridge",
+  "priority": 110
 }
 ```
 
@@ -108,12 +112,28 @@ A spawn point names a safe position and facing direction.
 {
   "id": "spawn.shuttle-bay",
   "room": "bay.shuttle",
-  "position": [2.6, -5.8],
-  "yaw": -0.72
+  "position": [0.24, 0.9, 4.3],
+  "yaw": 32,
+  "pitch": -4
 }
 ```
 
 Validation must confirm the spawn position is inside the referenced room bounds.
+
+## Movement
+
+Movement declares the global playable envelope and fixed collision boxes used by the first-person controller. It should cover every playable room; individual room bounds still define which spaces count as walkable.
+
+```json
+{
+  "bounds": { "minX": -9.8, "maxX": 9.8, "minZ": -39.65, "maxZ": 5.12 },
+  "colliders": [
+    { "id": "docked-shuttle-hull", "minX": -1.36, "maxX": 1.36, "minZ": -1.42, "maxZ": 1.44 }
+  ]
+}
+```
+
+Validation must confirm each room is inside movement bounds and each collider has valid min/max coordinates.
 
 ## Props
 
@@ -225,6 +245,28 @@ State defaults initialize runtime state and provide migration defaults for older
 }
 ```
 
+
+## Interactables
+
+An interactable is the gameplay target that actually produces a prompt and receives the E-key. Terminals can describe system state, while interactables define player reachability, prompt copy, and action ids.
+
+```json
+{
+  "id": "terminal.bridge-tactical",
+  "kind": "terminal",
+  "room": "bridge.deck",
+  "position": [2.85, -36.7],
+  "radius": 1.85,
+  "label": "Bridge Tactical Console",
+  "prompt": "Press E to fire Bridge Tactical Console.",
+  "action": "fireBridgeTacticalConsole"
+}
+```
+
+Patch D extracts current mother-ship E-key targets into `motherShipInterior.interactables`. A later schema migration can map that nested project metadata directly into top-level `interactables`.
+
+Validators should confirm that every interactable is inside a reachable room, has a non-empty prompt, and points to a registered action handler.
+
 ## Validation profile
 
 A definition should declare which validators are expected to pass.
@@ -234,6 +276,7 @@ A definition should declare which validators are expected to pass.
   "validation": {
     "requireConnectedRooms": true,
     "requireReachableTerminals": true,
+    "requireReachableInteractables": true,
     "requireInteractionHandlers": true,
     "requireObjectiveTargets": true,
     "requireSpawnInsideRoom": true
@@ -251,6 +294,9 @@ all rooms have finite min/max bounds
 all exits reference existing rooms
 all terminals reference existing rooms
 all terminals are inside room bounds
+all terminals reference existing rooms
+all interactables are inside room bounds
+all interactables reference registered actions
 all terminals reference registered interactions
 all objective targets exist
 all spawns are inside room bounds
