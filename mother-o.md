@@ -3,7 +3,7 @@
 Status: operator-facing companion to `mother.md`
 
 Source reviewed: `mother.md` SHA-256
-`7ad760806a866d8ee47b1b57425d891906545316110af5508ef54541f9806694`
+`b239639116941085daabf33093481d18c21127199ed2e440eabcea240dea7ef0`
 
 ## 1. Purpose and authority
 

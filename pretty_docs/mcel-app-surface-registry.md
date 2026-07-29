@@ -11,7 +11,7 @@ Required app-surface entries:
 
 ```text
 file-explorer    semantic-runtime
-document         semantic-runtime
+document         runtime-baseline
 website-builder  semantic-runtime
 code-editor      semantic-runtime
 calculator       semantic-runtime
@@ -19,12 +19,20 @@ mcel-lab         semantic-runtime
 git-tools        semantic-runtime
 ```
 
-File Explorer, Document Editor, and Calculator require the full five-layer baseline because they now have
-domain-neutral semantic surface contracts:
+File Explorer and Calculator require the full five-layer baseline because they have
+truth-auditable domain-neutral semantic surface contracts:
 
 ```text
 semantic-surface
 layout-grammar
+runtime-ownership
+runtime-visual-fit
+diagnostic-no-throw
+```
+
+Document Editor remains conformance-required but is parked at runtime-baseline. It still runs the browser/runtime app-surface checks, but it is no longer declared semantic-runtime until its requirements contract and semantic adapter coverage are truth-auditable:
+
+```text
 runtime-ownership
 runtime-visual-fit
 diagnostic-no-throw

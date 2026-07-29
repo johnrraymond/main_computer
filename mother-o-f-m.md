@@ -6,13 +6,13 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 7ad760806a866d8ee47b1b57425d891906545316110af5508ef54541f9806694
+SHA-256: b239639116941085daabf33093481d18c21127199ed2e440eabcea240dea7ef0
 
 mother-o.md
-SHA-256: 0a8521841319cd04a890a118bc00c6c627c8d8d27532ae60d1e40dfb385c9c22
+SHA-256: 1a557a39ecbea95f65bc3dbb90988a5529b0d182cfe2ff5eea9264549d4776e4
 
 mother-o-f.md
-SHA-256: 7d22a58ad0b5c9bededff0d16967c9aa0e279a325aec6c56a538d60650fd7165
+SHA-256: 2ab68a1b3990e65143e7b85eb943d0937435862c1e5b2d77cae05b88df0553ea
 ```
 
 ## 1. Purpose and authority
@@ -234,10 +234,13 @@ operation entry modules
 ```
 
 Core modules MUST NOT import control, protocol, adapter, or operation modules.
-State modules MAY import core modules only. Live adapters MAY import core
-modules and vendor clients, but MUST NOT import operation modules. Protocol
-modules MAY import state, transport, adapter, and core modules. Operation
-modules MAY import any declared lower layer.
+State modules MAY import core modules only, except that
+`MOTHER-OFM-STATE-002` MAY import the immutable types and read/pure-builder
+seams of `MOTHER-OFM-STATE-001`. That dependency is one-way:
+`MOTHER-OFM-STATE-001` MUST NOT import `MOTHER-OFM-STATE-002`. Live adapters
+MAY import core modules and vendor clients, but MUST NOT import operation
+modules. Protocol modules MAY import state, transport, adapter, and core
+modules. Operation modules MAY import any declared lower layer.
 
 Cross-domain coordination belongs in an operation module or a declared
 protocol module. Circular imports are prohibited.
@@ -1008,6 +1011,731 @@ delegated CORE-011 `MotherError` is preserved in the same way, and
 CORE-009 do not introduce new `DurableEffectRef.effect_kind` values.
 
 
+
+#### 4.1.3 STATE-001 journal and STATE-002 checkpoint contracts
+
+`MOTHER-OFM-STATE-001` owns the canonical journal envelope, immutable journal
+entry parsing and construction, stable-head observation, lineage loading, and
+deterministic replay. `MOTHER-OFM-STATE-002` owns checkpoint payload
+construction, checkpoint selection and validation, and verification of the
+checkpoint state-object closure. Checkpoints remain journal-entry payloads; they
+do not gain a second mutable head or a separate authority path.
+
+The module-owned immutable types and protocols are exported exactly from:
+
+```text
+tools.mother.common.journal:
+  JournalEntryRef
+  JournalEntry
+  JournalEntryBuildRequest
+  LoadedAuthorizationBundle
+  JournalLineageMember
+  JournalLineage
+  ValidatedJournalLineage
+  AuthorizedJournalLineage
+  CheckpointReplayProof
+  JournalReplayInput
+  JournalReplayResult
+  JournalReducer
+  AuthorizationBundleValidator
+
+tools.mother.common.checkpoints:
+  CheckpointBuildRequest
+  CheckpointEntryBuildRequest
+  CheckpointPayload
+  CheckpointBuildResult
+  CheckpointEntryBuildResult
+  CheckpointSelection
+  CheckpointValidationResult
+  StateClosureEdge
+  StateClosureManifest
+  StateClosureManifestBuildResult
+  StateClosure
+```
+
+`JournalReducer` and `AuthorizationBundleValidator` are runtime-checkable
+protocols rather than dataclasses. Every other name above is a frozen dataclass
+with slots.
+
+The following six values are proof-bearing and use module-controlled
+construction:
+
+```text
+ValidatedJournalLineage
+AuthorizedJournalLineage
+CheckpointValidationResult
+StateClosure
+CheckpointReplayProof
+JournalReplayInput
+```
+
+Each is declared as a frozen, slotted dataclass with `init=False`, inherits a
+non-exported module-private proof-seal base, and defines a public `__init__`
+that always raises `TypeError`. Its owning private factory allocates with
+`object.__new__`, assigns the exact fields with `object.__setattr__`, and sets
+the private seal. It is created only by its owning validation or binding seam:
+
+```text
+STATE-001.validate_lineage  → ValidatedJournalLineage
+STATE-001.authorize_lineage → AuthorizedJournalLineage
+STATE-002.validate_checkpoint → CheckpointValidationResult
+STATE-002.state_closure → StateClosure
+STATE-002.prepare_replay → CheckpointReplayProof + JournalReplayInput
+```
+
+Ordinary direct construction of every proof-bearing type MUST raise `TypeError`.
+The private factories set a non-exported, process-local proof seal that is not a
+dataclass field and is never serialized. Public consumers MUST verify that seal
+before reading proof fields, touching object stores, invoking an authorization
+validator or reducer, or rereading the stable head. A value fabricated with
+`object.__new__`, field assignment, deserialization, copying, or subclassing but
+without the exact owning-module seal is rejected as follows:
+
+```text
+authorize_lineage(unsealed ValidatedJournalLineage)
+  → MOTHER_STATE_INVALID_LINEAGE
+
+validate_checkpoint(unsealed AuthorizedJournalLineage)
+  → MOTHER_STATE_CHECKPOINT_INVALID
+
+prepare_replay(unsealed AuthorizedJournalLineage,
+               unsealed CheckpointValidationResult,
+               or unsealed StateClosure)
+  → MOTHER_STATE_REPLAY_FAILED
+
+replay_forward(unsealed JournalReplayInput,
+               unsealed nested AuthorizedJournalLineage,
+               or unsealed CheckpointReplayProof)
+  → MOTHER_STATE_REPLAY_FAILED
+```
+
+These checks prevent ordinary callers from replacing structural validation,
+AUTH-003 validation, checkpoint validation, or durable closure verification with
+mutually consistent fabricated field values. The exact public dataclass fields
+remain normative:
+
+| Type | Exact fields in declaration order |
+|---|---|
+| `JournalEntryRef` | `journal_id: str`, `sequence: int`, `entry_hash: ContentHash`, `authorization_bundle_hash: ContentHash`, `state_hash: ContentHash` |
+| `JournalEntry` | `entry_version: str`, `journal_id: str`, `network: str`, `sequence: int`, `operation_id: str`, `operation_kind: str`, `previous_entry_hash: ContentHash | None`, `previous_authorization_bundle_hash: ContentHash | None`, `previous_state_hash: ContentHash | None`, `event_type: str`, `event_payload: bytes`, `resulting_state_hash: ContentHash`, `created_at: str` |
+| `JournalEntryBuildRequest` | `journal_id: str`, `sequence: int`, `previous: JournalEntryRef | None`, `event_type: str`, `event_payload: bytes`, `resulting_state: bytes`, `created_at: str` |
+| `LoadedAuthorizationBundle` | `object_hash: ContentHash`, `payload: bytes` |
+| `JournalLineageMember` | `reference: JournalEntryRef`, `entry: JournalEntry`, `authorization_bundle: LoadedAuthorizationBundle` |
+| `JournalLineage` | `head: HeadTuple`, `stop: JournalEntryRef`, `members: tuple[JournalLineageMember, ...]` |
+| `ValidatedJournalLineage` | `head: HeadTuple`, `stop: JournalEntryRef`, `members: tuple[JournalLineageMember, ...]` |
+| `AuthorizedJournalLineage` | `head: HeadTuple`, `stop: JournalEntryRef`, `members: tuple[JournalLineageMember, ...]` |
+| `CheckpointReplayProof` | `checkpoint_ref: JournalEntryRef`, `state_schema: str`, `state: bytes`, `state_hash: ContentHash`, `state_closure_manifest_hash: ContentHash`, `state_closure_members: tuple[ContentHash, ...]`, `authoritative: bool` |
+| `JournalReplayInput` | `lineage: AuthorizedJournalLineage`, `checkpoint: CheckpointReplayProof` |
+| `JournalReplayResult` | `head: HeadTuple`, `checkpoint_ref: JournalEntryRef`, `state_schema: str`, `state: bytes`, `state_hash: ContentHash`, `applied_entry_refs: tuple[JournalEntryRef, ...]` |
+| `CheckpointBuildRequest` | `checkpoint_kind: str`, `covers_through: JournalEntryRef | None`, `state_schema: str`, `state: bytes`, `state_object_refs: tuple[ContentHash, ...]`, `state_closure_manifest_hash: ContentHash`, `prepared_intent_hash: ContentHash | None`, `superseded_lineage_heads: tuple[ContentHash, ...]` |
+| `CheckpointEntryBuildRequest` | `journal_id: str`, `sequence: int`, `previous: JournalEntryRef | None`, `checkpoint_request: CheckpointBuildRequest`, `created_at: str` |
+| `CheckpointPayload` | `checkpoint_version: str`, `checkpoint_kind: str`, `covers_through_sequence: int`, `covers_through_entry_hash: ContentHash | None`, `state_schema: str`, `state: bytes`, `state_hash: ContentHash`, `state_object_refs: tuple[ContentHash, ...]`, `state_closure_manifest_hash: ContentHash`, `prepared_intent_hash: ContentHash | None`, `superseded_lineage_heads: tuple[ContentHash, ...]` |
+| `CheckpointBuildResult` | `checkpoint: CheckpointPayload`, `event_payload: bytes` |
+| `CheckpointEntryBuildResult` | `checkpoint: CheckpointPayload`, `event_payload: bytes`, `entry_bytes: bytes` |
+| `CheckpointSelection` | `checkpoint_ref: JournalEntryRef`, `checkpoint: CheckpointPayload`, `later_entry_refs: tuple[JournalEntryRef, ...]` |
+| `CheckpointValidationResult` | `checkpoint_ref: JournalEntryRef`, `checkpoint: CheckpointPayload`, `authoritative: bool` |
+| `StateClosureEdge` | `parent: ContentHash`, `children: tuple[ContentHash, ...]` |
+| `StateClosureManifest` | `manifest_version: str`, `roots: tuple[ContentHash, ...]`, `edges: tuple[StateClosureEdge, ...]` |
+| `StateClosureManifestBuildResult` | `manifest: StateClosureManifest`, `manifest_bytes: bytes`, `manifest_hash: ContentHash` |
+| `StateClosure` | `manifest_hash: ContentHash`, `roots: tuple[ContentHash, ...]`, `edges: tuple[StateClosureEdge, ...]`, `members: tuple[ContentHash, ...]` |
+
+All strings are non-empty and already NFC. Integers are exact `int` values;
+booleans are rejected. Sequences are positive. Epochs and coverage sequences are
+non-negative. Public collections are tuples only, and every tuple member has
+the exact declared type. Bare mappings, lists, sets, frozensets, `bytearray`,
+`memoryview`, and implicit coercion are forbidden at public boundaries.
+`event_payload`, `resulting_state`, checkpoint `state`, and loaded object
+`payload` values are exact `bytes`.
+
+The closed versions are:
+
+```text
+mother.journal.metadata.v1
+mother.journal.head.v2
+mother.journal.entry.v1
+mother.committed-state-projection.v1
+mother.journal.checkpoint.v1
+mother.state.object.v1
+mother.state.closure-manifest.v1
+```
+
+The broader parent design recognizes `network`, `action`, and `rollback`
+journals, but the exact STATE-001/002 callable contracts in this slice accept
+only `journal_kind="network"`. Every `JournalEntryRef`, lineage member, stable
+head, and checkpoint selection therefore carries a non-null
+`authorization_bundle_hash` and an exact loaded authorization bundle. Action
+and rollback journal decoding, null-bundle references, and their typed journal
+contexts are deferred and MUST NOT be inferred by these APIs.
+
+The closed checkpoint kinds and their construction constraints are:
+
+| Checkpoint kind | Coverage | Prospective containing entry | Prepared intent | Superseded heads |
+|---|---|---|---|---|
+| `initial` | `covers_through=None` | sequence `1`, `previous=None` | `None` | empty |
+| `initial-network-birth` | `covers_through=None` | sequence `1`, `previous=None` | required | empty |
+| `routine` | exact immediately preceding committed entry | sequence is coverage sequence plus one; `previous` equals coverage | `None` | empty |
+| `authoritative-rectification` | exact selected predecessor entry | sequence is coverage sequence plus one; `previous` equals coverage | required | non-empty |
+
+`CheckpointPayload.covers_through_sequence` is `0` and
+`covers_through_entry_hash` is `None` when `covers_through=None`. Otherwise the
+two fields are copied exactly from `CheckpointBuildRequest.covers_through`.
+
+`build_checkpoint` performs only intrinsic payload validation and
+construction-time replay validation. For `routine`, `prior_replay` is mandatory
+and MUST end at the exact coverage reference with byte-identical state, state
+schema, and state hash. For `authoritative-rectification`, `prior_replay` proves
+the selected predecessor and coverage; the checkpoint state MAY differ because
+the parent D029 contract authorizes explicit replacement state. Initial kinds
+require no prior replay.
+
+`build_checkpoint_entry_bytes` is the sole construction seam that binds a
+checkpoint payload to its prospective containing entry. It enforces the exact
+sequence and predecessor column above, passes the checkpoint bytes to
+`STATE-001.build_entry_bytes` with `event_type="state-checkpoint"`, and passes
+the checkpoint state as the exact `resulting_state`. It returns entry bytes
+only; no entry hash, authorization bundle, or committed reference exists yet.
+`validate_checkpoint` is reserved for an already loaded authorized lineage. It
+MUST NOT appear in a pre-publication construction chain.
+
+Committed-read validation never requires archived replay before the checkpoint.
+It verifies the intrinsic payload, state hash, existing containing entry,
+coverage adjacency, semantically validated committed authorization bundle, and
+kind-specific predecessor and resulting-state bindings. This separation permits
+routine reopening after older covered entries have been archived.
+
+Every public tuple has one total order. Content hashes are ordered by
+`(algorithm, digest)`, with the algorithm compared first by UTF-8 bytes.
+`JournalLineage.members`, `ValidatedJournalLineage.members`, and
+`AuthorizedJournalLineage.members` are ordered from the committed head toward
+the selected checkpoint by strictly descending sequence.
+`CheckpointSelection.later_entry_refs` and
+`JournalReplayResult.applied_entry_refs` are ordered from the entry after the
+checkpoint through the committed head by strictly ascending sequence.
+`state_object_refs`, `superseded_lineage_heads`, closure roots, closure members,
+and `CheckpointReplayProof.state_closure_members` are unique canonical hash
+sets. Closure edges are ordered by parent hash; each edge's children are a
+unique canonical hash set. Duplicate entry hashes, bundle hashes, sequence
+identities, closure parents, roots, children, or members are rejected before
+ordering.
+
+The shared `ContentHash` wire object is the exact object defined in section
+4.1.2. The exact journal metadata bytes are CORE-003 canonical JSON for:
+
+```text
+{
+  "created_at": <non-empty NFC string>,
+  "journal_id": <non-empty NFC string>,
+  "journal_kind": "network" | "action" | "rollback",
+  "schema": "mother.journal.metadata.v1",
+  "state_schema": <non-empty NFC string>
+}
+```
+
+The exact authoritative network-head bytes are CORE-003 canonical JSON for:
+
+```text
+{
+  "authorization_bundle_hash": <ContentHash wire object>,
+  "committed_at": <non-empty NFC string>,
+  "head_entry_hash": <ContentHash wire object>,
+  "head_epoch": <non-negative integer>,
+  "head_id": <non-empty NFC string>,
+  "head_sequence": <positive integer>,
+  "head_state_hash": <ContentHash wire object>,
+  "journal_id": <non-empty NFC string>,
+  "schema": "mother.journal.head.v2"
+}
+```
+
+The exact `committed-state.json` projection envelope is:
+
+```text
+{
+  "head": {
+    "authorization_bundle_hash": <ContentHash wire object>,
+    "entry_hash": <ContentHash wire object>,
+    "head_epoch": <non-negative integer>,
+    "head_id": <non-empty NFC string>,
+    "journal_identity": <non-empty NFC string>,
+    "sequence": <positive integer>,
+    "state_hash": <ContentHash wire object>
+  },
+  "projection_version": "mother.committed-state-projection.v1",
+  "state": <one canonical JSON object>,
+  "state_schema": <non-empty NFC string>
+}
+```
+
+`head.state_hash` is SHA-256 of the CORE-003 canonical bytes of the decoded
+`state` object. The projection envelope itself is not included in that state
+digest. The seven `head` fields decode directly to `HeadTuple` and MUST equal
+the journal-head fields exactly.
+
+The exact immutable entry bytes produced and accepted by STATE-001 are:
+
+```text
+{
+  "created_at": <non-empty NFC string>,
+  "entry_version": "mother.journal.entry.v1",
+  "event_payload": <one decoded canonical JSON object>,
+  "event_type": <non-empty NFC string>,
+  "journal_id": <non-empty NFC string>,
+  "network": <non-empty NFC string>,
+  "operation_id": <non-empty NFC string>,
+  "operation_kind": <closed OperationIdentity operation kind>,
+  "previous_authorization_bundle_hash": <ContentHash wire object or null>,
+  "previous_entry_hash": <ContentHash wire object or null>,
+  "previous_state_hash": <ContentHash wire object or null>,
+  "resulting_state_hash": <ContentHash wire object>,
+  "sequence": <positive integer>
+}
+```
+
+`event_payload` and `resulting_state` enter the builder as canonical JSON bytes
+for one top-level object. `event_payload` is embedded as its decoded object.
+`resulting_state` is not duplicated in an ordinary entry; its exact SHA-256 is
+stored as `resulting_state_hash`. The immutable CORE-012 object hash of the
+complete entry bytes is the journal entry hash. The illustrative
+`entry_hash` field in the parent design is therefore external derived metadata
+and is not a self-referential field inside these canonical bytes.
+
+The exact checkpoint event payload bytes are:
+
+```text
+{
+  "checkpoint_kind": "initial" | "initial-network-birth" | "routine" | "authoritative-rectification",
+  "checkpoint_version": "mother.journal.checkpoint.v1",
+  "covers_through_entry_hash": <ContentHash wire object or null>,
+  "covers_through_sequence": <non-negative integer>,
+  "prepared_intent_hash": <ContentHash wire object or null>,
+  "state": <one decoded canonical JSON object>,
+  "state_closure_manifest_hash": <ContentHash wire object>,
+  "state_hash": <ContentHash wire object>,
+  "state_object_refs": [<ContentHash wire object>, ...],
+  "state_schema": <non-empty NFC string>,
+  "superseded_lineage_heads": [<ContentHash wire object>, ...]
+}
+```
+
+`CheckpointPayload.state_hash` is SHA-256 of the exact canonical state bytes.
+`state_closure_manifest_hash` names one immutable manifest built and published
+before the checkpoint entry bytes exist. `CheckpointBuildResult.event_payload`
+is the canonical JSON encoding of the exact checkpoint payload object.
+
+Every state object reachable from a checkpoint root has exact CORE-003 canonical
+JSON bytes:
+
+```text
+{
+  "object_version": "mother.state.object.v1",
+  "references": [<ContentHash wire object>, ...],
+  "state_schema": <non-empty NFC string>,
+  "value": <one decoded canonical JSON object>
+}
+```
+
+`references` is the complete direct child-reference set encoded by that object,
+ordered as a unique canonical hash set. A state-object schema MUST express every
+transitive object reference in this field; hash-shaped strings inside `value`
+are data and do not create an edge.
+
+The exact closure-manifest bytes are:
+
+```text
+{
+  "edges": [
+    {
+      "children": [<ContentHash wire object>, ...],
+      "parent": <ContentHash wire object>
+    },
+    ...
+  ],
+  "manifest_version": "mother.state.closure-manifest.v1",
+  "roots": [<ContentHash wire object>, ...]
+}
+```
+
+The manifest contains exactly one edge for every member reachable from `roots`,
+including leaves with `children=[]`. Each edge is derived from the exact
+`references` field of the verified parent object. The manifest object itself is
+metadata and is not a state-closure member.
+
+The exact public signatures are:
+
+```python
+# tools.mother.common.journal
+def read_stable_head(
+    paths: NetworkHeadPaths,
+    *,
+    operation: OperationIdentity,
+) -> HeadTuple: ...
+
+def load_entry(
+    entry_root: Path,
+    reference: JournalEntryRef,
+    *,
+    operation: OperationIdentity,
+) -> JournalEntry: ...
+
+def load_bundle(
+    authorization_root: Path,
+    reference: JournalEntryRef,
+    *,
+    operation: OperationIdentity,
+) -> LoadedAuthorizationBundle: ...
+
+def walk_back(
+    entry_root: Path,
+    authorization_root: Path,
+    head: HeadTuple,
+    stop: JournalEntryRef,
+    *,
+    operation: OperationIdentity,
+) -> JournalLineage: ...
+
+def validate_lineage(
+    lineage: JournalLineage,
+    *,
+    operation: OperationIdentity,
+) -> ValidatedJournalLineage: ...
+
+def authorize_lineage(
+    lineage: ValidatedJournalLineage,
+    validator: AuthorizationBundleValidator,
+    *,
+    operation: OperationIdentity,
+) -> AuthorizedJournalLineage: ...
+
+def replay_forward(
+    replay_input: JournalReplayInput,
+    reducer: JournalReducer,
+    paths: NetworkHeadPaths,
+    *,
+    operation: OperationIdentity,
+) -> JournalReplayResult: ...
+
+def build_entry_bytes(
+    request: JournalEntryBuildRequest,
+    *,
+    operation: OperationIdentity,
+) -> bytes: ...
+
+# tools.mother.common.checkpoints
+def locate_newest_valid(
+    entry_root: Path,
+    head: HeadTuple,
+    *,
+    operation: OperationIdentity,
+) -> CheckpointSelection: ...
+
+def build_state_closure_manifest(
+    state_object_root: Path,
+    roots: tuple[ContentHash, ...],
+    *,
+    operation: OperationIdentity,
+) -> StateClosureManifestBuildResult: ...
+
+def build_checkpoint(
+    request: CheckpointBuildRequest,
+    prior_replay: JournalReplayResult | None,
+    *,
+    operation: OperationIdentity,
+) -> CheckpointBuildResult: ...
+
+def build_checkpoint_entry_bytes(
+    request: CheckpointEntryBuildRequest,
+    prior_replay: JournalReplayResult | None,
+    *,
+    operation: OperationIdentity,
+) -> CheckpointEntryBuildResult: ...
+
+def validate_checkpoint(
+    lineage: AuthorizedJournalLineage,
+    checkpoint: CheckpointPayload,
+    *,
+    operation: OperationIdentity,
+) -> CheckpointValidationResult: ...
+
+def state_closure(
+    state_object_root: Path,
+    checkpoint: CheckpointPayload,
+    *,
+    operation: OperationIdentity,
+) -> StateClosure: ...
+
+def prepare_replay(
+    lineage: AuthorizedJournalLineage,
+    checkpoint_validation: CheckpointValidationResult,
+    closure: StateClosure,
+    *,
+    operation: OperationIdentity,
+) -> JournalReplayInput: ...
+```
+
+Path ownership is exact. `journal_root` is `paths.journal_head.parent`.
+`metadata.json` and `head.json` are direct children of that root.
+`entry_root` is the CORE-005-resolved `journal_root / "entries"` immutable
+CORE-012 object-store root. `authorization_root` is the distinct
+CORE-005-resolved `journal_root / "authorizations"` immutable CORE-012
+object-store root. Neither root MAY equal, contain, or be contained by the
+other. `state_object_root` is exactly the CORE-005-resolved
+`paths.journal_head.parent / "state-objects"` immutable CORE-012 object-store
+root for `operation.network`. It is network-scoped, not derived from
+`state_schema`, and MUST be distinct from, and neither contain nor be contained
+by, `entry_root` and `authorization_root`. STATE-001 and STATE-002 do not read
+or write `temporary/` or `archive/` during normal observation, replay, or
+building.
+
+The runtime-checkable protocols are exact:
+
+```python
+class JournalReducer(Protocol):
+    state_schema: str
+
+    def apply(
+        self,
+        previous_state: bytes,
+        event_type: str,
+        event_payload: bytes,
+    ) -> bytes: ...
+
+class AuthorizationBundleValidator(Protocol):
+    def validate_bundle(
+        self,
+        reference: JournalEntryRef,
+        entry: JournalEntry,
+        bundle: LoadedAuthorizationBundle,
+        *,
+        operation: OperationIdentity,
+    ) -> None: ...
+```
+
+A reducer is a caller-owned pure, deterministic, side-effect-free contract. It
+MUST not mutate its inputs, read files, acquire locks, dispatch calls, or depend
+on wall-clock time, process identity, locale, hash seed, or iteration order. It
+returns canonical JSON bytes for one top-level object in its declared
+`state_schema`. STATE-001 applies each event exactly once. One execution cannot
+prove general determinism or absence of hidden side effects; STATE-001 detects
+only an exception, malformed or non-canonical output, schema disagreement, input
+mutation observable at the boundary, or resulting hash disagreement.
+
+`AuthorizationBundleValidator` is the STATE-001 seam through which
+`MOTHER-OFM-AUTH-003.validate_bundle` validates every network-journal member.
+`authorize_lineage` invokes it exactly once for every member, in descending
+sequence order, and returns `AuthorizedJournalLineage` only after every call
+succeeds. STATE-001 does not interpret certificate or authority semantics.
+
+`read_stable_head` accepts only an exact `NetworkHeadPaths`. It derives
+`metadata.json` from `paths.journal_head.parent`, uses CORE-011
+`stable_read(..., max_attempts=3)` around the entire load, validates the exact
+metadata and head envelopes, stably reads the committed-state projection, and
+requires metadata, head, projection, and supplied operation network identities
+to agree. The CORE-011 outer reread occurs after projection parsing and state
+hash verification. A causal `MOTHER_STATE_UNSTABLE_READ` from either pointer is
+translated to `MOTHER_STATE_UNSTABLE_HEAD` while preserving the cause,
+operation identity, `retry_class="after-reobserve"`, and
+`authority_effect="none"`. Every other delegated CORE-011 error is propagated
+unchanged.
+
+`load_entry` calls CORE-012 `get_verified` against `entry_root` with
+`reference.entry_hash`, decodes only the exact entry wire object, reconstructs
+canonical `event_payload` bytes, and requires exact journal ID, sequence,
+resulting-state hash, and a non-null network authorization-bundle reference.
+`load_bundle` requires that exact bundle hash, calls CORE-012
+`get_verified` against `authorization_root`, requires canonical JSON bytes for one top-level object, and
+returns those exact bytes without interpreting certificate or authority
+semantics. `MOTHER-OFM-AUTH-003` remains the sole semantic validator of the
+authorization bundle.
+
+`locate_newest_valid` starts from the exact stable head in `entry_root` and
+follows verified predecessor entry objects. The first encountered
+`event_type="state-checkpoint"` MUST decode and pass intrinsic checkpoint
+validation; an invalid committed checkpoint is not skipped. The method returns
+that checkpoint plus every later entry reference in forward sequence order.
+Reaching sequence 1 without a valid initial checkpoint or encountering a cycle
+before a checkpoint raises `MOTHER_STATE_CHECKPOINT_MISSING`.
+
+A missing immutable object has context-specific ownership. A direct
+`load_entry` or `load_bundle` request propagates CORE-012
+`MOTHER_STATE_OBJECT_MISSING` unchanged. When `locate_newest_valid` follows a
+non-null predecessor hash before finding a checkpoint and CORE-012 reports that
+object missing, STATE-002 raises `MOTHER_STATE_CHECKPOINT_MISSING`. When
+`walk_back` follows any required predecessor in the selected segment and
+CORE-012 reports that object missing, STATE-001 raises
+`MOTHER_STATE_INVALID_LINEAGE`. Both translations use `retry_class="never"` and
+`authority_effect="none"` and retain the complete causal `MotherError`,
+operation identity, durable/evidence references, and allowed next actions.
+Every other delegated CORE-012 error is preserved unchanged.
+
+`walk_back` records the exact requested `stop` and loads the exact
+head-to-checkpoint segment selected above, including the authorization bundle
+named by every network-journal reference. It returns members in descending
+sequence order and never follows an object not named by the committed lineage.
+`validate_lineage` returns a distinct `ValidatedJournalLineage` only when all of
+these are true:
+
+1. the first member equals the supplied `HeadTuple` in journal ID, sequence,
+   entry hash, bundle hash, and state hash;
+2. every member's reference matches its decoded entry and loaded bundle;
+3. sequences decrease by exactly one;
+4. every child entry's previous entry, previous bundle, and previous state
+   hashes equal the next member's reference;
+5. journal ID, network, and operation-network binding remain exact;
+6. entry and bundle identities do not repeat;
+7. sequence 1 has all predecessor fields null, and every later sequence has all
+   three predecessor fields non-null;
+8. the final member equals `lineage.stop`, and `lineage.stop` is the exact
+   requested checkpoint reference.
+
+`authorize_lineage` is mandatory before committed checkpoint validation or
+replay. It invokes the supplied `AuthorizationBundleValidator` for every member
+and returns a distinct `AuthorizedJournalLineage` with the same immutable
+members only after every bundle is semantically valid for its exact entry.
+
+`build_state_closure_manifest` accepts only canonical roots. It recursively
+loads each reachable object from `state_object_root`, decodes the exact
+`mother.state.object.v1` envelope, derives every child edge exclusively from the
+verified object's `references` field, and visits every derived child. It
+constructs one edge for every member, including leaves, verifies the derived
+graph through CORE-012, computes the exact manifest bytes and SHA-256, and
+returns them without publication. It accepts no caller-supplied edges or member
+set.
+
+`build_entry_bytes` copies `operation.operation_id`,
+`operation.operation_kind`, and `operation.network` into the entry. For
+sequence 1, `previous` MUST be `None`; for every later sequence, `previous` is
+required and MUST be exactly sequence minus one. The builder computes
+`resulting_state_hash`, validates all NFC and canonical-byte rules, preserves
+its inputs, and returns only the exact entry bytes. It does not publish an
+object or update a head.
+
+`build_checkpoint` computes the state hash and canonical event payload,
+performs the intrinsic and construction-time replay checks defined above,
+requires canonical unique roots and superseded-lineage tuples, and preserves its
+inputs. `build_checkpoint_entry_bytes` calls `build_checkpoint`, enforces the
+prospective entry sequence and predecessor rules, and calls
+`STATE-001.build_entry_bytes` with the exact checkpoint payload and state. It
+does not call `validate_checkpoint`.
+
+`validate_checkpoint` accepts an existing `AuthorizedJournalLineage`. The
+lineage stop member is the containing checkpoint entry and its authorization
+bundle has already passed AUTH-003 semantic validation. The method requires the
+entry event type and payload to equal the checkpoint bytes, the entry reference
+to carry the exact loaded authorization-bundle hash, the entry resulting-state
+hash to equal the checkpoint state hash, and the coverage fields to bind the
+exact predecessor. For `routine`, the containing entry sequence is coverage
+sequence plus one, its previous entry hash equals the coverage hash, and its
+previous state hash equals the checkpoint state hash. For
+`authoritative-rectification`, sequence and predecessor-entry adjacency are
+required but the predecessor state hash need not equal the replacement
+checkpoint state. `authoritative=True` only for
+`authoritative-rectification`.
+
+`state_closure` loads the exact manifest named by
+`checkpoint.state_closure_manifest_hash`. It requires manifest roots to equal
+`checkpoint.state_object_refs`, independently reloads every manifest member,
+re-derives each edge from the member's exact `references` field, and requires
+byte-identical canonical manifest rows. It rejects substituted, omitted, extra,
+unreachable, duplicate, or cyclic rows and returns the verified manifest hash,
+roots, edges, and members. A parent object that names a child cannot be accepted
+as a leaf.
+
+Closure error precedence is exact:
+
+```text
+checkpoint.state_closure_manifest_hash or checkpoint roots do not bind the
+selected verified manifest
+  → MOTHER_STATE_CHECKPOINT_INVALID
+
+the selected manifest or an object-derived edge is malformed, disagrees with
+canonical object bytes, omits or adds a member or edge, is unreachable, or
+contains a cycle
+  → MOTHER_RECOVERY_INVALID_CLOSURE
+
+roots, manifest parents, child tuples, derived members, or build inputs contain
+duplicate identities
+  → MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER
+```
+
+A directly requested missing manifest or state object retains the delegated
+CORE-012 `MOTHER_STATE_OBJECT_MISSING`. `build_state_closure_manifest` and
+`state_closure` own the two closure-domain translations above after exact
+objects have been loaded; checkpoint-to-manifest binding is checked first.
+
+`prepare_replay` is the only seam that constructs `JournalReplayInput` or
+`CheckpointReplayProof`. Before reading any proof field it verifies the
+module-private seals on `AuthorizedJournalLineage`,
+`CheckpointValidationResult`, and `StateClosure`. It requires the authorized
+lineage stop to equal the checkpoint-validation reference, requires the
+validation checkpoint and closure manifest hash and roots to match exactly, and
+copies the verified checkpoint state and closure members into the sealed
+`CheckpointReplayProof`. No loose checkpoint state, schema, hash, bundle, or
+closure tuple is accepted by `replay_forward`.
+
+`replay_forward` accepts only a sealed `JournalReplayInput` containing the exact
+sealed `AuthorizedJournalLineage` and sealed `CheckpointReplayProof` produced by
+`prepare_replay`. It verifies all three seals before invoking the reducer,
+reading the committed-state projection, or rereading the stable head. It then
+rechecks the proof cross-bindings, requires the checkpoint state hash to equal
+SHA-256 of the canonical checkpoint state, and requires the reducer schema to
+equal the proof state schema. It skips the checkpoint entry, reverses later
+members into ascending sequence order, verifies each `previous_state_hash`,
+applies the reducer once, and requires each resulting canonical state hash to
+equal the entry's `resulting_state_hash`. The final hash MUST equal both the
+authorized lineage head state hash and the committed-state projection hash.
+Before returning, the method calls `read_stable_head` again and requires the
+entire `HeadTuple` to equal the proof-bound head. A changed head discards the
+replay result and raises `MOTHER_STATE_UNSTABLE_HEAD`; no state derived from the
+superseded head is returned.
+
+The future-object prohibition is enforced at both builders and at checkpoint
+decode. The recursively closed post-entry field-name set is:
+
+```text
+authorization_bundle_hash
+authority_reseal_certificate_acceptance_set_root
+authority_reseal_certificate_hash
+authority_reseal_proposal_hash
+certificate_acceptance_set_root
+certificate_hash
+completed_certificate_hash
+proposal_acceptance_set_root
+proposal_hash
+successor_certificate_hash
+transition_acceptance_set_root
+transition_decision_hash
+transition_decision_record_hash
+```
+
+None of those keys MAY occur at any depth in an entry event payload, checkpoint
+state, or checkpoint payload, even with `null` or an already existing hash.
+`previous_authorization_bundle_hash` in the entry envelope is not prohibited.
+`prepared_intent_hash` and `state_closure_manifest_hash` are explicitly
+pre-entry and are allowed only in the checkpoint fields defined above. A new
+protocol-visible hash role that is created after the successor entry hash does
+not become permitted by choosing a new spelling; the governing functionality
+and this closed contract MUST first be amended. Raw hash-shaped strings do not
+substitute for typed `ContentHash` wire objects.
+
+STATE-001 and STATE-002 are readers plus pure immutable-byte builders. They do
+not acquire the network mutation lock, write files, call CORE-012
+`put_immutable`, update `head.json`, update `committed-state.json`, create an
+authorization bundle, dispatch external calls, or create evidence. Entry and
+checkpoint publication is performed by the owning authority or protocol
+functionality through CORE-012 after the builder returns. The only writer of
+the committed entry/bundle head remains `MOTHER-OFM-AUTH-004`, and the only
+writer of the committed-state projection remains `MOTHER-OFM-STATE-003`.
+A checkpoint becomes authoritative only when its containing entry and required
+authorization bundle are committed through that normal head path.
+
+Every public boundary translates constructor, decoder, reducer, and semantic
+validation failures to the exact STATE-001/002 error contract below. Delegated
+CORE-011 and CORE-012 errors retain their original code, module ID, retry class,
+authority effect, durable-effect references, evidence references, and allowed
+next actions except for the two exact missing-predecessor translations defined
+above. Those translations retain the complete causal CORE-012 `MotherError`.
+STATE-001 and STATE-002 introduce no new durable-effect kind.
+
 ### 4.2 Error envelope
 
 All expected failures use `MotherError` with:
@@ -1065,6 +1793,15 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_TRANSPORT_VENDOR_FAILURE` | `MOTHER-OFM-CORE-002` vendor-error wrapper for `MOTHER-OFM-XPORT-002` | `after-reobserve` | `live-state-maybe-changed` | A vendor/transport failure was wrapped without exposing secrets or discarding typed durable/evidence references. |
 | `MOTHER_STATE_UNSTABLE_READ` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The bounded read/load/reread sequence did not observe an identical pointer pair. |
 | `MOTHER_STATE_UNSTABLE_HEAD` | `MOTHER-OFM-STATE-001.read_stable_head` / `MOTHER-OF-OBS-001` | `after-reobserve` | `none` | The state-facing stable-head operation maps a causal `MOTHER_STATE_UNSTABLE_READ` from CORE-011 to this domain code while preserving the typed cause and classifications. |
+| `MOTHER_STATE_MALFORMED_JOURNAL_HEAD` | `MOTHER-OFM-STATE-001.read_stable_head` | `never` | `none` | Journal metadata, head bytes, committed-state projection bytes, versions, field sets, NFC strings, state hash, network binding, or the exact head/projection tuple is malformed or contradictory. |
+| `MOTHER_STATE_MALFORMED_JOURNAL_ENTRY` | `MOTHER-OFM-STATE-001.load_entry,build_entry_bytes` | `never` | `none` | Stored entry bytes or a build request violate the exact version, field, type, canonical-byte, predecessor, operation-binding, or NFC contract. |
+| `MOTHER_STATE_JOURNAL_REFERENCE_MISMATCH` | `MOTHER-OFM-STATE-001.load_entry,load_bundle,walk_back` | `never` | `none` | A typed entry or bundle reference does not match the verified immutable object, sequence, journal identity, state hash, bundle nullability, or expected committed pair. |
+| `MOTHER_STATE_INVALID_LINEAGE` | `MOTHER-OFM-STATE-001.walk_back,validate_lineage,authorize_lineage` | `never` | `none` | The committed chain has a sequence gap, duplicate or cycle, inconsistent journal/network identity, a required predecessor object is missing during selected-segment walking, authorization validation fails, or an entry, bundle, or state link mismatches. A translated missing-object error retains the causal CORE-012 `MotherError`. |
+| `MOTHER_STATE_REPLAY_FAILED` | `MOTHER-OFM-STATE-001.replay_forward` and `MOTHER-OFM-STATE-002.prepare_replay` | `never` | `none` | A replay proof is absent, malformed, or cross-bound to different lineage/checkpoint/closure values, or a reducer raises, returns malformed or non-canonical bytes, changes schema, observably mutates an input, or produces a state hash that disagrees with an entry, head, or committed-state projection. General nondeterminism and hidden side effects remain caller-contract violations and are not claimed detectable from one application. |
+| `MOTHER_STATE_CHECKPOINT_MISSING` | `MOTHER-OFM-STATE-002.locate_newest_valid` | `never` | `none` | The committed retained lineage reaches sequence 1, a cycle, or a missing predecessor object before one valid checkpoint. A translated missing-object error retains the causal CORE-012 `MotherError`. Normal mutation is blocked pending explicit recovery. |
+| `MOTHER_STATE_MALFORMED_CHECKPOINT` | `MOTHER-OFM-STATE-002.locate_newest_valid,build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint` | `never` | `none` | A checkpoint version, kind, field set, canonical payload, constructor value, tuple member, ordering, coverage shape, closure-manifest reference, or NFC string is uninterpretable. |
+| `MOTHER_STATE_CHECKPOINT_INVALID` | `MOTHER-OFM-STATE-002.locate_newest_valid,build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint,state_closure` | `never` | `none` | An interpretable checkpoint fails construction-time prior-replay binding, prospective entry sequence/predecessor/resulting-state binding, committed-read binding to its existing authorized containing entry, exact predecessor, state schema, state bytes, state hash, closure manifest, authoritative kind, or superseded lineage. |
+| `MOTHER_STATE_FUTURE_OBJECT_REFERENCE` | `MOTHER-OFM-STATE-001.build_entry_bytes` and `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint` | `never` | `none` | An entry event or checkpoint contains a proposal, certificate, acceptance, decision, authorization-bundle, or other object role created only after the successor entry hash exists. A pre-entry state-closure-manifest hash is permitted. |
 | `MOTHER_CONFLICT_DURABLE_TARGET_EXISTS` | `MOTHER-OFM-CORE-011.durable_create` | `after-reobserve` | `none` | Exclusive publication found an already-published target and did not overwrite it. |
 | `MOTHER_STATE_DURABLE_TARGET_MISSING` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The required durable pointer or target is absent before any authority effect. |
 | `MOTHER_STATE_DURABLE_READ_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `none` | A host-filesystem read failed before a new authority effect; the typed cause is retained. |
@@ -1075,9 +1812,9 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_INPUT_UNSAFE_PATH` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `never` | `none` | A root, target, object path, existing prefix, or required directory position is a symlink, escapes containment, is occupied by a non-directory, or is otherwise unsafe for durable authority. |
 | `MOTHER_STATE_OBJECT_MISSING` | `MOTHER-OFM-CORE-012.get_verified` | `after-reobserve` | `none` | The requested content-addressed object is absent. |
 | `MOTHER_STATE_OBJECT_CORRUPT` | `MOTHER-OFM-CORE-012.put_immutable,get_verified` | `never` | `none` | Bytes at a content-addressed path do not hash to that path or conflict with the proposed exact bytes. |
-| `MOTHER_RECOVERY_INVALID_CLOSURE` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` | `never` | `none` | The declared transitive closure is missing, corrupt, cyclic where prohibited, substituted, incomplete, or contains unreachable rows. |
-| `MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` | `never` | `none` | Roots, expected members, or child-reference lists contain duplicate identities. |
-| `MOTHER_INPUT_OVERLAPPING_STORAGE_ROOTS` | `MOTHER-OFM-CORE-008.export_manifest` and `MOTHER-OFM-CORE-012.copy_verified_closure` | `never` | `none` | Source and destination object-store trees are equal or one contains the other; no source read or destination write begins. |
+| `MOTHER_RECOVERY_INVALID_CLOSURE` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` and `MOTHER-OFM-STATE-002.build_state_closure_manifest,state_closure` | `never` | `none` | A selected closure manifest or object-derived graph is malformed, corrupt, cyclic where prohibited, substituted, incomplete, disagrees with canonical object references, or contains unreachable rows. Checkpoint-to-manifest hash or root binding mismatches use `MOTHER_STATE_CHECKPOINT_INVALID` first; directly missing immutable objects retain `MOTHER_STATE_OBJECT_MISSING`. |
+| `MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` and `MOTHER-OFM-STATE-002.build_state_closure_manifest,state_closure` | `never` | `none` | Closure-build roots, manifest parents, child-reference lists, derived members, or verified roots contain duplicate identities. |
+| `MOTHER_INPUT_OVERLAPPING_STORAGE_ROOTS` | `MOTHER-OFM-CORE-008.export_manifest`, `MOTHER-OFM-CORE-012.copy_verified_closure`, and `MOTHER-OFM-STATE-001.walk_back` | `never` | `none` | Required distinct object-store trees are equal or one contains the other; no source read or destination write begins. |
 | `MOTHER_SCHEMA_UNKNOWN_VERSION` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | Canonical bytes or typed inputs declare an unknown schema, capability, or compatibility contract version; no nearby version substitution is allowed. |
 | `MOTHER_SCHEMA_MALFORMED_BYTES` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | Canonical bytes cannot be decoded into the exact required typed value. |
 | `MOTHER_SCHEMA_MALFORMED_OBJECT` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | A decoded schema, capability, compatibility report, or requirement object is structurally invalid or contains a value outside the documented closed set. |
@@ -1282,8 +2019,8 @@ required capabilities return the exact ordered blockers from section 4.1.1.
 
 | Module ID | Path | Public API | Effect and failure contract |
 |---|---|---|---|
-| `MOTHER-OFM-STATE-001` | `common/journal.py` | `read_stable_head`, `load_entry`, `load_bundle`, `walk_back`, `replay_forward`, `validate_lineage`, `build_entry_bytes` | `reader` plus immutable entry construction; never updates a head pointer |
-| `MOTHER-OFM-STATE-002` | `common/checkpoints.py` | `locate_newest_valid`, `build_checkpoint`, `validate_checkpoint`, `state_closure` | immutable checkpoint construction; future-object hashes prohibited from checkpoint state |
+| `MOTHER-OFM-STATE-001` | `common/journal.py` | exact section 4.1.3 signatures for `read_stable_head`, `load_entry`, `load_bundle`, `walk_back`, `validate_lineage`, `authorize_lineage`, `replay_forward`, `build_entry_bytes` | `reader` plus pure immutable entry construction; stable-head, authorization-proof, and replay checks are fail-closed; never publishes an object or updates a head pointer |
+| `MOTHER-OFM-STATE-002` | `common/checkpoints.py` | exact section 4.1.3 signatures for `locate_newest_valid`, `build_state_closure_manifest`, `build_checkpoint`, `build_checkpoint_entry_bytes`, `validate_checkpoint`, `state_closure`, `prepare_replay` | `reader` plus pure checkpoint, closure-manifest, and entry-byte construction; validates closure, coverage, committed checkpoint binding, and replay proof; future-object hashes prohibited |
 | `MOTHER-OFM-STATE-003` | `common/projections.py` | `render_generation`, `compare_generation`, `build_manifest`, `publish_generation` | `derived-writer`; publication uses one flushed pointer CAS |
 | `MOTHER-OFM-STATE-004` | `common/private_state.py` | `read_private_state`, `resolve_validator_ref`, `build_recovery_closure`, `install_verified_private_state` | secret-bearing reader/writer; strict permissions, no general serialization, no plaintext evidence |
 | `MOTHER-OFM-STATE-005` | `common/generations.py` | `create_staging`, `seal_generation`, `discard_unpublished`, `switch_active`, `reconcile_active` | local generation writer; active pointer is the commit determinant |
@@ -1395,8 +2132,8 @@ required capabilities return the exact ordered blockers from section 4.1.1.
 | Resource | Exclusive writer |
 |---|---|
 | Network journal entry/bundle head pair | `MOTHER-OFM-AUTH-004` |
-| Immutable journal entries | `MOTHER-OFM-STATE-001` via object store |
-| Checkpoints | `MOTHER-OFM-STATE-002` via object store |
+| Immutable journal entries | `MOTHER-OFM-STATE-001` owns canonical bytes; only the traced authority/protocol caller publishes them through CORE-012 |
+| Checkpoints | `MOTHER-OFM-STATE-002` owns the checkpoint payload; its containing entry is built by STATE-001 and published only by the traced authority/protocol caller through CORE-012 |
 | Successor reservations | `MOTHER-OFM-AUTH-001` |
 | Finalization intent and state | `MOTHER-OFM-AUTH-006` |
 | Operation record/current pointer | `MOTHER-OFM-CTL-003` |
@@ -1463,10 +2200,10 @@ boundaries.
 
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
-| `MOTHER-OF-OBS-001` | `MOTHER-OFM-CORE-005.resolve_network_head_paths` → `MOTHER-OFM-CORE-011.stable_read` → `MOTHER-OFM-STATE-001.read_stable_head` | Canonically contained head paths and one internally consistent committed `HeadTuple`, or `MOTHER_STATE_UNSTABLE_HEAD` |
+| `MOTHER-OF-OBS-001` | `MOTHER-OFM-CORE-005.resolve_network_head_paths` → `MOTHER-OFM-CORE-011.stable_read` → `MOTHER-OFM-STATE-001.read_stable_head` | Canonically contained head paths and one internally consistent committed `HeadTuple`, or `MOTHER_STATE_UNSTABLE_HEAD`; STATE-001 owns parsing, projection comparison, and the complete bounded stable-read semantics |
 | `MOTHER-OF-OBS-002` | `MOTHER-OFM-STATE-001.load_bundle` → `MOTHER-OFM-AUTH-003.validate_bundle` | Bundle bytes and validated binding to the exact entry |
-| `MOTHER-OF-OBS-003` | `MOTHER-OFM-STATE-002.locate_newest_valid` → `MOTHER-OFM-STATE-001.walk_back` → `MOTHER-OFM-STATE-001.replay_forward` | Replayed canonical state plus lineage and checkpoint evidence |
-| `MOTHER-OF-OBS-004` | `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.compare_generation` | Per-projection equal/missing/stale/corrupt classification |
+| `MOTHER-OF-OBS-003` | `MOTHER-OFM-STATE-002.locate_newest_valid` → `MOTHER-OFM-STATE-001.load_entry,load_bundle,walk_back,validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` | Stable-head-bound replay from the newest valid checkpoint, with every network authorization bundle semantically validated and represented by `AuthorizedJournalLineage`, committed-read checkpoint and derived closure proof bound into `JournalReplayInput`, and exact final state hash |
+| `MOTHER-OF-OBS-004` | proof-bearing `JournalReplayInput` from `MOTHER-OF-OBS-003` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.compare_generation` | Per-projection equal/missing/stale/corrupt classification; loose lineage or checkpoint values are not accepted |
 | `MOTHER-OF-OBS-005` | typed `ParticipantResult` inputs produced by the parent operation's transport functionalities → `MOTHER-OFM-OBS-005.collect_reports,validate_report,freeze_report_set` | Exact expected-set report map with explicit missing/invalid members |
 | `MOTHER-OF-OBS-006` | `MOTHER-OFM-OBS-002.observe_service,observe_host` → `MOTHER-OFM-OBS-001.build_inventory` | Normalized ownership-aware service/identity/host/marker inventory |
 | `MOTHER-OF-OBS-007` | `MOTHER-OFM-OBS-003.probe_guard,probe_runtime` → `MOTHER-OFM-OBS-004.merge_observations` | Per-process and per-guard observed state without inferred success |
@@ -1642,7 +2379,7 @@ restoration effects.
 | `MOTHER-OF-SYNC-001` | `MOTHER-OFM-CTL-004.acquire_scope` with local-adoption exclusivity → `MOTHER-OFM-CTL-003.create_prepared` | Owned local-adoption scope retained through terminal state |
 | `MOTHER-OF-SYNC-002` | `MOTHER-OFM-STATE-005.reconcile_active` → `MOTHER-OFM-OBS-005.freeze_report_set` → `MOTHER-OFM-REC-001.pin_candidate` | Old local pointer/head and unanimous remote candidate pinned |
 | `MOTHER-OF-SYNC-003` | `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-REC-001.download_to_staging` → `MOTHER-OFM-CORE-012.verify_closure` | Complete immutable candidate closure in unpublished staging |
-| `MOTHER-OF-SYNC-004` | `MOTHER-OFM-REC-001.verify_staging` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.compare_generation` → `MOTHER-OFM-STATE-004.read_private_state` | Candidate lineage, objects, private state, pending actions, and projections verify |
+| `MOTHER-OF-SYNC-004` | `MOTHER-OFM-REC-001.verify_staging` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.compare_generation` → `MOTHER-OFM-STATE-004.read_private_state` | Candidate lineage, objects, private state, pending actions, and projections verify from one module-sealed replay input; REC-001 does not synthesize proof values |
 | `MOTHER-OF-SYNC-005` | `MOTHER-OFM-REC-001.prepare_activation` → `MOTHER-OFM-CORE-011.durable_create` | Activation-prepared evidence outside the swappable generation |
 | `MOTHER-OF-SYNC-006` | `MOTHER-OFM-REC-001.switch_pointer` → `MOTHER-OFM-STATE-005.switch_active` | One flushed CAS from pinned old generation to verified candidate |
 | `MOTHER-OF-SYNC-007` | `MOTHER-OFM-STATE-005.reconcile_active` → `MOTHER-OFM-REC-001.reconcile` → `MOTHER-OFM-CTL-006.reconcile_from_durable_effect` | Pointer-determined committed or pre-commit state after interruption |
@@ -1656,7 +2393,7 @@ restoration effects.
 | `MOTHER-OF-REC-002` | `MOTHER-OFM-OBS-005.collect_reports,freeze_report_set` → `MOTHER-OFM-REC-002.prove_unanimous_candidate` | Unanimous lineage, state, pending-action, private-material, and closure proof |
 | `MOTHER-OF-REC-003` | `MOTHER-OFM-REC-002.fetch_objects` → `MOTHER-OFM-CORE-012.copy_verified_closure,verify_closure` | Every required recovery object downloaded and hash-verified |
 | `MOTHER-OF-REC-004` | `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-REC-002.restore_state_root` → `MOTHER-OFM-STATE-004.install_verified_private_state` | Complete recovered local Mother root in immutable generation |
-| `MOTHER-OF-REC-005` | `MOTHER-OFM-REC-002.replay_and_verify` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.render_generation` | Recovered journals replayed and projections rebuilt |
+| `MOTHER-OF-REC-005` | `MOTHER-OFM-REC-002.replay_and_verify` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.render_generation` | Recovered journals replay and projections rebuild from one module-sealed replay input; REC-002 does not synthesize proof values |
 | `MOTHER-OF-REC-006` | `MOTHER-OFM-OBS-003.probe_guard,probe_runtime` → `MOTHER-OFM-OBS-007.run_assertion_set` → `MOTHER-OFM-REC-002.prove_unanimous_candidate` comparison | Recovered state matches guards, live assertions, and the frozen recovery candidate |
 | `MOTHER-OF-REC-007` | `MOTHER-OFM-REC-002.activate_replacement_identity` → `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-AUTH-004.commit_entry_bundle_pair` | Replacement head ID/epoch activation committed at its defined boundary |
 | `MOTHER-OF-REC-008` | `MOTHER-OFM-REC-002.replicate_activation` → `MOTHER-OFM-AUTH-005.replicate_closure,collect_acknowledgements` → `MOTHER-OFM-AUTH-002.build_ack_certificate` | Every expected replica acknowledges replacement-head activation |
@@ -1666,11 +2403,11 @@ restoration effects.
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
 | `MOTHER-OF-RSL-001` | `MOTHER-OFM-OBS-005.collect_reports,freeze_report_set` → `MOTHER-OFM-REC-003.collect_base_reports` → `MOTHER-OFM-CORE-008.store_evidence` | Every current base-authority report plus immutable invalid-head evidence |
-| `MOTHER-OF-RSL-002` | `MOTHER-OFM-STATE-001.validate_lineage,replay_forward` → `MOTHER-OFM-REC-003.prove_common_base` | Common old authority generation and replay-valid selected predecessor |
+| `MOTHER-OF-RSL-002` | `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` with `MOTHER-OFM-AUTH-003.validate_bundle` → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-REC-003.prove_common_base` | Common old authority generation and replay-valid selected predecessor proven from one authorized checkpoint/closure replay input |
 | `MOTHER-OF-RSL-003` | `MOTHER-OFM-REC-003.calculate_head_sets` → `MOTHER-OFM-CORE-004.set_root` | Observed valid head set and superseded set equal to observed valid heads minus selected predecessor |
 | `MOTHER-OF-RSL-004` | `MOTHER-OFM-CTL-003.inspect_active` → `MOTHER-OFM-RB-003.replay` → `MOTHER-OFM-AUTH-001.resume` → `MOTHER-OFM-AUTH-006.verify_terminal_membership` → `MOTHER-OFM-MEM-003.validate_decision` → `MOTHER-OFM-REC-003.classify_obligations` | Each unresolved obligation preserved, carried as remediation-required, or blocks |
 | `MOTHER-OF-RSL-005` | `MOTHER-OFM-REC-003.build_intent` → `MOTHER-OFM-CORE-003.canonical_json` → `MOTHER-OFM-CORE-012.put_immutable` | Prepared intent is constructed during `do`, after any actual prospective-readiness root exists, and contains only pre-entry facts plus separate obligation/closure roots |
-| `MOTHER-OF-RSL-006` | `MOTHER-OFM-REC-003.build_checkpoint` → `MOTHER-OFM-STATE-002.build_checkpoint,validate_checkpoint` → `MOTHER-OFM-CORE-012.put_immutable` | Exact successor checkpoint binding `prepared_intent_hash`, not future proposal/certificate hashes |
+| `MOTHER-OF-RSL-006` | `MOTHER-OFM-REC-003.build_checkpoint` → `MOTHER-OFM-STATE-002.build_state_closure_manifest` → `MOTHER-OFM-CORE-012.put_immutable` for the pre-entry manifest → `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable` for the entry | Exact successor checkpoint entry binding its derived closure manifest and `prepared_intent_hash`; `build_checkpoint_entry_bytes` invokes the pure `build_checkpoint` seam, and committed-read `validate_checkpoint` is prohibited before entry publication and authorization-bundle commit |
 | `MOTHER-OF-RSL-007` | `MOTHER-OFM-REC-003.build_proposal,collect_proposal_acceptances` → `MOTHER-OFM-AUTH-002.validate_acceptances` | Proposal binds intent plus entry and is accepted exactly once by every base-authority replica, installing the D029 fence |
 | `MOTHER-OF-RSL-008` | `MOTHER-OFM-REC-003.build_certificate` → `MOTHER-OFM-CORE-012.put_immutable` | Authority-reseal certificate constructed from the full proposal-acceptance set; no completed-certificate acceptance occurs in this functionality |
 | `MOTHER-OF-RSL-009` | `MOTHER-OFM-MEM-001.calculate_sets,freeze_sets` → `MOTHER-OFM-REC-003.freeze_readiness_contract,compose_membership` → `MOTHER-OFM-CORE-008.store_evidence` | Freeze the prospective set, expected generation, required closure and schemas, readiness-receipt contract/version, expected membership sets, and structural legality during `prep`; this functionality performs no participant mutation and creates no readiness or transition result |
@@ -1743,7 +2480,7 @@ implementable; authority-changing APIs MUST return
 | `MOTHER-OF-MIG-002` | `MOTHER-OFM-MAINT-001.preserve_source` → `MOTHER-OFM-CORE-012.put_immutable` → `MOTHER-OFM-CORE-008.store_evidence` | Original bytes, hashes, and audit evidence |
 | `MOTHER-OF-MIG-003` | `MOTHER-OFM-MAINT-001.resolve_migration,apply_declared` | Deterministic destination bytes from exact source bytes |
 | `MOTHER-OF-MIG-004` | `MOTHER-OFM-MAINT-001.validate_graph` → `MOTHER-OFM-CORE-006.validate_object` → `MOTHER-OFM-CORE-012.verify_closure` | Complete migrated graph validates |
-| `MOTHER-OF-MIG-005` | `MOTHER-OFM-MAINT-001.build_migrated_object` → `MOTHER-OFM-STATE-002.build_checkpoint` or schema-owned state builder | Content-addressed migrated checkpoint/state object |
+| `MOTHER-OF-MIG-005` | `MOTHER-OFM-MAINT-001.build_migrated_object` → for a checkpoint: `MOTHER-OFM-STATE-002.build_state_closure_manifest` → `MOTHER-OFM-CORE-012.put_immutable` for the pre-entry manifest → `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable`; or schema-owned state builder | Content-addressed migrated checkpoint entry or schema-owned state object, with exact source preservation, derived closure provenance, and no committed-read validation before an entry/bundle pair exists |
 | `MOTHER-OF-MIG-006` | `MOTHER-OFM-MAINT-001.replicate` → `MOTHER-OFM-AUTH-005.replicate_closure,verify_replica` | Full expected set verifies migrated result |
 | `MOTHER-OF-MIG-007` | `MOTHER-OFM-MAINT-001` disabled `commit` | Block until predecessor, certificate, bundle, head, finalization, and rollback authority are defined |
 | `MOTHER-OF-MIG-008` | `MOTHER-OFM-MAINT-001.abort` → `MOTHER-OFM-STATE-005.discard_unpublished`; pre-commit restore only | Staging canceled without changing authority |
@@ -1774,7 +2511,7 @@ defines the commit and rollback boundaries.
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
 | `MOTHER-OF-PRJ-001` | `MOTHER-OFM-STATE-001.read_stable_head` → `MOTHER-OFM-MAINT-003.pin_head` | Complete authoritative local head tuple pinned |
-| `MOTHER-OF-PRJ-002` | `MOTHER-OFM-MAINT-003.replay_generation` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.render_generation` | New unpublished projection generation from exact lineage |
+| `MOTHER-OF-PRJ-002` | `MOTHER-OFM-MAINT-003.replay_generation` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.render_generation` | New unpublished projection generation from one module-sealed replay input; MAINT-003 does not synthesize `JournalReplayInput` |
 | `MOTHER-OF-PRJ-003` | `MOTHER-OFM-STATE-003.build_manifest` → `MOTHER-OFM-MAINT-003.write_manifest` → `MOTHER-OFM-CORE-011.durable_create` | Hashed, flushed, reread-verified projection manifest |
 | `MOTHER-OF-PRJ-004` | `MOTHER-OFM-STATE-001.read_stable_head` → `MOTHER-OFM-MAINT-003.recheck_head` | Current head equals every pinned tuple field |
 | `MOTHER-OF-PRJ-005` | `MOTHER-OFM-MAINT-003.publish` → `MOTHER-OFM-STATE-003.publish_generation` → `MOTHER-OFM-CORE-011.atomic_pointer_cas` | One complete projection-generation pointer published |

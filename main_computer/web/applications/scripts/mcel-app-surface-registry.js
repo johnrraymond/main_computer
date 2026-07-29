@@ -108,11 +108,11 @@ var McelAppSurfaceRegistry = (() => {
       label: "Document Editor",
       state: "surface-aware",
       conformanceRequired: true,
-      maturity: "semantic-runtime",
+      maturity: "runtime-baseline",
       surfaceId: "document-editor.surface.primary",
       contractId: "document-editor.contract.default.app-health",
-      requiredLayerIds: BASELINE_LAYER_IDS,
-      notes: "Rich authoring surface pilot; requires document semantic extraction, shared layout grammar, runtime ownership, visual fit, and diagnostic no-throw checks."
+      requiredLayerIds: RUNTIME_LAYER_IDS,
+      notes: "Rich authoring surface pilot parked at runtime-baseline until its requirements contract and semantic adapter coverage are truth-auditable."
     }
   });
 

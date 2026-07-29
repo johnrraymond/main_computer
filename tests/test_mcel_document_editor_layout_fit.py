@@ -162,7 +162,7 @@ def test_document_editor_visual_fit_diagnostics_cover_document_regions() -> None
     assert '.mc-page-overlay-layer[aria-hidden=' in diagnosis
     assert 'String(current.display || "") === "contents"' in diagnosis
     assert 'directVisibleChildren(container, context)' in diagnosis
-    assert 'appId === "document" ||\n        appId === "file-explorer"' in diagnosis
+    assert 'appId === "document" || appId === "file-explorer"' in diagnosis
     assert "contentFitViolationSeverity(contract, snapshot)" in diagnosis
     assert "contentFitPolicyFor(el)" in diagnosis
     assert "declaredFitPolicyAllowsClip" in diagnosis
@@ -209,7 +209,7 @@ def test_document_editor_visual_fit_ignores_intentional_overlay_and_display_cont
     assert 'const children = directVisibleChildren(container, context)\n        .filter' in diagnosis
 
 
-def test_document_editor_content_fit_violations_are_hard_failures_for_semantic_runtime_apps() -> None:
+def test_document_editor_content_fit_violations_remain_hard_failures_while_parked() -> None:
     diagnosis = SELF_DIAGNOSIS_JS.read_text(encoding="utf-8")
 
     assert 'function contentFitViolationSeverity(contract, snapshot)' in diagnosis

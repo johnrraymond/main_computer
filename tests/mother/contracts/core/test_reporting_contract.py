@@ -469,6 +469,55 @@ def test_build_evidence_report_rejects_non_nfc_manifest_metadata_before_load(
 
 @pytest.mark.mother_contract(
     requirements=["MOTHER-REQ-002"],
+    operations=["MOTHER-OP-EVIDENCE-EXPORT"],
+    functionalities=["MOTHER-OF-OBS-018"],
+    modules=["MOTHER-OFM-CORE-009"],
+    methods=["MOTHER-OFM-CORE-009.build_evidence_report"],
+)
+def test_build_evidence_report_translates_non_nfc_operation_identity(
+    tmp_path: Path,
+) -> None:
+    reporting = _surface()
+    operation = OperationIdentity(
+        operation_id="report-e\u0301vidence",
+        request_id="request-wave1d-reporting",
+        network="testnet",
+        operation_kind="MOTHER-OP-EVIDENCE-EXPORT",
+    )
+    with pytest.raises(MotherError) as caught:
+        reporting.build_evidence_report(
+            tmp_path / "export", _manifest_ref(), operation=operation
+        )
+    _assert_error(caught.value, "MOTHER_REPORT_MALFORMED_MODEL", operation)
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-002"],
+    operations=["MOTHER-OP-DIAGNOSE"],
+    functionalities=["MOTHER-OF-OBS-015"],
+    modules=["MOTHER-OFM-CORE-009"],
+    methods=["MOTHER-OFM-CORE-009.build_allowed_commands_report"],
+)
+def test_allowed_commands_builder_translates_non_nfc_operation_identity() -> None:
+    reporting = _surface()
+    operation = OperationIdentity(
+        operation_id="report-e\u0301commands",
+        request_id="request-wave1d-reporting",
+        network="testnet",
+        operation_kind="MOTHER-OP-DIAGNOSE",
+    )
+    with pytest.raises(MotherError) as caught:
+        reporting.build_allowed_commands_report(
+            "wedged",
+            None,
+            (reporting.AllowedCommand("mother diagnose", "inspect"),),
+            operation=operation,
+        )
+    _assert_error(caught.value, "MOTHER_REPORT_MALFORMED_MODEL", operation)
+
+
+@pytest.mark.mother_contract(
+    requirements=["MOTHER-REQ-002"],
     operations=["MOTHER-OP-DIAGNOSE"],
     functionalities=["MOTHER-OF-OBS-015"],
     modules=["MOTHER-OFM-CORE-009"],

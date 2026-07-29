@@ -828,15 +828,16 @@ Recommended per-network durable layout:
   journal/
     metadata.json
     head.json
-    entries/
-      000000000001.json
-      000000000002.json
-      ...
-    authorizations/
-      sha256-<authorization-bundle-hash>.json
+    entries/          # immutable CORE-012 object-store root
+    authorizations/   # distinct immutable CORE-012 object-store root
+    state-objects/    # distinct immutable CORE-012 state-object root
   archive/
     superseded-lineages/
 ```
+
+Objects beneath `entries/`, `authorizations/`, and `state-objects/` are addressed
+only by the exact CORE-012 `ContentHash` object-store contract. Sequence-number
+filenames and `sha256-<digest>.json` names are not journal wire paths.
 
 Checkpoint records are immutable entries inside `journal/entries/`; they are not
 maintained in a separate mutable checkpoint store. The common journal storage,
@@ -885,41 +886,45 @@ the global journal. Their durable action, rollback, or participant journal
 entries are referenced from the network journal when they affect the replicated
 pending-action state.
 
-Each ordinary journal entry records at least:
+Each ordinary network-journal entry uses the acyclic canonical envelope:
 
 ```yaml
-kind: main_computer.mother.journal_entry.v1
-network_key: mainnet
+entry_version: mother.journal.entry.v1
+journal_id: "network:mainnet"
+network: mainnet
 sequence: 142
-action_id: "operation-..."
-operation: "add-node"
-state_class: "pending-action"
-expected_head_id: "mother-head-..."
-expected_head_epoch: 7
-expected_journal_sequence: 141
-expected_journal_hash: "sha256:..."
-expected_authorization_bundle_hash: "sha256:..."
-expected_replica_set_hash: "sha256:..."  # exact successor-authority set
-prepared_current_replica_set_hash: "sha256:..."
-successor_authority_replica_set_hash: "sha256:..."
-desired_replica_set_hash: "sha256:..."  # membership-changing successors
-expected_enrollment_receipt_contract_hash: "sha256:..."
-actual_enrollment_readiness_root: "sha256:..."  # null before accepted readiness
-prepared_intent_hash: "sha256:..."
-previous_entry_hash: "sha256:..."
-previous_authorization_bundle_hash: "sha256:..."
-previous_state_hash: "sha256:..."
-changes: []
-resulting_state_hash: "sha256:..."
-entry_hash: "sha256:..."
-committed_at: "..."
+operation_id: "operation-..."
+operation_kind: add-node
+previous_entry_hash:
+  algorithm: sha256
+  digest: "..."
+previous_authorization_bundle_hash:
+  algorithm: sha256
+  digest: "..."
+previous_state_hash:
+  algorithm: sha256
+  digest: "..."
+event_type: pending-action-phase-advanced
+event_payload: {}
+resulting_state_hash:
+  algorithm: sha256
+  digest: "..."
+created_at: "..."
 ```
+
+Every hash field above is the exact typed `ContentHash` wire object. The entry
+does not embed `entry_hash`; its entry hash is the external CORE-012 object hash
+of the complete canonical entry bytes. The exact field set and canonical bytes
+are frozen by `MOTHER-OFM-STATE-001` in `mother-o-f-m.md`.
 
 The immutable successor entry contains only facts known before claims are
 issued. It MUST NOT contain its own successor certificate hash, a transition
 acceptance-set root, or a transition-decision-record hash. Those values are
 created only after the entry hash exists and therefore belong to a separate
 immutable authorization bundle.
+
+Every journal-facing hash shown below uses the exact typed `ContentHash` wire
+object even where a legacy conceptual example abbreviates it as `sha256:...`.
 
 A representative network authorization bundle is:
 
@@ -1014,33 +1019,16 @@ Rectification MUST NOT silently pick a winner.
 
 An authoritative rectification checkpoint is the recovery mechanism for a state
 that cannot be reconciled through normal replay. It is an explicit
-operator-approved journal event containing a complete network state and enough
-evidence to explain why the earlier lineage was superseded. It records at least:
-
-```yaml
-kind: main_computer.mother.authoritative_checkpoint.v1
-journal_id: "network:mainnet"
-network_key: mainnet
-checkpoint_id: "checkpoint-..."
-checkpoint_kind: authoritative-rectification
-sequence: 143
-previous_entry_hash: "sha256:..."
-previous_authorization_bundle_hash: "sha256:..."
-reason: "operator-approved recovery from divergent journal lineages"
-created_by: "local-head:<machine-id>"
-created_at: "..."
-replica_hosts:
-  - coolify-a
-  - coolify-c
-supersedes:
-  journal_entries_through: 142
-  prior_lineage_heads: []
-checkpoint_state: {}
-checkpoint_state_hash: "sha256:..."
-resulting_state_hash: "sha256:..."
-previous_checkpoint_hash: "sha256:..."
-entry_hash: "sha256:..."
-```
+operator-approved `state-checkpoint` journal event containing one complete
+network state and enough immutable references to explain which lineage was
+superseded. Its event payload uses
+`checkpoint_version="mother.journal.checkpoint.v1"` and
+`checkpoint_kind="authoritative-rectification"`, binds the exact selected
+predecessor through typed coverage fields, carries the complete canonical state,
+state hash, state-object roots, required prepared-intent hash, and canonical
+non-empty superseded-lineage-head set. The containing entry supplies journal
+identity, sequence, predecessor entry/bundle/state hashes, operation identity,
+and resulting-state hash. Neither payload nor entry embeds its own object hash.
 
 The authoritative checkpoint does not edit or erase prior journal records.
 Instead, it supersedes them for active-state reconstruction. Future replay uses
@@ -1668,112 +1656,74 @@ Immutable journal entries, required network authorization bundles, and the
 atomically replaced committed head are authoritative. Complete state documents, active rollback stacks, current-action
 pointers, and summaries are replayable projections.
 
-Every Mother journal has the same physical shape:
+The authoritative network-journal layout is:
 
 ```text
 <journal-root>/
   metadata.json
   head.json
-  entries/
-    000000000001.json
-    000000000002.json
-    ...
-  authorizations/              # network journals; empty for action/rollback
-    sha256-<authorization-bundle-hash>.json
+  entries/          # immutable CORE-012 object-store root
+  authorizations/   # distinct immutable CORE-012 object-store root
+  state-objects/    # distinct immutable CORE-012 object-store root
   temporary/
   archive/
 ```
 
-`metadata.json` gives the stable journal identity and kind. A representative
-document is:
+`metadata.json` and `head.json` are the only direct journal pointer documents.
+All entries, authorization bundles, and checkpoint state objects are immutable
+CORE-012 objects addressed by typed `ContentHash` values; no sequence filename
+or embedded self-hash participates in the journal contract.
 
-```json
-{
-  "schema": "mother.journal.metadata.v1",
-  "journal_id": "action:add-node-mainneta-super2-001",
-  "journal_kind": "action",
-  "state_schema": "mother.action-state.v1",
-  "created_at": "..."
-}
-```
+The exact network metadata identifies `journal_kind: "network"`. The exact head
+binds a positive sequence, entry hash, resulting-state hash, non-null
+authorization-bundle hash, head identity and epoch, and commit time. Every hash
+is the exact `ContentHash` wire object. The current STATE-001/002 callable slice
+is network-journal-only. Action and rollback journal support remains a later
+typed contract and MUST NOT be inferred by accepting null bundle references.
 
-`head.json` identifies the last committed entry:
+A network entry uses `entry_version`, `journal_id`, `network`, `sequence`,
+`operation_id`, `operation_kind`, predecessor entry/bundle/state hashes,
+`event_type`, decoded canonical `event_payload`, `resulting_state_hash`, and
+`created_at`. It contains no `entry_hash` field. Its external entry identity is
+the CORE-012 hash of the complete canonical bytes, avoiding self-reference.
 
-```json
-{
-  "schema": "mother.journal.head.v2",
-  "journal_id": "action:add-node-mainneta-super2-001",
-  "head_sequence": 17,
-  "head_entry_hash": "sha256:...",
-  "head_state_hash": "sha256:...",
-  "authorization_bundle_hash": null,
-  "committed_at": "..."
-}
-```
-
-A file in `entries/` is not committed merely because it exists. The exact
-commit point is the durable atomic replacement of `head.json` with a head that
-names that entry. For action and rollback journals,
-`authorization_bundle_hash` is null. For every authoritative network-journal
-successor, including the bootstrap first head, it is non-null and the same
-atomic pointer binds both the journal entry and its immutable authorization
-bundle. An entry or bundle not jointly named by the active pointer is orphaned
-evidence and MUST NOT be interpreted as committed network authority.
-
-Every entry records enough information to verify both history and state
-transition:
-
-```json
-{
-  "schema": "mother.journal.entry.v1",
-  "journal_id": "action:add-node-mainneta-super2-001",
-  "sequence": 17,
-  "previous_entry_hash": "sha256:...",
-  "previous_state_hash": "sha256:...",
-  "event_type": "step-postconditions-verified",
-  "event": {},
-  "resulting_state_hash": "sha256:...",
-  "entry_hash": "sha256:...",
-  "created_at": "..."
-}
-```
-
-The entry hash covers the canonical entry content, including journal identity,
-sequence, previous-entry hash, previous-state hash, event type and payload, and
-resulting-state hash. Entries are never edited or replaced in place.
+An object in `entries/` or `authorizations/` is not committed merely because it
+exists. The exact network commit point is the durable atomic replacement of
+`head.json` with one pointer that jointly names the verified entry and its
+verified non-null authorization bundle. Unnamed objects are orphan evidence and
+MUST NOT be interpreted as committed authority.
 
 ### Checkpoint-aware replay
 
 Every checkpoint is an immutable journal entry containing a complete state for
 that journal. Checkpoints are not side files and do not bypass the journal head.
 
-A routine checkpoint has the shape:
+A routine checkpoint is a network-journal entry with
+`event_type="state-checkpoint"` whose canonical event payload has
+`checkpoint_version="mother.journal.checkpoint.v1"`,
+`checkpoint_kind="routine"`, the exact immediately preceding entry sequence and
+hash, one complete state object, its typed state hash, the exact canonical
+state-object roots, and the hash of one pre-entry canonical closure manifest.
 
-```json
-{
-  "schema": "mother.journal.entry.v1",
-  "journal_id": "action:add-node-mainneta-super2-001",
-  "sequence": 20,
-  "previous_entry_hash": "sha256:...",
-  "previous_state_hash": "sha256:...",
-  "event_type": "state-checkpoint",
-  "event": {
-    "checkpoint_kind": "routine",
-    "covers_through_sequence": 19,
-    "covers_through_entry_hash": "sha256:...",
-    "state_schema": "mother.action-state.v1",
-    "state": {},
-    "state_hash": "sha256:..."
-  },
-  "resulting_state_hash": "sha256:...",
-  "entry_hash": "sha256:...",
-  "created_at": "..."
-}
-```
+Every reachable state object exposes its complete direct child-reference set in
+the exact canonical state-object envelope. STATE-002 derives the closure graph
+from those verified object bytes, creates one manifest row for every reachable
+member including leaves, and computes the manifest hash before checkpoint entry
+construction. A caller-supplied edge or member declaration is not closure proof.
 
-For a routine checkpoint, `event.state_hash`, `resulting_state_hash`, and the
-state obtained by valid replay through `covers_through_sequence` MUST be equal.
-A routine checkpoint summarizes valid history; it does not override it.
+Construction validation requires a prior replay through the covered predecessor
+and proves byte-identical state, schema, and hash. A dedicated checkpoint-entry
+builder binds the payload to the prospective sequence, predecessor, and exact
+resulting state before returning entry bytes. It does not perform committed-read
+validation because no entry reference or authorization bundle exists yet.
+
+Committed-read validation occurs only after the existing entry and its
+authorization bundle have been loaded and the bundle has passed AUTH-003
+semantic validation. It does not require archived pre-checkpoint history: it
+verifies the intrinsic checkpoint payload, the containing entry, coverage
+adjacency, state hash, closure-manifest binding, and the containing entry's
+predecessor and resulting-state bindings. A routine checkpoint summarizes valid
+history; it does not override it.
 
 Every newly created journal begins with an initial-state checkpoint before any
 ordinary event is committed:
@@ -1798,21 +1748,37 @@ pending-action state, has `previous_entry_hash: null`, has
 non-null `bootstrap-birth` authorization bundle. The first later non-bootstrap
 network event is sequence 2.
 
-When opening a committed journal, Mother MUST:
+When opening a committed network journal, Mother MUST:
 
-1. read a stable committed head;
-2. begin at the head entry and walk backward by sequence;
-3. for a network journal, load the authorization bundle named by the head,
-   verify that it names the entry, and walk backward through both the
-   previous-entry and previous-authorization-bundle links;
-4. validate each encountered entry hash, authorization-bundle hash when
-   applicable, journal identity, sequence, and predecessor relationship;
-5. stop at the newest valid checkpoint on that committed lineage;
-6. verify the checkpoint's complete state and state hash;
-7. reverse the collected later entries into forward order;
-8. replay those entries from the checkpoint state;
-9. verify every previous-state and resulting-state hash;
-10. require the final replayed state hash to equal `head.json`.
+1. read one stable committed entry/bundle head;
+2. begin at the exact head entry and walk backward through both entry and
+   authorization-bundle links;
+3. structurally validate every loaded entry, bundle object identity, journal
+   identity, sequence, state link, and predecessor relationship;
+4. invoke `MOTHER-OFM-AUTH-003` to semantically validate every network
+   authorization bundle against its exact entry and obtain one authorized
+   lineage value;
+5. stop at the newest intrinsically valid checkpoint on that committed lineage;
+6. perform committed-read checkpoint validation without requiring archived
+   history before the checkpoint;
+7. load the exact closure manifest named by the checkpoint, independently
+   rederive every edge from the verified state-object `references` fields, and
+   verify the complete closure against the network `journal/state-objects`
+   CORE-012 root;
+8. bind the authorized lineage, committed checkpoint validation, and verified
+   closure into one proof-bearing replay input;
+9. reverse the collected later entries into forward order, replay them once,
+   and verify every previous-state and resulting-state hash;
+10. require the final replayed state hash to equal both `head.json` and the
+    committed-state projection, then reread the complete head and discard the
+    result if it changed.
+
+A missing immutable object requested directly retains the CORE-012 missing-object
+error. A required predecessor missing while selecting a checkpoint is translated
+to `MOTHER_STATE_CHECKPOINT_MISSING`; a required predecessor missing while
+walking the selected lineage is translated to `MOTHER_STATE_INVALID_LINEAGE`.
+Both translations retain the causal CORE-012 error and are non-retryable without
+explicit recovery.
 
 Readers MUST NOT assume that replay begins at sequence `1` or that entries
 older than the selected checkpoint remain in the active journal directory.
@@ -1846,32 +1812,34 @@ replay algorithm.
 
 ### Atomic filesystem commit
 
-A mutating journal writer MUST hold the applicable exclusive operating-system
-lock and commit one entry in this order:
+A mutating network-journal writer MUST hold the applicable exclusive
+operating-system lock and commit one entry in this order:
 
 ```text
 1. Read and verify the current committed head.
 2. Derive and validate the next complete state.
-3. Construct and hash the next immutable entry using only pre-claim facts.
-4. For an authorized network successor, obtain the exact certificate and any
-   required D028 acceptance/decision evidence, then construct and hash the
-   immutable authorization bundle; for action or rollback journals use null.
-5. Write the entry to a temporary file in the same filesystem.
-6. Flush and fsync the temporary entry.
-7. Atomically rename it to entries/<sequence>.json.
-8. Fsync the entries directory.
-9. When non-null, write, flush, fsync, and content-address the authorization
-   bundle under authorizations/<authorization-bundle-hash>.json.
-10. Fsync the authorizations directory.
-11. Write one replacement head to a temporary file binding the entry hash,
-    resulting-state hash, and authorization-bundle hash.
-12. Flush and fsync the replacement head.
-13. Atomically replace head.json.
-14. Fsync the journal directory.
-15. Rebuild or atomically replace derived projections.
+3. Publish every referenced immutable state object through CORE-012.
+4. For a checkpoint, derive the closure graph from those verified object bytes,
+   build and publish the pre-entry closure manifest, and retain its ContentHash.
+5. Build the exact acyclic ordinary-entry bytes or use the dedicated
+   checkpoint-entry builder to bind payload, sequence, predecessor, and
+   resulting state.
+6. Publish the immutable entry through CORE-012 and retain its ContentHash.
+7. Obtain and validate the exact successor authorization evidence.
+8. Build and publish the immutable authorization bundle through the distinct
+   CORE-012 authorization root and retain its ContentHash.
+9. Write one replacement head to a temporary file binding the entry hash,
+   resulting-state hash, and non-null authorization-bundle hash.
+10. Flush and fsync the replacement head.
+11. Atomically replace head.json.
+12. Fsync the journal directory.
+13. Rebuild or atomically replace derived projections.
 ```
 
-Step 13 is the sole commit point. A crash has deterministic meaning:
+Step 11 is the sole commit point. STATE-001 and STATE-002 own only canonical
+bytes and validation; the traced authority/protocol caller owns immutable
+publication, and `MOTHER-OFM-AUTH-004` alone owns the head replacement. A crash
+has deterministic meaning:
 
 ```text
 temporary entry or authorization bundle exists:
@@ -5985,7 +5953,7 @@ The entry contains at least:
 
 ```text
 event_type: state-checkpoint
-checkpoint_kind: authoritative-reseal
+checkpoint_kind: authoritative-rectification
 sequence: selected predecessor head_sequence + 1
 previous_entry_hash: selected predecessor network head entry hash
 previous_authorization_bundle_hash: selected predecessor network head authorization-bundle hash

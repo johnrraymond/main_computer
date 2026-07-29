@@ -1,7 +1,7 @@
 # MCEL Document Editor Surface Pilot
 
-Patch 20 promoted Document Editor from a layout-bound legacy app into a
-semantic-runtime MCEL app surface.
+Patch 43 parks Document Editor at runtime-baseline until its requirements
+contract and semantic adapter coverage are truth-auditable.
 
 The original intent was narrow:
 
@@ -12,12 +12,13 @@ existing Document Editor UI
   + runtime diagnosis contract
   -> extractable SemanticSurfaceIR
   -> valid SharedLayoutGrammar
-  -> enrolled semantic-runtime conformance
+  -> parked runtime-baseline conformance
 ```
 
-Patch 20 did not redesign Document Editor or add a visible panel. Patch 24a now
-specifies the next Document Editor interaction model before Patch 24b changes
-the live UI.
+Patch 20 did not redesign Document Editor or add a visible panel. Patch 24a
+specified the next Document Editor interaction model before Patch 24b changed
+the live UI. Patch 43 keeps that runtime surface proof intact while removing
+the premature semantic-runtime declaration.
 
 ## Current surface
 

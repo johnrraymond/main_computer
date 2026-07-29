@@ -285,7 +285,7 @@ def test_document_editor_surface_contract_builds_reusable_ir_and_layout() -> Non
     assert data["controls"] == 10
 
 
-def test_document_editor_is_enrolled_as_semantic_runtime() -> None:
+def test_document_editor_is_parked_as_runtime_baseline() -> None:
     report = healthy_document_runtime_report()
     html = DOCUMENT_HTML.read_text(encoding="utf-8")
     script = load_document_surface_stack(
@@ -310,12 +310,10 @@ def test_document_editor_is_enrolled_as_semantic_runtime() -> None:
     data = run_node_json(script)
 
     assert data["policy"]["state"] == "surface-aware"
-    assert data["policy"]["maturity"] == "semantic-runtime"
+    assert data["policy"]["maturity"] == "runtime-baseline"
     assert data["policy"]["conformanceRequired"] is True
     assert data["policy"]["surfaceId"] == "document-editor.surface.primary"
     assert data["requiredLayerIds"] == [
-        "semantic-surface",
-        "layout-grammar",
         "runtime-ownership",
         "runtime-visual-fit",
         "diagnostic-no-throw",
@@ -345,7 +343,7 @@ def test_document_editor_surface_is_domain_neutral_and_documented() -> None:
     assert "document-editor.surface.primary" in script
     assert "buildStaticSurfaceRidgeRecords" in script
     assert "extractCurrentSurface" in script
-    assert "semantic-runtime" in doc
+    assert "runtime-baseline" in doc
 
     forbidden_terms = ["Health", "BIO_HEALTH", "SYS_HEALTH", "patient", "clinical"]
     for text in [script, doc]:

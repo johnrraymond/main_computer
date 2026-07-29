@@ -199,11 +199,9 @@ def test_registry_marks_git_tools_as_semantic_runtime_after_promotion() -> None:
     ]
 
     assert data["documentEditor"]["conformanceRequired"] is True
-    assert data["documentEditor"]["maturity"] == "semantic-runtime"
+    assert data["documentEditor"]["maturity"] == "runtime-baseline"
     assert data["documentEditor"]["surfaceId"] == "document-editor.surface.primary"
     assert data["documentEditor"]["requiredLayerIds"] == [
-        "semantic-surface",
-        "layout-grammar",
         "runtime-ownership",
         "runtime-visual-fit",
         "diagnostic-no-throw",

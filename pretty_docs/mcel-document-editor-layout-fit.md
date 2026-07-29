@@ -1,7 +1,8 @@
 # Document Editor layout fit
 
 Patch 21 stabilized the Document Editor as a usable MCEL surface, not only a
-semantic one.
+semantic one. Patch 43 parks the app at runtime-baseline until its requirements
+contract and semantic adapter coverage are truth-auditable.
 
 Patch 21a corrected the lane policy after live use showed that stacking the
 right Document AI companion was the wrong degradation. The then-current layout
@@ -79,8 +80,8 @@ macro fit: the big regions fit in the app shell
 micro fit: readable/control content inside each region has a fit policy
 ```
 
-For semantic-runtime apps, content-fit violations are hard runtime visual-fit
-failures.
+For conformance-required app surfaces, content-fit violations remain hard
+runtime visual-fit failures even when an app is parked at runtime-baseline.
 
 ## Patch 22a and 22b page auto-fit
 

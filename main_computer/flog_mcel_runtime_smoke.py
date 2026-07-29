@@ -85,7 +85,7 @@ ROUTE_OVERRIDES = {
 
 SCENARIO_INTENTS = {
     "calculator": "Verify the calculator workspace satisfies its runtime app-surface baseline.",
-    "document": "Verify Document Editor satisfies semantic-runtime surface, layout, ownership, and visual-fit conformance.",
+    "document": "Verify Document Editor satisfies its parked runtime-baseline ownership, visual-fit, and diagnostic conformance.",
     "file-explorer": "Verify File Explorer satisfies semantic-runtime surface, layout, ownership, and visual-fit conformance.",
     "git-tools": "Verify Git Tools satisfies semantic-runtime repository workflow, governed-publish, and runtime conformance when explicitly requested.",
     "code-editor": "Verify the Code Editor host/workbench exposes one usable selected-source editor.",
@@ -146,10 +146,10 @@ FALLBACK_APP_SURFACE_POLICIES = {
         label="Document Editor",
         state="surface-aware",
         conformance_required=True,
-        maturity="semantic-runtime",
+        maturity="runtime-baseline",
         surface_id="document-editor.surface.primary",
         contract_id="document-editor.contract.default.app-health",
-        required_layer_ids=BASELINE_LAYER_IDS,
+        required_layer_ids=RUNTIME_LAYER_IDS,
     ),
     "file-explorer": AppSurfacePolicy(
         app_id="file-explorer",

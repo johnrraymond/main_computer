@@ -512,7 +512,14 @@ def test_redact_copy_rejects_invalid_missing_duplicate_or_overlapping_pointers(
         evidence,
         b'{"a/b":"x","credentials":{"password":"secret"},"items":["x","y"]}',
     )
-    policy = _policy(evidence, *pointers)
+    if pointers == ("",):
+        malformed_rule = object.__new__(evidence.RedactionRule)
+        object.__setattr__(malformed_rule, "json_pointer", "")
+        policy = evidence.RedactionPolicy(
+            "redaction-policy.v1", "public-export", (malformed_rule,)
+        )
+    else:
+        policy = _policy(evidence, *pointers)
     with pytest.raises(MotherError) as caught:
         evidence.redact_copy(document, policy, operation=_operation())
     _assert_error(caught.value, "MOTHER_EVIDENCE_REDACTION_FAILED")

@@ -26,6 +26,7 @@ def test_valid_trace_preserves_real_ancestry() -> None:
         operations=("MOTHER-OP-DIAGNOSE",),
         functionalities=("MOTHER-OF-OBS-001",),
         modules=("MOTHER-OFM-CORE-011", "MOTHER-OFM-STATE-001"),
+        methods=("MOTHER-OFM-STATE-001.read_stable_head",),
     )
     assert validate_contract_trace(trace, docs) == []
 
@@ -317,3 +318,66 @@ def test_method_metadata_is_required_for_core008_and_core009() -> None:
             "requires methods metadata for method-qualified modules" in error
             for error in errors
         )
+
+
+def test_method_metadata_is_required_for_state001_and_state002() -> None:
+    docs = MotherDocuments.load()
+    cases = (
+        (
+            "MOTHER-OFM-STATE-001",
+            "MOTHER-OF-OBS-003",
+            "MOTHER-OP-DIAGNOSE",
+            "MOTHER-OFM-STATE-001.validate_lineage",
+        ),
+        (
+            "MOTHER-OFM-STATE-002",
+            "MOTHER-OF-OBS-003",
+            "MOTHER-OP-DIAGNOSE",
+            "MOTHER-OFM-STATE-002.prepare_replay",
+        ),
+    )
+    for module_id, functionality, operation, direct_method in cases:
+        errors = validate_contract_trace(
+            ContractTrace(
+                requirements=("MOTHER-REQ-002",),
+                operations=(operation,),
+                functionalities=(functionality,),
+                modules=(module_id,),
+                methods=(),
+            ),
+            docs,
+            direct_methods=(direct_method,),
+        )
+        assert any(
+            "requires methods metadata for method-qualified modules" in error
+            for error in errors
+        )
+        assert any(
+            f"direct public-method call {direct_method} "
+            "is omitted from methods metadata" in error
+            for error in errors
+        )
+
+
+def test_state_replay_functionality_rows_include_proof_factories() -> None:
+    rows = functionality_method_rows(MotherDocuments.load())
+    expected_validation_tail = (
+        "MOTHER-OFM-STATE-001.validate_lineage",
+        "MOTHER-OFM-STATE-001.authorize_lineage",
+        "MOTHER-OFM-AUTH-003.validate_bundle",
+        "MOTHER-OFM-STATE-002.validate_checkpoint",
+        "MOTHER-OFM-STATE-002.state_closure",
+        "MOTHER-OFM-STATE-002.prepare_replay",
+        "MOTHER-OFM-STATE-001.replay_forward",
+    )
+    for functionality in (
+        "MOTHER-OF-SYNC-004",
+        "MOTHER-OF-REC-005",
+        "MOTHER-OF-PRJ-002",
+    ):
+        row = rows[functionality]
+        positions = tuple(row.index(method) for method in expected_validation_tail)
+        assert positions == tuple(sorted(positions))
+
+    assert "MOTHER-OFM-STATE-002.build_checkpoint" in rows["MOTHER-OF-RSL-006"]
+    assert "MOTHER-OFM-STATE-002.build_checkpoint" in rows["MOTHER-OF-MIG-005"]

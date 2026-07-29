@@ -439,7 +439,8 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     assert report["summary"]["appCount"] == 21
     assert report["summary"]["declaredLevelCounts"] == {
         "legacy": 14,
-        "semantic-runtime": 7,
+        "runtime-baseline": 1,
+        "semantic-runtime": 6,
     }
     assert report["summary"]["promotionReadyAppIds"] == []
     assert report["authorities"] == {
