@@ -21,6 +21,7 @@
       chatController: null,
       chatOpen: false,
       dirty: false,
+      annotationSavePromise: Promise.resolve(),
       nodes: {}
     };
 
@@ -1152,8 +1153,8 @@
       setGameEditorStatus("RAG edit applied and project reloaded");
     }
 
-    function handleShuttle3dPolygonAnnotationSave(detail = {}) {
-      // Patch U: accept hold-P polygon/object annotations from the WebGL scene surface.
+    async function handleShuttle3dPolygonAnnotationSave(detail = {}) {
+      // Patch U.3: persist hold-P annotations through the project write route immediately.
       const projectId = String(detail?.projectId || "");
       if (projectId && projectId !== String(gameEditorState.projectId || "")) return;
       const annotation = detail?.annotation && typeof detail.annotation === "object" ? detail.annotation : null;
@@ -1175,8 +1176,37 @@
       else annotations.push(cleanAnnotation);
       if (gameEditorState.project) gameEditorState.project.activeSceneId = String(scene.id || sceneId);
       gameEditorState.selectedSceneId = String(scene.id || sceneId);
-      markGameEditorDirty(`dirty - annotated ${String(annotation.label || annotation.targetId || targetKey)}`);
-      setGameEditorWebglStatus(`annotation saved for ${String(annotation.label || annotation.targetId || targetKey)}`);
+      const label = String(annotation.label || annotation.targetId || targetKey);
+      markGameEditorDirty(`saving annotation for ${label}...`);
+      setGameEditorWebglStatus(`saving annotation for ${label}...`);
+      const saveResult = await saveGameEditorProject({
+        verifyAnnotation: {
+          sceneId: String(scene.id || sceneId),
+          targetKey,
+          annotationId: String(cleanAnnotation.id || "")
+        }
+      });
+      if (saveResult?.annotation_verified !== true) {
+        throw new Error(`Annotation disk verification failed for ${label}.`);
+      }
+      setGameEditorWebglStatus(`annotation saved and verified on disk for ${label}`);
+      return {
+        persisted: true,
+        projectId: String(gameEditorState.projectId || ""),
+        sceneId: String(scene.id || sceneId),
+        annotation: cloneGameEditorData(saveResult.annotation || cleanAnnotation),
+        contentHash: String(saveResult.content_hash || gameEditorState.contentHash || ""),
+        writePath: String(saveResult.write_path || `game_projects/${gameEditorState.projectId}/project.json`),
+        writePathResolved: String(saveResult.write_path_resolved || "")
+      };
+    }
+
+    function queueShuttle3dPolygonAnnotationSave(detail = {}) {
+      const run = Promise.resolve(gameEditorState.annotationSavePromise)
+        .catch(() => undefined)
+        .then(() => handleShuttle3dPolygonAnnotationSave(detail));
+      gameEditorState.annotationSavePromise = run.catch(() => undefined);
+      return run;
     }
 
     async function loadGameEditorAssets() {
@@ -1356,7 +1386,8 @@
         projectId: gameEditorState.projectId,
         selectedObjectId: gameEditorState.selectedObjectId,
         assets: gameEditorState.assets,
-        showLabels: true
+        showLabels: true,
+        onPolygonAnnotationSave: (detail = {}) => queueShuttle3dPolygonAnnotationSave(detail)
       }) || {scene: normalizedScene, dispose() { canvas.replaceChildren(); }};
       decorateGameEditorPreviewObjects(normalizedScene);
       const count = Array.isArray(normalizedScene.objects) ? normalizedScene.objects.length : 0;
@@ -1399,20 +1430,33 @@
       setGameEditorStatus(`framed ${displayObjectLabel(object)}`);
     }
 
-    async function saveGameEditorProject() {
+    async function saveGameEditorProject({verifyAnnotation = null} = {}) {
       const project = gameEditorState.project;
-      if (!project) return;
+      if (!project) return null;
       project.name = gameEditorState.nodes.projectName?.value.trim() || displayProjectName(project);
       syncGameEditorSceneStore();
-      const data = await gameEditorPost("/api/applications/game-editor/project/write", {
+      const payload = {
         project_id: gameEditorState.projectId,
         expected_content_hash: gameEditorState.contentHash,
         project
-      });
+      };
+      if (verifyAnnotation && typeof verifyAnnotation === "object") {
+        payload.verify_annotation = {
+          scene_id: String(verifyAnnotation.sceneId || ""),
+          target_key: String(verifyAnnotation.targetKey || ""),
+          annotation_id: String(verifyAnnotation.annotationId || "")
+        };
+      }
+      const data = await gameEditorPost("/api/applications/game-editor/project/write", payload);
       gameEditorState.contentHash = String(data.content_hash || gameEditorState.contentHash);
+      if (payload.verify_annotation && data.annotation_verified !== true) {
+        gameEditorState.dirty = true;
+        throw new Error("Project write returned without verifying the annotation on disk.");
+      }
       gameEditorState.dirty = false;
       setGameEditorStatus("project saved");
       renderGameEditorProjectList();
+      return data;
     }
 
     function readFileAsBase64(file) {
@@ -1454,7 +1498,9 @@
           refreshGameEditorAfterRagApply(event?.detail || {}).catch((error) => reportGameEditorError(error));
         });
         window.addEventListener("main-computer-shuttle3d-polygon-annotation-save", (event) => {
-          handleShuttle3dPolygonAnnotationSave(event?.detail || {});
+          queueShuttle3dPolygonAnnotationSave(event?.detail || {}).catch((error) => {
+            reportGameEditorError(error);
+          });
         });
         gameEditorState.initialized = true;
       }

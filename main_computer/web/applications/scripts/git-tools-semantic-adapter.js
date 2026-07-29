@@ -4,7 +4,7 @@
 
     if (!global) return;
 
-    const VERSION = "git-tools-semantic-adapter-commit-preflight-v10";
+    const VERSION = "git-tools-semantic-adapter-local-gitea-preflight-v11";
     const APP_ID = "git-tools";
     const ADAPTER_ID = "git-tools-domain-adapter";
     const STATE_SCHEMA_VERSION = "git-tools-semantic-state-v1";
@@ -643,14 +643,10 @@
         "preparePush",
         "pushCurrentBranch",
         "commitSelectedFiles",
+        "prepareLocalGiteaTarget",
         "previewIgnoreRule"
       ].includes(definition.id)) {
         return "executable";
-      }
-      if ([
-        "prepareLocalGiteaTarget"
-      ].includes(definition.id)) {
-        return "preflight-only";
       }
       if (definition.preflightRequired === true) return "preflight-only";
       return "declared-only";
@@ -680,6 +676,9 @@
       }
       if (definition.id === "commitSelectedFiles" && status === "executable") {
         return "git-tools-semantic-adapter.commitSelectedFilesPreflight";
+      }
+      if (definition.id === "prepareLocalGiteaTarget" && status === "executable") {
+        return "git-tools-semantic-adapter.prepareLocalGiteaTargetPreflight";
       }
       if (status === "preflight-only") return "mcel-preflight-gap";
       if (status === "prohibited") return "policy-prohibited";
@@ -738,6 +737,11 @@
           entry.intentId === "commitSelectedFiles" &&
           entry.status === "executable"
       );
+      const localGiteaPreflightExecutable = entries.some(
+        (entry) =>
+          entry.intentId === "prepareLocalGiteaTarget" &&
+          entry.status === "executable"
+      );
       const semanticRuntimeScope = governedPublishExecutable
         ? (
           safeReadComplete
@@ -745,7 +749,11 @@
               ignoreRulePreviewExecutable
                 ? (
                   commitPreflightExecutable
-                    ? "governed-publish-ignore-preview-commit-preflight-partial"
+                    ? (
+                      localGiteaPreflightExecutable
+                        ? "governed-publish-preflight-complete"
+                        : "governed-publish-ignore-preview-commit-preflight-partial"
+                    )
                     : "governed-publish-ignore-preview-partial"
                 )
                 : "governed-publish-gap-closed-partial"
@@ -914,6 +922,35 @@
       return String(path || "").split("/").some((part) => part === "..");
     }
 
+    function basenameFromPath(path) {
+      const text = String(path || "").replace(/\\+/g, "/").replace(/\/+$/, "");
+      const parts = text.split("/").filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : "";
+    }
+
+    function normalizeLocalTargetSlug(value, fallback = "") {
+      return String(value || fallback || "")
+        .trim()
+        .replace(/\.git$/i, "")
+        .replace(/\s+/g, "-");
+    }
+
+    function localGiteaTargetUrl(parameters = {}) {
+      if (parameters.targetUrl) return String(parameters.targetUrl).trim();
+      const protocol = String(parameters.protocol || "http").trim().toLowerCase() || "http";
+      const host = String(parameters.host || "localhost").trim() || "localhost";
+      const port = String(parameters.port || "").trim();
+      const owner = encodeURIComponent(String(parameters.owner || "local"));
+      const repositoryName = encodeURIComponent(String(parameters.repositoryName || "repository"));
+      const authority = port && ["http", "https"].includes(protocol)
+        ? `${host}:${port}`
+        : host;
+      if (protocol === "ssh") {
+        return `ssh://git@${authority}/${owner}/${repositoryName}.git`;
+      }
+      return `${protocol}://${authority}/${owner}/${repositoryName}.git`;
+    }
+
     function normalizeIntentParameters(intentOrId, input = {}) {
       const intentId = normalizeIntentId(intentOrId);
       const safeInput = input && typeof input === "object" ? input : {};
@@ -963,6 +1000,64 @@
             safeInput.secret_risk === true ||
             safeInput.classification === "secret"
         };
+      }
+      if (intentId === "prepareLocalGiteaTarget") {
+        const repoDir = String(
+          safeInput.repoDir ??
+          safeInput.repo_dir ??
+          ""
+        ).trim();
+        const inferredRepoName = basenameFromPath(
+          safeInput.gitRoot ??
+          safeInput.git_root ??
+          repoDir
+        );
+        const repositoryName = normalizeLocalTargetSlug(
+          safeInput.repositoryName ??
+          safeInput.repository_name ??
+          safeInput.repoName ??
+          safeInput.repo ??
+          inferredRepoName,
+          "repository"
+        );
+        const owner = normalizeLocalTargetSlug(
+          safeInput.owner ??
+          safeInput.organization ??
+          safeInput.namespace,
+          "local"
+        );
+        const remoteName = normalizeLocalTargetSlug(
+          safeInput.remote ??
+          safeInput.remoteName ??
+          safeInput.targetRemote,
+          "local-gitea"
+        );
+        const protocol = String(safeInput.protocol ?? "http").trim().toLowerCase() || "http";
+        const host = String(safeInput.host ?? safeInput.hostname ?? "localhost").trim() || "localhost";
+        const port = String(safeInput.port ?? "3000").trim();
+        const targetUrl = String(
+          safeInput.targetUrl ??
+          safeInput.remoteUrl ??
+          safeInput.url ??
+          ""
+        ).trim();
+        const normalized = {
+          repoDir,
+          owner,
+          repositoryName,
+          remoteName,
+          protocol,
+          host,
+          port,
+          targetUrl,
+          switchOrigin: safeInput.switchOrigin === true || safeInput.switch_origin === true,
+          createRemoteIfMissing:
+            safeInput.createRemoteIfMissing === true ||
+            safeInput.create_remote_if_missing === true,
+          source: String(safeInput.source || "semantic-adapter").trim()
+        };
+        normalized.targetUrl = localGiteaTargetUrl(normalized);
+        return normalized;
       }
       if (intentId === "previewIgnoreRule") {
         const rule = String(
@@ -1014,6 +1109,58 @@
         repo: String(safeInput.repo ?? safeInput.repoName ?? "").trim(),
         protocol: String(safeInput.protocol ?? "http").trim().toLowerCase() || "http",
         switchOrigin: safeInput.switchOrigin === true || safeInput.switch_origin === true
+      };
+    }
+
+    function localGiteaTargetPreflightPayload(parameters = {}, state = getState()) {
+      const safeState = state && typeof state === "object" ? state : getState();
+      const targetUrl = localGiteaTargetUrl(parameters);
+      const remoteExists = (safeState.remotes || []).some(
+        (remote) => String(remote?.name || "") === String(parameters.remoteName || "local-gitea")
+      );
+      return {
+        kind: "local-gitea-target-preflight",
+        repository: safeState.gitRoot || safeState.repoDir || "",
+        branch: safeState.branch || "unknown",
+        owner: String(parameters.owner || "local"),
+        repositoryName: String(parameters.repositoryName || "repository"),
+        remoteName: String(parameters.remoteName || "local-gitea"),
+        protocol: String(parameters.protocol || "http"),
+        host: String(parameters.host || "localhost"),
+        port: String(parameters.port || ""),
+        targetUrl,
+        remoteExists,
+        wouldStartService: false,
+        wouldCreateRepository: false,
+        wouldWriteGitConfig: false,
+        wouldRunGitCommand: false,
+        wouldModifyRepository: false,
+        wouldPush: false,
+        requiresExplicitMutationBinding: true,
+        commandPreview: {
+          addRemote: `git remote add ${String(parameters.remoteName || "local-gitea")} ${JSON.stringify(targetUrl)}`,
+          setRemoteUrl: `git remote set-url ${String(parameters.remoteName || "local-gitea")} ${JSON.stringify(targetUrl)}`,
+          push: `git push ${String(parameters.remoteName || "local-gitea")} ${String(safeState.branch || "main")}`,
+          executionPermitted: false
+        },
+        targetContract: {
+          serviceProbeAttempted: false,
+          serviceRequiredBeforeMutation: true,
+          repositoryCreationRequiredBeforePush: parameters.createRemoteIfMissing === true,
+          originSwitchRequested: parameters.switchOrigin === true
+        },
+        safety: {
+          shellExecution: false,
+          serviceMutation: false,
+          gitConfigMutation: false,
+          pushMutation: false
+        },
+        requiredNextActions: [
+          "Confirm the Local Gitea service is running outside this adapter.",
+          "Create or verify the target repository through an explicit platform binding.",
+          "Apply remote configuration through a future mutation lane; this preflight does not write Git config."
+        ],
+        rollbackGuidance: "No rollback is needed because this lane does not start services, create repositories, write Git config, or push commits."
       };
     }
 
@@ -1737,6 +1884,86 @@
       }
 
       if (
+        definition?.id === "prepareLocalGiteaTarget" &&
+        blockers.length === 0
+      ) {
+        const slugPattern = /^[A-Za-z0-9._-]+$/;
+        const invalidSlugFields = [];
+        [
+          ["owner", parameters.owner],
+          ["repositoryName", parameters.repositoryName],
+          ["remoteName", parameters.remoteName]
+        ].forEach(([field, value]) => {
+          const text = String(value || "").trim();
+          if (!text || text === "." || text === ".." || !slugPattern.test(text)) {
+            invalidSlugFields.push({field, value: text});
+          }
+        });
+        if (invalidSlugFields.length) {
+          addBlocker(
+            blockers,
+            "local-gitea-target-slug-invalid",
+            "Local Gitea target preparation requires safe owner, repository, and remote names.",
+            {invalidSlugFields}
+          );
+        }
+
+        if (!["http", "https", "ssh"].includes(String(parameters.protocol || ""))) {
+          addBlocker(
+            blockers,
+            "local-gitea-protocol-invalid",
+            "Local Gitea target preparation only supports http, https, or ssh preview URLs.",
+            {protocol: parameters.protocol}
+          );
+        }
+
+        if (!String(parameters.host || "").trim() || /[\s\0/]/.test(String(parameters.host || ""))) {
+          addBlocker(
+            blockers,
+            "local-gitea-host-invalid",
+            "Local Gitea target host must be a single hostname without path or whitespace.",
+            {host: parameters.host}
+          );
+        }
+
+        if (["http", "https"].includes(String(parameters.protocol || ""))) {
+          const portNumber = Number(parameters.port || 0);
+          if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+            addBlocker(
+              blockers,
+              "local-gitea-port-invalid",
+              "Local Gitea target port must be an integer between 1 and 65535.",
+              {port: parameters.port}
+            );
+          }
+        }
+
+        if (/\0/.test(String(parameters.targetUrl || ""))) {
+          addBlocker(
+            blockers,
+            "local-gitea-target-url-invalid",
+            "Local Gitea target URL must not contain NUL characters.",
+            {targetUrl: parameters.targetUrl}
+          );
+        }
+
+        addWarning(
+          warnings,
+          "local-gitea-service-not-probed",
+          "This preflight does not contact or start Local Gitea; service readiness must be proven by a future platform binding.",
+          {host: parameters.host, port: parameters.port}
+        );
+        if (parameters.switchOrigin === true) {
+          addWarning(
+            warnings,
+            "local-gitea-origin-switch-requested",
+            "Switching origin is a Git config mutation and is previewed only in this lane.",
+            {remoteName: parameters.remoteName}
+          );
+        }
+      }
+
+      if (
         definition &&
         (definition.id === "preparePush" || definition.id === "pushCurrentBranch") &&
         blockers.length === 0
@@ -2316,6 +2543,52 @@
       return storeReceipt(decoratedReceipt, options);
     }
 
+    function buildLocalGiteaTargetPreflightExecutionReceipt(preflight, stateBefore, plan, options = {}) {
+      const definition = definitionFor("prepareLocalGiteaTarget");
+      receiptSequence += 1;
+      const createdAt = nowIso({
+        now: options.completedAt || options.now || new Date().toISOString()
+      });
+      const fingerprint = stateFingerprint(stateBefore || initialState());
+      const receipt = {
+        schemaVersion: RECEIPT_SCHEMA_VERSION,
+        receiptId: `${APP_ID}-receipt-${Date.parse(createdAt) || Date.now()}-${receiptSequence}`,
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        kind: "action-execution-receipt",
+        intentId: "prepareLocalGiteaTarget",
+        risk: String(definition?.risk || preflight?.risk || "remote-target-mutation"),
+        status: "succeeded",
+        decision: "allow",
+        createdAt,
+        startedAt: String(options.startedAt || preflight?.evaluatedAt || createdAt),
+        completedAt: createdAt,
+        preflightId: String(preflight?.preflightId || ""),
+        stateObservedAt: String(stateBefore?.observedAt || ""),
+        stateFingerprint: fingerprint,
+        stateBeforeFingerprint: fingerprint,
+        stateAfterFingerprint: fingerprint,
+        parameters: clonePlain(preflight?.parameters || {}),
+        blockers: clonePlain(preflight?.blockers || []),
+        warnings: clonePlain(preflight?.warnings || []),
+        executionAttempted: true,
+        executionBinding: "git-tools-semantic-adapter.prepareLocalGiteaTargetPreflight",
+        result: {
+          status: "succeeded",
+          ...clonePlain(plan || {})
+        },
+        error: null,
+        recoveryClassified: false
+      };
+      const decoratedReceipt = decorateReceiptWithRecovery(
+        receipt,
+        stateBefore || getState(),
+        options
+      );
+      return storeReceipt(decoratedReceipt, options);
+    }
+
     function buildPreviewIgnoreRuleExecutionReceipt(preflight, stateBefore, preview, options = {}) {
       const definition = definitionFor("previewIgnoreRule");
       receiptSequence += 1;
@@ -2470,6 +2743,45 @@
         adapterId: ADAPTER_ID,
         adapterVersion: VERSION,
         intentId: "commitSelectedFiles",
+        status: receipt.status,
+        decision: "allow",
+        executionAttempted: true,
+        executionBinding: receipt.executionBinding,
+        blockers: clonePlain(preflight.blockers || []),
+        warnings: clonePlain(preflight.warnings || []),
+        preflight,
+        receipt,
+        result: clonePlain(receipt.result || {}),
+        stateBefore: canonicalStateSnapshot(stateBefore),
+        stateAfter: canonicalStateSnapshot(stateBefore),
+        error: null
+      };
+    }
+
+    async function executePrepareLocalGiteaTargetIntent(options = {}) {
+      const stateBefore = getState();
+      const preflight = evaluatePreflight("prepareLocalGiteaTarget", stateBefore, options);
+      if (preflight.blocked) {
+        return blockedPreflightExecutionResult(
+          "prepareLocalGiteaTarget",
+          preflight,
+          stateBefore,
+          options
+        );
+      }
+      const plan = localGiteaTargetPreflightPayload(preflight.parameters, stateBefore);
+      const receipt = buildLocalGiteaTargetPreflightExecutionReceipt(
+        preflight,
+        stateBefore,
+        plan,
+        options
+      );
+      return {
+        schemaVersion: "git-tools-execution-result-v1",
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        intentId: "prepareLocalGiteaTarget",
         status: receipt.status,
         decision: "allow",
         executionAttempted: true,
@@ -2913,6 +3225,9 @@
       if (intentId === "commitSelectedFiles") {
         return executeCommitSelectedFilesIntent(options);
       }
+      if (intentId === "prepareLocalGiteaTarget") {
+        return executePrepareLocalGiteaTargetIntent(options);
+      }
       if (intentId === "previewIgnoreRule") {
         return executePreviewIgnoreRuleIntent(options);
       }
@@ -3042,6 +3357,7 @@
       DEFAULT_MAX_STATE_AGE_MS,
       normalizeStatus,
       evaluatePreflight,
+      localGiteaTargetPreflightPayload,
       ignoreRulePreviewPayload,
       stateContentFingerprint,
       buildExecutionReceipt,

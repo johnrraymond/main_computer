@@ -3,7 +3,8 @@
       project: null,
       assets: [],
       contentHash: "",
-      loading: null
+      loading: null,
+      annotationSavePromise: Promise.resolve()
     };
 
     async function webglPost(path, payload = {}) {
@@ -119,6 +120,80 @@
       const scenes = Array.isArray(project?.scenes) ? project.scenes : [];
       const selectedId = String(sceneId || project?.activeSceneId || window.MainComputerSceneStore?.selectedSceneId?.() || "default-empty-scene");
       return scenes.find((scene) => scene?.id === selectedId) || scenes[0] || null;
+    }
+
+    function upsertWebglPolygonAnnotation(project, sceneId, annotation) {
+      if (!project || typeof project !== "object" || !annotation?.targetKey) return null;
+      const scene = webglProjectScene(project, sceneId);
+      if (!scene || String(scene.id || "") !== String(sceneId || "")) return null;
+      scene.metadata = scene.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
+      scene.metadata.shuttle3d = scene.metadata.shuttle3d && typeof scene.metadata.shuttle3d === "object"
+        ? scene.metadata.shuttle3d
+        : {};
+      scene.metadata.shuttle3d.polygonAnnotations = Array.isArray(scene.metadata.shuttle3d.polygonAnnotations)
+        ? scene.metadata.shuttle3d.polygonAnnotations
+        : [];
+      const annotations = scene.metadata.shuttle3d.polygonAnnotations;
+      const targetKey = String(annotation.targetKey || "");
+      const index = annotations.findIndex((candidate) => String(candidate?.targetKey || "") === targetKey);
+      const cleanAnnotation = JSON.parse(JSON.stringify(annotation));
+      if (index >= 0) annotations[index] = cleanAnnotation;
+      else annotations.push(cleanAnnotation);
+      return cleanAnnotation;
+    }
+
+    async function persistWebglPolygonAnnotation(detail = {}) {
+      const projectId = String(detail?.projectId || webglProjectState.projectId || "webgl-demo");
+      const sceneId = String(detail?.sceneId || "");
+      const annotation = detail?.annotation && typeof detail.annotation === "object" ? detail.annotation : null;
+      if (!sceneId) throw new Error("Annotation save is missing the scene id.");
+      if (!annotation?.targetKey || !annotation?.id) {
+        throw new Error("Annotation save is missing a stable target key or annotation id.");
+      }
+
+      const payload = {
+        project_id: projectId,
+        scene_id: sceneId,
+        annotation,
+        expected_content_hash: String(webglProjectState.contentHash || "")
+      };
+      const data = await webglPost("/api/applications/game-editor/project/annotation/write", payload);
+      if (data?.annotation_verified !== true) {
+        throw new Error("Annotation write returned without disk verification.");
+      }
+
+      webglProjectState.projectId = String(data.project_id || projectId);
+      webglProjectState.contentHash = String(data.content_hash || webglProjectState.contentHash || "");
+      upsertWebglPolygonAnnotation(webglProjectState.project, sceneId, data.annotation || annotation);
+      const editorState = window.gameEditorState;
+      if (editorState?.project && String(editorState.projectId || "") === webglProjectState.projectId) {
+        upsertWebglPolygonAnnotation(editorState.project, sceneId, data.annotation || annotation);
+        editorState.contentHash = webglProjectState.contentHash;
+      }
+
+      const writePath = String(data.write_path || `game_projects/${webglProjectState.projectId}/project.json`);
+      const mergedSuffix = data.stale_hash_merged ? " after merging against newer disk state" : "";
+      if (glStatus) {
+        glStatus.textContent = `annotation saved to ${writePath}${mergedSuffix}`;
+      }
+      return {
+        persisted: true,
+        projectId: webglProjectState.projectId,
+        sceneId,
+        annotation: data.annotation || annotation,
+        contentHash: webglProjectState.contentHash,
+        writePath,
+        writePathResolved: String(data.write_path_resolved || ""),
+        staleHashMerged: Boolean(data.stale_hash_merged)
+      };
+    }
+
+    function queueWebglPolygonAnnotationSave(detail = {}) {
+      const run = Promise.resolve(webglProjectState.annotationSavePromise)
+        .catch(() => undefined)
+        .then(() => persistWebglPolygonAnnotation(detail));
+      webglProjectState.annotationSavePromise = run.catch(() => undefined);
+      return run;
     }
 
     function webglEditorSceneCandidate(sceneId = "") {
@@ -1034,6 +1109,11 @@
         selectedObjectId,
         assets: Array.isArray(candidate?.assets) ? candidate.assets : [],
         showLabels: true,
+        onPolygonAnnotationSave: (detail = {}) => queueWebglPolygonAnnotationSave({
+          ...detail,
+          projectId,
+          sceneId: String(detail?.sceneId || scene?.id || "")
+        }),
         enableClickMovement: true,
         movementObjectId: "hero-sprite",
         onSceneMovement(detail) {

@@ -48,7 +48,7 @@
     },
     "git-tools": {
       "app": "git-tools",
-      "current_runtime_status": "runtime-baseline-with-commit-preflight-semantic-adapter",
+      "current_runtime_status": "runtime-baseline-with-local-gitea-preflight-semantic-adapter",
       "declared_form_primitive_count": 6,
       "mutation_intent_count": 4,
       "prohibited_intent_count": 1,
@@ -794,8 +794,7 @@
     },
     "git-tools": {
       "adapter_status_counts": {
-        "current_adapter_status:executable": 8,
-        "current_adapter_status:preflight-only": 1,
+        "current_adapter_status:executable": 9,
         "current_adapter_status:prohibited": 1
       },
       "app": "git-tools",
@@ -811,7 +810,7 @@
         "mcel-use-case": 4
       },
       "contract_complete": true,
-      "current_runtime_status": "runtime-baseline-with-commit-preflight-semantic-adapter",
+      "current_runtime_status": "runtime-baseline-with-local-gitea-preflight-semantic-adapter",
       "dominant_object": "RepositoryProject",
       "first_regions": [
         {
@@ -959,7 +958,7 @@
       },
       "mutation_intent_count": 4,
       "open_finding_count": 4,
-      "planned_or_open_count": 39,
+      "planned_or_open_count": 38,
       "primary_user_goal": "Inspect repository state, triage files, create safe commits, and publish selected project work through governed Git/Gitea actions without exposing raw Git plumbing as the default user path.",
       "prohibited_intent_count": 1,
       "region_count": 8,
@@ -991,16 +990,16 @@
         }
       ],
       "source": {
-        "end_line": 80,
+        "end_line": 86,
         "file": "pretty_docs/mcel-git-tools-requirements.md",
         "start_line": 18
       },
       "status": "specified",
       "status_counts": {
-        "implemented": 7,
+        "implemented": 8,
         "open": 4,
         "partially-implemented": 4,
-        "planned": 7,
+        "planned": 6,
         "prohibited": 1,
         "specified": 28
       },
@@ -2242,8 +2241,7 @@
     },
     {
       "adapter_status_counts": {
-        "current_adapter_status:executable": 8,
-        "current_adapter_status:preflight-only": 1,
+        "current_adapter_status:executable": 9,
         "current_adapter_status:prohibited": 1
       },
       "app": "git-tools",
@@ -2259,7 +2257,7 @@
         "mcel-use-case": 4
       },
       "contract_complete": true,
-      "current_runtime_status": "runtime-baseline-with-commit-preflight-semantic-adapter",
+      "current_runtime_status": "runtime-baseline-with-local-gitea-preflight-semantic-adapter",
       "dominant_object": "RepositoryProject",
       "first_regions": [
         {
@@ -2407,7 +2405,7 @@
       },
       "mutation_intent_count": 4,
       "open_finding_count": 4,
-      "planned_or_open_count": 39,
+      "planned_or_open_count": 38,
       "primary_user_goal": "Inspect repository state, triage files, create safe commits, and publish selected project work through governed Git/Gitea actions without exposing raw Git plumbing as the default user path.",
       "prohibited_intent_count": 1,
       "region_count": 8,
@@ -2439,16 +2437,16 @@
         }
       ],
       "source": {
-        "end_line": 80,
+        "end_line": 86,
         "file": "pretty_docs/mcel-git-tools-requirements.md",
         "start_line": 18
       },
       "status": "specified",
       "status_counts": {
-        "implemented": 7,
+        "implemented": 8,
         "open": 4,
         "partially-implemented": 4,
-        "planned": 7,
+        "planned": 6,
         "prohibited": 1,
         "specified": 28
       },
@@ -3907,9 +3905,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 1176,
+                "end_line": 1188,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1153
+                "start_line": 1165
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -3948,9 +3946,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 1125,
+                "end_line": 1137,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1103
+                "start_line": 1115
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -4012,9 +4010,9 @@
               ],
               "severity": "critical",
               "source": {
-                "end_line": 1151,
+                "end_line": 1163,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1127
+                "start_line": 1139
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -4618,7 +4616,7 @@
     "error_count": 0,
     "pretty_docs_root": "pretty_docs",
     "registry_version": "mcel-requirements-registry-v1",
-    "repo_root": "/mnt/data/patch40_work/main_computer_test",
+    "repo_root": "/mnt/data/work_patch41_norm/main_computer_test",
     "strict_schema_ready": true,
     "total_blocks": 304,
     "valid": true,
@@ -4626,8 +4624,7 @@
   },
   "truth_gate": "requirements describe the contract; adapters and tests prove implementation",
   "valid": true
-}
-);
+});
 
     function clonePlain(value) {
       if (value == null || typeof value !== "object") return value;

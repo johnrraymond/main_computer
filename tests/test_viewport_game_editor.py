@@ -303,6 +303,85 @@ class ViewportGameEditorTests(unittest.TestCase):
         project["name"] = "Stale Save"
         self.assertEqual(self.post_error("/api/applications/game-editor/project/write", {"project_id": "webgl-demo", "expected_content_hash": current["content_hash"], "project": project}).code, 409)
 
+    def test_project_write_verifies_polygon_annotation_from_disk(self) -> None:
+        current = self.read_project()
+        project = copy.deepcopy(current["project"])
+        scene = project["scenes"][0]
+        scene.setdefault("metadata", {}).setdefault("shuttle3d", {})["polygonAnnotations"] = [
+            {
+                "schema": "game.shuttle3d.polygonAnnotation.v1",
+                "id": "annotation.rendered-beam-test",
+                "targetKey": "scene-viewer.dynamic:rendered-beam-test",
+                "targetId": "rendered-beam-test",
+                "targetKind": "beam",
+                "label": "Floating yellow bar",
+                "note": "Remove or attach this geometry.",
+                "tags": ["cleanup"],
+            }
+        ]
+        saved = self.post(
+            "/api/applications/game-editor/project/write",
+            {
+                "project_id": "webgl-demo",
+                "expected_content_hash": current["content_hash"],
+                "project": project,
+                "verify_annotation": {
+                    "scene_id": str(scene.get("id", "")),
+                    "target_key": "scene-viewer.dynamic:rendered-beam-test",
+                    "annotation_id": "annotation.rendered-beam-test",
+                },
+            },
+        )
+        self.assertTrue(saved["ok"])
+        self.assertTrue(saved["annotation_verified"])
+        self.assertEqual(saved["annotation"]["note"], "Remove or attach this geometry.")
+        self.assertEqual(
+            saved["annotation_verification"]["target_key"],
+            "scene-viewer.dynamic:rendered-beam-test",
+        )
+        disk_project = json.loads(
+            (self.root / "game_projects" / "webgl-demo" / "project.json").read_text(encoding="utf-8")
+        )
+        disk_annotations = disk_project["scenes"][0]["metadata"]["shuttle3d"]["polygonAnnotations"]
+        self.assertEqual(disk_annotations[0]["id"], "annotation.rendered-beam-test")
+
+    def test_polygon_annotation_write_merges_current_disk_project_and_reports_path(self) -> None:
+        current = self.read_project()
+        scene = current["project"]["scenes"][0]
+        annotation = {
+            "schema": "game.shuttle3d.polygonAnnotation.v1",
+            "id": "annotation.webgl-direct-save",
+            "targetKey": "scene-viewer.dynamic:webgl-direct-save",
+            "targetId": "webgl-direct-save",
+            "targetKind": "beam",
+            "label": "Floating yellow bar",
+            "note": "Persisted from the standalone WebGL surface.",
+            "tags": ["cleanup", "webgl"],
+        }
+        saved = self.post(
+            "/api/applications/game-editor/project/annotation/write",
+            {
+                "project_id": "webgl-demo",
+                "scene_id": str(scene.get("id", "")),
+                "annotation": annotation,
+                "expected_content_hash": "intentionally-stale-for-merge-test",
+            },
+        )
+        self.assertTrue(saved["ok"])
+        self.assertTrue(saved["annotation_verified"])
+        self.assertTrue(saved["stale_hash_merged"])
+        self.assertEqual(saved["write_path"], "game_projects/webgl-demo/project.json")
+        self.assertTrue(saved["write_path_resolved"].endswith("game_projects/webgl-demo/project.json"))
+        self.assertEqual(saved["annotation"]["id"], "annotation.webgl-direct-save")
+
+        disk_project = json.loads(
+            (self.root / "game_projects" / "webgl-demo" / "project.json").read_text(encoding="utf-8")
+        )
+        disk_annotations = disk_project["scenes"][0]["metadata"]["shuttle3d"]["polygonAnnotations"]
+        self.assertTrue(
+            any(item.get("id") == "annotation.webgl-direct-save" for item in disk_annotations)
+        )
+
     def test_project_create_duplicate_export_and_import(self) -> None:
         created = self.post("/api/applications/game-editor/project/create", {"project_id": "new-game", "name": "New Game"})
         self.assertTrue(created["ok"])

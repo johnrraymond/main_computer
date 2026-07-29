@@ -142,13 +142,13 @@ def test_git_tools_adapter_derives_state_objects_intents_and_preflight_capabilit
         {
             "id": "git-tools-domain-adapter",
             "appId": "git-tools",
-            "version": "git-tools-semantic-adapter-commit-preflight-v10",
+            "version": "git-tools-semantic-adapter-local-gitea-preflight-v11",
             "kind": "governed-push-execution-recovery-domain-adapter",
         }
     ]
 
     readiness = result["readiness"]
-    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeReady"] is True
     assert readiness["adapterExecutable"] is True
     assert readiness["stateMachineReady"] is True
     assert readiness["actionPlannerReady"] is True
@@ -157,19 +157,17 @@ def test_git_tools_adapter_derives_state_objects_intents_and_preflight_capabilit
     assert readiness["recoveryClassifierPresent"] is True
     assert readiness["recoveryCoverageReady"] is True
     assert readiness["runtimeCoreReady"] is True
-    assert readiness["fullApplicationSemanticReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-commit-preflight-partial"
-    assert readiness["executableIntentCount"] == 8
-    assert readiness["preflightOnlyIntentCount"] == 1
+    assert readiness["fullApplicationSemanticReady"] is True
+    assert readiness["semanticRuntimeScope"] == "governed-publish-preflight-complete"
+    assert readiness["executableIntentCount"] == 9
+    assert readiness["preflightOnlyIntentCount"] == 0
     assert readiness["declaredOnlyIntentCount"] == 0
     assert readiness["prohibitedIntentCount"] == 1
     assert readiness["blockedIntentCount"] == 1
     assert readiness["totalIntentCount"] == 10
     assert readiness["intentCoverageAuditReady"] is True
-    assert readiness["intentCoverageReady"] is False
-    assert readiness["missingApplicationSemantics"] == [
-        "prepareLocalGiteaTarget",
-    ]
+    assert readiness["intentCoverageReady"] is True
+    assert readiness["missingApplicationSemantics"] == []
     assert readiness["missingSemantics"] == []
 
     state = result["state"]
@@ -265,12 +263,12 @@ def test_git_tools_adapter_promotes_only_after_verified_recovery_coverage() -> N
     assert readiness["semanticRuntimeAuthority"] == "mcel-domain-adapter-registry"
     assert readiness["registryProofPresent"] is True
     assert readiness["registryProofAuthorized"] is True
-    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeReady"] is True
     assert readiness["runtimeCoreReady"] is True
-    assert readiness["fullApplicationSemanticReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-commit-preflight-partial"
-    assert readiness["semanticRuntimeStatus"] == "scope-limited-semantic-runtime"
-    assert readiness["adapterKind"] == "scope-limited-executable-semantic-workbench"
+    assert readiness["fullApplicationSemanticReady"] is True
+    assert readiness["semanticRuntimeScope"] == "governed-publish-preflight-complete"
+    assert readiness["semanticRuntimeStatus"] == "executable-semantic-workbench"
+    assert readiness["adapterKind"] == "executable-semantic-workbench"
     assert readiness["adapterExecutable"] is True
     assert readiness["stateMachineReady"] is True
     assert readiness["actionPlannerReady"] is True
@@ -335,7 +333,7 @@ def test_git_tools_adapter_captures_status_api_failure_without_mutation_fallback
         "message": "status backend offline",
     }
     assert result["availableIntents"] == ["refreshStatus"]
-    assert result["readiness"]["semanticRuntimeReady"] is False
+    assert result["readiness"]["semanticRuntimeReady"] is True
 
 
 def test_git_tools_preflight_classifies_risky_intents_and_builds_blocked_receipts() -> None:
@@ -479,7 +477,7 @@ def test_git_tools_preflight_classifies_risky_intents_and_builds_blocked_receipt
     assert all(item["executionAttempted"] is False for item in result["receipts"])
 
     readiness = result["readiness"]
-    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeReady"] is True
     assert readiness["adapterExecutable"] is True
     assert readiness["actionPlannerReady"] is True
     assert readiness["recoveryReady"] is True
@@ -685,7 +683,7 @@ def test_git_tools_executes_only_governed_refresh_and_emits_execution_receipt() 
     assert result["executionEvidence"]["claims"]["resultStatus"] == "succeeded"
 
     readiness = result["readiness"]
-    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeReady"] is True
     assert readiness["adapterExecutable"] is True
     assert readiness["recoveryReady"] is True
     assert readiness["missingSemantics"] == []
@@ -750,7 +748,7 @@ def test_git_tools_refresh_execution_failure_is_receipted_without_mutation_fallb
     assert execution["receipt"]["executionAttempted"] is True
     assert execution["receipt"]["error"]["message"] == "status backend offline"
     assert len(result["receipts"]) == 1
-    assert result["readiness"]["semanticRuntimeReady"] is False
+    assert result["readiness"]["semanticRuntimeReady"] is True
     assert result["readiness"]["adapterExecutable"] is True
     assert result["readiness"]["recoveryReady"] is True
 
@@ -884,7 +882,7 @@ def test_git_tools_recovery_classifier_attaches_guidance_without_promoting_readi
     assert readiness["recoveryClassifierPresent"] is True
     assert readiness["recoveryCoverageReady"] is True
     assert readiness["recoveryReady"] is True
-    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeReady"] is True
     assert readiness["missingSemantics"] == []
 
 
@@ -1191,11 +1189,11 @@ def test_governed_local_gitea_push_executes_after_confirmation_and_revalidation(
         ("action-execution-receipt", "succeeded"),
     ]
     readiness = result["readiness"]
-    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeReady"] is True
     assert readiness["runtimeCoreReady"] is True
-    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-commit-preflight-partial"
-    assert readiness["executableIntentCount"] == 8
-    assert readiness["preflightOnlyIntentCount"] == 1
+    assert readiness["semanticRuntimeScope"] == "governed-publish-preflight-complete"
+    assert readiness["executableIntentCount"] == 9
+    assert readiness["preflightOnlyIntentCount"] == 0
 
 
 def test_governed_push_decline_and_changed_state_never_call_backend() -> None:
@@ -1520,8 +1518,16 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
               generatedRisk: true
             }}
           }});
-          const localTarget = adapter.preflightIntent("prepareLocalGiteaTarget", adapter.getState(), {{
-            now: "2026-07-15T23:30:15.000Z"
+          const localTarget = await adapter.executeIntent("prepareLocalGiteaTarget", {{
+            now: "2026-07-15T23:30:15.000Z",
+            parameters: {{
+              owner: "local",
+              repoName: "main-computer",
+              remoteName: "local-gitea",
+              host: "localhost",
+              port: "3000",
+              switchOrigin: true
+            }}
           }});
           const ignoreRule = await adapter.executeIntent("previewIgnoreRule", {{
             now: "2026-07-15T23:30:16.000Z",
@@ -1539,12 +1545,13 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
             preparePush,
             ignoreRule,
             commit,
-            futurePreflight: {{
-              localTarget: {{
-                decision: localTarget.decision,
-                executionAvailable: localTarget.executionAvailable,
-                executionBinding: localTarget.executionBinding
-              }}
+            localTarget: {{
+              status: localTarget.status,
+              decision: localTarget.decision,
+              executionAttempted: localTarget.executionAttempted,
+              executionBinding: localTarget.executionBinding,
+              result: localTarget.result,
+              warnings: localTarget.warnings
             }},
             receipts: adapter.listReceipts(),
             readiness
@@ -1613,12 +1620,28 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
         warning["code"] for warning in commit["warnings"]
     }
 
-    assert result["futurePreflight"] == {
-        "localTarget": {
-            "decision": "allow",
-            "executionAvailable": False,
-            "executionBinding": "mcel-preflight-gap",
-        },
+    local_target = result["localTarget"]
+    assert local_target["status"] == "succeeded"
+    assert local_target["decision"] == "allow"
+    assert local_target["executionAttempted"] is True
+    assert local_target["executionBinding"] == "git-tools-semantic-adapter.prepareLocalGiteaTargetPreflight"
+    assert local_target["result"]["kind"] == "local-gitea-target-preflight"
+    assert local_target["result"]["owner"] == "local"
+    assert local_target["result"]["repositoryName"] == "main-computer"
+    assert local_target["result"]["remoteName"] == "local-gitea"
+    assert local_target["result"]["targetUrl"] == "http://localhost:3000/local/main-computer.git"
+    assert local_target["result"]["wouldStartService"] is False
+    assert local_target["result"]["wouldCreateRepository"] is False
+    assert local_target["result"]["wouldWriteGitConfig"] is False
+    assert local_target["result"]["wouldRunGitCommand"] is False
+    assert local_target["result"]["wouldModifyRepository"] is False
+    assert local_target["result"]["wouldPush"] is False
+    assert local_target["result"]["commandPreview"]["executionPermitted"] is False
+    assert "local-gitea-service-not-probed" in {
+        warning["code"] for warning in local_target["warnings"]
+    }
+    assert "local-gitea-origin-switch-requested" in {
+        warning["code"] for warning in local_target["warnings"]
     }
 
     receipt_kinds = [(item["intentId"], item["kind"], item["executionAttempted"]) for item in result["receipts"]]
@@ -1628,22 +1651,20 @@ def test_git_tools_gap_closure_executes_read_inspection_and_prepare_push_without
         ("inspectPatchInventory", "action-execution-receipt", True),
         ("preparePush", "preflight-decision-receipt", False),
         ("commitSelectedFiles", "action-execution-receipt", True),
-        ("prepareLocalGiteaTarget", "preflight-decision-receipt", False),
+        ("prepareLocalGiteaTarget", "action-execution-receipt", True),
         ("previewIgnoreRule", "action-execution-receipt", True),
     ]
 
     readiness = result["readiness"]
     assert readiness["runtimeCoreReady"] is True
-    assert readiness["semanticRuntimeReady"] is False
-    assert readiness["semanticRuntimeScope"] == "governed-publish-ignore-preview-commit-preflight-partial"
-    assert readiness["executableIntentCount"] == 8
-    assert readiness["preflightOnlyIntentCount"] == 1
+    assert readiness["semanticRuntimeReady"] is True
+    assert readiness["semanticRuntimeScope"] == "governed-publish-preflight-complete"
+    assert readiness["executableIntentCount"] == 9
+    assert readiness["preflightOnlyIntentCount"] == 0
     assert readiness["declaredOnlyIntentCount"] == 0
     assert readiness["prohibitedIntentCount"] == 1
     assert readiness["totalIntentCount"] == 10
-    assert readiness["missingApplicationSemantics"] == [
-        "prepareLocalGiteaTarget",
-    ]
+    assert readiness["missingApplicationSemantics"] == []
 
 
 def test_git_tools_preview_ignore_rule_blocks_missing_or_multiline_rule_without_writes() -> None:
@@ -1728,12 +1749,10 @@ def test_git_tools_preview_ignore_rule_blocks_missing_or_multiline_rule_without_
         ("previewIgnoreRule", "preflight-decision-receipt", False),
         ("previewIgnoreRule", "preflight-decision-receipt", False),
     ]
-    assert result["readiness"]["semanticRuntimeReady"] is False
-    assert result["readiness"]["executableIntentCount"] == 8
-    assert result["readiness"]["preflightOnlyIntentCount"] == 1
-    assert result["readiness"]["missingApplicationSemantics"] == [
-        "prepareLocalGiteaTarget",
-    ]
+    assert result["readiness"]["semanticRuntimeReady"] is True
+    assert result["readiness"]["executableIntentCount"] == 9
+    assert result["readiness"]["preflightOnlyIntentCount"] == 0
+    assert result["readiness"]["missingApplicationSemantics"] == []
 
 
 def test_git_tools_commit_selected_files_blocks_missing_paths_message_and_secret_risk_without_mutation() -> None:
@@ -1849,9 +1868,7 @@ def test_git_tools_commit_selected_files_blocks_missing_paths_message_and_secret
         ("commitSelectedFiles", "preflight-decision-receipt", False),
         ("commitSelectedFiles", "preflight-decision-receipt", False),
     ]
-    assert result["readiness"]["semanticRuntimeReady"] is False
-    assert result["readiness"]["executableIntentCount"] == 8
-    assert result["readiness"]["preflightOnlyIntentCount"] == 1
-    assert result["readiness"]["missingApplicationSemantics"] == [
-        "prepareLocalGiteaTarget",
-    ]
+    assert result["readiness"]["semanticRuntimeReady"] is True
+    assert result["readiness"]["executableIntentCount"] == 9
+    assert result["readiness"]["preflightOnlyIntentCount"] == 0
+    assert result["readiness"]["missingApplicationSemantics"] == []

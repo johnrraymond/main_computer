@@ -11,6 +11,7 @@ from tests.mother.support.traceability import (
     faultpoint_bearing_functionalities,
     functionality_method_rows,
     functionality_module_rows,
+    module_public_method_rows,
     validate_contract_trace,
 )
 
@@ -205,20 +206,111 @@ def test_method_trace_requires_exact_functionality_chain_membership() -> None:
     assert any("not in any claimed functionality method chain" in error for error in errors)
 
 
+
+
+def test_method_qualified_wave1c_modules_require_methods_metadata() -> None:
+    docs = MotherDocuments.load()
+    trace = ContractTrace(
+        requirements=("MOTHER-REQ-015",),
+        operations=("MOTHER-OP-DIAGNOSE",),
+        functionalities=("MOTHER-OF-OBS-016",),
+        modules=("MOTHER-OFM-CORE-007",),
+    )
+
+    errors = validate_contract_trace(
+        trace,
+        docs,
+        direct_methods=("MOTHER-OFM-CORE-007.read_capabilities",),
+    )
+
+    assert any(
+        "requires methods metadata for method-qualified modules" in error
+        for error in errors
+    )
+    assert any(
+        "direct public-method call MOTHER-OFM-CORE-007.read_capabilities "
+        "is omitted from methods metadata" in error
+        for error in errors
+    )
+
+
 def test_documented_method_rows_include_wave1c_chains() -> None:
     rows = functionality_method_rows(MotherDocuments.load())
     assert rows["MOTHER-OF-OBS-016"] == (
         "MOTHER-OFM-CORE-006.validate_object",
         "MOTHER-OFM-CORE-007.read_capabilities",
         "MOTHER-OFM-CORE-007.require_capabilities",
+        "MOTHER-OFM-CORE-010.decode_compatibility_report",
         "MOTHER-OFM-CORE-010.check_peer_compatibility",
+    )
+    assert rows["MOTHER-OF-OBS-015"] == (
+        "MOTHER-OFM-OBS-006.classify",
+        "MOTHER-OFM-CORE-009.build_allowed_commands_report",
+        "MOTHER-OFM-CORE-009.render_allowed_commands",
+    )
+    assert rows["MOTHER-OF-OBS-018"] == (
+        "MOTHER-OFM-CORE-008.store_evidence",
+        "MOTHER-OFM-CORE-008.load_evidence",
+        "MOTHER-OFM-CORE-008.redact_copy",
+        "MOTHER-OFM-CORE-008.export_manifest",
+        "MOTHER-OFM-CORE-009.build_evidence_report",
+        "MOTHER-OFM-CORE-009.render_json",
+        "MOTHER-OFM-CORE-009.render_text",
     )
     assert rows["MOTHER-OF-CTL-010"] == (
         "MOTHER-OFM-CORE-010.freeze_contract_versions",
         "MOTHER-OFM-CORE-007.freeze_capability_set",
     )
     assert rows["MOTHER-OF-MIG-001"] == (
+        "MOTHER-OFM-CORE-006.decode_schema_catalog",
         "MOTHER-OFM-CORE-006.load_schema",
         "MOTHER-OFM-CORE-006.validate_schema_transition",
         "MOTHER-OFM-CORE-007.require_capabilities",
     )
+
+
+def test_direct_public_method_calls_must_be_declared_in_metadata() -> None:
+    docs = MotherDocuments.load()
+    public = module_public_method_rows(docs)
+    assert "decode_schema_catalog" in public["MOTHER-OFM-CORE-006"]
+    trace = ContractTrace(
+        requirements=("MOTHER-REQ-015",),
+        operations=("MOTHER-OP-SCHEMA-MIGRATION",),
+        functionalities=("MOTHER-OF-MIG-001",),
+        modules=("MOTHER-OFM-CORE-006",),
+        methods=("MOTHER-OFM-CORE-006.load_schema",),
+    )
+
+    errors = validate_contract_trace(
+        trace,
+        docs,
+        direct_methods=("MOTHER-OFM-CORE-006.decode_schema_catalog",),
+    )
+
+    assert any(
+        "direct public-method call MOTHER-OFM-CORE-006.decode_schema_catalog "
+        "is omitted from methods metadata" in error
+        for error in errors
+    )
+
+
+def test_method_metadata_is_required_for_core008_and_core009() -> None:
+    docs = MotherDocuments.load()
+    for module_id, functionality, operation in (
+        ("MOTHER-OFM-CORE-008", "MOTHER-OF-OBS-018", "MOTHER-OP-EVIDENCE-EXPORT"),
+        ("MOTHER-OFM-CORE-009", "MOTHER-OF-OBS-015", "MOTHER-OP-DIAGNOSE"),
+    ):
+        errors = validate_contract_trace(
+            ContractTrace(
+                requirements=("MOTHER-REQ-002",),
+                operations=(operation,),
+                functionalities=(functionality,),
+                modules=(module_id,),
+                methods=(),
+            ),
+            docs,
+        )
+        assert any(
+            "requires methods metadata for method-qualified modules" in error
+            for error in errors
+        )

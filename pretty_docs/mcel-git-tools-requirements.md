@@ -4,12 +4,12 @@
 
 This is the documentation-first requirements contract for the Git Tools app.
 
-The current implementation already has a substantial Git Tools workbench, project cards, status APIs, patch inventory helpers, Git ignore/filter/secrets workbenches, project-level publishing plans, and a real MCEL semantic adapter for a governed push slice. Patch 37 enrolled the live Git Tools workbench for runtime-baseline app-surface proof. Patch 38 closed the adapter coverage gap for read-only inspection and push preparation. Patch 39 made ignore-rule preview executable as evidence-only semantic execution, and Patch 40 makes commitSelectedFiles executable as a guarded commit-plan preflight lane while still not claiming full application semantic readiness through the MCEL adapter registry.
+The current implementation already has a substantial Git Tools workbench, project cards, status APIs, patch inventory helpers, Git ignore/filter/secrets workbenches, project-level publishing plans, and a real MCEL semantic adapter for a governed push slice. Patch 37 enrolled the live Git Tools workbench for runtime-baseline app-surface proof. Patch 38 closed the adapter coverage gap for read-only inspection and push preparation. Patch 39 made ignore-rule preview executable as evidence-only semantic execution, Patch 40 made commitSelectedFiles executable as a guarded commit-plan preflight lane, and Patch 41 makes prepareLocalGiteaTarget executable as a no-mutation Local Gitea target preflight. This closes the adapter intent-coverage gap while still leaving promotion to a separate registry-maturity patch.
 
 So this document must be read as:
 
 ```text
-current: runtime-baseline surface proof plus gap-closed semantic adapter coverage for governed publishing, read-only inspection, evidence-only ignore-rule preview, and commit-plan preflight execution
+current: runtime-baseline surface proof plus full semantic adapter intent coverage for governed publishing, read-only inspection, evidence-only ignore-rule preview, commit-plan preflight execution, and Local Gitea target preflight
 planned: full Git Tools semantic runtime for repository inspection, project publishing, file triage, recovery, and advanced Git evidence
 ```
 
@@ -19,10 +19,10 @@ The purpose of this document is to make Git Tools requirements stable enough tha
 id: git-tools
 title: Git Tools
 status: specified
-current_runtime_status: runtime-baseline-with-commit-preflight-semantic-adapter
-current_semantic_runtime_scope: governed-publish-ignore-preview-commit-preflight-partial
+current_runtime_status: runtime-baseline-with-local-gitea-preflight-semantic-adapter
+current_semantic_runtime_scope: governed-publish-preflight-complete
 target_runtime_status: full-application-semantic-runtime
-patch_40_gap_closure:
+patch_41_gap_closure:
   executable_now:
     - inspectWorkingTree
     - inspectRemotes
@@ -30,8 +30,8 @@ patch_40_gap_closure:
     - preparePush
     - previewIgnoreRule
     - commitSelectedFiles
-  intentionally_preflight_only:
     - prepareLocalGiteaTarget
+  intentionally_preflight_only: []
   evidence_only_execution:
     previewIgnoreRule: >
       Generates a .gitignore diff preview, affected-file explanation, risk
@@ -42,9 +42,15 @@ patch_40_gap_closure:
       generated/secret-risk gates, then emits a commit-plan receipt and command
       preview without staging files, creating commits, running Git commands,
       pushing remotes, or preparing Local Gitea state.
-  still_not_semantic_runtime_reason: >
-    Local Gitea target mutation remains a preflight-only gap intent until its
-    backend execution lane has bounded receipts and recovery proof.
+    prepareLocalGiteaTarget: >
+      Validates a Local Gitea owner, repository name, remote name, host,
+      protocol, and port, then emits a target-preparation receipt and command
+      preview without starting services, creating repositories, writing Git
+      config, running Git commands, switching origin, or pushing.
+  promotion_boundary: >
+    The adapter now has full intent-level semantic coverage, so Git Tools can
+    become promotion-ready while remaining runtime-baseline until a separate
+    registry-maturity patch explicitly promotes it.
 dominant_object: RepositoryProject
 primary_user_goal: >
   Inspect repository state, triage files, create safe commits, and publish
@@ -875,19 +881,25 @@ receipt: git-tools-commit-selected-files-preflight-receipt
 id: git-tools.intent.prepare-local-gitea-target
 app: git-tools
 intent: prepareLocalGiteaTarget
-status: planned
-current_adapter_status: preflight-only
+status: implemented
+current_adapter_status: executable
 risk: remote-mutation
-default_execution: preflight-required
+default_execution: executable-preflight
 requires:
-  - repository root
-  - local Gitea backend availability
-  - explicit repository target
+  - fresh repository state
+  - safe Local Gitea owner, repository, remote, host, protocol, and port inputs
 produces:
-  - local Gitea remote evidence
-  - create-or-repair plan
+  - Local Gitea target-preparation plan
   - target URL receipt
-receipt: git-tools-prepare-local-gitea-target-receipt
+  - mutation-free command preview
+  - explicit service/platform binding warning
+constraints:
+  - Must not start Local Gitea.
+  - Must not create repositories.
+  - Must not write Git config or switch origin.
+  - Must not run Git commands.
+  - Must not push commits.
+receipt: git-tools-prepare-local-gitea-target-preflight-receipt
 ```
 
 ```mcel-intent

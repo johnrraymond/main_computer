@@ -8105,7 +8105,7 @@
         return annotations.find((annotation) => String(annotation?.targetKey || "") === key) || null;
       }
 
-      function shuttle3dSavePolygonAnnotation(scene, annotation, options = {}) {
+      async function shuttle3dSavePolygonAnnotation(scene, annotation, options = {}) {
         const annotations = shuttle3dPolygonAnnotationStore(scene);
         const key = String(annotation?.targetKey || "");
         const index = annotations.findIndex((candidate) => String(candidate?.targetKey || "") === key);
@@ -8117,21 +8117,27 @@
             notify: false
           });
         } catch {
-          // Disk-backed game projects receive the same payload through the editor event below.
+          // The editor callback below remains the disk-persistence source of truth.
+        }
+        const detail = {
+          projectId: String(options.projectId || ""),
+          sceneId: String(scene?.id || ""),
+          annotation,
+          source: "shuttle3d-polygon-annotation"
+        };
+        if (typeof options.onPolygonAnnotationSave === "function") {
+          const result = await options.onPolygonAnnotationSave(detail);
+          if (result?.persisted !== true) {
+            throw new Error("Annotation save callback did not confirm disk persistence.");
+          }
+          return result;
         }
         try {
-          window.dispatchEvent(new CustomEvent("main-computer-shuttle3d-polygon-annotation-save", {
-            detail: {
-              projectId: String(options.projectId || ""),
-              sceneId: String(scene?.id || ""),
-              annotation,
-              source: "shuttle3d-polygon-annotation"
-            }
-          }));
+          window.dispatchEvent(new CustomEvent("main-computer-shuttle3d-polygon-annotation-save", {detail}));
         } catch {
           // Annotation still exists in the live scene copy when CustomEvent is unavailable.
         }
-        return annotation;
+        return {persisted: false, annotation, transport: "window-event-fallback"};
       }
 
       function shuttle3dAnnotationDialogOpen(container) {
@@ -8233,8 +8239,9 @@
         };
         cancel.addEventListener("click", closeDialog);
         dialog.addEventListener("close", removeDialog, {once: true});
-        form.addEventListener("submit", (event) => {
+        form.addEventListener("submit", async (event) => {
           event.preventDefault();
+          if (save.disabled) return;
           const targetKey = String(target.targetKey || `${target.targetKind || "target"}:${target.targetId || "unknown"}`);
           const cleanKey = shuttle3dPolygonAnnotationSanitizeId(targetKey, "annotation-target");
           const tags = String(tagInput.value || "")
@@ -8257,17 +8264,36 @@
             camera: target.camera && typeof target.camera === "object" ? target.camera : {},
             updatedAt: new Date().toISOString()
           };
-          shuttle3dSavePolygonAnnotation(scene, annotation, options);
-          const hint = shell.querySelector?.("[data-shuttle3d-annotation-hint]");
-          if (hint) {
-            hint.hidden = false;
-            hint.textContent = `Annotation saved for ${annotation.label || annotation.targetId}.`;
-            window.clearTimeout(hint.__mainComputerAnnotationSavedTimer);
-            hint.__mainComputerAnnotationSavedTimer = window.setTimeout(() => {
-              if (hint && shell.dataset.polygonAnnotationMode !== "held") hint.hidden = true;
-            }, 1800);
+          const sourceText = `Target: ${target.targetKey || target.targetId || "unknown"} • Source: ${target.source || "runtime geometry"}`;
+          save.disabled = true;
+          cancel.disabled = true;
+          save.textContent = "Saving...";
+          sourceLine.dataset.saveState = "saving";
+          sourceLine.textContent = "Writing annotation to project.json...";
+          try {
+            const result = await shuttle3dSavePolygonAnnotation(scene, annotation, options);
+            const hint = shell.querySelector?.("[data-shuttle3d-annotation-hint]");
+            if (hint) {
+              hint.hidden = false;
+              const writePath = String(result?.writePath || result?.write_path || "").trim();
+              hint.textContent = result?.persisted === true
+                ? `Annotation saved and verified on disk for ${annotation.label || annotation.targetId}${writePath ? ` at ${writePath}` : ""}.`
+                : `Annotation saved in the live scene for ${annotation.label || annotation.targetId}.`;
+              window.clearTimeout(hint.__mainComputerAnnotationSavedTimer);
+              hint.__mainComputerAnnotationSavedTimer = window.setTimeout(() => {
+                if (hint && shell.dataset.polygonAnnotationMode !== "held") hint.hidden = true;
+              }, 2400);
+            }
+            closeDialog();
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error || "unknown error");
+            save.disabled = false;
+            cancel.disabled = false;
+            save.textContent = "Save annotation";
+            sourceLine.dataset.saveState = "error";
+            sourceLine.textContent = `Save failed: ${message}`;
+            labelInput.focus?.({preventScroll: true});
           }
-          closeDialog();
         });
 
         if (typeof dialog.showModal === "function") dialog.showModal();

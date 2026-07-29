@@ -37,12 +37,41 @@ class Shuttle3DPolygonAnnotationToolTests(unittest.TestCase):
         self.assertIn("shuttle3d.pilotStations", scene_viewer)
         self.assertIn("shuttle3dRayIntersectsBounds", scene_viewer)
 
-    def test_game_editor_persists_annotation_events_as_dirty_project_metadata(self) -> None:
+    def test_game_editor_persists_annotation_events_to_disk_immediately(self) -> None:
         game_editor = (SCRIPT_ROOT / "game-editor.js").read_text(encoding="utf-8")
-        self.assertIn("handleShuttle3dPolygonAnnotationSave", game_editor)
+        self.assertIn("async function handleShuttle3dPolygonAnnotationSave", game_editor)
         self.assertIn("metadata.shuttle3d.polygonAnnotations", game_editor)
-        self.assertIn("markGameEditorDirty(`dirty - annotated", game_editor)
+        self.assertIn("markGameEditorDirty(`saving annotation for ${label}...`)", game_editor)
+        self.assertIn("onPolygonAnnotationSave: (detail = {}) => queueShuttle3dPolygonAnnotationSave(detail)", game_editor)
+        self.assertIn("verifyAnnotation:", game_editor)
+        self.assertIn("payload.verify_annotation", game_editor)
+        self.assertIn("saveResult?.annotation_verified !== true", game_editor)
+        self.assertIn("annotation saved and verified on disk for ${label}", game_editor)
+        self.assertIn("queueShuttle3dPolygonAnnotationSave", game_editor)
+        self.assertIn("annotationSavePromise: Promise.resolve()", game_editor)
         self.assertIn("main-computer-shuttle3d-polygon-annotation-save", game_editor)
+
+    def test_webgl_game_surface_has_direct_disk_persistence_callback(self) -> None:
+        webgl_desktop = (SCRIPT_ROOT / "webgl-desktop.js").read_text(encoding="utf-8")
+        self.assertIn("async function persistWebglPolygonAnnotation", webgl_desktop)
+        self.assertIn("/api/applications/game-editor/project/annotation/write", webgl_desktop)
+        self.assertIn("queueWebglPolygonAnnotationSave", webgl_desktop)
+        self.assertIn("onPolygonAnnotationSave:", webgl_desktop)
+        self.assertIn("annotation saved to ${writePath}", webgl_desktop)
+        self.assertIn("stale_hash_merged", webgl_desktop)
+        self.assertIn("writePathResolved", webgl_desktop)
+
+    def test_annotation_dialog_awaits_explicit_editor_save_callback(self) -> None:
+        scene_viewer = (SCRIPT_ROOT / "scene-viewer.js").read_text(encoding="utf-8")
+        self.assertIn("async function shuttle3dSavePolygonAnnotation", scene_viewer)
+        self.assertIn('typeof options.onPolygonAnnotationSave === "function"', scene_viewer)
+        self.assertIn("await options.onPolygonAnnotationSave(detail)", scene_viewer)
+        self.assertIn("Annotation save callback did not confirm disk persistence.", scene_viewer)
+        self.assertIn('form.addEventListener("submit", async (event) => {', scene_viewer)
+        self.assertIn("const result = await shuttle3dSavePolygonAnnotation(scene, annotation, options);", scene_viewer)
+        self.assertIn('sourceLine.textContent = "Writing annotation to project.json...";', scene_viewer)
+        self.assertIn("Save failed: ${message}", scene_viewer)
+        self.assertIn("result?.writePath || result?.write_path", scene_viewer)
 
     def test_project_control_hints_expose_annotation_shortcut(self) -> None:
         for project_path in PROJECT_PATHS:

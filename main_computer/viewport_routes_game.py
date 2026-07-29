@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+import copy
 import difflib
 import hashlib
 import json
@@ -78,6 +79,9 @@ class ViewportGameRoutesMixin:
                 return
             if route == "/api/applications/game-editor/project/write":
                 self._handle_game_project_write(body)
+                return
+            if route == "/api/applications/game-editor/project/annotation/write":
+                self._handle_game_project_annotation_write(body)
                 return
             if route == "/api/applications/game-editor/project/create":
                 self._handle_game_project_create(body)
@@ -1594,6 +1598,139 @@ class ViewportGameRoutesMixin:
             }
         )
 
+    def _handle_game_project_annotation_write(self, body: dict[str, Any]) -> None:
+        """Merge one polygon annotation into the current project file.
+
+        This endpoint intentionally reads the latest project.json before applying the
+        annotation. It is safe for the standalone WebGL surface, which does not own a
+        full authoritative editor project object and therefore must not overwrite the
+        whole project with a stale browser copy.
+        """
+        project_id = str(body.get("project_id", "") or "")
+        root = self._game_project_root(project_id)
+        project_file = root / "project.json"
+        scene_id = str(body.get("scene_id", "") or "").strip()
+        annotation = body.get("annotation")
+        expected_content_hash = str(body.get("expected_content_hash", "") or "")
+
+        if not scene_id:
+            raise ValueError("scene_id is required.")
+        if not isinstance(annotation, dict):
+            raise ValueError("annotation must be an object.")
+
+        target_key = str(annotation.get("targetKey", "") or "").strip()
+        annotation_id = str(annotation.get("id", "") or "").strip()
+        if not target_key:
+            raise ValueError("annotation.targetKey is required.")
+        if not annotation_id:
+            raise ValueError("annotation.id is required.")
+
+        previous_content_hash = self._game_hash(project_file)
+        stale_hash_merged = bool(
+            expected_content_hash
+            and expected_content_hash != previous_content_hash
+        )
+
+        project = json.loads(project_file.read_text(encoding="utf-8"))
+        scenes = project.get("scenes") if isinstance(project, dict) else None
+        if not isinstance(scenes, list):
+            raise ValueError("Project does not contain a scenes array.")
+
+        target_scene: dict[str, Any] | None = None
+        for candidate in scenes:
+            if isinstance(candidate, dict) and str(candidate.get("id", "") or "") == scene_id:
+                target_scene = candidate
+                break
+        if target_scene is None:
+            raise ValueError(f"Project does not contain scene {scene_id!r}.")
+
+        metadata = target_scene.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            target_scene["metadata"] = metadata
+        shuttle = metadata.get("shuttle3d")
+        if not isinstance(shuttle, dict):
+            shuttle = {}
+            metadata["shuttle3d"] = shuttle
+        annotations = shuttle.get("polygonAnnotations")
+        if not isinstance(annotations, list):
+            annotations = []
+            shuttle["polygonAnnotations"] = annotations
+
+        clean_annotation = copy.deepcopy(annotation)
+        replaced = False
+        for index, candidate in enumerate(annotations):
+            if not isinstance(candidate, dict):
+                continue
+            if str(candidate.get("targetKey", "") or "") == target_key:
+                annotations[index] = clean_annotation
+                replaced = True
+                break
+        if not replaced:
+            annotations.append(clean_annotation)
+
+        payload = json.dumps(project, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+        self._game_atomic_write(project_file, payload)
+
+        saved_project = json.loads(project_file.read_text(encoding="utf-8"))
+        saved_annotation: dict[str, Any] | None = None
+        for candidate_scene in saved_project.get("scenes", []):
+            if not isinstance(candidate_scene, dict):
+                continue
+            if str(candidate_scene.get("id", "") or "") != scene_id:
+                continue
+            candidate_metadata = candidate_scene.get("metadata")
+            candidate_shuttle = candidate_metadata.get("shuttle3d") if isinstance(candidate_metadata, dict) else None
+            candidate_annotations = candidate_shuttle.get("polygonAnnotations") if isinstance(candidate_shuttle, dict) else None
+            if not isinstance(candidate_annotations, list):
+                break
+            for candidate_annotation in candidate_annotations:
+                if not isinstance(candidate_annotation, dict):
+                    continue
+                if str(candidate_annotation.get("targetKey", "") or "") != target_key:
+                    continue
+                if str(candidate_annotation.get("id", "") or "") != annotation_id:
+                    continue
+                saved_annotation = candidate_annotation
+                break
+            break
+
+        if saved_annotation is None:
+            raise ValueError(
+                f"Saved project does not contain annotation {annotation_id!r} "
+                f"for target {target_key!r} in scene {scene_id!r}."
+            )
+
+        write_path = f"game_projects/{root.name}/project.json"
+        response = {
+            "ok": True,
+            "project_id": root.name,
+            "scene_id": scene_id,
+            "annotation_verified": True,
+            "annotation": saved_annotation,
+            "annotation_verification": {
+                "scene_id": scene_id,
+                "target_key": target_key,
+                "annotation_id": annotation_id,
+            },
+            "write_path": write_path,
+            "write_path_resolved": str(project_file.resolve()),
+            "previous_content_hash": previous_content_hash,
+            "expected_content_hash": expected_content_hash,
+            "stale_hash_merged": stale_hash_merged,
+            **self._game_file_shared(project_file),
+        }
+        self.server.signal(
+            "api-game-project-annotation-write",
+            project_id=root.name,
+            scene_id=scene_id,
+            target_key=target_key,
+            annotation_id=annotation_id,
+            write_path=write_path,
+            stale_hash_merged=stale_hash_merged,
+        )
+        self._send_json(response)
+
     def _handle_game_project_write(self, body: dict[str, Any]) -> None:
         project_id = str(body.get("project_id", "") or "")
         project_file = self._game_project_root(project_id) / "project.json"
@@ -1601,11 +1738,74 @@ class ViewportGameRoutesMixin:
         project = body.get("project")
         if not isinstance(project, dict):
             raise ValueError("project must be an object.")
+        verify_annotation = body.get("verify_annotation")
+        if verify_annotation is not None and not isinstance(verify_annotation, dict):
+            raise ValueError("verify_annotation must be an object.")
         project.setdefault("id", project_id)
         payload = json.dumps(project, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
         self._game_atomic_write(project_file, payload)
-        self.server.signal("api-game-project-write", project_id=project_id, bytes=len(payload))
-        self._send_json({"ok": True, **self._game_file_shared(project_file), "project_id": project_id})
+
+        response: dict[str, Any] = {
+            "ok": True,
+            **self._game_file_shared(project_file),
+            "project_id": project_id,
+            "write_path": f"game_projects/{self._game_project_root(project_id).name}/project.json",
+            "write_path_resolved": str(project_file.resolve()),
+        }
+        if isinstance(verify_annotation, dict):
+            scene_id = str(verify_annotation.get("scene_id", "") or "")
+            target_key = str(verify_annotation.get("target_key", "") or "")
+            annotation_id = str(verify_annotation.get("annotation_id", "") or "")
+            if not target_key:
+                raise ValueError("verify_annotation.target_key is required.")
+
+            saved_project = json.loads(project_file.read_text(encoding="utf-8"))
+            saved_annotation: dict[str, Any] | None = None
+            scenes = saved_project.get("scenes") if isinstance(saved_project, dict) else None
+            if isinstance(scenes, list):
+                for scene in scenes:
+                    if not isinstance(scene, dict):
+                        continue
+                    if scene_id and str(scene.get("id", "") or "") != scene_id:
+                        continue
+                    metadata = scene.get("metadata")
+                    shuttle = metadata.get("shuttle3d") if isinstance(metadata, dict) else None
+                    annotations = shuttle.get("polygonAnnotations") if isinstance(shuttle, dict) else None
+                    if not isinstance(annotations, list):
+                        continue
+                    for annotation in annotations:
+                        if not isinstance(annotation, dict):
+                            continue
+                        if str(annotation.get("targetKey", "") or "") != target_key:
+                            continue
+                        if annotation_id and str(annotation.get("id", "") or "") != annotation_id:
+                            continue
+                        saved_annotation = annotation
+                        break
+                    if saved_annotation is not None:
+                        break
+
+            if saved_annotation is None:
+                raise ValueError(
+                    f"Saved project does not contain annotation target {target_key!r}"
+                    + (f" in scene {scene_id!r}" if scene_id else "")
+                    + "."
+                )
+            response["annotation_verified"] = True
+            response["annotation"] = saved_annotation
+            response["annotation_verification"] = {
+                "scene_id": scene_id,
+                "target_key": target_key,
+                "annotation_id": str(saved_annotation.get("id", "") or ""),
+            }
+
+        self.server.signal(
+            "api-game-project-write",
+            project_id=project_id,
+            bytes=len(payload),
+            annotation_verified=bool(response.get("annotation_verified")),
+        )
+        self._send_json(response)
 
     def _handle_game_project_create(self, body: dict[str, Any]) -> None:
         project_id = self._game_project_id(str(body.get("project_id") or body.get("id") or body.get("name") or "new-game"))

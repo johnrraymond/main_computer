@@ -79,13 +79,21 @@ This allows temporary or one-off visible bars, beams, and view-model pieces to b
 
 ## Game Editor integration
 
-The WebGL surface dispatches:
+The Game Editor passes an explicit `onPolygonAnnotationSave` callback into the
+WebGL scene surface. The annotation dialog awaits that callback before closing.
+The callback merges the annotation into the authoritative project scene and
+writes through:
 
 ```text
-main-computer-shuttle3d-polygon-annotation-save
+/api/applications/game-editor/project/write
 ```
 
-The Game Editor listens for that event, writes the annotation into the active project scene metadata, and marks the project dirty. The user still saves to disk through the existing Game Editor save button and project write route.
+Patch U.4 sends a `verify_annotation` receipt request with the project write. The
+server rereads `project.json`, locates the annotation by scene, target key, and id,
+and returns `annotation_verified: true` plus the saved annotation. The dialog only
+reports a disk save after that response is received. The older
+`main-computer-shuttle3d-polygon-annotation-save` window event remains as a
+fallback for surfaces that do not provide the direct callback.
 
 ## Behavior preserved
 
@@ -108,7 +116,8 @@ no locked-door progression
 - Holding P toggles annotation mode.
 - P + left click opens an annotation dialog for the nearest selectable element.
 - Saving writes `metadata.shuttle3d.polygonAnnotations`.
-- The Game Editor marks the project dirty after annotation save.
+- The annotation save action immediately writes the active project to disk.
+- Failed disk writes leave the project dirty and surface an editor error.
 - The picker targets data-defined room geometry, props, interactables, and pilot stations.
 - Existing gameplay controls remain unchanged when P is not held.
 - `new_patch.py --dry-run` verifies exact replacement paths.
@@ -124,3 +133,30 @@ The annotation dialog now suspends shuttle-3D gameplay keyboard handling while i
 is open. Movement, firing, pilot, and inspection keys are cleared/ignored by the
 game surface so the label, notes, and tags fields can receive normal typing,
 including `W`, `A`, `S`, and `D`.
+
+
+## Patch U.3 corrective note
+
+The annotation dialog's **Save annotation** action now persists the active project
+through `/api/applications/game-editor/project/write` immediately. Annotation
+writes are serialized, successful writes update the project content hash, and a
+failed write remains visible as an editor error instead of being reported as a
+disk save.
+
+
+## Patch U.4 corrective note
+
+The annotation save path now uses an explicit callback from the WebGL scene
+surface to the Game Editor instead of relying on a cross-surface window event.
+The modal stays open and shows a save error if the callback fails. Successful
+writes are confirmed by a server-side reread of `project.json` before the UI says
+the annotation was saved to disk.
+
+
+## Patch U.5 corrective note
+
+The standalone WebGL game surface now passes a direct disk-persistence callback
+for annotations. A dedicated annotation-write endpoint merges the annotation into
+the latest on-disk project, verifies it after an atomic write, and returns the
+exact project path. The event-only fallback is no longer the persistence path for
+the normal WebGL application.

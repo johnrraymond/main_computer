@@ -3134,7 +3134,36 @@
                 "label": "Bridge viewscreen marker"
               }
             ]
-          }
+          },
+          "polygonAnnotations": [
+            {
+              "schema": "game.shuttle3d.polygonAnnotation.v1",
+              "id": "annotation.rendered:scene-viewer.dynamic.beam.0168",
+              "targetKey": "rendered:scene-viewer.dynamic.beam.0168",
+              "targetId": "scene-viewer.dynamic.beam.0168",
+              "targetKind": "rendered-beam",
+              "source": "scene-viewer.dynamic",
+              "room": "",
+              "label": "dynamic #fbbf24 beam",
+              "note": "What is this thing? Why is it here?",
+              "tags": [],
+              "hit": [
+                1.0722736559989423,
+                0.5806356308060011,
+                -11.950000000000001
+              ],
+              "camera": {
+                "position": [
+                  0.6033849915017419,
+                  0.9,
+                  -11.487828468338249
+                ],
+                "yaw": 15.200000000000045,
+                "pitch": -24.386664428710937
+              },
+              "updatedAt": "2026-07-29T01:27:05.676Z"
+            }
+          ]
         },
         "combatEnabled": true,
         "healthHud": true,

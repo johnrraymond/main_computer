@@ -490,6 +490,245 @@ class AuthoritativeDelta:
         )
 
 
+
+WAVE1C_PARTICIPANTS = frozenset({"local", "peer"})
+WAVE1C_BLOCKER_CODES = frozenset(
+    {
+        "contract-version-set-changed",
+        "schema-producer-unsupported",
+        "schema-consumer-unsupported",
+        "required-capability-absent",
+        "schema-transition-requirement-mismatch",
+        "schema-transition-undeclared",
+    }
+)
+
+
+def _require_participant(value: str, field_name: str) -> None:
+    if value not in WAVE1C_PARTICIPANTS:
+        raise ValueError(f"{field_name} must be 'local' or 'peer'")
+
+
+def _require_nonempty_tuple_strings(values: tuple[str, ...], field_name: str) -> None:
+    if not isinstance(values, tuple):
+        raise TypeError(f"{field_name} must be a tuple")
+    for index, value in enumerate(values):
+        _require_text(value, f"{field_name}[{index}]")
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaVersionRef:
+    schema_id: str
+    schema_version: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.schema_id, "schema_id")
+        _require_text(self.schema_version, "schema_version")
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaFlowRequirement:
+    schema_id: str
+    schema_version: str
+    producer: str
+    consumer: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.schema_id, "schema_id")
+        _require_text(self.schema_version, "schema_version")
+        _require_participant(self.producer, "producer")
+        _require_participant(self.consumer, "consumer")
+        if self.producer == self.consumer:
+            raise ValueError("producer and consumer must be different")
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityRequirement:
+    capability_id: str
+    executor: str
+    required: bool
+
+    def __post_init__(self) -> None:
+        _require_text(self.capability_id, "capability_id")
+        _require_participant(self.executor, "executor")
+        if type(self.required) is not bool:
+            raise TypeError("required must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityRequirementSet:
+    format_version: str
+    local_contract_versions: tuple[str, ...]
+    peer_contract_versions: tuple[str, ...]
+    schema_flows: tuple[SchemaFlowRequirement, ...]
+    capability_requirements: tuple[CapabilityRequirement, ...]
+
+    def __post_init__(self) -> None:
+        _require_text(self.format_version, "format_version")
+        _require_nonempty_tuple_strings(
+            self.local_contract_versions, "local_contract_versions"
+        )
+        _require_nonempty_tuple_strings(
+            self.peer_contract_versions, "peer_contract_versions"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenCompatibilityContract:
+    format_version: str
+    local_contract_versions: tuple[str, ...]
+    peer_contract_versions: tuple[str, ...]
+    schema_flows: tuple[SchemaFlowRequirement, ...]
+    capability_requirements: tuple[CapabilityRequirement, ...]
+
+    def __post_init__(self) -> None:
+        _require_text(self.format_version, "format_version")
+        _require_nonempty_tuple_strings(
+            self.local_contract_versions, "local_contract_versions"
+        )
+        _require_nonempty_tuple_strings(
+            self.peer_contract_versions, "peer_contract_versions"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityBlocker:
+    code: str
+    subject_id: str
+    participant: str
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.code not in WAVE1C_BLOCKER_CODES:
+            raise ValueError(f"unknown compatibility blocker code: {self.code!r}")
+        _require_text(self.subject_id, "subject_id")
+        _require_participant(self.participant, "participant")
+        _require_text(self.detail, "detail")
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityDecision:
+    compatible: bool
+    blockers: tuple[CompatibilityBlocker, ...]
+    local_contract_versions: tuple[str, ...]
+    peer_contract_versions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.compatible) is not bool:
+            raise TypeError("compatible must be a boolean")
+        _require_nonempty_tuple_strings(
+            self.local_contract_versions, "local_contract_versions"
+        )
+        _require_nonempty_tuple_strings(
+            self.peer_contract_versions, "peer_contract_versions"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilitySet:
+    participant: str
+    contract_version: str
+    capabilities: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_participant(self.participant, "participant")
+        _require_text(self.contract_version, "contract_version")
+        _require_nonempty_tuple_strings(self.capabilities, "capabilities")
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenCapabilitySet:
+    participant: str
+    contract_version: str
+    capabilities: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_participant(self.participant, "participant")
+        _require_text(self.contract_version, "contract_version")
+        _require_nonempty_tuple_strings(self.capabilities, "capabilities")
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityReport:
+    report_version: str
+    participant: str
+    contract_versions: tuple[str, ...]
+    produced_schemas: tuple[SchemaVersionRef, ...]
+    consumed_schemas: tuple[SchemaVersionRef, ...]
+    capabilities: FrozenCapabilitySet
+
+    def __post_init__(self) -> None:
+        _require_text(self.report_version, "report_version")
+        _require_participant(self.participant, "participant")
+        _require_nonempty_tuple_strings(self.contract_versions, "contract_versions")
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaDefinition:
+    schema_id: str
+    schema_version: str
+    object_kind: str
+    required_field_names: tuple[str, ...]
+    optional_field_names: tuple[str, ...]
+    allowed_destinations: tuple[SchemaVersionRef, ...]
+
+    def __post_init__(self) -> None:
+        _require_text(self.schema_id, "schema_id")
+        _require_text(self.schema_version, "schema_version")
+        _require_text(self.object_kind, "object_kind")
+        _require_nonempty_tuple_strings(
+            self.required_field_names, "required_field_names"
+        )
+        _require_nonempty_tuple_strings(
+            self.optional_field_names, "optional_field_names"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaCatalog:
+    catalog_id: str
+    catalog_version: str
+    schemas: tuple[SchemaDefinition, ...]
+
+    def __post_init__(self) -> None:
+        _require_text(self.catalog_id, "catalog_id")
+        _require_text(self.catalog_version, "catalog_version")
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaValidationResult:
+    schema_id: str
+    schema_version: str
+    valid: bool
+    violations: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_text(self.schema_id, "schema_id")
+        _require_text(self.schema_version, "schema_version")
+        if type(self.valid) is not bool:
+            raise TypeError("valid must be a boolean")
+        _require_nonempty_tuple_strings(self.violations, "violations")
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaTransitionDecision:
+    compatible: bool
+    blockers: tuple[CompatibilityBlocker, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.compatible) is not bool:
+            raise TypeError("compatible must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityDecision:
+    allowed: bool
+    blockers: tuple[CompatibilityBlocker, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.allowed) is not bool:
+            raise TypeError("allowed must be a boolean")
+
 _MODEL_TYPES = {
     cls.__name__: cls
     for cls in (
@@ -518,16 +757,67 @@ _MODEL_TYPES = {
         HubReleaseAuthorization,
         HubComponentReleaseState,
         AuthoritativeDelta,
+        SchemaVersionRef,
+        SchemaFlowRequirement,
+        CapabilityRequirement,
+        CompatibilityRequirementSet,
+        FrozenCompatibilityContract,
+        CompatibilityBlocker,
+        CompatibilityDecision,
+        CompatibilityReport,
+        SchemaCatalog,
+        SchemaDefinition,
+        SchemaValidationResult,
+        SchemaTransitionDecision,
+        CapabilitySet,
+        FrozenCapabilitySet,
+        CapabilityDecision,
     )
 }
 
 
+
+class _SerializedModelDict(dict[str, Any]):
+    """Ordered in-memory model mapping that preserves a field named schema_version.
+
+    The generic model envelope and a declared model field can share the normative
+    label ``schema_version``.  This mapping preserves declaration-order iteration
+    for contract inspection while retaining the declared field value separately
+    for exact in-memory deserialization.
+    """
+
+    __slots__ = ("_ordered_names", "_field_values")
+
+    def __init__(self, field_values: Mapping[str, Any]) -> None:
+        base = {"schema_version": SCHEMA_VERSION}
+        base.update(
+            (name, value)
+            for name, value in field_values.items()
+            if name != "schema_version"
+        )
+        super().__init__(base)
+        self._ordered_names = ("schema_version", *tuple(field_values))
+        self._field_values = dict(field_values)
+
+    def __iter__(self):
+        return iter(self._ordered_names)
+
+    def __len__(self) -> int:
+        return len(self._ordered_names)
+
+    def declared_field_value(self, name: str) -> Any:
+        return self._field_values[name]
+
+
 def _serialize(value: Any) -> Any:
     if is_dataclass(value):
-        result = {"schema_version": SCHEMA_VERSION}
-        for field in fields(value):
-            result[field.name] = _serialize(getattr(value, field.name))
-        return result
+        field_values = {
+            field.name: _serialize(getattr(value, field.name))
+            for field in fields(value)
+        }
+        if "schema_version" in field_values:
+            return _SerializedModelDict(field_values)
+        return {"schema_version": SCHEMA_VERSION, **field_values}
     if isinstance(value, FrozenMapping):
         return {key: _serialize(item) for key, item in value.items()}
     if isinstance(value, Mapping):
@@ -688,7 +978,10 @@ def _deserialize_type(cls: type[T], payload: Mapping[str, Any]) -> T:
         raise ValueError(f"unsupported schema version: {version!r}")
 
     declared_fields = {field.name: field for field in fields(cls)}
-    supplied = set(payload) - {"schema_version"}
+    if isinstance(payload, _SerializedModelDict):
+        supplied = set(payload._field_values)
+    else:
+        supplied = set(payload) - {"schema_version"}
     unknown = supplied - set(declared_fields)
     if unknown:
         raise ValueError(f"unknown fields for {cls.__name__}: {sorted(unknown)!r}")
@@ -705,7 +998,12 @@ def _deserialize_type(cls: type[T], payload: Mapping[str, Any]) -> T:
 
     hints = get_type_hints(cls)
     values = {
-        name: _decode(hints.get(name, Any), payload[name])
+        name: _decode(
+            hints.get(name, Any),
+            payload.declared_field_value(name)
+            if isinstance(payload, _SerializedModelDict)
+            else payload[name],
+        )
         for name in supplied
     }
     return cls(**values)

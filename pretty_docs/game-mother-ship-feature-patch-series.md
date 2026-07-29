@@ -542,3 +542,70 @@ W/A/S/D typed in dialog fields are not consumed by movement controls
 gameplay keydown/keyup handling is skipped while the dialog is open
 closing the dialog restores normal gameplay controls
 ```
+
+
+## Patch U.3. Annotation disk autosave
+
+Corrective tooling patch after Patch U.2.
+
+Purpose:
+
+```text
+Make the annotation dialog's Save annotation action persist the active project
+to project.json immediately instead of only marking the editor dirty.
+```
+
+Acceptance:
+
+```text
+annotation metadata is merged into the active scene
+the project write route is called immediately
+annotation writes are serialized to avoid content-hash races
+successful saves update the content hash and clear dirty state
+failed saves remain dirty and report an editor error
+```
+
+
+## Patch U.4. Explicit annotation save callback and disk receipt
+
+Corrective tooling patch after Patch U.3.
+
+Purpose:
+
+```text
+Route Save annotation directly into the active Game Editor save function and
+prove the annotation exists in project.json before closing the modal.
+```
+
+Acceptance:
+
+```text
+the editor passes an explicit save callback into the WebGL renderer
+the annotation dialog awaits that callback
+the project write request identifies the annotation to verify
+the server rereads project.json and returns annotation_verified
+save failures leave the dialog open with an actionable error
+the legacy window event remains fallback-only
+```
+
+
+## Patch U.5. Standalone WebGL annotation disk persistence
+
+Corrective tooling patch after Patch U.4.
+
+Purpose:
+
+```text
+Give the standalone WebGL game surface its own direct annotation save callback
+and merge one annotation into the latest project.json on disk.
+```
+
+Acceptance:
+
+```text
+WebGL Save annotation calls the annotation-specific write route
+current disk project state is preserved
+saved annotation is reread and verified
+exact write path and content hash are returned
+stale browser hashes are merged safely instead of overwriting the project
+```

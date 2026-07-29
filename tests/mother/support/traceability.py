@@ -17,6 +17,16 @@ MODULE_RE = re.compile(r"MOTHER-OFM-[A-Z]+-\d{3}")
 METHOD_RE = re.compile(r"MOTHER-OFM-[A-Z]+-\d{3}\.[A-Za-z_][A-Za-z0-9_]*")
 OPEN_ERROR_RE = re.compile(r"MOTHER_OPEN_[A-Z0-9_]+")
 
+METHOD_QUALIFIED_CONTRACT_MODULES = frozenset(
+    {
+        "MOTHER-OFM-CORE-006",
+        "MOTHER-OFM-CORE-007",
+        "MOTHER-OFM-CORE-008",
+        "MOTHER-OFM-CORE-009",
+        "MOTHER-OFM-CORE-010",
+    }
+)
+
 _RANGE_SEPARATORS = r"(?:through|[–—])"
 
 
@@ -383,6 +393,37 @@ def functionality_method_rows(docs: MotherDocuments) -> dict[str, tuple[str, ...
     return rows
 
 
+
+def module_public_method_rows(docs: MotherDocuments) -> dict[str, tuple[str, ...]]:
+    """Return explicitly named public methods from the stable module registry."""
+
+    core = section(docs.modules, "### 5.2 Core modules", "### 5.3")
+    methods: dict[str, list[str]] = {}
+    for line in core.splitlines():
+        if not line.startswith("| `MOTHER-OFM-"):
+            continue
+        cells = _table_cells(line)
+        if len(cells) < 3:
+            continue
+        module_match = MODULE_RE.search(cells[0])
+        if not module_match:
+            continue
+        module_id = module_match.group(0)
+        api_cell = cells[2].replace("`", "")
+        names = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?=\(|,|$)", api_cell)
+        if names:
+            methods.setdefault(module_id, []).extend(names)
+
+    for references in functionality_method_rows(docs).values():
+        for reference in references:
+            module_id, method_name = reference.split(".", 1)
+            methods.setdefault(module_id, []).append(method_name)
+
+    return {
+        module_id: tuple(dict.fromkeys(names))
+        for module_id, names in methods.items()
+    }
+
 def requirement_coverage(docs: MotherDocuments) -> dict[str, RequirementCoverage]:
     function_section = section(
         docs.functionalities,
@@ -642,6 +683,7 @@ def validate_contract_trace(
     trace: ContractTrace,
     docs: MotherDocuments,
     fixture_names: Iterable[str] = (),
+    direct_methods: Iterable[str] = (),
 ) -> list[str]:
     """Validate identifier existence, ancestry, order, and contract-open guards."""
 
@@ -762,6 +804,17 @@ def validate_contract_trace(
     method_pattern = re.compile(
         r"^MOTHER-OFM-[A-Z]+-\d{3}\.[A-Za-z_][A-Za-z0-9_]*$"
     )
+    method_qualified_modules = tuple(
+        module
+        for module in trace.modules
+        if module in METHOD_QUALIFIED_CONTRACT_MODULES
+    )
+    if method_qualified_modules and not trace.methods:
+        errors.append(
+            "mother_contract requires methods metadata for method-qualified modules: "
+            f"{list(method_qualified_modules)}"
+        )
+
     duplicate_methods = duplicates(trace.methods)
     if duplicate_methods:
         errors.append(f"duplicate methods: {sorted(duplicate_methods)}")
@@ -784,6 +837,18 @@ def validate_contract_trace(
             errors.append(
                 f"{method} is not in any claimed functionality method chain: "
                 f"{list(trace.functionalities)}"
+            )
+
+    direct_method_tuple = tuple(direct_methods)
+    duplicate_direct_methods = duplicates(direct_method_tuple)
+    if duplicate_direct_methods:
+        errors.append(
+            f"duplicate direct public-method calls: {sorted(duplicate_direct_methods)}"
+        )
+    for method in direct_method_tuple:
+        if method not in trace.methods:
+            errors.append(
+                f"direct public-method call {method} is omitted from methods metadata"
             )
 
     for functionality in trace.functionalities:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from pathlib import Path
+import textwrap
 from typing import Any
 
 import pytest
@@ -8,7 +11,9 @@ import pytest
 from tests.mother.support.fixtures import OpenContractGuard
 from tests.mother.support.traceability import (
     ContractTrace,
+    METHOD_QUALIFIED_CONTRACT_MODULES,
     MotherDocuments,
+    module_public_method_rows,
     validate_contract_trace,
 )
 
@@ -18,6 +23,36 @@ def _as_tuple(marker: pytest.Mark, key: str) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
     return tuple(value)
+
+
+def _direct_public_method_calls(
+    item: pytest.Item,
+    trace: ContractTrace,
+    docs: MotherDocuments,
+) -> tuple[str, ...]:
+    """Infer direct calls to documented public methods in one test function."""
+
+    obj = getattr(item, "obj", None)
+    if obj is None:
+        return ()
+    try:
+        source = textwrap.dedent(inspect.getsource(obj))
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError):
+        return ()
+
+    called_names = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    public_rows = module_public_method_rows(docs)
+    result: list[str] = []
+    for module_id in trace.modules:
+        for method_name in public_rows.get(module_id, ()):
+            if method_name in called_names:
+                result.append(f"{module_id}.{method_name}")
+    return tuple(result)
 
 
 def pytest_collection_modifyitems(config: Any, items: list[pytest.Item]) -> None:
@@ -42,6 +77,17 @@ def pytest_collection_modifyitems(config: Any, items: list[pytest.Item]) -> None
             trace,
             docs,
             fixture_names=getattr(item, "fixturenames", ()),
+            direct_methods=(
+                _direct_public_method_calls(item, trace, docs)
+                if (
+                    trace.methods
+                    or any(
+                        module in METHOD_QUALIFIED_CONTRACT_MODULES
+                        for module in trace.modules
+                    )
+                )
+                else ()
+            ),
         )
         errors.extend(f"{item.nodeid}: {message}" for message in item_errors)
 

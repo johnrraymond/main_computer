@@ -333,68 +333,486 @@ method-qualified section 7 chain together.
 | `HubReleaseAuthorization` | descriptor-payload hash, signature-envelope hash, and independently resolved validated signer-policy hash |
 | `HubComponentReleaseState` | complete retained Hub release authorization tuple, participant-release-map root, and release generation |
 | `AuthoritativeDelta` | closed operation-kind-specific predecessor/successor dimensions and unchanged-dimension assertions |
-| `SchemaFlowRequirement` | schema ID, producer participant (`local` or `peer`), consumer participant (`local` or `peer`) |
+| `SchemaVersionRef` | exact schema ID and schema version |
+| `SchemaFlowRequirement` | exact schema ID and version, producer participant (`local` or `peer`), consumer participant (`local` or `peer`) |
 | `CapabilityRequirement` | capability ID, executor participant (`local` or `peer`), required flag |
-| `CompatibilityRequirementSet` | contract version requirements, directional schema-flow requirements, capability requirements |
-| `FrozenCompatibilityContract` | canonical contract-version set and canonical requirement set produced from `CompatibilityRequirementSet` |
-| `CompatibilityBlocker` | exact blocker code, subject ID, participant, and deterministic detail string; not durable evidence |
-| `CompatibilityDecision` | compatible flag, ordered blockers, and frozen contract versions considered |
-| `CompatibilityReport` | participant (`local` or `peer`), contract versions, schema IDs produced, schema IDs consumed, and frozen capability set |
+| `CompatibilityRequirementSet` | format version, independently frozen local and peer contract-version sets, directional schema-flow requirements, capability requirements |
+| `FrozenCompatibilityContract` | frozen-format version, canonical local and peer contract-version sets, canonical schema-flow requirements, canonical capability requirements |
+| `CompatibilityBlocker` | exact closed blocker code, subject ID, participant, and deterministic detail string; not durable evidence |
+| `CompatibilityDecision` | compatible flag, ordered blockers, and exact local and peer contract-version sets considered |
+| `CompatibilityReport` | report version, participant (`local` or `peer`), contract versions, exact produced and consumed schema versions, and frozen capability set |
+| `SchemaCatalog` | catalog ID, catalog version, ordered schema definitions |
+| `SchemaDefinition` | schema ID, schema version, object kind, exact required and optional field names, allowed destination schema-version references |
+| `SchemaValidationResult` | schema ID, schema version, valid flag, deterministic violation strings |
+| `SchemaTransitionDecision` | compatible flag and ordered `CompatibilityBlocker` values |
+| `CapabilitySet` | participant, capability contract version, ordered capability IDs |
+| `FrozenCapabilitySet` | participant, capability contract version, deterministic unique capability IDs |
+| `CapabilityDecision` | allowed flag and ordered `CompatibilityBlocker` values |
 
 Every cross-module value MUST use these models or a versioned schema-owned
 model. Bare dictionaries MUST NOT cross a public module boundary.
 
-#### 4.1.1 Wave 1C negotiation type ownership
+#### 4.1.1 Wave 1C negotiation types, ownership, and wire contracts
 
-`MOTHER-OFM-CORE-001` owns `SchemaFlowRequirement`,
-`CapabilityRequirement`, `CompatibilityRequirementSet`,
-`FrozenCompatibilityContract`, `CompatibilityBlocker`,
-`CompatibilityDecision`, and `CompatibilityReport`, because those values cross
-schema, capability, compatibility, planning, observation, and reporting module
-boundaries.
+`MOTHER-OFM-CORE-001` is the definition, constructor-validation,
+serialization, and export owner for every Wave 1C dataclass that crosses a
+module boundary:
 
-`MOTHER-OFM-CORE-006` owns the versioned immutable schema values
-`SchemaCatalog`, `SchemaDefinition`, `SchemaValidationResult`, and
-`SchemaTransitionDecision`. Required fields are:
+```text
+SchemaVersionRef
+SchemaFlowRequirement
+CapabilityRequirement
+CompatibilityRequirementSet
+FrozenCompatibilityContract
+CompatibilityBlocker
+CompatibilityDecision
+CompatibilityReport
+SchemaCatalog
+SchemaDefinition
+SchemaValidationResult
+SchemaTransitionDecision
+CapabilitySet
+FrozenCapabilitySet
+CapabilityDecision
+```
 
-| Type | Required fields |
+All names above MUST be exported from `tools.mother.common.models`. CORE-006
+owns schema catalog, object-validation, and transition-validation semantics.
+CORE-007 owns capability decoding, ambiguity rejection, freezing, and
+requirement semantics. CORE-010 owns compatibility-report decoding, contract
+freezing, and local/peer comparison semantics. Semantic ownership does not move
+the shared type definitions out of CORE-001.
+
+The exact Python fields are normative:
+
+| Type | Exact fields in declaration order |
 |---|---|
-| `SchemaCatalog` | catalog ID, catalog version, ordered schema definitions |
-| `SchemaDefinition` | schema ID, schema version, object kind, required field names, optional field names, allowed destination schema IDs |
-| `SchemaValidationResult` | schema ID, schema version, valid flag, deterministic violation strings |
-| `SchemaTransitionDecision` | compatible flag and ordered `CompatibilityBlocker` values |
+| `SchemaVersionRef` | `schema_id: str`, `schema_version: str` |
+| `SchemaFlowRequirement` | `schema_id: str`, `schema_version: str`, `producer: str`, `consumer: str` |
+| `CapabilityRequirement` | `capability_id: str`, `executor: str`, `required: bool` |
+| `CompatibilityRequirementSet` | `format_version: str`, `local_contract_versions: tuple[str, ...]`, `peer_contract_versions: tuple[str, ...]`, `schema_flows: tuple[SchemaFlowRequirement, ...]`, `capability_requirements: tuple[CapabilityRequirement, ...]` |
+| `FrozenCompatibilityContract` | `format_version: str`, `local_contract_versions: tuple[str, ...]`, `peer_contract_versions: tuple[str, ...]`, `schema_flows: tuple[SchemaFlowRequirement, ...]`, `capability_requirements: tuple[CapabilityRequirement, ...]` |
+| `CompatibilityBlocker` | `code: str`, `subject_id: str`, `participant: str`, `detail: str` |
+| `CompatibilityDecision` | `compatible: bool`, `blockers: tuple[CompatibilityBlocker, ...]`, `local_contract_versions: tuple[str, ...]`, `peer_contract_versions: tuple[str, ...]` |
+| `CompatibilityReport` | `report_version: str`, `participant: str`, `contract_versions: tuple[str, ...]`, `produced_schemas: tuple[SchemaVersionRef, ...]`, `consumed_schemas: tuple[SchemaVersionRef, ...]`, `capabilities: FrozenCapabilitySet` |
+| `SchemaCatalog` | `catalog_id: str`, `catalog_version: str`, `schemas: tuple[SchemaDefinition, ...]` |
+| `SchemaDefinition` | `schema_id: str`, `schema_version: str`, `object_kind: str`, `required_field_names: tuple[str, ...]`, `optional_field_names: tuple[str, ...]`, `allowed_destinations: tuple[SchemaVersionRef, ...]` |
+| `SchemaValidationResult` | `schema_id: str`, `schema_version: str`, `valid: bool`, `violations: tuple[str, ...]` |
+| `SchemaTransitionDecision` | `compatible: bool`, `blockers: tuple[CompatibilityBlocker, ...]` |
+| `CapabilitySet` | `participant: str`, `contract_version: str`, `capabilities: tuple[str, ...]` |
+| `FrozenCapabilitySet` | `participant: str`, `contract_version: str`, `capabilities: tuple[str, ...]` |
+| `CapabilityDecision` | `allowed: bool`, `blockers: tuple[CompatibilityBlocker, ...]` |
 
-`MOTHER-OFM-CORE-007` owns the versioned immutable capability values
-`CapabilitySet`, `FrozenCapabilitySet`, and `CapabilityDecision`. Required
-fields are:
+`participant`, `producer`, `consumer`, and `executor` use the closed values
+`local` and `peer`. `SchemaFlowRequirement.producer` and `.consumer` MUST be
+different. All identifiers and versions are non-empty exact strings. Tuples are
+immutable; unordered sets and bare mappings are forbidden at public boundaries.
 
-| Type | Required fields |
-|---|---|
-| `CapabilitySet` | participant (`local` or `peer`), capability contract version, ordered capability IDs |
-| `FrozenCapabilitySet` | participant (`local` or `peer`), capability contract version, deterministic unique capability IDs |
-| `CapabilityDecision` | allowed flag and ordered `CompatibilityBlocker` values |
+The supported Wave 1C format versions are exactly:
 
-The Wave 1C public decoding boundary is canonical bytes in and immutable typed
-values out. Public APIs in `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and
-`MOTHER-OFM-CORE-010` MUST NOT accept or return bare mappings. Internal raw
-mappings MAY exist only inside one module call and MUST be converted to typed
-values before crossing the public boundary.
+```text
+schema-catalog.v1
+capabilities.v1
+compatibility-report.v1
+compatibility-requirements.v1
+frozen-compatibility-contract.v1
+```
 
-`SchemaFlowRequirement` records direction explicitly. For a `peer` producer and
-`local` consumer, the peer MUST support producing the schema ID and the local
-participant MUST support consuming it. For a `local` producer and `peer`
-consumer, the local participant MUST support producing the schema ID and the
-peer MUST support consuming it. Direction MUST NOT be inferred from ambiguous
-fields such as `read_schemas` or `write_schemas`.
+Component contract versions inside `local_contract_versions`,
+`peer_contract_versions`, or `CompatibilityReport.contract_versions` are
+opaque non-empty exact strings. They are frozen independently for each
+participant and are not looked up in the format-version closed set.
 
-`CapabilityRequirement` records the executor explicitly. A required capability
-blocks only the participant named by `executor`. Optional capabilities MAY
-appear in typed reports but MUST NOT block a decision unless declared required.
+Every public tuple has one normative total order. Exact strings are compared
+by their UTF-8 byte sequence; no locale, case folding, or natural-number
+ordering is permitted.
+
+| Tuple | Canonical sort key | Duplicate identity key |
+|---|---|---|
+| local, peer, or report contract versions | exact version string | exact version string |
+| produced, consumed, or allowed-destination schema references | `(schema_id, schema_version)` | `(schema_id, schema_version)` |
+| schema-flow requirements | `(schema_id, schema_version, producer, consumer)` | `(schema_id, schema_version, producer, consumer)` |
+| capability requirements | `(capability_id, executor)` | `(capability_id, executor)`; differing `required` values for the same identity are conflicting duplicates |
+| capability IDs | exact capability ID | exact capability ID |
+| schema required or optional field names | exact field name | exact field name |
+| schema definitions in a catalog | `(schema_id, schema_version)` | `(schema_id, schema_version)` |
+
+Decoders reject duplicate identities before sorting. Supported decoded values
+and all freeze operations return tuples in the order above.
+`freeze_contract_versions` canonicalizes local and peer contract versions,
+schema flows, and capability requirements independently. A compatibility
+report canonicalizes its contract versions, produced schema references, and
+consumed schema references independently.
+
+CORE-001 generic model serialization is also normative for these fifteen
+types: `serialize_model` emits `schema_version=1` followed by the exact Python
+fields in declaration order, recursively serializes nested CORE-001 values,
+and `deserialize_model` round-trips only the exact declared type and field set.
+
+The public decoding boundary is canonical JSON bytes in and immutable
+CORE-001 values out. The exact serialized envelopes are:
+
+```text
+SchemaCatalog:
+  catalog_id
+  catalog_version = schema-catalog.v1
+  schemas[]
+    allowed_destinations[] {schema_id, schema_version}
+    object_kind
+    optional_field_names[]
+    required_field_names[]
+    schema_id
+    schema_version
+
+CapabilitySet/FrozenCapabilitySet:
+  capabilities[]
+  contract_version = capabilities.v1
+  participant = local | peer
+
+CompatibilityReport payload:
+  consumed_schemas[] {schema_id, schema_version}
+  contract_versions[]
+  participant = local | peer
+  produced_schemas[] {schema_id, schema_version}
+  report_version = compatibility-report.v1
+```
+
+The compatibility-report payload does not duplicate capability bytes.
+`decode_compatibility_report` receives the separately decoded
+`FrozenCapabilitySet`, requires its participant to equal the report
+participant, and attaches that typed value to the returned
+`CompatibilityReport`.
+
+Decoders validate in this exact order:
+
+1. Require `bytes`, strict UTF-8 JSON, a top-level object, and byte-for-byte
+   canonical CORE-003 JSON. Failure is `MOTHER_SCHEMA_MALFORMED_BYTES`.
+2. Read the envelope discriminator before validating any other field:
+   `catalog_version`, `contract_version`, or `report_version`. A missing or
+   non-string discriminator is `MOTHER_SCHEMA_MALFORMED_OBJECT`; a string not
+   in the exact supported set is `MOTHER_SCHEMA_UNKNOWN_VERSION`, even when
+   other envelope fields are missing or malformed.
+3. For a supported version, require the exact serialized field set, exact
+   primitive types, and closed participant values. Failure is
+   `MOTHER_SCHEMA_MALFORMED_OBJECT`.
+4. Reject duplicate or conflicting schema, contract-version, destination, or
+   capability identities with `MOTHER_SCHEMA_AMBIGUOUS_DECLARATION`.
+5. Construct and return the immutable CORE-001 value. No implicit coercion,
+   nearby-version substitution, field dropping, or field defaulting is allowed.
+
+`SchemaValidationResult.violations` uses only
+`missing-required-field:<field-name>` and `unknown-field:<field-name>`.
+Violations are ordered first by code (`missing-required-field` before
+`unknown-field`) and then by field name. An interpretable object with no
+violations returns `valid=True`.
+
+The closed `CompatibilityBlocker.code` set and global ordering are:
+
+```text
+1 contract-version-set-changed
+2 schema-producer-unsupported
+3 schema-consumer-unsupported
+4 required-capability-absent
+5 schema-transition-requirement-mismatch
+6 schema-transition-undeclared
+```
+
+Blockers are ordered by that rank, then `subject_id`, `participant`, and
+`detail`. Exact blocker construction is:
+
+| Code | Subject | Participant | Detail |
+|---|---|---|---|
+| `contract-version-set-changed` | `contract_versions` | changed report participant | `expected=<comma-joined canonical set>;observed=<comma-joined canonical set>` |
+| `schema-producer-unsupported` | `<schema_id>@<schema_version>` | declared producer | `required producer schema is absent` |
+| `schema-consumer-unsupported` | `<schema_id>@<schema_version>` | declared consumer | `required consumer schema is absent` |
+| `required-capability-absent` | capability ID | declared executor | `required capability is absent` |
+| `schema-transition-requirement-mismatch` | requirement `<schema_id>@<schema_version>` | declared producer | `requirement=<schema_id>@<schema_version>;destination=<schema_id>@<schema_version>;transition=requirement-mismatch` |
+| `schema-transition-undeclared` | destination `<schema_id>@<schema_version>` | declared producer | `source=<schema_id>@<schema_version>;destination=<schema_id>@<schema_version>;transition=undeclared` |
+
+Schema flow is exact and directional. For `peer` → `local`, the peer report
+MUST contain the exact schema ID/version in `produced_schemas` and the local
+report MUST contain it in `consumed_schemas`. For `local` → `peer`, the local
+report MUST contain the exact schema ID/version in `produced_schemas` and the
+peer report MUST contain it in `consumed_schemas`.
+
+A required capability blocks only the participant named by `executor`.
+Optional capabilities never block. CORE-007 and CORE-010 use the same exact
+`required-capability-absent` blocker.
+
+Local and peer component contract-version strings need not match.
+`freeze_contract_versions` independently canonicalizes the expected local and
+peer sets. `check_peer_compatibility` compares each report only with its own
+frozen expected set and proves compatibility through the exact schema-flow and
+required-capability checks. A changed but interpretable participant set returns
+`contract-version-set-changed`; it is not an unknown-format error. Full
+operation compatibility requires both the capability decision and the peer
+compatibility decision to be positive.
 
 CORE-006, CORE-007, and CORE-010 are pure readers for Wave 1C. They MUST NOT
 acquire locks, write files, publish object-store content, create `EvidenceRef`
-values, or dispatch external calls. CORE-008 exclusively owns durable evidence
-storage and `EvidenceRef` creation.
+values, hash validated objects as an output obligation, or dispatch external
+calls. CORE-008 exclusively owns durable evidence storage and `EvidenceRef`
+creation.
+
+
+#### 4.1.2 CORE-008 evidence and CORE-009 reporting contracts
+
+CORE-008 and CORE-009 own versioned module-specific immutable types. These
+types are not registry entries and do not move authority from the governing
+documents. They are exported from their owning modules:
+
+```text
+tools.mother.common.evidence:
+  EvidenceDocument
+  RedactionRule
+  RedactionPolicy
+  EvidenceExportItem
+  EvidenceManifestEntry
+  EvidenceManifest
+  EvidenceExportResult
+
+tools.mother.common.reporting:
+  AllowedCommand
+  AllowedCommandsReport
+  EvidenceReport
+  ReportArtifactRef
+```
+
+The exact Python fields are normative:
+
+| Type | Exact fields in declaration order |
+|---|---|
+| `EvidenceDocument` | `document_version: str`, `schema_id: str`, `source: str`, `observation_time: str`, `redaction_policy: str`, `payload: bytes` |
+| `RedactionRule` | `json_pointer: str` |
+| `RedactionPolicy` | `policy_version: str`, `policy_id: str`, `rules: tuple[RedactionRule, ...]` |
+| `EvidenceExportItem` | `source_ref: EvidenceRef`, `document: EvidenceDocument` |
+| `EvidenceManifestEntry` | `source_ref: EvidenceRef`, `export_ref: EvidenceRef` |
+| `EvidenceManifest` | `manifest_version: str`, `entries: tuple[EvidenceManifestEntry, ...]` |
+| `EvidenceExportResult` | `manifest: EvidenceManifest`, `manifest_ref: EvidenceRef`, `exported_refs: tuple[EvidenceRef, ...]` |
+| `AllowedCommand` | `command: str`, `reason: str` |
+| `AllowedCommandsReport` | `report_version: str`, `operation_id: str`, `classification: str`, `active_operation_id: str | None`, `commands: tuple[AllowedCommand, ...]` |
+| `EvidenceReport` | `report_version: str`, `operation_id: str`, `manifest_ref: EvidenceRef`, `evidence_refs: tuple[EvidenceRef, ...]` |
+| `ReportArtifactRef` | `format: str`, `relative_name: str`, `content_hash: ContentHash`, `byte_length: int` |
+
+All are frozen dataclasses with slots. Identifiers, schema names, sources,
+timestamps, commands, reasons, relative names, and format values are non-empty
+exact strings. Public collections are tuples only; mappings, lists, sets, and
+frozensets are rejected at constructors. `byte_length` is a non-negative
+integer and booleans are rejected. `ReportArtifactRef.format` is exactly
+`json`, `text`, or `allowed-commands`.
+
+The supported format versions are exactly:
+
+```text
+evidence-document.v1
+redaction-policy.v1
+evidence-manifest.v1
+allowed-commands-report.v1
+evidence-report.v1
+```
+
+`EvidenceDocument.payload` is canonical CORE-003 JSON bytes for one top-level
+object. It is not arbitrary bytes and it never contains private-state file
+bytes. The storage envelope is canonical JSON with the exact serialized fields:
+
+```text
+document_version
+observation_time
+payload
+redaction_policy
+schema_id
+source
+```
+
+`payload` is embedded as its decoded JSON object. `load_evidence` reconstructs
+the exact canonical payload bytes. No bare mapping crosses the API.
+
+The public signatures are exactly:
+
+```python
+# tools.mother.common.evidence
+def store_evidence(
+    root: Path,
+    document: EvidenceDocument,
+    *,
+    operation: OperationIdentity,
+) -> EvidenceRef: ...
+
+def load_evidence(
+    root: Path,
+    reference: EvidenceRef,
+    *,
+    operation: OperationIdentity,
+) -> EvidenceDocument: ...
+
+def redact_copy(
+    document: EvidenceDocument,
+    policy: RedactionPolicy,
+    *,
+    operation: OperationIdentity,
+) -> EvidenceDocument: ...
+
+def export_manifest(
+    root: Path,
+    items: tuple[EvidenceExportItem, ...],
+    manifest_time: str,
+    *,
+    operation: OperationIdentity,
+) -> EvidenceExportResult: ...
+
+# tools.mother.common.reporting
+def build_evidence_report(
+    export: EvidenceExportResult,
+    *,
+    operation: OperationIdentity,
+) -> EvidenceReport: ...
+
+def build_allowed_commands_report(
+    classification: str,
+    active_operation_id: str | None,
+    commands: tuple[AllowedCommand, ...],
+    *,
+    operation: OperationIdentity,
+) -> AllowedCommandsReport: ...
+
+def render_json(
+    root: Path,
+    report: EvidenceReport | AllowedCommandsReport,
+    *,
+    operation: OperationIdentity,
+) -> ReportArtifactRef: ...
+
+def render_text(
+    root: Path,
+    report: EvidenceReport | AllowedCommandsReport,
+    *,
+    operation: OperationIdentity,
+) -> ReportArtifactRef: ...
+
+def render_allowed_commands(
+    root: Path,
+    report: AllowedCommandsReport,
+    *,
+    operation: OperationIdentity,
+) -> ReportArtifactRef: ...
+```
+
+CORE-008 accepts only exact `Path` roots already resolved and contained by
+CORE-005. It delegates content-addressed publication and verified reads to
+CORE-012; it does not reimplement object-store paths or atomic publication.
+`store_evidence` canonicalizes the storage envelope, publishes it once, and
+returns an `EvidenceRef` whose `schema`, `redaction_policy`, `source`, and
+`observation_time` exactly equal the corresponding document fields.
+The call is idempotent for the same document. `load_evidence` rehashes through
+CORE-012, decodes the exact envelope, and requires every reference metadata
+field to match the stored document.
+
+Redaction uses RFC 6901 JSON Pointer syntax with these restrictions:
+
+1. the empty pointer is forbidden;
+2. each pointer begins with `/`;
+3. `~0` and `~1` are the only escapes;
+4. array tokens are canonical non-negative decimal indexes with no leading zero
+   except `0`;
+5. every pointer resolves to an existing value;
+6. normalized pointers are unique and are applied in UTF-8 byte order;
+7. each selected value is replaced with the exact string `[REDACTED]`;
+8. the input document and policy remain unchanged.
+
+`redact_copy` returns a new `EvidenceDocument` whose `redaction_policy` is the
+policy ID and whose payload is canonical JSON bytes. It does not store the copy.
+
+The closed private-material key set is:
+
+```text
+access_token
+api_token
+credential
+mnemonic
+password
+private_key
+private_key_bytes
+refresh_token
+secret
+secret_bytes
+seed
+signature_bytes
+```
+
+Before export, every occurrence of those exact object keys at any nesting depth
+MUST have the exact value `[REDACTED]`. `export_manifest` rejects a document
+with redaction policy `none`, an unredacted closed key, duplicate source
+references, duplicate resulting export references, or a mismatch in schema, source, or observation time between a source
+reference and its redacted document. The source reference's redaction policy
+MAY differ from the redacted document's policy. It stores only redacted documents in the supplied export object-store
+root, then stores one canonical manifest containing exact source/export
+reference pairs. The manifest reference uses exactly `schema=mother.evidence-manifest.v1`,
+`redaction_policy=manifest`,
+`source=MOTHER-OFM-CORE-008.export_manifest`, and
+`observation_time=manifest_time`. It returns the typed manifest, that
+`EvidenceRef`, and exported references.
+
+Evidence references and manifest tuples use these total orders and duplicate
+identities:
+
+| Tuple | Canonical sort key | Duplicate identity |
+|---|---|---|
+| redaction rules | normalized JSON pointer | normalized JSON pointer |
+| export items | source object-hash digest, schema, source, observation time | complete `source_ref` |
+| manifest entries | source object-hash digest, export object-hash digest | complete `source_ref` or complete `export_ref` |
+| exported references | object-hash digest, schema, source, observation time | complete `EvidenceRef` |
+| evidence-report references | object-hash digest, schema, source, observation time | complete `EvidenceRef` |
+| allowed commands | command, reason | exact command; different reasons for one command are conflicting duplicates |
+
+String ordering is UTF-8 byte order. Decoders and builders reject duplicates
+before sorting.
+
+`build_evidence_report` copies the operation ID from the real
+`OperationIdentity`, requires the manifest entries and exported references to
+describe the same canonical set, and produces `evidence-report.v1`.
+`build_allowed_commands_report` rejects secret-shaped command or reason text
+with `MOTHER_REPORT_PRIVATE_MATERIAL` and accepts only these sealed-state
+classifications:
+
+```text
+local-current
+local-stale-network-agrees
+network-replica-mismatch
+wedged
+```
+
+It copies the operation ID, canonicalizes commands, and preserves the supplied
+active operation ID. It renders a supplied legal command set; it does not
+invent authority or decide operation legality independently of the
+classification and operation-control owners.
+
+CORE-009 owns only derived report files. The `root` argument is the exact
+CORE-005-resolved `reports/<operation-id>/` directory and MUST correspond to
+the report operation ID. The exact filenames are:
+
+```text
+evidence-report.json
+evidence-report.txt
+allowed-commands-report.json
+allowed-commands-report.txt
+allowed-commands.txt
+```
+
+`render_json` writes canonical CORE-003 JSON. `render_text` writes UTF-8 text
+with LF line endings and one final LF. `render_allowed_commands` writes one
+`<command>\t<reason>` line per canonical command and one final LF; an empty set
+writes zero bytes. Each renderer uses CORE-011 durable replacement, returns a
+`ReportArtifactRef` for the exact bytes, and never writes outside its supplied
+root. Re-rendering identical input is byte-identical.
+
+CORE-008 MAY write only immutable evidence objects and manifests. CORE-009 MAY
+write only derived reports. Neither module acquires logical operation scopes,
+writes journals, changes state pointers, creates authority objects, dispatches
+external calls, or treats reports as authority. CORE-009 creates no
+`EvidenceRef`. CORE-008 creates no report file. Durable publication failures
+retain the exact CORE-011/012 retry class and authority effect; any durable
+effect reference is remapped to `evidence-object-publication` for CORE-008 or
+`derived-report-publication` for CORE-009.
 
 
 ### 4.2 Error envelope
@@ -437,6 +855,8 @@ boundary. Secret values MUST NOT appear in any error field.
 | `MOTHER_MEMBERSHIP_*` | readiness mismatch, unreachable current replica, decision conflict |
 | `MOTHER_RECOVERY_*` | no unanimous candidate, invalid closure, reseal base mismatch |
 | `MOTHER_LIVE_*` | postcondition failure, unhealthy service, topology disagreement |
+| `MOTHER_EVIDENCE_*` | malformed evidence, reference mismatch, redaction or export failure |
+| `MOTHER_REPORT_*` | malformed derived report, duplicate command, private material |
 | `MOTHER_OPEN_*` | implementation blocked by a parent `contract-open` decision |
 
 
@@ -471,6 +891,14 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_SCHEMA_MISSING_DEFINITION` | `MOTHER-OFM-CORE-006.load_schema` | `never` | `none` | The requested exact schema ID and version are absent from the supplied typed catalog; no nearby schema substitution is allowed. |
 | `MOTHER_SCHEMA_AMBIGUOUS_DECLARATION` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | A typed catalog, capability set, report, or frozen requirement set contains duplicate, conflicting, or ambiguous declarations. |
 | `MOTHER_SCHEMA_DUPLICATE_REQUIREMENT` | `MOTHER-OFM-CORE-007.require_capabilities` and `MOTHER-OFM-CORE-010.freeze_contract_versions` | `never` | `none` | Frozen schema-flow, capability, or contract-version requirements contain duplicate identities and therefore deterministic invalid input. |
+| `MOTHER_EVIDENCE_MALFORMED_DOCUMENT` | `MOTHER-OFM-CORE-008.store_evidence,load_evidence,redact_copy` | `never` | `none` | An evidence document or stored envelope is not the exact supported canonical object, version, field set, or primitive shape. |
+| `MOTHER_EVIDENCE_REFERENCE_MISMATCH` | `MOTHER-OFM-CORE-008.load_evidence,export_manifest` | `never` | `none` | A typed evidence reference does not exactly match the verified stored document metadata or an export item's source document. |
+| `MOTHER_EVIDENCE_REDACTION_FAILED` | `MOTHER-OFM-CORE-008.redact_copy` | `never` | `none` | A redaction policy version, pointer, escape, array index, target, duplicate identity, or policy ID is invalid; no partial redacted result is returned. |
+| `MOTHER_EVIDENCE_PRIVATE_MATERIAL` | `MOTHER-OFM-CORE-008.export_manifest` | `never` | `none` | An export candidate is unredacted or retains a closed private-material key whose value is not exactly `[REDACTED]`. |
+| `MOTHER_EVIDENCE_DUPLICATE_EXPORT` | `MOTHER-OFM-CORE-008.export_manifest` | `never` | `none` | Export items, source references, resulting exported references, or manifest entries contain a duplicate or conflicting identity. |
+| `MOTHER_REPORT_MALFORMED_MODEL` | `MOTHER-OFM-CORE-009` | `never` | `none` | A report model has an unknown version, classification, format, filename binding, operation binding, or structurally invalid typed value. |
+| `MOTHER_REPORT_DUPLICATE_COMMAND` | `MOTHER-OFM-CORE-009.build_allowed_commands_report` | `never` | `none` | An allowed-command input repeats a command or supplies conflicting reasons for one command. |
+| `MOTHER_REPORT_PRIVATE_MATERIAL` | `MOTHER-OFM-CORE-009` | `never` | `none` | A derived report field contains secret-shaped or private material; no report file is published. |
 
 
 ## 5. Stable module registry
@@ -517,18 +945,19 @@ return `OperationCommandResult`.
 | `MOTHER-OFM-CORE-004` | `common/hashing.py` | `sha256(bytes)`, `hash_file`, `ordered_root`, `set_root` | `pure` except file read; validates algorithm and canonical member ordering |
 | `MOTHER-OFM-CORE-005` | `common/paths.py` | Resolve canonical Mother roots and validate contained paths | `pure`; rejects traversal, symlink escape, wrong network, and wrong generation |
 | `MOTHER-OFM-CORE-006` | `common/schemas.py` | `decode_schema_catalog`, `load_schema`, `validate_object`, `validate_schema_transition` | `pure reader`; unknown versions and uninterpretable input raise exact `MOTHER_SCHEMA_*`; known invalid objects or undeclared transitions return typed negative decisions |
-| `MOTHER-OFM-CORE-007` | `common/capabilities.py` | `read_capabilities`, `require_capabilities`, `freeze_capability_set` | `pure reader`; malformed, ambiguous, or changed frozen input raises exact `MOTHER_SCHEMA_*`; absent required capabilities return typed negative decisions |
-| `MOTHER-OFM-CORE-008` | `common/evidence.py` | `store_evidence`, `load_evidence`, `export_manifest`, `redact_copy` | immutable local writes only; content-addressed, flushed, secret-redacted export |
-| `MOTHER-OFM-CORE-009` | `common/reporting.py` | `render_json`, `render_text`, `render_allowed_commands`, and typed report builders | `derived-writer`; rendering never changes authority |
-| `MOTHER-OFM-CORE-010` | `common/compatibility.py` | `check_peer_compatibility`, `freeze_contract_versions` | `pure reader`; malformed or ambiguous values raise exact `MOTHER_SCHEMA_*`; ordinary incompatibility returns typed blockers, not durable evidence |
+| `MOTHER-OFM-CORE-007` | `common/capabilities.py` | `read_capabilities`, `require_capabilities`, `freeze_capability_set` | `pure reader`; malformed or ambiguous input raises exact `MOTHER_SCHEMA_*`; reads and freezes exact capability sets; absent required capabilities return typed negative decisions |
+| `MOTHER-OFM-CORE-008` | `common/evidence.py` | exact section 4.1.2 signatures for `store_evidence`, `load_evidence`, `redact_copy`, `export_manifest` | immutable local writes only through CORE-012; exact reference verification, deterministic redaction, and secret-free content-addressed export |
+| `MOTHER-OFM-CORE-009` | `common/reporting.py` | exact section 4.1.2 signatures for `build_evidence_report`, `build_allowed_commands_report`, `render_json`, `render_text`, `render_allowed_commands` | `derived-writer`; deterministic CORE-011 publication beneath one operation report root; rendering never changes authority |
+| `MOTHER-OFM-CORE-010` | `common/compatibility.py` | `decode_compatibility_report`, `check_peer_compatibility`, `freeze_contract_versions` | `pure reader`; malformed or ambiguous values raise exact `MOTHER_SCHEMA_*`; ordinary incompatibility returns typed blockers, not durable evidence |
 | `MOTHER-OFM-CORE-011` | `common/atomic_files.py` | `stable_read(..., operation: OperationIdentity)`, `durable_create(..., operation: OperationIdentity)`, `durable_replace(..., operation: OperationIdentity)`, `atomic_pointer_cas(..., operation: OperationIdentity)`, `synchronized_target(..., operation: OperationIdentity)` | local durable I/O; durable directory ancestry, temp-write, file fsync, byte reread, rename/replace, directory fsync; CAS mismatch never overwrites; every host-filesystem failure is translated to the exact typed contract; CORE-012 synchronizes only through the public target seam |
 | `MOTHER-OFM-CORE-012` | `common/object_store.py` | `put_immutable(..., operation: OperationIdentity)`, `get_verified(..., operation: OperationIdentity)`, `copy_verified_closure(..., operation: OperationIdentity)`, `verify_closure(..., operation: OperationIdentity)` | immutable local I/O; publication and reads synchronize on the CORE-011 target lock; existing hash with different bytes is fatal corruption |
 | `MOTHER-OFM-CORE-013` | `common/faultpoints.py` | `hit(name, context)` and production no-op/test interruption implementations | `pure` in production; cannot mutate state, suppress errors, or select an alternate algorithm |
 
 #### 5.2.1 Wave 1C exact public API contracts
 
-The following signatures are the Wave 1C public surface. The `operation`
-argument is keyword-only and every raised `MotherError` MUST preserve
+The following signatures are the Wave 1C public surface. All returned models
+are imported from `tools.mother.common.models`. The `operation` argument is
+keyword-only and every raised `MotherError` MUST preserve
 `operation.operation_id`, the owning module ID, the documented retry class, and
 `authority_effect="none"`.
 
@@ -557,7 +986,11 @@ validate_schema_transition(
 ) -> SchemaTransitionDecision
 
 # MOTHER-OFM-CORE-007 common/capabilities.py
-read_capabilities(payload: bytes, *, operation: OperationIdentity) -> CapabilitySet
+read_capabilities(
+    payload: bytes,
+    *,
+    operation: OperationIdentity,
+) -> FrozenCapabilitySet
 freeze_capability_set(
     capabilities: CapabilitySet,
     *,
@@ -565,12 +998,18 @@ freeze_capability_set(
 ) -> FrozenCapabilitySet
 require_capabilities(
     capabilities: FrozenCapabilitySet,
-    requirements: CompatibilityRequirementSet,
+    requirements: CompatibilityRequirementSet | FrozenCompatibilityContract,
     *,
     operation: OperationIdentity,
 ) -> CapabilityDecision
 
 # MOTHER-OFM-CORE-010 common/compatibility.py
+decode_compatibility_report(
+    payload: bytes,
+    capabilities: FrozenCapabilitySet,
+    *,
+    operation: OperationIdentity,
+) -> CompatibilityReport
 freeze_contract_versions(
     requirements: CompatibilityRequirementSet,
     *,
@@ -585,30 +1024,41 @@ check_peer_compatibility(
 ) -> CompatibilityDecision
 ```
 
-CORE-006 decoders raise `MOTHER_SCHEMA_MALFORMED_BYTES` when canonical bytes
-cannot be decoded into the requested typed value. CORE-006 raises
-`MOTHER_SCHEMA_UNKNOWN_VERSION` for unknown schema contract versions and
-`MOTHER_SCHEMA_MISSING_DEFINITION` when exact `schema_id` plus
-`schema_version` lookup fails. `validate_object` returns
-`SchemaValidationResult(valid=False, violations=(...))` for a known schema and
-an interpretable object that violates that schema. `validate_schema_transition`
-returns `SchemaTransitionDecision(compatible=False, blockers=(...))` for an
-interpretable but undeclared transition.
+CORE-006 follows the decoder precedence in section 4.1.1.
+`load_schema` performs exact `schema_id` plus `schema_version` lookup and raises
+`MOTHER_SCHEMA_MISSING_DEFINITION` when absent. `validate_object` returns the
+exact ordered violation strings from section 4.1.1 for a known schema and an
+interpretable object. `validate_schema_transition` first requires
+`requirement.schema_id` and `requirement.schema_version` to equal the
+destination definition exactly. A mismatch returns exactly one
+`schema-transition-requirement-mismatch` blocker. When they match, the method
+returns exactly one `schema-transition-undeclared` blocker if the destination
+`SchemaVersionRef` is absent from `source.allowed_destinations`; otherwise it
+returns a positive decision with no blockers.
 
-CORE-007 raises `MOTHER_SCHEMA_MALFORMED_BYTES` for undecodable capability
-bytes, `MOTHER_SCHEMA_UNKNOWN_VERSION` for unknown capability contract versions,
-and `MOTHER_SCHEMA_AMBIGUOUS_DECLARATION` for duplicate or conflicting
-capability declarations. `require_capabilities` returns
-`CapabilityDecision(allowed=False, blockers=(...))` when the named executor
-lacks a required capability. It raises `MOTHER_SCHEMA_DUPLICATE_REQUIREMENT`
-when the frozen requirement input contains duplicate capability requirements.
+CORE-007 follows the decoder precedence in section 4.1.1.
+`read_capabilities` returns a canonical `FrozenCapabilitySet`.
+`freeze_capability_set` does not mutate its input and sorts capability IDs.
+Both reject duplicate IDs with `MOTHER_SCHEMA_AMBIGUOUS_DECLARATION`.
+`require_capabilities` rejects duplicate capability-requirement identities with
+`MOTHER_SCHEMA_DUPLICATE_REQUIREMENT`; otherwise it returns the exact ordered
+`required-capability-absent` blockers from section 4.1.1. Optional
+requirements do not block.
 
-CORE-010 raises `MOTHER_SCHEMA_MALFORMED_OBJECT` for malformed typed reports or
-requirement sets, `MOTHER_SCHEMA_UNKNOWN_VERSION` for unknown compatibility
-contract versions, and `MOTHER_SCHEMA_AMBIGUOUS_DECLARATION` for conflicting
-contract declarations. Ordinary local/peer incompatibility returns
-`CompatibilityDecision(compatible=False, blockers=(...))`.
-
+CORE-010 follows the decoder precedence in section 4.1.1.
+`decode_compatibility_report` raises `MOTHER_SCHEMA_MALFORMED_OBJECT` when the
+separately supplied capability participant differs from the report
+participant. `freeze_contract_versions` requires
+`format_version="compatibility-requirements.v1"`, rejects duplicate
+contract-version, schema-flow, or capability-requirement identities with
+`MOTHER_SCHEMA_DUPLICATE_REQUIREMENT`, and returns
+`format_version="frozen-compatibility-contract.v1"` with every tuple in the
+canonical order defined in section 4.1.1. `check_peer_compatibility` requires
+local and peer report versions `compatibility-report.v1`, the frozen format
+version `frozen-compatibility-contract.v1`, exact participant roles, and
+unambiguous report contents. Uninterpretable typed values raise the exact
+`MOTHER_SCHEMA_*` error. Ordinary changed versions, missing schemas, or missing
+required capabilities return the exact ordered blockers from section 4.1.1.
 
 
 ### 5.3 Observation and external adapter modules
@@ -833,10 +1283,10 @@ boundaries.
 | `MOTHER-OF-OBS-012` | `MOTHER-OFM-RB-002.resolve_provisional,select_lifo` → `MOTHER-OFM-RB-003.replay` | Provisional frame, promoted stack, and exact restorable ranges |
 | `MOTHER-OF-OBS-013` | `MOTHER-OFM-AUTH-001.resume` → `MOTHER-OFM-AUTH-006.verify_terminal_membership` → `MOTHER-OFM-MEM-003.validate_decision` | Reservation, cancellation, finalization, acknowledgement, decision, and release facts |
 | `MOTHER-OF-OBS-014` | `MOTHER-OFM-OBS-004.merge_observations,verify_topology_closure` → `MOTHER-OFM-OBS-006.classify` | One sealed-state classification or explicit contradiction set |
-| `MOTHER-OF-OBS-015` | `MOTHER-OFM-OBS-006.classify` → `MOTHER-OFM-CORE-009.render_allowed_commands` | Only commands legal for the classification and active operation |
-| `MOTHER-OF-OBS-016` | `MOTHER-OFM-CORE-006.validate_object` → `MOTHER-OFM-CORE-007.read_capabilities` → `MOTHER-OFM-CORE-007.require_capabilities` → `MOTHER-OFM-CORE-010.check_peer_compatibility` | Typed compatibility report object, exact capability read, required-capability decision, and peer-compatibility decision with typed blockers only |
+| `MOTHER-OF-OBS-015` | `MOTHER-OFM-OBS-006.classify` → `MOTHER-OFM-CORE-009.build_allowed_commands_report,render_allowed_commands` | Only the supplied legal commands for the exact classification and active operation, rendered deterministically |
+| `MOTHER-OF-OBS-016` | `MOTHER-OFM-CORE-006.validate_object` → `MOTHER-OFM-CORE-007.read_capabilities` → `MOTHER-OFM-CORE-007.require_capabilities` → `MOTHER-OFM-CORE-010.decode_compatibility_report` → `MOTHER-OFM-CORE-010.check_peer_compatibility` | Validated compatibility-report bytes, exact frozen capability read, required-capability decision, typed local/peer reports, and peer-compatibility decision with typed blockers only |
 | `MOTHER-OF-OBS-017` | `MOTHER-OFM-OBS-007.run_assertion_set,verify_assertion_evidence` | Complete passed/failed/unknown assertion result |
-| `MOTHER-OF-OBS-018` | `MOTHER-OFM-CORE-008.store_evidence,redact_copy,export_manifest` → `MOTHER-OFM-CORE-009.render_json` or `render_text` | Immutable hashed evidence manifest with no private material |
+| `MOTHER-OF-OBS-018` | `MOTHER-OFM-CORE-008.store_evidence,load_evidence,redact_copy,export_manifest` → `MOTHER-OFM-CORE-009.build_evidence_report` → `MOTHER-OFM-CORE-009.render_json` or `MOTHER-OFM-CORE-009.render_text` | Verified immutable evidence, deterministic redacted export manifest, and derived report with no private material |
 
 ### 7.2 Planning and operation control
 
@@ -1095,7 +1545,7 @@ implementable; authority-changing APIs MUST return
 
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
-| `MOTHER-OF-MIG-001` | `MOTHER-OFM-CORE-006.load_schema` → `MOTHER-OFM-CORE-006.validate_schema_transition` → `MOTHER-OFM-CORE-007.require_capabilities` | Source/destination schemas loaded, declared transition validated, and migration capability decision produced before any authority-changing migration call |
+| `MOTHER-OF-MIG-001` | `MOTHER-OFM-CORE-006.decode_schema_catalog` → `MOTHER-OFM-CORE-006.load_schema` → `MOTHER-OFM-CORE-006.validate_schema_transition` → `MOTHER-OFM-CORE-007.require_capabilities` | Canonical schema catalog decoded, source/destination schemas loaded, declared transition validated, and migration capability decision produced before any authority-changing migration call |
 | `MOTHER-OF-MIG-002` | `MOTHER-OFM-MAINT-001.preserve_source` → `MOTHER-OFM-CORE-012.put_immutable` → `MOTHER-OFM-CORE-008.store_evidence` | Original bytes, hashes, and audit evidence |
 | `MOTHER-OF-MIG-003` | `MOTHER-OFM-MAINT-001.resolve_migration,apply_declared` | Deterministic destination bytes from exact source bytes |
 | `MOTHER-OF-MIG-004` | `MOTHER-OFM-MAINT-001.validate_graph` → `MOTHER-OFM-CORE-006.validate_object` → `MOTHER-OFM-CORE-012.verify_closure` | Complete migrated graph validates |
@@ -1258,11 +1708,11 @@ into a filesystem path. Callers pass typed identifiers, not path fragments.
 | `actions/<operation-id>/finalization/` acknowledgement certificate | `MOTHER-OFM-AUTH-002` | Finalization and reporting read |
 | `actions/<operation-id>/membership-transition-decisions/` | `MOTHER-OFM-MEM-003` | Authorization and reporting read |
 | request/result journals | `MOTHER-OFM-XPORT-003` | Transport and reconciliation read |
-| content-addressed evidence objects/manifests | `MOTHER-OFM-CORE-008` through `MOTHER-OFM-CORE-012` | Reporting/redacted export read |
+| `evidence/objects/` and `evidence/exports/<operation-id>/objects/` content-addressed evidence objects/manifests | `MOTHER-OFM-CORE-008` through the public `MOTHER-OFM-CORE-012` API | CORE-009 and evidence-export operation read through CORE-008 only |
 | content-addressed Hub release descriptors and pinned target/rollback artifact closures | `MOTHER-OFM-CORE-012` | `MOTHER-OFM-SVC-001` stages through object-store API; `MOTHER-OFM-SVC-002` verifies hashes only |
 | authority-reseal intent/proposal/certificate evidence | `MOTHER-OFM-REC-003` through declared state/authority writers | Recovery/reporting read |
 | `current/` | `MOTHER-OFM-CTL-003` | Diagnose/rollback read; replay-derived only |
-| `reports/<operation-id>/` | `MOTHER-OFM-CORE-009` | No authority reader treats reports as source of truth |
+| `reports/<operation-id>/` exact filenames in section 4.1.2 | `MOTHER-OFM-CORE-009` through CORE-011 | No authority reader treats reports as source of truth |
 | projection generations and active projection pointer | `MOTHER-OFM-STATE-003` | `MOTHER-OFM-MAINT-003` through its API |
 
 ### 9.3 Mother context

@@ -86,3 +86,20 @@ Each future implementation patch should:
 The mother-ship content has reached the point where new features should be planned against the data-driven runtime architecture instead of continuing to add one-off renderer branches. Future implementation patches should preserve the existing playable route while moving state, rooms, interactables, objectives, and validation into explicit game-definition data.
 
 Patch A for that transition is documentation/schema only. It does not change runtime behavior. Patch B centralizes current mother-ship state defaults into one runtime factory while preserving the current bridge route, viewscreen, tactical console, and no-locked-door behavior. Patch C extracts the current room list, movement bounds, exits, and shuttle-bay spawn into explicit level data while keeping the same route playable. Patch D extracts terminals, prompts, interaction ranges, and E-key action ids into `motherShipInterior.interactables` while preserving the current route and bridge/tactical behavior. Patch E routes those action ids through a safe interaction registry so future validators can prove that every prompt has a handler before content ships. Patch Q adds declarative effect expectations (`changesState`, `successStatus`, and `nextObjective`) so a prompt can also describe what a successful handler should visibly change. Patch R adds a direct project-JSON validator harness so authored room reachability, prompt handlers, effect metadata, terminal visibility, objective/display targets, and room-bound placement are tested before the browser runtime loads the scene. Patch S begins the browser-safe renderer module split by moving room-geometry and content-defined viewscreen render passes into separate registered script modules while keeping `scene-viewer.js` method names as delegating seams. Patch U adds an editor-facing annotation tool: hold `P` and click visible geometry to attach notes to stable data-defined targets under `metadata.shuttle3d.polygonAnnotations`.
+
+
+Patch U.3 makes the polygon annotation workflow disk-backed at the point of action:
+clicking **Save annotation** now runs the Game Editor project write path
+immediately, rather than requiring a second Save Project click.
+
+
+Patch U.4 replaces the annotation tool's indirect event-only disk handoff with an
+explicit editor callback. The project write request carries an annotation receipt,
+and the server rereads `project.json` to confirm the annotation exists before the
+dialog reports success.
+
+
+Patch U.5 closes the standalone WebGL persistence gap. The game surface now
+supplies a direct annotation save callback, and the server merges the annotation
+into the latest `project.json`, rereads it, and reports the exact write path before
+the UI claims success.
