@@ -12,7 +12,7 @@ mother-o.md
 SHA-256: 1a557a39ecbea95f65bc3dbb90988a5529b0d182cfe2ff5eea9264549d4776e4
 
 mother-o-f.md
-SHA-256: 2ab68a1b3990e65143e7b85eb943d0937435862c1e5b2d77cae05b88df0553ea
+SHA-256: 16a162c2c3c62598196a8a46660f8703f29c54f842c58642125d4db7ce0a368a
 ```
 
 ## 1. Purpose and authority
@@ -1167,33 +1167,68 @@ head, and checkpoint selection therefore carries a non-null
 and rollback journal decoding, null-bundle references, and their typed journal
 contexts are deferred and MUST NOT be inferred by these APIs.
 
-The closed checkpoint kinds and their construction constraints are:
+The network-journal callable slice recognizes exactly these durable checkpoint
+kinds. Recognition and committed-read validation do not imply that STATE-002
+currently owns an authorized construction path for every recognized kind.
 
-| Checkpoint kind | Coverage | Prospective containing entry | Prepared intent | Superseded heads |
-|---|---|---|---|---|
-| `initial` | `covers_through=None` | sequence `1`, `previous=None` | `None` | empty |
-| `initial-network-birth` | `covers_through=None` | sequence `1`, `previous=None` | required | empty |
-| `routine` | exact immediately preceding committed entry | sequence is coverage sequence plus one; `previous` equals coverage | `None` | empty |
-| `authoritative-rectification` | exact selected predecessor entry | sequence is coverage sequence plus one; `previous` equals coverage | required | non-empty |
+| Checkpoint kind | Durable read-side meaning | Current construction status | Sole current construction ancestry |
+|---|---|---|---|
+| `initial-network-birth` | sequence `1`, no predecessor, and the exact authority-created birth state | constructible; `covers_through=None`, prepared intent required, superseded heads empty | `MOTHER-OP-ADD-NODE` initial mode, `MOTHER-OF-AUTH-004` |
+| `routine` | exact same-state replay summary through the immediately preceding committed entry | readable and validatable, but construction is `contract-open` | none |
+| `authoritative-rectification` | D029-authorized replacement state over an exact selected predecessor | constructible; coverage equals the predecessor, prepared intent required, superseded heads non-empty | `MOTHER-OP-RESEAL-STATE`, `MOTHER-OF-RSL-006` |
+
+The currently constructible network-checkpoint set is therefore exactly
+`initial-network-birth` and `authoritative-rectification`. `build_checkpoint`
+and `build_checkpoint_entry_bytes` MUST reject an interpretable request with
+`checkpoint_kind="routine"` as
+`MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION` before reducer execution,
+immutable-object access, writes, locks, publication, or dispatch. Routine
+remains a valid committed durable kind for `locate_newest_valid`,
+`validate_checkpoint`, `state_closure`, and replay preparation.
+
+The broader parent journal format reserves `initial` for a newly created
+non-network journal kind. Action- and rollback-journal callable contracts remain
+deferred, so STATE-002 network APIs MUST reject `checkpoint_kind="initial"` as
+`MOTHER_STATE_MALFORMED_CHECKPOINT`. No network construction test or
+implementation MAY infer a generic sequence-1 checkpoint outside the
+`initial-network-birth` ancestry above.
+
+The currently documented automatic checkpoint-frequency and
+checkpointless-history policies do not establish who is authorized to construct a routine
+checkpoint or under which operation. A later functionality MUST define its
+authorization, trigger, and publication boundary before routine construction
+can be enabled. This open decision MUST NOT weaken the routine invariant: a
+committed routine checkpoint reproduces byte-identical replay state, schema, and
+hash through its covered predecessor.
+
+`MOTHER-OF-MIG-005` does not construct a checkpoint or journal successor. It
+builds, validates, and durably stores only the content-addressed migrated
+schema-owned state object as an uncommitted candidate. `MOTHER-OF-MIG-007`
+remains the contract-open authority-commit boundary. No schema-migration
+checkpoint kind is introduced by this slice.
 
 `CheckpointPayload.covers_through_sequence` is `0` and
 `covers_through_entry_hash` is `None` when `covers_through=None`. Otherwise the
-two fields are copied exactly from `CheckpointBuildRequest.covers_through`.
+two fields are copied exactly from the committed durable checkpoint's coverage
+reference.
 
-`build_checkpoint` performs only intrinsic payload validation and
-construction-time replay validation. For `routine`, `prior_replay` is mandatory
-and MUST end at the exact coverage reference with byte-identical state, state
-schema, and state hash. For `authoritative-rectification`, `prior_replay` proves
-the selected predecessor and coverage; the checkpoint state MAY differ because
-the parent D029 contract authorizes explicit replacement state. Initial kinds
-require no prior replay.
+`build_checkpoint` performs only intrinsic payload validation and the
+construction-time validation required by the two constructible kinds.
+`authoritative-rectification` requires `prior_replay` ending at the exact
+selected predecessor and coverage; its checkpoint state MAY differ because the
+parent D029 contract authorizes explicit replacement state.
+`initial-network-birth` requires no prior replay. Routine requests are rejected
+with `MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION`; they are never treated as
+malformed.
 
 `build_checkpoint_entry_bytes` is the sole construction seam that binds a
-checkpoint payload to its prospective containing entry. It enforces the exact
-sequence and predecessor column above, passes the checkpoint bytes to
-`STATE-001.build_entry_bytes` with `event_type="state-checkpoint"`, and passes
-the checkpoint state as the exact `resulting_state`. It returns entry bytes
-only; no entry hash, authorization bundle, or committed reference exists yet.
+constructible checkpoint payload to its prospective containing entry. It
+enforces the exact sequence and predecessor rules above, passes the checkpoint
+bytes to `STATE-001.build_entry_bytes` with
+`event_type="state-checkpoint"`, and passes the checkpoint state as the exact
+`resulting_state`. It returns entry bytes only; no entry hash, authorization
+bundle, or committed reference exists yet. Routine requests are rejected with
+`MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION` before entry construction.
 `validate_checkpoint` is reserved for an already loaded authorized lineage. It
 MUST NOT appear in a pre-publication construction chain.
 
@@ -1303,7 +1338,7 @@ The exact checkpoint event payload bytes are:
 
 ```text
 {
-  "checkpoint_kind": "initial" | "initial-network-birth" | "routine" | "authoritative-rectification",
+  "checkpoint_kind": "initial-network-birth" | "routine" | "authoritative-rectification",
   "checkpoint_version": "mother.journal.checkpoint.v1",
   "covers_through_entry_hash": <ContentHash wire object or null>,
   "covers_through_sequence": <non-negative integer>,
@@ -1801,6 +1836,7 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_STATE_CHECKPOINT_MISSING` | `MOTHER-OFM-STATE-002.locate_newest_valid` | `never` | `none` | The committed retained lineage reaches sequence 1, a cycle, or a missing predecessor object before one valid checkpoint. A translated missing-object error retains the causal CORE-012 `MotherError`. Normal mutation is blocked pending explicit recovery. |
 | `MOTHER_STATE_MALFORMED_CHECKPOINT` | `MOTHER-OFM-STATE-002.locate_newest_valid,build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint` | `never` | `none` | A checkpoint version, kind, field set, canonical payload, constructor value, tuple member, ordering, coverage shape, closure-manifest reference, or NFC string is uninterpretable. |
 | `MOTHER_STATE_CHECKPOINT_INVALID` | `MOTHER-OFM-STATE-002.locate_newest_valid,build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint,state_closure` | `never` | `none` | An interpretable checkpoint fails construction-time prior-replay binding, prospective entry sequence/predecessor/resulting-state binding, committed-read binding to its existing authorized containing entry, exact predecessor, state schema, state bytes, state hash, closure manifest, authoritative kind, or superseded lineage. |
+| `MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION` | `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes` | `never` | `none` | A valid durable `routine` checkpoint was requested for construction before a governing functionality defines who authorizes it, when it is triggered, and how it is published. The request is interpretable but the construction contract is open; rejection occurs before any side effect. |
 | `MOTHER_STATE_FUTURE_OBJECT_REFERENCE` | `MOTHER-OFM-STATE-001.build_entry_bytes` and `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint` | `never` | `none` | An entry event or checkpoint contains a proposal, certificate, acceptance, decision, authorization-bundle, or other object role created only after the successor entry hash exists. A pre-entry state-closure-manifest hash is permitted. |
 | `MOTHER_CONFLICT_DURABLE_TARGET_EXISTS` | `MOTHER-OFM-CORE-011.durable_create` | `after-reobserve` | `none` | Exclusive publication found an already-published target and did not overwrite it. |
 | `MOTHER_STATE_DURABLE_TARGET_MISSING` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The required durable pointer or target is absent before any authority effect. |
@@ -2258,7 +2294,7 @@ boundaries.
 | `MOTHER-OF-AUTH-001` | `MOTHER-OFM-CTL-004.acquire_full_set` → `MOTHER-OFM-AUTH-001.acquire_full_set,collect_receipts` | Exact full-set reservation receipts for one authority generation and entry hash |
 | `MOTHER-OF-AUTH-002` | `MOTHER-OFM-AUTH-002.build_successor_certificate,validate_successor_certificate` → `MOTHER-OFM-CORE-012.put_immutable` | Valid immutable full-set successor certificate |
 | `MOTHER-OF-AUTH-003` | `MOTHER-OFM-CTL-004.acquire_full_set` → `MOTHER-OFM-AUTH-001.cancel_full_set` → `MOTHER-OFM-AUTH-007.reconcile_cancellation` | Uncommitted reservation canceled on the full authority set |
-| `MOTHER-OF-AUTH-004` | `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-CORE-004.sha256` → `MOTHER-OFM-CORE-012.put_immutable` | Exact content-addressed pending-action entry; no future-object hash |
+| `MOTHER-OF-AUTH-004` | ordinary successor: `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-CORE-004.sha256` → `MOTHER-OFM-CORE-012.put_immutable`; `MOTHER-OP-ADD-NODE` initial birth: `MOTHER-OFM-STATE-002.build_state_closure_manifest` → `MOTHER-OFM-CORE-012.put_immutable` for the pre-entry manifest → `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable` for the entry | Exact content-addressed pending-action entry, or the sequence-1 `initial-network-birth` checkpoint in Add Node initial mode; no future-object hash |
 | `MOTHER-OF-AUTH-005` | `MOTHER-OFM-AUTH-003.build_bundle,validate_bundle` → `MOTHER-OFM-CORE-012.put_immutable` | Bundle binding the exact entry, certificate, and applicable post-entry evidence |
 | `MOTHER-OF-AUTH-006` | `MOTHER-OFM-AUTH-004.commit_entry_bundle_pair` → `MOTHER-OFM-AUTH-007.reconcile_head_commit` | Atomic local head-pair commit or pointer-determined reconciled outcome |
 | `MOTHER-OF-AUTH-007` | `MOTHER-OFM-AUTH-005.replicate_closure,verify_replica` → `MOTHER-OFM-AUTH-007.reconcile_replication` | Every required replica holds and replays the exact committed closure |
@@ -2480,7 +2516,7 @@ implementable; authority-changing APIs MUST return
 | `MOTHER-OF-MIG-002` | `MOTHER-OFM-MAINT-001.preserve_source` → `MOTHER-OFM-CORE-012.put_immutable` → `MOTHER-OFM-CORE-008.store_evidence` | Original bytes, hashes, and audit evidence |
 | `MOTHER-OF-MIG-003` | `MOTHER-OFM-MAINT-001.resolve_migration,apply_declared` | Deterministic destination bytes from exact source bytes |
 | `MOTHER-OF-MIG-004` | `MOTHER-OFM-MAINT-001.validate_graph` → `MOTHER-OFM-CORE-006.validate_object` → `MOTHER-OFM-CORE-012.verify_closure` | Complete migrated graph validates |
-| `MOTHER-OF-MIG-005` | `MOTHER-OFM-MAINT-001.build_migrated_object` → for a checkpoint: `MOTHER-OFM-STATE-002.build_state_closure_manifest` → `MOTHER-OFM-CORE-012.put_immutable` for the pre-entry manifest → `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes` → `MOTHER-OFM-CORE-012.put_immutable`; or schema-owned state builder | Content-addressed migrated checkpoint entry or schema-owned state object, with exact source preservation, derived closure provenance, and no committed-read validation before an entry/bundle pair exists |
+| `MOTHER-OF-MIG-005` | `MOTHER-OFM-MAINT-001.build_migrated_object` → schema-owned state validator → `MOTHER-OFM-CORE-012.put_immutable` | Content-addressed migrated schema-owned state object durably stored as an uncommitted candidate; no checkpoint, journal successor, authorization bundle, or authority change is constructed |
 | `MOTHER-OF-MIG-006` | `MOTHER-OFM-MAINT-001.replicate` → `MOTHER-OFM-AUTH-005.replicate_closure,verify_replica` | Full expected set verifies migrated result |
 | `MOTHER-OF-MIG-007` | `MOTHER-OFM-MAINT-001` disabled `commit` | Block until predecessor, certificate, bundle, head, finalization, and rollback authority are defined |
 | `MOTHER-OF-MIG-008` | `MOTHER-OFM-MAINT-001.abort` → `MOTHER-OFM-STATE-005.discard_unpublished`; pre-commit restore only | Staging canceled without changing authority |
@@ -2976,7 +3012,7 @@ the complete function-level expansion remains section 7.
 | `MOTHER-REQ-012` | `MOTHER-OFM-APP-005` plus its section 7 expansion |
 | `MOTHER-REQ-013` | `MOTHER-OFM-APP-006` plus its section 7 expansion |
 | `MOTHER-REQ-014` | `MOTHER-OFM-NET-001`, `MOTHER-OFM-RB-001` through `004` |
-| `MOTHER-REQ-015` | `MOTHER-OFM-CORE-006`, `007`, `010` |
+| `MOTHER-REQ-015` | `MOTHER-OFM-CORE-006`, `007`, `010`, `MOTHER-OFM-STATE-002`, `MOTHER-OFM-MAINT-001` |
 | `MOTHER-REQ-016` | `MOTHER-OFM-STATE-004`, `MOTHER-OFM-CORE-012`, `MOTHER-OFM-REC-001`, `002` |
 | `MOTHER-REQ-017` | `MOTHER-OFM-APP-011`, `MOTHER-OFM-REC-002` |
 | `MOTHER-REQ-018` | `MOTHER-OFM-APP-010`, `MOTHER-OFM-REC-001`, `MOTHER-OFM-STATE-005` |

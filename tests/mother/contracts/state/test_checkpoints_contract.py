@@ -49,6 +49,14 @@ TRACE_BUILD_ENTRY = _trace(
     "MOTHER-REQ-005", "MOTHER-OP-RESEAL-STATE", "MOTHER-OF-RSL-006",
     "build_checkpoint_entry_bytes",
 )
+TRACE_BIRTH_BUILD_CHECKPOINT = _trace(
+    "MOTHER-REQ-005", "MOTHER-OP-ADD-NODE", "MOTHER-OF-AUTH-004",
+    "build_checkpoint",
+)
+TRACE_BIRTH_BUILD_ENTRY = _trace(
+    "MOTHER-REQ-005", "MOTHER-OP-ADD-NODE", "MOTHER-OF-AUTH-004",
+    "build_checkpoint_entry_bytes",
+)
 TRACE_VALIDATE = _trace(
     "MOTHER-REQ-002", "MOTHER-OP-DIAGNOSE", "MOTHER-OF-OBS-003",
     "validate_checkpoint",
@@ -96,6 +104,17 @@ def _operation(kind: str = "MOTHER-OP-DIAGNOSE") -> OperationIdentity:
     )
 
 
+
+
+def _construction_operation(kind: str) -> OperationIdentity:
+    operation_kind = {
+        "initial-network-birth": "MOTHER-OP-ADD-NODE",
+        "routine": "MOTHER-OP-DIAGNOSE",
+        "authoritative-rectification": "MOTHER-OP-RESEAL-STATE",
+    }[kind]
+    return _operation(operation_kind)
+
+
 def _hash(tag: str) -> ContentHash:
     digest = (tag.encode("utf-8").hex() * 64)[:64]
     return ContentHash("sha256", digest)
@@ -141,6 +160,40 @@ def _manifest_wire(
             ],
             "manifest_version": version,
             "roots": [_content_hash_wire(root) for root in roots],
+        }
+    )
+
+
+def _checkpoint_event_payload(checkpoint) -> bytes:
+    return canonical_json(
+        {
+            "checkpoint_kind": checkpoint.checkpoint_kind,
+            "checkpoint_version": checkpoint.checkpoint_version,
+            "covers_through_entry_hash": (
+                None
+                if checkpoint.covers_through_entry_hash is None
+                else _content_hash_wire(checkpoint.covers_through_entry_hash)
+            ),
+            "covers_through_sequence": checkpoint.covers_through_sequence,
+            "prepared_intent_hash": (
+                None
+                if checkpoint.prepared_intent_hash is None
+                else _content_hash_wire(checkpoint.prepared_intent_hash)
+            ),
+            "state": json.loads(checkpoint.state.decode("utf-8")),
+            "state_closure_manifest_hash": _content_hash_wire(
+                checkpoint.state_closure_manifest_hash
+            ),
+            "state_hash": _content_hash_wire(checkpoint.state_hash),
+            "state_object_refs": [
+                _content_hash_wire(reference)
+                for reference in checkpoint.state_object_refs
+            ],
+            "state_schema": checkpoint.state_schema,
+            "superseded_lineage_heads": [
+                _content_hash_wire(reference)
+                for reference in checkpoint.superseded_lineage_heads
+            ],
         }
     )
 
@@ -249,27 +302,45 @@ def _durable_checkpoint(
     journal,
     tmp_path: Path,
     *,
-    kind: str = "initial",
+    kind: str = "initial-network-birth",
     operation: OperationIdentity | None = None,
 ):
     operation = operation or _operation()
+    fixture_operation = _construction_operation(kind)
     state_root = tmp_path / "state-objects"
     leaf_bytes = _state_object("mother.network-state.v1", {"name": "leaf"})
     leaf_hash = object_store.put_immutable(
-        state_root, leaf_bytes, operation=operation
+        state_root, leaf_bytes, operation=fixture_operation
     )
     parent_bytes = _state_object(
         "mother.network-state.v1", {"name": "parent"}, (leaf_hash,)
     )
     parent_hash = object_store.put_immutable(
-        state_root, parent_bytes, operation=operation
+        state_root, parent_bytes, operation=fixture_operation
     )
-    manifest_result = checkpoints.build_state_closure_manifest(
-        state_root, (parent_hash,), operation=operation
+    edges = tuple(
+        sorted(
+            ((leaf_hash, ()), (parent_hash, (leaf_hash,))),
+            key=lambda row: (row[0].algorithm.encode("utf-8"), row[0].digest),
+        )
     )
-    assert object_store.put_immutable(
-        state_root, manifest_result.manifest_bytes, operation=operation
-    ) == manifest_result.manifest_hash
+    manifest_bytes = _manifest_wire((parent_hash,), edges)
+    manifest_hash = object_store.put_immutable(
+        state_root, manifest_bytes, operation=fixture_operation
+    )
+    manifest = checkpoints.StateClosureManifest(
+        "mother.state.closure-manifest.v1",
+        (parent_hash,),
+        tuple(
+            checkpoints.StateClosureEdge(parent, children)
+            for parent, children in edges
+        ),
+    )
+    manifest_result = checkpoints.StateClosureManifestBuildResult(
+        manifest,
+        manifest_bytes,
+        manifest_hash,
+    )
 
     previous = None
     prior_replay = None
@@ -300,30 +371,64 @@ def _durable_checkpoint(
         kind,
         state=checkpoint_state,
         roots=(parent_hash,),
-        manifest_hash=manifest_result.manifest_hash,
+        manifest_hash=manifest_hash,
         coverage=coverage,
     )
-    entry_request = checkpoints.CheckpointEntryBuildRequest(
-        "network-journal",
-        sequence,
-        previous,
-        request,
-        "2026-07-29T14:16:27Z",
-    )
-    built = checkpoints.build_checkpoint_entry_bytes(
-        entry_request, prior_replay, operation=operation
-    )
+
+    if kind == "routine":
+        checkpoint = checkpoints.CheckpointPayload(
+            "mother.journal.checkpoint.v1",
+            "routine",
+            coverage.sequence,
+            coverage.entry_hash,
+            request.state_schema,
+            checkpoint_state,
+            sha256(checkpoint_state),
+            request.state_object_refs,
+            request.state_closure_manifest_hash,
+            None,
+            (),
+        )
+        event_payload = _checkpoint_event_payload(checkpoint)
+        entry_bytes = journal.build_entry_bytes(
+            journal.JournalEntryBuildRequest(
+                "network-journal",
+                sequence,
+                previous,
+                "state-checkpoint",
+                event_payload,
+                checkpoint_state,
+                "2026-07-29T14:16:27Z",
+            ),
+            operation=_operation("MOTHER-OP-ADD-NODE"),
+        )
+        built = checkpoints.CheckpointEntryBuildResult(
+            checkpoint,
+            event_payload,
+            entry_bytes,
+        )
+    else:
+        entry_request = checkpoints.CheckpointEntryBuildRequest(
+            "network-journal",
+            sequence,
+            previous,
+            request,
+            "2026-07-29T14:16:27Z",
+        )
+        built = checkpoints.build_checkpoint_entry_bytes(
+            entry_request, prior_replay, operation=fixture_operation
+        )
 
     entry_root = tmp_path / "entries"
     authorization_root = tmp_path / "authorizations"
     entry_hash = object_store.put_immutable(
-        entry_root, built.entry_bytes, operation=operation
+        entry_root, built.entry_bytes, operation=fixture_operation
     )
     bundle_bytes = canonical_json(
         {"authorized": True, "entry": entry_hash.digest}
     )
     bundle_hash = object_store.put_immutable(
-        authorization_root, bundle_bytes, operation=operation
+        authorization_root, bundle_bytes, operation=fixture_operation
     )
     reference = journal.JournalEntryRef(
         "network-journal",
@@ -379,6 +484,7 @@ def _store_later_entry(
     operation: OperationIdentity,
 ):
     previous = durable["reference"]
+    construction_operation = _operation("MOTHER-OP-ADD-NODE")
     state = canonical_json({"generation": sequence})
     entry_bytes = journal.build_entry_bytes(
         journal.JournalEntryBuildRequest(
@@ -390,14 +496,14 @@ def _store_later_entry(
             state,
             f"2026-07-29T14:16:{27 + sequence:02d}Z",
         ),
-        operation=operation,
+        operation=construction_operation,
     )
     entry_hash = object_store.put_immutable(
-        durable["entry_root"], entry_bytes, operation=operation
+        durable["entry_root"], entry_bytes, operation=construction_operation
     )
     bundle = canonical_json({"authorized": True, "entry": sequence})
     bundle_hash = object_store.put_immutable(
-        durable["authorization_root"], bundle, operation=operation
+        durable["authorization_root"], bundle, operation=construction_operation
     )
     return journal.JournalEntryRef(
         "network-journal",
@@ -406,6 +512,160 @@ def _store_later_entry(
         bundle_hash,
         sha256(state),
     )
+
+
+@pytest.mark.parametrize(
+    "method_name,parameter_names",
+    (
+        pytest.param(
+            "locate_newest_valid",
+            ("entry_root", "head", "operation"),
+            marks=TRACE_LOCATE,
+        ),
+        pytest.param(
+            "build_state_closure_manifest",
+            ("state_object_root", "roots", "operation"),
+            marks=TRACE_BUILD_CLOSURE,
+        ),
+        pytest.param(
+            "build_checkpoint",
+            ("request", "prior_replay", "operation"),
+            marks=TRACE_BUILD_CHECKPOINT,
+        ),
+        pytest.param(
+            "build_checkpoint_entry_bytes",
+            ("request", "prior_replay", "operation"),
+            marks=TRACE_BUILD_ENTRY,
+        ),
+        pytest.param(
+            "validate_checkpoint",
+            ("lineage", "checkpoint", "operation"),
+            marks=TRACE_VALIDATE,
+        ),
+        pytest.param(
+            "state_closure",
+            ("state_object_root", "checkpoint", "operation"),
+            marks=TRACE_CLOSURE,
+        ),
+        pytest.param(
+            "prepare_replay",
+            ("lineage", "checkpoint_validation", "closure", "operation"),
+            marks=TRACE_PREPARE,
+        ),
+    ),
+)
+def test_checkpoint_public_signatures_have_exact_order_and_keyword_only_operation(
+    method_name: str,
+    parameter_names: tuple[str, ...],
+) -> None:
+    checkpoints = _surface()
+    signature = inspect.signature(getattr(checkpoints, method_name))
+    assert tuple(signature.parameters) == parameter_names
+    for name in parameter_names[:-1]:
+        assert signature.parameters[name].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    operation_parameter = signature.parameters["operation"]
+    assert operation_parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert operation_parameter.default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    (
+        pytest.param("CheckpointBuildRequest", marks=TRACE_BUILD_CHECKPOINT),
+        pytest.param("CheckpointEntryBuildRequest", marks=TRACE_BUILD_ENTRY),
+        pytest.param("CheckpointPayload", marks=TRACE_BUILD_CHECKPOINT),
+        pytest.param("CheckpointBuildResult", marks=TRACE_BUILD_CHECKPOINT),
+        pytest.param("CheckpointEntryBuildResult", marks=TRACE_BUILD_ENTRY),
+        pytest.param("CheckpointSelection", marks=TRACE_LOCATE),
+        pytest.param("CheckpointValidationResult", marks=TRACE_VALIDATE),
+        pytest.param("StateClosureEdge", marks=TRACE_BUILD_CLOSURE),
+        pytest.param("StateClosureManifest", marks=TRACE_BUILD_CLOSURE),
+        pytest.param("StateClosureManifestBuildResult", marks=TRACE_BUILD_CLOSURE),
+        pytest.param("StateClosure", marks=TRACE_CLOSURE),
+    ),
+)
+def test_checkpoint_exported_models_have_exact_annotations_and_slots(
+    model_name: str,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    expected = {
+        "CheckpointBuildRequest": {
+            "checkpoint_kind": str,
+            "covers_through": journal.JournalEntryRef | None,
+            "state_schema": str,
+            "state": bytes,
+            "state_object_refs": tuple[ContentHash, ...],
+            "state_closure_manifest_hash": ContentHash,
+            "prepared_intent_hash": ContentHash | None,
+            "superseded_lineage_heads": tuple[ContentHash, ...],
+        },
+        "CheckpointEntryBuildRequest": {
+            "journal_id": str,
+            "sequence": int,
+            "previous": journal.JournalEntryRef | None,
+            "checkpoint_request": checkpoints.CheckpointBuildRequest,
+            "created_at": str,
+        },
+        "CheckpointPayload": {
+            "checkpoint_version": str,
+            "checkpoint_kind": str,
+            "covers_through_sequence": int,
+            "covers_through_entry_hash": ContentHash | None,
+            "state_schema": str,
+            "state": bytes,
+            "state_hash": ContentHash,
+            "state_object_refs": tuple[ContentHash, ...],
+            "state_closure_manifest_hash": ContentHash,
+            "prepared_intent_hash": ContentHash | None,
+            "superseded_lineage_heads": tuple[ContentHash, ...],
+        },
+        "CheckpointBuildResult": {
+            "checkpoint": checkpoints.CheckpointPayload,
+            "event_payload": bytes,
+        },
+        "CheckpointEntryBuildResult": {
+            "checkpoint": checkpoints.CheckpointPayload,
+            "event_payload": bytes,
+            "entry_bytes": bytes,
+        },
+        "CheckpointSelection": {
+            "checkpoint_ref": journal.JournalEntryRef,
+            "checkpoint": checkpoints.CheckpointPayload,
+            "later_entry_refs": tuple[journal.JournalEntryRef, ...],
+        },
+        "CheckpointValidationResult": {
+            "checkpoint_ref": journal.JournalEntryRef,
+            "checkpoint": checkpoints.CheckpointPayload,
+            "authoritative": bool,
+        },
+        "StateClosureEdge": {
+            "parent": ContentHash,
+            "children": tuple[ContentHash, ...],
+        },
+        "StateClosureManifest": {
+            "manifest_version": str,
+            "roots": tuple[ContentHash, ...],
+            "edges": tuple[checkpoints.StateClosureEdge, ...],
+        },
+        "StateClosureManifestBuildResult": {
+            "manifest": checkpoints.StateClosureManifest,
+            "manifest_bytes": bytes,
+            "manifest_hash": ContentHash,
+        },
+        "StateClosure": {
+            "manifest_hash": ContentHash,
+            "roots": tuple[ContentHash, ...],
+            "edges": tuple[checkpoints.StateClosureEdge, ...],
+            "members": tuple[ContentHash, ...],
+        },
+    }[model_name]
+    model = getattr(checkpoints, model_name)
+    assert is_dataclass(model)
+    assert model.__dataclass_params__.frozen is True
+    assert tuple(field.name for field in fields(model)) == tuple(expected)
+    assert tuple(model.__slots__) == tuple(expected)
+    assert get_type_hints(model) == expected
 
 
 @TRACE_LOCATE
@@ -426,7 +686,9 @@ def test_checkpoint_selection_model_and_signature_are_exact() -> None:
 
 
 @TRACE_LOCATE
+@pytest.mark.parametrize("kind", ("initial-network-birth", "routine"))
 def test_locate_newest_valid_selects_checkpoint_and_forward_entries(
+    kind: str,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -434,14 +696,17 @@ def test_locate_newest_valid_selects_checkpoint_and_forward_entries(
     journal = _journal_surface()
     operation = _operation()
     durable = _durable_checkpoint(
-        checkpoints, journal, tmp_path, kind="initial", operation=operation
+        checkpoints, journal, tmp_path / kind, kind=kind, operation=operation
     )
     later = _store_later_entry(
-        journal, durable, sequence=2, operation=operation
+        journal,
+        durable,
+        sequence=durable["reference"].sequence + 1,
+        operation=operation,
     )
     head = HeadTuple(
         "network-journal",
-        2,
+        later.sequence,
         later.entry_hash,
         later.authorization_bundle_hash,
         later.state_hash,
@@ -457,6 +722,7 @@ def test_locate_newest_valid_selects_checkpoint_and_forward_entries(
     assert selection.later_entry_refs == (later,)
 
 
+
 @TRACE_LOCATE
 def test_locate_newest_valid_does_not_skip_invalid_first_checkpoint(
     tmp_path: Path,
@@ -465,7 +731,7 @@ def test_locate_newest_valid_does_not_skip_invalid_first_checkpoint(
     journal = _journal_surface()
     operation = _operation()
     durable = _durable_checkpoint(
-        checkpoints, journal, tmp_path, kind="initial", operation=operation
+        checkpoints, journal, tmp_path, kind="initial-network-birth", operation=operation
     )
     malformed_state = canonical_json({"generation": 2})
     malformed_entry = journal.build_entry_bytes(
@@ -496,11 +762,7 @@ def test_locate_newest_valid_does_not_skip_invalid_first_checkpoint(
         checkpoints.locate_newest_valid(
             durable["entry_root"], head, operation=operation
         )
-    assert caught.value.code in {
-        "MOTHER_STATE_MALFORMED_CHECKPOINT",
-        "MOTHER_STATE_CHECKPOINT_INVALID",
-    }
-    assert caught.value.module_id == "MOTHER-OFM-STATE-002"
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_CHECKPOINT")
 
 
 @TRACE_LOCATE
@@ -599,30 +861,42 @@ def test_build_state_closure_manifest_derives_complete_graph_without_effects(
 
 
 @TRACE_BUILD_CLOSURE
+def test_build_state_closure_manifest_rejects_duplicate_roots_exactly(
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    operation = _operation("MOTHER-OP-RESEAL-STATE")
+    with pytest.raises(MotherError) as caught:
+        checkpoints.build_state_closure_manifest(
+            tmp_path / "state-objects",
+            (_hash("a"), _hash("a")),
+            operation=operation,
+        )
+    _assert_error(caught.value, "MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER")
+
+
+@TRACE_BUILD_CLOSURE
 @pytest.mark.parametrize(
     "roots",
     (
         (_hash("b"), _hash("a")),
-        (_hash("a"), _hash("a")),
         [_hash("a")],
         ("not-a-hash",),
     ),
 )
-def test_build_state_closure_manifest_rejects_order_type_or_duplicates(
+def test_build_state_closure_manifest_rejects_malformed_roots_exactly(
     roots,
     tmp_path: Path,
 ) -> None:
     checkpoints = _surface()
     operation = _operation("MOTHER-OP-RESEAL-STATE")
-    with pytest.raises((MotherError, TypeError, ValueError)) as caught:
+    with pytest.raises(MotherError) as caught:
         checkpoints.build_state_closure_manifest(
-            tmp_path / "state-objects", roots, operation=operation
+            tmp_path / "state-objects",
+            roots,
+            operation=operation,
         )
-    if isinstance(caught.value, MotherError):
-        assert caught.value.code in {
-            "MOTHER_RECOVERY_INVALID_CLOSURE",
-            "MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER",
-        }
+    _assert_error(caught.value, "MOTHER_RECOVERY_INVALID_CLOSURE")
 
 
 @TRACE_BUILD_CLOSURE
@@ -734,32 +1008,43 @@ def test_checkpoint_build_models_and_signature_are_exact() -> None:
     }
 
 
-@TRACE_BUILD_CHECKPOINT
 @pytest.mark.parametrize(
-    "kind",
-    ("initial", "initial-network-birth", "routine", "authoritative-rectification"),
+    "kind,operation_kind",
+    (
+        pytest.param(
+            "initial-network-birth",
+            "MOTHER-OP-ADD-NODE",
+            marks=TRACE_BIRTH_BUILD_CHECKPOINT,
+        ),
+        pytest.param(
+            "authoritative-rectification",
+            "MOTHER-OP-RESEAL-STATE",
+            marks=TRACE_BUILD_CHECKPOINT,
+        ),
+    ),
 )
-def test_build_checkpoint_supports_every_closed_kind_without_effects(
+def test_build_checkpoint_supports_each_constructible_kind_without_effects(
     kind: str,
+    operation_kind: str,
     monkeypatch,
 ) -> None:
     checkpoints = _surface()
     journal = _journal_surface()
-    operation = _operation("MOTHER-OP-RESEAL-STATE")
+    operation = _operation(operation_kind)
     state = canonical_json({"generation": 1})
     coverage = None
     prior = None
-    if kind in ("routine", "authoritative-rectification"):
+    if kind == "authoritative-rectification":
+        prior_state = state
         coverage = journal.JournalEntryRef(
             "network-journal",
             4,
             _hash("coverage-entry"),
             _hash("coverage-bundle"),
-            sha256(state),
+            sha256(prior_state),
         )
-        prior = _prior_replay(journal, coverage, state=state)
-        if kind == "authoritative-rectification":
-            state = canonical_json({"generation": 99})
+        prior = _prior_replay(journal, coverage, state=prior_state)
+        state = canonical_json({"generation": 99})
     request = _checkpoint_request(
         checkpoints,
         kind,
@@ -779,16 +1064,18 @@ def test_build_checkpoint_supports_every_closed_kind_without_effects(
     )
 
 
+
 @TRACE_BUILD_CHECKPOINT
 @pytest.mark.parametrize(
     "args",
     (
+        ("initial", None, "schema", b"{}", (_hash("root"),), _hash("manifest"), None, ()),
         ("unknown", None, "schema", b"{}", (_hash("root"),), _hash("manifest"), None, ()),
-        ("initial", None, "", b"{}", (_hash("root"),), _hash("manifest"), None, ()),
-        ("initial", None, "e\u0301", b"{}", (_hash("root"),), _hash("manifest"), None, ()),
-        ("initial", None, "schema", bytearray(b"{}"), (_hash("root"),), _hash("manifest"), None, ()),
-        ("initial", None, "schema", b"{}", [_hash("root")], _hash("manifest"), None, ()),
-        ("initial", None, "schema", b"{}", (_hash("root"),), _hash("manifest"), None, [_hash("head")]),
+        ("initial-network-birth", None, "", b"{}", (_hash("root"),), _hash("manifest"), None, ()),
+        ("initial-network-birth", None, "e\u0301", b"{}", (_hash("root"),), _hash("manifest"), None, ()),
+        ("initial-network-birth", None, "schema", bytearray(b"{}"), (_hash("root"),), _hash("manifest"), None, ()),
+        ("initial-network-birth", None, "schema", b"{}", [_hash("root")], _hash("manifest"), None, ()),
+        ("initial-network-birth", None, "schema", b"{}", (_hash("root"),), _hash("manifest"), None, [_hash("head")]),
     ),
 )
 def test_checkpoint_build_request_rejects_invalid_complete_values(
@@ -800,12 +1087,35 @@ def test_checkpoint_build_request_rejects_invalid_complete_values(
 
 
 @TRACE_BUILD_CHECKPOINT
-@pytest.mark.parametrize(
-    "mutation",
-    ("missing-prior", "wrong-state", "wrong-schema", "wrong-coverage"),
-)
-def test_build_checkpoint_rejects_routine_prior_replay_mismatch(
-    mutation: str,
+def test_build_checkpoint_rejects_deferred_generic_initial_at_public_boundary() -> None:
+    checkpoints = _surface()
+    operation = _operation("MOTHER-OP-RESEAL-STATE")
+    request = object.__new__(checkpoints.CheckpointBuildRequest)
+    values = {
+        "checkpoint_kind": "initial",
+        "covers_through": None,
+        "state_schema": "mother.network-state.v1",
+        "state": canonical_json({"generation": 0}),
+        "state_object_refs": (_hash("root"),),
+        "state_closure_manifest_hash": _hash("manifest"),
+        "prepared_intent_hash": None,
+        "superseded_lineage_heads": (),
+    }
+    for name, value in values.items():
+        object.__setattr__(request, name, value)
+
+    with pytest.raises(MotherError) as caught:
+        checkpoints.build_checkpoint(
+            request,
+            None,
+            operation=operation,
+        )
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_CHECKPOINT")
+
+
+@TRACE_BUILD_CHECKPOINT
+def test_build_checkpoint_rejects_open_routine_construction_before_effects(
+    monkeypatch,
 ) -> None:
     checkpoints = _surface()
     journal = _journal_surface()
@@ -827,41 +1137,21 @@ def test_build_checkpoint_rejects_routine_prior_replay_mismatch(
         coverage=coverage,
     )
     prior = _prior_replay(journal, coverage, state=state)
-    if mutation == "missing-prior":
-        prior = None
-    elif mutation == "wrong-state":
-        prior = journal.JournalReplayResult(
-            prior.head,
-            prior.checkpoint_ref,
-            prior.state_schema,
-            canonical_json({"generation": 3}),
-            sha256(canonical_json({"generation": 3})),
-            prior.applied_entry_refs,
-        )
-    elif mutation == "wrong-schema":
-        prior = journal.JournalReplayResult(
-            prior.head,
-            prior.checkpoint_ref,
-            "other.schema.v1",
-            prior.state,
-            prior.state_hash,
-            prior.applied_entry_refs,
-        )
-    else:
-        wrong = journal.JournalEntryRef(
-            coverage.journal_id,
-            3,
-            _hash("other-entry"),
-            coverage.authorization_bundle_hash,
-            coverage.state_hash,
-        )
-        prior = _prior_replay(journal, wrong, state=state)
-    with pytest.raises(MotherError) as caught:
-        checkpoints.build_checkpoint(request, prior, operation=operation)
-    _assert_error(caught.value, "MOTHER_STATE_CHECKPOINT_INVALID")
+    with forbid_state_owned_effects(monkeypatch, checkpoints):
+        with pytest.raises(MotherError) as caught:
+            checkpoints.build_checkpoint(
+                request,
+                prior,
+                operation=operation,
+            )
+    _assert_error(
+        caught.value,
+        "MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION",
+    )
 
 
-@TRACE_BUILD_CHECKPOINT
+
+@TRACE_BIRTH_BUILD_CHECKPOINT
 @pytest.mark.parametrize(
     "forbidden_key",
     (
@@ -875,10 +1165,10 @@ def test_build_checkpoint_rejects_future_object_roles(
     forbidden_key: str,
 ) -> None:
     checkpoints = _surface()
-    operation = _operation("MOTHER-OP-RESEAL-STATE")
+    operation = _operation("MOTHER-OP-ADD-NODE")
     request = _checkpoint_request(
         checkpoints,
-        "initial",
+        "initial-network-birth",
         state=canonical_json({"nested": {forbidden_key: None}}),
         roots=(_hash("root"),),
         manifest_hash=_hash("manifest"),
@@ -910,36 +1200,47 @@ def test_checkpoint_entry_build_models_and_signature_are_exact() -> None:
     }
 
 
-@TRACE_BUILD_ENTRY
 @pytest.mark.parametrize(
-    "kind",
-    ("initial", "initial-network-birth", "routine", "authoritative-rectification"),
+    "kind,operation_kind",
+    (
+        pytest.param(
+            "initial-network-birth",
+            "MOTHER-OP-ADD-NODE",
+            marks=TRACE_BIRTH_BUILD_ENTRY,
+        ),
+        pytest.param(
+            "authoritative-rectification",
+            "MOTHER-OP-RESEAL-STATE",
+            marks=TRACE_BUILD_ENTRY,
+        ),
+    ),
 )
-def test_build_checkpoint_entry_binds_kind_sequence_and_predecessor(
+def test_build_checkpoint_entry_binds_constructible_kind_sequence_and_predecessor(
     kind: str,
+    operation_kind: str,
     monkeypatch,
 ) -> None:
     checkpoints = _surface()
     journal = _journal_surface()
-    operation = _operation("MOTHER-OP-RESEAL-STATE")
+    operation = _operation(operation_kind)
     state = canonical_json({"generation": 1})
     previous = None
     prior = None
     sequence = 1
     coverage = None
-    if kind in ("routine", "authoritative-rectification"):
+    if kind == "authoritative-rectification":
+        prior_state = state
         coverage = journal.JournalEntryRef(
             "network-journal",
             4,
             _hash("entry"),
             _hash("bundle"),
-            sha256(state),
+            sha256(prior_state),
         )
         previous = coverage
         sequence = 5
-        prior = _prior_replay(journal, coverage, state=state)
-        if kind == "authoritative-rectification":
-            state = canonical_json({"generation": 99})
+        prior = _prior_replay(journal, coverage, state=prior_state)
+        state = canonical_json({"generation": 99})
     request = checkpoints.CheckpointEntryBuildRequest(
         "network-journal",
         sequence,
@@ -974,34 +1275,103 @@ def test_build_checkpoint_entry_binds_kind_sequence_and_predecessor(
     assert validation_calls == []
 
 
-@TRACE_BUILD_ENTRY
+
 @pytest.mark.parametrize(
-    "kind,sequence,has_previous",
+    "kind,sequence,previous_mode,operation_kind",
     (
-        ("initial", 2, False),
-        ("initial-network-birth", 2, False),
-        ("routine", 5, False),
-        ("authoritative-rectification", 5, False),
+        pytest.param(
+            "initial-network-birth",
+            2,
+            "none",
+            "MOTHER-OP-ADD-NODE",
+            marks=TRACE_BIRTH_BUILD_ENTRY,
+            id="birth-wrong-sequence",
+        ),
+        pytest.param(
+            "initial-network-birth",
+            1,
+            "present",
+            "MOTHER-OP-ADD-NODE",
+            marks=TRACE_BIRTH_BUILD_ENTRY,
+            id="birth-has-predecessor",
+        ),
+        pytest.param(
+            "authoritative-rectification",
+            5,
+            "none",
+            "MOTHER-OP-RESEAL-STATE",
+            marks=TRACE_BUILD_ENTRY,
+            id="rectification-missing-predecessor",
+        ),
+        pytest.param(
+            "authoritative-rectification",
+            5,
+            "wrong-sequence",
+            "MOTHER-OP-RESEAL-STATE",
+            marks=TRACE_BUILD_ENTRY,
+            id="rectification-wrong-predecessor-sequence",
+        ),
+        pytest.param(
+            "authoritative-rectification",
+            5,
+            "wrong-journal",
+            "MOTHER-OP-RESEAL-STATE",
+            marks=TRACE_BUILD_ENTRY,
+            id="rectification-wrong-predecessor-journal",
+        ),
     ),
 )
 def test_build_checkpoint_entry_rejects_sequence_or_predecessor_mismatch(
     kind: str,
     sequence: int,
-    has_previous: bool,
+    previous_mode: str,
+    operation_kind: str,
 ) -> None:
     checkpoints = _surface()
     journal = _journal_surface()
-    operation = _operation("MOTHER-OP-RESEAL-STATE")
-    state = canonical_json({"generation": 1})
+    operation = _operation(operation_kind)
+    prior_state = canonical_json({"generation": 1})
+    state = prior_state
     coverage = None
     prior = None
     previous = None
-    if kind in ("routine", "authoritative-rectification"):
+    if kind == "authoritative-rectification":
         coverage = journal.JournalEntryRef(
-            "network-journal", 4, _hash("entry"), _hash("bundle"), sha256(state)
+            "network-journal",
+            4,
+            _hash("entry"),
+            _hash("bundle"),
+            sha256(prior_state),
         )
-        prior = _prior_replay(journal, coverage, state=state)
-        previous = coverage if has_previous else None
+        prior = _prior_replay(journal, coverage, state=prior_state)
+        state = canonical_json({"generation": 99})
+        if previous_mode == "present":
+            previous = coverage
+        elif previous_mode == "wrong-sequence":
+            previous = journal.JournalEntryRef(
+                coverage.journal_id,
+                3,
+                coverage.entry_hash,
+                coverage.authorization_bundle_hash,
+                coverage.state_hash,
+            )
+        elif previous_mode == "wrong-journal":
+            previous = journal.JournalEntryRef(
+                "other-journal",
+                coverage.sequence,
+                coverage.entry_hash,
+                coverage.authorization_bundle_hash,
+                coverage.state_hash,
+            )
+    elif previous_mode == "present":
+        previous = journal.JournalEntryRef(
+            "network-journal",
+            1,
+            _hash("entry"),
+            _hash("bundle"),
+            _hash("state"),
+        )
+
     request = checkpoints.CheckpointEntryBuildRequest(
         "network-journal",
         sequence,
@@ -1018,9 +1388,55 @@ def test_build_checkpoint_entry_rejects_sequence_or_predecessor_mismatch(
     )
     with pytest.raises(MotherError) as caught:
         checkpoints.build_checkpoint_entry_bytes(
-            request, prior, operation=operation
+            request,
+            prior,
+            operation=operation,
         )
     _assert_error(caught.value, "MOTHER_STATE_CHECKPOINT_INVALID")
+
+
+
+@TRACE_BUILD_ENTRY
+def test_build_checkpoint_entry_rejects_open_routine_construction_before_effects(
+    monkeypatch,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    operation = _operation("MOTHER-OP-RESEAL-STATE")
+    state = canonical_json({"generation": 4})
+    coverage = journal.JournalEntryRef(
+        "network-journal",
+        4,
+        _hash("entry"),
+        _hash("bundle"),
+        sha256(state),
+    )
+    prior = _prior_replay(journal, coverage, state=state)
+    request = checkpoints.CheckpointEntryBuildRequest(
+        "network-journal",
+        5,
+        coverage,
+        _checkpoint_request(
+            checkpoints,
+            "routine",
+            state=state,
+            roots=(_hash("root"),),
+            manifest_hash=_hash("manifest"),
+            coverage=coverage,
+        ),
+        "2026-07-29T14:16:27Z",
+    )
+    with forbid_state_owned_effects(monkeypatch, checkpoints):
+        with pytest.raises(MotherError) as caught:
+            checkpoints.build_checkpoint_entry_bytes(
+                request,
+                prior,
+                operation=operation,
+            )
+    _assert_error(
+        caught.value,
+        "MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION",
+    )
 
 
 @TRACE_VALIDATE
@@ -1050,7 +1466,7 @@ def test_checkpoint_validation_rejects_complete_direct_construction() -> None:
     )
     payload = checkpoints.CheckpointPayload(
         "mother.journal.checkpoint.v1",
-        "initial",
+        "initial-network-birth",
         0,
         None,
         "mother.network-state.v1",
@@ -1058,7 +1474,7 @@ def test_checkpoint_validation_rejects_complete_direct_construction() -> None:
         sha256(state),
         (_hash("root"),),
         _hash("manifest"),
-        None,
+        _hash("birth-intent"),
         (),
     )
     with pytest.raises(TypeError):
@@ -1068,7 +1484,7 @@ def test_checkpoint_validation_rejects_complete_direct_construction() -> None:
 @TRACE_VALIDATE
 @pytest.mark.parametrize(
     "kind",
-    ("initial", "initial-network-birth", "routine", "authoritative-rectification"),
+    ("initial-network-birth", "routine", "authoritative-rectification"),
 )
 def test_validate_checkpoint_accepts_every_committed_kind_without_effects(
     kind: str,
@@ -1175,7 +1591,7 @@ def test_validate_checkpoint_rejects_unsealed_lineage_before_field_access() -> N
     state = canonical_json({"generation": 1})
     checkpoint = checkpoints.CheckpointPayload(
         "mother.journal.checkpoint.v1",
-        "initial",
+        "initial-network-birth",
         0,
         None,
         "mother.network-state.v1",
@@ -1183,7 +1599,7 @@ def test_validate_checkpoint_rejects_unsealed_lineage_before_field_access() -> N
         sha256(state),
         (_hash("root"),),
         _hash("manifest"),
-        None,
+        _hash("birth-intent"),
         (),
     )
     with pytest.raises(MotherError) as caught:
@@ -1231,7 +1647,7 @@ def test_state_closure_successfully_rederives_complete_graph_without_effects(
     journal = _journal_surface()
     operation = _operation()
     durable = _durable_checkpoint(
-        checkpoints, journal, tmp_path, kind="initial", operation=operation
+        checkpoints, journal, tmp_path, kind="initial-network-birth", operation=operation
     )
     with forbid_state_owned_effects(monkeypatch, checkpoints):
         closure = checkpoints.state_closure(
@@ -1269,9 +1685,9 @@ def test_state_closure_rejects_checkpoint_manifest_root_mismatch_first(
     )
     state = canonical_json({"generation": 1})
     checkpoint = checkpoints.CheckpointPayload(
-        "mother.journal.checkpoint.v1", "initial", 0, None,
+        "mother.journal.checkpoint.v1", "initial-network-birth", 0, None,
         "mother.network-state.v1", state, sha256(state), (other,),
-        manifest_hash, None, (),
+        manifest_hash, _hash("birth-intent"), (),
     )
     with pytest.raises(MotherError) as caught:
         checkpoints.state_closure(
@@ -1334,9 +1750,9 @@ def test_state_closure_rejects_malformed_or_incomplete_manifest(
     )
     state = canonical_json({"generation": 1})
     checkpoint = checkpoints.CheckpointPayload(
-        "mother.journal.checkpoint.v1", "initial", 0, None,
+        "mother.journal.checkpoint.v1", "initial-network-birth", 0, None,
         "mother.network-state.v1", state, sha256(state), (parent,),
-        manifest_hash, None, (),
+        manifest_hash, _hash("birth-intent"), (),
     )
     with pytest.raises(MotherError) as caught:
         checkpoints.state_closure(root, checkpoint, operation=operation)
@@ -1366,9 +1782,9 @@ def test_state_closure_rejects_derived_cycle(
     _patch_alias(monkeypatch, checkpoints, object_store, "get_verified", fake_get_verified)
     state = canonical_json({"generation": 1})
     checkpoint = checkpoints.CheckpointPayload(
-        "mother.journal.checkpoint.v1", "initial", 0, None,
+        "mother.journal.checkpoint.v1", "initial-network-birth", 0, None,
         "mother.network-state.v1", state, sha256(state), (a,),
-        manifest_hash, None, (),
+        manifest_hash, _hash("birth-intent"), (),
     )
     with pytest.raises(MotherError) as caught:
         checkpoints.state_closure(
@@ -1385,9 +1801,9 @@ def test_state_closure_preserves_direct_missing_object_error(
     operation = _operation()
     state = canonical_json({"generation": 1})
     checkpoint = checkpoints.CheckpointPayload(
-        "mother.journal.checkpoint.v1", "initial", 0, None,
+        "mother.journal.checkpoint.v1", "initial-network-birth", 0, None,
         "mother.network-state.v1", state, sha256(state), (_hash("root"),),
-        _hash("missing"), None, (),
+        _hash("missing"), _hash("birth-intent"), (),
     )
     with pytest.raises(MotherError) as caught:
         checkpoints.state_closure(
@@ -1420,7 +1836,7 @@ def test_prepare_replay_returns_sealed_cross_bound_input_without_effects(
     journal = _journal_surface()
     operation = _operation()
     durable = _durable_checkpoint(
-        checkpoints, journal, tmp_path, kind="initial", operation=operation
+        checkpoints, journal, tmp_path, kind="initial-network-birth", operation=operation
     )
     validation = checkpoints.validate_checkpoint(
         durable["authorized"], durable["built"].checkpoint, operation=operation
@@ -1451,7 +1867,7 @@ def test_prepare_replay_rejects_cross_binding_mismatch(
     journal = _journal_surface()
     operation = _operation()
     first = _durable_checkpoint(
-        checkpoints, journal, tmp_path / "first", kind="initial", operation=operation
+        checkpoints, journal, tmp_path / "first", kind="initial-network-birth", operation=operation
     )
     second = _durable_checkpoint(
         checkpoints,
@@ -1496,7 +1912,7 @@ def test_prepare_replay_rejects_each_unsealed_input_before_object_store(
     journal = _journal_surface()
     operation = _operation()
     durable = _durable_checkpoint(
-        checkpoints, journal, tmp_path, kind="initial", operation=operation
+        checkpoints, journal, tmp_path, kind="initial-network-birth", operation=operation
     )
     validation = checkpoints.validate_checkpoint(
         durable["authorized"], durable["built"].checkpoint, operation=operation

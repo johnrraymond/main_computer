@@ -380,4 +380,11 @@ def test_state_replay_functionality_rows_include_proof_factories() -> None:
         assert positions == tuple(sorted(positions))
 
     assert "MOTHER-OFM-STATE-002.build_checkpoint" in rows["MOTHER-OF-RSL-006"]
-    assert "MOTHER-OFM-STATE-002.build_checkpoint" in rows["MOTHER-OF-MIG-005"]
+    assert "MOTHER-OFM-STATE-002.build_checkpoint" in rows["MOTHER-OF-AUTH-004"]
+    migration_row = rows["MOTHER-OF-MIG-005"]
+    assert migration_row == (
+        "MOTHER-OFM-MAINT-001.build_migrated_object",
+        "MOTHER-OFM-CORE-012.put_immutable",
+    )
+    assert "MOTHER-OFM-STATE-002.build_checkpoint" not in migration_row
+    assert "MOTHER-OFM-STATE-002.build_checkpoint_entry_bytes" not in migration_row

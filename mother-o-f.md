@@ -329,7 +329,7 @@ exists.
 | `MOTHER-OF-MIG-002` | Preserve original bytes, hashes, and audit evidence |
 | `MOTHER-OF-MIG-003` | Apply the declared deterministic migration |
 | `MOTHER-OF-MIG-004` | Validate the complete migrated object graph |
-| `MOTHER-OF-MIG-005` | Construct the migrated checkpoint or state object |
+| `MOTHER-OF-MIG-005` | Construct and durably store the migrated schema-owned state object as an uncommitted candidate |
 | `MOTHER-OF-MIG-006` | Replicate and verify the migrated result on the full expected set |
 | `MOTHER-OF-MIG-007` | Commit the migrated authority at its defined boundary |
 | `MOTHER-OF-MIG-008` | Cancel staging or restore the pre-migration authority before commit |
@@ -1271,7 +1271,7 @@ and full-set replayability.
 | `prep` | 4 | `MOTHER-OF-CTL-007` through `MOTHER-OF-CTL-012` | Exclusive scopes, rollback requirements, and operation record |
 | `do` | 1 | `MOTHER-OF-MIG-003` | Deterministically transformed candidate |
 | `do` | 2 | `MOTHER-OF-MIG-004` | Complete candidate validation |
-| `do` | 3 | `MOTHER-OF-MIG-005` | Migrated checkpoint or complete state object |
+| `do` | 3 | `MOTHER-OF-MIG-005` | Content-addressed migrated schema-owned state object durably stored as an uncommitted candidate |
 | `do` | 4 | `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Govern every full-set migration request |
 | `do` | 5 | `MOTHER-OF-MIG-006` | Full-set replicated and verified candidate |
 | `finalize` | 1 | `MOTHER-OF-MIG-007` | Committed migrated authority |
@@ -1786,7 +1786,7 @@ for the owning requirement text.
 | `MOTHER-REQ-012` | Complete `MOTHER-OP-ADD-NODE` pipeline | `add-node` |
 | `MOTHER-REQ-013` | Complete `MOTHER-OP-REMOVE-NODE` pipeline | `remove-node` |
 | `MOTHER-REQ-014` | `MOTHER-OF-QBFT-001` through `MOTHER-OF-QBFT-007` | `add-node`, `remove-node`, `reseal-qbft` |
-| `MOTHER-REQ-015` | `MOTHER-OF-OBS-016`, `MOTHER-OF-CTL-010`, `MOTHER-OF-MIG-001` | Every staged operation, retry, rollback, recovery, and schema-migration preparation |
+| `MOTHER-REQ-015` | `MOTHER-OF-OBS-016`, `MOTHER-OF-CTL-010`, `MOTHER-OF-MIG-001`, `MOTHER-OF-MIG-005` | Every staged operation, retry, rollback, recovery, and schema-migration preparation or deterministic migrated-object construction |
 | `MOTHER-REQ-016` | `MOTHER-OF-ID-005`, `MOTHER-OF-SYNC-003`, `MOTHER-OF-SYNC-004`, `MOTHER-OF-REC-002` through `MOTHER-OF-REC-005` | Enrollment, `sync-state`, `recover-head`, `reseal-state` |
 | `MOTHER-REQ-017` | `MOTHER-OF-REC-001` through `MOTHER-OF-REC-008` | `recover-head` |
 | `MOTHER-REQ-018` | `MOTHER-OF-SYNC-001` through `MOTHER-OF-SYNC-008` | `sync-state` |

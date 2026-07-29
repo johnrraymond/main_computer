@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 import importlib
 import inspect
 import json
@@ -368,13 +368,13 @@ def _prepared_replay(journal, tmp_path: Path, *, operation: OperationIdentity):
 
     initial_state = canonical_json({"generation": 0})
     checkpoint_request = checkpoints.CheckpointBuildRequest(
-        "initial",
+        "initial-network-birth",
         None,
         "mother.network-state.v1",
         initial_state,
         (root_hash,),
         manifest.manifest_hash,
-        None,
+        _hash("birth-intent"),
         (),
     )
     checkpoint_entry = checkpoints.build_checkpoint_entry_bytes(
@@ -472,6 +472,171 @@ def _prepared_replay(journal, tmp_path: Path, *, operation: OperationIdentity):
         state=canonical_json({"generation": 3}),
     )
     return replay_input, paths, head, tuple(refs)
+
+
+@pytest.mark.parametrize(
+    "method_name,parameter_names",
+    (
+        pytest.param(
+            "read_stable_head",
+            ("paths", "operation"),
+            marks=TRACE_READ,
+        ),
+        pytest.param(
+            "load_entry",
+            ("entry_root", "reference", "operation"),
+            marks=TRACE_LOAD_ENTRY,
+        ),
+        pytest.param(
+            "load_bundle",
+            ("authorization_root", "reference", "operation"),
+            marks=TRACE_LOAD_BUNDLE,
+        ),
+        pytest.param(
+            "walk_back",
+            ("entry_root", "authorization_root", "head", "stop", "operation"),
+            marks=TRACE_WALK,
+        ),
+        pytest.param(
+            "validate_lineage",
+            ("lineage", "operation"),
+            marks=TRACE_VALIDATE,
+        ),
+        pytest.param(
+            "authorize_lineage",
+            ("lineage", "validator", "operation"),
+            marks=TRACE_AUTHORIZE,
+        ),
+        pytest.param(
+            "replay_forward",
+            ("replay_input", "reducer", "paths", "operation"),
+            marks=TRACE_REPLAY,
+        ),
+        pytest.param(
+            "build_entry_bytes",
+            ("request", "operation"),
+            marks=TRACE_BUILD,
+        ),
+    ),
+)
+def test_journal_public_signatures_have_exact_order_and_keyword_only_operation(
+    method_name: str,
+    parameter_names: tuple[str, ...],
+) -> None:
+    journal = _surface()
+    signature = inspect.signature(getattr(journal, method_name))
+    assert tuple(signature.parameters) == parameter_names
+    for name in parameter_names[:-1]:
+        assert signature.parameters[name].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    operation_parameter = signature.parameters["operation"]
+    assert operation_parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert operation_parameter.default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    (
+        pytest.param("JournalEntryRef", marks=TRACE_LOAD_ENTRY),
+        pytest.param("JournalEntry", marks=TRACE_LOAD_ENTRY),
+        pytest.param("JournalEntryBuildRequest", marks=TRACE_BUILD),
+        pytest.param("LoadedAuthorizationBundle", marks=TRACE_LOAD_BUNDLE),
+        pytest.param("JournalLineageMember", marks=TRACE_WALK),
+        pytest.param("JournalLineage", marks=TRACE_WALK),
+        pytest.param("ValidatedJournalLineage", marks=TRACE_VALIDATE),
+        pytest.param("AuthorizedJournalLineage", marks=TRACE_AUTHORIZE),
+        pytest.param("CheckpointReplayProof", marks=TRACE_REPLAY),
+        pytest.param("JournalReplayInput", marks=TRACE_REPLAY),
+        pytest.param("JournalReplayResult", marks=TRACE_REPLAY),
+    ),
+)
+def test_journal_exported_models_have_exact_annotations_and_slots(
+    model_name: str,
+) -> None:
+    journal = _surface()
+    expected = {
+        "JournalEntryRef": {
+            "journal_id": str,
+            "sequence": int,
+            "entry_hash": ContentHash,
+            "authorization_bundle_hash": ContentHash,
+            "state_hash": ContentHash,
+        },
+        "JournalEntry": {
+            "entry_version": str,
+            "journal_id": str,
+            "network": str,
+            "sequence": int,
+            "operation_id": str,
+            "operation_kind": str,
+            "previous_entry_hash": ContentHash | None,
+            "previous_authorization_bundle_hash": ContentHash | None,
+            "previous_state_hash": ContentHash | None,
+            "event_type": str,
+            "event_payload": bytes,
+            "resulting_state_hash": ContentHash,
+            "created_at": str,
+        },
+        "JournalEntryBuildRequest": {
+            "journal_id": str,
+            "sequence": int,
+            "previous": journal.JournalEntryRef | None,
+            "event_type": str,
+            "event_payload": bytes,
+            "resulting_state": bytes,
+            "created_at": str,
+        },
+        "LoadedAuthorizationBundle": {
+            "object_hash": ContentHash,
+            "payload": bytes,
+        },
+        "JournalLineageMember": {
+            "reference": journal.JournalEntryRef,
+            "entry": journal.JournalEntry,
+            "authorization_bundle": journal.LoadedAuthorizationBundle,
+        },
+        "JournalLineage": {
+            "head": HeadTuple,
+            "stop": journal.JournalEntryRef,
+            "members": tuple[journal.JournalLineageMember, ...],
+        },
+        "ValidatedJournalLineage": {
+            "head": HeadTuple,
+            "stop": journal.JournalEntryRef,
+            "members": tuple[journal.JournalLineageMember, ...],
+        },
+        "AuthorizedJournalLineage": {
+            "head": HeadTuple,
+            "stop": journal.JournalEntryRef,
+            "members": tuple[journal.JournalLineageMember, ...],
+        },
+        "CheckpointReplayProof": {
+            "checkpoint_ref": journal.JournalEntryRef,
+            "state_schema": str,
+            "state": bytes,
+            "state_hash": ContentHash,
+            "state_closure_manifest_hash": ContentHash,
+            "state_closure_members": tuple[ContentHash, ...],
+            "authoritative": bool,
+        },
+        "JournalReplayInput": {
+            "lineage": journal.AuthorizedJournalLineage,
+            "checkpoint": journal.CheckpointReplayProof,
+        },
+        "JournalReplayResult": {
+            "head": HeadTuple,
+            "checkpoint_ref": journal.JournalEntryRef,
+            "state_schema": str,
+            "state": bytes,
+            "state_hash": ContentHash,
+            "applied_entry_refs": tuple[journal.JournalEntryRef, ...],
+        },
+    }[model_name]
+    model = getattr(journal, model_name)
+    assert is_dataclass(model)
+    assert model.__dataclass_params__.frozen is True
+    assert tuple(field.name for field in fields(model)) == tuple(expected)
+    assert tuple(model.__slots__) == tuple(expected)
+    assert get_type_hints(model) == expected
 
 
 @TRACE_READ
@@ -1513,3 +1678,286 @@ def test_replay_forward_translates_reducer_failure_without_partial_result(
         )
     _assert_error(caught.value, "MOTHER_STATE_REPLAY_FAILED")
     assert calls == 1
+
+@TRACE_READ
+def test_read_stable_head_keeps_projection_inside_outer_head_reread(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    state = canonical_json({"generation": 1})
+    head = _head(state_hash=sha256(state))
+    paths = _write_head_view(tmp_path, operation=operation, head=head, state=state)
+    real_stable_read = atomic_files.stable_read
+    real_read_bytes = Path.read_bytes
+    head_reads = 0
+    mutated = False
+
+    def counted_read_bytes(path: Path) -> bytes:
+        nonlocal head_reads
+        if path == paths.journal_head:
+            head_reads += 1
+        return real_read_bytes(path)
+
+    def tracked_stable_read(pointer, load, *, operation, max_attempts=3):
+        nonlocal mutated
+        result = real_stable_read(
+            pointer,
+            load,
+            operation=operation,
+            max_attempts=max_attempts,
+        )
+        if Path(pointer) == paths.committed_state and not mutated:
+            raw = json.loads(paths.journal_head.read_text("utf-8"))
+            raw["committed_at"] = "2026-07-29T14:16:29Z"
+            paths.journal_head.write_bytes(canonical_json(raw))
+            mutated = True
+        return result
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+    _patch_alias(
+        monkeypatch,
+        journal,
+        atomic_files,
+        "stable_read",
+        tracked_stable_read,
+    )
+    assert journal.read_stable_head(paths, operation=operation) == head
+    assert mutated is True
+    assert head_reads == 4
+
+
+@TRACE_VALIDATE
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "previous-entry",
+        "previous-bundle",
+        "previous-state",
+        "member-reference",
+        "loaded-bundle",
+        "network",
+        "journal",
+        "nullability",
+        "stop-binding",
+        "duplicate-entry-hash",
+        "duplicate-bundle-hash",
+    ),
+)
+def test_validate_lineage_enforces_every_link_rule(
+    mutation: str,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    _, refs, _, lineage = _build_chain(journal, operation=operation, count=3)
+    members = list(lineage.members)
+    child = members[0]
+    next_member = members[1]
+    head = lineage.head
+    stop = lineage.stop
+
+    if mutation == "previous-entry":
+        child = replace(
+            child,
+            entry=replace(child.entry, previous_entry_hash=_hash("wrong-entry")),
+        )
+    elif mutation == "previous-bundle":
+        child = replace(
+            child,
+            entry=replace(
+                child.entry,
+                previous_authorization_bundle_hash=_hash("wrong-bundle"),
+            ),
+        )
+    elif mutation == "previous-state":
+        child = replace(
+            child,
+            entry=replace(child.entry, previous_state_hash=_hash("wrong-state")),
+        )
+    elif mutation == "member-reference":
+        child = replace(
+            child,
+            reference=replace(child.reference, sequence=child.reference.sequence - 1),
+        )
+    elif mutation == "loaded-bundle":
+        child = replace(
+            child,
+            authorization_bundle=replace(
+                child.authorization_bundle,
+                object_hash=_hash("wrong-loaded-bundle"),
+            ),
+        )
+    elif mutation == "network":
+        child = replace(child, entry=replace(child.entry, network="othernet"))
+    elif mutation == "journal":
+        child = replace(child, entry=replace(child.entry, journal_id="other-journal"))
+    elif mutation == "nullability":
+        next_member = replace(
+            next_member,
+            entry=replace(next_member.entry, previous_state_hash=None),
+        )
+    elif mutation == "stop-binding":
+        stop = refs[1]
+    elif mutation == "duplicate-entry-hash":
+        next_member = replace(
+            next_member,
+            reference=replace(
+                next_member.reference,
+                entry_hash=child.reference.entry_hash,
+            ),
+        )
+    else:
+        next_member = replace(
+            next_member,
+            reference=replace(
+                next_member.reference,
+                authorization_bundle_hash=child.reference.authorization_bundle_hash,
+            ),
+        )
+
+    members[0] = child
+    members[1] = next_member
+    malformed = journal.JournalLineage(head, stop, tuple(members))
+    with pytest.raises(MotherError) as caught:
+        journal.validate_lineage(malformed, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_INVALID_LINEAGE")
+
+
+@TRACE_BUILD
+@pytest.mark.parametrize(
+    "sequence,previous",
+    (
+        pytest.param(
+            1,
+            "present",
+            id="sequence-one-has-predecessor",
+        ),
+        pytest.param(
+            2,
+            None,
+            id="later-entry-missing-predecessor",
+        ),
+        pytest.param(
+            3,
+            "sequence-one",
+            id="later-entry-wrong-predecessor-sequence",
+        ),
+        pytest.param(
+            2,
+            "wrong-journal",
+            id="later-entry-wrong-predecessor-journal",
+        ),
+    ),
+)
+def test_build_entry_bytes_rejects_invalid_predecessor_shape(
+    sequence: int,
+    previous: str | None,
+) -> None:
+    journal = _surface()
+    operation = _operation("MOTHER-OP-ADD-NODE")
+    reference = None
+    if previous is not None:
+        prior_sequence = 1
+        journal_id = "network-journal"
+        if previous == "present":
+            prior_sequence = 1
+        elif previous == "sequence-one":
+            prior_sequence = 1
+        elif previous == "wrong-journal":
+            journal_id = "other-journal"
+        reference = journal.JournalEntryRef(
+            journal_id,
+            prior_sequence,
+            _hash("entry"),
+            _hash("bundle"),
+            _hash("state"),
+        )
+    request = journal.JournalEntryBuildRequest(
+        "network-journal",
+        sequence,
+        reference,
+        "member-updated",
+        canonical_json({"member": "alpha"}),
+        canonical_json({"generation": sequence}),
+        "2026-07-29T14:16:31Z",
+    )
+    with pytest.raises(MotherError) as caught:
+        journal.build_entry_bytes(request, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_ENTRY")
+
+
+@TRACE_REPLAY
+@pytest.mark.parametrize(
+    "case",
+    (
+        "wrong-schema",
+        "malformed-output",
+        "noncanonical-output",
+        "previous-state-mismatch",
+        "resulting-state-mismatch",
+        "mutated-input",
+        "committed-projection-mismatch",
+    ),
+)
+def test_replay_forward_rejects_every_replay_binding_failure(
+    case: str,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    replay_input, paths, _, _ = _prepared_replay(
+        journal,
+        tmp_path,
+        operation=operation,
+    )
+
+    if case in {"previous-state-mismatch", "resulting-state-mismatch"}:
+        members = list(replay_input.lineage.members)
+        target = members[0]
+        if case == "previous-state-mismatch":
+            entry = replace(target.entry, previous_state_hash=_hash("wrong-previous-state"))
+        else:
+            entry = replace(target.entry, resulting_state_hash=_hash("wrong-result"))
+        members[0] = replace(target, entry=entry)
+        object.__setattr__(replay_input.lineage, "members", tuple(members))
+
+    if case == "committed-projection-mismatch":
+        raw = json.loads(paths.committed_state.read_text("utf-8"))
+        raw["state"] = {"generation": 999}
+        paths.committed_state.write_bytes(canonical_json(raw))
+
+    class Reducer:
+        state_schema = (
+            "other.schema.v1"
+            if case == "wrong-schema"
+            else "mother.network-state.v1"
+        )
+
+        def apply(self, previous_state, event_type, event_payload):
+            if case == "malformed-output":
+                return b"[]"
+            if case == "noncanonical-output":
+                return b'{ "generation": 1 }'
+            if case == "mutated-input":
+                object.__setattr__(
+                    replay_input.checkpoint,
+                    "state_schema",
+                    "mutated.schema.v1",
+                )
+            previous = json.loads(previous_state)
+            event = json.loads(event_payload)
+            return canonical_json(
+                {"generation": previous["generation"] + event["delta"]}
+            )
+
+    with pytest.raises(MotherError) as caught:
+        journal.replay_forward(
+            replay_input,
+            Reducer(),
+            paths,
+            operation=operation,
+        )
+    _assert_error(caught.value, "MOTHER_STATE_REPLAY_FAILED")
+
