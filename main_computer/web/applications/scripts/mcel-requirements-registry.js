@@ -48,7 +48,7 @@
     },
     "git-tools": {
       "app": "git-tools",
-      "current_runtime_status": "runtime-baseline-with-local-gitea-preflight-semantic-adapter",
+      "current_runtime_status": "fullApplicationSemanticReady",
       "declared_form_primitive_count": 6,
       "mutation_intent_count": 4,
       "prohibited_intent_count": 1,
@@ -810,7 +810,7 @@
         "mcel-use-case": 4
       },
       "contract_complete": true,
-      "current_runtime_status": "runtime-baseline-with-local-gitea-preflight-semantic-adapter",
+      "current_runtime_status": "fullApplicationSemanticReady",
       "dominant_object": "RepositoryProject",
       "first_regions": [
         {
@@ -990,7 +990,7 @@
         }
       ],
       "source": {
-        "end_line": 86,
+        "end_line": 87,
         "file": "pretty_docs/mcel-git-tools-requirements.md",
         "start_line": 18
       },
@@ -2257,7 +2257,7 @@
         "mcel-use-case": 4
       },
       "contract_complete": true,
-      "current_runtime_status": "runtime-baseline-with-local-gitea-preflight-semantic-adapter",
+      "current_runtime_status": "fullApplicationSemanticReady",
       "dominant_object": "RepositoryProject",
       "first_regions": [
         {
@@ -2437,7 +2437,7 @@
         }
       ],
       "source": {
-        "end_line": 86,
+        "end_line": 87,
         "file": "pretty_docs/mcel-git-tools-requirements.md",
         "start_line": 18
       },
@@ -3905,9 +3905,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 1188,
+                "end_line": 1189,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1165
+                "start_line": 1166
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -3946,9 +3946,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 1137,
+                "end_line": 1138,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1115
+                "start_line": 1116
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -4010,9 +4010,9 @@
               ],
               "severity": "critical",
               "source": {
-                "end_line": 1163,
+                "end_line": 1164,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1139
+                "start_line": 1140
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -4616,7 +4616,7 @@
     "error_count": 0,
     "pretty_docs_root": "pretty_docs",
     "registry_version": "mcel-requirements-registry-v1",
-    "repo_root": "/mnt/data/work_patch41_norm/main_computer_test",
+    "repo_root": "/mnt/data/work_patch42/src/main_computer_test",
     "strict_schema_ready": true,
     "total_blocks": 304,
     "valid": true,
@@ -4624,7 +4624,8 @@
   },
   "truth_gate": "requirements describe the contract; adapters and tests prove implementation",
   "valid": true
-});
+}
+);
 
     function clonePlain(value) {
       if (value == null || typeof value !== "object") return value;

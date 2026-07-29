@@ -16,7 +16,7 @@ website-builder  semantic-runtime
 code-editor      semantic-runtime
 calculator       semantic-runtime
 mcel-lab         semantic-runtime
-git-tools        runtime-baseline
+git-tools        semantic-runtime
 ```
 
 File Explorer, Document Editor, and Calculator require the full five-layer baseline because they now have
@@ -30,7 +30,7 @@ runtime-visual-fit
 diagnostic-no-throw
 ```
 
-Git Tools is enrolled as a runtime-baseline app-surface entry first. Its current policy requires only the runtime layers while the governed-publish adapter remains scope-limited and does not yet claim full semantic-runtime coverage:
+Git Tools is now promoted to semantic-runtime after its governed-publish domain adapter proved full intent-level semantic coverage. Its current policy still requires the runtime conformance layers because the app's semantic proof comes from the domain adapter plus acceptance evidence, not from a static surface extraction requirement:
 
 ```text
 runtime-ownership
@@ -38,15 +38,7 @@ runtime-visual-fit
 diagnostic-no-throw
 ```
 
-That distinction matters. An app can be required for conformance without already
-having full static semantic/layout extraction. The registry prevents those two
-states from being confused:
-
-```text
-required runtime baseline
-  is not the same as
-full semantic-runtime conversion
-```
+That distinction matters. An app can be semantic-runtime without requiring every static semantic/layout layer in the FLOG scenario policy, as long as the truth audit binds runtime proof, acceptance evidence, and adapter readiness exactly.
 
 Other legacy apps remain declared as not-required so diagnostics and tests can
 distinguish:

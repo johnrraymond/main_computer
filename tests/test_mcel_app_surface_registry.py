@@ -163,7 +163,7 @@ def test_registry_declares_the_first_required_surface_aware_apps() -> None:
     assert data["summary"]["legacyCount"] >= 9
 
 
-def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() -> None:
+def test_registry_marks_git_tools_as_semantic_runtime_after_promotion() -> None:
     script = load_registry_stack(
         """
         const fileExplorer = registry.getAppPolicy("file-explorer");
@@ -247,7 +247,7 @@ def test_registry_distinguishes_full_semantic_runtime_from_runtime_baseline() ->
     ]
 
     assert data["gitTools"]["conformanceRequired"] is True
-    assert data["gitTools"]["maturity"] == "runtime-baseline"
+    assert data["gitTools"]["maturity"] == "semantic-runtime"
     assert data["gitTools"]["surfaceId"] == "git-tools.surface.workflow"
     assert data["gitTools"]["requiredLayerIds"] == [
         "runtime-ownership",
@@ -299,7 +299,7 @@ def test_required_runtime_baseline_apps_can_pass_without_static_surface_yet() ->
     assert data["policyUnavailableLayerIds"] == []
 
 
-def test_git_tools_runtime_baseline_can_pass_without_static_surface_yet() -> None:
+def test_git_tools_semantic_runtime_policy_can_pass_with_runtime_layers_only() -> None:
     report = healthy_runtime_report("git-tools", "git-tools.surface.workflow", "#git-project-workflow-surface")
     script = load_conformance_stack(
         f"""

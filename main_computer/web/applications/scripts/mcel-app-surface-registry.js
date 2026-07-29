@@ -75,11 +75,11 @@ var McelAppSurfaceRegistry = (() => {
       label: "Git Tools",
       state: "surface-aware",
       conformanceRequired: true,
-      maturity: "runtime-baseline",
+      maturity: "semantic-runtime",
       surfaceId: "git-tools.surface.workflow",
       contractId: "git-tools.contract.default.app-health",
       requiredLayerIds: RUNTIME_LAYER_IDS,
-      notes: "Repository workflow surface is enrolled for runtime ownership, visual fit, and diagnostic no-throw proof while the governed-publish adapter remains scope-limited and not full semantic-runtime."
+      notes: "Governed Git Tools repository inspection, publish preflight, ignore-rule preview, commit-plan preflight, and Local Gitea target preparation semantics are proven through the domain adapter and acceptance evidence; direct shell execution remains prohibited."
     },
     "code-editor": {
       appId: "code-editor",

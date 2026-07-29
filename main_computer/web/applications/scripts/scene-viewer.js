@@ -6749,18 +6749,15 @@
           builder.beam([2.14, 0.12, -4.58], [4.42, 0.12, -4.58], 0.03, green);
           terminalBlock("terminal.bay-ops", 3.86, -6.42, blue);
           builder.beam([2.0, 0.1, -5.15], [4.55, 0.1, -5.15], 0.024, blue);
-          builder.beam([-1.12, 0.14, -8.82], [1.12, 0.14, -8.82], 0.024, amber);
           // Security checkpoint and inner bay door.
           builder.box([-2.62, -1.05, -12.3], [-1.48, 0.2, -11.7], bulkhead);
           builder.box([1.48, -1.05, -12.3], [2.62, 0.2, -11.7], bulkhead);
-          builder.beam([-2.55, 0.55, -12.0], [2.55, 0.55, -12.0], 0.03, amber);
 
           // Main corridor hub.
 
           // Engineering access.
           terminalBlock("terminal.engineering-power", 7.35, -20.75, green);
           builder.ellipsoid([5.4, 0.05, -21.1], [0.74, 1.15, 0.74], 14, 8, builder.color("#115e59"));
-          builder.beam([5.4, 1.15, -21.1], [5.4, 2.45, -21.1], 0.06, this.shipState?.power === "online" ? green : amber);
           builder.beam([3.0, 0.3, -18.3], [8.8, 0.3, -23.0], 0.02, green);
           // Medbay triage.
           builder.box([-8.65, -1.04, -22.9], [-6.65, -0.62, -21.7], builder.color("#e2e8f0"));

@@ -566,7 +566,7 @@ tools.mother.common.evidence:
   EvidenceDocument
   RedactionRule
   RedactionPolicy
-  EvidenceExportItem
+  EvidenceExportRequest
   EvidenceManifestEntry
   EvidenceManifest
   EvidenceExportResult
@@ -585,7 +585,7 @@ The exact Python fields are normative:
 | `EvidenceDocument` | `document_version: str`, `schema_id: str`, `source: str`, `observation_time: str`, `redaction_policy: str`, `payload: bytes` |
 | `RedactionRule` | `json_pointer: str` |
 | `RedactionPolicy` | `policy_version: str`, `policy_id: str`, `rules: tuple[RedactionRule, ...]` |
-| `EvidenceExportItem` | `source_ref: EvidenceRef`, `document: EvidenceDocument` |
+| `EvidenceExportRequest` | `source_ref: EvidenceRef`, `policy: RedactionPolicy` |
 | `EvidenceManifestEntry` | `source_ref: EvidenceRef`, `export_ref: EvidenceRef` |
 | `EvidenceManifest` | `manifest_version: str`, `entries: tuple[EvidenceManifestEntry, ...]` |
 | `EvidenceExportResult` | `manifest: EvidenceManifest`, `manifest_ref: EvidenceRef`, `exported_refs: tuple[EvidenceRef, ...]` |
@@ -595,11 +595,22 @@ The exact Python fields are normative:
 | `ReportArtifactRef` | `format: str`, `relative_name: str`, `content_hash: ContentHash`, `byte_length: int` |
 
 All are frozen dataclasses with slots. Identifiers, schema names, sources,
-timestamps, commands, reasons, relative names, and format values are non-empty
-exact strings. Public collections are tuples only; mappings, lists, sets, and
-frozensets are rejected at constructors. `byte_length` is a non-negative
-integer and booleans are rejected. `ReportArtifactRef.format` is exactly
-`json`, `text`, or `allowed-commands`.
+timestamps, policies, commands, reasons, classifications, relative names, and
+format values are non-empty exact strings. Every wire-facing string MUST
+already be Unicode Normalization Form C (NFC), defined by
+`unicodedata.normalize("NFC", value) == value`. Constructors reject non-NFC
+string fields. Public module boundaries also reject non-NFC strings nested in
+accepted `EvidenceRef` metadata, payload object keys or string values, decoded
+JSON Pointer tokens, commands, reasons, and directly supplied report models.
+No boundary silently normalizes caller input. Duplicate detection and UTF-8
+ordering occur only after NFC validation.
+
+Public collections are tuples only; mappings, lists, sets, and frozensets are
+rejected at constructors. Every tuple member has the exact declared type.
+`EvidenceDocument.payload` is bytes, not `bytearray`, `memoryview`, text, or
+another bytes-like substitute. `byte_length` is a non-negative integer and
+booleans are rejected. `ReportArtifactRef.format` is exactly `json`, `text`, or
+`allowed-commands`.
 
 The supported format versions are exactly:
 
@@ -611,9 +622,21 @@ allowed-commands-report.v1
 evidence-report.v1
 ```
 
+Constructors reject every other version. `AllowedCommandsReport.classification`
+is exactly one of:
+
+```text
+local-current
+local-stale-network-agrees
+network-replica-mismatch
+wedged
+```
+
 `EvidenceDocument.payload` is canonical CORE-003 JSON bytes for one top-level
-object. It is not arbitrary bytes and it never contains private-state file
-bytes. The storage envelope is canonical JSON with the exact serialized fields:
+object. Every decoded object key and string value is already NFC; canonical
+equivalence is not accepted as byte equivalence. It is not arbitrary bytes and
+it never contains private-state file bytes. The storage envelope is canonical
+JSON with the exact serialized fields:
 
 ```text
 document_version
@@ -626,6 +649,26 @@ source
 
 `payload` is embedded as its decoded JSON object. `load_evidence` reconstructs
 the exact canonical payload bytes. No bare mapping crosses the API.
+
+The shared wire objects used by CORE-008 and CORE-009 are exact:
+
+```text
+ContentHash:
+  schema_version: 1
+  algorithm: "sha256"
+  digest: <64 lowercase hexadecimal characters>
+
+EvidenceRef:
+  schema_version: 1
+  object_hash: <ContentHash wire object>
+  schema: <non-empty string>
+  redaction_policy: <non-empty string>
+  source: <non-empty string>
+  observation_time: <non-empty string>
+```
+
+No extra or missing wire field is accepted. Object keys are emitted by
+CORE-003 canonical JSON ordering.
 
 The public signatures are exactly:
 
@@ -653,16 +696,25 @@ def redact_copy(
 ) -> EvidenceDocument: ...
 
 def export_manifest(
-    root: Path,
-    items: tuple[EvidenceExportItem, ...],
+    source_root: Path,
+    export_root: Path,
+    requests: tuple[EvidenceExportRequest, ...],
     manifest_time: str,
+    *,
+    operation: OperationIdentity,
+) -> EvidenceExportResult: ...
+
+def load_export_result(
+    export_root: Path,
+    manifest_ref: EvidenceRef,
     *,
     operation: OperationIdentity,
 ) -> EvidenceExportResult: ...
 
 # tools.mother.common.reporting
 def build_evidence_report(
-    export: EvidenceExportResult,
+    export_root: Path,
+    manifest_ref: EvidenceRef,
     *,
     operation: OperationIdentity,
 ) -> EvidenceReport: ...
@@ -698,27 +750,45 @@ def render_allowed_commands(
 ```
 
 CORE-008 accepts only exact `Path` roots already resolved and contained by
-CORE-005. It delegates content-addressed publication and verified reads to
-CORE-012; it does not reimplement object-store paths or atomic publication.
-`store_evidence` canonicalizes the storage envelope, publishes it once, and
-returns an `EvidenceRef` whose `schema`, `redaction_policy`, `source`, and
-`observation_time` exactly equal the corresponding document fields.
-The call is idempotent for the same document. `load_evidence` rehashes through
-CORE-012, decodes the exact envelope, and requires every reference metadata
-field to match the stored document.
+CORE-005. `source_root` is a verified source object-store root. `export_root`
+is a distinct verified export object-store root; equal, ancestor, or descendant
+roots are rejected before any read or write. CORE-008 delegates
+content-addressed publication and verified reads to CORE-012 and does not
+reimplement object-store paths or atomic publication.
 
-Redaction uses RFC 6901 JSON Pointer syntax with these restrictions:
+`store_evidence` validates exact types, non-empty fields, NFC metadata, NFC
+payload keys and string values, and canonical payload bytes before it
+canonicalizes the storage envelope and publishes it once. Non-NFC document
+metadata or payload strings are `MOTHER_EVIDENCE_MALFORMED_DOCUMENT`;
+non-NFC accepted reference metadata is
+`MOTHER_EVIDENCE_REFERENCE_MISMATCH`; and non-NFC policy IDs, pointer strings,
+or decoded pointer tokens are `MOTHER_EVIDENCE_REDACTION_FAILED`. It returns an
+`EvidenceRef` whose `schema`, `redaction_policy`, `source`, and
+`observation_time` exactly equal the corresponding document fields. The call is
+idempotent for the same document. `load_evidence` rejects non-NFC reference
+metadata before reading, rehashes through CORE-012, decodes the exact envelope,
+and requires every reference metadata field to match the stored document.
 
-1. the empty pointer is forbidden;
-2. each pointer begins with `/`;
-3. `~0` and `~1` are the only escapes;
-4. array tokens are canonical non-negative decimal indexes with no leading zero
-   except `0`;
-5. every pointer resolves to an existing value;
-6. normalized pointers are unique and are applied in UTF-8 byte order;
-7. each selected value is replaced with the exact string `[REDACTED]`;
-8. the input document and policy remain unchanged.
+Redaction uses RFC 6901 JSON Pointer syntax with this exact normalization:
 
+1. the empty pointer is forbidden and every pointer begins with `/`;
+2. split the pointer at `/` boundaries without decoding first;
+3. decode each token from left to right, replacing `~1` with `/` and `~0` with
+   `~`; any `~` not followed by `0` or `1` is invalid;
+4. require the raw pointer string and every decoded token to already be NFC;
+5. re-encode each decoded token by replacing `~` with `~0` and `/` with `~1`,
+   then join the tokens with `/`;
+6. compare duplicates using the re-encoded normalized pointer;
+7. reject overlap when either decoded token sequence is a prefix of the other,
+   including exact equality;
+8. while resolving an array, a token is a canonical non-negative decimal index
+   with no leading zero except `0`;
+9. every pointer resolves against the original unmodified payload;
+10. each selected value is replaced with the exact string `[REDACTED]`;
+11. the input document and policy remain unchanged.
+
+Because overlapping pointers are rejected, replacement order cannot change the
+result. Non-overlapping normalized pointers are processed in UTF-8 byte order.
 `redact_copy` returns a new `EvidenceDocument` whose `redaction_policy` is the
 policy ID and whose payload is canonical JSON bytes. It does not store the copy.
 
@@ -736,59 +806,117 @@ refresh_token
 secret
 secret_bytes
 seed
-signature_bytes
 ```
 
-Before export, every occurrence of those exact object keys at any nesting depth
-MUST have the exact value `[REDACTED]`. `export_manifest` rejects a document
-with redaction policy `none`, an unredacted closed key, duplicate source
-references, duplicate resulting export references, or a mismatch in schema, source, or observation time between a source
-reference and its redacted document. The source reference's redaction policy
-MAY differ from the redacted document's policy. It stores only redacted documents in the supplied export object-store
-root, then stores one canonical manifest containing exact source/export
-reference pairs. The manifest reference uses exactly `schema=mother.evidence-manifest.v1`,
-`redaction_policy=manifest`,
-`source=MOTHER-OFM-CORE-008.export_manifest`, and
-`observation_time=manifest_time`. It returns the typed manifest, that
-`EvidenceRef`, and exported references.
+`signature_bytes` is intentionally not private material; detached signatures
+are public verification evidence. Before export, every occurrence of a closed
+private-material key at any nesting depth MUST have the exact string value
+`[REDACTED]`.
 
-Evidence references and manifest tuples use these total orders and duplicate
-identities:
+`export_manifest` accepts only requests. For every request it MUST:
+
+1. load the exact source object from `source_root` through `load_evidence` using
+   the complete `source_ref`, including its object hash;
+2. apply the request's policy itself through `redact_copy`;
+3. reject redaction policy `none` or any surviving closed private-material key;
+4. store the redacted document in `export_root`;
+5. record the exact source and resulting export references.
+
+A caller cannot supply replacement document bytes to `export_manifest`.
+Matching metadata never substitutes for the source object hash. Duplicate
+complete source references are prohibited. Distinct source references MAY
+produce one identical redacted export reference.
+
+The durable manifest payload is canonical JSON with this exact object:
+
+```text
+{
+  "entries": [
+    {
+      "export_ref": <EvidenceRef wire object>,
+      "source_ref": <EvidenceRef wire object>
+    }
+  ],
+  "manifest_version": "evidence-manifest.v1"
+}
+```
+
+The manifest is stored as an `EvidenceDocument` with exactly:
+
+```text
+document_version: evidence-document.v1
+schema_id: mother.evidence-manifest.v1
+source: MOTHER-OFM-CORE-008.export_manifest
+observation_time: <manifest_time argument>
+redaction_policy: manifest
+payload: <canonical manifest payload bytes>
+```
+
+The returned `manifest_ref` is the reference returned by `store_evidence` for
+that exact document.
+
+`load_export_result` is the restart seam. It loads the exact manifest document
+from `export_root`, requires the manifest reference metadata above, decodes the
+exact canonical manifest payload and version, rejects malformed, unsorted, or
+duplicate source entries, and verifies every unique exported reference through
+`load_evidence(export_root, export_ref, ...)`. Every verified export MUST have
+a redaction policy other than `none`, and its payload MUST contain no surviving
+closed private-material key whose value differs from `[REDACTED]`.
+`load_export_result` reconstructs the exact typed `EvidenceExportResult` and
+does not require the source store to remain mounted. A syntactically valid
+manually stored manifest cannot bless an unredacted or secret-bearing export.
+
+Evidence tuples use these total orders and duplicate identities:
 
 | Tuple | Canonical sort key | Duplicate identity |
 |---|---|---|
-| redaction rules | normalized JSON pointer | normalized JSON pointer |
-| export items | source object-hash digest, schema, source, observation time | complete `source_ref` |
-| manifest entries | source object-hash digest, export object-hash digest | complete `source_ref` or complete `export_ref` |
-| exported references | object-hash digest, schema, source, observation time | complete `EvidenceRef` |
-| evidence-report references | object-hash digest, schema, source, observation time | complete `EvidenceRef` |
+| redaction rules | normalized JSON pointer | normalized JSON pointer or overlapping token path |
+| export requests | source object-hash digest, schema, redaction policy, source, observation time | complete `source_ref` |
+| manifest entries | source object-hash digest, source schema, source redaction policy, source, source observation time | complete `source_ref` |
+| exported references | object-hash digest, schema, redaction policy, source, observation time | complete `EvidenceRef` |
+| evidence-report references | object-hash digest, schema, redaction policy, source, observation time | complete `EvidenceRef` |
 | allowed commands | command, reason | exact command; different reasons for one command are conflicting duplicates |
 
-String ordering is UTF-8 byte order. Decoders and builders reject duplicates
-before sorting.
+String ordering is UTF-8 byte order. Decoders and builders reject prohibited
+duplicates before sorting. Manifest entries are sorted only by source
+reference. `EvidenceExportResult.exported_refs` is the unique canonical
+export-reference set derived from the manifest entries; its order is
+independent of manifest-entry order.
 
-`build_evidence_report` copies the operation ID from the real
-`OperationIdentity`, requires the manifest entries and exported references to
-describe the same canonical set, and produces `evidence-report.v1`.
-`build_allowed_commands_report` rejects secret-shaped command or reason text
-with `MOTHER_REPORT_PRIVATE_MATERIAL` and accepts only these sealed-state
-classifications:
+`build_evidence_report` takes only an export object-store root and a durable
+manifest reference. It calls
+`MOTHER-OFM-CORE-008.load_export_result(export_root, manifest_ref, ...)` and
+therefore binds report provenance to the exact stored manifest object and to
+the verified exported objects named by that manifest. It MUST NOT accept a
+caller-supplied `EvidenceManifest` or `EvidenceExportResult`. It copies the
+operation ID from the real `OperationIdentity`, requires the recovered unique
+manifest export-reference set and `exported_refs` to be equal, canonicalizes
+the evidence references, and produces `evidence-report.v1`. A fabricated
+manifest reference, unrelated typed manifest, missing export, unredacted
+export, or secret-bearing export cannot produce a report.
 
-```text
-local-current
-local-stale-network-agrees
-network-replica-mismatch
-wedged
-```
-
-It copies the operation ID, canonicalizes commands, and preserves the supplied
+`build_allowed_commands_report` accepts only the closed classifications above,
+copies the operation ID, canonicalizes commands, and preserves the supplied
 active operation ID. It renders a supplied legal command set; it does not
 invent authority or decide operation legality independently of the
 classification and operation-control owners.
 
+A command or reason contains secret-shaped material exactly when this
+case-insensitive regular expression matches:
+
+```text
+(?:^|[\s?&;,])(?:--)?(?:access[-_]?token|api[-_]?token|credential|mnemonic|password|private[-_]?key(?:[-_]?bytes)?|refresh[-_]?token|secret(?:[-_]?bytes)?|seed|token)\s*[:=]\s*\S+
+```
+
+Builders and renderers reject such material with
+`MOTHER_REPORT_PRIVATE_MATERIAL` before any file write. Non-NFC report fields,
+accepted evidence-reference metadata, or directly supplied nested values are
+`MOTHER_REPORT_MALFORMED_MODEL`.
+
 CORE-009 owns only derived report files. The `root` argument is the exact
-CORE-005-resolved `reports/<operation-id>/` directory and MUST correspond to
-the report operation ID. The exact filenames are:
+CORE-005-resolved `reports/<operation-id>/` directory. Its final path component,
+the report's `operation_id`, and the supplied `OperationIdentity.operation_id`
+MUST all be equal. The exact filenames are:
 
 ```text
 evidence-report.json
@@ -798,21 +926,86 @@ allowed-commands-report.txt
 allowed-commands.txt
 ```
 
-`render_json` writes canonical CORE-003 JSON. `render_text` writes UTF-8 text
-with LF line endings and one final LF. `render_allowed_commands` writes one
-`<command>\t<reason>` line per canonical command and one final LF; an empty set
-writes zero bytes. Each renderer uses CORE-011 durable replacement, returns a
-`ReportArtifactRef` for the exact bytes, and never writes outside its supplied
-root. Re-rendering identical input is byte-identical.
+The exact JSON report wire objects are:
+
+```text
+AllowedCommand:
+  command: <non-empty string>
+  reason: <non-empty string>
+
+AllowedCommandsReport:
+  report_version: "allowed-commands-report.v1"
+  operation_id: <non-empty string>
+  classification: <closed classification>
+  active_operation_id: <non-empty string or null>
+  commands: [<AllowedCommand wire object>, ...]
+
+EvidenceReport:
+  report_version: "evidence-report.v1"
+  operation_id: <non-empty string>
+  manifest_ref: <EvidenceRef wire object>
+  evidence_refs: [<EvidenceRef wire object>, ...]
+```
+
+`render_json` writes the corresponding exact object using CORE-003 canonical
+JSON, with no byte-order mark and no trailing newline.
+
+`render_text` writes UTF-8 with LF line endings. Every string atom after a label
+is encoded as one CORE-003 canonical JSON string; `null` is emitted literally.
+The exact allowed-commands report lines are:
+
+```text
+report_version<TAB><JSON string><LF>
+operation_id<TAB><JSON string><LF>
+classification<TAB><JSON string><LF>
+active_operation_id<TAB><JSON string or null><LF>
+command<TAB><JSON command string><TAB><JSON reason string><LF>
+```
+
+There is one `command` line per canonical command. The exact evidence-report
+lines are:
+
+```text
+report_version<TAB><JSON string><LF>
+operation_id<TAB><JSON string><LF>
+manifest_ref<TAB><canonical JSON EvidenceRef object><LF>
+evidence_ref<TAB><canonical JSON EvidenceRef object><LF>
+```
+
+There is one `evidence_ref` line per canonical evidence reference. There are no
+other labels, blank lines, spaces around tabs, or platform-specific line
+endings. Each non-empty text report therefore ends with one LF.
+
+`render_allowed_commands` writes exactly one
+`<JSON command string><TAB><JSON reason string><LF>` line per canonical command.
+An empty command set writes zero bytes.
+
+Every renderer validates the complete directly supplied model before writing,
+including NFC strings, tuple member types, duplicate commands or evidence
+references, secret-shaped text, and exact `EvidenceRef` metadata. An
+`EvidenceReport.manifest_ref` MUST have schema
+`mother.evidence-manifest.v1`, redaction policy `manifest`, source
+`MOTHER-OFM-CORE-008.export_manifest`, non-empty NFC observation time, and a
+valid SHA-256 hash. Renderers use CORE-011 `durable_replace` and return a
+`ReportArtifactRef` whose
+`relative_name` and `format` match the selected renderer, whose `byte_length`
+equals the exact written-byte length, and whose `content_hash` equals
+CORE-004 SHA-256 of the exact written bytes. Re-rendering identical input is
+byte-identical.
 
 CORE-008 MAY write only immutable evidence objects and manifests. CORE-009 MAY
 write only derived reports. Neither module acquires logical operation scopes,
 writes journals, changes state pointers, creates authority objects, dispatches
 external calls, or treats reports as authority. CORE-009 creates no
-`EvidenceRef`. CORE-008 creates no report file. Durable publication failures
-retain the exact CORE-011/012 retry class and authority effect; any durable
-effect reference is remapped to `evidence-object-publication` for CORE-008 or
-`derived-report-publication` for CORE-009.
+`EvidenceRef`. CORE-008 creates no report file.
+
+A delegated CORE-012 `MotherError` is propagated without changing its code,
+module ID, retry class, authority effect, durable-effect references, evidence
+references, or allowed next actions. In particular,
+`immutable-object-publication` remains `immutable-object-publication`. A
+delegated CORE-011 `MotherError` is preserved in the same way, and
+`local-file-publication` remains `local-file-publication`. CORE-008 and
+CORE-009 do not introduce new `DurableEffectRef.effect_kind` values.
 
 
 ### 4.2 Error envelope
@@ -884,7 +1077,7 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_STATE_OBJECT_CORRUPT` | `MOTHER-OFM-CORE-012.put_immutable,get_verified` | `never` | `none` | Bytes at a content-addressed path do not hash to that path or conflict with the proposed exact bytes. |
 | `MOTHER_RECOVERY_INVALID_CLOSURE` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` | `never` | `none` | The declared transitive closure is missing, corrupt, cyclic where prohibited, substituted, incomplete, or contains unreachable rows. |
 | `MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER` | `MOTHER-OFM-CORE-012.verify_closure,copy_verified_closure` | `never` | `none` | Roots, expected members, or child-reference lists contain duplicate identities. |
-| `MOTHER_INPUT_OVERLAPPING_STORAGE_ROOTS` | `MOTHER-OFM-CORE-012.copy_verified_closure` | `never` | `none` | Source and destination object-store trees are equal or one contains the other. |
+| `MOTHER_INPUT_OVERLAPPING_STORAGE_ROOTS` | `MOTHER-OFM-CORE-008.export_manifest` and `MOTHER-OFM-CORE-012.copy_verified_closure` | `never` | `none` | Source and destination object-store trees are equal or one contains the other; no source read or destination write begins. |
 | `MOTHER_SCHEMA_UNKNOWN_VERSION` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | Canonical bytes or typed inputs declare an unknown schema, capability, or compatibility contract version; no nearby version substitution is allowed. |
 | `MOTHER_SCHEMA_MALFORMED_BYTES` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | Canonical bytes cannot be decoded into the exact required typed value. |
 | `MOTHER_SCHEMA_MALFORMED_OBJECT` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | A decoded schema, capability, compatibility report, or requirement object is structurally invalid or contains a value outside the documented closed set. |
@@ -892,10 +1085,11 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_SCHEMA_AMBIGUOUS_DECLARATION` | `MOTHER-OFM-CORE-006`, `MOTHER-OFM-CORE-007`, and `MOTHER-OFM-CORE-010` | `never` | `none` | A typed catalog, capability set, report, or frozen requirement set contains duplicate, conflicting, or ambiguous declarations. |
 | `MOTHER_SCHEMA_DUPLICATE_REQUIREMENT` | `MOTHER-OFM-CORE-007.require_capabilities` and `MOTHER-OFM-CORE-010.freeze_contract_versions` | `never` | `none` | Frozen schema-flow, capability, or contract-version requirements contain duplicate identities and therefore deterministic invalid input. |
 | `MOTHER_EVIDENCE_MALFORMED_DOCUMENT` | `MOTHER-OFM-CORE-008.store_evidence,load_evidence,redact_copy` | `never` | `none` | An evidence document or stored envelope is not the exact supported canonical object, version, field set, or primitive shape. |
-| `MOTHER_EVIDENCE_REFERENCE_MISMATCH` | `MOTHER-OFM-CORE-008.load_evidence,export_manifest` | `never` | `none` | A typed evidence reference does not exactly match the verified stored document metadata or an export item's source document. |
-| `MOTHER_EVIDENCE_REDACTION_FAILED` | `MOTHER-OFM-CORE-008.redact_copy` | `never` | `none` | A redaction policy version, pointer, escape, array index, target, duplicate identity, or policy ID is invalid; no partial redacted result is returned. |
-| `MOTHER_EVIDENCE_PRIVATE_MATERIAL` | `MOTHER-OFM-CORE-008.export_manifest` | `never` | `none` | An export candidate is unredacted or retains a closed private-material key whose value is not exactly `[REDACTED]`. |
-| `MOTHER_EVIDENCE_DUPLICATE_EXPORT` | `MOTHER-OFM-CORE-008.export_manifest` | `never` | `none` | Export items, source references, resulting exported references, or manifest entries contain a duplicate or conflicting identity. |
+| `MOTHER_EVIDENCE_MALFORMED_MANIFEST` | `MOTHER-OFM-CORE-008.load_export_result` | `never` | `none` | A stored manifest document or payload has the wrong metadata, version, canonical field set, entry shape, ordering, or source identity. |
+| `MOTHER_EVIDENCE_REFERENCE_MISMATCH` | `MOTHER-OFM-CORE-008.load_evidence,export_manifest,load_export_result` | `never` | `none` | A typed evidence reference does not exactly match the verified stored document metadata, exact source object, or manifest metadata. |
+| `MOTHER_EVIDENCE_REDACTION_FAILED` | `MOTHER-OFM-CORE-008.redact_copy` | `never` | `none` | A redaction policy version, pointer, escape, array index, target, normalized duplicate, overlap, or policy ID is invalid; no partial redacted result is returned. |
+| `MOTHER_EVIDENCE_PRIVATE_MATERIAL` | `MOTHER-OFM-CORE-008.export_manifest,load_export_result` | `never` | `none` | A derived export has policy `none` or retains a closed private-material key whose value is not exactly `[REDACTED]`. |
+| `MOTHER_EVIDENCE_DUPLICATE_EXPORT` | `MOTHER-OFM-CORE-008.export_manifest,load_export_result` | `never` | `none` | Export requests or manifest entries repeat a complete source reference. Multiple sources producing one identical redacted export are permitted. |
 | `MOTHER_REPORT_MALFORMED_MODEL` | `MOTHER-OFM-CORE-009` | `never` | `none` | A report model has an unknown version, classification, format, filename binding, operation binding, or structurally invalid typed value. |
 | `MOTHER_REPORT_DUPLICATE_COMMAND` | `MOTHER-OFM-CORE-009.build_allowed_commands_report` | `never` | `none` | An allowed-command input repeats a command or supplies conflicting reasons for one command. |
 | `MOTHER_REPORT_PRIVATE_MATERIAL` | `MOTHER-OFM-CORE-009` | `never` | `none` | A derived report field contains secret-shaped or private material; no report file is published. |
@@ -946,7 +1140,7 @@ return `OperationCommandResult`.
 | `MOTHER-OFM-CORE-005` | `common/paths.py` | Resolve canonical Mother roots and validate contained paths | `pure`; rejects traversal, symlink escape, wrong network, and wrong generation |
 | `MOTHER-OFM-CORE-006` | `common/schemas.py` | `decode_schema_catalog`, `load_schema`, `validate_object`, `validate_schema_transition` | `pure reader`; unknown versions and uninterpretable input raise exact `MOTHER_SCHEMA_*`; known invalid objects or undeclared transitions return typed negative decisions |
 | `MOTHER-OFM-CORE-007` | `common/capabilities.py` | `read_capabilities`, `require_capabilities`, `freeze_capability_set` | `pure reader`; malformed or ambiguous input raises exact `MOTHER_SCHEMA_*`; reads and freezes exact capability sets; absent required capabilities return typed negative decisions |
-| `MOTHER-OFM-CORE-008` | `common/evidence.py` | exact section 4.1.2 signatures for `store_evidence`, `load_evidence`, `redact_copy`, `export_manifest` | immutable local writes only through CORE-012; exact reference verification, deterministic redaction, and secret-free content-addressed export |
+| `MOTHER-OFM-CORE-008` | `common/evidence.py` | exact section 4.1.2 signatures for `store_evidence`, `load_evidence`, `redact_copy`, `export_manifest`, `load_export_result` | immutable local writes only through CORE-012; exact source-object provenance, restart-safe manifest recovery, deterministic redaction, and secret-free content-addressed export |
 | `MOTHER-OFM-CORE-009` | `common/reporting.py` | exact section 4.1.2 signatures for `build_evidence_report`, `build_allowed_commands_report`, `render_json`, `render_text`, `render_allowed_commands` | `derived-writer`; deterministic CORE-011 publication beneath one operation report root; rendering never changes authority |
 | `MOTHER-OFM-CORE-010` | `common/compatibility.py` | `decode_compatibility_report`, `check_peer_compatibility`, `freeze_contract_versions` | `pure reader`; malformed or ambiguous values raise exact `MOTHER_SCHEMA_*`; ordinary incompatibility returns typed blockers, not durable evidence |
 | `MOTHER-OFM-CORE-011` | `common/atomic_files.py` | `stable_read(..., operation: OperationIdentity)`, `durable_create(..., operation: OperationIdentity)`, `durable_replace(..., operation: OperationIdentity)`, `atomic_pointer_cas(..., operation: OperationIdentity)`, `synchronized_target(..., operation: OperationIdentity)` | local durable I/O; durable directory ancestry, temp-write, file fsync, byte reread, rename/replace, directory fsync; CAS mismatch never overwrites; every host-filesystem failure is translated to the exact typed contract; CORE-012 synchronizes only through the public target seam |
@@ -1283,10 +1477,10 @@ boundaries.
 | `MOTHER-OF-OBS-012` | `MOTHER-OFM-RB-002.resolve_provisional,select_lifo` → `MOTHER-OFM-RB-003.replay` | Provisional frame, promoted stack, and exact restorable ranges |
 | `MOTHER-OF-OBS-013` | `MOTHER-OFM-AUTH-001.resume` → `MOTHER-OFM-AUTH-006.verify_terminal_membership` → `MOTHER-OFM-MEM-003.validate_decision` | Reservation, cancellation, finalization, acknowledgement, decision, and release facts |
 | `MOTHER-OF-OBS-014` | `MOTHER-OFM-OBS-004.merge_observations,verify_topology_closure` → `MOTHER-OFM-OBS-006.classify` | One sealed-state classification or explicit contradiction set |
-| `MOTHER-OF-OBS-015` | `MOTHER-OFM-OBS-006.classify` → `MOTHER-OFM-CORE-009.build_allowed_commands_report,render_allowed_commands` | Only the supplied legal commands for the exact classification and active operation, rendered deterministically |
+| `MOTHER-OF-OBS-015` | `MOTHER-OFM-OBS-006.classify` → `MOTHER-OFM-CORE-009.build_allowed_commands_report,render_json,render_text,render_allowed_commands` | Only the supplied legal commands for the exact classification and active operation, rendered in the exact JSON, text, and command-list formats |
 | `MOTHER-OF-OBS-016` | `MOTHER-OFM-CORE-006.validate_object` → `MOTHER-OFM-CORE-007.read_capabilities` → `MOTHER-OFM-CORE-007.require_capabilities` → `MOTHER-OFM-CORE-010.decode_compatibility_report` → `MOTHER-OFM-CORE-010.check_peer_compatibility` | Validated compatibility-report bytes, exact frozen capability read, required-capability decision, typed local/peer reports, and peer-compatibility decision with typed blockers only |
 | `MOTHER-OF-OBS-017` | `MOTHER-OFM-OBS-007.run_assertion_set,verify_assertion_evidence` | Complete passed/failed/unknown assertion result |
-| `MOTHER-OF-OBS-018` | `MOTHER-OFM-CORE-008.store_evidence,load_evidence,redact_copy,export_manifest` → `MOTHER-OFM-CORE-009.build_evidence_report` → `MOTHER-OFM-CORE-009.render_json` or `MOTHER-OFM-CORE-009.render_text` | Verified immutable evidence, deterministic redacted export manifest, and derived report with no private material |
+| `MOTHER-OF-OBS-018` | `MOTHER-OFM-CORE-008.store_evidence,load_evidence,redact_copy,export_manifest,load_export_result` → `MOTHER-OFM-CORE-009.build_evidence_report` → `MOTHER-OFM-CORE-009.render_json` or `MOTHER-OFM-CORE-009.render_text` | Verified immutable evidence, exact source-to-export lineage, restart-reconstructed manifest result, and byte-specified derived report with no private material |
 
 ### 7.2 Planning and operation control
 

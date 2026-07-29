@@ -246,6 +246,8 @@ def test_documented_method_rows_include_wave1c_chains() -> None:
     assert rows["MOTHER-OF-OBS-015"] == (
         "MOTHER-OFM-OBS-006.classify",
         "MOTHER-OFM-CORE-009.build_allowed_commands_report",
+        "MOTHER-OFM-CORE-009.render_json",
+        "MOTHER-OFM-CORE-009.render_text",
         "MOTHER-OFM-CORE-009.render_allowed_commands",
     )
     assert rows["MOTHER-OF-OBS-018"] == (
@@ -253,6 +255,7 @@ def test_documented_method_rows_include_wave1c_chains() -> None:
         "MOTHER-OFM-CORE-008.load_evidence",
         "MOTHER-OFM-CORE-008.redact_copy",
         "MOTHER-OFM-CORE-008.export_manifest",
+        "MOTHER-OFM-CORE-008.load_export_result",
         "MOTHER-OFM-CORE-009.build_evidence_report",
         "MOTHER-OFM-CORE-009.render_json",
         "MOTHER-OFM-CORE-009.render_text",
