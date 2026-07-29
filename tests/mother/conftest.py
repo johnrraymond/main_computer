@@ -34,6 +34,7 @@ def pytest_collection_modifyitems(config: Any, items: list[pytest.Item]) -> None
             operations=_as_tuple(marker, "operations"),
             functionalities=_as_tuple(marker, "functionalities"),
             modules=_as_tuple(marker, "modules"),
+            methods=_as_tuple(marker, "methods"),
             mutating=bool(marker.kwargs.get("mutating", False)),
             open_error=marker.kwargs.get("open_error"),
         )

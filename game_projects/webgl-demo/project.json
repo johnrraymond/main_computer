@@ -634,7 +634,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Mouse over console + E pilot \u2022 W/S throttle flies to Mother Ship \u2022 after docking use W/A/S/D to explore ship decks \u2022 E operates ship doors and terminals",
+          "controlsHint": "Mouse over console + E pilot • W/S throttle flies to Mother Ship • after docking use W/A/S/D to explore ship decks • hold P + click polygons/objects to annotate • E operates ship doors and terminals",
           "systems": {
             "shuttleBayTwiddle": {
               "enabled": true,

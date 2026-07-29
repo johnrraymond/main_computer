@@ -4,7 +4,7 @@
 
     if (!global) return;
 
-    const VERSION = "git-tools-semantic-adapter-ignore-preview-v9";
+    const VERSION = "git-tools-semantic-adapter-commit-preflight-v10";
     const APP_ID = "git-tools";
     const ADAPTER_ID = "git-tools-domain-adapter";
     const STATE_SCHEMA_VERSION = "git-tools-semantic-state-v1";
@@ -642,12 +642,12 @@
         "inspectPatchInventory",
         "preparePush",
         "pushCurrentBranch",
+        "commitSelectedFiles",
         "previewIgnoreRule"
       ].includes(definition.id)) {
         return "executable";
       }
       if ([
-        "commitSelectedFiles",
         "prepareLocalGiteaTarget"
       ].includes(definition.id)) {
         return "preflight-only";
@@ -677,6 +677,9 @@
       }
       if (definition.id === "previewIgnoreRule" && status === "executable") {
         return "git-tools-semantic-adapter.previewIgnoreRule";
+      }
+      if (definition.id === "commitSelectedFiles" && status === "executable") {
+        return "git-tools-semantic-adapter.commitSelectedFilesPreflight";
       }
       if (status === "preflight-only") return "mcel-preflight-gap";
       if (status === "prohibited") return "policy-prohibited";
@@ -730,12 +733,21 @@
           entry.intentId === "previewIgnoreRule" &&
           entry.status === "executable"
       );
+      const commitPreflightExecutable = entries.some(
+        (entry) =>
+          entry.intentId === "commitSelectedFiles" &&
+          entry.status === "executable"
+      );
       const semanticRuntimeScope = governedPublishExecutable
         ? (
           safeReadComplete
             ? (
               ignoreRulePreviewExecutable
-                ? "governed-publish-ignore-preview-partial"
+                ? (
+                  commitPreflightExecutable
+                    ? "governed-publish-ignore-preview-commit-preflight-partial"
+                    : "governed-publish-ignore-preview-partial"
+                )
                 : "governed-publish-gap-closed-partial"
             )
             : "governed-publish-partial"
@@ -873,9 +885,85 @@
       return simpleHash(stableStringify(snapshot));
     }
 
+    function normalizePathList(value) {
+      const rawValues = Array.isArray(value)
+        ? value
+        : String(value || "")
+            .split(/[\n,]/)
+            .map((entry) => entry.trim());
+
+      const normalized = rawValues
+        .map((entry) => {
+          if (entry && typeof entry === "object") {
+            return String(entry.path ?? entry.file ?? entry.name ?? "").trim();
+          }
+          return String(entry || "").trim();
+        })
+        .filter(Boolean)
+        .map((entry) => entry.replace(/\\+/g, "/").replace(/^\.\//, ""));
+
+      return Array.from(new Set(normalized));
+    }
+
+    function pathLooksAbsolute(path) {
+      const text = String(path || "");
+      return /^[A-Za-z]:\//.test(text) || text.startsWith("/");
+    }
+
+    function pathHasTraversal(path) {
+      return String(path || "").split("/").some((part) => part === "..");
+    }
+
     function normalizeIntentParameters(intentOrId, input = {}) {
       const intentId = normalizeIntentId(intentOrId);
       const safeInput = input && typeof input === "object" ? input : {};
+      if (intentId === "commitSelectedFiles") {
+        const selectedFiles = normalizePathList(
+          safeInput.selectedFiles ??
+          safeInput.selected_files ??
+          safeInput.files ??
+          safeInput.paths ??
+          safeInput.path ??
+          safeInput.targetPath ??
+          ""
+        );
+        const commitMessage = String(
+          safeInput.commitMessage ??
+          safeInput.commit_message ??
+          safeInput.message ??
+          safeInput.summary ??
+          ""
+        ).trim();
+        return {
+          repoDir: String(
+            safeInput.repoDir ??
+            safeInput.repo_dir ??
+            ""
+          ).trim(),
+          selectedFiles,
+          commitMessage,
+          messageSummary: commitMessage.split(/\r?\n/)[0] || "",
+          authorName: String(
+            safeInput.authorName ??
+            safeInput.author_name ??
+            ""
+          ).trim(),
+          authorEmail: String(
+            safeInput.authorEmail ??
+            safeInput.author_email ??
+            ""
+          ).trim(),
+          source: String(safeInput.source || "semantic-adapter").trim(),
+          generatedRisk:
+            safeInput.generatedRisk === true ||
+            safeInput.generated_risk === true ||
+            safeInput.classification === "generated",
+          secretRisk:
+            safeInput.secretRisk === true ||
+            safeInput.secret_risk === true ||
+            safeInput.classification === "secret"
+        };
+      }
       if (intentId === "previewIgnoreRule") {
         const rule = String(
           safeInput.rule ??
@@ -1520,6 +1608,92 @@
       }
 
       if (
+        definition?.id === "commitSelectedFiles" &&
+        blockers.length === 0
+      ) {
+        const selectedFiles = Array.isArray(parameters.selectedFiles)
+          ? parameters.selectedFiles
+          : [];
+        const invalidPaths = selectedFiles.filter((filePath) => {
+          const text = String(filePath || "");
+          return (
+            !text ||
+            /\0/.test(text) ||
+            pathLooksAbsolute(text) ||
+            pathHasTraversal(text)
+          );
+        });
+        if (!selectedFiles.length) {
+          addBlocker(
+            blockers,
+            "commit-files-missing",
+            "At least one repository-relative file must be selected for commit preparation."
+          );
+        } else if (invalidPaths.length) {
+          addBlocker(
+            blockers,
+            "commit-file-path-invalid",
+            "Commit preparation only accepts safe repository-relative paths.",
+            {invalidPaths}
+          );
+        }
+
+        const message = String(parameters.commitMessage || "").trim();
+        if (!message) {
+          addBlocker(
+            blockers,
+            "commit-message-missing",
+            "A commit message is required before commit preparation can proceed."
+          );
+        } else if (/\0/.test(message)) {
+          addBlocker(
+            blockers,
+            "commit-message-invalid",
+            "Commit messages must not contain NUL characters."
+          );
+        } else if (String(parameters.messageSummary || message).length > 72) {
+          addWarning(
+            warnings,
+            "commit-message-summary-long",
+            "The commit message summary is longer than 72 characters.",
+            {summaryLength: String(parameters.messageSummary || message).length}
+          );
+        }
+
+        if (
+          safeState.dirty === false ||
+          (
+            safeState.dirty !== true &&
+            integerOr(safeState.changedCount) <= 0 &&
+            integerOr(safeState.untrackedCount) <= 0
+          )
+        ) {
+          addBlocker(
+            blockers,
+            "nothing-to-commit",
+            "No working-tree changes are available for commit preparation."
+          );
+        }
+
+        if (parameters.secretRisk === true) {
+          addBlocker(
+            blockers,
+            "commit-secret-risk",
+            "Secret-risk files cannot be committed through this preflight lane.",
+            {selectedFiles}
+          );
+        }
+        if (parameters.generatedRisk === true) {
+          addWarning(
+            warnings,
+            "commit-generated-risk",
+            "Generated files are selected; verify they are intended source artifacts before committing.",
+            {selectedFiles}
+          );
+        }
+      }
+
+      if (
         definition?.id === "previewIgnoreRule" &&
         blockers.length === 0
       ) {
@@ -2047,6 +2221,101 @@
       return storeReceipt(decoratedReceipt, options);
     }
 
+    function commitSelectedFilesPreflightPayload(parameters = {}, state = getState()) {
+      const safeState = state && typeof state === "object" ? state : getState();
+      const selectedFiles = Array.isArray(parameters.selectedFiles)
+        ? parameters.selectedFiles.slice()
+        : [];
+      const commitMessage = String(parameters.commitMessage || "").trim();
+      const messageSummary = String(parameters.messageSummary || commitMessage.split(/\r?\n/)[0] || "");
+      return {
+        kind: "commit-selected-files-preflight",
+        repository: safeState.gitRoot || safeState.repoDir || "",
+        branch: safeState.branch || "unknown",
+        selectedFiles,
+        selectedFileCount: selectedFiles.length,
+        commitMessage,
+        messageSummary,
+        authorName: String(parameters.authorName || ""),
+        authorEmail: String(parameters.authorEmail || ""),
+        wouldStageFiles: false,
+        wouldCommit: false,
+        wouldRunGitCommand: false,
+        wouldModifyRepository: false,
+        requiresExplicitMutationBinding: true,
+        commandPreview: {
+          stage: selectedFiles.length ? `git add -- ${selectedFiles.map((file) => JSON.stringify(file)).join(" ")}` : "",
+          commit: messageSummary ? `git commit -m ${JSON.stringify(messageSummary)}` : "",
+          executionPermitted: false
+        },
+        diffPreview: {
+          operation: "commit-plan-preview",
+          selectedFiles,
+          writeRequired: false,
+          commitRequired: false
+        },
+        safety: {
+          generatedRisk: parameters.generatedRisk === true,
+          secretRisk: parameters.secretRisk === true,
+          shellExecution: false,
+          gitMutation: false,
+          pushMutation: false
+        },
+        requiredNextActions: [
+          "Review selected file evidence.",
+          "Confirm secret/filter gates before a future mutation lane is allowed.",
+          "Use an explicit commit execution binding in a later patch; this preflight lane does not commit."
+        ],
+        rollbackGuidance: "No rollback is needed because this lane does not stage files, create commits, or mutate the repository."
+      };
+    }
+
+    function buildCommitSelectedFilesPreflightReceipt(preflight, stateBefore, plan, options = {}) {
+      const definition = definitionFor("commitSelectedFiles");
+      receiptSequence += 1;
+      const createdAt = nowIso({
+        now: options.completedAt || options.now || new Date().toISOString()
+      });
+      const fingerprint = stateFingerprint(stateBefore || initialState());
+      const receipt = {
+        schemaVersion: RECEIPT_SCHEMA_VERSION,
+        receiptId: `${APP_ID}-receipt-${Date.parse(createdAt) || Date.now()}-${receiptSequence}`,
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        kind: "action-execution-receipt",
+        intentId: "commitSelectedFiles",
+        risk: String(definition?.risk || preflight?.risk || "local-repository-mutation"),
+        status: "succeeded",
+        decision: "allow",
+        createdAt,
+        startedAt: String(options.startedAt || preflight?.evaluatedAt || createdAt),
+        completedAt: createdAt,
+        preflightId: String(preflight?.preflightId || ""),
+        stateObservedAt: String(stateBefore?.observedAt || ""),
+        stateFingerprint: fingerprint,
+        stateBeforeFingerprint: fingerprint,
+        stateAfterFingerprint: fingerprint,
+        parameters: clonePlain(preflight?.parameters || {}),
+        blockers: clonePlain(preflight?.blockers || []),
+        warnings: clonePlain(preflight?.warnings || []),
+        executionAttempted: true,
+        executionBinding: "git-tools-semantic-adapter.commitSelectedFilesPreflight",
+        result: {
+          status: "succeeded",
+          ...clonePlain(plan || {})
+        },
+        error: null,
+        recoveryClassified: false
+      };
+      const decoratedReceipt = decorateReceiptWithRecovery(
+        receipt,
+        stateBefore || getState(),
+        options
+      );
+      return storeReceipt(decoratedReceipt, options);
+    }
+
     function buildPreviewIgnoreRuleExecutionReceipt(preflight, stateBefore, preview, options = {}) {
       const definition = definitionFor("previewIgnoreRule");
       receiptSequence += 1;
@@ -2171,6 +2440,45 @@
           confirmationRequired: preflight.confirmationRequired === true,
           executionAvailable: preflight.executionAvailable === true
         },
+        stateBefore: canonicalStateSnapshot(stateBefore),
+        stateAfter: canonicalStateSnapshot(stateBefore),
+        error: null
+      };
+    }
+
+    async function executeCommitSelectedFilesIntent(options = {}) {
+      const stateBefore = getState();
+      const preflight = evaluatePreflight("commitSelectedFiles", stateBefore, options);
+      if (preflight.blocked) {
+        return blockedPreflightExecutionResult(
+          "commitSelectedFiles",
+          preflight,
+          stateBefore,
+          options
+        );
+      }
+      const plan = commitSelectedFilesPreflightPayload(preflight.parameters, stateBefore);
+      const receipt = buildCommitSelectedFilesPreflightReceipt(
+        preflight,
+        stateBefore,
+        plan,
+        options
+      );
+      return {
+        schemaVersion: "git-tools-execution-result-v1",
+        appId: APP_ID,
+        adapterId: ADAPTER_ID,
+        adapterVersion: VERSION,
+        intentId: "commitSelectedFiles",
+        status: receipt.status,
+        decision: "allow",
+        executionAttempted: true,
+        executionBinding: receipt.executionBinding,
+        blockers: clonePlain(preflight.blockers || []),
+        warnings: clonePlain(preflight.warnings || []),
+        preflight,
+        receipt,
+        result: clonePlain(receipt.result || {}),
         stateBefore: canonicalStateSnapshot(stateBefore),
         stateAfter: canonicalStateSnapshot(stateBefore),
         error: null
@@ -2601,6 +2909,9 @@
       }
       if (intentId === "preparePush") {
         return executePreparePushIntent(options);
+      }
+      if (intentId === "commitSelectedFiles") {
+        return executeCommitSelectedFilesIntent(options);
       }
       if (intentId === "previewIgnoreRule") {
         return executePreviewIgnoreRuleIntent(options);

@@ -1152,6 +1152,33 @@
       setGameEditorStatus("RAG edit applied and project reloaded");
     }
 
+    function handleShuttle3dPolygonAnnotationSave(detail = {}) {
+      // Patch U: accept hold-P polygon/object annotations from the WebGL scene surface.
+      const projectId = String(detail?.projectId || "");
+      if (projectId && projectId !== String(gameEditorState.projectId || "")) return;
+      const annotation = detail?.annotation && typeof detail.annotation === "object" ? detail.annotation : null;
+      if (!annotation?.targetKey) return;
+      const sceneId = normalizeGameEditorSceneId(detail?.sceneId || gameEditorState.selectedSceneId);
+      const scenes = gameEditorProjectScenes();
+      const scene = scenes.find((candidate) => String(candidate?.id || "") === sceneId) || activeGameEditorScene();
+      if (!scene) return;
+      scene.metadata = scene.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
+      scene.metadata.shuttle3d = scene.metadata.shuttle3d && typeof scene.metadata.shuttle3d === "object" ? scene.metadata.shuttle3d : {};
+      scene.metadata.shuttle3d.polygonAnnotations = Array.isArray(scene.metadata.shuttle3d.polygonAnnotations)
+        ? scene.metadata.shuttle3d.polygonAnnotations
+        : [];
+      const annotations = scene.metadata.shuttle3d.polygonAnnotations;
+      const targetKey = String(annotation.targetKey || "");
+      const index = annotations.findIndex((candidate) => String(candidate?.targetKey || "") === targetKey);
+      const cleanAnnotation = cloneGameEditorData(annotation);
+      if (index >= 0) annotations[index] = cleanAnnotation;
+      else annotations.push(cleanAnnotation);
+      if (gameEditorState.project) gameEditorState.project.activeSceneId = String(scene.id || sceneId);
+      gameEditorState.selectedSceneId = String(scene.id || sceneId);
+      markGameEditorDirty(`dirty - annotated ${String(annotation.label || annotation.targetId || targetKey)}`);
+      setGameEditorWebglStatus(`annotation saved for ${String(annotation.label || annotation.targetId || targetKey)}`);
+    }
+
     async function loadGameEditorAssets() {
       const data = await gameEditorPost("/api/applications/game-editor/assets", {project_id: gameEditorState.projectId});
       gameEditorState.assets = Array.isArray(data.assets) ? data.assets : [];
@@ -1425,6 +1452,9 @@
         buildGameEditorShell();
         window.addEventListener("main-computer-chat-console-output-applied", (event) => {
           refreshGameEditorAfterRagApply(event?.detail || {}).catch((error) => reportGameEditorError(error));
+        });
+        window.addEventListener("main-computer-shuttle3d-polygon-annotation-save", (event) => {
+          handleShuttle3dPolygonAnnotationSave(event?.detail || {});
         });
         gameEditorState.initialized = true;
       }

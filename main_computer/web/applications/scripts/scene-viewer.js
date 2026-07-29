@@ -5199,13 +5199,69 @@
       }
 
       class Shuttle3dGeometryWriter {
-        constructor() {
+        constructor(options = {}) {
           this.values = [];
+          this.annotationTargets = Array.isArray(options.annotationTargets) ? options.annotationTargets : null;
+          this.annotationSource = String(options.annotationSource || "runtime geometry");
+          this.annotationSequence = 0;
         }
 
         color(value, emissive = false) {
           const rgb = sceneColorRgb(value);
-          return [rgb.r, rgb.g, rgb.b, emissive ? 1 : 0];
+          const color = [rgb.r, rgb.g, rgb.b, emissive ? 1 : 0];
+          color.sourceColor = String(value || "");
+          color.emissive = Boolean(emissive);
+          return color;
+        }
+
+        annotationBoundsForPoints(points, padding = 0.02) {
+          const usable = (Array.isArray(points) ? points : [])
+            .filter((point) => Array.isArray(point) && point.length >= 3)
+            .map((point) => point.slice(0, 3).map(Number))
+            .filter((point) => point.every(Number.isFinite));
+          if (!usable.length) return null;
+          const xs = usable.map((point) => point[0]);
+          const ys = usable.map((point) => point[1]);
+          const zs = usable.map((point) => point[2]);
+          const amount = Math.max(0.005, Math.min(0.75, Number(padding) || 0.02));
+          return {
+            min: [Math.min(...xs) - amount, Math.min(...ys) - amount, Math.min(...zs) - amount],
+            max: [Math.max(...xs) + amount, Math.max(...ys) + amount, Math.max(...zs) + amount]
+          };
+        }
+
+        recordAnnotationPrimitive(kind, points, color, details = {}) {
+          // Patch U.1: capture a fallback selectable target for visible rendered primitives.
+          // Data-defined targets remain preferred, but this lets P+click hit one-off bars,
+          // beams, view-model pieces, and other visible runtime geometry that has not yet
+          // been promoted into authored content data.
+          if (!this.annotationTargets) return;
+          const normalizedKind = String(kind || "primitive").toLowerCase();
+          const bounds = this.annotationBoundsForPoints(points, details.padding);
+          if (!bounds) return;
+          const sequence = this.annotationSequence + 1;
+          this.annotationSequence = sequence;
+          const sourceId = String(this.annotationSource || "runtime")
+            .trim()
+            .replace(/[^a-zA-Z0-9_.:-]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "runtime";
+          const colorName = String(color?.sourceColor || "").trim();
+          const targetId = `${sourceId}.${normalizedKind}.${String(sequence).padStart(4, "0")}`;
+          const labelBits = [this.annotationSource, colorName, normalizedKind]
+            .filter(Boolean)
+            .map((value) => String(value).replace(/^scene-viewer\./, ""));
+          this.annotationTargets.push({
+            targetKind: `rendered-${normalizedKind}`,
+            targetId,
+            targetKey: `rendered:${targetId}`,
+            label: labelBits.length ? labelBits.join(" ") : `Rendered ${normalizedKind}`,
+            room: "",
+            source: this.annotationSource,
+            primitiveKind: normalizedKind,
+            color: colorName,
+            emissive: Boolean(color?.emissive || color?.[3]),
+            bounds
+          });
         }
 
         normal(a, b, c) {
@@ -5244,6 +5300,7 @@
           const p101 = [x1, y0, z1];
           const p011 = [x0, y1, z1];
           const p111 = [x1, y1, z1];
+          this.recordAnnotationPrimitive("box", [p000, p100, p010, p110, p001, p101, p011, p111], color, {padding: 0.012});
           this.quad(p001, p101, p111, p011, color);
           this.quad(p100, p000, p010, p110, color);
           this.quad(p000, p001, p011, p010, color);
@@ -5271,6 +5328,7 @@
           const f = corner(end, radius, -radius);
           const g = corner(end, radius, radius);
           const h = corner(end, -radius, radius);
+          this.recordAnnotationPrimitive("beam", [a, b, c, d, e, f, g, h], color, {padding: Math.max(0.02, radius * 0.65)});
           this.quad(a, b, c, d, color);
           this.quad(e, h, g, f, color);
           this.quad(a, e, f, b, color);
@@ -5292,6 +5350,7 @@
           const f = [right, frontY, front];
           const g = [right, backY, back];
           const h = [left, backY, back];
+          this.recordAnnotationPrimitive("console-wedge", [a, b, c, d, e, f, g, h], color, {padding: 0.02});
           this.quad(a, b, f, e, color);
           this.quad(b, c, g, f, color);
           this.quad(c, d, h, g, color);
@@ -5301,6 +5360,12 @@
         }
 
         ellipsoid(center, radii, segments, rings, color) {
+          if (Array.isArray(center) && Array.isArray(radii) && center.length >= 3 && radii.length >= 3) {
+            this.recordAnnotationPrimitive("ellipsoid", [
+              [Number(center[0]) - Math.abs(Number(radii[0]) || 0), Number(center[1]) - Math.abs(Number(radii[1]) || 0), Number(center[2]) - Math.abs(Number(radii[2]) || 0)],
+              [Number(center[0]) + Math.abs(Number(radii[0]) || 0), Number(center[1]) + Math.abs(Number(radii[1]) || 0), Number(center[2]) + Math.abs(Number(radii[2]) || 0)]
+            ], color, {padding: 0.025});
+          }
           for (let ring = 0; ring < rings; ring += 1) {
             const v0 = ring / rings;
             const v1 = (ring + 1) / rings;
@@ -5392,6 +5457,7 @@
           this.shipInteractionRegistry = this.createShipInteractionRegistry();
           this.pilotStations = shuttle3dPilotStationsConfig(scene);
           this.hoveredPilotStation = null;
+          this.polygonAnnotationKeyHeld = false;
           this.pilot = {
             active: false,
             station: null,
@@ -5509,7 +5575,11 @@
         }
 
         buildGeometry() {
-          const builder = new Shuttle3dGeometryWriter();
+          const annotationTargets = [];
+          const builder = new Shuttle3dGeometryWriter({
+            annotationTargets,
+            annotationSource: "scene-viewer.static"
+          });
           const hull = shuttle3dBoundsVertices(this.scene);
           const forward = hull.slice(0, 6);
           const aft = hull.slice(6, 12);
@@ -5593,6 +5663,8 @@
 
           // Exterior ships are appended dynamically so console piloting can fly the shuttle toward the mother ship.
 
+          this.staticAnnotationPrimitiveTargets = annotationTargets;
+          this.refreshAnnotationPrimitiveTargets?.();
           return builder.toFloat32Array();
         }
 
@@ -7003,6 +7075,328 @@
           return {forward, right, up};
         }
 
+        refreshAnnotationPrimitiveTargets() {
+          const staticTargets = Array.isArray(this.staticAnnotationPrimitiveTargets) ? this.staticAnnotationPrimitiveTargets : [];
+          const dynamicTargets = Array.isArray(this.dynamicAnnotationPrimitiveTargets) ? this.dynamicAnnotationPrimitiveTargets : [];
+          this.annotationPrimitiveTargets = staticTargets.concat(dynamicTargets);
+          return this.annotationPrimitiveTargets;
+        }
+
+        setPolygonAnnotationKeyHeld(active) {
+          // Patch U: hold P + click enters a targeted polygon/object annotation flow.
+          this.polygonAnnotationKeyHeld = Boolean(active);
+          const shell = this.canvas?.closest?.(".scene-shuttle3d");
+          if (shell) {
+            shell.dataset.polygonAnnotationMode = this.polygonAnnotationKeyHeld ? "held" : "inactive";
+            const hint = shell.querySelector?.("[data-shuttle3d-annotation-hint]");
+            if (hint) {
+              hint.hidden = !this.polygonAnnotationKeyHeld;
+              hint.textContent = this.polygonAnnotationKeyHeld
+                ? "P held: click a visible polygon or object to annotate it."
+                : "Hold P and click a polygon or object to annotate it.";
+            }
+          }
+        }
+
+        isPolygonAnnotationKeyHeld() {
+          return Boolean(this.polygonAnnotationKeyHeld);
+        }
+
+        shuttle3dScreenRay(clientX, clientY) {
+          const rect = this.canvas.getBoundingClientRect?.();
+          if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+          const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+          const y = 1 - ((clientY - rect.top) / rect.height) * 2;
+          const {forward, right, up} = this.cameraBasis();
+          const fov = 66 * Math.PI / 180;
+          const scale = Math.tan(fov / 2);
+          const aspect = this.aspect || rect.width / Math.max(1, rect.height);
+          const direction = shuttle3dNormalizeVector([
+            forward[0] + right[0] * x * scale * aspect + up[0] * y * scale,
+            forward[1] + right[1] * x * scale * aspect + up[1] * y * scale,
+            forward[2] + right[2] * x * scale * aspect + up[2] * y * scale
+          ]);
+          return {origin: this.camera.slice(), direction};
+        }
+
+        polygonAnnotationBounds(minimum, maximum) {
+          if (!Array.isArray(minimum) || !Array.isArray(maximum) || minimum.length < 3 || maximum.length < 3) return null;
+          const min = minimum.slice(0, 3).map(Number);
+          const max = maximum.slice(0, 3).map(Number);
+          if (!min.every(Number.isFinite) || !max.every(Number.isFinite)) return null;
+          return {
+            min: [
+              Math.min(min[0], max[0]),
+              Math.min(min[1], max[1]),
+              Math.min(min[2], max[2])
+            ],
+            max: [
+              Math.max(min[0], max[0]),
+              Math.max(min[1], max[1]),
+              Math.max(min[2], max[2])
+            ]
+          };
+        }
+
+        polygonAnnotationInflatedBounds(minimum, maximum, radius = 0.04) {
+          const bounds = this.polygonAnnotationBounds(minimum, maximum);
+          if (!bounds) return null;
+          const amount = Math.max(0.005, Math.min(0.6, Number(radius) || 0.04));
+          return {
+            min: [bounds.min[0] - amount, bounds.min[1] - amount, bounds.min[2] - amount],
+            max: [bounds.max[0] + amount, bounds.max[1] + amount, bounds.max[2] + amount]
+          };
+        }
+
+        polygonAnnotationPropBounds(prop) {
+          if (!Array.isArray(prop?.position) || prop.position.length < 2) return null;
+          const x = Number(prop.position[0]);
+          const z = Number(prop.position[1]);
+          if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+          const kind = String(prop.kind || "prop").toLowerCase();
+          const size = Array.isArray(prop.size) ? prop.size.map(Number) : [];
+          const width = Math.max(0.12, Number.isFinite(size[0]) ? size[0] : 0.6);
+          const depth = Math.max(0.12, Number.isFinite(size[1]) ? size[1] : 0.5);
+          const height = Math.max(0.12, Number.isFinite(size[2]) ? size[2] : depth);
+          if (kind === "sign") {
+            const facing = String(prop.facing || "north").toLowerCase();
+            const y0 = 1.1;
+            const y1 = y0 + Math.max(0.18, depth);
+            if (facing === "east" || facing === "west") return this.polygonAnnotationInflatedBounds([x, y0, z - width / 2], [x, y1, z + width / 2], 0.06);
+            return this.polygonAnnotationInflatedBounds([x - width / 2, y0, z], [x + width / 2, y1, z], 0.06);
+          }
+          if (kind === "viewscreen" || kind === "status-panel") {
+            return this.polygonAnnotationInflatedBounds([x - width / 2, 0.16, z - 0.08], [x + width / 2, 0.35 + depth, z + 0.08], 0.05);
+          }
+          if (kind === "terminal-console") {
+            return this.polygonAnnotationInflatedBounds([x - width / 2, -1.06, z - depth / 2], [x + width / 2, -0.42 + height, z + depth / 2], 0.04);
+          }
+          if (kind === "beacon" || kind === "map-marker") {
+            return this.polygonAnnotationInflatedBounds([x - width / 2, -1.06, z - width / 2], [x + width / 2, -0.72 + height, z + width / 2], 0.05);
+          }
+          if (kind === "light-strip") {
+            const length = Math.max(0.2, width);
+            if (String(prop.axis || "x").toLowerCase() === "z") return this.polygonAnnotationInflatedBounds([x, 2.38, z - length / 2], [x, 2.5, z + length / 2], 0.08);
+            return this.polygonAnnotationInflatedBounds([x - length / 2, 2.38, z], [x + length / 2, 2.5, z], 0.08);
+          }
+          return this.polygonAnnotationInflatedBounds([x - width / 2, -1.06, z - depth / 2], [x + width / 2, -0.9, z + depth / 2], 0.03);
+        }
+
+        polygonAnnotationRoomGeometryTargets() {
+          const targets = [];
+          const rooms = Array.isArray(this.interiorConfig?.rooms) ? this.interiorConfig.rooms : [];
+          const add = (target) => {
+            if (!target?.bounds) return;
+            targets.push(target);
+          };
+          rooms.forEach((room) => {
+            const roomId = String(room?.id || room?.location || "room");
+            const roomLabel = String(room?.name || roomId);
+            const geometry = room?.geometry && typeof room.geometry === "object" ? room.geometry : {};
+            const shell = geometry.shell && typeof geometry.shell === "object" ? geometry.shell : {};
+            const shellBounds = shell.bounds || room?.bounds || {};
+            const minX = Number(shellBounds.minX);
+            const maxX = Number(shellBounds.maxX);
+            const minZ = Number(shellBounds.minZ);
+            const maxZ = Number(shellBounds.maxZ);
+            if ([minX, maxX, minZ, maxZ].every(Number.isFinite) && maxX > minX && maxZ > minZ) {
+              add({
+                targetKind: "room-floor",
+                targetId: `${roomId}:floor`,
+                targetKey: `room-floor:${roomId}`,
+                label: `${roomLabel} floor`,
+                room: roomId,
+                source: "rooms[].geometry.shell",
+                bounds: this.polygonAnnotationInflatedBounds([minX, -1.055, minZ], [maxX, -0.985, maxZ], 0.01)
+              });
+              add({
+                targetKind: "room-ceiling",
+                targetId: `${roomId}:ceiling`,
+                targetKey: `room-ceiling:${roomId}`,
+                label: `${roomLabel} ceiling`,
+                room: roomId,
+                source: "rooms[].geometry.shell",
+                bounds: this.polygonAnnotationInflatedBounds([minX, 2.36, minZ], [maxX, 2.48, maxZ], 0.01)
+              });
+            }
+            (Array.isArray(geometry.walls) ? geometry.walls : []).forEach((wall, index) => {
+              const axis = String(wall?.axis || "").toLowerCase();
+              const wallId = String(wall?.id || `${roomId}:wall.${index + 1}`);
+              let bounds = null;
+              if (axis === "x") {
+                const x = Number(wall.x);
+                const z0 = Number(wall.minZ);
+                const z1 = Number(wall.maxZ);
+                if ([x, z0, z1].every(Number.isFinite)) bounds = this.polygonAnnotationInflatedBounds([x, -1.06, z0], [x, 2.42, z1], 0.09);
+              } else if (axis === "z") {
+                const z = Number(wall.z);
+                const x0 = Number(wall.minX);
+                const x1 = Number(wall.maxX);
+                if ([z, x0, x1].every(Number.isFinite)) bounds = this.polygonAnnotationInflatedBounds([x0, -1.06, z], [x1, 2.42, z], 0.09);
+              }
+              add({
+                targetKind: "room-wall",
+                targetId: wallId,
+                targetKey: `room-wall:${wallId}`,
+                label: `${roomLabel} wall ${index + 1}`,
+                room: roomId,
+                source: "rooms[].geometry.walls",
+                bounds
+              });
+            });
+            (Array.isArray(geometry.openings) ? geometry.openings : []).forEach((opening, index) => {
+              const bounds = opening?.bounds || {};
+              const minOX = Number(bounds.minX);
+              const maxOX = Number(bounds.maxX);
+              const minOZ = Number(bounds.minZ);
+              const maxOZ = Number(bounds.maxZ);
+              if (![minOX, maxOX, minOZ, maxOZ].every(Number.isFinite)) return;
+              const openingId = String(opening?.id || opening?.exit || opening?.door || `${roomId}:opening.${index + 1}`);
+              add({
+                targetKind: "room-opening",
+                targetId: openingId,
+                targetKey: `room-opening:${openingId}`,
+                label: `${roomLabel} opening ${index + 1}`,
+                room: roomId,
+                source: "rooms[].geometry.openings",
+                bounds: this.polygonAnnotationInflatedBounds([minOX, -1.04, minOZ], [maxOX, 0.45, maxOZ], 0.08)
+              });
+            });
+            (Array.isArray(geometry.doorPanels) ? geometry.doorPanels : []).forEach((panel, index) => {
+              const center = Array.isArray(panel?.center) ? panel.center.map(Number) : [];
+              if (center.length < 2 || !center.every(Number.isFinite)) return;
+              const width = Math.max(0.24, Number(panel.width) || 1.0);
+              const vertical = Boolean(panel.vertical);
+              const panelId = String(panel?.id || panel?.door || `${roomId}:doorPanel.${index + 1}`);
+              const bounds = vertical
+                ? this.polygonAnnotationInflatedBounds([center[0] - 0.08, -0.55, center[1] - width / 2], [center[0] + 0.08, 0.62, center[1] + width / 2], 0.04)
+                : this.polygonAnnotationInflatedBounds([center[0] - width / 2, -0.55, center[1] - 0.08], [center[0] + width / 2, 0.62, center[1] + 0.08], 0.04);
+              add({
+                targetKind: "door-panel",
+                targetId: panelId,
+                targetKey: `door-panel:${panelId}`,
+                label: `${roomLabel} door panel`,
+                room: roomId,
+                source: "rooms[].geometry.doorPanels",
+                bounds
+              });
+            });
+            (Array.isArray(geometry.boxes) ? geometry.boxes : []).forEach((box, index) => {
+              const bounds = this.polygonAnnotationBounds(box?.min, box?.max);
+              const boxId = String(box?.id || `${roomId}:box.${index + 1}`);
+              add({
+                targetKind: "room-box",
+                targetId: boxId,
+                targetKey: `room-box:${boxId}`,
+                label: `${roomLabel} structural box ${index + 1}`,
+                room: roomId,
+                source: "rooms[].geometry.boxes",
+                bounds
+              });
+            });
+            (Array.isArray(geometry.beams) ? geometry.beams : []).forEach((beam, index) => {
+              const radius = Math.max(0.012, Number(beam?.radius) || 0.03);
+              const bounds = this.polygonAnnotationInflatedBounds(beam?.start, beam?.end, radius + 0.04);
+              const beamId = String(beam?.id || `${roomId}:beam.${index + 1}`);
+              add({
+                targetKind: "room-beam",
+                targetId: beamId,
+                targetKey: `room-beam:${beamId}`,
+                label: `${roomLabel} beam ${index + 1}`,
+                room: roomId,
+                source: "rooms[].geometry.beams",
+                bounds
+              });
+            });
+          });
+          return targets;
+        }
+
+        polygonAnnotationTargets() {
+          const targets = [];
+          const add = (target) => {
+            if (!target?.bounds) return;
+            targets.push(target);
+          };
+          this.polygonAnnotationRoomGeometryTargets().forEach(add);
+          (Array.isArray(this.interiorConfig?.props) ? this.interiorConfig.props : []).forEach((prop) => {
+            const propId = String(prop?.id || "");
+            if (!propId) return;
+            add({
+              targetKind: `prop.${String(prop.kind || "content")}`,
+              targetId: propId,
+              targetKey: `prop:${propId}`,
+              label: String(prop.label || propId),
+              room: String(prop.room || ""),
+              source: "motherShipInterior.props",
+              bounds: this.polygonAnnotationPropBounds(prop)
+            });
+          });
+          (Array.isArray(this.interiorConfig?.interactables) ? this.interiorConfig.interactables : []).forEach((target) => {
+            if (!Array.isArray(target?.position) || target.position.length < 2) return;
+            const x = Number(target.position[0]);
+            const z = Number(target.position[1]);
+            if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+            const radius = Math.max(0.18, Math.min(1.4, Number(target.range || 1.0) * 0.22));
+            add({
+              targetKind: `interactable.${String(target.kind || "action")}`,
+              targetId: String(target.id || ""),
+              targetKey: `interactable:${String(target.id || "")}`,
+              label: String(target.label || target.prompt || target.id || "Interactable"),
+              room: String(target.location || ""),
+              source: "motherShipInterior.interactables",
+              bounds: this.polygonAnnotationInflatedBounds([x - radius, -1.06, z - radius], [x + radius, 0.35, z + radius], 0.04)
+            });
+          });
+          (Array.isArray(this.pilotStations) ? this.pilotStations : []).forEach((station) => {
+            add({
+              targetKind: "pilot-station",
+              targetId: String(station.id || ""),
+              targetKey: `pilot-station:${String(station.id || "")}`,
+              label: String(station.label || station.id || "Pilot station"),
+              room: "shuttle.cockpit",
+              source: "shuttle3d.pilotStations",
+              bounds: station.bounds
+            });
+          });
+          // Patch U.1: append generic rendered primitive fallbacks after stable targets.
+          // This makes P+click useful for visible beams/bars and other one-off geometry
+          // before every piece has been promoted to a named data definition.
+          (Array.isArray(this.annotationPrimitiveTargets) ? this.annotationPrimitiveTargets : []).forEach(add);
+          return targets;
+        }
+
+        pickPolygonAnnotationTarget(clientX, clientY) {
+          const ray = this.shuttle3dScreenRay(clientX, clientY);
+          if (!ray) return null;
+          let best = null;
+          let bestDistance = Infinity;
+          this.polygonAnnotationTargets().forEach((target) => {
+            const bounds = target?.bounds;
+            if (!bounds || !Array.isArray(bounds.min) || !Array.isArray(bounds.max)) return;
+            const distance = shuttle3dRayIntersectsBounds(ray.origin, ray.direction, bounds);
+            if (!Number.isFinite(distance) || distance >= bestDistance) return;
+            bestDistance = distance;
+            best = target;
+          });
+          if (!best) return null;
+          const hit = [
+            ray.origin[0] + ray.direction[0] * bestDistance,
+            ray.origin[1] + ray.direction[1] * bestDistance,
+            ray.origin[2] + ray.direction[2] * bestDistance
+          ];
+          return {
+            ...best,
+            distance: bestDistance,
+            hit,
+            camera: {
+              position: this.camera.slice(),
+              yaw: Number(this.look?.yaw || 0),
+              pitch: Number(this.look?.pitch || 0)
+            }
+          };
+        }
+
         appendMotherShipViewscreenDisplay(builder, prop, nowMs = 0) {
           return globalThis.MainComputerShuttle3DRendererModules?.call(
             "viewscreens",
@@ -7164,7 +7558,11 @@
         }
 
         buildDynamicGeometry(nowMs) {
-          const builder = new Shuttle3dGeometryWriter();
+          const annotationTargets = [];
+          const builder = new Shuttle3dGeometryWriter({
+            annotationTargets,
+            annotationSource: "scene-viewer.dynamic"
+          });
           const transportGlow = builder.color("#84cc16", true);
           const alienBody = builder.color("#365314");
           const alienArmor = builder.color("#1a2e05");
@@ -7174,7 +7572,9 @@
           const healthFill = builder.color("#84cc16", true);
           this.appendFlightScene(builder, nowMs);
           if (this.isDockingSceneActive()) {
-            return builder.toFloat32Array();
+            this.dynamicAnnotationPrimitiveTargets = annotationTargets;
+          this.refreshAnnotationPrimitiveTargets?.();
+          return builder.toFloat32Array();
           }
           this.appendPilotStationHighlights(builder, nowMs);
           this.appendPilotViewModel(builder);
@@ -7217,6 +7617,8 @@
             builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.025, builder.color("#f59e0b", true));
             builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.009, builder.color("#fff7d6", true));
           }
+          this.dynamicAnnotationPrimitiveTargets = annotationTargets;
+          this.refreshAnnotationPrimitiveTargets?.();
           return builder.toFloat32Array();
         }
 
@@ -7679,7 +8081,203 @@
         }
       }
 
-      function bindShuttle3dLookaround(container, scene) {
+      function shuttle3dPolygonAnnotationSanitizeId(value, fallback = "annotation") {
+        const clean = String(value || fallback)
+          .trim()
+          .replace(/[^a-zA-Z0-9_.:-]+/g, "-")
+          .replace(/^-+|-+$/g, "");
+        return clean || fallback;
+      }
+
+      function shuttle3dPolygonAnnotationStore(scene) {
+        if (!scene || typeof scene !== "object") return [];
+        scene.metadata = scene.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
+        scene.metadata.shuttle3d = scene.metadata.shuttle3d && typeof scene.metadata.shuttle3d === "object" ? scene.metadata.shuttle3d : {};
+        scene.metadata.shuttle3d.polygonAnnotations = Array.isArray(scene.metadata.shuttle3d.polygonAnnotations)
+          ? scene.metadata.shuttle3d.polygonAnnotations
+          : [];
+        return scene.metadata.shuttle3d.polygonAnnotations;
+      }
+
+      function shuttle3dPolygonAnnotationForTarget(scene, target) {
+        const annotations = shuttle3dPolygonAnnotationStore(scene);
+        const key = String(target?.targetKey || "");
+        return annotations.find((annotation) => String(annotation?.targetKey || "") === key) || null;
+      }
+
+      function shuttle3dSavePolygonAnnotation(scene, annotation, options = {}) {
+        const annotations = shuttle3dPolygonAnnotationStore(scene);
+        const key = String(annotation?.targetKey || "");
+        const index = annotations.findIndex((candidate) => String(candidate?.targetKey || "") === key);
+        if (index >= 0) annotations[index] = annotation;
+        else annotations.push(annotation);
+        try {
+          window.MainComputerSceneStore?.saveScene?.(scene, {
+            source: "shuttle3d-polygon-annotation",
+            notify: false
+          });
+        } catch {
+          // Disk-backed game projects receive the same payload through the editor event below.
+        }
+        try {
+          window.dispatchEvent(new CustomEvent("main-computer-shuttle3d-polygon-annotation-save", {
+            detail: {
+              projectId: String(options.projectId || ""),
+              sceneId: String(scene?.id || ""),
+              annotation,
+              source: "shuttle3d-polygon-annotation"
+            }
+          }));
+        } catch {
+          // Annotation still exists in the live scene copy when CustomEvent is unavailable.
+        }
+        return annotation;
+      }
+
+      function shuttle3dAnnotationDialogOpen(container) {
+        const shell = container?.querySelector?.(".scene-shuttle3d") || container;
+        return Boolean(shell?.querySelector?.(".scene-shuttle3d-annotation-dialog[open], .scene-shuttle3d-annotation-dialog[data-open='true']"));
+      }
+
+      function shuttle3dAnnotationDialogEventTarget(event) {
+        return Boolean(event?.target?.closest?.(".scene-shuttle3d-annotation-dialog"));
+      }
+
+      function shuttle3dStopGameplayInputForAnnotationDialog(container) {
+        const shuttle = container?.__mainComputerShuttle3dRenderer || null;
+        try {
+          shuttle?.clearMovementKeys?.();
+          shuttle?.setPolygonAnnotationKeyHeld?.(false);
+        } catch {
+          // The annotation modal is editor tooling; never let input cleanup block typing.
+        }
+        if (container?.dataset) delete container.dataset.shuttle3dDragging;
+      }
+
+      function openShuttle3dPolygonAnnotationDialog(container, scene, target, options = {}) {
+        const shell = container?.querySelector?.(".scene-shuttle3d") || container;
+        if (!shell || !target) return null;
+        shuttle3dStopGameplayInputForAnnotationDialog(container);
+        const existing = shuttle3dPolygonAnnotationForTarget(scene, target);
+        const dialog = document.createElement("dialog");
+        dialog.className = "scene-shuttle3d-annotation-dialog";
+        dialog.dataset.open = "true";
+        dialog.setAttribute("aria-label", "Annotate selected polygon or object");
+
+        const form = document.createElement("form");
+        form.method = "dialog";
+        const title = document.createElement("h3");
+        title.textContent = "Annotate selected element";
+        const targetSummary = document.createElement("p");
+        targetSummary.className = "scene-shuttle3d-annotation-target";
+        const hit = Array.isArray(target.hit) ? target.hit : [];
+        const hitText = hit.length >= 3 && hit.every(Number.isFinite)
+          ? ` • hit x ${hit[0].toFixed(2)} y ${hit[1].toFixed(2)} z ${hit[2].toFixed(2)}`
+          : "";
+        targetSummary.textContent = `${target.label || target.targetId} — ${target.targetKind || "polygon"}${target.room ? ` • ${target.room}` : ""}${hitText}`;
+
+        const labelLabel = document.createElement("label");
+        labelLabel.textContent = "Annotation label";
+        const labelInput = document.createElement("input");
+        labelInput.name = "label";
+        labelInput.maxLength = 96;
+        labelInput.value = String(existing?.label || target.label || target.targetId || "");
+        labelLabel.append(labelInput);
+
+        const noteLabel = document.createElement("label");
+        noteLabel.textContent = "Notes";
+        const noteInput = document.createElement("textarea");
+        noteInput.name = "note";
+        noteInput.rows = 5;
+        noteInput.maxLength = 1200;
+        noteInput.placeholder = "Describe what this polygon/object represents or what should change here.";
+        noteInput.value = String(existing?.note || "");
+        noteLabel.append(noteInput);
+
+        const tagLabel = document.createElement("label");
+        tagLabel.textContent = "Tags";
+        const tagInput = document.createElement("input");
+        tagInput.name = "tags";
+        tagInput.maxLength = 160;
+        tagInput.placeholder = "optional, comma-separated";
+        tagInput.value = Array.isArray(existing?.tags) ? existing.tags.join(", ") : "";
+        tagLabel.append(tagInput);
+
+        const sourceLine = document.createElement("p");
+        sourceLine.className = "scene-shuttle3d-annotation-source";
+        sourceLine.textContent = `Target: ${target.targetKey || target.targetId || "unknown"} • Source: ${target.source || "runtime geometry"}`;
+
+        const actions = document.createElement("div");
+        actions.className = "scene-shuttle3d-annotation-actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.textContent = "Cancel";
+        const save = document.createElement("button");
+        save.type = "submit";
+        save.textContent = "Save annotation";
+        actions.append(cancel, save);
+
+        form.append(title, targetSummary, labelLabel, noteLabel, tagLabel, sourceLine, actions);
+        dialog.append(form);
+        shell.append(dialog);
+
+        const removeDialog = () => {
+          dialog.dataset.open = "false";
+          dialog.remove();
+          shuttle3dStopGameplayInputForAnnotationDialog(container);
+          shell.focus?.({preventScroll: true});
+        };
+        const closeDialog = () => {
+          if (dialog.open && typeof dialog.close === "function") dialog.close();
+          else removeDialog();
+        };
+        cancel.addEventListener("click", closeDialog);
+        dialog.addEventListener("close", removeDialog, {once: true});
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const targetKey = String(target.targetKey || `${target.targetKind || "target"}:${target.targetId || "unknown"}`);
+          const cleanKey = shuttle3dPolygonAnnotationSanitizeId(targetKey, "annotation-target");
+          const tags = String(tagInput.value || "")
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+            .slice(0, 12);
+          const annotation = {
+            schema: "game.shuttle3d.polygonAnnotation.v1",
+            id: String(existing?.id || `annotation.${cleanKey}`),
+            targetKey,
+            targetId: String(target.targetId || ""),
+            targetKind: String(target.targetKind || "polygon"),
+            source: String(target.source || ""),
+            room: String(target.room || ""),
+            label: String(labelInput.value || target.label || target.targetId || "").trim(),
+            note: String(noteInput.value || "").trim(),
+            tags,
+            hit: Array.isArray(target.hit) ? target.hit.map((value) => Number(value)).filter(Number.isFinite).slice(0, 3) : [],
+            camera: target.camera && typeof target.camera === "object" ? target.camera : {},
+            updatedAt: new Date().toISOString()
+          };
+          shuttle3dSavePolygonAnnotation(scene, annotation, options);
+          const hint = shell.querySelector?.("[data-shuttle3d-annotation-hint]");
+          if (hint) {
+            hint.hidden = false;
+            hint.textContent = `Annotation saved for ${annotation.label || annotation.targetId}.`;
+            window.clearTimeout(hint.__mainComputerAnnotationSavedTimer);
+            hint.__mainComputerAnnotationSavedTimer = window.setTimeout(() => {
+              if (hint && shell.dataset.polygonAnnotationMode !== "held") hint.hidden = true;
+            }, 1800);
+          }
+          closeDialog();
+        });
+
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "open");
+        labelInput.focus?.({preventScroll: true});
+        labelInput.select?.();
+        return dialog;
+      }
+
+      function bindShuttle3dLookaround(container, scene, options = {}) {
         disposeShuttle3dLookaround(container);
         const config = shuttle3dCameraConfig(scene);
         const movementCodes = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight"]);
@@ -7711,7 +8309,23 @@
         const pointerDown = (event) => {
           if (event.button !== 0 || event.defaultPrevented) return;
           const target = event.target;
-          if (target?.closest?.("button, a, input, select, textarea")) return;
+          if (target?.closest?.("button, a, input, select, textarea, dialog")) return;
+          const shuttle = renderer();
+          if (shuttle?.isPolygonAnnotationKeyHeld?.()) {
+            event.preventDefault();
+            const picked = shuttle.pickPolygonAnnotationTarget?.(event.clientX, event.clientY);
+            if (picked) {
+              openShuttle3dPolygonAnnotationDialog(container, scene, picked, options);
+            } else {
+              const shell = container?.querySelector?.(".scene-shuttle3d") || container;
+              const hint = shell?.querySelector?.("[data-shuttle3d-annotation-hint]");
+              if (hint) {
+                hint.hidden = false;
+                hint.textContent = "P held: no selectable rendered primitive under cursor. Try clicking the visible face/bar center.";
+              }
+            }
+            return;
+          }
           updatePilotHover(event);
           event.preventDefault();
           dragging = true;
@@ -7725,9 +8339,16 @@
           container.focus({preventScroll: true});
         };
         const pointerHover = (event) => {
+          if (shuttle3dAnnotationDialogOpen(container)) return;
           updatePilotHover(event);
         };
         const pointerMove = (event) => {
+          if (shuttle3dAnnotationDialogOpen(container)) {
+            dragging = false;
+            dragDistance = 0;
+            delete container.dataset.shuttle3dDragging;
+            return;
+          }
           if (!dragging) return;
           applyDelta(event.clientX - startX, event.clientY - startY);
           updatePilotHover(event);
@@ -7737,6 +8358,13 @@
           renderer()?.setHoveredPilotStation?.(null);
         };
         const pointerUp = () => {
+          if (shuttle3dAnnotationDialogOpen(container)) {
+            dragging = false;
+            dragDistance = 0;
+            delete container.dataset.shuttle3dDragging;
+            renderer()?.clearMovementKeys?.();
+            return;
+          }
           if (!dragging) return;
           dragging = false;
           delete container.dataset.shuttle3dDragging;
@@ -7744,6 +8372,17 @@
         };
         const keyDown = (event) => {
           const shuttle = renderer();
+          if (shuttle3dAnnotationDialogOpen(container)) {
+            if (!shuttle3dAnnotationDialogEventTarget(event)) event.preventDefault();
+            shuttle?.clearMovementKeys?.();
+            shuttle?.setPolygonAnnotationKeyHeld?.(false);
+            return;
+          }
+          if (event.code === "KeyP") {
+            event.preventDefault();
+            shuttle?.setPolygonAnnotationKeyHeld?.(true);
+            return;
+          }
           if (event.code === "KeyE") {
             event.preventDefault();
             if (event.repeat || shuttle?.isDockingCutsceneActive?.()) return;
@@ -7805,6 +8444,17 @@
         };
         const keyUp = (event) => {
           const shuttle = renderer();
+          if (shuttle3dAnnotationDialogOpen(container)) {
+            if (!shuttle3dAnnotationDialogEventTarget(event)) event.preventDefault();
+            shuttle?.clearMovementKeys?.();
+            shuttle?.setPolygonAnnotationKeyHeld?.(false);
+            return;
+          }
+          if (event.code === "KeyP") {
+            event.preventDefault();
+            shuttle?.setPolygonAnnotationKeyHeld?.(false);
+            return;
+          }
           if (shuttle?.pilot?.active && pilotCodes.has(event.code)) {
             event.preventDefault();
             shuttle.setMovementKey?.(event.code, false);
@@ -7819,6 +8469,7 @@
           dragDistance = 0;
           delete container.dataset.shuttle3dDragging;
           renderer()?.clearMovementKeys?.();
+          renderer()?.setPolygonAnnotationKeyHeld?.(false);
         };
         const handler = {pointerDown, pointerHover, pointerMove, pointerLeave, pointerUp, keyDown, keyUp, blur};
         container.__mainComputerShuttle3dLookHandler = handler;
@@ -7924,7 +8575,13 @@
 
         const hint = document.createElement("div");
         hint.className = "scene-shuttle3d-look-hint";
-        hint.textContent = shuttle.controlsHint || "Mouse over console + E pilot • W/S throttle flies to Mother Ship • docking triggers shuttle-bay cutscene • Click/Space/F fire outside pilot";
+        hint.textContent = shuttle.controlsHint || "Mouse over console + E pilot • W/S flies to Mother Ship • hold P + click visible geometry to annotate • Click/Space/F fire outside pilot";
+
+        const annotationHint = document.createElement("div");
+        annotationHint.className = "scene-shuttle3d-annotation-hint";
+        annotationHint.dataset.shuttle3dAnnotationHint = "true";
+        annotationHint.hidden = true;
+        annotationHint.textContent = "Hold P and click a polygon or object to annotate it.";
 
         const status = document.createElement("div");
         status.className = "scene-shuttle3d-mesh-status";
@@ -7946,9 +8603,9 @@
         twiddleButton.title = "Force first-person control in the mother ship shuttle bay.";
         twiddleSystem.append(twiddleTitle, twiddleStatus, twiddleButton);
 
-        shell.append(canvas, hud, crosshair, pilotPrompt, damageFlash, gameOver, hint, status, twiddleSystem);
+        shell.append(canvas, hud, crosshair, pilotPrompt, damageFlash, gameOver, hint, annotationHint, status, twiddleSystem);
         container.append(shell);
-        bindShuttle3dLookaround(container, scene);
+        bindShuttle3dLookaround(container, scene, options);
 
         try {
           const renderer = new Shuttle3dVertexRenderer(canvas, scene);

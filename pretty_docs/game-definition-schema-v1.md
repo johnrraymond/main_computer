@@ -475,6 +475,37 @@ Patch S does not change the schema. It changes where existing renderer code live
 
 The browser runtime now loads a small `MainComputerShuttle3DRendererModules` registry before `scene-viewer.js`, allowing room-geometry and viewscreen rendering to live in separate files without requiring ES modules or a bundler.
 
+
+## Scene polygon annotations
+
+Patch U adds editor-authored annotations for selected WebGL polygons/objects. These annotations live on the scene metadata, not inside the mother-ship runtime definition itself:
+
+```json
+{
+  "metadata": {
+    "shuttle3d": {
+      "polygonAnnotations": [
+        {
+          "schema": "game.shuttle3d.polygonAnnotation.v1",
+          "targetKey": "prop:prop.display.bridge-viewscreen",
+          "targetId": "prop.display.bridge-viewscreen",
+          "targetKind": "prop.viewscreen",
+          "source": "motherShipInterior.props",
+          "room": "bridge.deck",
+          "label": "Bridge viewscreen",
+          "note": "Designer note",
+          "tags": ["bridge"],
+          "hit": [0, 0.5, -39.1],
+          "updatedAt": "2026-07-28T00:00:00.000Z"
+        }
+      ]
+    }
+  }
+}
+```
+
+The key rule is that annotations should point at stable authored targets, such as `rooms[].geometry`, `motherShipInterior.props`, `motherShipInterior.interactables`, or `shuttle3d.pilotStations`, rather than anonymous GPU triangle indexes.
+
 ## Versioning rule
 
 Schema v1 should be append-only where possible. New optional fields may be added, but existing field meanings should not change without a new schema id.

@@ -9,6 +9,7 @@ from tests.mother.support.traceability import (
     ContractTrace,
     MotherDocuments,
     faultpoint_bearing_functionalities,
+    functionality_method_rows,
     functionality_module_rows,
     validate_contract_trace,
 )
@@ -184,3 +185,40 @@ def test_documented_reconciliation_transitions_accept_core013(
     )
     assert validate_contract_trace(trace, docs) == []
 
+
+def test_method_trace_requires_exact_functionality_chain_membership() -> None:
+    docs = MotherDocuments.load()
+    trace = ContractTrace(
+        requirements=("MOTHER-REQ-015",),
+        operations=("MOTHER-OP-DIAGNOSE",),
+        functionalities=("MOTHER-OF-OBS-016",),
+        modules=("MOTHER-OFM-CORE-007",),
+        methods=("MOTHER-OFM-CORE-007.read_capabilities",),
+    )
+    assert validate_contract_trace(trace, docs) == []
+
+    unrelated = replace(
+        trace,
+        methods=("MOTHER-OFM-CORE-007.freeze_capability_set",),
+    )
+    errors = validate_contract_trace(unrelated, docs)
+    assert any("not in any claimed functionality method chain" in error for error in errors)
+
+
+def test_documented_method_rows_include_wave1c_chains() -> None:
+    rows = functionality_method_rows(MotherDocuments.load())
+    assert rows["MOTHER-OF-OBS-016"] == (
+        "MOTHER-OFM-CORE-006.validate_object",
+        "MOTHER-OFM-CORE-007.read_capabilities",
+        "MOTHER-OFM-CORE-007.require_capabilities",
+        "MOTHER-OFM-CORE-010.check_peer_compatibility",
+    )
+    assert rows["MOTHER-OF-CTL-010"] == (
+        "MOTHER-OFM-CORE-010.freeze_contract_versions",
+        "MOTHER-OFM-CORE-007.freeze_capability_set",
+    )
+    assert rows["MOTHER-OF-MIG-001"] == (
+        "MOTHER-OFM-CORE-006.load_schema",
+        "MOTHER-OFM-CORE-006.validate_schema_transition",
+        "MOTHER-OFM-CORE-007.require_capabilities",
+    )

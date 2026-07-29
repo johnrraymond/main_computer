@@ -14,6 +14,7 @@ DESIGN_RE = re.compile(r"MOTHER-DESIGN-\d{3}")
 OP_RE = re.compile(r"MOTHER-OP-[A-Z0-9-]+")
 FUNC_RE = re.compile(r"MOTHER-OF-[A-Z]+-\d{3}")
 MODULE_RE = re.compile(r"MOTHER-OFM-[A-Z]+-\d{3}")
+METHOD_RE = re.compile(r"MOTHER-OFM-[A-Z]+-\d{3}\.[A-Za-z_][A-Za-z0-9_]*")
 OPEN_ERROR_RE = re.compile(r"MOTHER_OPEN_[A-Z0-9_]+")
 
 _RANGE_SEPARATORS = r"(?:through|[–—])"
@@ -74,6 +75,7 @@ class ContractTrace:
     operations: tuple[str, ...]
     functionalities: tuple[str, ...]
     modules: tuple[str, ...]
+    methods: tuple[str, ...] = ()
     mutating: bool = False
     open_error: str | None = None
 
@@ -155,6 +157,25 @@ def functionality_references(text: str) -> list[str]:
 
 def module_references(text: str) -> list[str]:
     return _expand_references(text, "module")
+
+
+def method_references(text: str) -> list[str]:
+    """Return explicit module.method references, including comma shorthand."""
+
+    result: list[str] = []
+    pattern = re.compile(
+        r"(?P<module>MOTHER-OFM-[A-Z]+-\d{3})"
+        r"(?:\.(?P<methods>[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*))?"
+    )
+    for match in pattern.finditer(text.replace("`", "")):
+        module = match.group("module")
+        methods = match.group("methods")
+        if not methods:
+            continue
+        for method in re.split(r"\s*,\s*", methods):
+            if method:
+                result.append(f"{module}.{method}")
+    return result
 
 
 def requirement_ids(docs: MotherDocuments) -> list[str]:
@@ -337,6 +358,28 @@ def functionality_module_rows(docs: MotherDocuments) -> dict[str, tuple[str, ...
         cells = _table_cells(line)
         chain_cell = cells[1] if len(cells) > 1 else line
         rows[identifier] = tuple(module_references(chain_cell))
+    return rows
+
+
+def functionality_method_rows(docs: MotherDocuments) -> dict[str, tuple[str, ...]]:
+    composition = section(
+        docs.modules,
+        "## 7. Functionality-to-module composition",
+        "## 8. Operation and stage binding",
+    )
+    rows: dict[str, tuple[str, ...]] = {}
+    for line in composition.splitlines():
+        if not line.startswith("| `MOTHER-OF-"):
+            continue
+        func = FUNC_RE.search(line)
+        if not func:
+            continue
+        identifier = func.group(0)
+        if identifier in rows:
+            raise AssertionError(f"duplicate functionality-to-method row: {identifier}")
+        cells = _table_cells(line)
+        chain_cell = cells[1] if len(cells) > 1 else line
+        rows[identifier] = tuple(method_references(chain_cell))
     return rows
 
 
@@ -661,6 +704,7 @@ def validate_contract_trace(
             )
 
     function_modules = functionality_module_rows(docs)
+    function_methods = functionality_method_rows(docs)
     entry_modules = operation_entry_modules(docs)
     claimed_entries = {
         entry_modules[operation]
@@ -713,6 +757,43 @@ def validate_contract_trace(
             errors.append(
                 f"unsupported implicit core ancestry for {functionality}: "
                 f"{unsupported_implicit}"
+            )
+
+    method_pattern = re.compile(
+        r"^MOTHER-OFM-[A-Z]+-\d{3}\.[A-Za-z_][A-Za-z0-9_]*$"
+    )
+    duplicate_methods = duplicates(trace.methods)
+    if duplicate_methods:
+        errors.append(f"duplicate methods: {sorted(duplicate_methods)}")
+    for method in trace.methods:
+        if not method_pattern.fullmatch(method):
+            errors.append(f"invalid method reference: {method!r}")
+            continue
+        module_id = method.split(".", 1)[0]
+        if module_id not in trace.modules:
+            errors.append(
+                f"{method} belongs to {module_id}, which is not claimed in modules"
+            )
+            continue
+        parents = [
+            functionality
+            for functionality in trace.functionalities
+            if method in function_methods.get(functionality, ())
+        ]
+        if not parents:
+            errors.append(
+                f"{method} is not in any claimed functionality method chain: "
+                f"{list(trace.functionalities)}"
+            )
+
+    for functionality in trace.functionalities:
+        canonical_methods = function_methods.get(functionality, ())
+        claimed_methods = [
+            method for method in trace.methods if method in canonical_methods
+        ]
+        if claimed_methods and not _is_subsequence(claimed_methods, canonical_methods):
+            errors.append(
+                f"methods are out of order for {functionality}: {claimed_methods}"
             )
 
     coverage = requirement_coverage(docs)

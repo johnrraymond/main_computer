@@ -126,7 +126,7 @@ and context.
 | `MOTHER-OF-OBS-013` | Inspect reservation, cancellation, finalization, acknowledgement, and release state |
 | `MOTHER-OF-OBS-014` | Classify sealed state and contradictions |
 | `MOTHER-OF-OBS-015` | Route the condition to allowed next commands |
-| `MOTHER-OF-OBS-016` | Verify required schemas and capabilities |
+| `MOTHER-OF-OBS-016` | Validate compatibility-report objects, read declared capabilities, require exact capabilities, and compare peer compatibility |
 | `MOTHER-OF-OBS-017` | Run the operation-relevant live assertion set |
 | `MOTHER-OF-OBS-018` | Export immutable raw evidence with hashes and secret redaction |
 
@@ -325,7 +325,7 @@ exists.
 
 | Functionality ID | Canonical responsibility |
 |---|---|
-| `MOTHER-OF-MIG-001` | Inventory source schemas, destination schemas, and required capabilities |
+| `MOTHER-OF-MIG-001` | Load source and destination schemas, validate the declared transition, and require migration capabilities |
 | `MOTHER-OF-MIG-002` | Preserve original bytes, hashes, and audit evidence |
 | `MOTHER-OF-MIG-003` | Apply the declared deterministic migration |
 | `MOTHER-OF-MIG-004` | Validate the complete migrated object graph |
@@ -1266,7 +1266,7 @@ and full-set replayability.
 | Stage | Order | Functionality | Defined result |
 |---|---:|---|---|
 | `prep` | 1 | Applicable `MOTHER-OF-OBS-001`–`017` pipeline | Current authority and active obligations known |
-| `prep` | 2 | `MOTHER-OF-MIG-001` | Exact source/destination schema and capability inventory |
+| `prep` | 2 | `MOTHER-OF-MIG-001` | Exact source/destination schemas, declared transition, and migration capability inventory |
 | `prep` | 3 | `MOTHER-OF-MIG-002` | Immutable audit closure of original bytes and hashes |
 | `prep` | 4 | `MOTHER-OF-CTL-007` through `MOTHER-OF-CTL-012` | Exclusive scopes, rollback requirements, and operation record |
 | `do` | 1 | `MOTHER-OF-MIG-003` | Deterministically transformed candidate |
@@ -1786,7 +1786,7 @@ for the owning requirement text.
 | `MOTHER-REQ-012` | Complete `MOTHER-OP-ADD-NODE` pipeline | `add-node` |
 | `MOTHER-REQ-013` | Complete `MOTHER-OP-REMOVE-NODE` pipeline | `remove-node` |
 | `MOTHER-REQ-014` | `MOTHER-OF-QBFT-001` through `MOTHER-OF-QBFT-007` | `add-node`, `remove-node`, `reseal-qbft` |
-| `MOTHER-REQ-015` | `MOTHER-OF-OBS-016`, `MOTHER-OF-CTL-010` | Every staged operation, retry, rollback, and recovery |
+| `MOTHER-REQ-015` | `MOTHER-OF-OBS-016`, `MOTHER-OF-CTL-010`, `MOTHER-OF-MIG-001` | Every staged operation, retry, rollback, recovery, and schema-migration preparation |
 | `MOTHER-REQ-016` | `MOTHER-OF-ID-005`, `MOTHER-OF-SYNC-003`, `MOTHER-OF-SYNC-004`, `MOTHER-OF-REC-002` through `MOTHER-OF-REC-005` | Enrollment, `sync-state`, `recover-head`, `reseal-state` |
 | `MOTHER-REQ-017` | `MOTHER-OF-REC-001` through `MOTHER-OF-REC-008` | `recover-head` |
 | `MOTHER-REQ-018` | `MOTHER-OF-SYNC-001` through `MOTHER-OF-SYNC-008` | `sync-state` |

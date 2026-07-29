@@ -497,3 +497,48 @@ Patch T implementation note: mother-ship definitions now declare `schema`,
 passes, or interaction code read them. The game-editor project read route mirrors
 this behavior for legacy project JSON by applying safe defaults from the current
 default project without writing those defaults back to disk.
+
+
+Patch U implementation note: the shuttle-3D surface now supports a held polygon/object annotation shortcut. Holding `P` and clicking the WebGL surface raycasts against stable data-defined targets such as `rooms[].geometry`, `motherShipInterior.props`, `motherShipInterior.interactables`, and `shuttle3d.pilotStations`. Saving the dialog writes `metadata.shuttle3d.polygonAnnotations` and notifies the Game Editor so the active project becomes dirty without changing normal gameplay controls.
+
+
+## Patch U.1. Annotation rendered primitive fallback
+
+Corrective tooling patch after Patch U.
+
+Purpose:
+
+```text
+Keep hold-P annotation stable-target-first, but add a rendered-primitive fallback
+so visible one-off bars/beams can be selected before they are promoted to data.
+```
+
+Acceptance:
+
+```text
+P+click opens annotations for visible runtime beams/bars
+data-defined targets remain preferred
+misses show a clear hint
+normal gameplay controls are unchanged when P is not held
+```
+
+
+## Patch U.2. Annotation modal input guard
+
+Corrective tooling patch after Patch U.1.
+
+Purpose:
+
+```text
+When the annotation dialog is open, suspend gameplay keyboard capture so notes,
+labels, and tags can be typed normally.
+```
+
+Acceptance:
+
+```text
+opening the modal clears active movement keys
+W/A/S/D typed in dialog fields are not consumed by movement controls
+gameplay keydown/keyup handling is skipped while the dialog is open
+closing the dialog restores normal gameplay controls
+```
