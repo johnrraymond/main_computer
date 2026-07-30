@@ -93,8 +93,8 @@ def test_23c_is_after_23b_and_bound_into_runtime_lab_and_code_studio() -> None:
         "boundary.walletSafeRecoveryPlanner = boundary.wallet23cSafeRecoveryPlanner",
         "wallet23cSafeRecoveryPlanner: null",
         "walletSafeRecoveryPlanner: null",
-        "instance.runtime.wallet23cSafeRecoveryPlanner = boundary.wallet23cSafeRecoveryPlanner || null",
-        "instance.runtime.walletSafeRecoveryPlanner = boundary.walletSafeRecoveryPlanner || boundary.wallet23cSafeRecoveryPlanner || null",
+        "wallet23cSafeRecoveryPlanner: boundary.wallet23cSafeRecoveryPlanner || null",
+        "walletSafeRecoveryPlanner: boundary.walletSafeRecoveryPlanner || boundary.wallet23cSafeRecoveryPlanner || null",
         '"runtime.wallet23cSafeRecoveryPlanner"',
         '"runtime.walletSafeRecoveryPlanner"',
     ]

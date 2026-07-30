@@ -90,8 +90,8 @@ def test_23d_is_bound_into_lab_code_studio_and_introduces_no_provider_mutation()
         "boundary.walletExecutionAuditExport = boundary.wallet23dExecutionAuditExport",
         "wallet23dExecutionAuditExport: null",
         "walletExecutionAuditExport: null",
-        "instance.runtime.wallet23dExecutionAuditExport = boundary.wallet23dExecutionAuditExport || null",
-        "instance.runtime.walletExecutionAuditExport = boundary.walletExecutionAuditExport || boundary.wallet23dExecutionAuditExport || null",
+        "wallet23dExecutionAuditExport: boundary.wallet23dExecutionAuditExport || null",
+        "walletExecutionAuditExport: boundary.walletExecutionAuditExport || boundary.wallet23dExecutionAuditExport || null",
         '"runtime.wallet23dExecutionAuditExport"',
         '"runtime.walletExecutionAuditExport"',
     ]

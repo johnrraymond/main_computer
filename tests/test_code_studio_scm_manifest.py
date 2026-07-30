@@ -149,6 +149,7 @@ process.stdout.write(JSON.stringify({{
         "editorDraft.discarded",
     ]
     assert data["transitions"] == [
+        "syncLiveSurface",
         "openFile",
         "selectPanel",
         "editDraft",
@@ -235,6 +236,59 @@ process.stdout.write(JSON.stringify({{
         "commitDraft",
         "serializeWorkspace",
     ]
+
+
+def test_code_studio_live_surface_sync_uses_declared_transition(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const instance = McelCodeStudioScm.createDefaultInstance({{id: "code-studio-live-sync"}});
+const beforeSource = instance.source;
+const result = MCEL.transition(instance, "syncLiveSurface", {{
+  source: {{
+    workspace: {{
+      manifest: {{id: "workspace-live", title: "Live workspace"}},
+      files: [
+        {{id: "live-app", path: "src/live.js", language: "javascript", text: "export default true;"}}
+      ]
+    }}
+  }},
+  activeFileId: "live-app",
+  selectedPanel: "preview",
+  bottomDockExpanded: true,
+  dirty: true,
+  shell: {{
+    mounted: true,
+    damaged: false,
+    selectedPath: "src/live.js"
+  }}
+}});
+const packet = MCEL.exportScmEvidence(instance);
+process.stdout.write(JSON.stringify({{
+  result,
+  sourceReplaced: beforeSource !== instance.source,
+  source: instance.source,
+  state: instance.state,
+  runtime: instance.runtime,
+  lastTransition: packet.evidence.filter(
+    (entry) => entry.phase === "transition"
+  ).at(-1)?.transitionName || "",
+}}));
+"""
+    data = _run_node_json(tmp_path, script)
+
+    assert data["result"]["ok"] is True
+    assert data["sourceReplaced"] is True
+    assert data["source"]["workspace"]["manifest"]["id"] == "workspace-live"
+    assert data["state"]["activeFileId"] == "live-app"
+    assert data["state"]["openTabs"] == ["src-app", "live-app"]
+    assert data["state"]["selectedPanel"] == "preview"
+    assert data["state"]["bottomDockExpanded"] is True
+    assert data["state"]["dirty"] is True
+    assert data["runtime"]["loadedFile"]["path"] == "src/live.js"
+    assert data["runtime"]["workbench"]["shell"]["mounted"] is True
+    assert data["runtime"]["workbench"]["shell"]["damaged"] is False
+    assert data["lastTransition"] == "syncLiveSurface"
 
 
 def test_code_studio_scm_child_context_reads_emits_and_blocks_undeclared_mutation(tmp_path: Path) -> None:

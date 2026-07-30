@@ -332,20 +332,18 @@
           });
         }
 
-        scmInstance.source = source;
-        scmInstance.state.activeFileId = activeFileId;
-        scmInstance.state.selectedPanel = selectedPanel;
-        scmInstance.state.bottomDockExpanded = bottomDockExpanded;
-        scmInstance.state.dirty = Boolean(studioState.dirty);
-        scmInstance.state.openTabs = Array.from(new Set([...(scmInstance.state.openTabs || []), activeFileId].filter(Boolean)));
-        scmInstance.runtime.loadedFile = source.workspace.files.find((file) => file.id === activeFileId) || null;
-        scmInstance.runtime.workbench = scmInstance.runtime.workbench || {};
-        scmInstance.runtime.workbench.shell = {
-          ...(scmInstance.runtime.workbench.shell || {}),
-          mounted: Boolean(studioState.mounted),
-          damaged: Boolean(studioState.damaged),
-          selectedPath: studioState.selectedPath
-        };
+        bridge.mcel.transition(scmInstance, "syncLiveSurface", {
+          source,
+          activeFileId,
+          selectedPanel,
+          bottomDockExpanded,
+          dirty: Boolean(studioState.dirty),
+          shell: {
+            mounted: Boolean(studioState.mounted),
+            damaged: Boolean(studioState.damaged),
+            selectedPath: studioState.selectedPath
+          }
+        });
 
         return scmInstance;
       }

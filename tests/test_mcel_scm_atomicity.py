@@ -378,7 +378,7 @@ process.stdout.write(JSON.stringify({{
     assert "repair-commit" in data["phases"]
 
 
-def test_transition_commit_failure_is_refused_before_any_root_swap(tmp_path: Path) -> None:
+def test_transition_commit_survives_refused_public_root_redefinition(tmp_path: Path) -> None:
     manifest = _atomic_component_manifest()
     script = f'''
 {_scm_bootstrap()}
@@ -393,26 +393,29 @@ const before = JSON.stringify({{
   runtime: instance.runtime,
 }});
 const evidenceBefore = McelLabScm.exportEvidence(instance).evidence.length;
-Object.defineProperty(instance, "state", {{
-  configurable: true,
-  enumerable: true,
-  writable: false,
-  value: instance.state,
-}});
-let violation = null;
+let tamperError = null;
 try {{
-  McelLabScm.transition(instance, "mutate");
+  Object.defineProperty(instance, "state", {{
+    configurable: true,
+    enumerable: true,
+    writable: false,
+    value: instance.state,
+  }});
 }} catch (error) {{
-  violation = error.violation;
+  tamperError = {{name: error.name, message: error.message}};
 }}
+const result = McelLabScm.transition(instance, "mutate");
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
-  violation,
-  unchanged: before === JSON.stringify({{
+  tamperError,
+  result,
+  changed: before !== JSON.stringify({{
     source: instance.source,
     state: instance.state,
     runtime: instance.runtime,
   }}),
+  count: instance.state.count,
+  runtimeStatus: instance.runtime.status,
   sameRefs: {{
     source: instance.source === sourceRef,
     state: instance.state === stateRef,
@@ -425,15 +428,17 @@ process.stdout.write(JSON.stringify({{
 '''
     data = _run_node_json(tmp_path, script)
 
-    assert data["violation"]["code"] == "SCM_TRANSITION_EXCEPTION"
-    assert data["violation"]["message"] == "SCM operation cannot commit non-writable state root."
-    assert data["unchanged"] is True
-    assert data["sameRefs"] == {"source": True, "state": True, "runtime": True}
+    assert data["tamperError"]["name"] == "TypeError"
+    assert data["result"]["ok"] is True
+    assert data["changed"] is True
+    assert data["count"] == 1
+    assert data["runtimeStatus"] == "transitioned"
+    assert data["sameRefs"] == {"source": True, "state": False, "runtime": False}
     assert data["evidenceAfter"] == data["evidenceBefore"] + 1
-    assert data["lastCode"] == "SCM_TRANSITION_EXCEPTION"
+    assert data["lastCode"] == ""
 
 
-def test_repair_commit_failure_is_refused_before_runtime_swap(tmp_path: Path) -> None:
+def test_repair_commit_survives_refused_public_root_redefinition(tmp_path: Path) -> None:
     manifest = _atomic_component_manifest()
     script = f'''
 {_scm_bootstrap()}
@@ -446,26 +451,28 @@ const before = JSON.stringify({{
   runtime: instance.runtime,
 }});
 const evidenceBefore = McelLabScm.exportEvidence(instance).evidence.length;
-Object.defineProperty(instance, "runtime", {{
-  configurable: true,
-  enumerable: true,
-  writable: false,
-  value: instance.runtime,
-}});
-let violation = null;
+let tamperError = null;
 try {{
-  McelLabScm.repairComponent(instance, "repair");
+  Object.defineProperty(instance, "runtime", {{
+    configurable: true,
+    enumerable: true,
+    writable: false,
+    value: instance.runtime,
+  }});
 }} catch (error) {{
-  violation = error.violation;
+  tamperError = {{name: error.name, message: error.message}};
 }}
+const result = McelLabScm.repairComponent(instance, "repair");
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
-  violation,
-  unchanged: before === JSON.stringify({{
+  tamperError,
+  result,
+  changed: before !== JSON.stringify({{
     source: instance.source,
     state: instance.state,
     runtime: instance.runtime,
   }}),
+  runtimeStatus: instance.runtime.status,
   sameRuntimeRef: instance.runtime === runtimeRef,
   evidenceBefore,
   evidenceAfter: packet.evidence.length,
@@ -474,9 +481,10 @@ process.stdout.write(JSON.stringify({{
 '''
     data = _run_node_json(tmp_path, script)
 
-    assert data["violation"]["code"] == "SCM_REPAIR_EXCEPTION"
-    assert data["violation"]["message"] == "SCM operation cannot commit non-writable runtime root."
-    assert data["unchanged"] is True
-    assert data["sameRuntimeRef"] is True
-    assert data["evidenceAfter"] == data["evidenceBefore"] + 1
-    assert data["lastCode"] == "SCM_REPAIR_EXCEPTION"
+    assert data["tamperError"]["name"] == "TypeError"
+    assert data["result"]["ok"] is True
+    assert data["changed"] is True
+    assert data["runtimeStatus"] == "repaired"
+    assert data["sameRuntimeRef"] is False
+    assert data["evidenceAfter"] == data["evidenceBefore"] + 2
+    assert data["lastCode"] == ""

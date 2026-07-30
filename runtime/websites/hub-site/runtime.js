@@ -2148,6 +2148,8 @@ var McelLabScm = (() => {
       const CONTRACT_VERSION = "mcel.scm.v1";
       const definitions = new Map();
       const routeDefinitions = new Map();
+      const componentRecords = new WeakMap();
+      const componentDrafts = new WeakSet();
       let nextInstanceId = 1;
       let nextRouteInstanceId = 1;
 
@@ -2210,6 +2212,34 @@ var McelLabScm = (() => {
         seen.add(value);
         Object.keys(value).forEach((key) => deepFreeze(value[key], seen));
         return Object.freeze(value);
+      }
+
+      function componentStorage(instance) {
+        if (componentRecords.has(instance)) return componentRecords.get(instance);
+        if (componentDrafts.has(instance)) return instance;
+        return null;
+      }
+
+      function invalidateComponentSnapshot(instance, root) {
+        const record = componentRecords.get(instance);
+        if (record?.snapshots && Object.prototype.hasOwnProperty.call(record.snapshots, root)) {
+          record.snapshots[root] = null;
+        }
+      }
+
+      function componentSnapshot(instance, root) {
+        const record = componentRecords.get(instance);
+        if (!record) return undefined;
+        if (record.snapshots[root] === null) {
+          record.snapshots[root] = deepFreeze(cloneValue(record[root]));
+        }
+        return record.snapshots[root];
+      }
+
+      function componentEvidence(instance) {
+        const storage = componentStorage(instance);
+        if (storage && Array.isArray(storage.evidence)) return storage.evidence;
+        return Array.isArray(instance?.evidence) ? instance.evidence : null;
       }
 
       function safeString(value) {
@@ -2403,8 +2433,10 @@ var McelLabScm = (() => {
       }
 
       function recordEvidence(instance, entry) {
-        if (!instance || !Array.isArray(instance.evidence)) return entry;
-        instance.evidence.push(jsonSafe(entry));
+        const evidence = componentEvidence(instance);
+        if (!evidence) return entry;
+        evidence.push(jsonSafe(entry));
+        invalidateComponentSnapshot(instance, "evidence");
         return entry;
       }
 
@@ -4718,17 +4750,35 @@ var McelLabScm = (() => {
           }));
         }
 
+        const record = {
+          source: cloneValue(options.source || definition.source || {}),
+          runtime: cloneValue(options.runtime || definition.runtime || {}),
+          state: mergeState(definition.state || {}, options.state),
+          evidence: [],
+          snapshots: {
+            source: null,
+            state: null,
+            runtime: null,
+            evidence: null
+          }
+        };
         const instance = {
           kind: "mcel-scm-component-instance",
           contractVersion: CONTRACT_VERSION,
           id: options.id || `scm-instance-${nextInstanceId++}`,
           componentName,
-          definition,
-          source: cloneValue(options.source || definition.source || {}),
-          runtime: cloneValue(options.runtime || definition.runtime || {}),
-          state: mergeState(definition.state || {}, options.state),
-          evidence: []
+          definition
         };
+        ["source", "state", "runtime", "evidence"].forEach((root) => {
+          Object.defineProperty(instance, root, {
+            configurable: false,
+            enumerable: true,
+            get() {
+              return componentSnapshot(instance, root);
+            }
+          });
+        });
+        componentRecords.set(instance, record);
 
         recordEvidence(instance, {
           kind: "mcel-scm-evidence",
@@ -4740,45 +4790,57 @@ var McelLabScm = (() => {
           instanceId: instance.id
         });
 
-        return instance;
+        return Object.freeze(instance);
       }
 
       function createOperationDraft(instance) {
-        return {
-          ...instance,
-          source: cloneValue(instance.source),
-          runtime: cloneValue(instance.runtime),
-          state: cloneValue(instance.state),
+        const storage = componentStorage(instance);
+        const draft = {
+          kind: instance.kind,
+          contractVersion: instance.contractVersion,
+          id: instance.id,
+          componentName: instance.componentName,
+          definition: instance.definition,
+          source: cloneValue(storage?.source || {}),
+          runtime: cloneValue(storage?.runtime || {}),
+          state: cloneValue(storage?.state || {}),
           evidence: []
         };
-      }
-
-      function assertOperationCommitWritable(instance, roots) {
-        [...roots, "evidence"].forEach((root) => {
-          const descriptor = Object.getOwnPropertyDescriptor(instance, root);
-          const dataPropertyBlocked = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "writable") && descriptor.writable !== true;
-          const accessorBlocked = descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "writable") && typeof descriptor.set !== "function";
-          if (dataPropertyBlocked || accessorBlocked) {
-            throw new Error(`SCM operation cannot commit non-writable ${root} root.`);
-          }
-        });
+        componentDrafts.add(draft);
+        return draft;
       }
 
       function appendOperationEvidence(instance, entry) {
-        const evidence = Array.isArray(instance.evidence) ? instance.evidence.slice() : [];
+        const storage = componentStorage(instance);
+        if (!storage) throw new Error("SCM operation cannot append evidence to an invalid component instance.");
+        const evidence = Array.isArray(storage.evidence) ? storage.evidence.slice() : [];
         evidence.push(jsonSafe(entry));
-        instance.evidence = evidence;
+        storage.evidence = evidence;
+        invalidateComponentSnapshot(instance, "evidence");
         return entry;
       }
 
       function commitOperationDraft(instance, draft, roots = ["source", "state", "runtime"]) {
-        assertOperationCommitWritable(instance, roots);
-        const evidence = Array.isArray(instance.evidence) ? instance.evidence.slice() : [];
+        const storage = componentRecords.get(instance);
+        if (!storage || !componentDrafts.has(draft)) {
+          throw new Error("SCM operation cannot commit without a canonical instance and operation draft.");
+        }
+        const evidence = Array.isArray(storage.evidence) ? storage.evidence.slice() : [];
         draft.evidence.forEach((entry) => evidence.push(jsonSafe(entry)));
+        const replacements = {};
         roots.forEach((root) => {
-          instance[root] = draft[root];
+          replacements[root] = cloneValue(draft[root]);
         });
-        instance.evidence = evidence;
+        roots.forEach((root) => {
+          const beforeJson = JSON.stringify(jsonSafe(storage[root]));
+          const afterJson = JSON.stringify(jsonSafe(replacements[root]));
+          if (beforeJson !== afterJson) {
+            storage[root] = replacements[root];
+            invalidateComponentSnapshot(instance, root);
+          }
+        });
+        storage.evidence = evidence;
+        invalidateComponentSnapshot(instance, "evidence");
       }
 
       function rethrowOperationFailure(instance, error, fallbackCode, details = {}) {
@@ -4799,6 +4861,8 @@ var McelLabScm = (() => {
       }
 
       function dataRoot(instance, root) {
+        const storage = componentStorage(instance);
+        if (storage) return storage[root];
         if (root === "source") return instance.source;
         if (root === "runtime") return instance.runtime;
         return instance.state;
@@ -4825,7 +4889,8 @@ var McelLabScm = (() => {
           cursor = cursor[part];
         }
         cursor[parts[parts.length - 1]] = cloneValue(value);
-        return cursor[parts[parts.length - 1]];
+        invalidateComponentSnapshot(instance, parts[0]);
+        return cloneValue(cursor[parts[parts.length - 1]]);
       }
 
       function deleteRaw(instance, path) {
@@ -4838,6 +4903,7 @@ var McelLabScm = (() => {
         }
         if (cursor && Object.prototype.hasOwnProperty.call(cursor, parts[parts.length - 1])) {
           delete cursor[parts[parts.length - 1]];
+          invalidateComponentSnapshot(instance, parts[0]);
           return true;
         }
         return false;
@@ -5220,7 +5286,11 @@ var McelLabScm = (() => {
       }
 
       function assertComponentInstance(instance, phase, details = {}) {
-        if (!instance || instance.kind !== "mcel-scm-component-instance") {
+        if (
+          !instance
+          || instance.kind !== "mcel-scm-component-instance"
+          || (!componentRecords.has(instance) && !componentDrafts.has(instance))
+        ) {
           throwViolation(violation("SCM_INVALID_INSTANCE", {
             phase,
             transitionName: safeString(details.transitionName),
@@ -6245,13 +6315,14 @@ var McelLabScm = (() => {
       }
 
       function exportEvidence(instance) {
+        const evidence = componentEvidence(instance);
         return {
           kind: "mcel-scm-evidence-packet",
           contractVersion: CONTRACT_VERSION,
           generatedAt: now(),
           componentName: instance?.componentName || "",
           instanceId: instance?.id || "",
-          evidence: Array.isArray(instance?.evidence) ? instance.evidence.map((entry) => jsonSafe(entry)) : []
+          evidence: evidence ? evidence.map((entry) => jsonSafe(entry)) : []
         };
       }
 

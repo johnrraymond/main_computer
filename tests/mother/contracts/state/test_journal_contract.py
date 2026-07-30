@@ -379,6 +379,7 @@ def _prepared_replay(journal, tmp_path: Path, *, operation: OperationIdentity):
         _hash("birth-intent"),
         (),
     )
+    construction_operation = _operation("MOTHER-OP-ADD-NODE")
     checkpoint_entry = checkpoints.build_checkpoint_entry_bytes(
         checkpoints.CheckpointEntryBuildRequest(
             "network-journal",
@@ -388,7 +389,7 @@ def _prepared_replay(journal, tmp_path: Path, *, operation: OperationIdentity):
             "2026-07-29T14:16:21Z",
         ),
         None,
-        operation=operation,
+        operation=construction_operation,
     )
     bundle_one = canonical_json({"entry": 1, "authorized": True})
     ref_one = journal.JournalEntryRef(

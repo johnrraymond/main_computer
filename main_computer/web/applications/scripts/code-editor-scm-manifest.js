@@ -230,6 +230,7 @@ var McelCodeStudioScm = (() => {
         state: defaultState(),
 
         outputs: [
+          "liveSurfaceSynchronized",
           "fileOpened",
           "draftEdited",
           "draftCommitted",
@@ -543,6 +544,66 @@ var McelCodeStudioScm = (() => {
         },
 
         transitions: {
+          syncLiveSurface: {
+            reads: [
+              "state.openTabs",
+              "state.activeFileId",
+              "runtime.workbench.shell",
+              "runtime.loadedFile"
+            ],
+            writes: [
+              "source.workspace.manifest",
+              "source.workspace.files",
+              "state.activeFileId",
+              "state.openTabs",
+              "state.selectedPanel",
+              "state.bottomDockExpanded",
+              "state.dirty",
+              "runtime.loadedFile",
+              "runtime.workbench.shell"
+            ],
+            emits: [
+              "liveSurfaceSynchronized"
+            ],
+            pre(_ctx, event) {
+              return Boolean(event?.source?.workspace)
+                && Array.isArray(event.source.workspace.files);
+            },
+            apply(ctx, event) {
+              const workspace = event.source.workspace;
+              const activeFileId = event.activeFileId || null;
+              const openTabs = ctx.get("state.openTabs") || [];
+              const shell = ctx.get("runtime.workbench.shell") || {};
+              ctx.set("source.workspace.manifest", workspace.manifest || {});
+              ctx.set("source.workspace.files", workspace.files);
+              ctx.set("state.activeFileId", activeFileId);
+              ctx.set("state.openTabs", Array.from(new Set([
+                ...openTabs,
+                activeFileId
+              ].filter(Boolean))));
+              ctx.set("state.selectedPanel", event.selectedPanel || "source");
+              ctx.set("state.bottomDockExpanded", event.bottomDockExpanded === true);
+              ctx.set("state.dirty", event.dirty === true);
+              ctx.set(
+                "runtime.loadedFile",
+                workspace.files.find((file) => file.id === activeFileId) || null
+              );
+              ctx.set("runtime.workbench.shell", {
+                ...shell,
+                mounted: event.shell?.mounted === true,
+                damaged: event.shell?.damaged === true,
+                selectedPath: event.shell?.selectedPath || null
+              });
+            },
+            post(ctx) {
+              const activeFileId = ctx.get("state.activeFileId");
+              const openTabs = ctx.get("state.openTabs") || [];
+              const loadedFile = ctx.get("runtime.loadedFile");
+              return !activeFileId
+                || (openTabs.includes(activeFileId) && loadedFile?.id === activeFileId);
+            }
+          },
+
           openFile: {
             reads: [
               "source.workspace.files",

@@ -8510,10 +8510,80 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         reason
       });
       const nextTxDraft = mcelTinyContractApplyTxDraftFreshness(instance.runtime.txDraft, freshness);
-      instance.runtime.txDraft = nextTxDraft;
-      instance.runtime.txDraftIdentity = nextTxDraft.identityEnvelope || nextTxDraft.txDraftIdentity || instance.runtime.txDraftIdentity || null;
-      instance.runtime.txDraftValidity = freshness.validityEnvelope || nextTxDraft.validityEnvelope || null;
+      window.McelLabScm.runEffect(instance, "scm.enforceTxDraftProvenance", {
+        txDraft: nextTxDraft,
+        txDraftIdentity: nextTxDraft.identityEnvelope || nextTxDraft.txDraftIdentity || instance.runtime.txDraftIdentity || null,
+        txDraftValidity: freshness.validityEnvelope || nextTxDraft.validityEnvelope || null,
+        reason
+      });
       return {freshness, txDraft: nextTxDraft};
+    }
+
+    function mcelTinyContractWalletBoundaryRuntimeProjection(boundary = {}) {
+      return {
+        walletCommitBoundary: boundary,
+        walletSmokeRegressionGuard: boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || null,
+        wallet19dProofSurfaceAlignment: boundary.wallet19dProofSurfaceAlignment || null,
+        wallet19eNegativePathRegression: boundary.wallet19eNegativePathRegression || null,
+        wallet20aUnlockContract: boundary.wallet20aUnlockContract || null,
+        wallet20bSignedIntentUnlock: boundary.wallet20bSignedIntentUnlock || null,
+        walletSignedIntentUnlock: boundary.walletSignedIntentUnlock || boundary.wallet20bSignedIntentUnlock || null,
+        wallet20cSignatureRequestPreflight: boundary.wallet20cSignatureRequestPreflight || null,
+        walletSignatureRequestPreflight: boundary.walletSignatureRequestPreflight || boundary.wallet20cSignatureRequestPreflight || null,
+        wallet20dProviderIntentSignature: boundary.wallet20dProviderIntentSignature || null,
+        walletProviderIntentSignature: boundary.walletProviderIntentSignature || boundary.wallet20dProviderIntentSignature || null,
+        wallet20eSignedIntentVerification: boundary.wallet20eSignedIntentVerification || null,
+        walletSignedIntentVerification: boundary.walletSignedIntentVerification || boundary.wallet20eSignedIntentVerification || null,
+        wallet20fPreSendReviewGate: boundary.wallet20fPreSendReviewGate || null,
+        walletPreSendReviewGate: boundary.walletPreSendReviewGate || boundary.wallet20fPreSendReviewGate || null,
+        wallet20gProviderIntentHardening: boundary.wallet20gProviderIntentHardening || null,
+        walletProviderIntentHardening: boundary.walletProviderIntentHardening || boundary.wallet20gProviderIntentHardening || null,
+        wallet21aPolicyBoundSendGate: boundary.wallet21aPolicyBoundSendGate || null,
+        walletTransactionSendGate: boundary.walletTransactionSendGate || boundary.wallet21aPolicyBoundSendGate || null,
+        wallet21bProviderOutcomeLedger: boundary.wallet21bProviderOutcomeLedger || null,
+        walletProviderOutcomeLedger: boundary.walletProviderOutcomeLedger || boundary.wallet21bProviderOutcomeLedger || null,
+        wallet21cTransactionWatcher: boundary.wallet21cTransactionWatcher || null,
+        walletTransactionWatcher: boundary.walletTransactionWatcher || boundary.wallet21cTransactionWatcher || null,
+        wallet21dRetryRecoverySafety: boundary.wallet21dRetryRecoverySafety || null,
+        walletRetryRecoverySafety: boundary.walletRetryRecoverySafety || boundary.wallet21dRetryRecoverySafety || null,
+        wallet21ePostConfirmationMcelReceiptIntegration: boundary.wallet21ePostConfirmationMcelReceiptIntegration || null,
+        walletPostConfirmationReceiptIntegration: boundary.walletPostConfirmationReceiptIntegration || boundary.wallet21ePostConfirmationMcelReceiptIntegration || null,
+        wallet21fRelockResetLifecycle: boundary.wallet21fRelockResetLifecycle || null,
+        walletRelockResetLifecycle: boundary.walletRelockResetLifecycle || boundary.wallet21fRelockResetLifecycle || null,
+        wallet22aNetworkExecutionPolicyRegistry: boundary.wallet22aNetworkExecutionPolicyRegistry || null,
+        walletNetworkExecutionPolicyRegistry: boundary.walletNetworkExecutionPolicyRegistry || boundary.wallet22aNetworkExecutionPolicyRegistry || null,
+        wallet22aNetworkExecutionPolicyDecision: boundary.wallet22aNetworkExecutionPolicyDecision || null,
+        walletNetworkExecutionPolicyDecision: boundary.walletNetworkExecutionPolicyDecision || boundary.wallet22aNetworkExecutionPolicyDecision || null,
+        wallet22aNetworkExecutionPolicyReceipt: boundary.wallet22aNetworkExecutionPolicyReceipt || null,
+        walletNetworkExecutionPolicyReceipt: boundary.walletNetworkExecutionPolicyReceipt || boundary.wallet22aNetworkExecutionPolicyReceipt || null,
+        wallet22bPolicyProfileImportSurface: boundary.wallet22bPolicyProfileImportSurface || null,
+        walletPolicyProfileImportSurface: boundary.walletPolicyProfileImportSurface || boundary.wallet22bPolicyProfileImportSurface || null,
+        wallet22cTargetRegistryContractBinding: boundary.wallet22cTargetRegistryContractBinding || null,
+        walletTargetRegistryContractBinding: boundary.walletTargetRegistryContractBinding || boundary.wallet22cTargetRegistryContractBinding || null,
+        wallet22dProductionPolicyHardening: boundary.wallet22dProductionPolicyHardening || null,
+        walletProductionPolicyHardening: boundary.walletProductionPolicyHardening || boundary.wallet22dProductionPolicyHardening || null,
+        wallet22ePolicyActivationRevocationLifecycle: boundary.wallet22ePolicyActivationRevocationLifecycle || null,
+        walletPolicyActivationRevocationLifecycle: boundary.walletPolicyActivationRevocationLifecycle || boundary.wallet22ePolicyActivationRevocationLifecycle || null,
+        wallet22fPolicyBoundExecutionReadinessSurface: boundary.wallet22fPolicyBoundExecutionReadinessSurface || null,
+        walletPolicyBoundExecutionReadinessSurface: boundary.walletPolicyBoundExecutionReadinessSurface || boundary.wallet22fPolicyBoundExecutionReadinessSurface || null,
+        wallet23aLiveNetworkExecutionPolish: boundary.wallet23aLiveNetworkExecutionPolish || null,
+        walletLiveNetworkExecutionPolish: boundary.walletLiveNetworkExecutionPolish || boundary.wallet23aLiveNetworkExecutionPolish || null,
+        wallet23bTransactionObserver: boundary.wallet23bTransactionObserver || null,
+        walletTransactionFinalityObserver: boundary.walletTransactionFinalityObserver || boundary.wallet23bTransactionObserver || null,
+        wallet23cSafeRecoveryPlanner: boundary.wallet23cSafeRecoveryPlanner || null,
+        walletSafeRecoveryPlanner: boundary.walletSafeRecoveryPlanner || boundary.wallet23cSafeRecoveryPlanner || null,
+        wallet23dExecutionAuditExport: boundary.wallet23dExecutionAuditExport || null,
+        walletExecutionAuditExport: boundary.walletExecutionAuditExport || boundary.wallet23dExecutionAuditExport || null,
+        walletUnlockContract: boundary.walletUnlockContract || boundary.wallet20aUnlockContract || null
+      };
+    }
+
+    function mcelTinyContractProjectWalletBoundary(instance, boundary, reason = "wallet-boundary-projection") {
+      if (!instance || !window.McelLabScm?.runEffect) return null;
+      return window.McelLabScm.runEffect(instance, "scm.projectWalletBoundary", {
+        boundary,
+        reason
+      });
     }
 
     function mcelTinyContractTxDraftConsumerGate({txDraft = {}, freshness = {}, consumer = "runtime.txDraft.consumer"} = {}) {
@@ -9428,6 +9498,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "devWalletConsole"
           ],
           effects: [
+            "scm.enforceTxDraftProvenance",
+            "scm.projectWalletBoundary",
             "wallet.connect",
             "wallet.connect.authorizationPending",
             "wallet.disconnect.pending",
@@ -9479,6 +9551,119 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           "serialized"
         ],
         effects: {
+          "scm.enforceTxDraftProvenance": {
+            kind: "internal-runtime-provenance-effect",
+            triggers: ["runtime.txDraft"],
+            reads: [],
+            writes: ["runtime.txDraft", "runtime.txDraftIdentity", "runtime.txDraftValidity"],
+            external: {
+              resource: "scm-runtime",
+              operation: "enforce-tx-draft-provenance"
+            },
+            errorPolicy: {
+              onFailure: "preserve-current-runtime"
+            },
+            run(ctx, payload = {}) {
+              ctx.set("runtime.txDraft", payload.txDraft || null);
+              ctx.set("runtime.txDraftIdentity", payload.txDraftIdentity || null);
+              ctx.set("runtime.txDraftValidity", payload.txDraftValidity || null);
+              ctx.evidence({
+                ok: true,
+                reason: payload.reason || "runtime-provenance-enforcement",
+                message: "Transaction-draft provenance was projected through a declared SCM runtime effect."
+              });
+              return {
+                reason: payload.reason || "runtime-provenance-enforcement",
+                txDraftStatus: payload.txDraft?.status || "empty",
+                validityStatus: payload.txDraftValidity?.status || "not-observed"
+              };
+            }
+          },
+          "scm.projectWalletBoundary": {
+            kind: "internal-runtime-proof-projection-effect",
+            triggers: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+            reads: [],
+            writes: [
+              "runtime.walletCommitBoundary",
+              "runtime.walletSmokeRegressionGuard",
+              "runtime.wallet19dProofSurfaceAlignment",
+              "runtime.wallet19eNegativePathRegression",
+              "runtime.wallet20aUnlockContract",
+              "runtime.wallet20bSignedIntentUnlock",
+              "runtime.walletSignedIntentUnlock",
+              "runtime.wallet20cSignatureRequestPreflight",
+              "runtime.walletSignatureRequestPreflight",
+              "runtime.wallet20dProviderIntentSignature",
+              "runtime.walletProviderIntentSignature",
+              "runtime.wallet20eSignedIntentVerification",
+              "runtime.walletSignedIntentVerification",
+              "runtime.wallet20fPreSendReviewGate",
+              "runtime.walletPreSendReviewGate",
+              "runtime.wallet20gProviderIntentHardening",
+              "runtime.walletProviderIntentHardening",
+              "runtime.wallet21aPolicyBoundSendGate",
+              "runtime.walletTransactionSendGate",
+              "runtime.wallet21bProviderOutcomeLedger",
+              "runtime.walletProviderOutcomeLedger",
+              "runtime.wallet21cTransactionWatcher",
+              "runtime.walletTransactionWatcher",
+              "runtime.wallet21dRetryRecoverySafety",
+              "runtime.walletRetryRecoverySafety",
+              "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+              "runtime.walletPostConfirmationReceiptIntegration",
+              "runtime.wallet21fRelockResetLifecycle",
+              "runtime.walletRelockResetLifecycle",
+              "runtime.wallet22aNetworkExecutionPolicyRegistry",
+              "runtime.walletNetworkExecutionPolicyRegistry",
+              "runtime.wallet22aNetworkExecutionPolicyDecision",
+              "runtime.walletNetworkExecutionPolicyDecision",
+              "runtime.wallet22aNetworkExecutionPolicyReceipt",
+              "runtime.walletNetworkExecutionPolicyReceipt",
+              "runtime.wallet22bPolicyProfileImportSurface",
+              "runtime.walletPolicyProfileImportSurface",
+              "runtime.wallet22cTargetRegistryContractBinding",
+              "runtime.walletTargetRegistryContractBinding",
+              "runtime.wallet22dProductionPolicyHardening",
+              "runtime.walletProductionPolicyHardening",
+              "runtime.wallet22ePolicyActivationRevocationLifecycle",
+              "runtime.walletPolicyActivationRevocationLifecycle",
+              "runtime.wallet22fPolicyBoundExecutionReadinessSurface",
+              "runtime.walletPolicyBoundExecutionReadinessSurface",
+              "runtime.wallet23aLiveNetworkExecutionPolish",
+              "runtime.walletLiveNetworkExecutionPolish",
+              "runtime.wallet23bTransactionObserver",
+              "runtime.walletTransactionFinalityObserver",
+              "runtime.wallet23cSafeRecoveryPlanner",
+              "runtime.walletSafeRecoveryPlanner",
+              "runtime.wallet23dExecutionAuditExport",
+              "runtime.walletExecutionAuditExport",
+              "runtime.walletUnlockContract"
+            ],
+            external: {
+              resource: "scm-runtime",
+              operation: "project-wallet-boundary"
+            },
+            errorPolicy: {
+              onFailure: "preserve-current-runtime"
+            },
+            run(ctx, payload = {}) {
+              const projection = mcelTinyContractWalletBoundaryRuntimeProjection(payload.boundary || {});
+              Object.entries(projection).forEach(([path, value]) => {
+                ctx.set(`runtime.${path}`, value);
+              });
+              ctx.evidence({
+                ok: true,
+                reason: payload.reason || "wallet-boundary-projection",
+                projectedPaths: Object.keys(projection),
+                message: "Wallet proof boundary was projected through declared SCM-owned runtime paths."
+              });
+              return {
+                reason: payload.reason || "wallet-boundary-projection",
+                status: payload.boundary?.status || "locked",
+                projectedPathCount: Object.keys(projection).length
+              };
+            }
+          },
           "wallet.connect": {
             kind: "external-wallet-effect",
             triggers: ["state.walletGate"],
@@ -13106,62 +13291,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         reason,
         simulation: tinyState.walletStaleSimulation || null
       });
-      if (instance?.runtime) {
-        instance.runtime.walletCommitBoundary = boundary;
-        instance.runtime.walletSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || null;
-        instance.runtime.wallet19dProofSurfaceAlignment = boundary.wallet19dProofSurfaceAlignment || null;
-        instance.runtime.wallet19eNegativePathRegression = boundary.wallet19eNegativePathRegression || null;
-        instance.runtime.wallet20aUnlockContract = boundary.wallet20aUnlockContract || null;
-        instance.runtime.wallet20bSignedIntentUnlock = boundary.wallet20bSignedIntentUnlock || null;
-        instance.runtime.walletSignedIntentUnlock = boundary.walletSignedIntentUnlock || boundary.wallet20bSignedIntentUnlock || null;
-        instance.runtime.wallet20cSignatureRequestPreflight = boundary.wallet20cSignatureRequestPreflight || null;
-        instance.runtime.walletSignatureRequestPreflight = boundary.walletSignatureRequestPreflight || boundary.wallet20cSignatureRequestPreflight || null;
-        instance.runtime.wallet20dProviderIntentSignature = boundary.wallet20dProviderIntentSignature || null;
-        instance.runtime.walletProviderIntentSignature = boundary.walletProviderIntentSignature || boundary.wallet20dProviderIntentSignature || null;
-        instance.runtime.wallet20eSignedIntentVerification = boundary.wallet20eSignedIntentVerification || null;
-        instance.runtime.walletSignedIntentVerification = boundary.walletSignedIntentVerification || boundary.wallet20eSignedIntentVerification || null;
-        instance.runtime.wallet20fPreSendReviewGate = boundary.wallet20fPreSendReviewGate || null;
-        instance.runtime.walletPreSendReviewGate = boundary.walletPreSendReviewGate || boundary.wallet20fPreSendReviewGate || null;
-        instance.runtime.wallet20gProviderIntentHardening = boundary.wallet20gProviderIntentHardening || null;
-        instance.runtime.walletProviderIntentHardening = boundary.walletProviderIntentHardening || boundary.wallet20gProviderIntentHardening || null;
-        instance.runtime.wallet21aPolicyBoundSendGate = boundary.wallet21aPolicyBoundSendGate || null;
-        instance.runtime.walletTransactionSendGate = boundary.walletTransactionSendGate || boundary.wallet21aPolicyBoundSendGate || null;
-        instance.runtime.wallet21bProviderOutcomeLedger = boundary.wallet21bProviderOutcomeLedger || null;
-        instance.runtime.walletProviderOutcomeLedger = boundary.walletProviderOutcomeLedger || boundary.wallet21bProviderOutcomeLedger || null;
-        instance.runtime.wallet21cTransactionWatcher = boundary.wallet21cTransactionWatcher || null;
-        instance.runtime.walletTransactionWatcher = boundary.walletTransactionWatcher || boundary.wallet21cTransactionWatcher || null;
-        instance.runtime.wallet21dRetryRecoverySafety = boundary.wallet21dRetryRecoverySafety || null;
-        instance.runtime.walletRetryRecoverySafety = boundary.walletRetryRecoverySafety || boundary.wallet21dRetryRecoverySafety || null;
-        instance.runtime.wallet21ePostConfirmationMcelReceiptIntegration = boundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
-        instance.runtime.walletPostConfirmationReceiptIntegration = boundary.walletPostConfirmationReceiptIntegration || boundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
-        instance.runtime.wallet21fRelockResetLifecycle = boundary.wallet21fRelockResetLifecycle || null;
-        instance.runtime.walletRelockResetLifecycle = boundary.walletRelockResetLifecycle || boundary.wallet21fRelockResetLifecycle || null;
-        instance.runtime.wallet22aNetworkExecutionPolicyRegistry = boundary.wallet22aNetworkExecutionPolicyRegistry || null;
-        instance.runtime.walletNetworkExecutionPolicyRegistry = boundary.walletNetworkExecutionPolicyRegistry || boundary.wallet22aNetworkExecutionPolicyRegistry || null;
-        instance.runtime.wallet22aNetworkExecutionPolicyDecision = boundary.wallet22aNetworkExecutionPolicyDecision || null;
-        instance.runtime.walletNetworkExecutionPolicyDecision = boundary.walletNetworkExecutionPolicyDecision || boundary.wallet22aNetworkExecutionPolicyDecision || null;
-        instance.runtime.wallet22aNetworkExecutionPolicyReceipt = boundary.wallet22aNetworkExecutionPolicyReceipt || null;
-        instance.runtime.walletNetworkExecutionPolicyReceipt = boundary.walletNetworkExecutionPolicyReceipt || boundary.wallet22aNetworkExecutionPolicyReceipt || null;
-        instance.runtime.wallet22bPolicyProfileImportSurface = boundary.wallet22bPolicyProfileImportSurface || null;
-        instance.runtime.walletPolicyProfileImportSurface = boundary.walletPolicyProfileImportSurface || boundary.wallet22bPolicyProfileImportSurface || null;
-        instance.runtime.wallet22cTargetRegistryContractBinding = boundary.wallet22cTargetRegistryContractBinding || null;
-        instance.runtime.walletTargetRegistryContractBinding = boundary.walletTargetRegistryContractBinding || boundary.wallet22cTargetRegistryContractBinding || null;
-        instance.runtime.wallet22dProductionPolicyHardening = boundary.wallet22dProductionPolicyHardening || null;
-        instance.runtime.walletProductionPolicyHardening = boundary.walletProductionPolicyHardening || boundary.wallet22dProductionPolicyHardening || null;
-        instance.runtime.wallet22ePolicyActivationRevocationLifecycle = boundary.wallet22ePolicyActivationRevocationLifecycle || null;
-        instance.runtime.walletPolicyActivationRevocationLifecycle = boundary.walletPolicyActivationRevocationLifecycle || boundary.wallet22ePolicyActivationRevocationLifecycle || null;
-        instance.runtime.wallet22fPolicyBoundExecutionReadinessSurface = boundary.wallet22fPolicyBoundExecutionReadinessSurface || null;
-        instance.runtime.walletPolicyBoundExecutionReadinessSurface = boundary.walletPolicyBoundExecutionReadinessSurface || boundary.wallet22fPolicyBoundExecutionReadinessSurface || null;
-        instance.runtime.wallet23aLiveNetworkExecutionPolish = boundary.wallet23aLiveNetworkExecutionPolish || null;
-        instance.runtime.walletLiveNetworkExecutionPolish = boundary.walletLiveNetworkExecutionPolish || boundary.wallet23aLiveNetworkExecutionPolish || null;
-        instance.runtime.wallet23bTransactionObserver = boundary.wallet23bTransactionObserver || null;
-        instance.runtime.walletTransactionFinalityObserver = boundary.walletTransactionFinalityObserver || boundary.wallet23bTransactionObserver || null;
-        instance.runtime.wallet23cSafeRecoveryPlanner = boundary.wallet23cSafeRecoveryPlanner || null;
-        instance.runtime.walletSafeRecoveryPlanner = boundary.walletSafeRecoveryPlanner || boundary.wallet23cSafeRecoveryPlanner || null;
-        instance.runtime.wallet23dExecutionAuditExport = boundary.wallet23dExecutionAuditExport || null;
-        instance.runtime.walletExecutionAuditExport = boundary.walletExecutionAuditExport || boundary.wallet23dExecutionAuditExport || null;
-        instance.runtime.walletUnlockContract = boundary.walletUnlockContract || boundary.wallet20aUnlockContract || null;
-      }
+      mcelTinyContractProjectWalletBoundary(instance, boundary, reason);
       tinyState.lastWalletCommitBoundary = boundary;
       if (boundary.mcelCommitReceipt) {
         tinyState.commitBoundaryReceipts = [
@@ -13566,54 +13696,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         reason: "render-wallet-tool",
         simulation: tinyState.walletStaleSimulation || null
       });
-      if (instance?.runtime) {
-        instance.runtime.walletCommitBoundary = commitBoundary;
-        instance.runtime.walletSmokeRegressionGuard = commitBoundary.wallet19aSmokeRegressionGuard || commitBoundary.walletSmokeRegressionGuard || null;
-        instance.runtime.wallet19dProofSurfaceAlignment = commitBoundary.wallet19dProofSurfaceAlignment || null;
-        instance.runtime.wallet19eNegativePathRegression = commitBoundary.wallet19eNegativePathRegression || null;
-        instance.runtime.wallet20aUnlockContract = commitBoundary.wallet20aUnlockContract || null;
-        instance.runtime.wallet20bSignedIntentUnlock = commitBoundary.wallet20bSignedIntentUnlock || null;
-        instance.runtime.walletSignedIntentUnlock = commitBoundary.walletSignedIntentUnlock || commitBoundary.wallet20bSignedIntentUnlock || null;
-        instance.runtime.wallet20cSignatureRequestPreflight = commitBoundary.wallet20cSignatureRequestPreflight || null;
-        instance.runtime.walletSignatureRequestPreflight = commitBoundary.walletSignatureRequestPreflight || commitBoundary.wallet20cSignatureRequestPreflight || null;
-        instance.runtime.wallet20dProviderIntentSignature = commitBoundary.wallet20dProviderIntentSignature || null;
-        instance.runtime.walletProviderIntentSignature = commitBoundary.walletProviderIntentSignature || commitBoundary.wallet20dProviderIntentSignature || null;
-        instance.runtime.wallet20eSignedIntentVerification = commitBoundary.wallet20eSignedIntentVerification || null;
-        instance.runtime.walletSignedIntentVerification = commitBoundary.walletSignedIntentVerification || commitBoundary.wallet20eSignedIntentVerification || null;
-        instance.runtime.wallet20fPreSendReviewGate = commitBoundary.wallet20fPreSendReviewGate || null;
-        instance.runtime.walletPreSendReviewGate = commitBoundary.walletPreSendReviewGate || commitBoundary.wallet20fPreSendReviewGate || null;
-        instance.runtime.wallet20gProviderIntentHardening = commitBoundary.wallet20gProviderIntentHardening || null;
-        instance.runtime.walletProviderIntentHardening = commitBoundary.walletProviderIntentHardening || commitBoundary.wallet20gProviderIntentHardening || null;
-        instance.runtime.wallet21aPolicyBoundSendGate = commitBoundary.wallet21aPolicyBoundSendGate || null;
-        instance.runtime.walletTransactionSendGate = commitBoundary.walletTransactionSendGate || commitBoundary.wallet21aPolicyBoundSendGate || null;
-        instance.runtime.wallet21bProviderOutcomeLedger = commitBoundary.wallet21bProviderOutcomeLedger || null;
-        instance.runtime.walletProviderOutcomeLedger = commitBoundary.walletProviderOutcomeLedger || commitBoundary.wallet21bProviderOutcomeLedger || null;
-        instance.runtime.wallet21cTransactionWatcher = commitBoundary.wallet21cTransactionWatcher || null;
-        instance.runtime.walletTransactionWatcher = commitBoundary.walletTransactionWatcher || commitBoundary.wallet21cTransactionWatcher || null;
-        instance.runtime.wallet21dRetryRecoverySafety = commitBoundary.wallet21dRetryRecoverySafety || null;
-        instance.runtime.walletRetryRecoverySafety = commitBoundary.walletRetryRecoverySafety || commitBoundary.wallet21dRetryRecoverySafety || null;
-        instance.runtime.wallet21ePostConfirmationMcelReceiptIntegration = commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
-        instance.runtime.walletPostConfirmationReceiptIntegration = commitBoundary.walletPostConfirmationReceiptIntegration || commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
-        instance.runtime.wallet21fRelockResetLifecycle = commitBoundary.wallet21fRelockResetLifecycle || null;
-        instance.runtime.walletRelockResetLifecycle = commitBoundary.walletRelockResetLifecycle || commitBoundary.wallet21fRelockResetLifecycle || null;
-        instance.runtime.wallet22aNetworkExecutionPolicyRegistry = commitBoundary.wallet22aNetworkExecutionPolicyRegistry || null;
-        instance.runtime.walletNetworkExecutionPolicyRegistry = commitBoundary.walletNetworkExecutionPolicyRegistry || commitBoundary.wallet22aNetworkExecutionPolicyRegistry || null;
-        instance.runtime.wallet22aNetworkExecutionPolicyDecision = commitBoundary.wallet22aNetworkExecutionPolicyDecision || null;
-        instance.runtime.walletNetworkExecutionPolicyDecision = commitBoundary.walletNetworkExecutionPolicyDecision || commitBoundary.wallet22aNetworkExecutionPolicyDecision || null;
-        instance.runtime.wallet22aNetworkExecutionPolicyReceipt = commitBoundary.wallet22aNetworkExecutionPolicyReceipt || null;
-        instance.runtime.walletNetworkExecutionPolicyReceipt = commitBoundary.walletNetworkExecutionPolicyReceipt || commitBoundary.wallet22aNetworkExecutionPolicyReceipt || null;
-        instance.runtime.wallet22bPolicyProfileImportSurface = commitBoundary.wallet22bPolicyProfileImportSurface || null;
-        instance.runtime.walletPolicyProfileImportSurface = commitBoundary.walletPolicyProfileImportSurface || commitBoundary.wallet22bPolicyProfileImportSurface || null;
-        instance.runtime.wallet22cTargetRegistryContractBinding = commitBoundary.wallet22cTargetRegistryContractBinding || null;
-        instance.runtime.walletTargetRegistryContractBinding = commitBoundary.walletTargetRegistryContractBinding || commitBoundary.wallet22cTargetRegistryContractBinding || null;
-        instance.runtime.wallet22dProductionPolicyHardening = commitBoundary.wallet22dProductionPolicyHardening || null;
-        instance.runtime.walletProductionPolicyHardening = commitBoundary.walletProductionPolicyHardening || commitBoundary.wallet22dProductionPolicyHardening || null;
-        instance.runtime.wallet22ePolicyActivationRevocationLifecycle = commitBoundary.wallet22ePolicyActivationRevocationLifecycle || null;
-        instance.runtime.walletPolicyActivationRevocationLifecycle = commitBoundary.walletPolicyActivationRevocationLifecycle || commitBoundary.wallet22ePolicyActivationRevocationLifecycle || null;
-        instance.runtime.wallet22fPolicyBoundExecutionReadinessSurface = commitBoundary.wallet22fPolicyBoundExecutionReadinessSurface || null;
-        instance.runtime.walletPolicyBoundExecutionReadinessSurface = commitBoundary.walletPolicyBoundExecutionReadinessSurface || commitBoundary.wallet22fPolicyBoundExecutionReadinessSurface || null;
-        instance.runtime.walletUnlockContract = commitBoundary.walletUnlockContract || commitBoundary.wallet20aUnlockContract || null;
-      }
+      mcelTinyContractProjectWalletBoundary(instance, commitBoundary, "render-wallet-tool");
       tinyState.lastWalletCommitBoundary = commitBoundary;
       if (commitBoundary.mcelCommitReceipt) {
         tinyState.commitBoundaryReceipts = [
@@ -16561,10 +16644,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         request: selectedMcelTinyContractItem(instance),
         reason: `render-proof:${reason}`
       });
-      if (instance?.runtime) {
-        instance.runtime.walletCommitBoundary = walletCommitBoundary;
-        instance.runtime.walletSmokeRegressionGuard = walletCommitBoundary.wallet19aSmokeRegressionGuard || walletCommitBoundary.walletSmokeRegressionGuard || null;
-      }
+      mcelTinyContractProjectWalletBoundary(instance, walletCommitBoundary, `render-proof:${reason}`);
       tinyState.lastWalletCommitBoundary = walletCommitBoundary;
       if (walletCommitBoundary.mcelCommitReceipt) {
         tinyState.commitBoundaryReceipts = [

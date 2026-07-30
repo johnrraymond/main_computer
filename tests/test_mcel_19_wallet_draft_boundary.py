@@ -155,8 +155,9 @@ def test_19c_txdraft_validity_enforces_stale_and_invalid_contexts() -> None:
 
     enforce_index = lab.index("function mcelTinyContractEnforceTxDraftProvenance")
     enforce_block = lab[enforce_index:enforce_index + 1500]
-    assert "instance.runtime.txDraftValidity" in enforce_block
-    assert "instance.runtime.txDraftIdentity" in enforce_block
+    assert 'runEffect(instance, "scm.enforceTxDraftProvenance"' in enforce_block
+    assert "txDraftValidity:" in enforce_block
+    assert "txDraftIdentity:" in enforce_block
 
     assert lab.index("function mcelTinyContractTxDraftIdentityEnvelope") < lab.index("function mcelTinyContractTxDraftValidityEnvelope")
 

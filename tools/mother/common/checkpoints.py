@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib as _importlib
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,10 @@ _AUTHORITY_SUPPORTED_KINDS = frozenset(
     {"initial-network-birth", "authoritative-rectification"}
 )
 _RECOGNIZED_KINDS = _AUTHORITY_SUPPORTED_KINDS | {"routine"}
+_CHECKPOINT_CONSTRUCTION_OPERATIONS = {
+    "initial-network-birth": "MOTHER-OP-ADD-NODE",
+    "authoritative-rectification": "MOTHER-OP-RESEAL-STATE",
+}
 _FORBIDDEN_EVENT_KEYS = frozenset(
     {
         "authorization_bundle_hash",
@@ -102,6 +107,17 @@ def _open_routine(operation: OperationIdentity) -> MotherError:
         "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY",
         "routine checkpoint authority is not closed in this slice",
     )
+
+
+def _require_public_issuer(public_name: str, proof_name: str) -> None:
+    frame = inspect.currentframe()
+    external = None
+    if frame is not None and frame.f_back is not None and frame.f_back.f_back is not None:
+        external = frame.f_back.f_back
+    public = globals().get(public_name)
+    public_code = None if public is None else getattr(public, "__code__", None)
+    if external is None or public_code is None or external.f_code is not public_code:
+        raise TypeError(f"{proof_name} values are issued only by {public_name}")
 
 
 def _is_nfc(value: str) -> bool:
@@ -302,6 +318,7 @@ def _validate_checkpoint_payload(
     operation: OperationIdentity,
     *,
     construction: bool = False,
+    enforce_state_hash: bool = True,
 ) -> None:
     try:
         if not isinstance(checkpoint, CheckpointPayload):
@@ -324,7 +341,7 @@ def _validate_checkpoint_payload(
             raise
         if state != checkpoint.state:
             raise ValueError("checkpoint state is not canonical")
-        if checkpoint.state_hash != sha256(checkpoint.state):
+        if enforce_state_hash and checkpoint.state_hash != sha256(checkpoint.state):
             raise ValueError("checkpoint state_hash does not match state bytes")
         _checkpoint_event_payload(checkpoint)
         kind = checkpoint.checkpoint_kind
@@ -381,8 +398,8 @@ def _reject_routine(checkpoint_or_kind: object, operation: OperationIdentity) ->
 class _State002ProofSeal:
     __slots__ = (
         "_state002_proof_seal",
-        "_state002_lineage_identity",
-        "_state002_checkpoint_identity",
+        "_state002_lineage",
+        "_state002_checkpoint",
     )
 
 
@@ -542,6 +559,11 @@ class StateClosureManifest:
             raise TypeError("edges must be a tuple")
         if any(not isinstance(edge, StateClosureEdge) for edge in self.edges):
             raise TypeError("edges must contain StateClosureEdge values")
+        parent_identities = [_hash_identity(edge.parent) for edge in self.edges]
+        if len(set(parent_identities)) != len(parent_identities):
+            raise ValueError("edges must not contain duplicate parents")
+        if self.edges != tuple(sorted(self.edges, key=lambda edge: _hash_key(edge.parent))):
+            raise ValueError("edges must be in canonical parent hash order")
 
 
 @dataclass(frozen=True, slots=True)
@@ -574,13 +596,14 @@ def _issue_checkpoint_validation(
     checkpoint: CheckpointPayload,
     authoritative: bool,
     *,
-    lineage_identity: int,
+    lineage: AuthorizedJournalLineage,
 ) -> CheckpointValidationResult:
+    _require_public_issuer("validate_checkpoint", "CheckpointValidationResult")
     value = object.__new__(CheckpointValidationResult)
     object.__setattr__(value, "checkpoint_ref", checkpoint_ref)
     object.__setattr__(value, "checkpoint", checkpoint)
     object.__setattr__(value, "authoritative", authoritative)
-    object.__setattr__(value, "_state002_lineage_identity", lineage_identity)
+    object.__setattr__(value, "_state002_lineage", lineage)
     object.__setattr__(value, "_state002_proof_seal", _PROOF_SEAL)
     return value
 
@@ -591,14 +614,15 @@ def _issue_state_closure(
     edges: tuple[StateClosureEdge, ...],
     members: tuple[ContentHash, ...],
     *,
-    checkpoint_identity: int,
+    checkpoint: CheckpointPayload,
 ) -> StateClosure:
+    _require_public_issuer("state_closure", "StateClosure")
     value = object.__new__(StateClosure)
     object.__setattr__(value, "manifest_hash", manifest_hash)
     object.__setattr__(value, "roots", roots)
     object.__setattr__(value, "edges", edges)
     object.__setattr__(value, "members", members)
-    object.__setattr__(value, "_state002_checkpoint_identity", checkpoint_identity)
+    object.__setattr__(value, "_state002_checkpoint", checkpoint)
     object.__setattr__(value, "_state002_proof_seal", _PROOF_SEAL)
     return value
 
@@ -698,7 +722,7 @@ def locate_newest_valid(
                     cause=exc,
                 ) from exc
             _reject_routine(checkpoint, op)
-            _validate_checkpoint_payload(checkpoint, op)
+            _validate_checkpoint_payload(checkpoint, op, enforce_state_hash=False)
             return CheckpointSelection(
                 current,
                 checkpoint,
@@ -755,7 +779,7 @@ def _derive_closure_graph(
         if identity in visiting:
             raise ValueError("state closure contains a cycle")
         if identity in visited:
-            return
+            raise ValueError("duplicate closure member")
         visiting.add(identity)
         data = object_store.get_verified(state_object_root, reference, operation=operation)
         children = _object_children(data)
@@ -768,7 +792,10 @@ def _derive_closure_graph(
 
     for root in roots:
         visit(root)
-    return tuple(members), tuple(edges)
+    return (
+        tuple(sorted(members, key=_hash_key)),
+        tuple(sorted(edges, key=lambda edge: _hash_key(edge.parent))),
+    )
 
 
 def _manifest_wire(manifest: StateClosureManifest) -> bytes:
@@ -842,6 +869,15 @@ def build_checkpoint(
         if not isinstance(request, CheckpointBuildRequest):
             raise TypeError("request must be CheckpointBuildRequest")
         _reject_routine(request.checkpoint_kind, op)
+        expected_operation = _CHECKPOINT_CONSTRUCTION_OPERATIONS.get(request.checkpoint_kind)
+        if expected_operation is None:
+            raise ValueError("unsupported checkpoint kind for network journals")
+        if op.operation_kind != expected_operation:
+            raise _state_error(
+                op,
+                "MOTHER_STATE_CHECKPOINT_INVALID",
+                "checkpoint construction operation does not authorize this kind",
+            )
         if request.checkpoint_kind == "initial-network-birth":
             if request.covers_through is not None or prior_replay is not None:
                 raise ValueError("birth checkpoint cannot bind prior replay")
@@ -852,14 +888,26 @@ def build_checkpoint(
                 raise ValueError("rectification checkpoint requires prior replay")
             if not isinstance(prior_replay, JournalReplayResult):
                 raise TypeError("prior_replay must be JournalReplayResult")
-            if prior_replay.checkpoint_ref != request.covers_through:
-                raise ValueError("prior replay does not end at coverage reference")
-            if prior_replay.head.sequence != request.covers_through.sequence:
-                raise ValueError("prior replay head does not match coverage sequence")
-            if prior_replay.head.entry_hash != request.covers_through.entry_hash:
-                raise ValueError("prior replay head does not match coverage entry")
-            if prior_replay.state_hash != request.covers_through.state_hash:
-                raise ValueError("prior replay state hash does not match coverage")
+            terminal = JournalEntryRef(
+                prior_replay.head.journal_identity,
+                prior_replay.head.sequence,
+                prior_replay.head.entry_hash,
+                prior_replay.head.authorization_bundle_hash,
+                prior_replay.head.state_hash,
+            )
+            if (
+                terminal.journal_id != request.covers_through.journal_id
+                or terminal.sequence != request.covers_through.sequence
+                or terminal.entry_hash != request.covers_through.entry_hash
+                or terminal.authorization_bundle_hash != request.covers_through.authorization_bundle_hash
+                or terminal.state_hash != request.covers_through.state_hash
+                or prior_replay.state_hash != request.covers_through.state_hash
+            ):
+                raise _state_error(
+                    op,
+                    "MOTHER_STATE_CHECKPOINT_INVALID",
+                    "prior replay terminal head does not match coverage reference",
+                )
             covers_sequence = request.covers_through.sequence
             covers_hash = request.covers_through.entry_hash
         else:
@@ -970,9 +1018,13 @@ def validate_checkpoint(
         raise _open_routine(op)
     try:
         try:
-            _validate_checkpoint_payload(checkpoint, op)
+            _validate_checkpoint_payload(checkpoint, op, enforce_state_hash=False)
         except MotherError as exc:
-            if exc.code == "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY":
+            if exc.code in {
+                "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY",
+                "MOTHER_STATE_FUTURE_OBJECT_REFERENCE",
+                "MOTHER_STATE_MALFORMED_CHECKPOINT",
+            }:
                 raise
             raise _state_error(
                 op,
@@ -992,6 +1044,9 @@ def validate_checkpoint(
             raise ValueError("checkpoint entry has wrong event type")
         if entry.event_payload != _checkpoint_event_payload(checkpoint):
             raise ValueError("checkpoint entry payload does not match checkpoint")
+        expected_operation = _CHECKPOINT_CONSTRUCTION_OPERATIONS.get(checkpoint.checkpoint_kind)
+        if expected_operation is None or entry.operation_kind != expected_operation:
+            raise ValueError("checkpoint entry construction operation does not match checkpoint kind")
         if entry.resulting_state_hash != checkpoint.state_hash:
             raise ValueError("checkpoint entry resulting state hash mismatch")
         if reference.state_hash != checkpoint.state_hash:
@@ -1020,7 +1075,7 @@ def validate_checkpoint(
             reference,
             checkpoint,
             authoritative,
-            lineage_identity=id(lineage),
+            lineage=lineage,
         )
     except MotherError as exc:
         if exc.module_id == _MODULE_ID:
@@ -1125,36 +1180,18 @@ def state_closure(
                 "state object closure graph is invalid",
                 cause=exc,
             ) from exc
-        manifest_map: dict[tuple[str, str], tuple[ContentHash, ...]] = {}
-        for edge in manifest.edges:
-            identity = _hash_identity(edge.parent)
-            if identity in manifest_map:
-                raise _state_error(
-                    op,
-                    "MOTHER_SCHEMA_DUPLICATE_CLOSURE_MEMBER",
-                    "state closure manifest contains duplicate parents",
-                )
-            manifest_map[identity] = edge.children
-        derived_map = {_hash_identity(edge.parent): edge.children for edge in edges}
-        if set(manifest_map) != set(derived_map):
+        if manifest.edges != edges:
             raise _state_error(
                 op,
                 "MOTHER_RECOVERY_INVALID_CLOSURE",
-                "state closure manifest has omitted, extra, or unreachable rows",
+                "state closure manifest disagrees with the exact derived object edges",
             )
-        for identity, children in derived_map.items():
-            if manifest_map[identity] != children:
-                raise _state_error(
-                    op,
-                    "MOTHER_RECOVERY_INVALID_CLOSURE",
-                    "state closure manifest disagrees with derived object edges",
-                )
         return _issue_state_closure(
             checkpoint.state_closure_manifest_hash,
             manifest.roots,
             edges,
             members,
-            checkpoint_identity=id(checkpoint),
+            checkpoint=checkpoint,
         )
     except MotherError:
         raise
@@ -1185,9 +1222,9 @@ def prepare_replay(
         if checkpoint_validation.checkpoint.checkpoint_kind == "routine":
             raise _open_routine(op)
         checkpoint = checkpoint_validation.checkpoint
-        if getattr(checkpoint_validation, "_state002_lineage_identity", None) != id(lineage):
+        if getattr(checkpoint_validation, "_state002_lineage", None) is not lineage:
             raise ValueError("checkpoint validation was not issued for this lineage")
-        if getattr(closure, "_state002_checkpoint_identity", None) != id(checkpoint):
+        if getattr(closure, "_state002_checkpoint", None) is not checkpoint:
             raise ValueError("state closure was not issued for this checkpoint")
         if lineage.stop != checkpoint_validation.checkpoint_ref:
             raise ValueError("lineage stop does not match checkpoint validation")

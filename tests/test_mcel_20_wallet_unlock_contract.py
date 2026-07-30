@@ -84,8 +84,8 @@ def test_20a_contract_is_bound_into_boundary_runtime_and_receipts() -> None:
     markers = [
         "boundary.wallet20aUnlockContract = mcelWallet20aUnlockContract(boundary)",
         "boundary.walletUnlockContract = boundary.wallet20aUnlockContract",
-        "instance.runtime.wallet20aUnlockContract = boundary.wallet20aUnlockContract || null",
-        "instance.runtime.walletUnlockContract = boundary.walletUnlockContract || boundary.wallet20aUnlockContract || null",
+        "wallet20aUnlockContract: boundary.wallet20aUnlockContract || null",
+        "walletUnlockContract: boundary.walletUnlockContract || boundary.wallet20aUnlockContract || null",
         "wallet20aUnlockContract: null",
         "walletUnlockContract: null",
         '"wallet20aUnlockContract"',

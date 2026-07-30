@@ -76,8 +76,8 @@ def test_23a_is_after_22f_and_bound_into_runtime_receipt_copy_and_visible_surfac
         "boundary.wallet23aLiveNetworkExecutionPolish?.canExecuteRoute === true",
         "wallet23aLiveNetworkExecutionPolish: null",
         "walletLiveNetworkExecutionPolish: null",
-        "instance.runtime.wallet23aLiveNetworkExecutionPolish = boundary.wallet23aLiveNetworkExecutionPolish || null",
-        "instance.runtime.walletLiveNetworkExecutionPolish = boundary.walletLiveNetworkExecutionPolish || boundary.wallet23aLiveNetworkExecutionPolish || null",
+        "wallet23aLiveNetworkExecutionPolish: boundary.wallet23aLiveNetworkExecutionPolish || null",
+        "walletLiveNetworkExecutionPolish: boundary.walletLiveNetworkExecutionPolish || boundary.wallet23aLiveNetworkExecutionPolish || null",
         '"runtime.wallet23aLiveNetworkExecutionPolish"',
         '"runtime.walletLiveNetworkExecutionPolish"',
     ]
