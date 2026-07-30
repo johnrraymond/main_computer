@@ -20,6 +20,28 @@ Optional, feature-specific requirements:
 - A MetaMask wallet is required to use the blockchain/dev-chain wallet elements. It is not required for the basic local app startup.
 - Playwright Chromium is only needed for browser automation/harness tests.
 
+
+## Agent harness workflow packet
+
+Main Computer includes a small ECC-inspired local harness helper for agentic development work. It does not vendor or install ECC; it captures the useful operating loop locally: intent, plan, focused tests, implementation, independent review, verification, memory, and patch-artifact safety.
+
+Generate a task packet from the repository root:
+
+```bat
+python tools\ecc_workflow.py profile --repo . --profile developer --stack python --task "describe the task" --out runtime\agent_harness\latest
+```
+
+The command writes a JSON manifest and Markdown packet under `runtime/agent_harness/latest`. The developer profile selects only the skills relevant to this repository instead of loading the entire catalog into context.
+
+Evaluate the delivery gate before calling a task complete:
+
+```bat
+python tools\ecc_workflow.py gate --changed-file main_computer/ecc_workflow.py --check pytest=pass --check dry-run=pass --review implementation=approved --review safety=approved
+```
+
+The gate blocks empty changed-file inventories, failing checks, missing review signoffs, unsafe paths, and rationalized completion language such as “should work” or “probably fine.”
+
+
 ## Docker and Podman compatibility
 
 Main Computer resolves container commands through a small Docker-compatible runtime layer. Docker remains the default when it is available, but Podman can be selected without changing code:

@@ -8,7 +8,9 @@ checkpoint construction are owned by their declared callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import json
+import sys
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 import unicodedata
@@ -17,7 +19,7 @@ from . import atomic_files, object_store
 from .canonical import canonical_json
 from .errors import MotherError
 from .hashing import sha256
-from .models import ContentHash, HeadTuple, NetworkHeadPaths, OperationIdentity
+from .models import ContentHash, HeadTuple, NetworkHeadPaths, OperationIdentity, OPERATION_KINDS
 
 
 _MODULE_ID = "MOTHER-OFM-STATE-001"
@@ -29,8 +31,17 @@ _PROOF_SEAL = object()
 _FORBIDDEN_EVENT_KEYS = frozenset(
     {
         "authorization_bundle_hash",
+        "authority_reseal_certificate_acceptance_set_root",
+        "authority_reseal_certificate_hash",
+        "authority_reseal_proposal_hash",
+        "certificate_acceptance_set_root",
         "certificate_hash",
+        "completed_certificate_hash",
+        "proposal_acceptance_set_root",
         "proposal_hash",
+        "successor_certificate_hash",
+        "transition_acceptance_set_root",
+        "transition_decision_hash",
         "transition_decision_record_hash",
     }
 )
@@ -119,7 +130,8 @@ def _decode_hash(value: object, name: str) -> ContentHash:
         raise ValueError(f"{name} must be a content-hash object")
     if set(value) != {"schema_version", "algorithm", "digest"}:
         raise ValueError(f"{name} has unexpected fields")
-    if value.get("schema_version") != 1:
+    schema_version = value.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
         raise ValueError(f"{name} has unsupported schema version")
     return ContentHash(value["algorithm"], value["digest"])  # type: ignore[arg-type]
 
@@ -170,6 +182,106 @@ def _reference_identity(reference: "JournalEntryRef") -> tuple[str, int, Content
     )
 
 
+def _hash_identity(value: ContentHash | None) -> tuple[str, str] | None:
+    if value is None:
+        return None
+    return (value.algorithm, value.digest)
+
+
+def _ref_snapshot(reference: "JournalEntryRef") -> tuple[object, ...]:
+    return (
+        reference.journal_id,
+        reference.sequence,
+        _hash_identity(reference.entry_hash),
+        _hash_identity(reference.authorization_bundle_hash),
+        _hash_identity(reference.state_hash),
+    )
+
+
+def _entry_snapshot(entry: "JournalEntry") -> tuple[object, ...]:
+    return (
+        entry.entry_version,
+        entry.journal_id,
+        entry.network,
+        entry.sequence,
+        entry.operation_id,
+        entry.operation_kind,
+        _hash_identity(entry.previous_entry_hash),
+        _hash_identity(entry.previous_authorization_bundle_hash),
+        _hash_identity(entry.previous_state_hash),
+        entry.event_type,
+        entry.event_payload,
+        _hash_identity(entry.resulting_state_hash),
+        entry.created_at,
+    )
+
+
+def _bundle_snapshot(bundle: "LoadedAuthorizationBundle") -> tuple[object, ...]:
+    return (_hash_identity(bundle.object_hash), bundle.payload)
+
+
+def _member_snapshot(member: "JournalLineageMember") -> tuple[object, ...]:
+    return (
+        _ref_snapshot(member.reference),
+        _entry_snapshot(member.entry),
+        _bundle_snapshot(member.authorization_bundle),
+    )
+
+
+def _head_snapshot(head: HeadTuple) -> tuple[object, ...]:
+    return (
+        head.journal_identity,
+        head.sequence,
+        _hash_identity(head.entry_hash),
+        _hash_identity(head.authorization_bundle_hash),
+        _hash_identity(head.state_hash),
+        head.head_id,
+        head.head_epoch,
+    )
+
+
+def _validate_entry_predecessor_shape(entry: "JournalEntry") -> None:
+    predecessor_values = (
+        entry.previous_entry_hash,
+        entry.previous_authorization_bundle_hash,
+        entry.previous_state_hash,
+    )
+    if entry.sequence == 1:
+        if any(value is not None for value in predecessor_values):
+            raise ValueError("sequence-one journal entries cannot have predecessor hashes")
+    elif any(value is None for value in predecessor_values):
+        raise ValueError("later journal entries require complete predecessor hashes")
+
+
+def _validate_network_head_paths(paths: NetworkHeadPaths, operation: OperationIdentity) -> None:
+    journal_head = Path(paths.journal_head)
+    committed_state = Path(paths.committed_state)
+    journal_root = journal_head.parent
+    network_root = journal_root.parent
+    networks_root = network_root.parent
+
+    if journal_head.name != "head.json" or journal_root.name != "journal":
+        raise ValueError("network journal head path must end in journal/head.json")
+    if networks_root.name != "networks":
+        raise ValueError("network journal head path must be under networks/<network>")
+    expected_journal_head = networks_root / operation.network / "journal" / "head.json"
+    expected_committed_state = networks_root / operation.network / "committed-state.json"
+    if journal_head != expected_journal_head or committed_state != expected_committed_state:
+        raise ValueError("network head paths do not match operation.network")
+
+
+def _require_state002_issuer() -> None:
+    frame = inspect.currentframe()
+    external = None
+    if frame is not None and frame.f_back is not None:
+        external = frame.f_back.f_back
+    checkpoints = sys.modules.get("tools.mother.common.checkpoints")
+    prepare_replay = None if checkpoints is None else getattr(checkpoints, "prepare_replay", None)
+    prepare_code = None if prepare_replay is None else getattr(prepare_replay, "__code__", None)
+    if external is None or prepare_code is None or external.f_code is not prepare_code:
+        raise TypeError("checkpoint replay proofs are issued only by checkpoints.prepare_replay")
+
+
 def _stable_head_from_wire(raw: dict[str, object]) -> HeadTuple:
     if set(raw) != {
         "authorization_bundle_hash",
@@ -187,6 +299,7 @@ def _stable_head_from_wire(raw: dict[str, object]) -> HeadTuple:
         raise ValueError("unsupported head schema")
     for key in ("committed_at", "head_id", "journal_id", "schema"):
         _text(raw[key], key)  # type: ignore[arg-type]
+    _positive_int(raw["head_sequence"], "head_sequence")  # type: ignore[arg-type]
     return HeadTuple(
         journal_identity=raw["journal_id"],  # type: ignore[arg-type]
         sequence=raw["head_sequence"],  # type: ignore[arg-type]
@@ -236,6 +349,7 @@ def _projection_head(raw: dict[str, object]) -> HeadTuple:
         raise ValueError("malformed committed projection head")
     for key in ("head_id", "journal_identity"):
         _text(raw[key], key)  # type: ignore[arg-type]
+    _positive_int(raw["sequence"], "sequence")  # type: ignore[arg-type]
     return HeadTuple(
         journal_identity=raw["journal_identity"],  # type: ignore[arg-type]
         sequence=raw["sequence"],  # type: ignore[arg-type]
@@ -263,6 +377,8 @@ def _validate_projection(raw: dict[str, object], head: HeadTuple, state_schema: 
         raise ValueError("projection head must be an object")
     if _projection_head(raw["head"]) != head:
         raise ValueError("projection head does not match journal head")
+    if not isinstance(raw["state"], dict):
+        raise ValueError("committed projection state must be an object")
     state_bytes = canonical_json(raw["state"])
     if sha256(state_bytes) != head.state_hash:
         raise ValueError("projection state hash does not match journal head")
@@ -288,8 +404,10 @@ def _entry_from_wire(data: bytes) -> "JournalEntry":
         raise ValueError("malformed journal entry")
     if raw["entry_version"] != _ENTRY_VERSION:
         raise ValueError("unsupported journal entry version")
+    if raw["operation_kind"] not in OPERATION_KINDS:
+        raise ValueError("unknown operation kind")
     payload = _json_object_to_bytes(raw["event_payload"], error_name="malformed journal entry")
-    return JournalEntry(
+    entry = JournalEntry(
         raw["entry_version"],  # type: ignore[arg-type]
         raw["journal_id"],  # type: ignore[arg-type]
         raw["network"],  # type: ignore[arg-type]
@@ -307,6 +425,8 @@ def _entry_from_wire(data: bytes) -> "JournalEntry":
         _decode_hash(raw["resulting_state_hash"], "resulting_state_hash"),
         raw["created_at"],  # type: ignore[arg-type]
     )
+    _validate_entry_predecessor_shape(entry)
+    return entry
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +474,8 @@ class JournalEntry:
             _text(getattr(self, name), name)
         _positive_int(self.sequence, "sequence")
         _bytes_exact(self.event_payload, "event_payload")
+        if self.operation_kind not in OPERATION_KINDS:
+            raise ValueError("operation_kind must be a known Mother operation kind")
         for name in (
             "previous_entry_hash",
             "previous_authorization_bundle_hash",
@@ -515,6 +637,8 @@ class AuthorizationBundleValidator(Protocol):
 
 @runtime_checkable
 class JournalReducer(Protocol):
+    state_schema: str
+
     def apply(
         self,
         previous_state: bytes,
@@ -559,6 +683,7 @@ def _issue_checkpoint_replay_proof(
     authoritative: bool,
 ) -> CheckpointReplayProof:
     # Private seam for STATE-002.prepare_replay.
+    _require_state002_issuer()
     if not isinstance(checkpoint_ref, JournalEntryRef):
         raise TypeError("checkpoint_ref must be JournalEntryRef")
     _text(state_schema, "state_schema")
@@ -589,6 +714,7 @@ def _issue_journal_replay_input(
     lineage: AuthorizedJournalLineage,
     checkpoint: CheckpointReplayProof,
 ) -> JournalReplayInput:
+    _require_state002_issuer()
     if not _sealed(lineage, AuthorizedJournalLineage):
         raise TypeError("lineage must be a sealed AuthorizedJournalLineage")
     if not _sealed(checkpoint, CheckpointReplayProof):
@@ -607,30 +733,22 @@ def _sealed(value: object, cls: type[object]) -> bool:
     )
 
 
-def _lineage_snapshot(lineage: AuthorizedJournalLineage) -> tuple[object, ...]:
+def _lineage_snapshot(lineage: AuthorizedJournalLineage | ValidatedJournalLineage) -> tuple[object, ...]:
     return (
-        lineage.head,
-        lineage.stop,
-        lineage.members,
-        tuple(
-            (
-                member.reference,
-                member.entry,
-                member.authorization_bundle,
-            )
-            for member in lineage.members
-        ),
+        _head_snapshot(lineage.head),
+        _ref_snapshot(lineage.stop),
+        tuple(_member_snapshot(member) for member in lineage.members),
     )
 
 
 def _checkpoint_snapshot(checkpoint: CheckpointReplayProof) -> tuple[object, ...]:
     return (
-        checkpoint.checkpoint_ref,
+        _ref_snapshot(checkpoint.checkpoint_ref),
         checkpoint.state_schema,
         checkpoint.state,
-        checkpoint.state_hash,
-        checkpoint.state_closure_manifest_hash,
-        checkpoint.state_closure_members,
+        _hash_identity(checkpoint.state_hash),
+        _hash_identity(checkpoint.state_closure_manifest_hash),
+        tuple(_hash_identity(member) for member in checkpoint.state_closure_members),
         checkpoint.authoritative,
     )
 
@@ -652,6 +770,15 @@ def read_stable_head(
     op = _operation(operation)
     if not isinstance(paths, NetworkHeadPaths):
         raise TypeError("paths must be NetworkHeadPaths")
+    try:
+        _validate_network_head_paths(paths, op)
+    except Exception as exc:
+        raise _state_error(
+            op,
+            "MOTHER_STATE_MALFORMED_JOURNAL_HEAD",
+            "network journal head paths are malformed",
+            cause=exc,
+        ) from exc
 
     def load_head(head_bytes: bytes) -> HeadTuple:
         try:
@@ -724,22 +851,22 @@ def load_entry(
         entry.journal_id != reference.journal_id
         or entry.sequence != reference.sequence
         or entry.resulting_state_hash != reference.state_hash
+        or entry.network != op.network
     ):
         raise _state_error(
             op,
             "MOTHER_STATE_JOURNAL_REFERENCE_MISMATCH",
             "journal entry object does not match the supplied reference",
         )
-    if entry.sequence > 1 and (
-        entry.previous_entry_hash is None
-        or entry.previous_authorization_bundle_hash is None
-        or entry.previous_state_hash is None
-    ):
+    try:
+        _validate_entry_predecessor_shape(entry)
+    except Exception as exc:
         raise _state_error(
             op,
             "MOTHER_STATE_MALFORMED_JOURNAL_ENTRY",
-            "later journal entry is missing predecessor hashes",
-        )
+            "journal entry has invalid predecessor hash shape",
+            cause=exc,
+        ) from exc
     return entry
 
 
@@ -899,6 +1026,7 @@ def validate_lineage(
 
             if entry.network != op.network:
                 raise ValueError("entry network does not match operation")
+            _validate_entry_predecessor_shape(entry)
             if entry.entry_version != _ENTRY_VERSION:
                 raise ValueError("unsupported entry version")
             if entry.journal_id != reference.journal_id:
@@ -953,14 +1081,20 @@ def authorize_lineage(
             "MOTHER_STATE_INVALID_LINEAGE",
             "validated journal lineage proof is not sealed by STATE-001",
         )
+    snapshot = _lineage_snapshot(lineage)
+    head = lineage.head
+    stop = lineage.stop
+    members = lineage.members
     try:
-        for member in lineage.members:
+        for member in members:
             validator.validate_bundle(
                 member.reference,
                 member.entry,
                 member.authorization_bundle,
                 operation=op,
             )
+            if _lineage_snapshot(lineage) != snapshot:
+                raise ValueError("authorization bundle validator mutated the validated lineage")
     except Exception as exc:
         raise _state_error(
             op,
@@ -968,7 +1102,13 @@ def authorize_lineage(
             "authorization bundle validator rejected the journal lineage",
             cause=exc,
         ) from exc
-    return _issue_authorized_lineage(lineage.head, lineage.stop, lineage.members)
+    if _lineage_snapshot(lineage) != snapshot:
+        raise _state_error(
+            op,
+            "MOTHER_STATE_INVALID_LINEAGE",
+            "validated journal lineage changed during authorization",
+        )
+    return _issue_authorized_lineage(head, stop, members)
 
 
 def build_entry_bytes(
@@ -1000,7 +1140,12 @@ def build_entry_bytes(
                 "MOTHER_STATE_FUTURE_OBJECT_REFERENCE",
                 "journal event payload contains a future object-reference role",
             )
-        # The resulting state is only hashed here; schema-owned state validation is caller-owned.
+        _canonical_object(
+            request.resulting_state,
+            error_name="malformed resulting state",
+        )
+        # The schema-owned state semantics are caller-owned, but STATE-001 binds
+        # only canonical JSON bytes for one top-level state object.
         state_hash = sha256(request.resulting_state)
         previous = request.previous
         wire = {

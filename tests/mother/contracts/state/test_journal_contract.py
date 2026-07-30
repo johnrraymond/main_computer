@@ -5,6 +5,8 @@ import importlib
 import inspect
 import json
 from pathlib import Path
+import sys
+import types
 import unicodedata
 from typing import get_type_hints
 
@@ -290,11 +292,11 @@ def _write_head_view(
     head: HeadTuple,
     state: bytes,
 ) -> NetworkHeadPaths:
-    journal_root = tmp_path / "journal"
+    journal_root = tmp_path / "networks" / operation.network / "journal"
     journal_root.mkdir(parents=True, exist_ok=True)
     paths = NetworkHeadPaths(
         journal_root / "head.json",
-        journal_root / "committed-state.json",
+        journal_root.parent / "committed-state.json",
     )
     metadata = canonical_json(
         {
@@ -693,6 +695,98 @@ def test_read_stable_head_rejects_projection_binding_mismatch(tmp_path: Path) ->
 
 
 @TRACE_READ
+def test_read_stable_head_rejects_non_object_projection_state(tmp_path: Path) -> None:
+    journal = _surface()
+    operation = _operation()
+    state = canonical_json({"generation": 1})
+    head = _head(state_hash=sha256(state))
+    paths = _write_head_view(tmp_path, operation=operation, head=head, state=state)
+    raw = json.loads(paths.committed_state.read_text("utf-8"))
+    raw["state"] = []
+    paths.committed_state.write_bytes(canonical_json(raw))
+    with pytest.raises(MotherError) as caught:
+        journal.read_stable_head(paths, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_HEAD")
+
+
+@TRACE_READ
+@pytest.mark.parametrize("location", ("journal-head", "projection-head"))
+def test_read_stable_head_rejects_zero_sequence_heads(
+    tmp_path: Path,
+    location: str,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    state = canonical_json({"generation": 1})
+    head = _head(state_hash=sha256(state))
+    paths = _write_head_view(tmp_path, operation=operation, head=head, state=state)
+    if location == "journal-head":
+        raw = json.loads(paths.journal_head.read_text("utf-8"))
+        raw["head_sequence"] = 0
+        paths.journal_head.write_bytes(canonical_json(raw))
+    else:
+        raw = json.loads(paths.committed_state.read_text("utf-8"))
+        raw["head"]["sequence"] = 0
+        paths.committed_state.write_bytes(canonical_json(raw))
+    with pytest.raises(MotherError) as caught:
+        journal.read_stable_head(paths, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_HEAD")
+
+
+@TRACE_READ
+def test_read_stable_head_rejects_cross_network_paths_before_reads(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    other_operation = OperationIdentity(
+        operation.operation_id,
+        operation.request_id,
+        "other-network",
+        operation.operation_kind,
+    )
+    state = canonical_json({"generation": 1})
+    head = _head(state_hash=sha256(state))
+    paths = _write_head_view(tmp_path, operation=operation, head=head, state=state)
+    calls = []
+
+    def forbidden_read(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("path validation must run before stable_read")
+
+    _patch_alias(monkeypatch, journal, atomic_files, "stable_read", forbidden_read)
+    with pytest.raises(MotherError) as caught:
+        journal.read_stable_head(paths, operation=other_operation)
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_HEAD")
+    assert calls == []
+
+
+@TRACE_READ
+def test_read_stable_head_rejects_noncanonical_head_layout_before_reads(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    paths = NetworkHeadPaths(
+        tmp_path / operation.network / "journal" / "head.json",
+        tmp_path / operation.network / "journal" / "committed-state.json",
+    )
+    calls = []
+
+    def forbidden_read(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("path validation must run before stable_read")
+
+    _patch_alias(monkeypatch, journal, atomic_files, "stable_read", forbidden_read)
+    with pytest.raises(MotherError) as caught:
+        journal.read_stable_head(paths, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_HEAD")
+    assert calls == []
+
+
+@TRACE_READ
 def test_read_stable_head_rejects_non_nfc_metadata(tmp_path: Path) -> None:
     journal = _surface()
     operation = _operation()
@@ -717,7 +811,8 @@ def test_read_stable_head_maps_unstable_read_with_typed_cause(
     journal = _surface()
     operation = _operation()
     paths = NetworkHeadPaths(
-        tmp_path / "head.json", tmp_path / "committed-state.json"
+        tmp_path / "networks" / operation.network / "journal" / "head.json",
+        tmp_path / "networks" / operation.network / "committed-state.json",
     )
     causal = MotherError(
         code="MOTHER_STATE_UNSTABLE_READ",
@@ -765,7 +860,8 @@ def test_read_stable_head_preserves_other_core011_errors(
 
     _patch_alias(monkeypatch, journal, atomic_files, "stable_read", failed)
     paths = NetworkHeadPaths(
-        tmp_path / "head.json", tmp_path / "committed-state.json"
+        tmp_path / "networks" / operation.network / "journal" / "head.json",
+        tmp_path / "networks" / operation.network / "committed-state.json",
     )
     with pytest.raises(MotherError) as caught:
         journal.read_stable_head(paths, operation=operation)
@@ -881,6 +977,78 @@ def test_load_entry_rejects_noncanonical_stored_entry(tmp_path: Path) -> None:
     with pytest.raises(MotherError) as caught:
         journal.load_entry(tmp_path / "entries", reference, operation=operation)
     _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_ENTRY")
+
+
+@TRACE_LOAD_ENTRY
+@pytest.mark.parametrize(
+    "case",
+    (
+        "boolean-hash-schema-version",
+        "unknown-operation-kind",
+        "sequence-one-predecessor-hashes",
+        "later-entry-incomplete-predecessor-hashes",
+    ),
+)
+def test_load_entry_rejects_malformed_stored_wire_regressions(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    _, refs, payloads, _ = _build_chain(journal, operation=operation, count=2)
+    index = 1 if case == "later-entry-incomplete-predecessor-hashes" else 0
+    raw = json.loads(payloads[index][0].decode("utf-8"))
+    if case == "boolean-hash-schema-version":
+        raw["resulting_state_hash"]["schema_version"] = True
+    elif case == "unknown-operation-kind":
+        raw["operation_kind"] = "MOTHER-OP-INVENTED"
+    elif case == "sequence-one-predecessor-hashes":
+        raw["previous_entry_hash"] = _content_hash_wire(_hash("previous-entry"))
+        raw["previous_authorization_bundle_hash"] = _content_hash_wire(
+            _hash("previous-bundle")
+        )
+        raw["previous_state_hash"] = _content_hash_wire(_hash("previous-state"))
+    else:
+        raw["previous_state_hash"] = None
+    stored = object_store.put_immutable(
+        tmp_path / "entries",
+        canonical_json(raw),
+        operation=operation,
+    )
+    reference = journal.JournalEntryRef(
+        refs[index].journal_id,
+        refs[index].sequence,
+        stored,
+        refs[index].authorization_bundle_hash,
+        refs[index].state_hash,
+    )
+    with pytest.raises(MotherError) as caught:
+        journal.load_entry(tmp_path / "entries", reference, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_ENTRY")
+
+
+@TRACE_LOAD_ENTRY
+def test_load_entry_rejects_entry_network_disagreement(tmp_path: Path) -> None:
+    journal = _surface()
+    operation = _operation()
+    _, refs, payloads, _ = _build_chain(journal, operation=operation, count=1)
+    raw = json.loads(payloads[0][0].decode("utf-8"))
+    raw["network"] = "other-network"
+    stored = object_store.put_immutable(
+        tmp_path / "entries",
+        canonical_json(raw),
+        operation=operation,
+    )
+    reference = journal.JournalEntryRef(
+        refs[0].journal_id,
+        refs[0].sequence,
+        stored,
+        refs[0].authorization_bundle_hash,
+        refs[0].state_hash,
+    )
+    with pytest.raises(MotherError) as caught:
+        journal.load_entry(tmp_path / "entries", reference, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_JOURNAL_REFERENCE_MISMATCH")
 
 
 @TRACE_LOAD_ENTRY
@@ -1224,6 +1392,22 @@ def test_authorize_lineage_validates_each_bundle_once_in_descending_order(
     assert authorized.members == lineage.members
 
 
+@TRACE_VALIDATE_AUTHORIZE
+def test_authorize_lineage_rejects_validator_mutation() -> None:
+    journal = _surface()
+    operation = _operation()
+    _, _, _, lineage = _build_chain(journal, operation=operation, count=2)
+    validated = journal.validate_lineage(lineage, operation=operation)
+
+    class MutatingValidator:
+        def validate_bundle(self, reference, entry, bundle, *, operation):
+            object.__setattr__(validated, "members", ())
+
+    with pytest.raises(MotherError) as caught:
+        journal.authorize_lineage(validated, MutatingValidator(), operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_INVALID_LINEAGE")
+
+
 @TRACE_AUTHORIZE
 def test_authorize_lineage_rejects_unsealed_forgery_before_validator() -> None:
     journal = _surface()
@@ -1362,8 +1546,17 @@ def test_build_entry_bytes_binds_exact_predecessor() -> None:
     "forbidden_key",
     (
         "authorization_bundle_hash",
+        "authority_reseal_certificate_acceptance_set_root",
+        "authority_reseal_certificate_hash",
+        "authority_reseal_proposal_hash",
+        "certificate_acceptance_set_root",
         "certificate_hash",
+        "completed_certificate_hash",
+        "proposal_acceptance_set_root",
         "proposal_hash",
+        "successor_certificate_hash",
+        "transition_acceptance_set_root",
+        "transition_decision_hash",
         "transition_decision_record_hash",
     ),
 )
@@ -1414,6 +1607,36 @@ def test_build_entry_bytes_rejects_malformed_or_noncanonical_payload(
     assert request.event_payload is payload
 
 
+@TRACE_BUILD
+@pytest.mark.parametrize(
+    "resulting_state",
+    (
+        b'{ "generation": 1 }',
+        b"[]",
+        b'{"name":"e\\u0301"}',
+        b'{"generation":1} trailing',
+    ),
+)
+def test_build_entry_bytes_rejects_malformed_or_noncanonical_resulting_state(
+    resulting_state: bytes,
+) -> None:
+    journal = _surface()
+    operation = _operation("MOTHER-OP-ADD-NODE")
+    request = journal.JournalEntryBuildRequest(
+        "network-journal",
+        1,
+        None,
+        "network-created",
+        canonical_json({"member": "alpha"}),
+        resulting_state,
+        "2026-07-29T14:16:21Z",
+    )
+    with pytest.raises(MotherError) as caught:
+        journal.build_entry_bytes(request, operation=operation)
+    _assert_error(caught.value, "MOTHER_STATE_MALFORMED_JOURNAL_ENTRY")
+    assert request.resulting_state is resulting_state
+
+
 @TRACE_REPLAY
 def test_replay_models_protocol_and_signature_are_exact() -> None:
     journal = _surface()
@@ -1433,6 +1656,7 @@ def test_replay_models_protocol_and_signature_are_exact() -> None:
         assert tuple(field.name for field in fields(model)) == field_names
         assert model.__dataclass_params__.frozen is True
     assert getattr(journal.JournalReducer, "_is_runtime_protocol", False)
+    assert get_type_hints(journal.JournalReducer) == {"state_schema": str}
     assert get_type_hints(journal.JournalReducer.apply) == {
         "previous_state": bytes,
         "event_type": str,
@@ -1469,6 +1693,70 @@ def test_replay_proof_types_reject_complete_direct_construction() -> None:
             object.__new__(journal.AuthorizedJournalLineage),
             object.__new__(journal.CheckpointReplayProof),
         )
+
+
+@TRACE_REPLAY
+def test_replay_private_proof_factories_reject_direct_calls() -> None:
+    journal = _surface()
+    reference = journal.JournalEntryRef(
+        "network-journal", 1, _hash("entry"), _hash("bundle"), _hash("state")
+    )
+    with pytest.raises(TypeError):
+        journal._issue_checkpoint_replay_proof(
+            reference,
+            "mother.network-state.v1",
+            canonical_json({"generation": 0}),
+            _hash("state"),
+            _hash("manifest"),
+            (_hash("root"),),
+            False,
+        )
+    with pytest.raises(TypeError):
+        journal._issue_journal_replay_input(object(), object())
+
+
+@TRACE_VALIDATE_AUTHORIZE
+def test_replay_private_proof_factories_accept_real_prepare_replay_code(
+    monkeypatch,
+) -> None:
+    journal = _surface()
+    operation = _operation()
+    _, _, _, lineage = _build_chain(journal, operation=operation, count=1)
+    validated = journal.validate_lineage(lineage, operation=operation)
+
+    class Validator:
+        def validate_bundle(self, reference, entry, bundle, *, operation):
+            return None
+
+    authorized = journal.authorize_lineage(validated, Validator(), operation=operation)
+    reference = authorized.stop
+    state = canonical_json({"generation": 0})
+
+    checkpoints_module = types.ModuleType("tools.mother.common.checkpoints")
+
+    def prepare_replay():
+        checkpoint = journal._issue_checkpoint_replay_proof(
+            reference,
+            "mother.network-state.v1",
+            state,
+            sha256(state),
+            _hash("manifest"),
+            (_hash("root"),),
+            True,
+        )
+        return journal._issue_journal_replay_input(authorized, checkpoint)
+
+    checkpoints_module.prepare_replay = prepare_replay
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mother.common.checkpoints",
+        checkpoints_module,
+    )
+
+    replay_input = checkpoints_module.prepare_replay()
+    assert isinstance(replay_input, journal.JournalReplayInput)
+    assert replay_input.lineage is authorized
+    assert isinstance(replay_input.checkpoint, journal.CheckpointReplayProof)
 
 
 @TRACE_REPLAY

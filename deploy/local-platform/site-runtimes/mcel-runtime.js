@@ -4743,6 +4743,61 @@ var McelLabScm = (() => {
         return instance;
       }
 
+      function createOperationDraft(instance) {
+        return {
+          ...instance,
+          source: cloneValue(instance.source),
+          runtime: cloneValue(instance.runtime),
+          state: cloneValue(instance.state),
+          evidence: []
+        };
+      }
+
+      function assertOperationCommitWritable(instance, roots) {
+        [...roots, "evidence"].forEach((root) => {
+          const descriptor = Object.getOwnPropertyDescriptor(instance, root);
+          const dataPropertyBlocked = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "writable") && descriptor.writable !== true;
+          const accessorBlocked = descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "writable") && typeof descriptor.set !== "function";
+          if (dataPropertyBlocked || accessorBlocked) {
+            throw new Error(`SCM operation cannot commit non-writable ${root} root.`);
+          }
+        });
+      }
+
+      function appendOperationEvidence(instance, entry) {
+        const evidence = Array.isArray(instance.evidence) ? instance.evidence.slice() : [];
+        evidence.push(jsonSafe(entry));
+        instance.evidence = evidence;
+        return entry;
+      }
+
+      function commitOperationDraft(instance, draft, roots = ["source", "state", "runtime"]) {
+        assertOperationCommitWritable(instance, roots);
+        const evidence = Array.isArray(instance.evidence) ? instance.evidence.slice() : [];
+        draft.evidence.forEach((entry) => evidence.push(jsonSafe(entry)));
+        roots.forEach((root) => {
+          instance[root] = draft[root];
+        });
+        instance.evidence = evidence;
+      }
+
+      function rethrowOperationFailure(instance, error, fallbackCode, details = {}) {
+        if (error?.violation?.kind === "mcel-scm-violation") {
+          appendOperationEvidence(instance, error.violation);
+          throw error;
+        }
+        const entry = violation(fallbackCode, {
+          ...details,
+          message: error?.message || String(error),
+          errorName: error?.name || "Error"
+        });
+        appendOperationEvidence(instance, entry);
+        const wrapped = new Error(entry.message);
+        wrapped.name = "McelScmViolationError";
+        wrapped.violation = jsonSafe(entry);
+        throw wrapped;
+      }
+
       function dataRoot(instance, root) {
         if (root === "source") return instance.source;
         if (root === "runtime") return instance.runtime;
@@ -6013,10 +6068,13 @@ var McelLabScm = (() => {
         }
 
         const beforeSource = cloneValue(instance.source);
+        const beforeState = cloneValue(instance.state);
         const beforeRuntime = cloneValue(instance.runtime);
         const beforeSourceJson = JSON.stringify(jsonSafe(beforeSource));
+        const beforeStateJson = JSON.stringify(jsonSafe(beforeState));
+        const draft = createOperationDraft(instance);
 
-        recordEvidence(instance, {
+        recordEvidence(draft, {
           kind: "mcel-scm-evidence",
           contractVersion: CONTRACT_VERSION,
           generatedAt: now(),
@@ -6029,7 +6087,7 @@ var McelLabScm = (() => {
           forbidden: contract.forbidden || []
         });
 
-        const ctx = createRepairContext(instance, name);
+        const ctx = createRepairContext(draft, name);
         let result = null;
         try {
           if (typeof strategy.apply === "function") result = strategy.apply(ctx, payload);
@@ -6042,20 +6100,30 @@ var McelLabScm = (() => {
                 instanceId: instance.id,
                 strategyName: name,
                 message: `Repair strategy ${name} postcondition failed.`
-              }), instance);
+              }), draft);
             }
           }
 
-          const afterSourceJson = JSON.stringify(jsonSafe(instance.source));
+          const afterSourceJson = JSON.stringify(jsonSafe(draft.source));
           if (afterSourceJson !== beforeSourceJson) {
-            instance.source = beforeSource;
             throwViolation(violation("SCM_REPAIR_SOURCE_CHANGED", {
               phase: "repair",
               componentName: instance.componentName,
               instanceId: instance.id,
               strategyName: name,
-              message: `Repair strategy ${name} changed source; source was restored and repair failed closed.`
-            }), instance);
+              message: `Repair strategy ${name} changed source; the draft was discarded and repair failed closed.`
+            }), draft);
+          }
+
+          const afterStateJson = JSON.stringify(jsonSafe(draft.state));
+          if (afterStateJson !== beforeStateJson) {
+            throwViolation(violation("SCM_REPAIR_STATE_CHANGED", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              message: `Repair strategy ${name} changed state; the draft was discarded and repair failed closed.`
+            }), draft);
           }
 
           const entry = {
@@ -6068,10 +6136,12 @@ var McelLabScm = (() => {
             instanceId: instance.id,
             strategyName: name,
             sourceUnchanged: true,
+            stateUnchanged: true,
             runtimeBefore: jsonSafe(beforeRuntime),
-            runtimeAfter: jsonSafe(instance.runtime)
+            runtimeAfter: jsonSafe(draft.runtime)
           };
-          recordEvidence(instance, entry);
+          recordEvidence(draft, entry);
+          commitOperationDraft(instance, draft, ["runtime"]);
 
           return {
             kind: "mcel-scm-repair-result",
@@ -6087,15 +6157,12 @@ var McelLabScm = (() => {
             evidence: jsonSafe(entry)
           };
         } catch (error) {
-          if (error?.violation?.kind === "mcel-scm-violation") throw error;
-          throwViolation(violation("SCM_REPAIR_EXCEPTION", {
+          rethrowOperationFailure(instance, error, "SCM_REPAIR_EXCEPTION", {
             phase: "repair",
             componentName: instance.componentName,
             instanceId: instance.id,
-            strategyName: name,
-            message: error?.message || String(error),
-            errorName: error?.name || "Error"
-          }), instance);
+            strategyName: name
+          });
         }
       }
 
@@ -6113,7 +6180,8 @@ var McelLabScm = (() => {
           }), instance);
         }
 
-        const ctx = createTransitionContext(instance, name, spec);
+        const draft = createOperationDraft(instance);
+        const ctx = createTransitionContext(draft, name, spec);
         try {
           if (typeof spec.pre === "function") {
             const preResult = spec.pre(ctx, payload);
@@ -6123,7 +6191,7 @@ var McelLabScm = (() => {
                 componentName: instance.componentName,
                 transitionName: name,
                 message: `Transition ${name} precondition failed.`
-              }), instance);
+              }), draft);
             }
           }
 
@@ -6137,7 +6205,7 @@ var McelLabScm = (() => {
                 componentName: instance.componentName,
                 transitionName: name,
                 message: `Transition ${name} postcondition failed.`
-              }), instance);
+              }), draft);
             }
           }
 
@@ -6152,7 +6220,9 @@ var McelLabScm = (() => {
             declaredReads: spec.reads,
             declaredWrites: spec.writes
           };
-          recordEvidence(instance, entry);
+          recordEvidence(draft, entry);
+          commitOperationDraft(instance, draft);
+
           return {
             kind: "mcel-scm-transition-result",
             contractVersion: CONTRACT_VERSION,
@@ -6166,14 +6236,11 @@ var McelLabScm = (() => {
             evidence: jsonSafe(entry)
           };
         } catch (error) {
-          if (error?.violation?.kind === "mcel-scm-violation") throw error;
-          throwViolation(violation("SCM_TRANSITION_EXCEPTION", {
+          rethrowOperationFailure(instance, error, "SCM_TRANSITION_EXCEPTION", {
             phase: "transition",
             componentName: instance.componentName,
-            transitionName: name,
-            message: error?.message || String(error),
-            errorName: error?.name || "Error"
-          }), instance);
+            transitionName: name
+          });
         }
       }
 
