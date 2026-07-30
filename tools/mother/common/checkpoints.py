@@ -318,7 +318,6 @@ def _validate_checkpoint_payload(
     operation: OperationIdentity,
     *,
     construction: bool = False,
-    enforce_state_hash: bool = True,
 ) -> None:
     try:
         if not isinstance(checkpoint, CheckpointPayload):
@@ -341,8 +340,12 @@ def _validate_checkpoint_payload(
             raise
         if state != checkpoint.state:
             raise ValueError("checkpoint state is not canonical")
-        if enforce_state_hash and checkpoint.state_hash != sha256(checkpoint.state):
-            raise ValueError("checkpoint state_hash does not match state bytes")
+        if checkpoint.state_hash != sha256(checkpoint.state):
+            raise _state_error(
+                operation,
+                "MOTHER_STATE_CHECKPOINT_INVALID",
+                "checkpoint state_hash does not match state bytes",
+            )
         _checkpoint_event_payload(checkpoint)
         kind = checkpoint.checkpoint_kind
         if kind not in _RECOGNIZED_KINDS and kind != "initial":
@@ -722,7 +725,7 @@ def locate_newest_valid(
                     cause=exc,
                 ) from exc
             _reject_routine(checkpoint, op)
-            _validate_checkpoint_payload(checkpoint, op, enforce_state_hash=False)
+            _validate_checkpoint_payload(checkpoint, op)
             return CheckpointSelection(
                 current,
                 checkpoint,
@@ -1018,7 +1021,7 @@ def validate_checkpoint(
         raise _open_routine(op)
     try:
         try:
-            _validate_checkpoint_payload(checkpoint, op, enforce_state_hash=False)
+            _validate_checkpoint_payload(checkpoint, op)
         except MotherError as exc:
             if exc.code in {
                 "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY",

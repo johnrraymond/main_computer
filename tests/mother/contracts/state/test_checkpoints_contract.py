@@ -201,6 +201,22 @@ def _checkpoint_event_payload(checkpoint) -> bytes:
     )
 
 
+def _checkpoint_with_mismatched_state_hash(checkpoints, checkpoint):
+    return checkpoints.CheckpointPayload(
+        checkpoint.checkpoint_version,
+        checkpoint.checkpoint_kind,
+        checkpoint.covers_through_sequence,
+        checkpoint.covers_through_entry_hash,
+        checkpoint.state_schema,
+        canonical_json({"generation": 999}),
+        checkpoint.state_hash,
+        checkpoint.state_object_refs,
+        checkpoint.state_closure_manifest_hash,
+        checkpoint.prepared_intent_hash,
+        checkpoint.superseded_lineage_heads,
+    )
+
+
 def _entry_from_bytes(journal, data: bytes):
     raw = json.loads(data.decode("utf-8"))
 
@@ -906,6 +922,59 @@ def test_locate_newest_valid_does_not_skip_invalid_first_checkpoint(
             durable["entry_root"], head, operation=operation
         )
     _assert_error(caught.value, "MOTHER_STATE_MALFORMED_CHECKPOINT")
+
+
+@TRACE_LOCATE
+def test_locate_newest_valid_rejects_checkpoint_state_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    operation = _operation()
+    construction_operation = _construction_operation("initial-network-birth")
+    durable = _durable_checkpoint(
+        checkpoints,
+        journal,
+        tmp_path,
+        kind="initial-network-birth",
+        operation=operation,
+    )
+    checkpoint = durable["built"].checkpoint
+    tampered = _checkpoint_with_mismatched_state_hash(checkpoints, checkpoint)
+    entry_bytes = journal.build_entry_bytes(
+        journal.JournalEntryBuildRequest(
+            "network-journal",
+            1,
+            None,
+            "state-checkpoint",
+            _checkpoint_event_payload(tampered),
+            checkpoint.state,
+            "2026-07-30T11:02:28Z",
+        ),
+        operation=construction_operation,
+    )
+    entry_hash = object_store.put_immutable(
+        durable["entry_root"],
+        entry_bytes,
+        operation=construction_operation,
+    )
+    head = HeadTuple(
+        "network-journal",
+        1,
+        entry_hash,
+        _hash("tampered-bundle"),
+        checkpoint.state_hash,
+        "tampered-head",
+        1,
+    )
+
+    with pytest.raises(MotherError) as caught:
+        checkpoints.locate_newest_valid(
+            durable["entry_root"],
+            head,
+            operation=operation,
+        )
+    _assert_error(caught.value, "MOTHER_STATE_CHECKPOINT_INVALID")
 
 
 @TRACE_LOCATE
@@ -1999,6 +2068,57 @@ def test_validate_checkpoint_rejects_committed_binding_mismatch(
     _assert_error(caught.value, "MOTHER_STATE_CHECKPOINT_INVALID")
 
 
+@TRACE_VALIDATE
+def test_validate_checkpoint_rejects_coherent_state_hash_tampering(
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    operation = _operation()
+    durable = _durable_checkpoint(
+        checkpoints,
+        journal,
+        tmp_path,
+        kind="initial-network-birth",
+        operation=operation,
+    )
+    checkpoint = _checkpoint_with_mismatched_state_hash(
+        checkpoints,
+        durable["built"].checkpoint,
+    )
+    authorized = durable["authorized"]
+    member = authorized.members[0]
+    entry = member.entry
+    forged_entry = journal.JournalEntry(
+        entry.entry_version,
+        entry.journal_id,
+        entry.network,
+        entry.sequence,
+        entry.operation_id,
+        entry.operation_kind,
+        entry.previous_entry_hash,
+        entry.previous_authorization_bundle_hash,
+        entry.previous_state_hash,
+        entry.event_type,
+        _checkpoint_event_payload(checkpoint),
+        checkpoint.state_hash,
+        entry.created_at,
+    )
+    forged_member = journal.JournalLineageMember(
+        member.reference,
+        forged_entry,
+        member.authorization_bundle,
+    )
+    object.__setattr__(authorized, "members", (forged_member,))
+
+    with pytest.raises(MotherError) as caught:
+        checkpoints.validate_checkpoint(
+            authorized,
+            checkpoint,
+            operation=operation,
+        )
+    _assert_error(caught.value, "MOTHER_STATE_CHECKPOINT_INVALID")
+
 
 @TRACE_VALIDATE
 def test_validate_checkpoint_rejects_wrong_historical_construction_operation(
@@ -2252,6 +2372,48 @@ def test_state_closure_rejects_reserved_routine_before_object_reads(
                 operation=operation,
             )
     _assert_error(caught.value, "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY")
+    assert calls == []
+
+
+@TRACE_CLOSURE
+def test_state_closure_rejects_checkpoint_state_hash_mismatch_before_object_reads(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    operation = _operation()
+    durable = _durable_checkpoint(
+        checkpoints,
+        journal,
+        tmp_path,
+        kind="initial-network-birth",
+        operation=operation,
+    )
+    checkpoint = _checkpoint_with_mismatched_state_hash(
+        checkpoints,
+        durable["built"].checkpoint,
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def forbidden_get(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("invalid checkpoint reached durable closure reads")
+
+    _patch_alias(
+        monkeypatch,
+        checkpoints,
+        object_store,
+        "get_verified",
+        forbidden_get,
+    )
+    with pytest.raises(MotherError) as caught:
+        checkpoints.state_closure(
+            durable["state_root"],
+            checkpoint,
+            operation=operation,
+        )
+    _assert_error(caught.value, "MOTHER_STATE_CHECKPOINT_INVALID")
     assert calls == []
 
 
