@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+import os
 
 import pytest
 
@@ -18,6 +19,22 @@ def _operation() -> OperationIdentity:
     )
 
 
+def _state_framed_module(**bindings) -> ModuleType:
+    module = ModuleType("tools.mother.common.journal")
+    module.__dict__.update(bindings)
+    exec(
+        """
+def invoke_alias(name, *args, **kwargs):
+    return globals()[name](*args, **kwargs)
+
+def invoke_provider(provider_name, name, *args, **kwargs):
+    return getattr(globals()[provider_name], name)(*args, **kwargs)
+""",
+        module.__dict__,
+    )
+    return module
+
+
 def test_state_effect_guard_permits_delegated_core012_verified_read(
     monkeypatch,
     tmp_path,
@@ -26,10 +43,11 @@ def test_state_effect_guard_permits_delegated_core012_verified_read(
     root = tmp_path / "objects"
     payload = b'{"value":"verified"}'
     object_hash = object_store.put_immutable(root, payload, operation=operation)
-    state_module = SimpleNamespace(__name__="tools.mother.common.journal")
+    state_module = _state_framed_module(get_verified=object_store.get_verified)
 
     with forbid_state_owned_effects(monkeypatch, state_module):
-        assert object_store.get_verified(
+        assert state_module.invoke_alias(
+            "get_verified",
             root,
             object_hash,
             operation=operation,
@@ -57,10 +75,11 @@ def test_state_effect_guard_permits_delegated_core011_stable_read(
     operation = _operation()
     pointer = tmp_path / "head.json"
     pointer.write_bytes(b'{"head":1}')
-    state_module = SimpleNamespace(__name__="tools.mother.common.journal")
+    state_module = _state_framed_module(stable_read=atomic_files.stable_read)
 
     with forbid_state_owned_effects(monkeypatch, state_module):
-        assert atomic_files.stable_read(
+        assert state_module.invoke_alias(
+            "stable_read",
             pointer,
             lambda data: data,
             operation=operation,
@@ -139,3 +158,179 @@ def test_state_effect_guard_rejects_provider_writers_before_publication(
         if path.is_file()
     }
     assert after == before
+
+
+@pytest.mark.parametrize("invocation", ("alias", "module-qualified"))
+def test_state_effect_guard_rejects_direct_directory_flush_from_state_frame(
+    invocation: str,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    state_module = _state_framed_module(
+        flush_directory=atomic_files.flush_directory,
+        atomic_files_module=atomic_files,
+    )
+    before = tuple(sorted(tmp_path.iterdir()))
+    with forbid_state_owned_effects(monkeypatch, state_module):
+        with pytest.raises(
+            AssertionError,
+            match="STATE reader or builder attempted an owned effect",
+        ):
+            if invocation == "alias":
+                state_module.invoke_alias("flush_directory", tmp_path)
+            else:
+                state_module.invoke_provider(
+                    "atomic_files_module",
+                    "flush_directory",
+                    tmp_path,
+                )
+    assert tuple(sorted(tmp_path.iterdir())) == before
+
+
+@pytest.mark.parametrize("invocation", ("alias", "module-qualified"))
+def test_state_effect_guard_rejects_direct_durable_directory_creation_from_state_frame(
+    invocation: str,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    operation = _operation()
+    target = tmp_path / "new" / "nested"
+    state_module = _state_framed_module(
+        ensure_durable_directory=atomic_files.ensure_durable_directory,
+        atomic_files_module=atomic_files,
+    )
+    with forbid_state_owned_effects(monkeypatch, state_module):
+        with pytest.raises(
+            AssertionError,
+            match="STATE reader or builder attempted an owned effect",
+        ):
+            if invocation == "alias":
+                state_module.invoke_alias(
+                    "ensure_durable_directory",
+                    target,
+                    operation=operation,
+                )
+            else:
+                state_module.invoke_provider(
+                    "atomic_files_module",
+                    "ensure_durable_directory",
+                    target,
+                    operation=operation,
+                )
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    tuple(
+        candidate
+        for candidate in ("fsync", "fdatasync")
+        if hasattr(os, candidate)
+    ),
+)
+@pytest.mark.parametrize("invocation", ("alias", "module-qualified"))
+def test_state_effect_guard_rejects_direct_file_flush_from_state_frame(
+    name: str,
+    invocation: str,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    target = tmp_path / "flush.bin"
+    target.write_bytes(b"unchanged")
+    fd = os.open(target, os.O_RDONLY)
+    try:
+        state_module = _state_framed_module(
+            flush=getattr(os, name),
+            os_module=os,
+        )
+        before = target.read_bytes()
+        with forbid_state_owned_effects(monkeypatch, state_module):
+            with pytest.raises(
+                AssertionError,
+                match="STATE reader or builder attempted an owned effect",
+            ):
+                if invocation == "alias":
+                    state_module.invoke_alias("flush", fd)
+                else:
+                    state_module.invoke_provider("os_module", name, fd)
+        assert target.read_bytes() == before
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("name", ("flock", "lockf"))
+@pytest.mark.parametrize("invocation", ("alias", "module-qualified"))
+def test_state_effect_guard_rejects_direct_posix_lock_from_state_frame(
+    name: str,
+    invocation: str,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    fcntl = pytest.importorskip("fcntl")
+    target = tmp_path / "lock.bin"
+    target.write_bytes(b"lock")
+    fd = os.open(target, os.O_RDWR)
+    try:
+        state_module = _state_framed_module(
+            platform_lock=getattr(fcntl, name),
+            fcntl_module=fcntl,
+        )
+        with forbid_state_owned_effects(monkeypatch, state_module):
+            with pytest.raises(
+                AssertionError,
+                match="STATE reader or builder attempted an owned effect",
+            ):
+                if invocation == "alias":
+                    state_module.invoke_alias(
+                        "platform_lock",
+                        fd,
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                else:
+                    state_module.invoke_provider(
+                        "fcntl_module",
+                        name,
+                        fd,
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("invocation", ("alias", "module-qualified"))
+def test_state_effect_guard_rejects_direct_windows_lock_from_state_frame(
+    invocation: str,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    msvcrt = pytest.importorskip("msvcrt")
+    target = tmp_path / "lock.bin"
+    target.write_bytes(b"x")
+    fd = os.open(target, os.O_RDWR)
+    try:
+        state_module = _state_framed_module(
+            platform_lock=msvcrt.locking,
+            msvcrt_module=msvcrt,
+        )
+        with forbid_state_owned_effects(monkeypatch, state_module):
+            with pytest.raises(
+                AssertionError,
+                match="STATE reader or builder attempted an owned effect",
+            ):
+                if invocation == "alias":
+                    state_module.invoke_alias(
+                        "platform_lock",
+                        fd,
+                        msvcrt.LK_NBLCK,
+                        1,
+                    )
+                else:
+                    state_module.invoke_provider(
+                        "msvcrt_module",
+                        "locking",
+                        fd,
+                        msvcrt.LK_NBLCK,
+                        1,
+                    )
+    finally:
+        os.close(fd)

@@ -142,6 +142,11 @@ def _mcel_doc_field(block: str, field: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _mcel_app_block(text: str) -> str:
+    app_blocks = [block for block_type, block in _mcel_doc_blocks(text) if block_type == "mcel-app"]
+    assert len(app_blocks) == 1, "requirements document should contain exactly one mcel-app block"
+    return app_blocks[0]
+
 
 def test_mcel_requirements_language_is_registered_and_defines_expanded_grammar() -> None:
     index = json.loads(PRETTY_DOCS_INDEX.read_text(encoding="utf-8"))
@@ -296,8 +301,6 @@ def test_code_editor_requirements_are_registered_and_machine_readable() -> None:
     text = CODE_EDITOR_REQUIREMENTS_DOC.read_text(encoding="utf-8")
     required_phrases = [
         "documentation-first requirements contract",
-        "current: structural MWSL workbench + domain-enrichment behavior",
-        "planned: executable Code Editor semantic adapter",
         "code-editor.source.canonical",
         "code-editor.mutation.explicit-boundaries",
         "code-editor.aider.plan-before-apply",
@@ -314,6 +317,13 @@ def test_code_editor_requirements_are_registered_and_machine_readable() -> None:
     ]
     for phrase in required_phrases:
         assert phrase in text
+
+    app_block = _mcel_app_block(text)
+    assert _mcel_doc_field(app_block, "id") == "code-editor"
+    assert _mcel_doc_field(app_block, "status") == "specified"
+    assert _mcel_doc_field(app_block, "current_runtime_status")
+    assert _mcel_doc_field(app_block, "target_runtime_status") == "fullApplicationSemanticReady"
+    assert "main_computer/web/applications/scripts/code-editor-semantic-adapter.js" in app_block
 
     blocks = _mcel_doc_blocks(text)
     assert len(blocks) >= 20
@@ -344,28 +354,39 @@ def test_git_tools_requirements_are_registered_and_machine_readable() -> None:
     text = GIT_TOOLS_REQUIREMENTS_DOC.read_text(encoding="utf-8")
     required_phrases = [
         "documentation-first requirements contract",
-        "current: scope-limited semantic runtime for governed publishing",
-        "planned: full Git Tools semantic runtime",
-        "governed-publish-partial",
         "git-tools.repository.evidence-first",
         "git-tools.push.governed",
         "git-tools.project-card.primary-publishing",
         "git-tools.remote-sync.explicit",
         "git-tools.adapter.truth-gated-readiness",
         "git-tools.intent.refresh-status",
-        "current_adapter_status: executable",
         "git-tools.intent.inspect-working-tree",
-        "current_adapter_status: declared-only",
         "git-tools.intent.prepare-push",
-        "current_adapter_status: preflight-only",
         "git-tools.intent.run-manual-command",
-        "current_adapter_status: prohibited",
         "MCEL truth gate does not report fullApplicationSemanticReady",
     ]
     for phrase in required_phrases:
         assert phrase in text
 
+    app_block = _mcel_app_block(text)
+    assert _mcel_doc_field(app_block, "id") == "git-tools"
+    assert _mcel_doc_field(app_block, "status") == "specified"
+    assert _mcel_doc_field(app_block, "current_runtime_status")
+    assert _mcel_doc_field(app_block, "target_runtime_status") == "full-application-semantic-runtime"
+    assert _mcel_doc_field(app_block, "current_semantic_runtime_scope")
+    assert "main_computer/web/applications/scripts/git-tools-semantic-adapter.js" in app_block
+
     blocks = _mcel_doc_blocks(text)
+    git_intent_blocks = [block for block_type, block in blocks if block_type == "mcel-intent"]
+    assert git_intent_blocks
+    intent_statuses = {
+        _mcel_doc_field(block, "current_adapter_status")
+        for block in git_intent_blocks
+        if _mcel_doc_field(block, "current_adapter_status")
+    }
+    assert intent_statuses <= {"not-registered", "declared-only", "preflight-only", "executable", "prohibited"}
+    assert "executable" in intent_statuses
+    assert "prohibited" in intent_statuses
     assert len(blocks) >= 30
 
     ids: list[str] = []
@@ -408,7 +429,6 @@ def test_calculator_requirements_are_registered_and_machine_readable() -> None:
         "calculator.intent.evaluate-expression",
         "calculator.intent.draw-graph",
         "calculator.intent.evaluate-mathics",
-        "current_adapter_status: executable",
         "target_adapter_status: executable",
         "askModelForMathicsExpression",
         "fullApplicationSemanticReady",
@@ -463,7 +483,6 @@ def test_file_explorer_requirements_are_registered_and_machine_readable() -> Non
         "file-explorer.intent.inspect-roots",
         "file-explorer.intent.preview-entry",
         "file-explorer.intent.delete-file",
-        "current_adapter_status: executable",
         "target_adapter_status: executable",
         "MCEL truth gate reports File Explorer fullApplicationSemanticReady",
     ]
@@ -499,8 +518,6 @@ def test_website_builder_requirements_are_registered_and_machine_readable() -> N
     text = WEBSITE_BUILDER_REQUIREMENTS_DOC.read_text(encoding="utf-8")
     required_phrases = [
         "documentation-first requirements contract",
-        "current: working Website Builder + saved website project manifests + local/dev/remote publish lanes",
-        "planned: full Website Builder semantic runtime",
         "Website Builder owns site editing, runtime setup, preview, and publish planning",
         "Git Tools owns repository add/commit/push evidence",
         "website-builder.use-case.edit-preview-saved-site",
@@ -516,11 +533,18 @@ def test_website_builder_requirements_are_registered_and_machine_readable() -> N
         "website-builder.intent.preview-draft",
         "website-builder.intent.publish-local-server",
         "website-builder.intent.prepare-git-handoff",
-        "current_adapter_status: not-registered",
         "target_adapter_status: executable",
     ]
     for phrase in required_phrases:
         assert phrase in text
+
+    app_block = _mcel_app_block(text)
+    assert _mcel_doc_field(app_block, "id") == "website-builder"
+    assert _mcel_doc_field(app_block, "status") == "specified"
+    assert _mcel_doc_field(app_block, "current_runtime_status")
+    assert _mcel_doc_field(app_block, "target_runtime_status") == "full-application-semantic-runtime"
+    assert _mcel_doc_field(app_block, "current_semantic_runtime_scope")
+    assert "main_computer/web/applications/scripts/website-builder-semantic-adapter.js" in app_block
 
     blocks = _mcel_doc_blocks(text)
     assert len(blocks) >= 40

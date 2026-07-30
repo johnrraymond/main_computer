@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,6 +9,7 @@ from pathlib import Path
 from main_computer.mcel_runtime_package import (
     MCEL_LAB_HELPER_FILE,
     MCEL_RUNTIME_MODULES,
+    MCEL_RUNTIME_VERSION,
     build_mcel_runtime_text,
     package_mcel_runtime,
 )
@@ -21,7 +24,8 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     text = result.output_path.read_text(encoding="utf-8")
 
     assert result.size_bytes == len(text.encode("utf-8"))
-    assert result.version == "mcel-runtime.v0.1.15"
+    assert result.version == MCEL_RUNTIME_VERSION
+    assert f'const mcelRuntimeVersion = "{MCEL_RUNTIME_VERSION}";' in text
     assert result.helper_functions == ("isolatedSiteCss",)
     assert MCEL_LAB_HELPER_FILE in result.source_files
     for source_file in MCEL_RUNTIME_MODULES:
@@ -80,6 +84,18 @@ def test_checked_in_mcel_runtime_asset_matches_packager_output() -> None:
 
     assert MCEL_RUNTIME.exists()
     assert MCEL_RUNTIME.read_text(encoding="utf-8") == expected
+
+
+def test_hub_site_runtime_and_manifest_match_current_package() -> None:
+    expected = build_mcel_runtime_text(ROOT)
+    hub_root = ROOT / "runtime" / "websites" / "hub-site"
+    hub_runtime = hub_root / "runtime.js"
+    manifest = json.loads((hub_root / "site.json").read_text(encoding="utf-8"))
+
+    assert hub_runtime.read_text(encoding="utf-8") == expected
+    assert manifest["runtime"]["page_runtime"]["sha256"] == hashlib.sha256(
+        hub_runtime.read_bytes()
+    ).hexdigest()
 
 
 def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everything() -> None:

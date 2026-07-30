@@ -190,7 +190,17 @@ def test_mcel_lab_phase_two_styles_define_generic_workbench_regions() -> None:
         assert selector in source
 
     assert 'grid-template-areas: "navigation primary rail";' in source
-    assert "minmax(700px, 1fr)" in source
+    workbench_rule = re.search(
+        r"\.mcel-lab-blueprint-workbench\s*\{(?P<body>.*?)\}",
+        source,
+        re.DOTALL,
+    )
+    assert workbench_rule
+    workbench_body = workbench_rule.group("body")
+    assert workbench_body.count("minmax(") >= 3
+    assert "--mcel-lab-workbench-block-size:" in workbench_body
+    assert "min-block-size: 0" in workbench_body
+    assert "overflow: hidden" in workbench_body
     assert "Phase 2 App Blueprint / Aspect Inspector shell" in source
 
 

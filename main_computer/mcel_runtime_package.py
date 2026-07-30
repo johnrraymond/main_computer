@@ -170,7 +170,12 @@ def build_mcel_runtime_text(repo_root: Path) -> str:
         sections.append(f"  // END {MCEL_LAB_HELPER_FILE}::{name}")
         sections.append("")
 
-    sections.append(_MCEL_RUNTIME_WRAPPER.strip())
+    sections.append(
+        _MCEL_RUNTIME_WRAPPER.strip().replace(
+            "__MCEL_RUNTIME_VERSION__",
+            MCEL_RUNTIME_VERSION,
+        )
+    )
     sections.append('})(typeof window !== "undefined" ? window : (typeof globalThis !== "undefined" ? globalThis : null));')
     return "\n".join(sections) + "\n"
 
@@ -196,7 +201,7 @@ def package_mcel_runtime(
 
 
 _MCEL_RUNTIME_WRAPPER = r'''
-  const mcelRuntimeVersion = "mcel-runtime.v0.1.10";
+  const mcelRuntimeVersion = "__MCEL_RUNTIME_VERSION__";
   const runtimeEntry = "runtime.js";
   const runtimeDefaults = Object.freeze({
     mode: "site",

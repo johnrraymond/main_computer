@@ -109,7 +109,6 @@ def _operation(kind: str = "MOTHER-OP-DIAGNOSE") -> OperationIdentity:
 def _construction_operation(kind: str) -> OperationIdentity:
     operation_kind = {
         "initial-network-birth": "MOTHER-OP-ADD-NODE",
-        "routine": "MOTHER-OP-DIAGNOSE",
         "authoritative-rectification": "MOTHER-OP-RESEAL-STATE",
     }[kind]
     return _operation(operation_kind)
@@ -342,11 +341,14 @@ def _durable_checkpoint(
         manifest_hash,
     )
 
+    if kind not in ("initial-network-birth", "authoritative-rectification"):
+        raise ValueError("durable checkpoint fixtures require current construction authority")
+
     previous = None
     prior_replay = None
     sequence = 1
     checkpoint_state = canonical_json({"generation": 1})
-    if kind in ("routine", "authoritative-rectification"):
+    if kind == "authoritative-rectification":
         prior_state = canonical_json({"generation": 1})
         coverage = journal.JournalEntryRef(
             "network-journal",
@@ -358,11 +360,7 @@ def _durable_checkpoint(
         previous = coverage
         sequence = 2
         prior_replay = _prior_replay(journal, coverage, state=prior_state)
-        checkpoint_state = (
-            prior_state
-            if kind == "routine"
-            else canonical_json({"generation": 99})
-        )
+        checkpoint_state = canonical_json({"generation": 99})
     else:
         coverage = None
 
@@ -374,50 +372,16 @@ def _durable_checkpoint(
         manifest_hash=manifest_hash,
         coverage=coverage,
     )
-
-    if kind == "routine":
-        checkpoint = checkpoints.CheckpointPayload(
-            "mother.journal.checkpoint.v1",
-            "routine",
-            coverage.sequence,
-            coverage.entry_hash,
-            request.state_schema,
-            checkpoint_state,
-            sha256(checkpoint_state),
-            request.state_object_refs,
-            request.state_closure_manifest_hash,
-            None,
-            (),
-        )
-        event_payload = _checkpoint_event_payload(checkpoint)
-        entry_bytes = journal.build_entry_bytes(
-            journal.JournalEntryBuildRequest(
-                "network-journal",
-                sequence,
-                previous,
-                "state-checkpoint",
-                event_payload,
-                checkpoint_state,
-                "2026-07-29T14:16:27Z",
-            ),
-            operation=_operation("MOTHER-OP-ADD-NODE"),
-        )
-        built = checkpoints.CheckpointEntryBuildResult(
-            checkpoint,
-            event_payload,
-            entry_bytes,
-        )
-    else:
-        entry_request = checkpoints.CheckpointEntryBuildRequest(
-            "network-journal",
-            sequence,
-            previous,
-            request,
-            "2026-07-29T14:16:27Z",
-        )
-        built = checkpoints.build_checkpoint_entry_bytes(
-            entry_request, prior_replay, operation=fixture_operation
-        )
+    entry_request = checkpoints.CheckpointEntryBuildRequest(
+        "network-journal",
+        sequence,
+        previous,
+        request,
+        "2026-07-29T14:16:27Z",
+    )
+    built = checkpoints.build_checkpoint_entry_bytes(
+        entry_request, prior_replay, operation=fixture_operation
+    )
 
     entry_root = tmp_path / "entries"
     authorization_root = tmp_path / "authorizations"
@@ -473,6 +437,80 @@ def _durable_checkpoint(
         "reference": reference,
         "authorized": authorized,
         "prior_replay": prior_replay,
+    }
+
+
+def _reserved_routine_checkpoint(
+    checkpoints,
+    journal,
+    tmp_path: Path,
+):
+    """Publish recognizable routine bytes without claiming construction authority."""
+
+    operation = _operation("MOTHER-OP-DIAGNOSE")
+    state = canonical_json({"generation": 1})
+    previous = journal.JournalEntryRef(
+        "network-journal",
+        1,
+        _hash("reserved-routine-previous-entry"),
+        _hash("reserved-routine-previous-bundle"),
+        sha256(state),
+    )
+    checkpoint = checkpoints.CheckpointPayload(
+        "mother.journal.checkpoint.v1",
+        "routine",
+        previous.sequence,
+        previous.entry_hash,
+        "mother.network-state.v1",
+        state,
+        sha256(state),
+        (_hash("reserved-routine-root"),),
+        _hash("reserved-routine-manifest"),
+        None,
+        (),
+    )
+    event_payload = _checkpoint_event_payload(checkpoint)
+    entry_bytes = journal.build_entry_bytes(
+        journal.JournalEntryBuildRequest(
+            "network-journal",
+            2,
+            previous,
+            "state-checkpoint",
+            event_payload,
+            state,
+            "2026-07-29T16:53:39Z",
+        ),
+        operation=operation,
+    )
+    entry_root = tmp_path / "entries"
+    entry_hash = object_store.put_immutable(
+        entry_root,
+        entry_bytes,
+        operation=operation,
+    )
+    bundle_hash = _hash("reserved-routine-bundle")
+    reference = journal.JournalEntryRef(
+        "network-journal",
+        2,
+        entry_hash,
+        bundle_hash,
+        checkpoint.state_hash,
+    )
+    head = HeadTuple(
+        "network-journal",
+        2,
+        entry_hash,
+        bundle_hash,
+        checkpoint.state_hash,
+        "head-routine-reserved",
+        1,
+    )
+    return {
+        "operation": operation,
+        "entry_root": entry_root,
+        "checkpoint": checkpoint,
+        "reference": reference,
+        "head": head,
     }
 
 
@@ -686,7 +724,7 @@ def test_checkpoint_selection_model_and_signature_are_exact() -> None:
 
 
 @TRACE_LOCATE
-@pytest.mark.parametrize("kind", ("initial-network-birth", "routine"))
+@pytest.mark.parametrize("kind", ("initial-network-birth",))
 def test_locate_newest_valid_selects_checkpoint_and_forward_entries(
     kind: str,
     monkeypatch,
@@ -721,6 +759,42 @@ def test_locate_newest_valid_selects_checkpoint_and_forward_entries(
     assert selection.checkpoint == durable["built"].checkpoint
     assert selection.later_entry_refs == (later,)
 
+
+@TRACE_LOCATE
+def test_locate_newest_valid_recognizes_reserved_routine_but_does_not_select_it(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    reserved = _reserved_routine_checkpoint(
+        checkpoints,
+        journal,
+        tmp_path,
+    )
+    get_calls: list[ContentHash] = []
+    real_get = object_store.get_verified
+
+    def recorded_get(root, reference, *, operation):
+        get_calls.append(reference)
+        return real_get(root, reference, operation=operation)
+
+    _patch_alias(
+        monkeypatch,
+        checkpoints,
+        object_store,
+        "get_verified",
+        recorded_get,
+    )
+    with forbid_state_owned_effects(monkeypatch, checkpoints):
+        with pytest.raises(MotherError) as caught:
+            checkpoints.locate_newest_valid(
+                reserved["entry_root"],
+                reserved["head"],
+                operation=reserved["operation"],
+            )
+    _assert_error(caught.value, "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY")
+    assert get_calls == [reserved["reference"].entry_hash]
 
 
 @TRACE_LOCATE
@@ -1146,7 +1220,7 @@ def test_build_checkpoint_rejects_open_routine_construction_before_effects(
             )
     _assert_error(
         caught.value,
-        "MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION",
+        "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY",
     )
 
 
@@ -1435,7 +1509,7 @@ def test_build_checkpoint_entry_rejects_open_routine_construction_before_effects
             )
     _assert_error(
         caught.value,
-        "MOTHER_OPEN_ROUTINE_CHECKPOINT_CONSTRUCTION",
+        "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY",
     )
 
 
@@ -1484,9 +1558,9 @@ def test_checkpoint_validation_rejects_complete_direct_construction() -> None:
 @TRACE_VALIDATE
 @pytest.mark.parametrize(
     "kind",
-    ("initial-network-birth", "routine", "authoritative-rectification"),
+    ("initial-network-birth", "authoritative-rectification"),
 )
-def test_validate_checkpoint_accepts_every_committed_kind_without_effects(
+def test_validate_checkpoint_accepts_every_authority_supported_kind_without_effects(
     kind: str,
     monkeypatch,
     tmp_path: Path,
@@ -1513,6 +1587,45 @@ def test_validate_checkpoint_accepts_every_committed_kind_without_effects(
 
 
 @TRACE_VALIDATE
+def test_validate_checkpoint_rejects_reserved_routine_before_trusting_lineage(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    operation = _operation()
+    durable = _durable_checkpoint(
+        checkpoints,
+        journal,
+        tmp_path,
+        kind="initial-network-birth",
+        operation=operation,
+    )
+    birth = durable["built"].checkpoint
+    routine = checkpoints.CheckpointPayload(
+        birth.checkpoint_version,
+        "routine",
+        durable["reference"].sequence,
+        durable["reference"].entry_hash,
+        birth.state_schema,
+        birth.state,
+        birth.state_hash,
+        birth.state_object_refs,
+        birth.state_closure_manifest_hash,
+        None,
+        (),
+    )
+    with forbid_state_owned_effects(monkeypatch, checkpoints):
+        with pytest.raises(MotherError) as caught:
+            checkpoints.validate_checkpoint(
+                durable["authorized"],
+                routine,
+                operation=operation,
+            )
+    _assert_error(caught.value, "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY")
+
+
+@TRACE_VALIDATE
 @pytest.mark.parametrize(
     "mutation",
     ("state-hash", "coverage-entry", "event-payload", "bundle-reference"),
@@ -1525,7 +1638,11 @@ def test_validate_checkpoint_rejects_committed_binding_mismatch(
     journal = _journal_surface()
     operation = _operation()
     durable = _durable_checkpoint(
-        checkpoints, journal, tmp_path, kind="routine", operation=operation
+        checkpoints,
+        journal,
+        tmp_path,
+        kind="authoritative-rectification",
+        operation=operation,
     )
     checkpoint = durable["built"].checkpoint
     authorized = durable["authorized"]
@@ -1636,6 +1753,51 @@ def test_state_closure_rejects_complete_direct_construction() -> None:
             (edge,),
             (_hash("root"),),
         )
+
+
+@TRACE_CLOSURE
+def test_state_closure_rejects_reserved_routine_before_object_reads(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    operation = _operation()
+    state = canonical_json({"generation": 1})
+    routine = checkpoints.CheckpointPayload(
+        "mother.journal.checkpoint.v1",
+        "routine",
+        1,
+        _hash("routine-coverage"),
+        "mother.network-state.v1",
+        state,
+        sha256(state),
+        (_hash("routine-root"),),
+        _hash("routine-manifest"),
+        None,
+        (),
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def forbidden_get(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("routine checkpoint reached durable closure reads")
+
+    _patch_alias(
+        monkeypatch,
+        checkpoints,
+        object_store,
+        "get_verified",
+        forbidden_get,
+    )
+    with forbid_state_owned_effects(monkeypatch, checkpoints):
+        with pytest.raises(MotherError) as caught:
+            checkpoints.state_closure(
+                tmp_path / "state-objects",
+                routine,
+                operation=operation,
+            )
+    _assert_error(caught.value, "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY")
+    assert calls == []
 
 
 @TRACE_CLOSURE
@@ -1852,6 +2014,57 @@ def test_prepare_replay_returns_sealed_cross_bound_input_without_effects(
     assert replay_input.checkpoint.checkpoint_ref == durable["reference"]
     assert replay_input.checkpoint.state_closure_manifest_hash == closure.manifest_hash
     assert replay_input.checkpoint.state_closure_members == closure.members
+
+
+@TRACE_VALIDATE_CLOSURE_PREPARE
+def test_prepare_replay_rejects_reserved_routine_before_proof_construction(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    checkpoints = _surface()
+    journal = _journal_surface()
+    operation = _operation()
+    durable = _durable_checkpoint(
+        checkpoints,
+        journal,
+        tmp_path,
+        kind="initial-network-birth",
+        operation=operation,
+    )
+    validation = checkpoints.validate_checkpoint(
+        durable["authorized"],
+        durable["built"].checkpoint,
+        operation=operation,
+    )
+    closure = checkpoints.state_closure(
+        durable["state_root"],
+        durable["built"].checkpoint,
+        operation=operation,
+    )
+    birth = validation.checkpoint
+    routine = checkpoints.CheckpointPayload(
+        birth.checkpoint_version,
+        "routine",
+        durable["reference"].sequence,
+        durable["reference"].entry_hash,
+        birth.state_schema,
+        birth.state,
+        birth.state_hash,
+        birth.state_object_refs,
+        birth.state_closure_manifest_hash,
+        None,
+        (),
+    )
+    object.__setattr__(validation, "checkpoint", routine)
+    with forbid_state_owned_effects(monkeypatch, checkpoints):
+        with pytest.raises(MotherError) as caught:
+            checkpoints.prepare_replay(
+                durable["authorized"],
+                validation,
+                closure,
+                operation=operation,
+            )
+    _assert_error(caught.value, "MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY")
 
 
 @TRACE_VALIDATE_CLOSURE_PREPARE

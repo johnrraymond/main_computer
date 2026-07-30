@@ -1698,12 +1698,14 @@ MUST NOT be interpreted as committed authority.
 Every checkpoint is an immutable journal entry containing a complete state for
 that journal. Checkpoints are not side files and do not bypass the journal head.
 
-A routine checkpoint is a network-journal entry with
-`event_type="state-checkpoint"` whose canonical event payload has
-`checkpoint_version="mother.journal.checkpoint.v1"`,
-`checkpoint_kind="routine"`, the exact immediately preceding entry sequence and
-hash, one complete state object, its typed state hash, the exact canonical
+The network checkpoint wire format reserves `checkpoint_kind="routine"` for a
+future authority-governed replay summary. Its canonical payload shape remains
+recognizable: it names the exact immediately preceding entry sequence and hash,
+one complete state object, its typed state hash, the exact canonical
 state-object roots, and the hash of one pre-entry canonical closure manifest.
+Recognition of those bytes is not authority validation. No current operation or
+functionality is authorized to construct, select, trust, validate, close, or
+replay from a routine checkpoint.
 
 Every reachable state object exposes its complete direct child-reference set in
 the exact canonical state-object envelope. STATE-002 derives the closure graph
@@ -1711,19 +1713,21 @@ from those verified object bytes, creates one manifest row for every reachable
 member including leaves, and computes the manifest hash before checkpoint entry
 construction. A caller-supplied edge or member declaration is not closure proof.
 
-Construction validation requires a prior replay through the covered predecessor
-and proves byte-identical state, schema, and hash. A dedicated checkpoint-entry
-builder binds the payload to the prospective sequence, predecessor, and exact
-resulting state before returning entry bytes. It does not perform committed-read
-validation because no entry reference or authorization bundle exists yet.
+Construction validation applies only to the currently authorized
+`initial-network-birth` and `authoritative-rectification` kinds. A dedicated
+checkpoint-entry builder binds the payload to the prospective sequence,
+predecessor, and exact resulting state before returning entry bytes. It does not
+perform committed-read validation because no entry reference or authorization
+bundle exists yet.
 
 Committed-read validation occurs only after the existing entry and its
 authorization bundle have been loaded and the bundle has passed AUTH-003
 semantic validation. It does not require archived pre-checkpoint history: it
 verifies the intrinsic checkpoint payload, the containing entry, coverage
 adjacency, state hash, closure-manifest binding, and the containing entry's
-predecessor and resulting-state bindings. A routine checkpoint summarizes valid
-history; it does not override it.
+predecessor and resulting-state bindings. Encountering recognizable routine
+bytes raises `MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY`; Mother MUST NOT treat
+the bytes as malformed, skip them, or use them as a replay root.
 
 Every newly created journal begins with an initial-state checkpoint before any
 ordinary event is committed:
@@ -1758,9 +1762,12 @@ When opening a committed network journal, Mother MUST:
 4. invoke `MOTHER-OFM-AUTH-003` to semantically validate every network
    authorization bundle against its exact entry and obtain one authorized
    lineage value;
-5. stop at the newest intrinsically valid checkpoint on that committed lineage;
-6. perform committed-read checkpoint validation without requiring archived
-   history before the checkpoint;
+5. stop at the newest checkpoint candidate on that committed lineage; if its
+   recognizable kind is `routine`, raise
+   `MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY` and block replay without skipping
+   to an older checkpoint;
+6. perform committed-read checkpoint validation for an authority-supported kind
+   without requiring archived history before the checkpoint;
 7. load the exact closure manifest named by the checkpoint, independently
    rederive every edge from the verified state-object `references` fields, and
    verify the complete closure against the network `journal/state-objects`
@@ -1785,30 +1792,32 @@ older than the selected checkpoint remain in the active journal directory.
 This is the compatibility boundary that permits old history to be archived or
 compressed later without redesigning replay.
 
-If Mother opens a journal that has no committed checkpoint, it MUST NOT continue
-normal operation as though a checkpoint existed:
+If Mother opens a journal that has no committed authority-supported checkpoint,
+it MUST NOT continue normal operation as though a checkpoint existed:
 
-- for an empty new journal, it commits the defined initial-state checkpoint;
-- for a checkpointless journal with committed entries, it acquires the
-  exclusive journal lock, validates and replays the complete retained history
-  from the journal kind's defined initial state, and appends a routine
-  checkpoint containing the resulting complete state;
-- if the initial state is not deterministic, the chain is invalid, or complete
-  replay cannot be proven, normal mutation is blocked and explicit
-  rectification is required.
+- for an empty new network journal, Add Node commits the defined
+  `initial-network-birth` checkpoint;
+- for a checkpointless journal with committed entries, normal mutation is
+  blocked and explicit recovery or authoritative rectification is required;
+- Mother MUST NOT synthesize or append a routine checkpoint from retained
+  history until a governing functionality defines its trigger, lock,
+  authorization bundle, publication, and head-commit chain.
 
-The routine checkpoint above is distinct from the authoritative rectification
-checkpoint defined by `MOTHER-DESIGN-010`. A routine checkpoint MUST equal
-valid prior replay. An authoritative rectification checkpoint is
-operator-approved, records the superseded lineage and evidence, and MAY establish
-a different active state after unreconcilable history. Both are immutable
-checkpoint entries and both become active only through normal head commit.
+The reserved routine format is distinct from the authoritative rectification
+checkpoint defined by `MOTHER-DESIGN-010`. A future routine checkpoint contract
+MUST require exact prior replay and MUST NOT override history. An authoritative
+rectification checkpoint is operator-approved, records the superseded lineage
+and evidence, and MAY establish a different active state after unreconcilable
+history. Only checkpoints with currently documented construction authority may
+become replay roots.
 
 No automatic checkpoint frequency, retention threshold, archive policy, or
 compression command is part of the current contract. The implementation MUST
-support appending and discovering checkpoints now; policy for adding later
-routine checkpoints MAY be introduced without changing the journal format or
-replay algorithm.
+construct and discover `initial-network-birth` and
+`authoritative-rectification` checkpoints and MUST recognize reserved routine
+bytes only to raise `MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY`. A later
+functionality MAY enable routine checkpoints without changing their reserved
+wire format, but it MUST first define the missing authority chain.
 
 ### Atomic filesystem commit
 

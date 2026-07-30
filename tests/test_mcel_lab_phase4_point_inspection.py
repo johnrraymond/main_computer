@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import json
 import subprocess
 import textwrap
@@ -217,8 +218,16 @@ def test_phase_four_styles_make_preview_clickable_only_in_inspect_mode() -> None
     assert ".mcel-preview-inspect-owner" in source
     assert ".mcel-lab-selected-element-facts" in source
     assert ".mcel-lab-rail-disclosure" in source
-    assert "min-height: 560px" in source
-    assert "max-height: 74vh" in source
+    preview_rule = re.search(
+        r"\.mcel-lab-mounted-preview-frame\s*\{(?P<body>.*?)\}",
+        source,
+        re.DOTALL,
+    )
+    assert preview_rule
+    preview_body = preview_rule.group("body")
+    assert "min-height: 0" in preview_body
+    assert "max-height: none" in preview_body
+    assert "overflow: auto" in preview_body
 
 
 def test_phase_four_removes_stale_compiler_chrome_language() -> None:

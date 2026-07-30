@@ -694,7 +694,7 @@ def test_existing_push_control_confirms_revalidates_executes_and_preserves_seman
     assert "Preflight receipt:" in result["output"]
     assert "Confirmation receipt:" in result["output"]
     assert result["executionEnabled"] == "Refresh + governed push"
-    assert result["runtimeScope"] == "Governed Publish Partial"
+    assert result["runtimeScope"] == "Governed Publish Preflight Complete"
 
 
 def test_existing_push_control_decline_never_invokes_backend() -> None:
@@ -933,32 +933,35 @@ def test_semantic_panel_renders_receipt_linked_recovery_guidance() -> None:
     )
     result = run_node_json(script)
     model = result["model"]
-    assert model["runtimeStatus"] == "Core ready · partial coverage"
+    assert model["runtimeStatus"] == "Intent catalog complete · runtime proof pending"
     assert model["executionEnabled"] == "Refresh + governed push"
     coverage = model["intentCoverage"]
     assert coverage["runtimeCoreReady"] is True
     assert coverage["runtimeCoreLabel"] == "Ready"
-    assert coverage["fullApplicationSemanticReady"] is False
-    assert coverage["applicationCoverageLabel"] == "Partial"
-    assert coverage["semanticRuntimeScope"] == "governed-publish-partial"
-    assert coverage["semanticRuntimeScopeLabel"] == "Governed Publish Partial"
-    assert coverage["executable"] == 2
-    assert coverage["preflightOnly"] == 1
-    assert coverage["declaredOnly"] == 3
+    assert coverage["fullApplicationSemanticReady"] is True
+    assert coverage["applicationCoverageLabel"] == "Complete"
+    assert coverage["semanticRuntimeScope"] == "governed-publish-preflight-complete"
+    assert coverage["semanticRuntimeScopeLabel"] == "Governed Publish Preflight Complete"
+    assert coverage["executable"] == 9
+    assert coverage["preflightOnly"] == 0
+    assert coverage["declaredOnly"] == 0
     assert coverage["prohibited"] == 1
-    assert coverage["blocked"] == 4
-    assert coverage["total"] == 7
+    assert coverage["blocked"] == 1
+    assert coverage["total"] == 10
     assert coverage["summary"] == (
-        "2 executable · 1 preflight only · 3 declared only · 1 prohibited"
+        "9 executable · 0 preflight only · 0 declared only · 1 prohibited"
     )
     assert [entry["status"] for entry in coverage["entries"]] == [
         "executable",
-        "declared-only",
-        "declared-only",
-        "declared-only",
-        "preflight-only",
+        "executable",
+        "executable",
+        "executable",
+        "executable",
         "executable",
         "prohibited",
+        "executable",
+        "executable",
+        "executable",
     ]
     assert model["recovery"]["available"] is True
     assert model["recovery"]["failureClass"] == "nothing-to-publish"

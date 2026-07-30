@@ -12501,7 +12501,7 @@ function isolatedSiteCss() {
     }
   // END main_computer/web/applications/scripts/mcel-lab.js::isolatedSiteCss
 
-const mcelRuntimeVersion = "mcel-runtime.v0.1.10";
+const mcelRuntimeVersion = "mcel-runtime.v0.1.15";
   const runtimeEntry = "runtime.js";
   const runtimeDefaults = Object.freeze({
     mode: "site",

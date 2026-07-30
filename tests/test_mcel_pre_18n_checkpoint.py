@@ -125,9 +125,9 @@ def test_pre_18n_checkpoint_pages_still_expose_mount_and_proof_surfaces() -> Non
     studio_markers = [
         'id="code-editor-app"',
         "MCEL Code Studio",
-        "Bottom Proof Dock",
-        "Receipt Vector",
-        "Replay",
+        'id="code-studio-bottom-panel"',
+        "SCM Receipt",
+        "Replay snapshot comparison",
         "Draft Provenance",
     ]
     for marker in studio_markers:
@@ -193,7 +193,8 @@ def test_18n_wallet_tool_mount_exposes_preflight_and_receipt_without_unlocking_w
         assert marker in lab_html
 
     studio_html_markers = [
-        "18N Commit Boundary",
+        "Show 18N boundary",
+        'id="code-studio-18n-commit-boundary-status"',
         'data-mcel-18n-commit-boundary-mount="receipt-vector"',
     ]
     for marker in studio_html_markers:
@@ -223,7 +224,7 @@ def test_18n_mcel_code_studio_commit_boundary_guards_runtime_commit_and_persiste
         "mcelCodeStudioCommitReceipt",
         "recordMcelCodeStudioCommitBoundary(commitBoundary)",
         "renderMcelCodeStudioCommitBoundaryInProofDock",
-        "codeStudio.commitRuntimeDraft",
+        "codeStudio.applyMonacoDraft",
         "codeStudio.persistLiveWorkspace",
         "consumer gate must run before source/localStorage mutation",
         "runtime draft intent is explicit before source mutation",
@@ -233,8 +234,24 @@ def test_18n_mcel_code_studio_commit_boundary_guards_runtime_commit_and_persiste
     for marker in markers:
         assert marker in studio
 
-    assert studio.index("buildMcelCodeStudioCommitBoundary({\n          action: \"codeStudio.commitRuntimeDraft\"") < studio.index("target.textContent = draft.value")
-    assert studio.index("persistenceBoundary = buildMcelCodeStudioCommitBoundary") < studio.index("storage.setItem(LIVE_WORKSPACE_PERSISTENCE_KEY")
+    commit_start = studio.index("function commitRuntimeDraft()")
+    commit_boundary = studio.index(
+        'buildMcelCodeStudioCommitBoundary({\n          action: "codeStudio.applyMonacoDraft"',
+        commit_start,
+    )
+    source_write = studio.index("target.textContent = draftText", commit_start)
+    assert commit_boundary < source_write
+
+    persistence_start = studio.index("function persistLiveWorkspaceFromSource")
+    persistence_boundary = studio.index(
+        "persistenceBoundary = buildMcelCodeStudioCommitBoundary",
+        persistence_start,
+    )
+    persistence_write = studio.index(
+        "storage.setItem(LIVE_WORKSPACE_PERSISTENCE_KEY",
+        persistence_start,
+    )
+    assert persistence_boundary < persistence_write
     assert "canSend: false" in studio
     assert "canSign: false" in studio
     assert "canBroadcast: false" in studio
@@ -254,27 +271,31 @@ def test_18n_mcel_code_studio_runtime_mount_uses_boundary_before_generated_chrom
     studio = read_script("code-editor-mcel-studio.js")
 
     markers = [
-        "codeStudio.mountRuntimeDraft",
-        "runtime-mount-preflight",
-        "mountRuntimeDraft-with-receipt",
-        "mountMonaco-runtime-only",
-        "Runtime mount blocked by MCEL 18N boundary",
+        "codeStudio.mountMonacoAuthoringEditor",
+        "authoring-editor-mount",
+        "mount-direct-monaco-editor",
+        "Monaco editor mount blocked",
         "source-workspace-missing-or-invalid",
         "selected-file-missing",
         "runtime-chrome-in-source",
-        "mount-runtime-draft-runtime-only-mutation",
-        "Code Studio runtime mount is now an 18N boundary specimen",
-        "Code Studio cannot mount runtime chrome without a fresh source snapshot",
+        "runtime.monacoAdapter",
+        "mount-direct-monaco-authoring-editor",
     ]
     for marker in markers:
         assert marker in studio
 
     render_runtime_start = studio.index("function renderRuntime()")
-    mount_boundary_index = studio.index("buildMcelCodeStudioCommitBoundary({\n          action: \"codeStudio.mountRuntimeDraft\"", render_runtime_start)
+    mount_boundary_index = studio.index(
+        'buildMcelCodeStudioCommitBoundary({\n          action: "codeStudio.mountMonacoAuthoringEditor"',
+        render_runtime_start,
+    )
     runtime_preview_write = studio.index("runtimePreview.innerHTML = `", render_runtime_start)
-    runtime_monaco_mount = studio.index("mountRuntimeMonaco(file, draft)", render_runtime_start)
+    runtime_monaco_mount = studio.index("mountRuntimeMonaco(file)", render_runtime_start)
     assert mount_boundary_index < runtime_preview_write
-    assert studio.index("recordMcelCodeStudioCommitBoundary(mountBoundary)", render_runtime_start) < runtime_monaco_mount
+    assert studio.index(
+        "recordMcelCodeStudioCommitBoundary(mountBoundary)",
+        render_runtime_start,
+    ) < runtime_monaco_mount
     assert "mutationExecuted: true" in studio
     assert "canSend: false" in studio
     assert "canSign: false" in studio
@@ -763,7 +784,7 @@ def test_18n_mcel_wallet_golden_toggle_wraps_validated_lifecycle_paths() -> None
         assert marker in lab
 
     toggle_index = lab.index("async function toggleMcelGoldenWalletControl")
-    toggle_end = lab.index("async function performMcelTinyContractWalletDisconnect", toggle_index)
+    toggle_end = lab.index("function commitMcelTinyContractWalletDisconnectPending", toggle_index)
     toggle_body = lab[toggle_index:toggle_end]
     assert 'action === "wallet.disconnect"' in toggle_body
     assert "disconnectMcelTinyContractWallet(reason)" in toggle_body

@@ -37,7 +37,7 @@
 
     function runtimeStatus(readiness) {
       if (readiness?.fullApplicationSemanticReady === true) {
-        return "Full semantic coverage";
+        return "Intent catalog complete · runtime proof pending";
       }
       if (readiness?.runtimeCoreReady === true) {
         return "Core ready · partial coverage";

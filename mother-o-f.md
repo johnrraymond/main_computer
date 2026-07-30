@@ -6,10 +6,10 @@ Sources:
 
 ```text
 mother.md
-SHA-256: b239639116941085daabf33093481d18c21127199ed2e440eabcea240dea7ef0
+SHA-256: 4fca6c1c38f1f9670de68a79a45648bac96bdfd442f4b379c0f584d115f1a0c2
 
 mother-o.md
-SHA-256: 1a557a39ecbea95f65bc3dbb90988a5529b0d182cfe2ff5eea9264549d4776e4
+SHA-256: cab0da251036460ff4ad3208b8b6cd9643b13bd292caff1a51b1f09d09509276
 ```
 
 ## 1. Purpose and authority
