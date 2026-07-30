@@ -91,7 +91,7 @@
         "editorDraft.discarded"
       ];
       const LIVE_WORKSPACE_PERSISTENCE_KEY = "main-computer-code-studio-live-workspace-v1";
-      const MCEL_RUNTIME_PACKAGE_VERSION = "mcel-runtime.v0.1.15";
+      const MCEL_RUNTIME_PACKAGE_VERSION = "mcel-runtime.v0.1.16";
       const SCM_RECEIPT_VECTOR_VERSION = "1.0.0";
       const SCM_LAB_RECEIPT_KIND = "mcel-lab-medium-scm-proven-dev-network-app-receipt";
       const SCM_LAB_RECEIPT_PROOF_KIND = "mcel-code-studio-normalized-lab-receipt-vector";

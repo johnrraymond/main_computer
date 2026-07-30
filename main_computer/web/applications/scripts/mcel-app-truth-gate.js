@@ -190,6 +190,85 @@ var McelAppTruthGate = (() => {
     };
   }
 
+  function epistemicState(appId, input, epistemicStatus) {
+    if (!input) {
+      return {
+        present: false,
+        valid: true,
+        appId,
+        contractVersion: "",
+        claimCount: 0,
+        requiredClaimIds: [],
+        missingClaimIds: [],
+        blockedClaims: [],
+        statusCounts: {},
+        truthGateEligible: true,
+        error: null
+      };
+    }
+
+    if (!epistemicStatus || typeof epistemicStatus.assessTruthGate !== "function") {
+      return {
+        present: true,
+        valid: false,
+        appId,
+        contractVersion: "",
+        claimCount: 0,
+        requiredClaimIds: [],
+        missingClaimIds: [],
+        blockedClaims: [],
+        statusCounts: {},
+        truthGateEligible: false,
+        error: {
+          code: "epistemic-api-unavailable",
+          message: "McelEpistemicStatus is unavailable."
+        }
+      };
+    }
+
+    const source = Array.isArray(input) ? {claims: input} : asObject(input);
+    const claims = Array.isArray(source.resolvedClaims)
+      ? source.resolvedClaims
+      : (Array.isArray(source.claims) ? source.claims : []);
+    try {
+      const assessment = epistemicStatus.assessTruthGate({
+        claims,
+        requiredClaimIds: source.requiredClaimIds
+      });
+      return {
+        present: true,
+        valid: true,
+        appId,
+        contractVersion: safeString(assessment.contractVersion),
+        claimCount: Number(assessment.claimCount || 0),
+        requiredClaimIds: uniqueStrings(assessment.requiredClaimIds),
+        missingClaimIds: uniqueStrings(assessment.missingClaimIds),
+        blockedClaims: clonePlain(assessment.blockedClaims || []),
+        statusCounts: clonePlain(assessment.statusCounts || {}),
+        truthGateEligible: assessment.truthGateEligible === true,
+        error: null
+      };
+    } catch (error) {
+      return {
+        present: true,
+        valid: false,
+        appId,
+        contractVersion: safeString(epistemicStatus.CONTRACT_VERSION),
+        claimCount: claims.length,
+        requiredClaimIds: uniqueStrings(source.requiredClaimIds),
+        missingClaimIds: [],
+        blockedClaims: [],
+        statusCounts: {},
+        truthGateEligible: false,
+        error: {
+          code: safeString(error?.code || "epistemic-contract-invalid"),
+          message: safeString(error?.message || error),
+          diagnosticCodes: uniqueStrings(error?.report?.diagnosticCodes)
+        }
+      };
+    }
+  }
+
   function evidenceAppId(entry) {
     return safeString(
       entry?.appId ||
@@ -422,7 +501,7 @@ var McelAppTruthGate = (() => {
     };
   }
 
-  function buildFindings(requirements, adapter, surface, runtime, acceptance) {
+  function buildFindings(requirements, adapter, surface, runtime, acceptance, epistemic) {
     const findings = [];
 
     if (!requirements.present) {
@@ -593,10 +672,48 @@ var McelAppTruthGate = (() => {
       ));
     }
 
+    if (epistemic.present && !epistemic.valid) {
+      findings.push(finding(
+        "epistemic-contract-invalid",
+        "error",
+        "Supplied epistemic evidence does not satisfy the MCEL epistemic contract.",
+        {
+          appId: epistemic.appId,
+          error: epistemic.error
+        },
+        true
+      ));
+    } else if (epistemic.present) {
+      if (epistemic.missingClaimIds.length > 0) {
+        findings.push(finding(
+          "epistemic-required-claim-missing",
+          "error",
+          "One or more truth-gate-required epistemic claims are missing.",
+          {
+            appId: epistemic.appId,
+            missingClaimIds: epistemic.missingClaimIds
+          },
+          true
+        ));
+      }
+      if (epistemic.blockedClaims.length > 0) {
+        findings.push(finding(
+          "epistemic-claim-not-verified",
+          "error",
+          "A truth-gate-required semantic claim is not independently verified.",
+          {
+            appId: epistemic.appId,
+            blockedClaims: epistemic.blockedClaims
+          },
+          true
+        ));
+      }
+    }
+
     return sortFindings(findings);
   }
 
-  function deriveClaims(requirements, adapter, surface, runtime, acceptance) {
+  function deriveClaims(requirements, adapter, surface, runtime, acceptance, epistemic) {
     const specified =
       requirements.present &&
       requirements.schemaValid &&
@@ -610,11 +727,15 @@ var McelAppTruthGate = (() => {
       runtime.policyPassed;
     const acceptanceRequired = requirements.acceptanceContractCount > 0;
     const acceptanceProven = !acceptanceRequired || (acceptance.present && acceptance.passed);
+    const epistemicClaimsProven =
+      !epistemic.present ||
+      (epistemic.valid && epistemic.truthGateEligible);
     const semanticRuntimeProven =
       specified &&
       adapter.fullApplicationSemanticReady &&
       runtimeSurfaceProven &&
-      acceptanceProven;
+      acceptanceProven &&
+      epistemicClaimsProven;
 
     return {
       specified,
@@ -622,8 +743,9 @@ var McelAppTruthGate = (() => {
       partiallyImplemented: implementationPresent && !adapter.fullApplicationSemanticReady,
       runtimeSurfaceProven,
       acceptanceProven,
+      epistemicClaimsProven,
       semanticRuntimeProven,
-      verificationComplete: runtimeSurfaceProven && acceptanceProven
+      verificationComplete: runtimeSurfaceProven && acceptanceProven && epistemicClaimsProven
     };
   }
 
@@ -651,6 +773,7 @@ var McelAppTruthGate = (() => {
     const requirementsRegistry = resolveApi(options, "requirementsRegistry", "McelRequirementsRegistry");
     const domainAdapterRegistry = resolveApi(options, "domainAdapterRegistry", "McelDomainAdapterRegistry");
     const appSurfaceRegistry = resolveApi(options, "appSurfaceRegistry", "McelAppSurfaceRegistry");
+    const epistemicStatus = resolveApi(options, "epistemicStatus", "McelEpistemicStatus");
     const nowValue = options.now ?? Date.now();
     const nowMs = typeof nowValue === "number" ? nowValue : Date.parse(nowValue);
     if (!Number.isFinite(nowMs)) throw new Error("MCEL app truth evaluation requires a valid 'now' value.");
@@ -669,19 +792,26 @@ var McelAppTruthGate = (() => {
       maxEvidenceAgeMs
     );
     const acceptanceEvidence = normalizeAcceptanceEvidence(id, options.acceptanceEvidence);
+    const epistemicEvidence = epistemicState(
+      id,
+      options.epistemicEvidence,
+      epistemicStatus
+    );
     const findings = buildFindings(
       requirements,
       adapter,
       surface,
       runtimeEvidence,
-      acceptanceEvidence
+      acceptanceEvidence,
+      epistemicEvidence
     );
     const claims = deriveClaims(
       requirements,
       adapter,
       surface,
       runtimeEvidence,
-      acceptanceEvidence
+      acceptanceEvidence,
+      epistemicEvidence
     );
 
     return deepFreeze({
@@ -695,7 +825,8 @@ var McelAppTruthGate = (() => {
       surface,
       evidence: {
         runtime: runtimeEvidence,
-        acceptance: acceptanceEvidence
+        acceptance: acceptanceEvidence,
+        epistemic: epistemicEvidence
       },
       claims,
       findings,

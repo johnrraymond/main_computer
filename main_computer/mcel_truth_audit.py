@@ -72,6 +72,8 @@ CORE_SCRIPT_NAMES = (
     "mcel-requirements-registry.js",
     "mcel-domain-adapter-registry.js",
     "mcel-app-surface-registry.js",
+    "mcel-epistemic-status.js",
+    "mcel-observation-bundle.js",
     "mcel-app-truth-gate.js",
     "mcel-semantic-adapter-toolkit.js",
 )

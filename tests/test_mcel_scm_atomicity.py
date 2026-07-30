@@ -39,6 +39,16 @@ def _scm_bootstrap() -> str:
 const window = {{}};
 {_script("mcel-scm.js")}
 McelLabScm.clearDefinitions();
+let nextTestOperationId = 1;
+function scmOperation(instance, scope) {{
+  return McelLabScm.createOperation(instance, `${{scope}}:${{nextTestOperationId++}}`);
+}}
+function scmTransition(instance, name, payload = {{}}) {{
+  return McelLabScm.transition(instance, name, payload, scmOperation(instance, `transition:${{name}}`));
+}}
+function scmRepair(instance, name, payload = {{}}) {{
+  return McelLabScm.repairComponent(instance, name, payload, scmOperation(instance, `repair:${{name}}`));
+}}
 '''
 
 
@@ -120,7 +130,7 @@ const before = JSON.stringify({{
 const evidenceBefore = McelLabScm.exportEvidence(instance).evidence.length;
 let violation = null;
 try {{
-  McelLabScm.repairComponent(instance, "repair");
+  scmRepair(instance, "repair");
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -170,7 +180,7 @@ const before = JSON.stringify({{
 const evidenceBefore = McelLabScm.exportEvidence(instance).evidence.length;
 let violation = null;
 try {{
-  McelLabScm.repairComponent(instance, "repair");
+  scmRepair(instance, "repair");
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -216,7 +226,7 @@ const before = JSON.stringify({{
 const evidenceBefore = McelLabScm.exportEvidence(instance).evidence.length;
 let violation = null;
 try {{
-  McelLabScm.repairComponent(instance, "repair");
+  scmRepair(instance, "repair");
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -263,7 +273,7 @@ const before = JSON.stringify({{
 const evidenceBefore = McelLabScm.exportEvidence(instance).evidence.length;
 let violation = null;
 try {{
-  McelLabScm.transition(instance, "mutate");
+  scmTransition(instance, "mutate");
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -308,7 +318,7 @@ const before = JSON.stringify({{
 const evidenceBefore = McelLabScm.exportEvidence(instance).evidence.length;
 let violation = null;
 try {{
-  McelLabScm.transition(instance, "mutate");
+  scmTransition(instance, "mutate");
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -352,8 +362,8 @@ return "transition-result";
 {_scm_bootstrap()}
 McelLabScm.defineComponent("AtomicSuccess", {manifest});
 const instance = McelLabScm.createComponentInstance("AtomicSuccess");
-const transitionResult = McelLabScm.transition(instance, "mutate");
-const repairResult = McelLabScm.repairComponent(instance, "repair");
+const transitionResult = scmTransition(instance, "mutate");
+const repairResult = scmRepair(instance, "repair");
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
   transitionResult,
@@ -404,7 +414,7 @@ try {{
 }} catch (error) {{
   tamperError = {{name: error.name, message: error.message}};
 }}
-const result = McelLabScm.transition(instance, "mutate");
+const result = scmTransition(instance, "mutate");
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
   tamperError,
@@ -462,7 +472,7 @@ try {{
 }} catch (error) {{
   tamperError = {{name: error.name, message: error.message}};
 }}
-const result = McelLabScm.repairComponent(instance, "repair");
+const result = scmRepair(instance, "repair");
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
   tamperError,

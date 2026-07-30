@@ -53,6 +53,8 @@ Use the user-space contract, not internal law names, when deciding whether a bui
 | Law registry | `main_computer/web/applications/scripts/mcel-law-registry.js` | Registers and lists law descriptors. |
 | Platform spine | `main_computer/web/applications/scripts/mcel-platform-spine.js` | Runs cross-law proof, builds the subsumption lattice, and builds the adoption case. |
 | Browser proof | `mcel-browser-observer.js`, `mcel-browser-runner.js` | Captures browser facts and turns them into proof evidence. |
+| Epistemic contract | `main_computer/web/applications/scripts/mcel-epistemic-status.js` | Separates declared, observed, inferred, verified, rejected, and ambiguous semantic claims. |
+| Observation contract | `main_computer/web/applications/scripts/mcel-observation-bundle.js` | Defines repository-bound, read-only, multi-lens observation bundles and canonical fingerprints. |
 | Code Editor layout contract | `main_computer/web/applications/scripts/code-editor-layout-contract.js` | Live application-local dock tree, semantic preferences, owned-track fill, and generated containment. |
 | Git Tools layout contract | `main_computer/web/applications/scripts/git-tools-layout-contract.js` | Live application-local repository workflow layout and semantic preferences. |
 | Live Code Editor FLOG | `main_computer/flog_code_editor_live_smoke.py` | Verifies owned center fill, containment, control interception, proof-dock reclamation, and user-layout states. |

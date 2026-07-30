@@ -316,3 +316,28 @@ Promotion readiness is advisory. The audit reports the evidence needed for
 `legacy → runtime-baseline` and `runtime-baseline → semantic-runtime`, but only
 an explicit registry patch may change an app's declared maturity.
 
+## Observation and epistemic companion contract
+
+The gate accepts optional `epistemicEvidence` governed by
+`mcel.epistemic-status.v1`. This input may be a claim array, an object with
+`claims`, or an observation bundle with `resolvedClaims`.
+
+Compatibility is explicit:
+
+- an app with no epistemic evidence retains the existing truth-gate behavior;
+- once a claim is marked `requiredForTruthGate` or named in
+  `requiredClaimIds`, it must be present and `verified`;
+- `declared`, `observed`, `inferred`, `rejected`, and `ambiguous` required
+  claims cannot satisfy the gate;
+- invalid epistemic evidence produces `epistemic-contract-invalid`;
+- missing required claims produce `epistemic-required-claim-missing`;
+- non-verified required claims produce `epistemic-claim-not-verified`.
+
+The complete normalized assessment is retained at
+`evidence.epistemic`. The derived `epistemicClaimsProven` claim becomes false
+when a required epistemic claim is missing, invalid, or not verified.
+
+The truth gate does not perform inference and does not promote claims. Claim
+construction, conflict preservation, observation lenses, and validator-result
+requirements are specified in
+`pretty_docs/mcel-observation-and-inference.md`.

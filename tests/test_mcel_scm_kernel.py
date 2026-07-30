@@ -39,6 +39,13 @@ def _scm_bootstrap() -> str:
 const window = {{}};
 {_script("mcel-scm.js")}
 McelLabScm.clearDefinitions();
+let nextTestOperationId = 1;
+function scmOperation(instance, scope) {{
+  return McelLabScm.createOperation(instance, `${{scope}}:${{nextTestOperationId++}}`);
+}}
+function scmTransition(instance, name, payload = {{}}) {{
+  return McelLabScm.transition(instance, name, payload, scmOperation(instance, `transition:${{name}}`));
+}}
 """
 
 
@@ -210,7 +217,7 @@ const instance = McelLabScm.createComponentInstance("CodeStudio", {{
     }}
   }}
 }});
-const result = McelLabScm.transition(instance, "openFile", {{fileId: "src-app"}});
+const result = scmTransition(instance, "openFile", {{fileId: "src-app"}});
 const packet = McelLabScm.exportEvidence(instance);
 
 process.stdout.write(JSON.stringify({{
@@ -256,7 +263,7 @@ McelLabScm.defineComponent("CodeStudio", {{
 const instance = McelLabScm.createComponentInstance("CodeStudio");
 let violation = null;
 try {{
-  McelLabScm.transition(instance, "editDraft", {{text: "bad"}});
+  scmTransition(instance, "editDraft", {{text: "bad"}});
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -305,7 +312,7 @@ McelLabScm.defineComponent("CodeStudio", {{
 const instance = McelLabScm.createComponentInstance("CodeStudio");
 let violation = null;
 try {{
-  McelLabScm.transition(instance, "editDraft", {{text: "bad"}});
+  scmTransition(instance, "editDraft", {{text: "bad"}});
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -347,7 +354,7 @@ McelLabScm.defineComponent("DraftOwner", {{
 }});
 
 const instance = McelLabScm.createComponentInstance("DraftOwner");
-const result = McelLabScm.transition(instance, "editDraft", {{text: "new text"}});
+const result = scmTransition(instance, "editDraft", {{text: "new text"}});
 
 process.stdout.write(JSON.stringify({{
   ok: result.ok,
@@ -474,6 +481,7 @@ process.stdout.write(JSON.stringify({{
     typeof MCEL.defineComponent,
     typeof MCEL.validateComponentManifest,
     typeof MCEL.createComponentInstance,
+    typeof MCEL.createOperation,
     typeof MCEL.createChildContext,
     typeof MCEL.createEffectContext,
     typeof MCEL.runEffect,
@@ -490,7 +498,18 @@ process.stdout.write(JSON.stringify({{
     assert data["listed"] == ["FacadeStudio"]
     assert data["activeFileId"] == "src-app"
     assert data["evidenceKind"] == "mcel-scm-evidence-packet"
-    assert data["facadeMethods"] == ["function", "function", "function", "function", "function", "function", "function", "function", "function"]
+    assert data["facadeMethods"] == [
+        "function",
+        "function",
+        "function",
+        "function",
+        "function",
+        "function",
+        "function",
+        "function",
+        "function",
+        "function",
+    ]
 
 
 def test_scm_validates_child_slots_inputs_outputs_and_mutations(tmp_path: Path) -> None:
@@ -658,12 +677,24 @@ const explorer = McelLabScm.createChildContext(instance, "explorer");
 const editor = McelLabScm.createChildContext(instance, "editor");
 const fileIds = explorer.get("files").map((file) => file.id);
 
-explorer.emit("openFile", {{fileId: "test-app"}});
-editor.set("state.drafts.test-app", "updated draft");
+explorer.emit(
+  "openFile",
+  {{fileId: "test-app"}},
+  scmOperation(instance, "child:explorer:emit")
+);
+editor.set(
+  "state.drafts.test-app",
+  "updated draft",
+  scmOperation(instance, "child:editor:set")
+);
 
 let blocked = null;
 try {{
-  explorer.set("state.activeFileId", "src-app");
+  explorer.set(
+    "state.activeFileId",
+    "src-app",
+    scmOperation(instance, "child:explorer:set")
+  );
 }} catch (error) {{
   blocked = error.violation;
 }}

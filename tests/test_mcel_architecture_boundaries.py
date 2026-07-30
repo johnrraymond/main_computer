@@ -57,8 +57,10 @@ MCEL_LAYER_INVENTORY = {
         "main_computer/web/applications/scripts/mcel-code-editor-surface-status.js",
         "main_computer/web/applications/scripts/mcel-diagnostics-counter-widget.js",
         "main_computer/web/applications/scripts/mcel-document-editor-surface.js",
+        "main_computer/web/applications/scripts/mcel-epistemic-status.js",
         "main_computer/web/applications/scripts/mcel-file-explorer-surface.js",
         "main_computer/web/applications/scripts/mcel-neutral-surface-demo.js",
+        "main_computer/web/applications/scripts/mcel-observation-bundle.js",
         "main_computer/web/applications/scripts/mcel-requirements-registry.js",
         "main_computer/web/applications/scripts/mcel-self-diagnosis.js",
         "main_computer/web/applications/scripts/mcel-semantic-surface-ir.js",
@@ -147,6 +149,7 @@ CORE_FACADE_METHODS = [
     "listComponentDefinitions",
     "componentDefinition",
     "createComponentInstance",
+    "createOperation",
     "transition",
     "exportScmEvidence",
     "listChromes",
@@ -329,7 +332,13 @@ process.stdout.write(JSON.stringify(adoptionCase));
     if not node:
         pytest.skip("node is unavailable; static architecture guards still cover the public facade")
 
-    result = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        [node, "-"],
+        input=script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     adoption_case = json.loads(result.stdout)
 
     assert adoption_case["kind"] == "mcel-adoption-case"

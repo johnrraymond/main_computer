@@ -8498,6 +8498,32 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       };
     }
 
+    function runMcelScmEffect(scm, instance, effectName, payload = {}) {
+      return scm.runEffect(
+        instance,
+        effectName,
+        payload,
+        scm.createOperation(instance, `effect:${effectName}`)
+      );
+    }
+
+    function repairMcelScmComponent(scm, instance, strategyName, payload = {}) {
+      return scm.repairComponent(
+        instance,
+        strategyName,
+        payload,
+        scm.createOperation(instance, `repair:${strategyName}`)
+      );
+    }
+
+    function serializeMcelScmComponent(scm, instance, options = {}) {
+      return scm.serializeComponent(
+        instance,
+        options,
+        scm.createOperation(instance, "serialize")
+      );
+    }
+
     function mcelTinyContractEnforceTxDraftProvenance(instance, reason = "runtime-provenance-enforcement") {
       if (!instance?.runtime?.txDraft) return null;
       const request = selectedMcelTinyContractItem(instance);
@@ -8510,7 +8536,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         reason
       });
       const nextTxDraft = mcelTinyContractApplyTxDraftFreshness(instance.runtime.txDraft, freshness);
-      window.McelLabScm.runEffect(instance, "scm.enforceTxDraftProvenance", {
+      runMcelScmEffect(window.McelLabScm, instance, "scm.enforceTxDraftProvenance", {
         txDraft: nextTxDraft,
         txDraftIdentity: nextTxDraft.identityEnvelope || nextTxDraft.txDraftIdentity || instance.runtime.txDraftIdentity || null,
         txDraftValidity: freshness.validityEnvelope || nextTxDraft.validityEnvelope || null,
@@ -8580,7 +8606,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
 
     function mcelTinyContractProjectWalletBoundary(instance, boundary, reason = "wallet-boundary-projection") {
       if (!instance || !window.McelLabScm?.runEffect) return null;
-      return window.McelLabScm.runEffect(instance, "scm.projectWalletBoundary", {
+      return runMcelScmEffect(window.McelLabScm, instance, "scm.projectWalletBoundary", {
         boundary,
         reason
       });
@@ -12044,20 +12070,20 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       });
 
       if (options.exercise !== false) {
-        scm.runEffect(instance, "wallet.connect", {
+        runMcelScmEffect(scm, instance, "wallet.connect", {
           mock: true,
           provider: "mock-dev-provider",
           account: "0xDeaD00000000000000000000000000000000BEEF",
           chainId: "0x28757b2"
         });
         tinyState.walletConnectCount += 1;
-        scm.runEffect(instance, "network.verify");
+        runMcelScmEffect(scm, instance, "network.verify");
         tinyState.networkVerifyCount += 1;
-        scm.runEffect(instance, "release.select", {id: "rel-allowance-view"});
+        runMcelScmEffect(scm, instance, "release.select", {id: "rel-allowance-view"});
         tinyState.releaseSelectCount += 1;
-        scm.runEffect(instance, "release.draftTx");
+        runMcelScmEffect(scm, instance, "release.draftTx");
         tinyState.txDraftCount += 1;
-        scm.runEffect(instance, "release.approve");
+        runMcelScmEffect(scm, instance, "release.approve");
         tinyState.reviewedCount += 1;
       }
       return {scm, instance, routeInstance, defined};
@@ -13376,7 +13402,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           value: {account, canRequestProviderSignature: intentSignature.canRequestProviderSignature === true},
           rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
         });
-        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.requestIntentSignature", {
+        const effectEnvelope = runMcelScmEffect(window.McelLabScm, instance, "wallet.requestIntentSignature", {
           providerPromptEligible: intentSignature.canRequestProviderSignature === true,
           intentEnvelope,
           typedData,
@@ -13428,7 +13454,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           containment: {sourceChanged: false, txDraftCreated: false, runtimeMutationGoverned: true}
         });
       }
-      const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.requestIntentSignature", {
+      const effectEnvelope = runMcelScmEffect(window.McelLabScm, instance, "wallet.requestIntentSignature", {
         providerPromptEligible: intentSignature.canRequestProviderSignature === true,
         intentEnvelope,
         typedData,
@@ -13495,7 +13521,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           },
           rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
         });
-        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.sendPolicyBoundTransaction", {
+        const effectEnvelope = runMcelScmEffect(window.McelLabScm, instance, "wallet.sendPolicyBoundTransaction", {
           sendGate,
           providerTransactionRequest,
           outcome,
@@ -13575,7 +13601,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         });
       }
 
-      const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.sendPolicyBoundTransaction", {
+      const effectEnvelope = runMcelScmEffect(window.McelLabScm, instance, "wallet.sendPolicyBoundTransaction", {
         sendGate,
         providerTransactionRequest,
         outcome,
@@ -14294,7 +14320,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         const payload = await readMcelTinyContractWalletInitialProviderSnapshot(reason);
         const outcome = recordMcelTinyContractExternalOutcome(payload.outcome);
         payload.outcome = outcome;
-        const result = window.McelLabScm.runEffect(instance, "wallet.provider.initialSnapshot", payload);
+        const result = runMcelScmEffect(window.McelLabScm, instance, "wallet.provider.initialSnapshot", payload);
         tinyState.providerInitialSnapshotCount = Number(tinyState.providerInitialSnapshotCount || 0) + 1;
         recordMcelTinyContractEvidence(
           "wallet-provider-initial-snapshot",
@@ -15452,7 +15478,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         return null;
       }
       try {
-        const result = window.McelLabScm.runEffect(instance, effectName, payload);
+        const result = runMcelScmEffect(window.McelLabScm, instance, effectName, payload);
         if (effectName === "wallet.provider.accountsChanged") {
           const eventResult = result?.result && typeof result.result === "object" ? result.result : result || {};
           tinyState.providerAccountsChangedCount += 1;
@@ -16046,7 +16072,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         },
         nextAction: "Approve or cancel the wallet authorization request in the provider popup."
       });
-      const result = window.McelLabScm.runEffect(instance, "wallet.connect.authorizationPending", {
+      const result = runMcelScmEffect(window.McelLabScm, instance, "wallet.connect.authorizationPending", {
         provider: adapter.providerKind,
         liveProvider: true,
         chainId: instance?.runtime?.network?.chainId || "",
@@ -16098,8 +16124,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         const walletPayload = await readMcelTinyContractWalletProvider(true, walletBacklogOptions);
         const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromWalletPayload(walletPayload));
         walletPayload.outcome = outcome;
-        const result = window.McelLabScm.runEffect(instance, "wallet.connect", walletPayload);
-        const networkResult = window.McelLabScm.runEffect(instance, "network.verify");
+        const result = runMcelScmEffect(window.McelLabScm, instance, "wallet.connect", walletPayload);
+        const networkResult = runMcelScmEffect(window.McelLabScm, instance, "network.verify");
         tinyState.walletConnectCount += 1;
         tinyState.networkVerifyCount += 1;
         recordMcelTinyContractEvidence(
@@ -16128,7 +16154,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         mcelTinyContractWalletAdapterState().lastError = detail.message;
         let effectEnvelope = null;
         try {
-          effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.connect", {
+          effectEnvelope = runMcelScmEffect(window.McelLabScm, instance, "wallet.connect", {
             provider: mcelTinyContractWalletAdapterState().providerKind || "exception",
             account: "",
             chainId: "",
@@ -16213,7 +16239,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           ? "Wait for provider permission revoke to settle; MCEL has already locked runtime transaction drafting."
           : "Provider is unavailable; MCEL will still clear local wallet runtime through SCM."
       }));
-      const result = window.McelLabScm.runEffect(instance, "wallet.disconnect.pending", {
+      const result = runMcelScmEffect(window.McelLabScm, instance, "wallet.disconnect.pending", {
         provider: adapter.providerKind,
         liveProvider: adapter.liveProvider === true,
         outcome,
@@ -16273,7 +16299,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       disconnectOutcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromRevoke(revoke));
       settleMcelWalletProviderPermissionRequestForOutcome(disconnectOutcome);
       try {
-        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.disconnect", {revoke, outcome: disconnectOutcome});
+        const effectEnvelope = runMcelScmEffect(window.McelLabScm, instance, "wallet.disconnect", {revoke, outcome: disconnectOutcome});
         const effectResult = effectEnvelope?.result || effectEnvelope;
         tinyState.walletDisconnectCount += 1;
         if (effectResult?.disconnected === true) {
@@ -16329,7 +16355,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       }
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return;
-      const result = window.McelLabScm.runEffect(instance, "network.verify");
+      const result = runMcelScmEffect(window.McelLabScm, instance, "network.verify");
       tinyState.networkVerifyCount += 1;
       recordMcelTinyContractEvidence(
         "network",
@@ -16365,7 +16391,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
         };
       }
-      const result = window.McelLabScm.runEffect(instance, "release.draftTx", {draftProbe});
+      const result = runMcelScmEffect(window.McelLabScm, instance, "release.draftTx", {draftProbe});
       const effectResult = result?.result || result || {};
       tinyState.txDraftCount += 1;
       recordMcelTinyContractEvidence(
@@ -16419,7 +16445,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       }
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return;
-      const result = window.McelLabScm.repairComponent(instance, "repairRuntimeProofChip", {
+      const result = repairMcelScmComponent(window.McelLabScm, instance, "repairRuntimeProofChip", {
         reason: "external-outcome-proof-display-gap",
         text: `Repair packet ready for ${reason}; no live AI call was made.`
       });
@@ -16452,7 +16478,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       }
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return;
-      const result = window.McelLabScm.runEffect(instance, "release.approve", {reason});
+      const result = runMcelScmEffect(window.McelLabScm, instance, "release.approve", {reason});
       tinyState.reviewedCount += 1;
       recordMcelTinyContractEvidence(
         "source-write",
@@ -16514,7 +16540,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       if (!items.length) return;
       tinyState.selectedIndex = (Number(tinyState.selectedIndex || 0) + 1) % items.length;
       const next = items[tinyState.selectedIndex];
-      const result = window.McelLabScm.runEffect(instance, "release.select", {id: next.id});
+      const result = runMcelScmEffect(window.McelLabScm, instance, "release.select", {id: next.id});
       tinyState.releaseSelectCount += 1;
       recordMcelTinyContractEvidence(
         "effect",
@@ -16551,7 +16577,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           layoutObservation = mcelTinyContractObservation(app);
           layoutCheck = window.McelLabScm.checkLayoutContract(instance, layoutObservation);
           styleCheck = window.McelLabScm.checkStyleContract(instance, layoutObservation);
-          scmSerialization = window.McelLabScm.serializeComponent(instance, {format: "clean-source-json"});
+          scmSerialization = serializeMcelScmComponent(window.McelLabScm, instance, {format: "clean-source-json"});
         } catch (error) {
           recordMcelTinyContractEvidence("serialize", "SCM serialization/layout/style check failed.", "fail", {
             code: error?.violation?.code || error?.name || "Error",

@@ -6,13 +6,13 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 4fca6c1c38f1f9670de68a79a45648bac96bdfd442f4b379c0f584d115f1a0c2
+SHA-256: bbc69b2e602e234a0e1f844c51f3f079c22669b2ac19c100f7e7c4162549a442
 
 mother-o.md
-SHA-256: cab0da251036460ff4ad3208b8b6cd9643b13bd292caff1a51b1f09d09509276
+SHA-256: 75e8b39cb348a653cf2cf24a5fddee29cc862803a5403eac711bbb542865d68f
 
 mother-o-f.md
-SHA-256: 11a28c1c11502bf8c0fdd6264718ae5a76ba3c262ff662a7c8e312f83b4b53ab
+SHA-256: 4a5ab69e5a3dcc20d8676cc43863f51320e7612b9d1dcc5db068000e0a797bd6
 ```
 
 ## 1. Purpose and authority
@@ -237,7 +237,12 @@ Core modules MUST NOT import control, protocol, adapter, or operation modules.
 State modules MAY import core modules only, except that
 `MOTHER-OFM-STATE-002` MAY import the immutable types and read/pure-builder
 seams of `MOTHER-OFM-STATE-001`. That dependency is one-way:
-`MOTHER-OFM-STATE-001` MUST NOT import `MOTHER-OFM-STATE-002`. Live adapters
+`MOTHER-OFM-STATE-001` MUST NOT import `MOTHER-OFM-STATE-002`.
+`MOTHER-OFM-STATE-005` MAY likewise import the immutable types and
+`read_private_state`/`build_recovery_closure` seams of
+`MOTHER-OFM-STATE-004` solely to bind and revalidate the excluded secret-bearing
+generation subtree immediately before seal, CAS, or reconciliation. That
+dependency is one-way: STATE-004 MUST NOT import STATE-005. Live adapters
 MAY import core modules and vendor clients, but MUST NOT import operation
 modules. Protocol modules MAY import state, transport, adapter, and core
 modules. Operation modules MAY import any declared lower layer.
@@ -314,6 +319,9 @@ method-qualified section 7 chain together.
 | `ContentHash` | algorithm, lowercase digest |
 | `NetworkHeadPaths` | canonical journal-head path and committed-state projection path; named immutable value, never positional |
 | `ProjectionPaths` | canonical projection-generations root and active projection pointer for one network; named immutable value, never positional |
+| `PrivateStatePaths` | one CORE-005-resolved live or generation-staging private-state root and its exact identity, metadata, recovery-object, and recovery-manifest paths |
+| `GenerationPaths` | canonical per-network local-generation root and active-generation pointer; named immutable value, never positional |
+| `PrivateStateBinding` | private-state kind, positive generation, exact identity-document hash, and exact private-recovery-manifest hash |
 | `HeadTuple` | journal identity, sequence, entry hash, authorization-bundle hash, state hash, head ID, head epoch |
 | `AuthorityGeneration` | predecessor head tuple or synthetic birth generation, current replicas, authority participants |
 | `ReplicaSets` | current, prospective, transition, desired, retiring, successor-authority |
@@ -2004,6 +2012,528 @@ exactly one possible effect: the delegated CORE-011 active-pointer CAS.
 Delegated CORE-011 publication failures retain their complete error envelope
 and durable-effect references.
 
+#### 4.1.5 STATE-004 private-state and STATE-005 generation contracts
+
+`MOTHER-OFM-CORE-001` owns and exports these exact frozen, slotted cross-module
+values:
+
+| Type | Exact fields in declaration order |
+|---|---|
+| `PrivateStatePaths` | `root: Path`, `identity_file: Path`, `metadata_file: Path`, `recovery_objects_root: Path`, `recovery_manifest: Path` |
+| `GenerationPaths` | `generations_root: Path`, `active_pointer: Path` |
+| `PrivateStateBinding` | `private_state_kind: str`, `generation: int`, `content_hash: ContentHash`, `recovery_manifest_hash: ContentHash` |
+| `StateGeneration` | `generation_id: str`, `immutable_root: ContentHash`, `manifest_hash: ContentHash`, `active_pointer_predecessor: ContentHash | None` |
+
+`PrivateStateBinding.private_state_kind` is exactly
+`main_computer.mother.private_state.v1`. Its generation is a positive integer;
+booleans are rejected. `StateGeneration.generation_id` uses the CORE-005
+identifier grammar. Its `active_pointer_predecessor` is `None` only when the
+expected predecessor pointer is absent; otherwise it is CORE-004 SHA-256 of the
+exact predecessor pointer bytes.
+
+CORE-005 is the only logical path resolver. Its exact new methods are:
+
+```python
+def resolve_private_state_paths(self) -> PrivateStatePaths: ...
+
+def resolve_generation_private_state_paths(
+    self,
+    network: str,
+    generation_id: str,
+) -> PrivateStatePaths: ...
+
+def resolve_generation_paths(self, network: str) -> GenerationPaths: ...
+```
+
+They return only these layouts:
+
+```text
+# live global private state
+/runtime/state/mother/
+  identity.private.yaml
+  identity.private.meta.json
+  private-recovery/
+    manifest.json
+    objects/
+
+# private-state copy inside an unpublished local generation
+/runtime/state/mother/generations/<network>/<generation-id>/private-state/
+  identity.private.yaml
+  identity.private.meta.json
+  private-recovery/
+    manifest.json
+    objects/
+
+# per-network local generation authority
+/runtime/state/mother/generations/<network>/
+/runtime/state/mother/active-generations/<network>.json
+```
+
+The live private-state root is global, not per-network. A generation-staging
+copy is transfer and verification material; selecting a per-network generation
+does not select or replace the global live private-state root. Every method
+below accepts only one of the exact CORE-005 pairings for
+`operation.network`. A relative path, caller-composed layout, traversal,
+symlink, wrong network or generation, or live/staging path mixture is
+`MOTHER_STATE_MALFORMED_PRIVATE_STATE` or
+`MOTHER_STATE_MALFORMED_GENERATION` before I/O.
+
+##### STATE-004 owned values and signatures
+
+`MOTHER-OFM-STATE-004` owns and exports these exact frozen, slotted dataclasses:
+
+| Type | Exact fields in declaration order |
+|---|---|
+| `PrivateStateMetadata` | `kind: str`, `private_state_kind: str`, `generation: int`, `content_hash: ContentHash`, `previous_content_hash: ContentHash | None`, `recovery_manifest_hash: ContentHash`, `updated_at: str`, `updated_by_action_id: str` |
+| `PrivateRecoveryManifestEntry` | `relative_path: str`, `generation: int`, `content_hash: ContentHash`, `byte_length: int` |
+| `PrivateRecoveryManifest` | `manifest_version: str`, `private_state_generation: int`, `entries: tuple[PrivateRecoveryManifestEntry, ...]` |
+| `PrivateRecoveryObject` | `relative_path: str`, `generation: int`, `content_hash: ContentHash`, `payload: bytes` |
+| `PrivateStateReadResult` | `paths: PrivateStatePaths`, `document_bytes: bytes`, `canonical_object_bytes: bytes`, `metadata: PrivateStateMetadata`, `recovery_manifest: PrivateRecoveryManifest`, `recovery_objects: tuple[PrivateRecoveryObject, ...]`, `binding: PrivateStateBinding` |
+| `ResolvedValidatorIdentity` | `validator_ref: str`, `address: str`, `private_key: bytes` |
+| `PrivateRecoveryClosure` | `source_paths: PrivateStatePaths`, `document_bytes: bytes`, `metadata_bytes: bytes`, `recovery_manifest_bytes: bytes`, `recovery_objects: tuple[PrivateRecoveryObject, ...]`, `binding: PrivateStateBinding`, `closure_hash: ContentHash` |
+| `PrivateStateInstallResult` | `installed: bool`, `binding: PrivateStateBinding`, `commit_manifest_hash: ContentHash` |
+
+Every type validates exact member types. Public collections are tuples only.
+Strings are non-empty and already NFC. Integers are positive, except
+`byte_length`, which is non-negative; booleans are rejected. Payloads and
+durable documents are exact `bytes`. Secret-bearing fields and types use a
+redacted `repr`; their document, private-key, and payload bytes never appear in
+exception text, logs, reports, evidence, or generic CORE-001 serialization.
+
+The supported versions are exactly:
+
+```text
+main_computer.mother.private_state.v1
+main_computer.mother.private_state_metadata.v1
+main_computer.mother.private_recovery_manifest.v1
+```
+
+The public signatures are exactly:
+
+```python
+def read_private_state(
+    paths: PrivateStatePaths,
+    *,
+    operation: OperationIdentity,
+) -> PrivateStateReadResult: ...
+
+def resolve_validator_ref(
+    private_state: PrivateStateReadResult,
+    network: str,
+    node_id: str,
+    *,
+    operation: OperationIdentity,
+) -> ResolvedValidatorIdentity: ...
+
+def build_recovery_closure(
+    private_state: PrivateStateReadResult,
+    *,
+    operation: OperationIdentity,
+) -> PrivateRecoveryClosure: ...
+
+def install_verified_private_state(
+    paths: PrivateStatePaths,
+    closure: PrivateRecoveryClosure,
+    expected_binding: PrivateStateBinding | None,
+    *,
+    operation: OperationIdentity,
+) -> PrivateStateInstallResult: ...
+```
+
+The exact metadata wire object is canonical CORE-003 JSON:
+
+```json
+{
+  "content_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+  "generation": 12,
+  "kind": "main_computer.mother.private_state_metadata.v1",
+  "previous_content_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+  "private_state_kind": "main_computer.mother.private_state.v1",
+  "recovery_manifest_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+  "updated_at": "<NFC timestamp>",
+  "updated_by_action_id": "<NFC operation id>"
+}
+```
+
+`previous_content_hash` is `null` only for generation 1 and is non-null for
+every later generation. The exact private-recovery manifest wire object is:
+
+```json
+{
+  "entries": [
+    {
+      "byte_length": 123,
+      "content_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+      "generation": 12,
+      "relative_path": "<contained relative path>"
+    }
+  ],
+  "manifest_version": "main_computer.mother.private_recovery_manifest.v1",
+  "private_state_generation": 12
+}
+```
+
+Manifest entries are ordered by `relative_path.encode("utf-8")` and duplicate
+paths are forbidden. Every entry generation equals
+`private_state_generation`. A relative path contains one or more nonempty `/`
+separated CORE-005 identifier segments. It is never absolute, contains no
+backslash, NUL, empty, `.` or `..` segment, and cannot name `manifest.json`.
+It resolves only beneath `recovery_objects_root`. `byte_length` and
+`content_hash` cover the exact object payload.
+
+`identity.private.yaml` is byte-for-byte CORE-003 canonical YAML for one
+mapping. Its top-level `schema_version` is integer `1` and `kind` is
+`main_computer.mother.private_state.v1`. Parsing uses the YAML safe subset and
+rejects tags, aliases, anchors, merge keys, duplicate mapping keys, floats,
+timestamps as implicit types, non-string mapping keys, non-NFC strings, and
+every value unsupported by CORE-003. Equality with freshly emitted canonical
+YAML is mandatory. `canonical_object_bytes` is CORE-003 canonical JSON for the
+same decoded mapping and is the only schema-validation representation passed to
+CORE-006; it remains secret-bearing and MUST NOT be logged, reported, or stored
+as evidence. The exact YAML source bytes remain the content-hash owner.
+
+`read_private_state` performs a bounded stable read with the recovery manifest
+as commit determinant: read and validate the manifest; read metadata, identity,
+and every named recovery object; then reread the manifest and require identical
+bytes. It verifies every exact hash, size, version, generation, path, and
+binding. `metadata.content_hash` hashes the exact YAML bytes;
+`metadata.recovery_manifest_hash` hashes the exact canonical manifest bytes.
+The returned `PrivateStateBinding` is reconstructed from verified durable
+bytes, never accepted from a caller.
+
+The local permission contract is fail-closed. On POSIX, every private-state
+directory is an owned regular directory with mode `0700`, and every identity,
+metadata, manifest, and recovery-object file is an owned regular file with
+mode `0600`; group or other permission bits are forbidden. On Windows, the
+equivalent DACL grants the configured Mother service identity and `SYSTEM`
+only, with no inherited broad access. A symlink, junction, reparse escape,
+unexpected owner, or broader access is invalid. Installation establishes those
+permissions before publication; reads verify them before loading secret bytes.
+
+`resolve_validator_ref` looks up exactly
+`networks.<network>.nodes.<node_id>.validator_ref`, requires that value to be
+the exact string
+`networks.<network>.validators.<validator-id>`, and follows it inside the same
+decoded document only. The referenced record has exactly one lowercase
+`0x`-prefixed 40-hex-character address and one lowercase `0x`-prefixed
+64-hex-character private key. It returns the key as the 32 decoded bytes.
+Cryptographic address derivation and ownership proof remain ID-001
+responsibilities; STATE-004 does not claim that structural equality proves key
+ownership.
+
+`build_recovery_closure` is pure over a previously verified read result. It
+reconstructs the exact canonical metadata and manifest bytes, rechecks every
+document/object hash and binding, and computes `closure_hash` as CORE-004
+`ordered_root` over these members in this order:
+
+```text
+sha256(identity.private.yaml exact bytes)
+sha256(identity.private.meta.json exact bytes)
+sha256(private-recovery/manifest.json exact bytes)
+for each canonical manifest entry:
+  sha256(canonical JSON of {relative_path, generation, content_hash, byte_length})
+```
+
+The recovery-object payload hashes are already bound by their canonical entry
+rows. No Coolify API credential, external secret backend, or unmanifested file
+MAY enter the closure.
+
+`install_verified_private_state` independently revalidates the complete closure
+before writing. `expected_binding=None` means the target MUST be absent or
+contain only byte-identical retry remnants. A non-null expected binding is an
+idempotency assertion: the target MUST already be fully readable with that
+binding, and the closure binding MUST equal it. In that case the method verifies
+all bytes and returns without rewriting them. STATE-004 never overwrites a
+different complete target in place. Recovery or rectification that replaces a
+live binding requires a later, expressly specified authority transaction and
+MUST NOT reinterpret this API as an unconditional overwrite.
+
+Installation durably creates recovery objects in manifest order, then the
+identity and metadata files, and publishes
+`private-recovery/manifest.json` last through CORE-011. That manifest is the
+commit determinant. The same complete closure is idempotent and returns
+`installed=False`; different bytes at any existing target fail closed.
+Interruption before manifest publication leaves no readable committed private
+state. After publication, reconciliation rereads the manifest and all bound
+bytes; cleanup ambiguity never reverses the manifest-determined outcome.
+
+##### STATE-005 owned values and signatures
+
+`MOTHER-OFM-STATE-005` owns and exports these exact frozen, slotted dataclasses:
+
+| Type | Exact fields in declaration order |
+|---|---|
+| `GenerationManifestEntry` | `relative_path: str`, `content_hash: ContentHash`, `byte_length: int` |
+| `GenerationManifest` | `manifest_version: str`, `generation_id: str`, `network: str`, `generation_kind: str`, `owner_operation_id: str`, `source_head: HeadTuple | None`, `private_state: PrivateStateBinding`, `private_state_closure_hash: ContentHash`, `active_pointer_predecessor: ContentHash | None`, `entries: tuple[GenerationManifestEntry, ...]` |
+| `GenerationStaging` | `generation_id: str`, `network: str`, `generation_kind: str`, `root: Path`, `owner_operation_id: str`, `source_head: HeadTuple | None`, `private_state: PrivateStateBinding`, `expected_pointer: bytes | None` |
+| `SealedGeneration` | `generation: StateGeneration`, `manifest: GenerationManifest`, `manifest_bytes: bytes`, `root: Path` |
+| `GenerationActivation` | `generation_id: str`, `manifest_hash: ContentHash`, `immutable_root: ContentHash`, `expected_pointer: bytes | None`, `activation_record_hash: ContentHash`, `private_state: PrivateStateBinding` |
+| `GenerationSwitchResult` | `switched: bool`, `generation_id: str`, `manifest_hash: ContentHash`, `pointer_bytes: bytes` |
+| `GenerationReconciliationResult` | `status: str`, `generation_id: str`, `pointer_bytes: bytes | None` |
+| `GenerationDiscardResult` | `discarded: bool`, `already_absent: bool`, `generation_id: str` |
+
+Strings and paths obey the same NFC, exact-type, CORE-005 identifier, and
+containment rules above. Collections are tuples only. `byte_length` is a
+non-negative integer and booleans are rejected. Exact bytes are never coerced.
+`generation_kind` is one of:
+
+```text
+prospective-host
+local-adoption
+local-recovery
+network-birth
+```
+
+`source_head` is non-null for `prospective-host` and `local-adoption`; it is
+optional for `local-recovery`; and it is null for `network-birth`. The closed
+versions are:
+
+```text
+mother.state-generation-descriptor.v1
+mother.state-generation-manifest.v1
+mother.state-generation-pointer.v1
+```
+
+The public signatures are exactly:
+
+```python
+def create_staging(
+    paths: GenerationPaths,
+    generation_id: str,
+    generation_kind: str,
+    source_head: HeadTuple | None,
+    private_state: PrivateStateBinding,
+    expected_pointer: bytes | None,
+    *,
+    operation: OperationIdentity,
+) -> GenerationStaging: ...
+
+def seal_generation(
+    staging: GenerationStaging,
+    staged_private_state_paths: PrivateStatePaths,
+    *,
+    operation: OperationIdentity,
+) -> SealedGeneration: ...
+
+def discard_unpublished(
+    paths: GenerationPaths,
+    generation_id: str,
+    *,
+    operation: OperationIdentity,
+) -> GenerationDiscardResult: ...
+
+def switch_active(
+    paths: GenerationPaths,
+    activation: GenerationActivation,
+    staged_private_state_paths: PrivateStatePaths,
+    live_private_state_paths: PrivateStatePaths,
+    *,
+    operation: OperationIdentity,
+) -> GenerationSwitchResult: ...
+
+def reconcile_active(
+    paths: GenerationPaths,
+    activation: GenerationActivation,
+    staged_private_state_paths: PrivateStatePaths,
+    live_private_state_paths: PrivateStatePaths,
+    *,
+    operation: OperationIdentity,
+) -> GenerationReconciliationResult: ...
+```
+
+`create_staging` validates an existing expected pointer as the exact canonical
+pointer wire object below and binds its exact SHA-256, or binds `None` when no
+pointer exists. It durably creates only:
+
+```text
+GenerationPaths.generations_root/<generation-id>/generation.json
+```
+
+`generation.json` is the canonical descriptor containing
+`descriptor_version`, `generation_id`, `network`, `generation_kind`,
+`owner_operation_id`, `source_head`, `private_state`, and
+`active_pointer_predecessor`. It creates no candidate state on behalf of a
+domain module. The same operation and exact descriptor are idempotent; an
+existing different descriptor, foreign owner, manifest, symlink, or
+unclassified content is a conflict.
+
+Its exact canonical JSON wire object is:
+
+```json
+{
+  "active_pointer_predecessor": null,
+  "descriptor_version": "mother.state-generation-descriptor.v1",
+  "generation_id": "<generation-id>",
+  "generation_kind": "network-birth",
+  "network": "<network>",
+  "owner_operation_id": "<operation-id>",
+  "private_state": {
+    "content_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+    "generation": 1,
+    "private_state_kind": "main_computer.mother.private_state.v1",
+    "recovery_manifest_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1}
+  },
+  "source_head": null
+}
+```
+
+For a non-null predecessor, `active_pointer_predecessor` is the exact
+`ContentHash` wire object. For a non-null source, `source_head` is the exact
+section 4.1.3 `HeadTuple` wire object. No additional descriptor field is
+accepted.
+
+The traced enrollment, recovery, migration, or sync module writes its complete
+candidate beneath the returned root through its own declared writers.
+`seal_generation` then walks the root without following links and rejects
+devices, sockets, hard-linked aliases, symlinks, reparse points, temporary
+files, an unexpected reserved `manifest.json`, or a file changed during its
+bounded read/hash/reread. An already-published manifest is handled only by the
+exact idempotent verification path below. It requires `generation.json` and at
+least one other regular file outside the private-state subtree. Relative paths
+use nonempty `/`-separated CORE-005 identifier segments with no absolute,
+empty, `.`, `..`, backslash, or NUL component. Entries are unique and ordered
+by `relative_path.encode("utf-8")`.
+
+The exact generation manifest wire object is:
+
+```json
+{
+  "active_pointer_predecessor": null,
+  "entries": [
+    {
+      "byte_length": 123,
+      "content_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+      "relative_path": "generation.json"
+    }
+  ],
+  "generation_id": "<generation-id>",
+  "generation_kind": "network-birth",
+  "manifest_version": "mother.state-generation-manifest.v1",
+  "network": "<network>",
+  "owner_operation_id": "<operation-id>",
+  "private_state": {
+    "content_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+    "generation": 12,
+    "private_state_kind": "main_computer.mother.private_state.v1",
+    "recovery_manifest_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1}
+  },
+  "private_state_closure_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+  "source_head": null
+}
+```
+
+The example uses `null` where first-generation/network-birth values permit it;
+other kinds preserve the exact typed values. The illustrative kind is
+`network-birth` whenever `source_head` and `active_pointer_predecessor` are both
+null.
+
+The STATE-004-owned `private-state/` subtree is not read or generically
+serialized by STATE-005. `seal_generation` requires its exact CORE-005 staging
+paths, calls STATE-004 `read_private_state` and `build_recovery_closure`, and
+requires the returned binding to equal `staging.private_state`. It excludes
+that subtree from generic file walking and binds its exact returned
+`closure_hash` as `private_state_closure_hash`. Every other file beneath the
+generation root, except the reserved `manifest.json`, has one manifest entry.
+
+`immutable_root` is CORE-004 `ordered_root` over
+`private_state_closure_hash` followed by
+`sha256(canonical_json(entry))` for every canonical entry. `manifest_hash` is
+SHA-256 of the exact manifest bytes. When no manifest exists,
+`seal_generation` durably creates `manifest.json` last through CORE-011,
+rereads and rehashes the whole sealed tree, and returns the corresponding
+`StateGeneration`. When the exact manifest already exists, it verifies the
+same sealed tree and returns the identical result; a different or malformed
+manifest is rejected. Once a manifest exists, no module MAY modify, add, or
+remove a member. A changed sealed tree is invalid, never a new generation with
+the same ID.
+
+The active pointer is exact canonical JSON:
+
+```json
+{
+  "activation_record_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+  "active_pointer_predecessor": null,
+  "generation_id": "<generation-id>",
+  "immutable_root": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+  "manifest_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+  "network": "<network>",
+  "pointer_version": "mother.state-generation-pointer.v1",
+  "private_state": {
+    "content_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+    "generation": 12,
+    "private_state_kind": "main_computer.mother.private_state.v1",
+    "recovery_manifest_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1}
+  }
+}
+```
+
+`GenerationActivation` is reconstructed from the independently durable
+activation-prepared record owned by the calling protocol. `switch_active`
+independently stable-reads and verifies the exact manifest and every generic
+member. Through STATE-004, it freshly rereads and rebuilds the staged private
+closure and rereads the live private state. It requires all generation,
+network, owner, predecessor, root, closure, and activation fields to agree, and
+requires the live and staged bindings to equal
+`activation.private_state == manifest.private_state`. It then calls CORE-011
+`atomic_pointer_cas` exactly once with `activation.expected_pointer`. No file,
+manifest, or pointer write occurs before all verification succeeds. CAS
+mismatch returns `switched=False` with the proposed canonical pointer bytes; it
+is not an overwrite or an exception.
+
+Because the live private-state root is global while active-generation pointers
+are per-network, STATE-005 never installs or replaces private state. A staged
+generation MAY contain a verified private-state copy, but activation requires
+its binding to equal the already-installed global binding. A disagreement
+returns `MOTHER_STATE_PRIVATE_STATE_CONFLICT` before CAS and routes to explicit
+`recover-head` or authority rectification. `sync-state` cannot choose a winner,
+even when every remote network replica agrees on a different private-state
+generation.
+
+`reconcile_active` validates the same sealed generation, activation record,
+fresh staged private closure, and fresh live private-state binding through the
+supplied CORE-005 paths, then bounded-stable-reads the active pointer. Its exact
+status precedence and meaning are:
+
+```text
+corrupt:
+  pointer bytes are present but malformed, the pointer is absent when
+  activation.expected_pointer is non-null, or the selected sealed generation
+  no longer verifies
+committed:
+  pointer bytes equal the exact proposed replacement
+precommit:
+  pointer bytes equal activation.expected_pointer, including both absent
+superseded:
+  pointer is a different well-formed generation pointer
+```
+
+The returned `pointer_bytes` are the exact observed bytes, or `None` when
+absent. No status mutates state. `committed` closes rollback and requires
+forward completion; `precommit` permits same activation retry or rollback;
+`superseded` requires reobservation/operator handling; `corrupt` blocks normal
+operation.
+
+`discard_unpublished` first stable-reads the active pointer, resolves exactly
+one contained generation, verifies its descriptor owner equals
+`operation.operation_id`, and refuses deletion if any well-formed active
+pointer names that generation. An absent target returns
+`discarded=False, already_absent=True`. An owned unsealed or sealed inactive
+target is removed without following links, and parent-directory durability is
+confirmed before `discarded=True`. A foreign, malformed, active, or
+unclassifiable target is never deleted. This API is for unpublished local
+generation roots only; projection repair deletes its distinct
+`projection-generations/` target through MAINT-003 and never calls STATE-005.
+The only successful flag pairs are `(True, False)` after confirmed deletion and
+`(False, True)` for an already absent target.
+
+STATE-004 and STATE-005 never acquire operation scope, network authority,
+membership, or recovery authority themselves. Callers provide those proofs
+through the traced functionality. Delegated CORE-011 errors preserve their
+complete code, module, retry, authority-effect, durable-effect, evidence, and
+cause fields. After a private manifest or active-generation pointer MAY have
+published, its durable bytes determine the result. No adapter remaps that
+effect to an invented durable-effect kind.
+
 ### 4.2 Error envelope
 
 All expected failures use `MotherError` with:
@@ -2074,6 +2604,18 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_STATE_MALFORMED_PROJECTION` | `MOTHER-OFM-STATE-003.render_generation,compare_generation,build_manifest,publish_generation` | `never` | `none` | A public typed input, projection path pairing, generation identifier, tuple member, ordering, canonical replay state, expected pointer, or constructor value is malformed or uninterpretable. Stored projection damage observed by `compare_generation` is returned as `missing` or `corrupt`, not raised under this code. |
 | `MOTHER_STATE_PROJECTION_INVALID` | `MOTHER-OFM-STATE-003.render_generation,build_manifest,publish_generation` | `never` | `none` | An interpretable replay, generation, manifest, artifact set, durable staged file, source head, network, schema, state hash, or publication binding disagrees with the exact projection contract. No pointer CAS begins after this error. |
 | `MOTHER_STATE_UNSTABLE_PROJECTION` | `MOTHER-OFM-STATE-003.compare_generation` | `after-reobserve` | `none` | The active projection pointer changed during every bounded CORE-011 stable-read attempt. The causal CORE-011 error is retained. |
+| `MOTHER_STATE_PRIVATE_STATE_MISSING` | `MOTHER-OFM-STATE-004.read_private_state` | `after-reobserve` | `none` | The private-state commit manifest or one of its required identity, metadata, or named recovery-object files is absent. A missing commit manifest means no committed private state is readable. |
+| `MOTHER_STATE_MALFORMED_PRIVATE_STATE` | `MOTHER-OFM-STATE-004.read_private_state,resolve_validator_ref,build_recovery_closure,install_verified_private_state` | `never` | `none` | A path pairing, version, field set, type, NFC string, canonical YAML/JSON document, relative path, tuple member, address, key encoding, manifest order, generation rule, or constructor value is uninterpretable. Secret bytes are omitted from the error. |
+| `MOTHER_STATE_PRIVATE_STATE_PERMISSION` | `MOTHER-OFM-STATE-004.read_private_state,install_verified_private_state` | `never` | `none` | A private directory or file has an unsafe type, owner, POSIX mode, Windows DACL, symlink/reparse condition, or broader access than the exact private-storage contract. |
+| `MOTHER_STATE_PRIVATE_STATE_REFERENCE_MISMATCH` | `MOTHER-OFM-STATE-004.read_private_state,resolve_validator_ref,build_recovery_closure,install_verified_private_state` | `never` | `none` | An interpretable identity, metadata, manifest, object, validator reference, generation, size, content hash, or closure hash does not bind to the exact verified bytes or referenced record. |
+| `MOTHER_STATE_PRIVATE_STATE_CONFLICT` | `MOTHER-OFM-STATE-004.install_verified_private_state` and `MOTHER-OFM-STATE-005.switch_active,reconcile_active` | `operator-decision` | `none` | A complete existing private-state binding differs from the verified closure or from the per-network generation proposed for activation. No winner is selected and no private-state or active-pointer write begins. |
+| `MOTHER_STATE_UNSTABLE_PRIVATE_STATE` | `MOTHER-OFM-STATE-004.read_private_state` | `after-reobserve` | `none` | The private-recovery commit manifest changed during every bounded stable-read attempt; no secret-bearing result is returned. The causal CORE-011 error is retained when applicable. |
+| `MOTHER_STATE_MALFORMED_GENERATION` | `MOTHER-OFM-STATE-005.create_staging,seal_generation,discard_unpublished,switch_active,reconcile_active` | `never` | `none` | A public path pairing, identifier, kind, version, field set, typed input, expected-pointer bytes, member path, order, or constructor value is malformed or uninterpretable. Malformed stored pointer or sealed-tree bytes observed by `reconcile_active` return status `corrupt` after valid public inputs; they do not raise this code. |
+| `MOTHER_STATE_GENERATION_INVALID` | `MOTHER-OFM-STATE-005.seal_generation,switch_active` | `never` | `none` | An interpretable descriptor, manifest, member set, file hash/size, immutable root, manifest hash, source head, predecessor, activation record, operation owner, network, or private-state binding disagrees with the exact generation contract. No pointer CAS begins after this error. The same stored damage observed by `reconcile_active` returns status `corrupt`. |
+| `MOTHER_STATE_GENERATION_CONFLICT` | `MOTHER-OFM-STATE-005.create_staging,discard_unpublished` | `after-reobserve` | `none` | A target generation ID already belongs to different bytes or an operation other than the exact caller, or an unclassifiable target prevents safe staging/discard. Existing bytes are preserved. |
+| `MOTHER_STATE_UNSTABLE_GENERATION` | `MOTHER-OFM-STATE-005.seal_generation,switch_active,reconcile_active,discard_unpublished` | `after-reobserve` | `none` | A descriptor, manifest, member, or active pointer changed during every bounded verification attempt. No unverified generation result is returned. |
+| `MOTHER_STATE_GENERATION_ACTIVE` | `MOTHER-OFM-STATE-005.discard_unpublished` | `never` | `none` | The active-generation pointer names the requested generation; deletion is refused without touching the generation. |
+| `MOTHER_STATE_GENERATION_DELETE_FAILED` | `MOTHER-OFM-STATE-005.discard_unpublished` | `same-request` | `none` | Safe deletion of an owned inactive generation or required parent-directory flush failed. The caller reobserves the target before deciding whether the same request remains necessary. |
 | `MOTHER_CONFLICT_DURABLE_TARGET_EXISTS` | `MOTHER-OFM-CORE-011.durable_create` | `after-reobserve` | `none` | Exclusive publication found an already-published target and did not overwrite it. |
 | `MOTHER_STATE_DURABLE_TARGET_MISSING` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The required durable pointer or target is absent before any authority effect. |
 | `MOTHER_STATE_DURABLE_READ_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `none` | A host-filesystem read failed before a new authority effect; the typed cause is retained. |
@@ -2146,7 +2688,7 @@ return `OperationCommandResult`.
 | `MOTHER-OFM-CORE-002` | `common/errors.py` | `MotherError`, `wrap_vendor_error`, exit-code mapping | `pure`; never includes secret-bearing values |
 | `MOTHER-OFM-CORE-003` | `common/canonical.py` | `canonical_json(value) -> bytes`, `canonical_yaml(value) -> bytes` | `pure`; deterministic UTF-8, normalized keys, no floats or ambiguous scalars in hashed objects |
 | `MOTHER-OFM-CORE-004` | `common/hashing.py` | `sha256(bytes)`, `hash_file`, `ordered_root`, `set_root` | `pure` except file read; validates algorithm and canonical member ordering |
-| `MOTHER-OFM-CORE-005` | `common/paths.py` | Resolve canonical Mother roots, `resolve_network_head_paths`, `resolve_projection_paths`, and validate contained paths | `pure`; rejects traversal, symlink escape, wrong network, and wrong generation |
+| `MOTHER-OFM-CORE-005` | `common/paths.py` | Resolve canonical Mother roots; `resolve_network_head_paths`, `resolve_projection_paths`, `resolve_private_state_paths`, `resolve_generation_private_state_paths`, `resolve_generation_paths`; validate contained paths | `pure`; rejects traversal, symlink escape, wrong network, wrong generation, and live/staging path mixtures |
 | `MOTHER-OFM-CORE-006` | `common/schemas.py` | `decode_schema_catalog`, `load_schema`, `validate_object`, `validate_schema_transition` | `pure reader`; unknown versions and uninterpretable input raise exact `MOTHER_SCHEMA_*`; known invalid objects or undeclared transitions return typed negative decisions |
 | `MOTHER-OFM-CORE-007` | `common/capabilities.py` | `read_capabilities`, `require_capabilities`, `freeze_capability_set` | `pure reader`; malformed or ambiguous input raises exact `MOTHER_SCHEMA_*`; reads and freezes exact capability sets; absent required capabilities return typed negative decisions |
 | `MOTHER-OFM-CORE-008` | `common/evidence.py` | exact section 4.1.2 signatures for `store_evidence`, `load_evidence`, `redact_copy`, `export_manifest`, `load_export_result` | immutable local writes only through CORE-012; exact source-object provenance, restart-safe manifest recovery, deterministic redaction, and secret-free content-addressed export |
@@ -2294,8 +2836,8 @@ required capabilities return the exact ordered blockers from section 4.1.1.
 | `MOTHER-OFM-STATE-001` | `common/journal.py` | exact section 4.1.3 signatures for `read_stable_head`, `load_entry`, `load_bundle`, `walk_back`, `validate_lineage`, `authorize_lineage`, `replay_forward`, `build_entry_bytes` | `reader` plus pure immutable entry construction; stable-head, authorization-proof, and replay checks are fail-closed; never publishes an object or updates a head pointer |
 | `MOTHER-OFM-STATE-002` | `common/checkpoints.py` | exact section 4.1.3 signatures for `locate_newest_valid`, `build_state_closure_manifest`, `build_checkpoint`, `build_checkpoint_entry_bytes`, `validate_checkpoint`, `state_closure`, `prepare_replay` | `reader` plus pure checkpoint, closure-manifest, and entry-byte construction; validates closure, coverage, committed checkpoint binding, and replay proof; future-object hashes prohibited |
 | `MOTHER-OFM-STATE-003` | `common/projections.py` | exact section 4.1.4 signatures for `render_generation`, `compare_generation`, `build_manifest`, `publish_generation` | `derived-writer`; render and manifest build are pure, comparison uses bounded stable reads, and publication verifies one complete immutable generation before one flushed pointer CAS |
-| `MOTHER-OFM-STATE-004` | `common/private_state.py` | `read_private_state`, `resolve_validator_ref`, `build_recovery_closure`, `install_verified_private_state` | secret-bearing reader/writer; strict permissions, no general serialization, no plaintext evidence |
-| `MOTHER-OFM-STATE-005` | `common/generations.py` | `create_staging`, `seal_generation`, `discard_unpublished`, `switch_active`, `reconcile_active` | local generation writer; active pointer is the commit determinant |
+| `MOTHER-OFM-STATE-004` | `common/private_state.py` | exact section 4.1.5 signatures for `read_private_state`, `resolve_validator_ref`, `build_recovery_closure`, `install_verified_private_state` | secret-bearing reader/writer; exact canonical private documents, strict permissions, commit-manifest publication, no general serialization or plaintext evidence |
+| `MOTHER-OFM-STATE-005` | `common/generations.py` | exact section 4.1.5 signatures for `create_staging`, `seal_generation`, `discard_unpublished`, `switch_active`, `reconcile_active` | local generation writer; immutable manifest and one active-pointer CAS; never replaces global private state |
 
 ### 5.6 Invocation and transport modules
 
@@ -2414,7 +2956,7 @@ required capabilities return the exact ordered blockers from section 4.1.1.
 | Request identity and status observations | `MOTHER-OFM-XPORT-003` |
 | Rollback frames | `MOTHER-OFM-RB-002` |
 | Rollback journal | `MOTHER-OFM-RB-003` |
-| Private state | `MOTHER-OFM-STATE-004` |
+| Live private state and private-state copies inside unpublished generations | `MOTHER-OFM-STATE-004` |
 | Active local-state generation pointer | `MOTHER-OFM-STATE-005` |
 | Projection generation pointer | `MOTHER-OFM-STATE-003` or `MOTHER-OFM-MAINT-003` through that API |
 | Membership readiness generation | `MOTHER-OFM-MEM-002` |
@@ -2479,7 +3021,7 @@ boundaries.
 | `MOTHER-OF-OBS-005` | typed `ParticipantResult` inputs produced by the parent operation's transport functionalities → `MOTHER-OFM-OBS-005.collect_reports,validate_report,freeze_report_set` | Exact expected-set report map with explicit missing/invalid members |
 | `MOTHER-OF-OBS-006` | `MOTHER-OFM-OBS-002.observe_service,observe_host` → `MOTHER-OFM-OBS-001.build_inventory` | Normalized ownership-aware service/identity/host/marker inventory |
 | `MOTHER-OF-OBS-007` | `MOTHER-OFM-OBS-003.probe_guard,probe_runtime` → `MOTHER-OFM-OBS-004.merge_observations` | Per-process and per-guard observed state without inferred success |
-| `MOTHER-OF-OBS-008` | `MOTHER-OFM-STATE-004.resolve_validator_ref` → `MOTHER-OFM-ID-001.resolve_identity` → `MOTHER-OFM-NET-001.observe_sets` | Expected/observed validator identity, membership, and block-progress evidence |
+| `MOTHER-OF-OBS-008` | `MOTHER-OFM-CORE-005.resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state,resolve_validator_ref` → `MOTHER-OFM-ID-001.resolve_identity` → `MOTHER-OFM-NET-001.observe_sets` | Expected/observed validator identity, membership, and block-progress evidence from the exact committed global private-state bundle |
 | `MOTHER-OF-OBS-009` | `MOTHER-OFM-NET-002.observe_owned_graph` → `MOTHER-OFM-OBS-004.merge_observations` | Typed owned route graph and backend eligibility |
 | `MOTHER-OF-OBS-010` | `MOTHER-OFM-NET-003.observe_topology` → `MOTHER-OFM-OBS-004.merge_observations` | Participant map and reported topology epochs |
 | `MOTHER-OF-OBS-011` | `MOTHER-OFM-CTL-003.inspect_active` → `MOTHER-OFM-CTL-004.inspect_locks` → `MOTHER-OFM-CTL-006.allowed_transitions` | Active operation, scopes, lock generation, stage, and legal next states |
@@ -2568,14 +3110,14 @@ boundaries.
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
 | `MOTHER-OF-MEM-001` | `MOTHER-OFM-MEM-001.calculate_sets,freeze_sets` → `MOTHER-OFM-CORE-008.store_evidence` | Current, prospective, transition, desired, retiring, and successor-authority sets |
-| `MOTHER-OF-MEM-002` | `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-MEM-002.create_generation` | Immutable prospective-host generation bound to authority and operation |
+| `MOTHER-OF-MEM-002` | `MOTHER-OFM-CORE-005.resolve_generation_paths` → `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-MEM-002.create_generation` → `MOTHER-OFM-CORE-005.resolve_generation_private_state_paths` → `MOTHER-OFM-STATE-005.seal_generation` | Immutable prospective-host generation bound to authority, operation, predecessor pointer, and verified private-state closure |
 | `MOTHER-OF-MEM-003` | `MOTHER-OFM-CTL-004.acquire_full_set` for the exact enrollment/bootstrap participant set | Durable generation-fenced lock set or no usable acquisition |
-| `MOTHER-OF-MEM-004` | `MOTHER-OFM-STATE-004.build_recovery_closure` → `MOTHER-OFM-MEM-002.transfer_closure` → `MOTHER-OFM-CORE-012.verify_closure` → `MOTHER-OFM-STATE-004.install_verified_private_state` | Exact private state and recovery closure installed with strict permissions |
+| `MOTHER-OF-MEM-004` | `MOTHER-OFM-CORE-005.resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state,build_recovery_closure` → `MOTHER-OFM-MEM-002.transfer_closure` → `MOTHER-OFM-CORE-012.verify_closure` → target `MOTHER-OFM-CORE-005.resolve_private_state_paths` or `resolve_generation_private_state_paths` → `MOTHER-OFM-STATE-004.install_verified_private_state` | Exact private state and recovery closure installed at one resolved live or staging target with strict permissions and manifest-last commitment |
 | `MOTHER-OF-MEM-005` | `MOTHER-OFM-MEM-002.build_readiness` → `MOTHER-OFM-CORE-008.store_evidence` | Immutable readiness evidence bound to generation and desired membership |
 | `MOTHER-OF-MEM-006` | `MOTHER-OFM-MEM-002.commit_readiness_root` | Canonical flushed readiness root |
 | `MOTHER-OF-MEM-007` | `MOTHER-OFM-MEM-003.collect_transition_acceptances` → `MOTHER-OFM-AUTH-002.validate_acceptances` | Exact prospective/transition-set acceptance of the certificate |
 | `MOTHER-OF-MEM-008` | `MOTHER-OFM-MEM-003.persist_commit_in_progress,validate_decision` | One durable commit-in-progress decision per old authority generation |
-| `MOTHER-OF-MEM-009` | `MOTHER-OFM-AUTH-002.validate_ack_certificate` → `MOTHER-OFM-MEM-001.activate` → `MOTHER-OFM-STATE-005.switch_active` | Prospective replica becomes active only after full acknowledgement |
+| `MOTHER-OF-MEM-009` | `MOTHER-OFM-AUTH-002.validate_ack_certificate` → `MOTHER-OFM-MEM-001.activate` → `MOTHER-OFM-CORE-005.resolve_generation_paths,resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state` → `MOTHER-OFM-STATE-005.switch_active` | Prospective replica becomes active only after full acknowledgement and exact installed-private-state binding |
 | `MOTHER-OF-MEM-010` | `MOTHER-OFM-AUTH-002.validate_ack_certificate` → `MOTHER-OFM-MEM-001.retire` | Reachable retiring replica is retired only after terminal evidence |
 | `MOTHER-OF-MEM-011` | `MOTHER-OFM-MEM-003.cancel_decision` → `MOTHER-OFM-MEM-002.cancel_and_tombstone` | Exact uncommitted readiness/decision canceled and generation tombstoned |
 | `MOTHER-OF-MEM-012` | `MOTHER-OFM-MEM-004.claim_synthetic_generation` → `MOTHER-OFM-AUTH-008.claim_birth_authority` | One synthetic-predecessor network-birth generation |
@@ -2586,11 +3128,11 @@ boundaries.
 
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
-| `MOTHER-OF-ID-001` | `MOTHER-OFM-STATE-004.read_private_state` → `MOTHER-OFM-CORE-006.validate_object` | Canonical private-state object from the fixed runtime path |
-| `MOTHER-OF-ID-002` | `MOTHER-OFM-STATE-004.resolve_validator_ref` → `MOTHER-OFM-ID-001.resolve_identity` | Exact validator record reached only through the node `validator_ref` |
+| `MOTHER-OF-ID-001` | `MOTHER-OFM-CORE-005.resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state` → `MOTHER-OFM-CORE-006.validate_object` | Canonical private-state object from the fixed manifest-committed runtime path |
+| `MOTHER-OF-ID-002` | `MOTHER-OFM-CORE-005.resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state,resolve_validator_ref` → `MOTHER-OFM-ID-001.resolve_identity` | Exact validator record reached only through the node `validator_ref` in the verified committed private document |
 | `MOTHER-OF-ID-003` | `MOTHER-OFM-ID-001.resolve_identity` → `MOTHER-OFM-ID-001.install_reserved` → `MOTHER-OFM-ID-001.verify_derivation` | Reserved identity installed byte-for-byte without regeneration |
 | `MOTHER-OF-ID-004` | `MOTHER-OFM-ID-001.verify_derivation,verify_ownership` | Private/public derivation and node/service ownership evidence |
-| `MOTHER-OF-ID-005` | `MOTHER-OFM-STATE-004.build_recovery_closure` → `MOTHER-OFM-ID-001.recovery_material_ref` → `MOTHER-OFM-CORE-012.verify_closure` | Private recovery material retained and closure-bound without disclosure |
+| `MOTHER-OF-ID-005` | `MOTHER-OFM-CORE-005.resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state,build_recovery_closure` → `MOTHER-OFM-ID-001.recovery_material_ref` → `MOTHER-OFM-CORE-012.verify_closure` | Private recovery material retained and closure-bound without disclosure |
 | `MOTHER-OF-SVC-001` | `MOTHER-OFM-OBS-002.observe_service` → `MOTHER-OFM-SVC-001.resolve_service` | Exact immutable service identity and target |
 | `MOTHER-OF-SVC-002` | `MOTHER-OFM-SVC-001.capture_service_prestate` → `MOTHER-OFM-RB-001.capture_typed` | Complete service, volume, environment, runtime, and marker prestate |
 | `MOTHER-OF-SVC-003` | `MOTHER-OFM-SVC-001.create_or_repair` → `MOTHER-OFM-OBS-002.apply_service_change` | Prepared service created/repaired under request identity |
@@ -2649,13 +3191,13 @@ restoration effects.
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
 | `MOTHER-OF-SYNC-001` | `MOTHER-OFM-CTL-004.acquire_scope` with local-adoption exclusivity → `MOTHER-OFM-CTL-003.create_prepared` | Owned local-adoption scope retained through terminal state |
-| `MOTHER-OF-SYNC-002` | `MOTHER-OFM-STATE-005.reconcile_active` → `MOTHER-OFM-OBS-005.freeze_report_set` → `MOTHER-OFM-REC-001.pin_candidate` | Old local pointer/head and unanimous remote candidate pinned |
-| `MOTHER-OF-SYNC-003` | `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-REC-001.download_to_staging` → `MOTHER-OFM-CORE-012.verify_closure` | Complete immutable candidate closure in unpublished staging |
-| `MOTHER-OF-SYNC-004` | `MOTHER-OFM-REC-001.verify_staging` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.compare_generation` → `MOTHER-OFM-STATE-004.read_private_state` | Candidate lineage, objects, private state, pending actions, and projections verify from one module-sealed replay input; REC-001 does not synthesize proof values |
+| `MOTHER-OF-SYNC-002` | `MOTHER-OFM-CORE-005.resolve_generation_paths,resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state` → `MOTHER-OFM-STATE-005.reconcile_active` → `MOTHER-OFM-OBS-005.freeze_report_set` → `MOTHER-OFM-REC-001.pin_candidate` | Old local pointer/head, installed global private-state binding, and unanimous remote candidate pinned |
+| `MOTHER-OF-SYNC-003` | `MOTHER-OFM-CORE-005.resolve_generation_paths` → `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-REC-001.download_to_staging` → `MOTHER-OFM-CORE-012.verify_closure` → `MOTHER-OFM-CORE-005.resolve_generation_private_state_paths` → `MOTHER-OFM-STATE-005.seal_generation` | Complete immutable candidate closure in one sealed unpublished staging generation |
+| `MOTHER-OF-SYNC-004` | `MOTHER-OFM-REC-001.verify_staging` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.compare_generation` → `MOTHER-OFM-CORE-005.resolve_generation_private_state_paths,resolve_private_state_paths` → candidate and live `MOTHER-OFM-STATE-004.read_private_state` | Candidate lineage, objects, pending actions, projections, and staged private bytes verify from one module-sealed input; candidate private-state binding MUST equal the installed global binding and REC-001 does not synthesize proof values |
 | `MOTHER-OF-SYNC-005` | `MOTHER-OFM-REC-001.prepare_activation` → `MOTHER-OFM-CORE-011.durable_create` | Activation-prepared evidence outside the swappable generation |
-| `MOTHER-OF-SYNC-006` | `MOTHER-OFM-REC-001.switch_pointer` → `MOTHER-OFM-STATE-005.switch_active` | One flushed CAS from pinned old generation to verified candidate |
-| `MOTHER-OF-SYNC-007` | `MOTHER-OFM-STATE-005.reconcile_active` → `MOTHER-OFM-REC-001.reconcile` → `MOTHER-OFM-CTL-006.reconcile_from_durable_effect` | Pointer-determined committed or pre-commit state after interruption |
-| `MOTHER-OF-SYNC-008` | `MOTHER-OFM-REC-001.discard` → `MOTHER-OFM-STATE-005.discard_unpublished` | Staging discarded while old active pointer remains unchanged |
+| `MOTHER-OF-SYNC-006` | `MOTHER-OFM-REC-001.switch_pointer` → `MOTHER-OFM-CORE-005.resolve_generation_paths,resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state` → `MOTHER-OFM-STATE-005.switch_active` | One flushed CAS from pinned old generation to verified candidate, only with unchanged installed global private-state binding |
+| `MOTHER-OF-SYNC-007` | `MOTHER-OFM-CORE-005.resolve_generation_paths,resolve_private_state_paths` → `MOTHER-OFM-STATE-004.read_private_state` → `MOTHER-OFM-STATE-005.reconcile_active` → `MOTHER-OFM-REC-001.reconcile` → `MOTHER-OFM-CTL-006.reconcile_from_durable_effect` | Pointer-determined committed or pre-commit state after interruption |
+| `MOTHER-OF-SYNC-008` | `MOTHER-OFM-REC-001.discard` → `MOTHER-OFM-CORE-005.resolve_generation_paths` → `MOTHER-OFM-STATE-005.discard_unpublished` | Owned staging discarded while old active pointer remains unchanged |
 
 ### 7.11 Lost-local-state recovery
 
@@ -2664,7 +3206,7 @@ restoration effects.
 | `MOTHER-OF-REC-001` | `MOTHER-OFM-REC-002.load_descriptor` → `MOTHER-OFM-CORE-006.validate_object` → `MOTHER-OFM-MEM-001.calculate_sets` | Valid descriptor and exact expected replica set |
 | `MOTHER-OF-REC-002` | `MOTHER-OFM-OBS-005.collect_reports,freeze_report_set` → `MOTHER-OFM-REC-002.prove_unanimous_candidate` | Unanimous lineage, state, pending-action, private-material, and closure proof |
 | `MOTHER-OF-REC-003` | `MOTHER-OFM-REC-002.fetch_objects` → `MOTHER-OFM-CORE-012.copy_verified_closure,verify_closure` | Every required recovery object downloaded and hash-verified |
-| `MOTHER-OF-REC-004` | `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-REC-002.restore_state_root` → `MOTHER-OFM-STATE-004.install_verified_private_state` | Complete recovered local Mother root in immutable generation |
+| `MOTHER-OF-REC-004` | `MOTHER-OFM-CORE-005.resolve_generation_paths` → `MOTHER-OFM-STATE-005.create_staging` → `MOTHER-OFM-REC-002.restore_state_root` → `MOTHER-OFM-CORE-005.resolve_generation_private_state_paths` → `MOTHER-OFM-STATE-004.install_verified_private_state` → `MOTHER-OFM-STATE-005.seal_generation` → `MOTHER-OFM-CORE-005.resolve_private_state_paths` → `MOTHER-OFM-STATE-004.install_verified_private_state` | Complete recovered local Mother root plus one immutable recovery staging generation; REC-002 first preserves an unprovable old root and establishes an absent/clean live target, and STATE-004 then commits the unanimously verified global private bundle manifest-last |
 | `MOTHER-OF-REC-005` | `MOTHER-OFM-REC-002.replay_and_verify` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.render_generation` | Recovered journals replay and projections rebuild from one module-sealed replay input; REC-002 does not synthesize proof values |
 | `MOTHER-OF-REC-006` | `MOTHER-OFM-OBS-003.probe_guard,probe_runtime` → `MOTHER-OFM-OBS-007.run_assertion_set` → `MOTHER-OFM-REC-002.prove_unanimous_candidate` comparison | Recovered state matches guards, live assertions, and the frozen recovery candidate |
 | `MOTHER-OF-REC-007` | `MOTHER-OFM-REC-002.activate_replacement_identity` → `MOTHER-OFM-STATE-001.build_entry_bytes` → `MOTHER-OFM-AUTH-004.commit_entry_bundle_pair` | Replacement head ID/epoch activation committed at its defined boundary |
@@ -2755,7 +3297,7 @@ implementable; authority-changing APIs MUST return
 | `MOTHER-OF-MIG-005` | `MOTHER-OFM-MAINT-001.build_migrated_object` → schema-owned state validator → `MOTHER-OFM-CORE-012.put_immutable` | Content-addressed migrated schema-owned state object durably stored as an uncommitted candidate; no checkpoint, journal successor, authorization bundle, or authority change is constructed |
 | `MOTHER-OF-MIG-006` | `MOTHER-OFM-MAINT-001.replicate` → `MOTHER-OFM-AUTH-005.replicate_closure,verify_replica` | Full expected set verifies migrated result |
 | `MOTHER-OF-MIG-007` | `MOTHER-OFM-MAINT-001` disabled `commit` | Block until predecessor, certificate, bundle, head, finalization, and rollback authority are defined |
-| `MOTHER-OF-MIG-008` | `MOTHER-OFM-MAINT-001.abort` → `MOTHER-OFM-STATE-005.discard_unpublished`; pre-commit restore only | Staging canceled without changing authority |
+| `MOTHER-OF-MIG-008` | `MOTHER-OFM-MAINT-001.abort`; pre-commit restore only | MAINT-001 cancels its deterministic uncommitted migrated-object staging without changing authority; MIG-005 does not create a STATE-005 local generation |
 
 ### 7.14 Identity or secret rotation
 
@@ -2787,7 +3329,7 @@ defines the commit and rollback boundaries.
 | `MOTHER-OF-PRJ-003` | `MOTHER-OFM-STATE-003.build_manifest` → `MOTHER-OFM-MAINT-003.write_manifest` → `MOTHER-OFM-CORE-011.durable_create` | Hashed, flushed, reread-verified projection manifest |
 | `MOTHER-OF-PRJ-004` | `MOTHER-OFM-STATE-001.read_stable_head` → `MOTHER-OFM-MAINT-003.recheck_head` | Current head equals every pinned tuple field |
 | `MOTHER-OF-PRJ-005` | `MOTHER-OFM-MAINT-003.publish` → `MOTHER-OFM-CORE-005.resolve_projection_paths` → `MOTHER-OFM-STATE-003.publish_generation` → `MOTHER-OFM-CORE-011.atomic_pointer_cas` | One complete verified projection-generation pointer published |
-| `MOTHER-OF-PRJ-006` | `MOTHER-OFM-MAINT-003.discard_or_retry` → `MOTHER-OFM-STATE-005.discard_unpublished` | Stale output removed and bounded retry enforced |
+| `MOTHER-OF-PRJ-006` | `MOTHER-OFM-MAINT-003.discard_or_retry` | MAINT-003 removes only its owned inactive `projection-generations/` target and enforces bounded retry; STATE-005 is not an owner of projection storage |
 
 ## 8. Operation and stage binding
 
@@ -2890,10 +3432,10 @@ into a filesystem path. Callers pass typed identifiers, not path fragments.
 
 | State area | Canonical owner | Other permitted access |
 |---|---|---|
-| `identity.private.yaml`, metadata, `private-recovery/` | `MOTHER-OFM-STATE-004` | `MOTHER-OFM-ID-001` through its API only |
+| live `identity.private.yaml`, metadata, `private-recovery/`, and `generations/<network>/<generation>/private-state/` copies | `MOTHER-OFM-STATE-004` | Paths resolved only by CORE-005; ID-001, enrollment, recovery, and adoption access through the STATE-004 API only |
 | `version.json` | deployment/version installer outside operation execution | `MOTHER-OFM-CORE-007`, `010` read only |
 | `projection-generations/`, `active-projections/`, `topology.yaml`, and committed-state projections | `MOTHER-OFM-STATE-003` | Paths resolved only by CORE-005; rebuilt only from authoritative replay |
-| `active-generations/<network>.json`, `generations/<network>/` | `MOTHER-OFM-STATE-005` | Recovery/adoption modules through its API |
+| `active-generations/<network>.json`, `generations/<network>/` excluding the STATE-004-owned `private-state/` subtree | `MOTHER-OFM-STATE-005` | Paths resolved only by CORE-005; recovery/adoption/enrollment/migration modules through the STATE-005 API |
 | `adoptions/<network>/<operation-id>/` | `MOTHER-OFM-REC-001` | Operation/reporting read |
 | `locks/` | `MOTHER-OFM-CTL-004` | Observation read |
 | `guards/` | guard process; `MOTHER-OFM-OBS-003` is reader | No Mother writer |

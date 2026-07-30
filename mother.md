@@ -686,9 +686,14 @@ script MUST run a sealed-state and journal preflight:
    active writer-reservation owner or successor claim; when enrollment is pending, separately require every prospective host to prove its exact staging generation, enrollment lock, and readiness receipt without counting it as predecessor authority;
 8. if every current expected replica agrees and the local head is stale, stop ordinary
    mutation and direct the operator to staged `sync-state`. That operation MUST
-   adopt the complete frozen generation, including private-state and recovery
-   objects referenced by its verified closure, and MUST commit only through the
-   local active-generation pointer switch;
+   stage and verify the complete frozen generation, including the private-state
+   and recovery objects referenced by its closure. Because the private-state
+   root is global while active-generation pointers are per network, ordinary
+   `sync-state` MUST require the candidate private-state binding to equal the
+   already-installed global binding and MUST commit only the network generation
+   through the local active-generation pointer switch. A different private-state
+   binding requires explicit recovery or rectification and is not selected by
+   `sync-state`;
 9. if journals diverge, journal replay disagrees with a network-state document,
    a required record is missing, equal finalized epochs have different complete
    state hashes, private-state metadata differs, pending-action metadata differs,
@@ -3471,6 +3476,16 @@ all generations, hashes, manifests, and receipt evidence, but adoption of a
 different private-state lineage requires explicit recovery or rectification.
 The replacement-local-head procedure is defined by
 `MOTHER-DESIGN-024`.
+
+The live private-state path is one global Mother resource, while
+`active-generations/<network>.json` is a per-network pointer. A per-network
+pointer switch therefore MUST NOT install or replace the live private-state
+bundle. Local-generation staging MAY contain a complete verified private-state
+copy for transfer and closure validation, but activation requires that copy's
+kind, generation, identity-document hash, and recovery-manifest hash to equal
+the already-installed global binding. A mismatch blocks activation and routes
+to explicit `recover-head` or authority rectification; two network pointers are
+never allowed to choose competing versions of one global secret-bearing file.
 
 Under the trusted-host threat model in `MOTHER-DESIGN-019`, Mother does not add a
 second application-level encryption or local authorization layer around replica
@@ -7462,8 +7477,11 @@ under the Mother state root remains mandatory.
 complete referenced object closure into an immutable staging generation, replay
 and verify every journal and checkpoint, verify private state and pending-action
 recovery data, and build all derived projections without activating the
-candidate. It MUST flush every staged object, manifest, projection generation,
-and staging-directory metadata before entering `sync-ready-to-activate`.
+candidate. Candidate private-state bytes are verification material inside the
+staging generation; `do` MUST prove their exact binding equals the committed
+global private-state binding and MUST NOT replace the live private-state files.
+It MUST flush every staged object, manifest, projection generation, and
+staging-directory metadata before entering `sync-ready-to-activate`.
 
 `sync-state rollback` MUST enter `sync-rolling-back`, discard the staged
 candidate, and leave the active local generation pointer unchanged. It MUST NOT
@@ -7479,6 +7497,9 @@ local-adoption scope.
 - the candidate still has the same journal identity, sequence, entry hash,
   authorization-bundle hash, recovery closure, private-state generation,
   `head_id`, and `head_epoch`;
+- the candidate private-state kind, generation, identity-document hash, and
+  private-recovery-manifest hash still equal the installed global private-state
+  binding;
 - the complete immutable staged generation still replays and verifies exactly;
 - every staged object and metadata file is durably persisted;
 - the local-adoption scope is still owned by this exact operation.
@@ -7523,8 +7544,8 @@ candidate remain unchanged immediately before the pointer switch.
 entry hash, and lineage. It MUST NOT select a lineage, create new authority,
 enter `finalized-replication-pending`, or write a network transition because the
 expected replicas already possess the adopted generation. Any authority change,
-lineage selection, replica disagreement, or reseal belongs to `recover-head` or
-`reseal-state`.
+lineage selection, replica disagreement, private-state-binding disagreement, or
+reseal belongs to `recover-head` or `reseal-state`.
 
 The HTTP shape is optional; the stage semantics, state-root visibility, current
 operation visibility, sealed-state visibility, replica visibility, preflight
@@ -7540,6 +7561,12 @@ switching the local active-generation pointer after an `activation-prepared`
 record is durable. Adoption transaction metadata remains independently
 addressable outside the swappable generation tree, and startup reconciliation is
 pointer-deterministic without post-commit materialization.
+
+The active-generation CAS is per network and is the only `sync-state` commit
+boundary. It binds, but does not write, the global private-state generation and
+hashes. The verified candidate binding MUST equal the installed global binding
+immediately before CAS. Different private-state lineage is outside ordinary
+local adoption and requires explicit recovery or rectification authority.
 
 Projection repair is separate non-authoritative maintenance. It publishes one
 complete immutable projection generation through one atomic durable pointer

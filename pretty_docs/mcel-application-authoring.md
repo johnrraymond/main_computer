@@ -1074,11 +1074,12 @@ MCEL.listUserContractClauses();
 
 MCEL.defineComponent(name, manifest, options);
 MCEL.createComponentInstance(name, options);
-MCEL.transition(instance, transitionName, payload);
+MCEL.createOperation(instance, scope);
+MCEL.transition(instance, transitionName, payload, operation);
 MCEL.checkLayoutContract(instance, observation);
 MCEL.checkStyleContract(instance, observation);
-MCEL.serializeComponent(instance, options);
-MCEL.repairComponent(instance, strategyName, payload);
+MCEL.serializeComponent(instance, options, operation);
+MCEL.repairComponent(instance, strategyName, payload, operation);
 
 MCEL.defineRoute(name, manifest, options);
 MCEL.createRouteInstance(name, options);
@@ -1090,6 +1091,21 @@ MCEL.normalizeChrome(chrome);
 MCEL.describeChrome(chrome);
 MCEL.applyChrome(runtimeHtml, options);
 ```
+
+Component instances expose immutable `source`, `state`, `runtime`, `evidence`,
+and `appliedOperationIds` snapshots plus a read-only `revision`. Every
+root-mutating SCM call requires an operation envelope:
+
+```js
+const operation = MCEL.createOperation(instance, "transition:openFile");
+MCEL.transition(instance, "openFile", {fileId: "src-app"}, operation);
+```
+
+The envelope contains a unique `operationId` and the caller's
+`expectedRevision`. `MCEL` creates an envelope automatically when the optional
+argument is omitted; direct `MCEL.scm` calls are strict and reject missing,
+duplicate, stale, or concurrently overlapping operations before roots,
+evidence, revision, or the bounded applied-operation ledger can change.
 
 ### Current compile, audit, and serialization lifecycle
 

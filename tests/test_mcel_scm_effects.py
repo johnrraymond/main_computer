@@ -39,6 +39,15 @@ def _scm_bootstrap() -> str:
 const window = {{}};
 {_script("mcel-scm.js")}
 McelLabScm.clearDefinitions();
+let nextTestOperationId = 1;
+function scmEffect(instance, name, payload = {{}}) {{
+  return McelLabScm.runEffect(
+    instance,
+    name,
+    payload,
+    McelLabScm.createOperation(instance, `effect:${{name}}:${{nextTestOperationId++}}`)
+  );
+}}
 """
 
 
@@ -167,7 +176,7 @@ def test_scm_component_effect_runs_through_declared_read_write_context(tmp_path:
 
 McelLabScm.defineComponent("EffectStudio", {_valid_effect_component_manifest()});
 const instance = McelLabScm.createComponentInstance("EffectStudio");
-const result = McelLabScm.runEffect(instance, "loadActiveFile", {{text: "hello"}});
+const result = scmEffect(instance, "loadActiveFile", {{text: "hello"}});
 const packet = McelLabScm.exportEvidence(instance);
 
 process.stdout.write(JSON.stringify({{
@@ -248,7 +257,7 @@ McelLabScm.defineComponent("EffectStudio", {{
 const instance = McelLabScm.createComponentInstance("EffectStudio");
 let violation = null;
 try {{
-  McelLabScm.runEffect(instance, "loadActiveFile", {{text: "hello"}});
+  scmEffect(instance, "loadActiveFile", {{text: "hello"}});
 }} catch (error) {{
   violation = error.violation;
 }}

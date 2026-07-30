@@ -289,16 +289,62 @@
         return requireScm().createComponentInstance(name, options);
       }
 
+      function createOperation(instance, scope = "operation") {
+        return requireScm().createOperation(instance, scope);
+      }
+
       function createChildContext(instance, childName) {
-        return requireScm().createChildContext(instance, childName);
+        const context = requireScm().createChildContext(instance, childName);
+        const guardedContext = {
+          ...context,
+          emit(outputName, payload = {}, operation = null) {
+            return context.emit(
+              outputName,
+              payload,
+              operation || createOperation(instance, `child:${childName}:emit:${outputName}`)
+            );
+          },
+          set(path, value, operation = null) {
+            return context.set(
+              path,
+              value,
+              operation || createOperation(instance, `child:${childName}:set`)
+            );
+          },
+          delete(path, operation = null) {
+            return context.delete(
+              path,
+              operation || createOperation(instance, `child:${childName}:delete`)
+            );
+          },
+          addUnique(path, value, operation = null) {
+            return context.addUnique(
+              path,
+              value,
+              operation || createOperation(instance, `child:${childName}:addUnique`)
+            );
+          },
+          evidence(entry = {}, operation = null) {
+            return context.evidence(
+              entry,
+              operation || createOperation(instance, `child:${childName}:evidence`)
+            );
+          }
+        };
+        return Object.freeze(guardedContext);
       }
 
       function createEffectContext(instance, effectName) {
         return requireScm().createEffectContext(instance, effectName);
       }
 
-      function runEffect(instance, effectName, payload = {}) {
-        return requireScm().runEffect(instance, effectName, payload);
+      function runEffect(instance, effectName, payload = {}, operation = null) {
+        return requireScm().runEffect(
+          instance,
+          effectName,
+          payload,
+          operation || createOperation(instance, `effect:${effectName}`)
+        );
       }
 
       function cancelEffect(instance, effectName, reason = "manual") {
@@ -313,20 +359,34 @@
         return requireScm().checkStyleContract(instance, observation);
       }
 
-      function serializeComponent(instance, options = {}) {
-        return requireScm().serializeComponent(instance, options);
+      function serializeComponent(instance, options = {}, operation = null) {
+        return requireScm().serializeComponent(
+          instance,
+          options,
+          operation || createOperation(instance, "serialize")
+        );
       }
 
       function createRepairContext(instance, strategyName) {
         return requireScm().createRepairContext(instance, strategyName);
       }
 
-      function repairComponent(instance, strategyName, payload = {}) {
-        return requireScm().repairComponent(instance, strategyName, payload);
+      function repairComponent(instance, strategyName, payload = {}, operation = null) {
+        return requireScm().repairComponent(
+          instance,
+          strategyName,
+          payload,
+          operation || createOperation(instance, `repair:${strategyName}`)
+        );
       }
 
-      function transition(instance, transitionName, payload = {}) {
-        return requireScm().transition(instance, transitionName, payload);
+      function transition(instance, transitionName, payload = {}, operation = null) {
+        return requireScm().transition(
+          instance,
+          transitionName,
+          payload,
+          operation || createOperation(instance, `transition:${transitionName}`)
+        );
       }
 
       function exportScmEvidence(instance) {
@@ -442,6 +502,7 @@
         listComponentDefinitions,
         componentDefinition,
         createComponentInstance,
+        createOperation,
         createChildContext,
         createEffectContext,
         runEffect,

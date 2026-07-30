@@ -99,7 +99,7 @@ def test_initial_snapshot_commits_scm_state_before_button_render_state_can_chang
     assert mount_call in lab
 
     effect_order = [
-        'window.McelLabScm.runEffect(instance, "wallet.provider.initialSnapshot", payload)',
+        'runMcelScmEffect(window.McelLabScm, instance, "wallet.provider.initialSnapshot", payload)',
         'refreshMcel18nWalletToolBoundary(`${reason}-boundary-refresh`)',
         'syncMcelTinyContractDomFromScm(target, instance, `${reason}-committed`)',
         'scheduleMcelWalletBacklogProofRender(target, `${reason}-proof-render`',
@@ -200,7 +200,7 @@ def test_interactive_wallet_authorization_pending_is_a_governed_lifecycle_state(
     assert perform_connect.index(pending_call) < perform_connect.index(request_call)
 
     helper = function_body(lab, "commitMcelTinyContractWalletConnectAuthorizationPending")
-    assert 'window.McelLabScm.runEffect(instance, "wallet.connect.authorizationPending"' in helper
+    assert 'runMcelScmEffect(window.McelLabScm, instance, "wallet.connect.authorizationPending"' in helper
     assert 'renderMcelTinyContractProof(target, `${reason}-authorization-pending`)' in helper
     assert '"eth_accounts"' not in helper
     assert "wallet_switchEthereumChain" not in lab
@@ -287,7 +287,7 @@ def test_interactive_disconnect_pending_is_a_governed_lifecycle_state_before_rev
     assert perform_disconnect.index(pending_call) < perform_disconnect.index(revoke_call)
 
     helper = function_body(lab, "commitMcelTinyContractWalletDisconnectPending")
-    assert 'window.McelLabScm.runEffect(instance, "wallet.disconnect.pending"' in helper
+    assert 'runMcelScmEffect(window.McelLabScm, instance, "wallet.disconnect.pending"' in helper
     assert 'renderMcelTinyContractProof(target, `${reason}-disconnect-pending`)' in helper
     assert '"eth_accounts"' not in helper
     assert "wallet_switchEthereumChain" not in lab

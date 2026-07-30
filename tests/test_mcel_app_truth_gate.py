@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "main_computer" / "web" / "applications" / "scripts"
 APP_SHELL = ROOT / "main_computer" / "web" / "applications.html"
+EPISTEMIC_JS = SCRIPTS / "mcel-epistemic-status.js"
 TRUTH_GATE_JS = SCRIPTS / "mcel-app-truth-gate.js"
 DOC = ROOT / "pretty_docs" / "mcel-app-truth-gate.md"
 
@@ -38,11 +39,17 @@ def load_truth_gate(body: str) -> str:
         const sandbox = {{console}};
         sandbox.window = sandbox;
         vm.runInNewContext(
+          fs.readFileSync({json.dumps(str(EPISTEMIC_JS))}, "utf8"),
+          sandbox,
+          {{filename: "mcel-epistemic-status.js"}}
+        );
+        vm.runInNewContext(
           fs.readFileSync({json.dumps(str(TRUTH_GATE_JS))}, "utf8"),
           sandbox,
           {{filename: "mcel-app-truth-gate.js"}}
         );
         const gate = sandbox.McelAppTruthGate;
+        const McelEpistemicStatus = sandbox.McelEpistemicStatus;
         {body}
         """
     )
@@ -177,9 +184,13 @@ def test_truth_gate_is_documented_and_loaded_after_its_authorities() -> None:
 
     shell = APP_SHELL.read_text(encoding="utf-8")
     assert "mcel-app-truth-gate.js" in shell
+    assert "mcel-epistemic-status.js" in shell
+    assert "mcel-observation-bundle.js" in shell
     assert shell.index("mcel-domain-adapter-registry.js") < shell.index("mcel-app-truth-gate.js")
     assert shell.index("mcel-app-surface-registry.js") < shell.index("mcel-app-truth-gate.js")
     assert shell.index("mcel-requirements-registry.js") < shell.index("mcel-app-truth-gate.js")
+    assert shell.index("mcel-epistemic-status.js") < shell.index("mcel-observation-bundle.js")
+    assert shell.index("mcel-observation-bundle.js") < shell.index("mcel-app-truth-gate.js")
     assert shell.index("mcel-app-truth-gate.js") < shell.index("mcel-self-diagnosis.js")
 
     source = TRUTH_GATE_JS.read_text(encoding="utf-8")
@@ -215,6 +226,115 @@ def test_complete_authorities_and_fresh_evidence_prove_semantic_runtime() -> Non
     assert truth["claims"]["runtimeSurfaceProven"] is True
     assert truth["claims"]["acceptanceProven"] is True
     assert truth["claims"]["semanticRuntimeProven"] is True
+    assert truth["claims"]["epistemicClaimsProven"] is True
+    assert truth["evidence"]["epistemic"]["present"] is False
+    assert truth["findings"] == []
+
+
+def test_inferred_required_claim_cannot_manufacture_semantic_runtime_readiness() -> None:
+    script = load_truth_gate(
+        fake_registry_prelude()
+        + """
+        const inferred = McelEpistemicStatus.createClaim({
+          claimId: "claim.demo.submit-role",
+          subject: "control.submit",
+          predicate: "semantic-role",
+          value: "submit",
+          status: "inferred",
+          sources: [{
+            id: "source.ax.submit",
+            kind: "browser-accessibility",
+            locator: "AXNode:17",
+            fingerprint: "sha256:ax-submit"
+          }],
+          confidence: 0.99,
+          contradictions: [],
+          observedAt: "2026-07-27T10:00:00Z",
+          repositoryFingerprint: "repo:demo",
+          validatorResults: [],
+          requiredForTruthGate: true,
+          truthGateRequirementIds: ["demo.semantic.submit-role"]
+        });
+        const truth = gate.evaluateAppTruth("demo", {
+          requirementsRegistry,
+          domainAdapterRegistry,
+          appSurfaceRegistry,
+          runtimeEvidence,
+          acceptanceEvidence,
+          epistemicEvidence: {claims: [inferred]},
+          now: "2026-07-27T12:00:00Z"
+        });
+        process.stdout.write(JSON.stringify(truth));
+        """
+    )
+    truth = run_node_json(script)
+
+    assert truth["overallStatus"] == "blocked"
+    assert truth["claims"]["runtimeSurfaceProven"] is True
+    assert truth["claims"]["acceptanceProven"] is True
+    assert truth["claims"]["epistemicClaimsProven"] is False
+    assert truth["claims"]["semanticRuntimeProven"] is False
+    assert truth["evidence"]["epistemic"]["blockedClaims"] == [
+        {
+            "claimId": "claim.demo.submit-role",
+            "status": "inferred",
+            "subject": "control.submit",
+            "predicate": "semantic-role",
+        }
+    ]
+    assert "epistemic-claim-not-verified" in truth["findingCodes"]
+
+
+def test_verified_required_claim_preserves_semantic_runtime_readiness() -> None:
+    script = load_truth_gate(
+        fake_registry_prelude()
+        + """
+        const verified = McelEpistemicStatus.createClaim({
+          claimId: "claim.demo.submit-role",
+          subject: "control.submit",
+          predicate: "semantic-role",
+          value: "submit",
+          status: "verified",
+          sources: [{
+            id: "source.ax.submit",
+            kind: "browser-accessibility",
+            locator: "AXNode:17",
+            fingerprint: "sha256:ax-submit"
+          }],
+          confidence: 1,
+          contradictions: [],
+          observedAt: "2026-07-27T10:00:00Z",
+          repositoryFingerprint: "repo:demo",
+          validatorResults: [{
+            id: "validation.native-submit",
+            validatorId: "mcel.native-submit-validator",
+            validatorVersion: "v1",
+            status: "pass",
+            code: "native-submit-confirmed",
+            evidenceFingerprint: "sha256:validator-evidence",
+            validatedAt: "2026-07-27T10:01:00Z"
+          }],
+          requiredForTruthGate: true,
+          truthGateRequirementIds: ["demo.semantic.submit-role"]
+        });
+        const truth = gate.evaluateAppTruth("demo", {
+          requirementsRegistry,
+          domainAdapterRegistry,
+          appSurfaceRegistry,
+          runtimeEvidence,
+          acceptanceEvidence,
+          epistemicEvidence: {claims: [verified]},
+          now: "2026-07-27T12:00:00Z"
+        });
+        process.stdout.write(JSON.stringify(truth));
+        """
+    )
+    truth = run_node_json(script)
+
+    assert truth["overallStatus"] == "semantic-runtime-proven"
+    assert truth["claims"]["epistemicClaimsProven"] is True
+    assert truth["claims"]["semanticRuntimeProven"] is True
+    assert truth["evidence"]["epistemic"]["truthGateEligible"] is True
     assert truth["findings"] == []
 
 

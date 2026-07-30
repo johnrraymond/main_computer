@@ -40,6 +40,22 @@ def _bootstrap() -> str:
 const window = {{}};
 {_script("mcel-scm.js")}
 McelLabScm.clearDefinitions();
+let nextTestOperationId = 1;
+function scmOperation(instance, scope) {{
+  return McelLabScm.createOperation(instance, `${{scope}}:${{nextTestOperationId++}}`);
+}}
+function scmTransition(instance, name, payload = {{}}) {{
+  return McelLabScm.transition(instance, name, payload, scmOperation(instance, `transition:${{name}}`));
+}}
+function scmRepair(instance, name, payload = {{}}) {{
+  return McelLabScm.repairComponent(instance, name, payload, scmOperation(instance, `repair:${{name}}`));
+}}
+function scmEffect(instance, name, payload = {{}}) {{
+  return McelLabScm.runEffect(instance, name, payload, scmOperation(instance, `effect:${{name}}`));
+}}
+function scmSerialize(instance, options = {{}}) {{
+  return McelLabScm.serializeComponent(instance, options, scmOperation(instance, "serialize"));
+}}
 '''
 
 
@@ -202,11 +218,11 @@ const instance = McelLabScm.createComponentInstance("AuthorizedOperations");
 const initialSource = instance.source;
 const initialState = instance.state;
 const initialRuntime = instance.runtime;
-const effectResult = McelLabScm.runEffect(instance, "authorized.update", {{status: "effect-updated"}});
+const effectResult = scmEffect(instance, "authorized.update", {{status: "effect-updated"}});
 const afterEffectRuntime = instance.runtime;
-const transitionResult = McelLabScm.transition(instance, "increment");
+const transitionResult = scmTransition(instance, "increment");
 const afterTransitionState = instance.state;
-const repairResult = McelLabScm.repairComponent(instance, "repair");
+const repairResult = scmRepair(instance, "repair");
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
   effectResult,
@@ -260,11 +276,11 @@ def test_leaked_operation_contexts_cannot_mutate_committed_roots(
 {_bootstrap()}
 McelLabScm.defineComponent("StaleOperationContext", {_manifest()});
 const instance = McelLabScm.createComponentInstance("StaleOperationContext");
-McelLabScm.transition(instance, "increment");
+scmTransition(instance, "increment");
 globalThis.leakedTransitionContext.set("state.count", 40);
-McelLabScm.repairComponent(instance, "repair");
+scmRepair(instance, "repair");
 globalThis.leakedRepairContext.set("runtime.status", "stale-context-tamper");
-McelLabScm.transition(instance, "increment");
+scmTransition(instance, "increment");
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
   state: instance.state,
@@ -303,7 +319,12 @@ const forged = {{
 }};
 let violation = null;
 try {{
-  McelLabScm.transition(forged, "increment");
+  McelLabScm.transition(
+    forged,
+    "increment",
+    {{}},
+    {{expectedRevision: 0, operationId: "forged-handle-operation"}}
+  );
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -349,7 +370,8 @@ def test_production_consumers_have_no_direct_component_root_assignment(
     assert destructive_calls == []
     if script_name == "mcel-lab.js":
         assert '"scm.projectWalletBoundary"' in source
-        assert 'window.McelLabScm.runEffect(instance, "scm.projectWalletBoundary"' in source
+        assert 'runMcelScmEffect(window.McelLabScm, instance, "scm.projectWalletBoundary"' in source
+        assert "scm.createOperation(instance" in source
     if script_name == "code-editor-mcel-studio.js":
         assert 'bridge.mcel.transition(scmInstance, "syncLiveSurface"' in source
 
@@ -418,11 +440,11 @@ const instance = McelLabScm.createComponentInstance("MutationAuthorityContexts")
 const initialState = instance.state;
 const initialRuntime = instance.runtime;
 const child = McelLabScm.createChildContext(instance, "counter");
-child.set("state.count", 7);
+child.set("state.count", 7, scmOperation(instance, "child:set"));
 const afterChildState = instance.state;
-const effectResult = McelLabScm.runEffect(instance, "mark");
+const effectResult = scmEffect(instance, "mark");
 const afterEffectRuntime = instance.runtime;
-const serialized = McelLabScm.serializeComponent(instance);
+const serialized = scmSerialize(instance);
 const packet = McelLabScm.exportEvidence(instance);
 process.stdout.write(JSON.stringify({{
   effectResult,

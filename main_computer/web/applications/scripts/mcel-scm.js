@@ -4,8 +4,10 @@ var McelLabScm = (() => {
       const routeDefinitions = new Map();
       const componentRecords = new WeakMap();
       const componentDrafts = new WeakSet();
+      const OPERATION_LEDGER_LIMIT = 256;
       let nextInstanceId = 1;
       let nextRouteInstanceId = 1;
+      let nextOperationId = 1;
 
       const ROOTS = Object.freeze(["source", "state", "runtime"]);
       const BLOCKED_SEGMENTS = Object.freeze(["__proto__", "prototype", "constructor"]);
@@ -88,6 +90,159 @@ var McelLabScm = (() => {
           record.snapshots[root] = deepFreeze(cloneValue(record[root]));
         }
         return record.snapshots[root];
+      }
+
+      function componentRevision(instance) {
+        const record = componentRecords.get(instance);
+        return record ? record.revision : undefined;
+      }
+
+      function componentAppliedOperationIds(instance) {
+        const record = componentRecords.get(instance);
+        if (!record) return undefined;
+        if (record.snapshots.operations === null) {
+          record.snapshots.operations = deepFreeze(record.appliedOperationIds.slice());
+        }
+        return record.snapshots.operations;
+      }
+
+      function operationScope(value) {
+        const normalized = safeString(value)
+          .replace(/[^A-Za-z0-9_.:-]+/g, "-")
+          .replace(/^-+|-+$/g, "");
+        return normalized || "operation";
+      }
+
+      function createOperation(instance, scope = "operation") {
+        assertComponentInstance(instance, "operation-envelope", {});
+        if (!componentRecords.has(instance)) {
+          throwViolation(violation("SCM_INVALID_INSTANCE", {
+            phase: "operation-envelope",
+            message: "MCEL SCM operation envelopes require a canonical component instance."
+          }));
+        }
+        return deepFreeze({
+          expectedRevision: componentRevision(instance),
+          operationId: `${operationScope(scope)}:${instance.id}:${nextOperationId++}`
+        });
+      }
+
+      function operationViolation(code, instance, phase, operation, details = {}) {
+        const record = componentRecords.get(instance);
+        return violation(code, {
+          phase,
+          componentName: instance?.componentName || "",
+          instanceId: instance?.id || "",
+          operationId: safeString(operation?.operationId),
+          expectedRevision: operation?.expectedRevision,
+          actualRevision: record?.revision,
+          ...details
+        });
+      }
+
+      function beginComponentOperation(instance, phase, operation, details = {}) {
+        assertComponentInstance(instance, phase, details);
+        const record = componentRecords.get(instance);
+        if (!record) {
+          throwViolation(operationViolation(
+            "SCM_INVALID_INSTANCE",
+            instance,
+            phase,
+            operation,
+            {message: "MCEL SCM mutations require a canonical component instance."}
+          ));
+        }
+
+        const operationId = safeString(operation?.operationId);
+        const expectedRevision = operation?.expectedRevision;
+        if (
+          !isPlainObject(operation)
+          || !operationId
+          || operationId.length > 200
+          || !Number.isSafeInteger(expectedRevision)
+          || expectedRevision < 0
+        ) {
+          throwViolation(operationViolation(
+            "SCM_OPERATION_ENVELOPE_REQUIRED",
+            instance,
+            phase,
+            operation,
+            {
+              message: "SCM mutations require operationId and a non-negative integer expectedRevision."
+            }
+          ));
+        }
+        if (record.appliedOperationIdSet.has(operationId) || record.pendingOperationIds.has(operationId)) {
+          throwViolation(operationViolation(
+            "SCM_DUPLICATE_OPERATION",
+            instance,
+            phase,
+            operation,
+            {message: `SCM operation ${operationId} has already been applied or is in progress.`}
+          ));
+        }
+        if (expectedRevision !== record.revision) {
+          throwViolation(operationViolation(
+            "SCM_STALE_REVISION",
+            instance,
+            phase,
+            operation,
+            {
+              message: `SCM operation ${operationId} expected revision ${expectedRevision}, but the instance is at revision ${record.revision}.`
+            }
+          ));
+        }
+        if (record.activeOperation) {
+          throwViolation(operationViolation(
+            "SCM_OPERATION_IN_PROGRESS",
+            instance,
+            phase,
+            operation,
+            {
+              activeOperationId: record.activeOperation.operationId,
+              message: `SCM instance ${instance.id} already has an operation in progress.`
+            }
+          ));
+        }
+
+        const token = Object.freeze({
+          operationId,
+          expectedRevision,
+          phase
+        });
+        record.pendingOperationIds.add(operationId);
+        record.activeOperation = token;
+        return token;
+      }
+
+      function abortComponentOperation(instance, token) {
+        const record = componentRecords.get(instance);
+        if (!record || record.activeOperation !== token) return;
+        record.pendingOperationIds.delete(token.operationId);
+        record.activeOperation = null;
+      }
+
+      function operationCommitMetadata(instance, token) {
+        const record = componentRecords.get(instance);
+        if (!record || record.activeOperation !== token) {
+          throw new Error("SCM operation cannot commit without its active authority token.");
+        }
+        const previousRevision = record.revision;
+        record.revision += 1;
+        record.appliedOperationIds.push(token.operationId);
+        record.appliedOperationIdSet.add(token.operationId);
+        while (record.appliedOperationIds.length > OPERATION_LEDGER_LIMIT) {
+          const removed = record.appliedOperationIds.shift();
+          record.appliedOperationIdSet.delete(removed);
+        }
+        record.pendingOperationIds.delete(token.operationId);
+        record.activeOperation = null;
+        record.snapshots.operations = null;
+        return {
+          operationId: token.operationId,
+          previousRevision,
+          revision: record.revision
+        };
       }
 
       function componentEvidence(instance) {
@@ -226,6 +381,21 @@ var McelLabScm = (() => {
         }
         if (code === "SCM_DUPLICATE_COMPONENT") {
           return `Component ${componentName} is already defined. Pass replace:true to replace it.`;
+        }
+        if (code === "SCM_OPERATION_ENVELOPE_REQUIRED") {
+          return "SCM mutations require operationId and expectedRevision.";
+        }
+        if (code === "SCM_DUPLICATE_OPERATION") {
+          return `SCM operation ${details.operationId || ""} has already been applied or is in progress.`;
+        }
+        if (code === "SCM_STALE_REVISION") {
+          return `SCM operation ${details.operationId || ""} targets a stale component revision.`;
+        }
+        if (code === "SCM_OPERATION_IN_PROGRESS") {
+          return `Component ${componentName} already has a mutation in progress.`;
+        }
+        if (code === "SCM_DIRECT_CONTEXT_MUTATION_BLOCKED") {
+          return "Direct context mutation is blocked; use an SCM mutation operation.";
         }
         if (code === "SCM_CHILD_OUTPUT_TARGET_MISSING") {
           return `Child ${details.childName || ""} output ${details.outputName || ""} targets a missing transition.`;
@@ -2609,11 +2779,17 @@ var McelLabScm = (() => {
           runtime: cloneValue(options.runtime || definition.runtime || {}),
           state: mergeState(definition.state || {}, options.state),
           evidence: [],
+          revision: 0,
+          appliedOperationIds: [],
+          appliedOperationIdSet: new Set(),
+          pendingOperationIds: new Set(),
+          activeOperation: null,
           snapshots: {
             source: null,
             state: null,
             runtime: null,
-            evidence: null
+            evidence: null,
+            operations: null
           }
         };
         const instance = {
@@ -2631,6 +2807,20 @@ var McelLabScm = (() => {
               return componentSnapshot(instance, root);
             }
           });
+        });
+        Object.defineProperty(instance, "revision", {
+          configurable: false,
+          enumerable: true,
+          get() {
+            return componentRevision(instance);
+          }
+        });
+        Object.defineProperty(instance, "appliedOperationIds", {
+          configurable: false,
+          enumerable: true,
+          get() {
+            return componentAppliedOperationIds(instance);
+          }
         });
         componentRecords.set(instance, record);
 
@@ -2674,9 +2864,18 @@ var McelLabScm = (() => {
         return entry;
       }
 
-      function commitOperationDraft(instance, draft, roots = ["source", "state", "runtime"]) {
+      function commitOperationDraft(
+        instance,
+        draft,
+        roots = ["source", "state", "runtime"],
+        operationToken
+      ) {
         const storage = componentRecords.get(instance);
-        if (!storage || !componentDrafts.has(draft)) {
+        if (
+          !storage
+          || !componentDrafts.has(draft)
+          || storage.activeOperation !== operationToken
+        ) {
           throw new Error("SCM operation cannot commit without a canonical instance and operation draft.");
         }
         const evidence = Array.isArray(storage.evidence) ? storage.evidence.slice() : [];
@@ -2695,6 +2894,7 @@ var McelLabScm = (() => {
         });
         storage.evidence = evidence;
         invalidateComponentSnapshot(instance, "evidence");
+        return operationCommitMetadata(instance, operationToken);
       }
 
       function rethrowOperationFailure(instance, error, fallbackCode, details = {}) {
@@ -2763,6 +2963,17 @@ var McelLabScm = (() => {
         return false;
       }
 
+      function assertOperationDraftContext(instance, phase, details = {}) {
+        if (componentDrafts.has(instance)) return;
+        throwViolation(violation("SCM_DIRECT_CONTEXT_MUTATION_BLOCKED", {
+          phase,
+          componentName: instance?.componentName || "",
+          instanceId: instance?.id || "",
+          ...details,
+          message: "Direct context mutation is blocked; invoke the owning SCM operation."
+        }), componentRecords.has(instance) ? instance : null);
+      }
+
       function createTransitionContext(instance, transitionName, spec) {
         const declaredReads = normalizePathList(spec.reads);
         const declaredWrites = normalizePathList(spec.writes);
@@ -2819,16 +3030,21 @@ var McelLabScm = (() => {
           },
 
           set(path, value) {
-            return writeRaw(instance, assertWrite(path), value);
+            const normalized = assertWrite(path);
+            assertOperationDraftContext(instance, "transition", {transitionName, path: normalized});
+            return writeRaw(instance, normalized, value);
           },
 
           delete(path) {
-            return deleteRaw(instance, assertWrite(path));
+            const normalized = assertWrite(path);
+            assertOperationDraftContext(instance, "transition", {transitionName, path: normalized});
+            return deleteRaw(instance, normalized);
           },
 
           addUnique(path, value) {
             const normalizedRead = assertRead(path);
             const normalizedWrite = assertWrite(path);
+            assertOperationDraftContext(instance, "transition", {transitionName, path: normalizedWrite});
             const current = readRaw(instance, normalizedRead);
             const next = Array.isArray(current) ? current.slice() : [];
             if (!next.includes(value)) next.push(value);
@@ -2859,6 +3075,7 @@ var McelLabScm = (() => {
           },
 
           evidence(entry) {
+            assertOperationDraftContext(instance, "transition", {transitionName});
             return recordEvidence(instance, {
               kind: "mcel-scm-evidence",
               contractVersion: CONTRACT_VERSION,
@@ -2947,16 +3164,21 @@ var McelLabScm = (() => {
           },
 
           set(path, value) {
-            return writeRaw(instance, assertWrite(path), value);
+            const normalized = assertWrite(path);
+            assertOperationDraftContext(instance, "effect", {effectName: name, path: normalized});
+            return writeRaw(instance, normalized, value);
           },
 
           delete(path) {
-            return deleteRaw(instance, assertWrite(path));
+            const normalized = assertWrite(path);
+            assertOperationDraftContext(instance, "effect", {effectName: name, path: normalized});
+            return deleteRaw(instance, normalized);
           },
 
           addUnique(path, value) {
             const normalizedRead = assertRead(path);
             const normalizedWrite = assertWrite(path);
+            assertOperationDraftContext(instance, "effect", {effectName: name, path: normalizedWrite});
             const current = readRaw(instance, normalizedRead);
             const next = Array.isArray(current) ? current.slice() : [];
             if (!next.includes(value)) next.push(value);
@@ -2977,6 +3199,7 @@ var McelLabScm = (() => {
           },
 
           evidence(entry) {
+            assertOperationDraftContext(instance, "effect", {effectName: name});
             return recordEvidence(instance, {
               kind: "mcel-scm-evidence",
               contractVersion: CONTRACT_VERSION,
@@ -2990,7 +3213,8 @@ var McelLabScm = (() => {
         });
       }
 
-      function recordEffectFailure(instance, effectName, error) {
+      function recordEffectFailure(instance, effectName, error, operationToken) {
+        abortComponentOperation(instance, operationToken);
         const entry = {
           kind: "mcel-scm-evidence",
           contractVersion: CONTRACT_VERSION,
@@ -3007,7 +3231,16 @@ var McelLabScm = (() => {
         return entry;
       }
 
-      function finishEffectCommit(instance, effectName, spec, ctx, result, payload) {
+      function finishEffectCommit(
+        instance,
+        draft,
+        operationToken,
+        effectName,
+        spec,
+        ctx,
+        result,
+        payload
+      ) {
         let committed = null;
         if (typeof spec.commit === "function") {
           committed = spec.commit(ctx, result, payload);
@@ -3024,7 +3257,13 @@ var McelLabScm = (() => {
           declaredWrites: spec.writes,
           committed: jsonSafe(committed)
         };
-        recordEvidence(instance, entry);
+        recordEvidence(draft, entry);
+        const operation = commitOperationDraft(
+          instance,
+          draft,
+          ["source", "state", "runtime"],
+          operationToken
+        );
         return {
           kind: "mcel-scm-effect-result",
           contractVersion: CONTRACT_VERSION,
@@ -3036,11 +3275,12 @@ var McelLabScm = (() => {
           state: cloneValue(instance.state),
           source: cloneValue(instance.source),
           runtime: cloneValue(instance.runtime),
+          ...operation,
           evidence: jsonSafe(entry)
         };
       }
 
-      function runEffect(instance, effectName, payload = {}) {
+      function runEffect(instance, effectName, payload = {}, operation = null) {
         assertComponentInstance(instance, "effect", {effectName});
         const name = safeString(effectName);
         const spec = instance.definition?.effects?.[name];
@@ -3053,8 +3293,15 @@ var McelLabScm = (() => {
           }), instance);
         }
 
-        const ctx = createEffectContext(instance, name);
-        recordEvidence(instance, {
+        const operationToken = beginComponentOperation(
+          instance,
+          "effect",
+          operation,
+          {effectName: name}
+        );
+        const draft = createOperationDraft(instance);
+        const ctx = createEffectContext(draft, name);
+        recordEvidence(draft, {
           kind: "mcel-scm-evidence",
           contractVersion: CONTRACT_VERSION,
           generatedAt: now(),
@@ -3075,30 +3322,56 @@ var McelLabScm = (() => {
           const result = typeof spec.run === "function" ? spec.run(ctx, payload) : null;
           if (result && typeof result.then === "function") {
             return result
-              .then((resolved) => finishEffectCommit(instance, name, spec, ctx, resolved, payload))
+              .then((resolved) => finishEffectCommit(
+                instance,
+                draft,
+                operationToken,
+                name,
+                spec,
+                ctx,
+                resolved,
+                payload
+              ))
               .catch((error) => {
-                recordEffectFailure(instance, name, error);
+                recordEffectFailure(instance, name, error, operationToken);
                 if (error?.violation?.kind === "mcel-scm-violation") throw error;
-                throwViolation(violation("SCM_EFFECT_EXCEPTION", {
+                const entry = violation("SCM_EFFECT_EXCEPTION", {
                   phase: "effect",
                   componentName: instance.componentName,
                   effectName: name,
                   message: error?.message || String(error),
                   errorName: error?.name || "Error"
-                }), instance);
+                });
+                const wrapped = new Error(entry.message);
+                wrapped.name = "McelScmViolationError";
+                wrapped.violation = jsonSafe(entry);
+                throw wrapped;
               });
           }
-          return finishEffectCommit(instance, name, spec, ctx, result, payload);
+          return finishEffectCommit(
+            instance,
+            draft,
+            operationToken,
+            name,
+            spec,
+            ctx,
+            result,
+            payload
+          );
         } catch (error) {
-          recordEffectFailure(instance, name, error);
+          recordEffectFailure(instance, name, error, operationToken);
           if (error?.violation?.kind === "mcel-scm-violation") throw error;
-          throwViolation(violation("SCM_EFFECT_EXCEPTION", {
+          const entry = violation("SCM_EFFECT_EXCEPTION", {
             phase: "effect",
             componentName: instance.componentName,
             effectName: name,
             message: error?.message || String(error),
             errorName: error?.name || "Error"
-          }), instance);
+          });
+          const wrapped = new Error(entry.message);
+          wrapped.name = "McelScmViolationError";
+          wrapped.violation = jsonSafe(entry);
+          throw wrapped;
         }
       }
 
@@ -3202,7 +3475,7 @@ var McelLabScm = (() => {
           return child.outputs[name];
         }
 
-        function assertChildMutation(path) {
+        function assertChildMutation(path, evidenceInstance = instance) {
           const normalized = normalizePath(path);
           if (!normalized || !rootForPath(normalized)) {
             throwViolation(violation("SCM_INVALID_PATH", {
@@ -3211,7 +3484,7 @@ var McelLabScm = (() => {
               childName,
               path: safeString(path),
               message: `Child ${childName} attempted mutation with invalid path ${safeString(path)}.`
-            }), instance);
+            }), evidenceInstance);
           }
           if (!isAllowedPath(normalized, declaredMutations)) {
             throwViolation(violation("SCM_CHILD_UNDECLARED_MUTATION", {
@@ -3220,7 +3493,7 @@ var McelLabScm = (() => {
               childName,
               path: normalized,
               declaredMutations
-            }), instance);
+            }), evidenceInstance);
           }
           if (!isOwnedWrite(instance.definition, normalized)) {
             throwViolation(violation("SCM_CHILD_MUTATION_OUTSIDE_OWNERSHIP", {
@@ -3229,9 +3502,39 @@ var McelLabScm = (() => {
               childName,
               path: normalized,
               declaredMutations
-            }), instance);
+            }), evidenceInstance);
           }
           return normalized;
+        }
+
+        function applyChildMutation(operation, action) {
+          const operationToken = beginComponentOperation(
+            instance,
+            "child-mutation",
+            operation,
+            {childName: name}
+          );
+          const draft = createOperationDraft(instance);
+          try {
+            const outcome = action(draft, operationToken);
+            const operationResult = commitOperationDraft(
+              instance,
+              draft,
+              ["source", "state", "runtime"],
+              operationToken
+            );
+            return {
+              value: outcome,
+              operation: operationResult
+            };
+          } catch (error) {
+            abortComponentOperation(instance, operationToken);
+            rethrowOperationFailure(instance, error, "SCM_CHILD_MUTATION_EXCEPTION", {
+              phase: "child-mutation",
+              componentName: instance.componentName,
+              childName: name
+            });
+          }
         }
 
         return Object.freeze({
@@ -3247,7 +3550,7 @@ var McelLabScm = (() => {
             return cloneValue(readRaw(instance, inputTarget(inputName)));
           },
 
-          emit(outputName, payload = {}) {
+          emit(outputName, payload = {}, operation = null) {
             const target = outputTarget(outputName);
             const targetTransition = transitionTargetName(target);
             if (!targetTransition) {
@@ -3261,6 +3564,7 @@ var McelLabScm = (() => {
               }), instance);
             }
 
+            const result = transition(instance, targetTransition, payload, operation);
             recordEvidence(instance, {
               kind: "mcel-scm-evidence",
               contractVersion: CONTRACT_VERSION,
@@ -3271,74 +3575,94 @@ var McelLabScm = (() => {
               childName: name,
               outputName: safeString(outputName),
               target,
-              transitionName: targetTransition
-            });
-            return transition(instance, targetTransition, payload);
-          },
-
-          set(path, value) {
-            const normalized = assertChildMutation(path);
-            const result = writeRaw(instance, normalized, value);
-            recordEvidence(instance, {
-              kind: "mcel-scm-evidence",
-              contractVersion: CONTRACT_VERSION,
-              generatedAt: now(),
-              phase: "child-mutation",
-              ok: true,
-              componentName: instance.componentName,
-              childName: name,
-              path: normalized
+              transitionName: targetTransition,
+              operationId: result.operationId,
+              revision: result.revision
             });
             return result;
           },
 
-          delete(path) {
-            const normalized = assertChildMutation(path);
-            const result = deleteRaw(instance, normalized);
-            recordEvidence(instance, {
-              kind: "mcel-scm-evidence",
-              contractVersion: CONTRACT_VERSION,
-              generatedAt: now(),
-              phase: "child-mutation",
-              ok: true,
-              componentName: instance.componentName,
-              childName: name,
-              path: normalized,
-              operation: "delete"
+          set(path, value, operation = null) {
+            const committed = applyChildMutation(operation, (draft, operationToken) => {
+              const normalized = assertChildMutation(path, draft);
+              const result = writeRaw(draft, normalized, value);
+              recordEvidence(draft, {
+                kind: "mcel-scm-evidence",
+                contractVersion: CONTRACT_VERSION,
+                generatedAt: now(),
+                phase: "child-mutation",
+                ok: true,
+                componentName: instance.componentName,
+                childName: name,
+                path: normalized,
+                operationId: operationToken.operationId
+              });
+              return result;
             });
-            return result;
+            return committed.value;
           },
 
-          addUnique(path, value) {
-            const normalized = assertChildMutation(path);
-            const current = readRaw(instance, normalized);
-            const next = Array.isArray(current) ? current.slice() : [];
-            if (!next.includes(value)) next.push(value);
-            const result = writeRaw(instance, normalized, next);
-            recordEvidence(instance, {
-              kind: "mcel-scm-evidence",
-              contractVersion: CONTRACT_VERSION,
-              generatedAt: now(),
-              phase: "child-mutation",
-              ok: true,
-              componentName: instance.componentName,
-              childName: name,
-              path: normalized,
-              operation: "addUnique"
+          delete(path, operation = null) {
+            const committed = applyChildMutation(operation, (draft, operationToken) => {
+              const normalized = assertChildMutation(path, draft);
+              const result = deleteRaw(draft, normalized);
+              recordEvidence(draft, {
+                kind: "mcel-scm-evidence",
+                contractVersion: CONTRACT_VERSION,
+                generatedAt: now(),
+                phase: "child-mutation",
+                ok: true,
+                componentName: instance.componentName,
+                childName: name,
+                path: normalized,
+                operation: "delete",
+                operationId: operationToken.operationId
+              });
+              return result;
             });
-            return result;
+            return committed.value;
           },
 
-          evidence(entry = {}) {
-            return recordEvidence(instance, {
-              kind: "mcel-scm-evidence",
-              contractVersion: CONTRACT_VERSION,
-              generatedAt: now(),
-              phase: "child-context",
-              componentName: instance.componentName,
-              childName: name,
-              ...jsonSafe(entry)
+          addUnique(path, value, operation = null) {
+            const committed = applyChildMutation(operation, (draft, operationToken) => {
+              const normalized = assertChildMutation(path, draft);
+              const current = readRaw(draft, normalized);
+              const next = Array.isArray(current) ? current.slice() : [];
+              if (!next.includes(value)) next.push(value);
+              const result = writeRaw(draft, normalized, next);
+              recordEvidence(draft, {
+                kind: "mcel-scm-evidence",
+                contractVersion: CONTRACT_VERSION,
+                generatedAt: now(),
+                phase: "child-mutation",
+                ok: true,
+                componentName: instance.componentName,
+                childName: name,
+                path: normalized,
+                operation: "addUnique",
+                operationId: operationToken.operationId
+              });
+              return result;
             });
+            return committed.value;
+          },
+
+          evidence(entry = {}, operation = null) {
+            const committed = applyChildMutation(operation, (draft, operationToken) => {
+              const evidenceEntry = {
+                kind: "mcel-scm-evidence",
+                contractVersion: CONTRACT_VERSION,
+                generatedAt: now(),
+                phase: "child-context",
+                componentName: instance.componentName,
+                childName: name,
+                operationId: operationToken.operationId,
+                ...jsonSafe(entry)
+              };
+              recordEvidence(draft, evidenceEntry);
+              return evidenceEntry;
+            });
+            return committed.value;
           }
         });
       }
@@ -3724,106 +4048,126 @@ var McelLabScm = (() => {
         return contract;
       }
 
-      function serializeComponent(instance, options = {}) {
+      function serializeComponent(instance, options = {}, operation = null) {
         const contract = serializationContractFor(instance);
-        const dirtyState = normalizeDirtyStateContract(contract.dirtyState);
-        const blocked = [];
+        const operationToken = beginComponentOperation(instance, "serialize", operation, {});
+        const draft = createOperationDraft(instance);
+        try {
+          const dirtyState = normalizeDirtyStateContract(contract.dirtyState);
+          const blocked = [];
 
-        recordEvidence(instance, {
-          kind: "mcel-scm-evidence",
-          contractVersion: CONTRACT_VERSION,
-          generatedAt: now(),
-          phase: "serialize-start",
-          ok: true,
-          componentName: instance.componentName,
-          instanceId: instance.id,
-          sourceOwns: contract.sourceOwns || [],
-          runtimeOnly: contract.runtimeOnly || []
-        });
-
-        dirtyState.blockedBy.forEach((path) => {
-          const value = readRaw(instance, path);
-          if (truthyForDirty(value)) {
-            blocked.push({
-              path,
-              value: jsonSafe(value)
-            });
-          }
-        });
-
-        if (blocked.length) {
-          throwViolation(violation("SCM_SERIALIZATION_DIRTY_STATE_BLOCKED", {
-            phase: "serialize",
+          recordEvidence(draft, {
+            kind: "mcel-scm-evidence",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            phase: "serialize-start",
+            ok: true,
             componentName: instance.componentName,
             instanceId: instance.id,
-            blockedBy: blocked,
-            message: `Component ${instance.componentName} cannot serialize while dirty state is present.`
-          }), instance);
-        }
+            sourceOwns: contract.sourceOwns || [],
+            runtimeOnly: contract.runtimeOnly || [],
+            operationId: operationToken.operationId
+          });
 
-        const cleanSource = cloneValue(instance.source || {});
-        const leaks = contract.failIfRuntimeLeaks === false
-          ? []
-          : findRuntimeLeaks(cleanSource, {markers: sourceRuntimeLeakMarkers(contract)});
+          dirtyState.blockedBy.forEach((path) => {
+            const value = readRaw(draft, path);
+            if (truthyForDirty(value)) {
+              blocked.push({
+                path,
+                value: jsonSafe(value)
+              });
+            }
+          });
 
-        if (leaks.length) {
-          throwViolation(violation("SCM_SERIALIZATION_RUNTIME_LEAK_DETECTED", {
-            phase: "serialize",
-            componentName: instance.componentName,
-            instanceId: instance.id,
-            leaks: leaks.map((leak) => jsonSafe(leak)),
-            message: `Component ${instance.componentName} source contains runtime/generated leakage.`
-          }), instance);
-        }
-
-        const output = isPlainObject(contract.output) ? contract.output : {};
-        const format = safeString(options.format || output.format || "clean-source-json");
-        let serialized = cleanSource;
-        if (format.includes("json")) {
-          serialized = JSON.stringify(cleanSource, null, 2);
-        }
-
-        if (output.writeTo) {
-          const writePath = normalizePath(output.writeTo);
-          if (!writePath || rootForPath(writePath) !== "runtime" || !isOwnedPath(instance.definition, writePath)) {
-            throwViolation(violation("SCM_SERIALIZATION_OUTPUT_WRITE_TO_INVALID", {
+          if (blocked.length) {
+            throwViolation(violation("SCM_SERIALIZATION_DIRTY_STATE_BLOCKED", {
               phase: "serialize",
               componentName: instance.componentName,
               instanceId: instance.id,
-              path: safeString(output.writeTo),
-              message: `Component ${instance.componentName} serialization output writeTo must target an owned runtime path.`
-            }), instance);
+              blockedBy: blocked,
+              message: `Component ${instance.componentName} cannot serialize while dirty state is present.`
+            }), draft);
           }
-          writeRaw(instance, writePath, serialized);
+
+          const cleanSource = cloneValue(draft.source || {});
+          const leaks = contract.failIfRuntimeLeaks === false
+            ? []
+            : findRuntimeLeaks(cleanSource, {markers: sourceRuntimeLeakMarkers(contract)});
+
+          if (leaks.length) {
+            throwViolation(violation("SCM_SERIALIZATION_RUNTIME_LEAK_DETECTED", {
+              phase: "serialize",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              leaks: leaks.map((leak) => jsonSafe(leak)),
+              message: `Component ${instance.componentName} source contains runtime/generated leakage.`
+            }), draft);
+          }
+
+          const output = isPlainObject(contract.output) ? contract.output : {};
+          const format = safeString(options.format || output.format || "clean-source-json");
+          let serialized = cleanSource;
+          if (format.includes("json")) {
+            serialized = JSON.stringify(cleanSource, null, 2);
+          }
+
+          if (output.writeTo) {
+            const writePath = normalizePath(output.writeTo);
+            if (!writePath || rootForPath(writePath) !== "runtime" || !isOwnedPath(instance.definition, writePath)) {
+              throwViolation(violation("SCM_SERIALIZATION_OUTPUT_WRITE_TO_INVALID", {
+                phase: "serialize",
+                componentName: instance.componentName,
+                instanceId: instance.id,
+                path: safeString(output.writeTo),
+                message: `Component ${instance.componentName} serialization output writeTo must target an owned runtime path.`
+              }), draft);
+            }
+            writeRaw(draft, writePath, serialized);
+          }
+
+          const entry = {
+            kind: "mcel-scm-evidence",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            phase: "serialize-commit",
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            format,
+            sourceBoundaryCount: Array.isArray(contract.sourceOwns) ? contract.sourceOwns.length : 0,
+            runtimeBoundaryCount: Array.isArray(contract.runtimeOnly) ? contract.runtimeOnly.length : 0,
+            outputWrittenTo: safeString(output.writeTo || ""),
+            operationId: operationToken.operationId
+          };
+          recordEvidence(draft, entry);
+          const operationResult = commitOperationDraft(
+            instance,
+            draft,
+            ["runtime"],
+            operationToken
+          );
+
+          return {
+            kind: "mcel-scm-serialization-result",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            format,
+            source: cleanSource,
+            serialized,
+            ...operationResult,
+            evidence: jsonSafe(entry)
+          };
+        } catch (error) {
+          abortComponentOperation(instance, operationToken);
+          rethrowOperationFailure(instance, error, "SCM_SERIALIZATION_EXCEPTION", {
+            phase: "serialize",
+            componentName: instance.componentName,
+            instanceId: instance.id
+          });
         }
-
-        const entry = {
-          kind: "mcel-scm-evidence",
-          contractVersion: CONTRACT_VERSION,
-          generatedAt: now(),
-          phase: "serialize-commit",
-          ok: true,
-          componentName: instance.componentName,
-          instanceId: instance.id,
-          format,
-          sourceBoundaryCount: Array.isArray(contract.sourceOwns) ? contract.sourceOwns.length : 0,
-          runtimeBoundaryCount: Array.isArray(contract.runtimeOnly) ? contract.runtimeOnly.length : 0,
-          outputWrittenTo: safeString(output.writeTo || "")
-        };
-        recordEvidence(instance, entry);
-
-        return {
-          kind: "mcel-scm-serialization-result",
-          contractVersion: CONTRACT_VERSION,
-          generatedAt: now(),
-          ok: true,
-          componentName: instance.componentName,
-          instanceId: instance.id,
-          format,
-          source: cleanSource,
-          serialized,
-          evidence: jsonSafe(entry)
-        };
       }
 
       function repairContractFor(instance, strategyName) {
@@ -3955,14 +4299,19 @@ var McelLabScm = (() => {
           },
 
           set(path, value) {
-            return writeRaw(instance, assertWrite(path), value);
+            const normalized = assertWrite(path);
+            assertOperationDraftContext(instance, "repair", {strategyName: name, path: normalized});
+            return writeRaw(instance, normalized, value);
           },
 
           delete(path) {
-            return deleteRaw(instance, assertWrite(path));
+            const normalized = assertWrite(path);
+            assertOperationDraftContext(instance, "repair", {strategyName: name, path: normalized});
+            return deleteRaw(instance, normalized);
           },
 
           evidence(entry) {
+            assertOperationDraftContext(instance, "repair", {strategyName: name});
             return recordEvidence(instance, {
               kind: "mcel-scm-evidence",
               contractVersion: CONTRACT_VERSION,
@@ -3977,7 +4326,7 @@ var McelLabScm = (() => {
         });
       }
 
-      function repairComponent(instance, strategyName, payload = {}) {
+      function repairComponent(instance, strategyName, payload = {}, operation = null) {
         const contract = repairContractFor(instance, strategyName);
         const name = safeString(strategyName);
         const strategy = contract.strategies?.[name];
@@ -3991,6 +4340,12 @@ var McelLabScm = (() => {
           }), instance);
         }
 
+        const operationToken = beginComponentOperation(
+          instance,
+          "repair",
+          operation,
+          {strategyName: name}
+        );
         const beforeSource = cloneValue(instance.source);
         const beforeState = cloneValue(instance.state);
         const beforeRuntime = cloneValue(instance.runtime);
@@ -4006,9 +4361,10 @@ var McelLabScm = (() => {
           ok: true,
           componentName: instance.componentName,
           instanceId: instance.id,
-          strategyName: name,
-          allowed: contract.allowed || [],
-          forbidden: contract.forbidden || []
+            strategyName: name,
+            allowed: contract.allowed || [],
+            forbidden: contract.forbidden || [],
+            operationId: operationToken.operationId
         });
 
         const ctx = createRepairContext(draft, name);
@@ -4062,10 +4418,16 @@ var McelLabScm = (() => {
             sourceUnchanged: true,
             stateUnchanged: true,
             runtimeBefore: jsonSafe(beforeRuntime),
-            runtimeAfter: jsonSafe(draft.runtime)
+            runtimeAfter: jsonSafe(draft.runtime),
+            operationId: operationToken.operationId
           };
           recordEvidence(draft, entry);
-          commitOperationDraft(instance, draft, ["runtime"]);
+          const operationResult = commitOperationDraft(
+            instance,
+            draft,
+            ["runtime"],
+            operationToken
+          );
 
           return {
             kind: "mcel-scm-repair-result",
@@ -4078,9 +4440,11 @@ var McelLabScm = (() => {
             result: jsonSafe(result),
             source: cloneValue(instance.source),
             runtime: cloneValue(instance.runtime),
+            ...operationResult,
             evidence: jsonSafe(entry)
           };
         } catch (error) {
+          abortComponentOperation(instance, operationToken);
           rethrowOperationFailure(instance, error, "SCM_REPAIR_EXCEPTION", {
             phase: "repair",
             componentName: instance.componentName,
@@ -4090,7 +4454,7 @@ var McelLabScm = (() => {
         }
       }
 
-      function transition(instance, transitionName, payload = {}) {
+      function transition(instance, transitionName, payload = {}, operation = null) {
         assertComponentInstance(instance, "transition", {transitionName});
 
         const name = safeString(transitionName);
@@ -4104,6 +4468,12 @@ var McelLabScm = (() => {
           }), instance);
         }
 
+        const operationToken = beginComponentOperation(
+          instance,
+          "transition",
+          operation,
+          {transitionName: name}
+        );
         const draft = createOperationDraft(instance);
         const ctx = createTransitionContext(draft, name, spec);
         try {
@@ -4142,10 +4512,16 @@ var McelLabScm = (() => {
             componentName: instance.componentName,
             transitionName: name,
             declaredReads: spec.reads,
-            declaredWrites: spec.writes
+            declaredWrites: spec.writes,
+            operationId: operationToken.operationId
           };
           recordEvidence(draft, entry);
-          commitOperationDraft(instance, draft);
+          const operationResult = commitOperationDraft(
+            instance,
+            draft,
+            ["source", "state", "runtime"],
+            operationToken
+          );
 
           return {
             kind: "mcel-scm-transition-result",
@@ -4157,9 +4533,11 @@ var McelLabScm = (() => {
             state: cloneValue(instance.state),
             source: cloneValue(instance.source),
             runtime: cloneValue(instance.runtime),
+            ...operationResult,
             evidence: jsonSafe(entry)
           };
         } catch (error) {
+          abortComponentOperation(instance, operationToken);
           rethrowOperationFailure(instance, error, "SCM_TRANSITION_EXCEPTION", {
             phase: "transition",
             componentName: instance.componentName,
@@ -4170,12 +4548,15 @@ var McelLabScm = (() => {
 
       function exportEvidence(instance) {
         const evidence = componentEvidence(instance);
+        const canonical = componentRecords.has(instance);
         return {
           kind: "mcel-scm-evidence-packet",
           contractVersion: CONTRACT_VERSION,
           generatedAt: now(),
           componentName: instance?.componentName || "",
           instanceId: instance?.id || "",
+          revision: canonical ? componentRevision(instance) : null,
+          appliedOperationIds: canonical ? cloneValue(componentAppliedOperationIds(instance)) : [],
           evidence: evidence ? evidence.map((entry) => jsonSafe(entry)) : []
         };
       }
@@ -4187,6 +4568,7 @@ var McelLabScm = (() => {
         listComponentDefinitions,
         componentDefinition,
         createComponentInstance,
+        createOperation,
         createChildContext,
         createEffectContext,
         runEffect,

@@ -39,6 +39,16 @@ def _scm_bootstrap() -> str:
 const window = {{}};
 {_script("mcel-scm.js")}
 McelLabScm.clearDefinitions();
+let nextTestOperationId = 1;
+function scmOperation(instance, scope) {{
+  return McelLabScm.createOperation(instance, `${{scope}}:${{nextTestOperationId++}}`);
+}}
+function scmSerialize(instance, options = {{}}) {{
+  return McelLabScm.serializeComponent(instance, options, scmOperation(instance, "serialize"));
+}}
+function scmRepair(instance, name, payload = {{}}) {{
+  return McelLabScm.repairComponent(instance, name, payload, scmOperation(instance, `repair:${{name}}`));
+}}
 """
 
 
@@ -132,7 +142,7 @@ def test_scm_serializes_clean_source_and_omits_runtime(tmp_path: Path) -> None:
 
 McelLabScm.defineComponent("SerializableStudio", {_valid_serialization_repair_manifest()});
 const instance = McelLabScm.createComponentInstance("SerializableStudio");
-const result = McelLabScm.serializeComponent(instance);
+const result = scmSerialize(instance);
 const packet = McelLabScm.exportEvidence(instance);
 
 console.log(JSON.stringify({{
@@ -171,7 +181,7 @@ const instance = McelLabScm.createComponentInstance("DirtyStudio", {{
 
 let violation = null;
 try {{
-  McelLabScm.serializeComponent(instance);
+  scmSerialize(instance);
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -207,7 +217,7 @@ const instance = McelLabScm.createComponentInstance("LeakyStudio", {{
 
 let violation = null;
 try {{
-  McelLabScm.serializeComponent(instance);
+  scmSerialize(instance);
 }} catch (error) {{
   violation = error.violation;
 }}
@@ -232,7 +242,7 @@ def test_scm_repairs_only_allowed_runtime_paths_and_preserves_source(tmp_path: P
 McelLabScm.defineComponent("RepairableStudio", {_valid_serialization_repair_manifest()});
 const instance = McelLabScm.createComponentInstance("RepairableStudio");
 const sourceBefore = JSON.stringify(instance.source);
-const result = McelLabScm.repairComponent(instance, "rebuildWorkbenchShell");
+const result = scmRepair(instance, "rebuildWorkbenchShell");
 const sourceAfter = JSON.stringify(instance.source);
 
 console.log(JSON.stringify({{

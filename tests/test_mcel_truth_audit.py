@@ -409,12 +409,40 @@ def test_markdown_separates_truth_enforcement_and_promotion() -> None:
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
 def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> None:
+    runtime_evidence = tmp_path / "empty-runtime-evidence.json"
+    runtime_evidence.write_text(
+        json.dumps(
+            {
+                "schema": "mcel-runtime-flog-report-v2",
+                "version": "mcel-runtime-flog-v2",
+                "generatedAt": "2026-07-27T10:00:00Z",
+                "results": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    acceptance_evidence = tmp_path / "empty-acceptance-evidence.json"
+    acceptance_evidence.write_text(
+        json.dumps(
+            {
+                "schema": "mcel-acceptance-evidence-report-v1",
+                "version": "mcel-acceptance-evidence-v1",
+                "generatedAt": "2026-07-27T10:00:00Z",
+                "results": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     completed = subprocess.run(
         [
             sys.executable,
             str(SCRIPT),
             "--now",
             "2026-07-27T12:00:00Z",
+            "--runtime-evidence",
+            str(runtime_evidence),
+            "--acceptance-evidence",
+            str(acceptance_evidence),
             "--output-dir",
             str(tmp_path),
         ],
@@ -452,6 +480,8 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     core_paths = [
         item["path"] for item in report["sourceInventory"]["coreAuthorities"]
     ]
+    assert "main_computer/web/applications/scripts/mcel-epistemic-status.js" in core_paths
+    assert "main_computer/web/applications/scripts/mcel-observation-bundle.js" in core_paths
     assert "main_computer/web/applications/scripts/mcel-semantic-adapter-toolkit.js" in core_paths
 
     adapter_paths = [

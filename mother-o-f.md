@@ -6,10 +6,10 @@ Sources:
 
 ```text
 mother.md
-SHA-256: 4fca6c1c38f1f9670de68a79a45648bac96bdfd442f4b379c0f584d115f1a0c2
+SHA-256: bbc69b2e602e234a0e1f844c51f3f079c22669b2ac19c100f7e7c4162549a442
 
 mother-o.md
-SHA-256: cab0da251036460ff4ad3208b8b6cd9643b13bd292caff1a51b1f09d09509276
+SHA-256: 75e8b39cb348a653cf2cf24a5fddee29cc862803a5403eac711bbb542865d68f
 ```
 
 ## 1. Purpose and authority
@@ -284,8 +284,8 @@ and context.
 |---|---|
 | `MOTHER-OF-SYNC-001` | Acquire and retain the exclusive local-adoption scope |
 | `MOTHER-OF-SYNC-002` | Pin the local prestate and unanimously agreed remote candidate |
-| `MOTHER-OF-SYNC-003` | Download the complete candidate closure into immutable staging |
-| `MOTHER-OF-SYNC-004` | Replay and verify the staged candidate and projections |
+| `MOTHER-OF-SYNC-003` | Download and seal the complete candidate closure in immutable staging |
+| `MOTHER-OF-SYNC-004` | Replay and verify the staged candidate and projections, including exact equality between staged and installed global private-state bindings |
 | `MOTHER-OF-SYNC-005` | Persist activation-prepared evidence outside the swappable generation |
 | `MOTHER-OF-SYNC-006` | Atomically switch the active-generation pointer |
 | `MOTHER-OF-SYNC-007` | Reconcile pointer-determined activation after interruption |
@@ -873,7 +873,8 @@ Class: staged local adoption
 
 Outcome: the local machine adopts the exact already-authoritative generation
 held unanimously by every expected replica without changing head identity,
-epoch, sequence, entry, bundle, state, membership, or lineage.
+epoch, sequence, entry, bundle, state, membership, lineage, or the installed
+global private-state binding.
 
 ### 12.1 `prep` functionalities
 
@@ -893,10 +894,14 @@ epoch, sequence, entry, bundle, state, membership, or lineage.
    candidate.
 2. `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` govern candidate
    download and replica revalidation requests.
-3. `MOTHER-OF-SYNC-003` downloads the complete immutable recovery closure into
-   staging.
-4. `MOTHER-OF-SYNC-004` verifies journals, checkpoints, private state, pending
-   action, rollback closure, and derived projections.
+3. `MOTHER-OF-SYNC-003` downloads and seals the complete immutable recovery
+   closure in staging.
+4. `MOTHER-OF-SYNC-004` verifies journals, checkpoints, pending action,
+   rollback closure, derived projections, and that the staged private-state
+   kind, generation, identity-document hash, and private-recovery-manifest hash
+   exactly equal the installed global private-state binding. Candidate private
+   bytes are verification material; `sync-state` does not replace the global
+   private-state root.
 5. `MOTHER-OF-ID-005` verifies the complete adopted private-recovery closure.
 6. `MOTHER-OF-CTL-014` enters `sync-ready-to-activate` only after every staged
    byte and directory is durable.
@@ -909,7 +914,7 @@ epoch, sequence, entry, bundle, state, membership, or lineage.
 | 1a | `MOTHER-OF-XPORT-001` through `MOTHER-OF-XPORT-005` | Requery the frozen replicas using durable request/result semantics |
 | 2 | `MOTHER-OF-SYNC-004` | Reverify complete staged generation |
 | 3 | `MOTHER-OF-SYNC-005` | Persist activation-prepared evidence independently of the generation tree |
-| 4 | `MOTHER-OF-SYNC-006` | Atomically switch and flush active-generation pointer |
+| 4 | `MOTHER-OF-SYNC-006` | Atomically switch and flush the per-network active-generation pointer after revalidating the unchanged installed global private-state binding |
 | 5 | `MOTHER-OF-SYNC-007` | Reconcile operation state from the durable pointer |
 | 6 | `MOTHER-OF-CTL-016` | Release local-adoption scope in `sync-committed` |
 
