@@ -121,9 +121,9 @@ Static app-surface conformance should verify the containers, ownership, fit
 policies, and projection contract. Authored-document conformance should verify
 identity, hierarchy, references, and synchronization.
 
-### Planned reusable operations
+### Planned reusable operations (not implemented in this snapshot)
 
-Patch 24b or a later implementation patch should provide host-independent
+A later implementation patch should provide host-independent
 operations equivalent to:
 
 ```javascript
@@ -136,8 +136,8 @@ describeSelection(authoredDocument, selection)
 Names may change during implementation, but the capabilities and layer boundary
 are normative.
 
-## Patch boundary
+## Current implementation boundary
 
 Patch 24a updates the specification and contract tests only. The existing v1
-analyzer behavior remains unchanged until an implementation patch adds the rich
-authored-document adapter.
+analyzer behavior remains unchanged in this snapshot; the host-independent rich
+authored-document operations listed above do not exist yet.

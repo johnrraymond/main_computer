@@ -2,7 +2,10 @@
 
 Patch 21 stabilized the Document Editor as a usable MCEL surface, not only a
 semantic one. Patch 43 parks the app at runtime-baseline until its requirements
-contract and semantic adapter coverage are truth-auditable.
+contract and semantic adapter coverage are truth-auditable. The current
+snapshot still uses the Patch 22b-era three-lane interface; the Patch 24a
+outline, modal-picker, and docked-companion material below remains a target
+specification rather than live-state documentation.
 
 Patch 21a corrected the lane policy after live use showed that stacking the
 right Document AI companion was the wrong degradation. The then-current layout
@@ -247,7 +250,7 @@ It must:
 - pass through save/discard/cancel when current edits are dirty;
 - remain open with an actionable error when loading fails.
 
-### Runtime conformance additions for Patch 24b
+### Target runtime conformance additions
 
 The implementation patch should extend runtime checks to prove:
 
@@ -266,11 +269,12 @@ active outline entry stays visible without changing document scroll position
 companion header and prompt composer remain reachable during internal overflow
 ```
 
-## Patch boundary
+## Current implementation boundary
 
-Patch 24a is specification and contract-test work only. The live Document
-Editor remains on the Patch 22b UI until Patch 24b implements the outline,
-modal picker, and docked companion.
+Patch 24a is specification and contract-test work only in this snapshot. The
+live Document Editor remains on the Patch 22b-era UI. A future implementation
+of the outline, modal picker, and docked companion must update the live markup,
+surface contract, layout checks, and chronology together.
 
 ### Focused host and vertical budget correction (Patch 24a4)
 

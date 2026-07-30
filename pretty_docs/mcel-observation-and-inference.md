@@ -141,6 +141,12 @@ This patch does not:
   mutation;
 - make any existing MCEL claim proven.
 
-Browser capture is the next layer after these contracts. Active exploration
-remains prohibited until SCM canonical-state isolation, revision checking, and
-duplicate-operation refusal are separately proven.
+Any browser-capture integration must follow the authorization boundary in
+`pretty_docs/mcel-status-and-roadmap.md`. SCM now provides canonical component
+instances, revision-bound operation envelopes, duplicate-operation refusal, and
+overlapping-operation refusal. Those guards satisfy one mutation-isolation
+prerequisite; they do not authorize active exploration.
+
+Active exploration remains prohibited until it has its own explicit operation
+scope, policy gate, evidence contract, refusal behavior, and tests. Observation
+alone cannot promote a claim from `observed` or `inferred` to `verified`.

@@ -17,7 +17,7 @@ result Q&A: explicit provider request over a visible calculator context snapshot
 hidden file/Git/shell/package/publish mutation: prohibited
 ```
 
-The purpose of this document is to make Calculator requirements stable enough that MCEL Lab can later parse them, compare them with the live app, generate finding candidates, and drive code/test updates without relying on loose prose. Calculator should be the small reference app for proving a complete MCEL semantic runtime because its core workflows are deterministic, low-risk, and easy to verify.
+The requirements registry parses this document. MCEL Lab and the repository truth audit compare it with app blueprints, adapter coverage, surface policy, runtime evidence, and acceptance evidence. This document is specification evidence, not implementation proof. Calculator should be the small reference app for a complete MCEL semantic runtime because its core workflows are deterministic, low-risk, and easy to verify.
 
 ## Roadmap use case: compare monthly costs
 

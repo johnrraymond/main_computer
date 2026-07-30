@@ -13,7 +13,7 @@ current: semantic-runtime Website Builder + saved website project manifests + lo
 proven scope: site authoring, runtime configuration, publish-lane preflight/receipts, website evidence, and Git Tools handoff preparation
 ```
 
-The purpose of this document is to keep website requirements stable enough that MCEL Lab can parse them, compare them with the live Website Builder app and saved website folders, generate finding candidates, and drive code/test updates without relying on loose prose.
+The requirements registry parses this document. MCEL Lab and the repository truth audit compare it with app blueprints, adapter coverage, surface policy, runtime evidence, and acceptance evidence. This document is specification evidence, not implementation proof.
 
 ## Roadmap use cases
 

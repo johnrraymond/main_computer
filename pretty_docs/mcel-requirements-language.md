@@ -1366,21 +1366,23 @@ It lets the registry compare apps by what each region owns: navigation, primary 
 inspection, evidence, governed actions, status, advanced boundaries, or helper
 companions.
 
-## Practical next phase
+## Current consumers
 
-The next phase after the registry is to connect it to MCEL Lab and app truth gates:
+The registry is already consumed by MCEL Lab, the app truth gate, and the repository truth audit:
 
 ```text
 read the requirements registry
 compare docs to app blueprints
 compare intents to adapter coverage
-create MCEL Lab findings for gaps
-list missing acceptance tests
-show which apps are parseable, strict-schema-ready, adapter-ready, and verified
+create structured findings for gaps
+list missing runtime and acceptance evidence
+separate parseable, strict-schema-ready, adapter-ready, and verified states
 ```
 
 The docs are the source of product intent. The registry makes that intent inspectable.
-Adapters, tests, receipts, and browser evidence remain the source of implementation truth.
+Adapters, tests, receipts, repository-bound runtime evidence, and independent validators
+remain the source of implementation truth. Current roadmap authority lives in
+`pretty_docs/mcel-status-and-roadmap.md`.
 
 ## FLOG runtime contract smoke
 

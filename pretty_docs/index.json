@@ -7,6 +7,12 @@
       "order": 10
     },
     {
+      "path": "mcel-status-and-roadmap.md",
+      "title": "MCEL Status and Roadmap",
+      "kind": "markdown",
+      "order": 34
+    },
+    {
       "path": "mcel-system-guide.md",
       "title": "MCEL System Guide",
       "kind": "markdown",

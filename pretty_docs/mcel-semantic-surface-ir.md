@@ -8,7 +8,7 @@ The semantic surface IR is the first typed MCEL model that sits after semantic r
 rendered ridge records
   -> semantic surface ridge contract
   -> SemanticSurfaceIR
-  -> later layout grammar, renderers, extractors, and editor diagnostics
+  -> shared layout grammar, renderers, extractors, and editor diagnostics
 ```
 
 ## Boundary
@@ -52,7 +52,7 @@ SemanticSurfaceIR
   layout.controls
 ```
 
-The graph is the semantic model. The layout section is only the layout data already present on ridges. A later patch will promote layout into a full shared grammar with viewport and route rules.
+The graph is the semantic model. The layout section carries layout data already present on ridges. `mcel.shared-layout-grammar.v1` now provides the shared viewport, region, box, port, and route contract; see `pretty_docs/mcel-shared-layout-grammar.md`.
 
 ## Safety rules in v1
 

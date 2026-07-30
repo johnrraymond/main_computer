@@ -13,7 +13,7 @@ current: semantic-runtime proof for governed publishing, read-only inspection, e
 planned: future backend mutation contracts may turn preflight receipts into explicit writes, commits, service setup, and pushes only after separate mutation-boundary work
 ```
 
-The purpose of this document is to make Git Tools requirements stable enough that MCEL Lab can later parse them, compare them with the live app, generate finding candidates, and drive code/test updates without relying on loose prose.
+The requirements registry parses this document. MCEL Lab and the repository truth audit compare it with app blueprints, adapter coverage, surface policy, runtime evidence, and acceptance evidence. This document is specification evidence, not implementation proof.
 
 ```mcel-app
 id: git-tools
@@ -209,7 +209,7 @@ user_goal: >
   Gitea target, push the current branch explicitly, and receive success or
   recovery evidence.
 current_support:
-  - scope-limited semantic adapter for governed publishing
+  - full-readiness semantic adapter for the governed preflight-oriented scope
   - pushCurrentBranch executable intent
   - preparePush preflight path
   - confirmation and recovery receipts
@@ -517,14 +517,15 @@ requirement: >
   every risky intent has preflight, receipts, evidence mapping, failure classes,
   and recovery coverage.
 current_state: >
-  The current adapter is correctly reported as scope-limited rather than full:
-  refreshStatus and pushCurrentBranch are executable; preparePush is
-  preflight-only; inspectWorkingTree, inspectRemotes, and inspectPatchInventory
-  are declared-only; runManualCommand is prohibited.
+  The current adapter registry reports fullApplicationSemanticReady for the
+  governed preflight-oriented scope. Required read and planning intents are
+  executable, evidence-only mutation preparations remain non-mutating, governed
+  push stays explicitly confirmed and receipted, and runManualCommand remains
+  prohibited.
 acceptance:
-  - MCEL truth gate reports runtimeCoreReady only for the governed-publish slice.
-  - MCEL truth gate does not report fullApplicationSemanticReady while read/inspect intents are declared-only.
-  - Declared-only intents have corresponding implementation milestones.
+  - MCEL truth gate reports fullApplicationSemanticReady only while required intent and recovery coverage remain complete.
+  - MCEL truth gate does not report fullApplicationSemanticReady when required read/inspect intents are declared-only.
+  - Evidence-only execution does not silently become repository or remote mutation.
   - Intent and recovery coverage audits remain machine-readable.
 ```
 
@@ -996,21 +997,20 @@ requires:
 
 ## MCEL Lab finding seeds
 
-These are not runtime findings yet. They are documentation-authored seeds that MCEL Lab should eventually compare against the app and adapter.
+These are documentation-authored finding seeds. MCEL Lab and the repository truth audit compare them with the current app, adapter, and evidence state. Historical seeds remain for traceability and are marked `deprecated` when their gap has closed.
 
 ```mcel-finding
 id: git-tools.finding.declared-only-read-intents
 app: git-tools
-status: open
+status: deprecated
 aspect: actions
 severity: high
 problem: >
-  inspectWorkingTree, inspectRemotes, and inspectPatchInventory are currently
-  declared-only in the semantic adapter even though they are safe-read intents
-  needed for full Git Tools semantic readiness.
+  Historical gap: inspectWorkingTree, inspectRemotes, and inspectPatchInventory
+  were declared-only even though they were required safe-read intents.
 desired_behavior: >
-  Implement these as executable read intents or intentionally reclassify them
-  with a documented reason and acceptance tests.
+  Keep these intents executable and truth-gated; regressions must be reported
+  by adapter and repository audit tests.
 required_checks:
   - tests/test_mcel_git_tools_semantic_adapter.py
   - tests/test_mcel_domain_adapter_registry.py
@@ -1019,17 +1019,15 @@ required_checks:
 ```mcel-finding
 id: git-tools.finding.prepare-push-gap
 app: git-tools
-status: open
+status: deprecated
 aspect: workflows
 severity: medium
 problem: >
-  preparePush is preflight-only while pushCurrentBranch is executable. That may
-  be acceptable as an intermediate state, but the product law should clarify
-  whether preparePush is an independent user-visible intent or an internal
-  preflight phase of push.
+  Historical gap: preparePush was an ambiguous preflight-only state while
+  pushCurrentBranch was executable.
 desired_behavior: >
-  Make preparePush intentionally preflight-only, or make it an executable
-  receipt-producing preparation intent with its own UI evidence.
+  Keep preparePush as an executable receipt-producing preparation intent with
+  explicit UI evidence and no hidden push.
 required_checks:
   - tests/test_mcel_git_tools_semantic_adapter.py
   - tests/test_mcel_git_tools_semantic_panel.py

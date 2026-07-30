@@ -13,7 +13,7 @@ current: full bounded read-only File Explorer semantic runtime for roots, naviga
 planned: governed cross-app handoff after a target-app handoff contract exists
 ```
 
-The purpose of this document is to make File Explorer requirements stable enough that MCEL Lab can later parse them, compare them with the live app, generate finding candidates, and drive code/test updates without relying on loose prose. File Explorer should be the small reference app for **navigation + list + preview** layout because its core workflows are useful, visible, and intentionally non-mutating.
+The requirements registry parses this document. MCEL Lab and the repository truth audit compare it with app blueprints, adapter coverage, surface policy, runtime evidence, and acceptance evidence. This document is specification evidence, not implementation proof. File Explorer remains the small reference app for **navigation + list + preview** layout because its core workflows are useful, visible, and intentionally non-mutating.
 
 ### Semantic adapter scope
 

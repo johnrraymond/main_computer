@@ -163,19 +163,22 @@ This contract does not:
 ```text
 does not define renderer appearance
 does not define editor UI panels
-does not define HTML or SVG output
 does not define domain vocabulary
-does not define the full round-trip extractor layer
 ```
 
-Those come later.
+HTML/SVG extraction and round-trip comparison are separate contracts rather than
+responsibilities of this grammar.
 
-## Next step
+## Implemented follow-on
 
-The next safe patch should add extraction helpers and round-trip verification helpers that compare:
+Extraction helpers and round-trip verification now compare:
 
 ```text
 canonical SemanticSurfaceIR + SharedLayoutGrammar
 against
 MCEL ridges extracted from rendered HTML/SVG surfaces
 ```
+
+See `pretty_docs/mcel-surface-extractors.md` and
+`pretty_docs/mcel-surface-roundtrip.md`. Current roadmap authority lives in
+`pretty_docs/mcel-status-and-roadmap.md`.

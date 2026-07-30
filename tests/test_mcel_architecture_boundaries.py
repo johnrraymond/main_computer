@@ -42,6 +42,7 @@ MCEL_LAYER_INVENTORY = {
     "browser-proof": [
         "main_computer/web/applications/scripts/mcel-browser-observer.js",
         "main_computer/web/applications/scripts/mcel-browser-runner.js",
+        "main_computer/web/applications/scripts/mcel-browser-observation-producer.js",
     ],
     "semantic-surface": [
         "main_computer/web/applications/scripts/mcel-app-blueprints-core.js",
@@ -372,3 +373,33 @@ def test_mcel_lower_layers_do_not_reach_into_lab_ui_surface() -> None:
                     violations.append(f"{relative_path} contains {marker!r}")
 
     assert violations == []
+
+def test_browser_observation_producer_load_order_and_read_only_boundary() -> None:
+    applications = _read_repo_text("main_computer/web/applications.html")
+    bundle_include = "<!-- @include applications/scripts/mcel-observation-bundle.js -->"
+    producer_include = "<!-- @include applications/scripts/mcel-browser-observation-producer.js -->"
+
+    assert applications.count(producer_include) == 1
+    assert applications.index(bundle_include) < applications.index(producer_include)
+
+    source = _read_repo_text(
+        "main_computer/web/applications/scripts/mcel-browser-observation-producer.js"
+    )
+    assert "captureReadOnlyObservation" in source
+    assert "createObservationBundle" in source
+    assert "validateSurfaceBinding" in source
+    assert "CAPTURE_POLICY_ID" in source
+    assert 'REDACTION_STATUS = "not-implemented"' in source
+    assert "HARD_LIMITS" in source
+    assert "claims: []" in source
+    for forbidden_invocation in [
+        ".click(",
+        ".focus(",
+        ".submit(",
+        ".requestSubmit(",
+        ".dispatchEvent(",
+        "history.pushState(",
+        "history.replaceState(",
+    ]:
+        assert forbidden_invocation not in source
+

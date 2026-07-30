@@ -6,7 +6,7 @@ import os
 from pathlib import Path, PureWindowsPath
 import re
 
-from .models import NetworkHeadPaths, ProjectionPaths
+from .models import GenerationPaths, NetworkHeadPaths, PrivateStatePaths, ProjectionPaths
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -101,6 +101,42 @@ class MotherPaths:
         return NetworkHeadPaths(
             journal_head=head,
             committed_state=committed_state,
+        )
+
+
+    def resolve_private_state_paths(self) -> PrivateStatePaths:
+        root = self._root
+        return PrivateStatePaths(
+            root=root,
+            identity_file=self.validate_contained(root / "identity.private.yaml"),
+            metadata_file=self.validate_contained(root / "identity.private.meta.json"),
+            recovery_objects_root=self.validate_contained(root / "private-recovery" / "objects"),
+            recovery_manifest=self.validate_contained(root / "private-recovery" / "manifest.json"),
+        )
+
+    def resolve_generation_private_state_paths(
+        self,
+        network: str,
+        generation_id: str,
+    ) -> PrivateStatePaths:
+        network_id = _identifier(network, "network")
+        generation = _identifier(generation_id, "generation_id")
+        root = self.validate_contained(
+            self._root / "generations" / network_id / generation / "private-state"
+        )
+        return PrivateStatePaths(
+            root=root,
+            identity_file=self.validate_contained(root / "identity.private.yaml"),
+            metadata_file=self.validate_contained(root / "identity.private.meta.json"),
+            recovery_objects_root=self.validate_contained(root / "private-recovery" / "objects"),
+            recovery_manifest=self.validate_contained(root / "private-recovery" / "manifest.json"),
+        )
+
+    def resolve_generation_paths(self, network: str) -> GenerationPaths:
+        network_id = _identifier(network, "network")
+        return GenerationPaths(
+            generations_root=self.validate_contained(self._root / "generations" / network_id),
+            active_pointer=self.validate_contained(self._root / "active-generations" / f"{network_id}.json"),
         )
 
     def resolve_projection_paths(self, network: str) -> ProjectionPaths:

@@ -4,16 +4,16 @@
 
 This is the documentation-first requirements contract for the Code Editor / MCEL Code Studio app.
 
-The current implementation already has a live MCEL-style workbench, authored layout hints, source/runtime/serialization boundaries, Aider controls, SCM evidence panels, local workspace persistence, Monaco runtime mounting, and layout-contract tests. It does **not** yet have a full Code Editor domain adapter that makes the app semantically executable through the MCEL adapter registry.
+The current implementation has a live MCEL-style workbench, authored layout hints, source/runtime/serialization boundaries, Aider controls, SCM evidence panels, local workspace persistence, Monaco runtime mounting, layout-contract tests, and a registered Code Editor semantic adapter. The adapter registry currently reports `fullApplicationSemanticReady` for the bounded source-safe authoring scope. Repository-bound runtime and acceptance evidence remain separate proof inputs.
 
 So this document must be read as:
 
 ```text
-current: source-safe Code Editor semantic runtime + evidence-backed repair workflow
-planned: execution adapter and broader static authored-surface parity
+current: source-safe Code Editor semantic runtime + registered full-readiness adapter for its bounded authoring scope
+planned: separately governed command-execution semantics and broader static authored-surface parity
 ```
 
-The purpose of this document is to make Code Editor requirements stable enough that MCEL Lab can later parse them, compare them with the live app, generate finding candidates, and drive code/test updates without relying on loose prose.
+The requirements registry parses this document. MCEL Lab and the repository truth audit compare it with app blueprints, adapter coverage, surface policy, runtime evidence, and acceptance evidence. This document is specification evidence, not implementation proof.
 
 ```mcel-app
 id: code-editor
@@ -1081,13 +1081,14 @@ id: code-editor.finding.docs-to-implementation-gap
 app: code-editor
 aspect: findings
 severity: medium
-status: open
+status: deprecated
 problem: >
-  Requirements in this document are not yet automatically compared with the
-  live Code Editor implementation.
+  Historical gap: requirements were not automatically compared with the live
+  Code Editor implementation.
 desired_behavior: >
-  MCEL Lab parses these blocks, compares them with app blueprint and adapter
-  state, and creates structured findings for missing or conflicting behavior.
+  The registry, MCEL Lab, and repository truth audit now compare these blocks
+  with app blueprint and adapter state. MCEL truth gate does not report
+  fullApplicationSemanticReady if required adapter coverage regresses.
 required_checks:
   - Parse all mcel-* blocks in this document.
   - Map block IDs to app regions, intents, tests, and source candidates.
@@ -1109,6 +1110,6 @@ Do not promote Code Editor to full semantic runtime before adapter coverage is p
 
 ## Summary
 
-The Code Editor is the right next app for documentation-first MCEL requirements because it has real product risk: file writes, patch application, command execution, AI-generated changes, runtime editor chrome, serialization boundaries, and evidence needs.
+Code Editor remains a high-value documentation-first MCEL contract because it has real product risk: file writes, patch application, command execution, AI-generated changes, runtime editor chrome, serialization boundaries, and evidence needs.
 
-The current app already demonstrates many MCEL workbench ideas. This document turns those ideas into stable requirements that MCEL Lab can later parse and enforce.
+The current app demonstrates those MCEL workbench ideas. This document supplies stable requirements that the registry, MCEL Lab, and repository truth audit can inspect without treating the requirements themselves as proof.

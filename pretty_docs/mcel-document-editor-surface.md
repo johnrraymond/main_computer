@@ -16,9 +16,11 @@ existing Document Editor UI
 ```
 
 Patch 20 did not redesign Document Editor or add a visible panel. Patch 24a
-specified the next Document Editor interaction model before Patch 24b changed
-the live UI. Patch 43 keeps that runtime surface proof intact while removing
-the premature semantic-runtime declaration.
+specified a later interaction model, but the current snapshot still uses the
+Patch 22b-era Pretty Docs library, document page, and Document AI companion.
+Patch 43 keeps the existing runtime surface proof intact while removing the
+premature semantic-runtime declaration. It does not claim that Patch 24b's
+target UI or a full semantic adapter exists.
 
 ## Current surface
 
@@ -40,7 +42,7 @@ document-editor.region.document-content
 document-editor.region.companion
 ```
 
-## Patch 24a target model
+## Historical Patch 24a target model
 
 Document Editor has two related semantic layers:
 
@@ -233,7 +235,7 @@ data-mcel-fit-policy="collapse-optional"
 data-mcel-fit-role="document-ai-companion"
 ```
 
-## Current static nodes
+## Current static nodes and live-state boundary
 
 Until Patch 24b implements the target model, the current runtime surface still
 extracts these Patch 20 nodes:
@@ -280,9 +282,9 @@ document-editor.control.ai-apply
 document-editor.control.ai-send
 ```
 
-These current identifiers remain documented so Patch 24b can make deliberate
-create/replace decisions rather than silently claiming the target state is
-already live.
+These current identifiers remain documented so a future implementation can
+make deliberate create/replace decisions rather than silently claiming the
+Patch 24a target state is already live.
 
 ## Runtime helper
 
@@ -317,12 +319,14 @@ runtime-visual-fit
 diagnostic-no-throw
 ```
 
-## Patch boundary
+## Current implementation boundary
 
-Patch 24a is specification and contract-test work only. It does not claim that
-the live Document Editor already provides the outline, modal picker, or docked
-companion. Patch 24b is responsible for implementing those behaviors and
-updating the runtime surface identifiers.
+Patch 24a is specification and contract-test work only in this snapshot. The
+original plan stated that Patch 24b is responsible for implementing those
+behaviors, but the live Document Editor in this snapshot does not provide the
+authored-heading outline, transient modal picker, or docked companion described
+by that target. Any implementation must update runtime surface identifiers and
+tests explicitly; documentation must not imply those behaviors are already live.
 
 ## Safety rules
 

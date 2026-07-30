@@ -103,6 +103,16 @@ def _freeze(value: Any) -> Any:
     return value
 
 
+def _require_identifier(value: str, field_name: str) -> str:
+    _require_text(value, field_name)
+    if value in {".", ".."} or any(ch in value for ch in ("/", "\\", "\x00")):
+        raise ValueError(f"invalid {field_name}")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if value[0] not in allowed or any(ch not in allowed for ch in value):
+        raise ValueError(f"invalid {field_name}")
+    return value
+
+
 def _require_text(value: str, field_name: str, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{field_name} must be a string")
@@ -147,6 +157,38 @@ class ProjectionPaths:
     generations_root: Path
     active_pointer: Path
     schema_version: ClassVar[int] = SCHEMA_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateStatePaths:
+    root: Path
+    identity_file: Path
+    metadata_file: Path
+    recovery_objects_root: Path
+    recovery_manifest: Path
+    schema_version: ClassVar[int] = SCHEMA_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationPaths:
+    generations_root: Path
+    active_pointer: Path
+    schema_version: ClassVar[int] = SCHEMA_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateStateBinding:
+    private_state_kind: str
+    generation: int
+    content_hash: ContentHash
+    recovery_manifest_hash: ContentHash
+    schema_version: ClassVar[int] = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.private_state_kind != "main_computer.mother.private_state.v1":
+            raise ValueError("unknown private-state kind")
+        if type(self.generation) is not int or self.generation <= 0:
+            raise ValueError("generation must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +449,9 @@ class StateGeneration:
     immutable_root: ContentHash
     manifest_hash: ContentHash
     active_pointer_predecessor: ContentHash | None = None
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.generation_id, "generation_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,6 +787,9 @@ _MODEL_TYPES = {
         ContentHash,
         NetworkHeadPaths,
         ProjectionPaths,
+        PrivateStatePaths,
+        GenerationPaths,
+        PrivateStateBinding,
         HeadTuple,
         ReplicaSets,
         AuthorityGeneration,
