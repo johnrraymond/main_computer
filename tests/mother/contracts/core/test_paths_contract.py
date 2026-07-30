@@ -120,3 +120,32 @@ def test_resolve_network_head_paths_returns_canonical_contained_paths(tmp_path) 
         resolved.committed_state,
         expected_network="network-a",
     ) == resolved.committed_state
+
+
+def test_resolve_projection_paths_returns_canonical_network_pair(tmp_path) -> None:
+    paths = _paths()
+    resolver = _resolver(paths, tmp_path)
+
+    resolved = resolver.resolve_projection_paths("network-a")
+
+    assert type(resolved).__name__ == "ProjectionPaths"
+    assert resolved.generations_root == (
+        resolver.root / "projection-generations" / "network-a"
+    )
+    assert resolved.active_pointer == (
+        resolver.root / "active-projections" / "network-a.json"
+    )
+    assert resolved.generations_root.is_absolute()
+    assert resolved.active_pointer.is_absolute()
+
+
+@pytest.mark.parametrize("identifier", ["../escape", "network/child", ".", ""])
+def test_resolve_projection_paths_rejects_identifier_injection(
+    tmp_path,
+    identifier: str,
+) -> None:
+    paths = _paths()
+    resolver = _resolver(paths, tmp_path)
+
+    with pytest.raises((TypeError, ValueError)):
+        resolver.resolve_projection_paths(identifier)

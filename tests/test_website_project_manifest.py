@@ -96,6 +96,10 @@ def test_repository_ships_hub_site_as_v2_artifact_set() -> None:
         "path": "runtime/websites/hub-site",
     }
     assert manifest["runtime"]["content_runtime"] == "deployed"
+    assert manifest["runtime"]["page_runtime"] == {
+        "entry": "runtime.js",
+        "id": "mcel",
+    }
     assert manifest["artifacts"]["required_files"] == ["site.json", "index.html", "style.css", "script.js", "builder.json", "runtime.js"]
 
 
@@ -725,6 +729,7 @@ def test_site_page_runtime_bundle_can_package_compiled_mcel_runtime(tmp_path: Pa
     site_root = tmp_path / "runtime" / "websites" / "hub-site"
     runtime_js = (site_root / "runtime.js").read_text(encoding="utf-8")
     metadata = json.loads((site_root / ".main-computer" / "runtime" / "page-runtime.json").read_text(encoding="utf-8"))
+    manifest = json.loads((site_root / "site.json").read_text(encoding="utf-8"))
 
     assert "MCELRuntime" in runtime_js
     assert "WebsiteBuilderRuntime" in runtime_js
@@ -733,6 +738,11 @@ def test_site_page_runtime_bundle_can_package_compiled_mcel_runtime(tmp_path: Pa
     assert metadata["entrypoint"] == "runtime.js"
     assert metadata["source"] == "deploy/local-platform/site-runtimes/mcel-runtime.js"
     assert metadata["source_exists"] is True
+    assert len(metadata["sha256"]) == 64
+    assert manifest["runtime"]["page_runtime"] == {
+        "entry": "runtime.js",
+        "id": "mcel",
+    }
 
 
 def test_site_runtime_bundle_copies_current_runtime_inside_site_directory(tmp_path: Path) -> None:

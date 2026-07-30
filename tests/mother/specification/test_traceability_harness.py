@@ -320,6 +320,38 @@ def test_method_metadata_is_required_for_core008_and_core009() -> None:
         )
 
 
+def test_state003_methods_are_functionality_bound_and_metadata_is_required() -> None:
+    docs = MotherDocuments.load()
+    rows = functionality_method_rows(docs)
+    assert rows["MOTHER-OF-OBS-004"][-1] == (
+        "MOTHER-OFM-STATE-003.compare_generation"
+    )
+    assert rows["MOTHER-OF-PRJ-002"][-1] == (
+        "MOTHER-OFM-STATE-003.render_generation"
+    )
+    assert rows["MOTHER-OF-PRJ-003"][0] == (
+        "MOTHER-OFM-STATE-003.build_manifest"
+    )
+    assert "MOTHER-OFM-STATE-003.publish_generation" in rows[
+        "MOTHER-OF-PRJ-005"
+    ]
+
+    errors = validate_contract_trace(
+        ContractTrace(
+            requirements=("MOTHER-REQ-002",),
+            operations=("MOTHER-OP-DIAGNOSE",),
+            functionalities=("MOTHER-OF-OBS-004",),
+            modules=("MOTHER-OFM-STATE-003",),
+            methods=(),
+        ),
+        docs,
+    )
+    assert any(
+        "requires methods metadata for method-qualified modules" in error
+        for error in errors
+    )
+
+
 def test_method_metadata_is_required_for_state001_and_state002() -> None:
     docs = MotherDocuments.load()
     cases = (

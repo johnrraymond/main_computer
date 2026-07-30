@@ -1,4 +1,4 @@
-"""Runtime guards for effect-free STATE-001/002 contract tests."""
+"""Runtime guards for effect-free STATE contract tests."""
 
 from __future__ import annotations
 

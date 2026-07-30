@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -93,9 +92,10 @@ def test_hub_site_runtime_and_manifest_match_current_package() -> None:
     manifest = json.loads((hub_root / "site.json").read_text(encoding="utf-8"))
 
     assert hub_runtime.read_text(encoding="utf-8") == expected
-    assert manifest["runtime"]["page_runtime"]["sha256"] == hashlib.sha256(
-        hub_runtime.read_bytes()
-    ).hexdigest()
+    assert manifest["runtime"]["page_runtime"] == {
+        "entry": "runtime.js",
+        "id": "mcel",
+    }
 
 
 def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everything() -> None:

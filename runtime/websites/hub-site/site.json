@@ -234,8 +234,7 @@
     "default_lane": "local",
     "page_runtime": {
       "entry": "runtime.js",
-      "id": "mcel",
-      "sha256": "8d6bfc544f226dfe84139bf9a22145c12266a918e0b83114ac2ad9540b391b6b"
+      "id": "mcel"
     }
   },
   "schema_version": 2,
@@ -244,5 +243,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-18T23:22:23+00:00"
+  "updated_at": "2026-07-30T18:35:03+00:00"
 }

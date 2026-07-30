@@ -37,6 +37,7 @@ WAVE1C_MODEL_NAMES = (
 REQUIRED_MODEL_NAMES = {
     "ContentHash",
     "NetworkHeadPaths",
+    "ProjectionPaths",
     "HeadTuple",
     "AuthorityGeneration",
     "ReplicaSets",
@@ -105,6 +106,33 @@ def test_schema_versioned_model_round_trip() -> None:
     payload = models.serialize_model(value)
     assert payload["schema_version"] == 1
     assert models.deserialize_model("ContentHash", payload) == value
+
+
+def test_projection_paths_are_named_immutable_and_round_trip(tmp_path) -> None:
+    models = _models()
+    value = models.ProjectionPaths(
+        tmp_path / "projection-generations" / "network-a",
+        tmp_path / "active-projections" / "network-a.json",
+    )
+    assert tuple(field.name for field in fields(type(value))) == (
+        "generations_root",
+        "active_pointer",
+    )
+    assert models.deserialize_model(
+        "ProjectionPaths",
+        models.serialize_model(value),
+    ) == value
+    with pytest.raises((FrozenInstanceError, AttributeError, TypeError)):
+        value.active_pointer = tmp_path / "different.json"
+
+
+def test_projection_paths_reject_non_path_members(tmp_path) -> None:
+    models = _models()
+    with pytest.raises(TypeError):
+        models.ProjectionPaths(
+            str(tmp_path / "projection-generations" / "network-a"),
+            tmp_path / "active-projections" / "network-a.json",
+        )
 
 
 def test_unknown_model_schema_version_is_rejected() -> None:

@@ -313,6 +313,7 @@ method-qualified section 7 chain together.
 |---|---|
 | `ContentHash` | algorithm, lowercase digest |
 | `NetworkHeadPaths` | canonical journal-head path and committed-state projection path; named immutable value, never positional |
+| `ProjectionPaths` | canonical projection-generations root and active projection pointer for one network; named immutable value, never positional |
 | `HeadTuple` | journal identity, sequence, entry hash, authorization-bundle hash, state hash, head ID, head epoch |
 | `AuthorityGeneration` | predecessor head tuple or synthetic birth generation, current replicas, authority participants |
 | `ReplicaSets` | current, prospective, transition, desired, retiring, successor-authority |
@@ -1789,6 +1790,220 @@ next actions except for the two exact missing-predecessor translations defined
 above. Those translations retain the complete causal CORE-012 `MotherError`.
 STATE-001 and STATE-002 introduce no new durable-effect kind.
 
+#### 4.1.4 STATE-003 projection contracts
+
+`MOTHER-OFM-CORE-001` owns and exports the immutable shared path value:
+
+```python
+ProjectionPaths(
+    generations_root: Path,
+    active_pointer: Path,
+)
+```
+
+`MOTHER-OFM-CORE-005.resolve_projection_paths(network)` is the only logical
+path resolver for STATE-003. For network `N`, it returns exactly:
+
+```text
+/runtime/state/mother/projection-generations/N/
+/runtime/state/mother/active-projections/N.json
+```
+
+STATE-003 accepts only that contained pairing for `operation.network`. Relative
+paths, traversal, symlink escape, a different network, a different Mother root,
+or a caller-composed directory shape are malformed inputs.
+
+`MOTHER-OFM-STATE-003` owns and exports these exact frozen, slotted dataclasses:
+
+| Type | Exact fields in declaration order |
+|---|---|
+| `ProjectionArtifact` | `relative_name: str`, `payload: bytes`, `content_hash: ContentHash` |
+| `ProjectionGeneration` | `generation_id: str`, `network: str`, `source_head: HeadTuple`, `state_schema: str`, `artifacts: tuple[ProjectionArtifact, ...]` |
+| `ProjectionManifestEntry` | `relative_name: str`, `content_hash: ContentHash`, `size: int` |
+| `ProjectionManifest` | `manifest_version: str`, `generation_id: str`, `network: str`, `source_head: HeadTuple`, `state_schema: str`, `entries: tuple[ProjectionManifestEntry, ...]` |
+| `ProjectionManifestBuildResult` | `manifest: ProjectionManifest`, `manifest_bytes: bytes`, `manifest_hash: ContentHash` |
+| `ProjectionComparisonItem` | `relative_name: str`, `status: str`, `expected_hash: ContentHash`, `observed_hash: ContentHash | None` |
+| `ProjectionComparisonResult` | `overall_status: str`, `generation_id: str | None`, `source_head: HeadTuple | None`, `items: tuple[ProjectionComparisonItem, ...]` |
+| `ProjectionPublicationResult` | `published: bool`, `generation_id: str`, `manifest_hash: ContentHash`, `pointer_bytes: bytes` |
+
+All strings are non-empty and already NFC. `generation_id` and `network` use
+the CORE-005 identifier grammar. Payloads and pointer values are exact `bytes`;
+implicit bytes coercion is prohibited. Public collections are tuples with exact
+member types. Projection artifacts and manifest entries are ordered by
+`relative_name.encode("utf-8")`, contain no duplicate name, and use the closed
+relative-name set:
+
+```text
+committed-state.json
+topology.yaml
+```
+
+Manifest `size` is the exact positive integer byte length; booleans and zero
+are rejected.
+
+The per-item and overall comparison status set is exactly:
+
+```text
+equal
+missing
+stale
+corrupt
+```
+
+Overall precedence is `corrupt`, then `missing`, then `stale`, then `equal`.
+An absent active pointer is ordinary `missing`. A valid complete generation
+whose source head differs from the supplied replay head is `stale`. Missing
+named artifacts are `missing`. Malformed pointer or manifest bytes, a missing
+referenced manifest, same-head content disagreement, hash disagreement,
+substitution, extra files named by the manifest, or generation/network binding
+failure is `corrupt`. These interpretable observation outcomes are typed
+results, not exceptions.
+
+The closed wire versions are:
+
+```text
+mother.committed-state-projection.v1
+mother.projection-manifest.v1
+mother.projection-pointer.v1
+```
+
+The exact signatures are:
+
+```python
+def render_generation(
+    replay: JournalReplayResult,
+    generation_id: str,
+    *,
+    operation: OperationIdentity,
+) -> ProjectionGeneration: ...
+
+def compare_generation(
+    paths: ProjectionPaths,
+    replay: JournalReplayResult,
+    *,
+    operation: OperationIdentity,
+) -> ProjectionComparisonResult: ...
+
+def build_manifest(
+    generation: ProjectionGeneration,
+    *,
+    operation: OperationIdentity,
+) -> ProjectionManifestBuildResult: ...
+
+def publish_generation(
+    paths: ProjectionPaths,
+    generation: ProjectionGeneration,
+    manifest: ProjectionManifestBuildResult,
+    expected_pointer: bytes | None,
+    *,
+    operation: OperationIdentity,
+) -> ProjectionPublicationResult: ...
+```
+
+`render_generation` is pure. It accepts one typed STATE-001
+`JournalReplayResult`, requires
+`replay.state_hash == replay.head.state_hash == sha256(replay.state)`, requires
+the replay state to be one exact CORE-003 canonical top-level JSON object, and
+preserves its input. It produces exactly two artifacts:
+
+1. `topology.yaml` is byte-identical to `replay.state`. CORE-003 canonical JSON
+   is the required canonical YAML-1.2-compatible representation for this file;
+   no independent YAML emitter is permitted.
+2. `committed-state.json` is the exact
+   `mother.committed-state-projection.v1` envelope defined in section 4.1.3,
+   binding the complete replay head, state schema, and decoded state object.
+
+Each artifact hash is CORE-004 SHA-256 of its exact payload.
+
+`build_manifest` is pure. It independently rechecks the generation, exact
+closed artifact set, canonical ordering, artifact hashes, projection envelope,
+topology bytes, source-head binding, network, and state schema. Its exact
+canonical JSON wire object is:
+
+```json
+{
+  "entries": [
+    {
+      "content_hash": {
+        "algorithm": "sha256",
+        "digest": "<64 lowercase hex>",
+        "schema_version": 1
+      },
+      "relative_name": "committed-state.json",
+      "size": 123
+    }
+  ],
+  "generation_id": "<generation-id>",
+  "manifest_version": "mother.projection-manifest.v1",
+  "network": "<network>",
+  "source_head": {
+    "authorization_bundle_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+    "entry_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1},
+    "head_epoch": 0,
+    "head_id": "<head-id>",
+    "journal_identity": "<journal-id>",
+    "sequence": 1,
+    "state_hash": {"algorithm": "sha256", "digest": "<hex>", "schema_version": 1}
+  },
+  "state_schema": "<schema-id>"
+}
+```
+
+The illustrative `entries` array above contains one row only to show its exact
+row schema. A valid manifest contains both closed projection names in canonical
+order with their exact byte sizes. `manifest_hash` is SHA-256 of the exact
+canonical manifest bytes.
+
+The exact active-pointer wire object is:
+
+```json
+{
+  "generation_id": "<generation-id>",
+  "manifest_hash": {
+    "algorithm": "sha256",
+    "digest": "<64 lowercase hex>",
+    "schema_version": 1
+  },
+  "network": "<network>",
+  "pointer_version": "mother.projection-pointer.v1"
+}
+```
+
+`compare_generation` performs a CORE-011 stable read of the active pointer and
+the immutable generation it names. It rechecks the exact manifest hash,
+manifest bytes, artifact membership, artifact hashes, and all source-head,
+network, schema, and state bindings before returning the per-file result. A
+CORE-011 unstable pointer read becomes
+`MOTHER_STATE_UNSTABLE_PROJECTION`; host read failures retain the delegated
+CORE-011 error unchanged.
+
+Before `publish_generation` is called, the traced MAINT-003 caller has durably
+created, flushed, and reread-verified these exact files beneath:
+
+```text
+ProjectionPaths.generations_root/<generation-id>/
+  committed-state.json
+  topology.yaml
+  manifest.json
+```
+
+`publish_generation` independently stable-reads those three files, rechecks
+them against the supplied immutable generation and manifest result, and only
+then calls CORE-011 `atomic_pointer_cas` exactly once. `expected_pointer` is
+either `None` for first publication or the exact canonical predecessor pointer
+bytes. CAS mismatch returns
+`ProjectionPublicationResult(published=False, ...)`; it never overwrites an
+unexpected pointer. Successful publication returns `published=True` and the
+exact replacement pointer bytes.
+
+STATE-003 never writes an individual projection or manifest, journal entry,
+journal head, private state, topology authority, rollback state, or evidence.
+`render_generation`, `compare_generation`, and `build_manifest` are effect-free
+except for delegated stable reads in comparison. `publish_generation` owns
+exactly one possible effect: the delegated CORE-011 active-pointer CAS.
+Delegated CORE-011 publication failures retain their complete error envelope
+and durable-effect references.
+
 ### 4.2 Error envelope
 
 All expected failures use `MotherError` with:
@@ -1856,6 +2071,9 @@ effect are part of the code contract and MUST NOT be changed by adapters.
 | `MOTHER_STATE_CHECKPOINT_INVALID` | `MOTHER-OFM-STATE-002.locate_newest_valid,build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint,state_closure` | `never` | `none` | An interpretable checkpoint fails construction-time prior-replay binding, prospective entry sequence/predecessor/resulting-state binding, committed-read binding to its existing authorized containing entry, exact predecessor, state schema, state bytes, state hash, closure manifest, authoritative kind, or superseded lineage. |
 | `MOTHER_OPEN_ROUTINE_CHECKPOINT_AUTHORITY` | `MOTHER-OFM-STATE-002.locate_newest_valid,build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint,state_closure,prepare_replay` | `never` | `none` | Recognizable `routine` checkpoint bytes reached a boundary that would construct or trust them before a governing functionality defines trigger, lock, authorization bundle, publication, and head commitment. The bytes are not malformed, but they cannot be selected, validated, closed, or used for replay. Construction rejects before effects; read-side boundaries reject immediately after kind recognition and before additional trust work. |
 | `MOTHER_STATE_FUTURE_OBJECT_REFERENCE` | `MOTHER-OFM-STATE-001.build_entry_bytes` and `MOTHER-OFM-STATE-002.build_checkpoint,build_checkpoint_entry_bytes,validate_checkpoint` | `never` | `none` | An entry event or checkpoint contains a proposal, certificate, acceptance, decision, authorization-bundle, or other object role created only after the successor entry hash exists. A pre-entry state-closure-manifest hash is permitted. |
+| `MOTHER_STATE_MALFORMED_PROJECTION` | `MOTHER-OFM-STATE-003.render_generation,compare_generation,build_manifest,publish_generation` | `never` | `none` | A public typed input, projection path pairing, generation identifier, tuple member, ordering, canonical replay state, expected pointer, or constructor value is malformed or uninterpretable. Stored projection damage observed by `compare_generation` is returned as `missing` or `corrupt`, not raised under this code. |
+| `MOTHER_STATE_PROJECTION_INVALID` | `MOTHER-OFM-STATE-003.render_generation,build_manifest,publish_generation` | `never` | `none` | An interpretable replay, generation, manifest, artifact set, durable staged file, source head, network, schema, state hash, or publication binding disagrees with the exact projection contract. No pointer CAS begins after this error. |
+| `MOTHER_STATE_UNSTABLE_PROJECTION` | `MOTHER-OFM-STATE-003.compare_generation` | `after-reobserve` | `none` | The active projection pointer changed during every bounded CORE-011 stable-read attempt. The causal CORE-011 error is retained. |
 | `MOTHER_CONFLICT_DURABLE_TARGET_EXISTS` | `MOTHER-OFM-CORE-011.durable_create` | `after-reobserve` | `none` | Exclusive publication found an already-published target and did not overwrite it. |
 | `MOTHER_STATE_DURABLE_TARGET_MISSING` | `MOTHER-OFM-CORE-011.stable_read` | `after-reobserve` | `none` | The required durable pointer or target is absent before any authority effect. |
 | `MOTHER_STATE_DURABLE_READ_FAILED` | `MOTHER-OFM-CORE-011` and `MOTHER-OFM-CORE-012` | `after-reobserve` | `none` | A host-filesystem read failed before a new authority effect; the typed cause is retained. |
@@ -1928,7 +2146,7 @@ return `OperationCommandResult`.
 | `MOTHER-OFM-CORE-002` | `common/errors.py` | `MotherError`, `wrap_vendor_error`, exit-code mapping | `pure`; never includes secret-bearing values |
 | `MOTHER-OFM-CORE-003` | `common/canonical.py` | `canonical_json(value) -> bytes`, `canonical_yaml(value) -> bytes` | `pure`; deterministic UTF-8, normalized keys, no floats or ambiguous scalars in hashed objects |
 | `MOTHER-OFM-CORE-004` | `common/hashing.py` | `sha256(bytes)`, `hash_file`, `ordered_root`, `set_root` | `pure` except file read; validates algorithm and canonical member ordering |
-| `MOTHER-OFM-CORE-005` | `common/paths.py` | Resolve canonical Mother roots and validate contained paths | `pure`; rejects traversal, symlink escape, wrong network, and wrong generation |
+| `MOTHER-OFM-CORE-005` | `common/paths.py` | Resolve canonical Mother roots, `resolve_network_head_paths`, `resolve_projection_paths`, and validate contained paths | `pure`; rejects traversal, symlink escape, wrong network, and wrong generation |
 | `MOTHER-OFM-CORE-006` | `common/schemas.py` | `decode_schema_catalog`, `load_schema`, `validate_object`, `validate_schema_transition` | `pure reader`; unknown versions and uninterpretable input raise exact `MOTHER_SCHEMA_*`; known invalid objects or undeclared transitions return typed negative decisions |
 | `MOTHER-OFM-CORE-007` | `common/capabilities.py` | `read_capabilities`, `require_capabilities`, `freeze_capability_set` | `pure reader`; malformed or ambiguous input raises exact `MOTHER_SCHEMA_*`; reads and freezes exact capability sets; absent required capabilities return typed negative decisions |
 | `MOTHER-OFM-CORE-008` | `common/evidence.py` | exact section 4.1.2 signatures for `store_evidence`, `load_evidence`, `redact_copy`, `export_manifest`, `load_export_result` | immutable local writes only through CORE-012; exact source-object provenance, restart-safe manifest recovery, deterministic redaction, and secret-free content-addressed export |
@@ -2075,7 +2293,7 @@ required capabilities return the exact ordered blockers from section 4.1.1.
 |---|---|---|---|
 | `MOTHER-OFM-STATE-001` | `common/journal.py` | exact section 4.1.3 signatures for `read_stable_head`, `load_entry`, `load_bundle`, `walk_back`, `validate_lineage`, `authorize_lineage`, `replay_forward`, `build_entry_bytes` | `reader` plus pure immutable entry construction; stable-head, authorization-proof, and replay checks are fail-closed; never publishes an object or updates a head pointer |
 | `MOTHER-OFM-STATE-002` | `common/checkpoints.py` | exact section 4.1.3 signatures for `locate_newest_valid`, `build_state_closure_manifest`, `build_checkpoint`, `build_checkpoint_entry_bytes`, `validate_checkpoint`, `state_closure`, `prepare_replay` | `reader` plus pure checkpoint, closure-manifest, and entry-byte construction; validates closure, coverage, committed checkpoint binding, and replay proof; future-object hashes prohibited |
-| `MOTHER-OFM-STATE-003` | `common/projections.py` | `render_generation`, `compare_generation`, `build_manifest`, `publish_generation` | `derived-writer`; publication uses one flushed pointer CAS |
+| `MOTHER-OFM-STATE-003` | `common/projections.py` | exact section 4.1.4 signatures for `render_generation`, `compare_generation`, `build_manifest`, `publish_generation` | `derived-writer`; render and manifest build are pure, comparison uses bounded stable reads, and publication verifies one complete immutable generation before one flushed pointer CAS |
 | `MOTHER-OFM-STATE-004` | `common/private_state.py` | `read_private_state`, `resolve_validator_ref`, `build_recovery_closure`, `install_verified_private_state` | secret-bearing reader/writer; strict permissions, no general serialization, no plaintext evidence |
 | `MOTHER-OFM-STATE-005` | `common/generations.py` | `create_staging`, `seal_generation`, `discard_unpublished`, `switch_active`, `reconcile_active` | local generation writer; active pointer is the commit determinant |
 
@@ -2257,7 +2475,7 @@ boundaries.
 | `MOTHER-OF-OBS-001` | `MOTHER-OFM-CORE-005.resolve_network_head_paths` → `MOTHER-OFM-CORE-011.stable_read` → `MOTHER-OFM-STATE-001.read_stable_head` | Canonically contained head paths and one internally consistent committed `HeadTuple`, or `MOTHER_STATE_UNSTABLE_HEAD`; STATE-001 owns parsing, projection comparison, and the complete bounded stable-read semantics |
 | `MOTHER-OF-OBS-002` | `MOTHER-OFM-STATE-001.load_bundle` → `MOTHER-OFM-AUTH-003.validate_bundle` | Bundle bytes and validated binding to the exact entry |
 | `MOTHER-OF-OBS-003` | `MOTHER-OFM-STATE-002.locate_newest_valid` → `MOTHER-OFM-STATE-001.load_entry,load_bundle,walk_back,validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` | Stable-head-bound replay from the newest valid checkpoint, with every network authorization bundle semantically validated and represented by `AuthorizedJournalLineage`, committed-read checkpoint and derived closure proof bound into `JournalReplayInput`, and exact final state hash |
-| `MOTHER-OF-OBS-004` | proof-bearing `JournalReplayInput` from `MOTHER-OF-OBS-003` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.compare_generation` | Per-projection equal/missing/stale/corrupt classification; loose lineage or checkpoint values are not accepted |
+| `MOTHER-OF-OBS-004` | proof-bearing `JournalReplayInput` from `MOTHER-OF-OBS-003` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-CORE-005.resolve_projection_paths` → `MOTHER-OFM-STATE-003.compare_generation` | Per-projection equal/missing/stale/corrupt classification; loose lineage or checkpoint values are not accepted |
 | `MOTHER-OF-OBS-005` | typed `ParticipantResult` inputs produced by the parent operation's transport functionalities → `MOTHER-OFM-OBS-005.collect_reports,validate_report,freeze_report_set` | Exact expected-set report map with explicit missing/invalid members |
 | `MOTHER-OF-OBS-006` | `MOTHER-OFM-OBS-002.observe_service,observe_host` → `MOTHER-OFM-OBS-001.build_inventory` | Normalized ownership-aware service/identity/host/marker inventory |
 | `MOTHER-OF-OBS-007` | `MOTHER-OFM-OBS-003.probe_guard,probe_runtime` → `MOTHER-OFM-OBS-004.merge_observations` | Per-process and per-guard observed state without inferred success |
@@ -2565,10 +2783,10 @@ defines the commit and rollback boundaries.
 | Functionality | Ordered module chain | Required result |
 |---|---|---|
 | `MOTHER-OF-PRJ-001` | `MOTHER-OFM-STATE-001.read_stable_head` → `MOTHER-OFM-MAINT-003.pin_head` | Complete authoritative local head tuple pinned |
-| `MOTHER-OF-PRJ-002` | `MOTHER-OFM-MAINT-003.replay_generation` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.render_generation` | New unpublished projection generation from one module-sealed replay input; MAINT-003 does not synthesize `JournalReplayInput` |
+| `MOTHER-OF-PRJ-002` | `MOTHER-OFM-CORE-005.resolve_projection_paths` → `MOTHER-OFM-MAINT-003.replay_generation` supplies loaded lineage, checkpoint, and state-object roots → `MOTHER-OFM-STATE-001.validate_lineage,authorize_lineage` using `MOTHER-OFM-AUTH-003.validate_bundle` for every lineage member → `MOTHER-OFM-STATE-002.validate_checkpoint,state_closure,prepare_replay` → `MOTHER-OFM-STATE-001.replay_forward` → `MOTHER-OFM-STATE-003.render_generation` | New unpublished projection generation from one module-sealed replay input at the canonical contained projection path; MAINT-003 does not synthesize `JournalReplayInput` |
 | `MOTHER-OF-PRJ-003` | `MOTHER-OFM-STATE-003.build_manifest` → `MOTHER-OFM-MAINT-003.write_manifest` → `MOTHER-OFM-CORE-011.durable_create` | Hashed, flushed, reread-verified projection manifest |
 | `MOTHER-OF-PRJ-004` | `MOTHER-OFM-STATE-001.read_stable_head` → `MOTHER-OFM-MAINT-003.recheck_head` | Current head equals every pinned tuple field |
-| `MOTHER-OF-PRJ-005` | `MOTHER-OFM-MAINT-003.publish` → `MOTHER-OFM-STATE-003.publish_generation` → `MOTHER-OFM-CORE-011.atomic_pointer_cas` | One complete projection-generation pointer published |
+| `MOTHER-OF-PRJ-005` | `MOTHER-OFM-MAINT-003.publish` → `MOTHER-OFM-CORE-005.resolve_projection_paths` → `MOTHER-OFM-STATE-003.publish_generation` → `MOTHER-OFM-CORE-011.atomic_pointer_cas` | One complete verified projection-generation pointer published |
 | `MOTHER-OF-PRJ-006` | `MOTHER-OFM-MAINT-003.discard_or_retry` → `MOTHER-OFM-STATE-005.discard_unpublished` | Stale output removed and bounded retry enforced |
 
 ## 8. Operation and stage binding
@@ -2674,7 +2892,7 @@ into a filesystem path. Callers pass typed identifiers, not path fragments.
 |---|---|---|
 | `identity.private.yaml`, metadata, `private-recovery/` | `MOTHER-OFM-STATE-004` | `MOTHER-OFM-ID-001` through its API only |
 | `version.json` | deployment/version installer outside operation execution | `MOTHER-OFM-CORE-007`, `010` read only |
-| root `topology.yaml` and committed-state projections | `MOTHER-OFM-STATE-003` | Rebuilt only from authoritative replay |
+| `projection-generations/`, `active-projections/`, `topology.yaml`, and committed-state projections | `MOTHER-OFM-STATE-003` | Paths resolved only by CORE-005; rebuilt only from authoritative replay |
 | `active-generations/<network>.json`, `generations/<network>/` | `MOTHER-OFM-STATE-005` | Recovery/adoption modules through its API |
 | `adoptions/<network>/<operation-id>/` | `MOTHER-OFM-REC-001` | Operation/reporting read |
 | `locks/` | `MOTHER-OFM-CTL-004` | Observation read |

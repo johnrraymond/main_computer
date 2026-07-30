@@ -26,6 +26,7 @@ METHOD_QUALIFIED_CONTRACT_MODULES = frozenset(
         "MOTHER-OFM-CORE-010",
         "MOTHER-OFM-STATE-001",
         "MOTHER-OFM-STATE-002",
+        "MOTHER-OFM-STATE-003",
     }
 )
 

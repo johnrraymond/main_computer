@@ -143,6 +143,13 @@ class NetworkHeadPaths:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectionPaths:
+    generations_root: Path
+    active_pointer: Path
+    schema_version: ClassVar[int] = SCHEMA_VERSION
+
+
+@dataclass(frozen=True, slots=True)
 class HeadTuple:
     journal_identity: str
     sequence: int
@@ -734,6 +741,7 @@ _MODEL_TYPES = {
     for cls in (
         ContentHash,
         NetworkHeadPaths,
+        ProjectionPaths,
         HeadTuple,
         ReplicaSets,
         AuthorityGeneration,

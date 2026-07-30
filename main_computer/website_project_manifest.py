@@ -3438,7 +3438,7 @@ def save_website_project_files(
     elif builder_text:
         (project.path / "builder.json").write_text(builder_text, encoding="utf-8")
 
-    page_runtime_bundle = ensure_site_page_runtime_bundle(repo_root, project.id, runtime_id=page_runtime_id)
+    ensure_site_page_runtime_bundle(repo_root, project.id, runtime_id=page_runtime_id)
 
     manifest = dict(project.manifest)
     manifest["updated_at"] = utc_now()
@@ -3450,10 +3450,12 @@ def save_website_project_files(
     runtime_manifest = manifest.get("runtime")
     if not isinstance(runtime_manifest, dict):
         runtime_manifest = {}
+    # Bundle integrity belongs to the generated page-runtime metadata. Keeping
+    # another digest in site.json creates a stale, write-only copy whenever the
+    # checked-in runtime is regenerated independently of a Website Builder save.
     runtime_manifest["page_runtime"] = {
         "id": page_runtime_id,
         "entry": PAGE_RUNTIME_OUTPUT.as_posix(),
-        "sha256": page_runtime_bundle["sha256"],
     }
     manifest["runtime"] = runtime_manifest
     write_json(project.path / "site.json", manifest)

@@ -6,7 +6,7 @@ import os
 from pathlib import Path, PureWindowsPath
 import re
 
-from .models import NetworkHeadPaths
+from .models import NetworkHeadPaths, ProjectionPaths
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -53,6 +53,14 @@ class MotherPaths:
         return self._root / "generations"
 
     @property
+    def projection_generations_root(self) -> Path:
+        return self._root / "projection-generations"
+
+    @property
+    def active_projections_root(self) -> Path:
+        return self._root / "active-projections"
+
+    @property
     def objects_root(self) -> Path:
         return self._root / "objects"
 
@@ -93,6 +101,19 @@ class MotherPaths:
         return NetworkHeadPaths(
             journal_head=head,
             committed_state=committed_state,
+        )
+
+    def resolve_projection_paths(self, network: str) -> ProjectionPaths:
+        network_id = _identifier(network, "network")
+        generations_root = self.validate_contained(
+            self.projection_generations_root / network_id
+        )
+        active_pointer = self.validate_contained(
+            self.active_projections_root / f"{network_id}.json"
+        )
+        return ProjectionPaths(
+            generations_root=generations_root,
+            active_pointer=active_pointer,
         )
 
     def generation_root(self, network: str, generation: str) -> Path:
