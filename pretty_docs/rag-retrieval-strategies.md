@@ -20,7 +20,7 @@ Every retriever should accept a bounded target and return an evidence bundle wit
 | RAPTOR | Retrieve from hierarchical summaries and source leaves. | `main_computer/rag_advanced_eval_layer_smoke.py`; contract smoke |
 | TreeRAG | Locate a relevant branch, then expand only that branch. | advanced-eval smoke; contract smoke |
 | GraphRAG | Use entities and relationships for local/global graph retrieval. | advanced-eval smoke; conceptual contract |
-| Graphify | Build/query a real source graph, then hydrate selected source. | scripts under `scripts/graphify_*`; experimental |
+| Graphify | Historical optional source-graph evaluation with exact-source hydration. | no retained repo-local harness; not mounted; baseline remains default |
 | Web retrieval | Use current external sources when local evidence is missing or stale. | `main_computer/ai_web_search.py`, web-search smokes; mounted/shared by caller |
 | Multimodal | Retrieve and reason over images plus text evidence. | multimodal smokes; experimental/operator |
 | Hybrid | Merge lexical, semantic, graph, web, or multimodal evidence. | desired common interface; not one sole authority |
@@ -79,7 +79,7 @@ Focused deterministic tests include `tests/test_rag_retriever.py`, `tests/test_r
 
 ## Provenance
 
-- Source snapshot: `main_computer_test-20260730-145547.zip`
+- Source snapshot: `main_computer_test-20260731-105403.zip`
 - Evidence status: source-inspected documentation.
 - Model-backed verification: not run for documentation generation.
 - Authority rule: mounted implementation and focused tests override this guide when they disagree.

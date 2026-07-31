@@ -9,7 +9,7 @@ This is the quick-scan public operation catalog. Operations describe product-lev
 - **Inspect target** — Read a bounded repository, site, game, project, or dataset without mutation.
 - **Retrieve evidence** — Find relevant files, symbols, excerpts, logs, records, or media.
 - **Route retrieval** — Choose lexical, semantic, graph, web, multimodal, or hybrid retrieval.
-- **Expand retrieval** — Broaden evidence with HyDE, step-back, RAPTOR, TreeRAG, GraphRAG, or Graphify.
+- **Expand retrieval** — Broaden evidence with HyDE, step-back, RAPTOR, TreeRAG, or GraphRAG.
 - **Grade evidence** — Decide whether evidence is relevant, sufficient, stale, contradictory, or poisoned.
 - **Disambiguate evidence** — Resolve competing symbols, repeated literals, duplicate files, or unclear targets.
 - **Search external sources** — Retrieve current web evidence when local material is insufficient or stale.
@@ -55,14 +55,18 @@ This is the quick-scan public operation catalog. Operations describe product-lev
 - **Compact consensus evidence** — Expand, check, verify, fork, and reduce tainted results into a host-verifiable state.
 - **Run consensus agent task** — Repeat consensus at action, planning, and edit-generation boundaries.
 
-## Graphify
+## Retired Graphify evaluation operations
 
-- **Build graph** — Extract a scoped structural graph and a source manifest.
-- **Query graph** — Rank relevant nodes, files, communities, and relationships.
-- **Explain graph result** — Record why a node or file was selected.
-- **Find graph paths** — Trace relationships between files, symbols, routes, imports, and assets.
-- **Hydrate graph evidence** — Resolve graph selections to exact current source and hashes.
-- **Invalidate graph** — Reject or rebuild stale graphs when source, scope, configuration, or Graphify version changes.
+The repository no longer retains Graphify-specific smoke or A/B harnesses. These operation names describe the retired evaluation surface, not mounted product behavior. The deterministic baseline remains the Website Builder default.
+
+- **Build graph** — Historically extracted a scoped structural graph and source manifest.
+- **Query graph** — Historically ranked relevant nodes, files, communities, and relationships.
+- **Explain graph result** — Recorded why a node or file was selected.
+- **Find graph paths** — Traced relationships between files, symbols, routes, imports, and assets.
+- **Hydrate graph evidence** — Resolved graph selections to exact current source and hashes before any editing stage.
+- **Invalidate graph** — Rejected or rebuilt stale graphs when source, scope, configuration, or Graphify version changed.
+
+Any future graph retriever must be reintroduced behind the existing grounding, promotion, artifact, and dry-run gates rather than treated as an apply authority.
 
 ## Model boundary
 
@@ -89,7 +93,7 @@ High-level operations should converge on a common envelope containing operation,
 
 ## Provenance
 
-- Source snapshot: `main_computer_test-20260730-145547.zip`
+- Source snapshot: `main_computer_test-20260731-105403.zip`
 - Evidence status: source-inspected documentation.
 - Model-backed verification: not run for documentation generation.
 - Authority rule: mounted implementation and focused tests override this guide when they disagree.

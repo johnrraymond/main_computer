@@ -104,15 +104,14 @@ def test_status_document_is_the_only_authority_for_upcoming_mcel_code_work() -> 
     status_text = corpus[STATUS_DOC]
     assert len(AUTHORIZED_NEXT_HEADING.findall(status_text)) == 1
     assert (
-        "The next authorized MCEL code candidate is repository-bound deployed runtime "
-        "and acceptance evidence for MCEL Lab."
+        "The next authorized MCEL code candidate is deterministic repository evidence "
+        "pipeline hardening."
         in status_text
     )
-    assert "`/applications/mcel-lab`" in status_text
-    assert "`1280 × 720`" in status_text
-    assert "`1440 × 900`" in status_text
-    assert "`runtime_evidence_binding: exact`" in status_text
-    assert "`acceptance_evidence_binding: exact`" in status_text
+    assert "`mcel-evidence-scope-v1`" in status_text
+    assert "`--overwrite-canonical`" in status_text
+    assert "missing canonical, partial-scope, stale" in status_text
+    assert "latest-report discovery does not select a newer declared partial report" in status_text
     assert "no declared application maturity is changed" in status_text.casefold()
     assert "does not authorize any application maturity promotion" in status_text
     assert "mcel-browser-observation-producer.js" in status_text

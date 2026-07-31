@@ -94,7 +94,7 @@ python main_computer/mcel_truth_audit.py \
 ```
 
 
-Discover the newest schema-valid reports and run the release-grade gate:
+Run the release-grade gate against the canonical report paths:
 
 ```bash
 python main_computer/mcel_truth_audit.py --release-gate
@@ -104,12 +104,15 @@ python main_computer/mcel_truth_audit.py --release-gate
 
 ```text
 --check
---latest-runtime-evidence
---latest-acceptance-evidence
 --require-fresh-runtime
 --require-acceptance
 --require-repo-match
 ```
+
+It does not select a newer app-scoped report over the canonical all-app
+artifacts. Use `--latest-runtime-evidence` or `--latest-acceptance-evidence`
+only when canonical discovery outside the conventional paths is intentional.
+Declared partial reports are excluded from latest-report discovery.
 
 Reports are written to:
 
@@ -122,18 +125,23 @@ Use `--no-write --json` for machine consumption without creating files.
 
 ## Evidence discovery and repository binding
 
-Runtime evidence can be selected from the newest schema-valid FLOG report:
+Runtime evidence can be selected from the newest schema-valid canonical FLOG
+report:
 
 ```bash
 python main_computer/mcel_truth_audit.py --latest-runtime-evidence
 ```
 
-Acceptance evidence can be selected from the newest report whose schema
-contains `acceptance`:
+Acceptance evidence can be selected from the newest schema-valid canonical
+acceptance report:
 
 ```bash
 python main_computer/mcel_truth_audit.py --latest-acceptance-evidence
 ```
+
+Reports declaring `mcel-evidence-scope-v1` with `canonical: false` are skipped
+during this discovery. They remain usable as explicit diagnostic inputs, but
+they cannot satisfy the repository release gate.
 
 Explicit evidence paths and their corresponding `--latest-*` options are
 mutually exclusive.
@@ -177,6 +185,18 @@ Evidence binding is reported as:
 - `unbound`: no repository provenance was declared;
 - `unsupported`: provenance uses an unknown schema or algorithm;
 - `absent`: no evidence report was selected.
+
+The audit also reports an evidence-input status separately from fingerprint
+binding:
+
+- `canonical-exact`: canonical evidence is present and exactly bound;
+- `missing-canonical`: the conventional canonical report is absent;
+- `partial`: the selected report is app/scenario scoped;
+- `stale`: runtime evidence exceeds the configured age window;
+- `fingerprint-mismatch`: provenance belongs to another source state.
+
+These statuses prevent a partial run from being mistaken for repository-wide
+proof or from being diagnosed merely as unrelated apps losing conformance.
 
 Explicitly mismatched or unsupported evidence is never forwarded to
 `McelAppTruthGate`, so it cannot prove runtime or acceptance truth. A mismatch
@@ -252,11 +272,17 @@ conformance it has declared. An incomplete legacy app is not treated as a
 broken enrolled app.
 
 `--require-fresh-runtime` and `--require-acceptance` deliberately promote
-evidence gaps into audit-policy failures. Their finding codes are separate from
-truth-gate implementation findings:
+evidence gaps into audit-policy failures. App-level proof gaps retain their
+existing codes, while repository-level evidence selection uses distinct codes:
 
 - `audit-required-runtime-proof-missing`
 - `audit-required-acceptance-proof-missing`
+- `audit-canonical-runtime-evidence-missing`
+- `audit-canonical-acceptance-evidence-missing`
+- `audit-runtime-evidence-partial-scope`
+- `audit-acceptance-evidence-partial-scope`
+- `audit-runtime-evidence-stale`
+- `audit-evidence-repository-mismatch`
 
 `audit-required-acceptance-proof-missing` is emitted only when the app has no
 repository-bound acceptance evidence. If evidence is present and fails, the

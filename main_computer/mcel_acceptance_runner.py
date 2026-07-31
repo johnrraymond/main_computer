@@ -90,6 +90,69 @@ def resolve_repo_path(path: Path, repo: Path) -> Path:
     return path if path.is_absolute() else repo / path
 
 
+def _scope_slug(values: Iterable[str]) -> str:
+    normalized = [
+        re.sub(r"[^a-z0-9._-]+", "-", safe_string(value).lower()).strip("-")
+        for value in values
+        if safe_string(value)
+    ]
+    return "__".join(value for value in normalized if value) or "selection"
+
+
+def build_evidence_scope(
+    *,
+    selected_apps: Iterable[str],
+    covered_apps: Iterable[str],
+    all_apps: Iterable[str],
+) -> dict[str, Any]:
+    selected = sorted({safe_string(value) for value in selected_apps if safe_string(value)})
+    covered = sorted({safe_string(value) for value in covered_apps if safe_string(value)})
+    complete = sorted({safe_string(value) for value in all_apps if safe_string(value)})
+    canonical = not selected
+    return {
+        "schema": "mcel-evidence-scope-v1",
+        "kind": "canonical" if canonical else "app-scoped",
+        "canonical": canonical,
+        "selectedApps": selected,
+        "coveredApps": covered,
+        "canonicalAppIds": complete,
+    }
+
+
+def resolve_output_dir(
+    *,
+    requested_output_dir: Path | None,
+    evidence_scope: Mapping[str, Any],
+    overwrite_canonical: bool,
+    repo: Path | None = None,
+) -> Path:
+    canonical = evidence_scope.get("canonical") is True
+    selected_apps = [
+        safe_string(value)
+        for value in evidence_scope.get("selectedApps") or []
+        if safe_string(value)
+    ]
+    if requested_output_dir is None:
+        if canonical or overwrite_canonical:
+            return DEFAULT_OUTPUT_DIR
+        return DEFAULT_OUTPUT_DIR / "apps" / _scope_slug(selected_apps)
+
+    requested = Path(requested_output_dir)
+    comparison_root = (repo or Path.cwd()).resolve()
+    requested_resolved = resolve_repo_path(requested, comparison_root).resolve()
+    canonical_resolved = resolve_repo_path(DEFAULT_OUTPUT_DIR, comparison_root).resolve()
+    if (
+        not canonical
+        and requested_resolved == canonical_resolved
+        and not overwrite_canonical
+    ):
+        raise McelAcceptanceError(
+            "App-scoped acceptance evidence cannot replace the canonical all-app report "
+            "without --overwrite-canonical."
+        )
+    return requested
+
+
 def load_requirements_registry(repo: Path):
     tools_dir = repo / "tools"
     if not (tools_dir / "mcel_requirements_registry.py").exists():
@@ -478,6 +541,11 @@ def build_report(
         "generatedAt": generated_at,
         "status": status,
         "passed": status == "pass",
+        "evidenceScope": build_evidence_scope(
+            selected_apps=selected_apps,
+            covered_apps=grouped,
+            all_apps=(safe_string(block.app) for block in contracts),
+        ),
         "repositoryProvenance": build_repository_provenance(repo),
         "requirementsRegistry": {
             "version": safe_string(getattr(registry, "summary")().get("registry_version")),
@@ -510,6 +578,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Version: `{safe_string(report.get('version'))}`",
         f"- Generated: `{safe_string(report.get('generatedAt'))}`",
         f"- Status: **{safe_string(report.get('status'))}**",
+        f"- Evidence scope: `{safe_string((report.get('evidenceScope') or {}).get('kind')) or 'unknown'}`",
         f"- Repository fingerprint: `{safe_string(provenance.get('fingerprint'))}`",
         f"- Fingerprint scope: `{safe_string(provenance.get('scope'))}`",
         f"- Selection method: `{safe_string(provenance.get('selectionMethod'))}`",
@@ -584,8 +653,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=None)
     parser.add_argument("--bindings", type=Path, default=DEFAULT_BINDINGS)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Report directory. Full runs use the canonical report directory; app-scoped "
+            "runs default to runtime/reports/mcel-acceptance/apps/<selection>."
+        ),
+    )
     parser.add_argument("--app", action="append", default=[], help="Run only this app; repeatable.")
+    parser.add_argument(
+        "--overwrite-canonical",
+        action="store_true",
+        help="Allow an app-scoped run to replace the canonical all-app report.",
+    )
     parser.add_argument("--pytest-arg", action="append", default=[], help="Additional pytest argument; repeatable.")
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--list-contracts", action="store_true")
@@ -621,6 +703,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             return 0
 
+        planned_scope = build_evidence_scope(
+            selected_apps=selected_apps,
+            covered_apps=selected_apps or known_apps,
+            all_apps=known_apps,
+        )
+        output_dir = resolve_output_dir(
+            requested_output_dir=args.output_dir,
+            evidence_scope=planned_scope,
+            overwrite_canonical=bool(args.overwrite_canonical),
+            repo=repo,
+        )
         report = build_report(
             repo=repo,
             registry=registry,
@@ -631,7 +724,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             extra_pytest_args=tuple(args.pytest_arg),
             timeout_seconds=args.timeout_seconds,
         )
-        json_path, markdown_path = write_report(report, args.output_dir, repo)
+        json_path, markdown_path = write_report(report, output_dir, repo)
     except McelAcceptanceError as exc:
         print(f"mcel acceptance error: {exc}", file=sys.stderr)
         return 2
@@ -642,6 +735,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary = report["summary"]
         print(REPORT_VERSION)
         print(f"status: {report['status']}")
+        print(f"evidence_scope: {report['evidenceScope']['kind']}")
         print(f"apps: {summary['appCount']}")
         print(f"enforceable_contracts: {summary['enforceableContractCount']}")
         print(f"passed_contracts: {summary['passedContractCount']}")

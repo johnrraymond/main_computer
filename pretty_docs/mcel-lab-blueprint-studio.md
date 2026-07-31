@@ -1693,18 +1693,29 @@ stacked profile additionally requires a single grid column, visible/content-size
 workbench flow, and non-overlapping source order.
 
 The fixture does not click, type, edit annotations, mount a different target,
-apply repairs, or mutate repository files. Its default output replaces the
-standard repository-bound runtime report at
-`runtime/reports/flog/mcel-runtime/mcel-runtime-flog-report.json`.
+apply repairs, or mutate repository files. Its default output is app-scoped:
 
-Generate the matching acceptance evidence and bind both reports to the exact
-same repository state with:
+`runtime/reports/flog/mcel-lab-deployed-conformance/mcel-runtime-flog-report.json`
+
+Generate matching app-scoped acceptance evidence with:
 
 ```bash
 python main_computer/mcel_acceptance_runner.py --app mcel-lab --check
+```
+
+That command writes under
+`runtime/reports/mcel-acceptance/apps/mcel-lab/` and does not replace the
+canonical all-app acceptance report. To complete the repository release gate,
+regenerate the canonical reports with unfiltered commands:
+
+```bash
+python main_computer/flog_mcel_runtime_smoke.py   --base-url http://127.0.0.1:8765
+python main_computer/mcel_acceptance_runner.py --check
 python main_computer/mcel_truth_audit.py --release-gate
 ```
 
-A successful fixture run is runtime proof only. It does not promote MCEL Lab's
-declared maturity or authorize new product behavior.
+Supplying `--overwrite-canonical` is required before either a filtered FLOG or
+acceptance run may replace canonical evidence. A successful fixture run is
+runtime proof only. It does not promote MCEL Lab's declared maturity or
+authorize new product behavior.
 

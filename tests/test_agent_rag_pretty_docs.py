@@ -41,8 +41,6 @@ REQUIRED_SOURCE_PATHS = (
     "main_computer/viewport_routes_aider.py",
     "main_computer/rag_text_console_control_surface_smoke.py",
     "main_computer/rag_profile_space_latest_png_rag_smoke.py",
-    "scripts/graphify_main_computer_repo_smoke_v9.py",
-    "scripts/graphify_vs_website_editor_debug_site_rag_ollama_smoke_v5.py",
     "tests/test_rag_code_edit_agent_guidance_smoke.py",
     "tests/test_data_god_mode_cli.py",
     "tests/test_debug_website_golden_path_no_deterministic_cheats.py",
@@ -126,13 +124,20 @@ def test_operation_catalog_exposes_required_high_level_operations() -> None:
         assert phrase in text
 
 
-def test_graphify_document_preserves_experimental_and_hydration_boundaries() -> None:
+def test_graphify_document_records_retirement_and_hydration_boundaries() -> None:
     text = _read("graphify-retrieval.md")
-    assert "experimental optional retrieval backend" in text
-    assert "not currently the sole mounted retrieval authority" in text
+    assert "retired experimental evaluation record" in text
+    assert "Graphify is not mounted" in text
+    assert "deterministic retrieval baseline remains the Website Builder default" in text
+    assert "No Graphify smoke or A/B scripts are retained in this snapshot" in text
     assert "exact-source hydration" in text
     assert "Graphify is a retriever" in text
     assert "Never let Graphify apply a patch" in text
+
+
+def test_agent_rag_documents_do_not_reference_deleted_graphify_scripts() -> None:
+    for name, _title, _order in DOCUMENTS:
+        assert "scripts/graphify_" not in _read(name), name
 
 
 def test_byzantine_document_preserves_host_mutation_authority() -> None:
@@ -181,7 +186,10 @@ def test_every_document_has_provenance_and_status_language() -> None:
     )
     for name, _title, _order in DOCUMENTS:
         text = _read(name)
-        assert "Source snapshot: `main_computer_test-20260730-145547.zip`" in text
+        assert re.search(
+            r"Source snapshot: `main_computer_test-\d{8}-\d{6}\.zip`",
+            text,
+        ), name
         assert "Model-backed verification: not run" in text
         lowered = text.lower()
         assert any(status in lowered for status in allowed_statuses), name

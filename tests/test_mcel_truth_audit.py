@@ -542,6 +542,8 @@ def test_latest_runtime_evidence_selects_newest_schema_matching_report(tmp_path:
     older = root / "older.json"
     newer = root / "nested" / "newer.json"
     newer.parent.mkdir()
+    newest_partial = root / "apps" / "mcel-lab" / "partial.json"
+    newest_partial.parent.mkdir(parents=True)
     ignored = root / "not-flog.json"
 
     older.write_text(
@@ -558,6 +560,21 @@ def test_latest_runtime_evidence_selects_newest_schema_matching_report(tmp_path:
             {
                 "schema": "mcel-runtime-flog-report-v2",
                 "generatedAt": "2026-07-27T11:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    newest_partial.write_text(
+        json.dumps(
+            {
+                "schema": "mcel-runtime-flog-report-v2",
+                "generatedAt": "2026-07-27T13:00:00Z",
+                "evidenceScope": {
+                    "schema": "mcel-evidence-scope-v1",
+                    "kind": "app-scoped",
+                    "canonical": False,
+                    "selectedApps": ["mcel-lab"],
+                },
             }
         ),
         encoding="utf-8",
@@ -663,3 +680,113 @@ def test_release_gate_enables_complete_evidence_policy() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "release_gate = bool" in source
     assert "require_repo_match = bool" in source
+
+
+
+def test_partial_evidence_has_distinct_release_gate_reason() -> None:
+    truth = fake_truth(runtime_present=False, runtime_proven=False)
+    report = audit.build_audit_report(
+        truth_snapshot=fake_snapshot(truth),
+        loader_diagnostics=[],
+        authorities={},
+        source_inventory_data={},
+        runtime_metadata={
+            "present": True,
+            "path": "runtime/reports/flog/mcel-runtime/apps/mcel-lab/report.json",
+            "selection": "explicit",
+            "repositoryBinding": {"status": "exact", "exact": True},
+            "evidenceScope": {
+                "status": "partial",
+                "kind": "app-scoped",
+                "canonical": False,
+                "selectedApps": ["mcel-lab"],
+            },
+            "freshness": {"status": "fresh", "fresh": True, "ageHours": 1},
+        },
+        acceptance_metadata={
+            "present": False,
+            "path": "acceptance.json",
+            "repositoryBinding": {"status": "absent", "exact": False},
+            "evidenceScope": {"status": "missing", "canonical": False},
+        },
+        repository_provenance={"fingerprint": "current"},
+        check=True,
+        require_fresh_runtime=True,
+        require_acceptance=False,
+        require_repo_match=True,
+        max_evidence_age_hours=168,
+    )
+
+    assert report["summary"]["evidenceInputStatuses"]["runtime"] == "partial"
+    assert report["auditLevelReasons"][0]["code"] == (
+        "audit-runtime-evidence-partial-scope"
+    )
+
+
+def test_missing_canonical_evidence_has_distinct_reason() -> None:
+    report = build_report(
+        fake_truth(runtime_present=False, runtime_proven=False),
+        require_fresh_runtime=True,
+    )
+
+    codes = [item["code"] for item in report["auditLevelReasons"]]
+    assert "audit-canonical-runtime-evidence-missing" in codes
+    assert report["summary"]["evidenceInputStatuses"]["runtime"] == (
+        "missing-canonical"
+    )
+
+
+def test_stale_runtime_evidence_has_distinct_reason() -> None:
+    truth = fake_truth(
+        runtime_present=True,
+        runtime_fresh=False,
+        runtime_proven=False,
+    )
+    report = audit.build_audit_report(
+        truth_snapshot=fake_snapshot(truth),
+        loader_diagnostics=[],
+        authorities={},
+        source_inventory_data={},
+        runtime_metadata={
+            "present": True,
+            "path": "runtime.json",
+            "selection": "default",
+            "repositoryBinding": {"status": "exact", "exact": True},
+            "evidenceScope": {
+                "status": "canonical",
+                "kind": "canonical",
+                "canonical": True,
+            },
+            "freshness": {"status": "stale", "fresh": False, "ageHours": 200},
+        },
+        acceptance_metadata={
+            "present": False,
+            "path": "acceptance.json",
+            "repositoryBinding": {"status": "absent", "exact": False},
+            "evidenceScope": {"status": "missing", "canonical": False},
+        },
+        repository_provenance={"fingerprint": "current"},
+        check=True,
+        require_fresh_runtime=True,
+        require_acceptance=False,
+        require_repo_match=True,
+        max_evidence_age_hours=168,
+    )
+
+    assert report["summary"]["evidenceInputStatuses"]["runtime"] == "stale"
+    assert report["auditLevelReasons"][0]["code"] == "audit-runtime-evidence-stale"
+
+
+def test_partial_evidence_is_not_forwarded_to_truth_gate() -> None:
+    evidence = audit.EvidenceInput(
+        value={"schema": "mcel-runtime-flog-report-v2"},
+        metadata={
+            "present": True,
+            "evidenceScope": {"status": "partial", "canonical": False},
+        },
+    )
+
+    assert audit.truth_eligible_evidence(
+        evidence,
+        {"status": "exact"},
+    ) is None

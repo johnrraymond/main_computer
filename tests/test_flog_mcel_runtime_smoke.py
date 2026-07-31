@@ -827,3 +827,61 @@ def test_latest_app_truth_snapshot_uses_last_gate_built_snapshot(flog):
     assert flog.latest_app_truth_snapshot(trials) == second
     assert flog.latest_app_truth_snapshot([{"appTruthSnapshot": {}}]) == {}
 
+
+
+
+def test_filtered_runtime_output_defaults_to_scoped_directory(flog):
+    scenarios = flog.build_scenarios(REPO_ROOT, apps=["mcel-lab"])
+    scope = flog.build_evidence_scope(
+        scenarios=scenarios,
+        selected_apps=["mcel-lab"],
+    )
+
+    assert scope["kind"] == "app-scoped"
+    assert scope["canonical"] is False
+    assert flog.resolve_output_dir(
+        requested_output_dir=None,
+        evidence_scope=scope,
+        overwrite_canonical=False,
+    ) == flog.DEFAULT_OUTPUT_DIR / "apps" / "mcel-lab"
+
+
+def test_filtered_runtime_output_requires_explicit_canonical_overwrite(flog):
+    scenarios = flog.build_scenarios(REPO_ROOT, apps=["mcel-lab"])
+    scope = flog.build_evidence_scope(
+        scenarios=scenarios,
+        selected_apps=["mcel-lab"],
+    )
+
+    with pytest.raises(ValueError, match="--overwrite-canonical"):
+        flog.resolve_output_dir(
+            requested_output_dir=flog.DEFAULT_OUTPUT_DIR,
+            evidence_scope=scope,
+            overwrite_canonical=False,
+        )
+    with pytest.raises(ValueError, match="--overwrite-canonical"):
+        flog.resolve_output_dir(
+            requested_output_dir=(REPO_ROOT / flog.DEFAULT_OUTPUT_DIR).resolve(),
+            evidence_scope=scope,
+            overwrite_canonical=False,
+            repo=REPO_ROOT,
+        )
+
+    assert flog.resolve_output_dir(
+        requested_output_dir=None,
+        evidence_scope=scope,
+        overwrite_canonical=True,
+    ) == flog.DEFAULT_OUTPUT_DIR
+
+
+def test_unfiltered_runtime_scope_remains_canonical(flog):
+    scenarios = flog.build_scenarios(REPO_ROOT)
+    scope = flog.build_evidence_scope(scenarios=scenarios)
+
+    assert scope["kind"] == "canonical"
+    assert scope["canonical"] is True
+    assert flog.resolve_output_dir(
+        requested_output_dir=None,
+        evidence_scope=scope,
+        overwrite_canonical=False,
+    ) == flog.DEFAULT_OUTPUT_DIR

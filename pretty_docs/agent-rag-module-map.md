@@ -24,9 +24,10 @@ This map identifies current ownership. Status is based on source imports, routes
 | `main_computer/rag_advanced_eval_layer_smoke.py` | RAPTOR, TreeRAG, GraphRAG, evaluation metrics | contract smoke |
 | `main_computer/rag_hyde_ollama_docker_smoke_v3.py` | model-backed HyDE evaluation | experimental/operator |
 | `main_computer/rag_minefield_ollama_docker_smoke.py` | planner, grader, disambiguator, answer, and critic minefield | experimental/operator |
-| `scripts/graphify_main_computer_repo_smoke_v9.py` | repository graph construction/query smoke | experimental |
-| `scripts/graphify_vs_existing_rag_ollama_realworld_smoke_v2.py` | baseline-versus-Graphify real-world comparison | experimental |
-| `scripts/graphify_vs_website_editor_debug_site_rag_ollama_smoke_v5.py` | isolated Website Builder Graphify comparison | experimental |
+
+### Retired Graphify evaluation surface
+
+No Graphify-specific smoke or A/B script remains in this snapshot, and no mounted or shared Python module imports Graphify. The deterministic baseline remains the Website Builder discovery default. `requirements.txt` still carries the `graphifyy==0.9.29` package pin pending a separate dependency-cleanup decision.
 
 ## Generated editor ownership
 
@@ -97,7 +98,7 @@ Versioned RAG-assisted-thinking modules and older smoke variants are not automat
 
 ## Provenance
 
-- Source snapshot: `main_computer_test-20260730-145547.zip`
+- Source snapshot: `main_computer_test-20260731-105403.zip`
 - Evidence status: source-inspected documentation.
 - Model-backed verification: not run for documentation generation.
 - Authority rule: mounted implementation and focused tests override this guide when they disagree.

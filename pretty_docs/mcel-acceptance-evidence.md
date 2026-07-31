@@ -33,10 +33,23 @@ contract is not proven:
 python main_computer/mcel_acceptance_runner.py --check
 ```
 
-Run one app:
+Run one app without replacing the canonical all-app report:
 
 ```bash
 python main_computer/mcel_acceptance_runner.py --app file-explorer
+```
+
+The scoped report is written under:
+
+```text
+runtime/reports/mcel-acceptance/apps/file-explorer/
+```
+
+Replacing the canonical report with partial evidence is an explicit operator
+action:
+
+```bash
+python main_computer/mcel_acceptance_runner.py   --app file-explorer   --overwrite-canonical
 ```
 
 List declarations and bindings without executing pytest:
@@ -45,12 +58,16 @@ List declarations and bindings without executing pytest:
 python main_computer/mcel_acceptance_runner.py --list-contracts
 ```
 
-Default artifacts:
+Canonical artifacts from an unfiltered run:
 
 ```text
 runtime/reports/mcel-acceptance/mcel-acceptance-report.json
 runtime/reports/mcel-acceptance/mcel-acceptance-report.md
 ```
+
+Every report declares `mcel-evidence-scope-v1`. Canonical reports use
+`canonical: true`; filtered reports use `canonical: false` and list their
+selected and covered apps.
 
 The release-grade sequence is:
 

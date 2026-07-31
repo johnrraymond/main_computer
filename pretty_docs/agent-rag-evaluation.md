@@ -59,8 +59,6 @@ main_computer/rag_minefield_ollama_docker_smoke.py
 main_computer/rag_hallucination_guard_smoke.py
 main_computer/rag_hallucination_miner.py
 tests/test_debug_website_golden_path_no_deterministic_cheats.py
-scripts/graphify_vs_existing_rag_ollama_realworld_smoke_v2.py
-scripts/graphify_vs_website_editor_debug_site_rag_ollama_smoke_v5.py
 ```
 
 ## Adoption gate
@@ -69,9 +67,15 @@ A candidate should not replace the baseline unless it has equal or better correc
 
 Smoke success is evidence for a contract. It is not proof of all production workloads.
 
+## Retired Graphify evaluation
+
+The Graphify-specific smoke and A/B scripts were removed after the final Website Builder gate failed the adoption threshold. Across 32 paired debug-site runs, baseline passed 23 cases and Graphify passed 21. Graphify also used more exact excerpt context, model calls, prompt-evaluation tokens, repairs, and elapsed time. The deterministic baseline remains the default Website Builder discovery path.
+
+The historical decision record is summarized in [Graphify Retrieval](graphify-retrieval.md). New graph-retrieval work requires a fresh harness against the current editor contract rather than restoration of stale versioned smoke scripts.
+
 ## Provenance
 
-- Source snapshot: `main_computer_test-20260730-145547.zip`
+- Source snapshot: `main_computer_test-20260731-105403.zip`
 - Evidence status: source-inspected documentation.
 - Model-backed verification: not run for documentation generation.
 - Authority rule: mounted implementation and focused tests override this guide when they disagree.

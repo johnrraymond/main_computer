@@ -12,7 +12,8 @@ Run from the repository root while the viewport server is already running::
       --base-url http://127.0.0.1:8765
 
 The generated report remains runtime evidence, not a source mutation or a
-maturity promotion.
+maturity promotion. By default it writes app-scoped evidence outside the
+canonical all-app FLOG report directory.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -30,7 +32,7 @@ except ImportError:  # Direct execution from the repository root.
     import flog_mcel_runtime_smoke as flog
 
 
-DEFAULT_OUTPUT_DIR = flog.DEFAULT_OUTPUT_DIR
+DEFAULT_OUTPUT_DIR = Path("runtime/reports/flog/mcel-lab-deployed-conformance")
 PROFILE_VERSION = "mcel-lab-deployed-conformance-v1"
 ROUTE = "/applications/mcel-lab"
 HOST_SELECTOR = ".mcel-lab-blueprint-primary"
@@ -358,6 +360,12 @@ def build_report(
         scenarios=[scenario],
         trials=trials,
         viewport=canonical_viewport,
+        evidence_scope=flog.build_evidence_scope(
+            scenarios=[scenario],
+            selected_apps=["mcel-lab"],
+            selected_scenarios=[trial.get("scenarioId", "") for trial in trials],
+            force_partial_kind="deployed-app-scoped",
+        ),
     )
     profile_status = "pass" if all(
         item.get("status") == "pass" for item in profile_results
@@ -503,7 +511,17 @@ def run_deployed_profile(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8765")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help=f"Report directory (default: {DEFAULT_OUTPUT_DIR}).",
+    )
+    parser.add_argument(
+        "--overwrite-canonical",
+        action="store_true",
+        help="Allow this MCEL Lab-only fixture to replace the canonical all-app FLOG report.",
+    )
     parser.add_argument("--startup-wait-ms", type=int, default=flog.DEFAULT_STARTUP_WAIT_MS)
     parser.add_argument("--timeout-ms", type=int, default=flog.DEFAULT_TIMEOUT_MS)
     parser.add_argument("--headed", action="store_true")
@@ -517,7 +535,32 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     repo = flog.repo_root_from_script()
-    browser_executable = resolve_browser_executable(args.browser_executable)
+    requested_output = args.output_dir
+    try:
+        if requested_output is None:
+            output_dir = (
+                flog.DEFAULT_OUTPUT_DIR if args.overwrite_canonical else DEFAULT_OUTPUT_DIR
+            )
+        else:
+            output_dir = Path(requested_output)
+            output_resolved = (
+                output_dir.resolve()
+                if output_dir.is_absolute()
+                else (repo / output_dir).resolve()
+            )
+            canonical_resolved = (repo / flog.DEFAULT_OUTPUT_DIR).resolve()
+            if (
+                output_resolved == canonical_resolved
+                and not args.overwrite_canonical
+            ):
+                raise ValueError(
+                    "MCEL Lab deployed evidence is app-scoped and cannot replace the canonical "
+                    "all-app FLOG report without --overwrite-canonical."
+                )
+        browser_executable = resolve_browser_executable(args.browser_executable)
+    except ValueError as exc:
+        print(f"mcel lab deployed conformance error: {exc}", file=sys.stderr)
+        return 2
     report = run_deployed_profile(
         repo=repo,
         base_url=args.base_url,
@@ -527,7 +570,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_zero_warnings=not bool(args.allow_warnings),
         browser_executable=browser_executable,
     )
-    paths = write_report_files(report, args.output_dir)
+    paths = write_report_files(report, output_dir)
     report["artifacts"] = paths
 
     if args.json:
@@ -538,6 +581,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(PROFILE_VERSION)
         print(f"base_url: {report.get('baseUrl', '')}")
         print(f"status: {summary.get('status', 'unknown')}")
+        print(f"evidence_scope: {(report.get('evidenceScope') or {}).get('kind', 'unknown')}")
         print(f"deployed_conformance: {conformance.get('status', 'unknown')}")
         print(f"repository_fingerprint: {(report.get('repositoryProvenance') or {}).get('fingerprint', '')}")
         print(f"json: {paths['json']}")

@@ -203,3 +203,63 @@ def test_documentation_defines_exact_deployed_evidence_sequence() -> None:
     assert "1280 × 720" in source
     assert "1440 × 900" in source
     assert "900 × 900" in source
+
+
+
+def test_deployed_fixture_defaults_to_noncanonical_report_directory() -> None:
+    assert deployed.DEFAULT_OUTPUT_DIR == Path(
+        "runtime/reports/flog/mcel-lab-deployed-conformance"
+    )
+
+
+def test_deployed_report_declares_partial_evidence_scope(monkeypatch) -> None:
+    scenario = flog.RuntimeScenario(
+        id="mcel-lab.default-load",
+        app="mcel-lab",
+        route="/applications/mcel-lab",
+        intent="test",
+    )
+    captured: dict = {}
+
+    def fake_build_report(**kwargs):
+        captured.update(kwargs)
+        return {
+            "schema": flog.REPORT_SCHEMA,
+            "version": flog.REPORT_VERSION,
+            "repositoryProvenance": {"fingerprint": "abc"},
+            "evidenceScope": kwargs["evidence_scope"],
+            "source": {},
+            "summary": {"status": "pass"},
+            "results": [],
+            "trials": kwargs["trials"],
+        }
+
+    monkeypatch.setattr(deployed.flog, "build_report", fake_build_report)
+    profiles = [
+        {
+            "profile": profile.to_dict(),
+            "status": "pass",
+            "failures": [],
+            "warnings": [],
+            "geometry": {},
+        }
+        for profile in deployed.VIEWPORT_PROFILES
+    ]
+    report = deployed.build_report(
+        repo=ROOT,
+        base_url="http://127.0.0.1:8765",
+        scenario=scenario,
+        trials=[
+            {
+                "scenarioId": f"mcel-lab.deployed-{profile.name}",
+                "app": "mcel-lab",
+            }
+            for profile in deployed.VIEWPORT_PROFILES
+        ],
+        profile_results=profiles,
+    )
+
+    assert captured["evidence_scope"]["kind"] == "deployed-app-scoped"
+    assert report["evidenceScope"]["canonical"] is False
+    assert report["evidenceScope"]["selectedApps"] == ["mcel-lab"]
+

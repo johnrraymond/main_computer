@@ -18,6 +18,7 @@ Run from the repository root after the viewport is running:
 Useful options:
 
     python main_computer/flog_mcel_runtime_smoke.py --app code-editor
+        # writes app-scoped evidence unless --overwrite-canonical is explicit
     python main_computer/flog_mcel_runtime_smoke.py --scenario document.default-load --headed
     python main_computer/flog_mcel_runtime_smoke.py --emit-events
     python main_computer/flog_mcel_runtime_smoke.py --viewport 1920x1200
@@ -237,6 +238,94 @@ def normalize_base_url(base_url: str) -> str:
     if not value.startswith(("http://", "https://")):
         value = "http://" + value
     return value.rstrip("/") + "/"
+
+
+def _scope_slug(values: list[str]) -> str:
+    normalized = [
+        re.sub(r"[^a-z0-9._-]+", "-", str(value).strip().lower()).strip("-")
+        for value in values
+        if str(value).strip()
+    ]
+    return "__".join(value for value in normalized if value) or "selection"
+
+
+def build_evidence_scope(
+    *,
+    scenarios: list[RuntimeScenario],
+    selected_apps: list[str] | None = None,
+    selected_scenarios: list[str] | None = None,
+    force_partial_kind: str = "",
+) -> dict[str, Any]:
+    apps = sorted({str(value).strip() for value in (selected_apps or []) if str(value).strip()})
+    scenario_ids = sorted(
+        {str(value).strip() for value in (selected_scenarios or []) if str(value).strip()}
+    )
+    covered_apps = sorted({scenario.app for scenario in scenarios})
+    covered_scenarios = sorted({scenario.id for scenario in scenarios})
+    partial = bool(force_partial_kind or apps or scenario_ids)
+    if force_partial_kind:
+        kind = force_partial_kind
+    elif apps:
+        kind = "app-scoped"
+    elif scenario_ids:
+        kind = "scenario-scoped"
+    else:
+        kind = "canonical"
+    return {
+        "schema": "mcel-evidence-scope-v1",
+        "kind": kind,
+        "canonical": not partial,
+        "selectedApps": apps,
+        "selectedScenarioIds": scenario_ids,
+        "coveredApps": covered_apps,
+        "coveredScenarioIds": covered_scenarios,
+    }
+
+
+def default_scoped_output_dir(evidence_scope: dict[str, Any]) -> Path:
+    selected_apps = [str(value) for value in evidence_scope.get("selectedApps") or []]
+    selected_scenarios = [
+        str(value) for value in evidence_scope.get("selectedScenarioIds") or []
+    ]
+    if selected_apps:
+        return DEFAULT_OUTPUT_DIR / "apps" / _scope_slug(selected_apps)
+    if selected_scenarios:
+        return DEFAULT_OUTPUT_DIR / "scenarios" / _scope_slug(selected_scenarios)
+    covered_apps = [str(value) for value in evidence_scope.get("coveredApps") or []]
+    return DEFAULT_OUTPUT_DIR / "scoped" / _scope_slug(covered_apps)
+
+
+def resolve_output_dir(
+    *,
+    requested_output_dir: Path | None,
+    evidence_scope: dict[str, Any],
+    overwrite_canonical: bool,
+    repo: Path | None = None,
+) -> Path:
+    canonical = evidence_scope.get("canonical") is True
+    if requested_output_dir is None:
+        if canonical or overwrite_canonical:
+            return DEFAULT_OUTPUT_DIR
+        return default_scoped_output_dir(evidence_scope)
+
+    requested = Path(requested_output_dir)
+    comparison_root = (repo or Path.cwd()).resolve()
+    requested_resolved = (
+        requested.resolve()
+        if requested.is_absolute()
+        else (comparison_root / requested).resolve()
+    )
+    canonical_resolved = (comparison_root / DEFAULT_OUTPUT_DIR).resolve()
+    if (
+        not canonical
+        and requested_resolved == canonical_resolved
+        and not overwrite_canonical
+    ):
+        raise ValueError(
+            "Scoped runtime evidence cannot replace the canonical all-app report "
+            "without --overwrite-canonical."
+        )
+    return requested
 
 
 def parse_viewport(value: str | None) -> dict[str, int]:
@@ -1275,6 +1364,7 @@ def build_report(
     scenarios: list[RuntimeScenario],
     trials: list[dict[str, Any]],
     viewport: dict[str, int] | None = None,
+    evidence_scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "kind": REPORT_KIND,
@@ -1282,6 +1372,7 @@ def build_report(
         "version": REPORT_VERSION,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "repoRoot": str(repo),
+        "evidenceScope": evidence_scope or build_evidence_scope(scenarios=scenarios),
         "repositoryProvenance": build_repository_provenance(repo),
         "baseUrl": normalize_base_url(base_url).rstrip("/"),
         "viewport": viewport or dict(DEFAULT_VIEWPORT),
@@ -1310,6 +1401,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Schema: `{report.get('schema', '')}`",
         f"- Version: `{report.get('version', '')}`",
         f"- Generated: `{report.get('generatedAt', '')}`",
+        f"- Evidence scope: `{(report.get('evidenceScope') or {}).get('kind', 'unknown')}`",
         f"- Repository fingerprint: `{(report.get('repositoryProvenance') or {}).get('fingerprint', '')}`",
         f"- Repository fingerprint scope: `{(report.get('repositoryProvenance') or {}).get('scope', '')}`",
         f"- Repository selection method: `{(report.get('repositoryProvenance') or {}).get('selectionMethod', '')}`",
@@ -1463,7 +1555,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-fail", action="store_true", help="Write reports but return success even when scenarios fail.")
     parser.add_argument("--allow-warnings", action="store_true", help="Do not fail on warning-level MCEL findings.")
     parser.add_argument("--emit-events", action="store_true", help="POST compact FLOG events to the MCEL diagnostics event endpoint.")
-    parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Report output directory.")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Report output directory. Unfiltered runs use the canonical directory; "
+            "filtered runs default to a scoped subdirectory."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite-canonical",
+        action="store_true",
+        help="Allow a filtered app/scenario run to replace the canonical all-app report.",
+    )
     parser.add_argument("--list-scenarios", action="store_true", help="Print available scenarios and exit.")
     parser.add_argument("--json", action="store_true", help="Print the final report JSON to stdout.")
     return parser.parse_args(argv)
@@ -1485,6 +1590,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{scenario.id}\t{scenario.app}\t{scenario.route}\t{scenario.intent}")
         return 0
 
+    evidence_scope = build_evidence_scope(
+        scenarios=scenarios,
+        selected_apps=list(args.app or []),
+        selected_scenarios=list(args.scenario or []),
+    )
+    try:
+        output_dir = resolve_output_dir(
+            requested_output_dir=args.output_dir,
+            evidence_scope=evidence_scope,
+            overwrite_canonical=bool(args.overwrite_canonical),
+            repo=repo,
+        )
+    except ValueError as exc:
+        print(f"mcel runtime flog error: {exc}", file=sys.stderr)
+        return 2
     trials = run_browser_scenarios(
         scenarios,
         base_url=args.base_url,
@@ -1494,8 +1614,15 @@ def main(argv: list[str] | None = None) -> int:
         require_zero_warnings=not bool(args.allow_warnings),
         viewport=viewport,
     )
-    report = build_report(repo=repo, base_url=args.base_url, scenarios=scenarios, trials=trials, viewport=viewport)
-    paths = write_report_files(report, Path(args.output_dir))
+    report = build_report(
+        repo=repo,
+        base_url=args.base_url,
+        scenarios=scenarios,
+        trials=trials,
+        viewport=viewport,
+        evidence_scope=evidence_scope,
+    )
+    paths = write_report_files(report, output_dir)
     report["artifacts"] = paths
 
     if args.json:
@@ -1506,6 +1633,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"base_url: {report['baseUrl']}")
         print(f"viewport: {viewport_label(report.get('viewport') or DEFAULT_VIEWPORT)}")
         print(f"status: {summary['status']}")
+        print(f"evidence_scope: {report['evidenceScope']['kind']}")
         print(f"scenarios: {summary['scenarioCount']}")
         print(f"status_counts: {summary['statusCounts']}")
         print(f"truth_status_counts: {summary.get('truthStatusCounts', {})}")

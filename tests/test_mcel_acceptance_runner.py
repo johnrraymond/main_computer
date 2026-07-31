@@ -285,3 +285,73 @@ def test_documentation_defines_release_sequence_and_no_overclaim_rules() -> None
     assert "not-due" in source
     assert "python main_computer/mcel_acceptance_runner.py" in audit_source
     assert "python main_computer/mcel_truth_audit.py --release-gate" in audit_source
+
+
+
+def test_app_scoped_output_defaults_away_from_canonical_report(tmp_path: Path) -> None:
+    scope = runner.build_evidence_scope(
+        selected_apps=["mcel-lab"],
+        covered_apps=["mcel-lab"],
+        all_apps=["calculator", "mcel-lab"],
+    )
+
+    output_dir = runner.resolve_output_dir(
+        requested_output_dir=None,
+        evidence_scope=scope,
+        overwrite_canonical=False,
+    )
+    assert output_dir == runner.DEFAULT_OUTPUT_DIR / "apps" / "mcel-lab"
+
+    canonical = tmp_path / runner.DEFAULT_OUTPUT_DIR / "mcel-acceptance-report.json"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text('{"sentinel": "canonical"}\n', encoding="utf-8")
+    runner.write_report(
+        {
+            "schema": runner.REPORT_SCHEMA,
+            "evidenceScope": scope,
+            "repositoryProvenance": {},
+            "summary": {},
+            "results": [],
+        },
+        output_dir,
+        tmp_path,
+    )
+
+    assert json.loads(canonical.read_text(encoding="utf-8")) == {
+        "sentinel": "canonical"
+    }
+    assert (
+        tmp_path
+        / runner.DEFAULT_OUTPUT_DIR
+        / "apps"
+        / "mcel-lab"
+        / "mcel-acceptance-report.json"
+    ).exists()
+
+
+def test_app_scoped_output_requires_explicit_canonical_overwrite() -> None:
+    scope = runner.build_evidence_scope(
+        selected_apps=["mcel-lab"],
+        covered_apps=["mcel-lab"],
+        all_apps=["calculator", "mcel-lab"],
+    )
+
+    with pytest.raises(runner.McelAcceptanceError, match="--overwrite-canonical"):
+        runner.resolve_output_dir(
+            requested_output_dir=runner.DEFAULT_OUTPUT_DIR,
+            evidence_scope=scope,
+            overwrite_canonical=False,
+        )
+    with pytest.raises(runner.McelAcceptanceError, match="--overwrite-canonical"):
+        runner.resolve_output_dir(
+            requested_output_dir=(ROOT / runner.DEFAULT_OUTPUT_DIR).resolve(),
+            evidence_scope=scope,
+            overwrite_canonical=False,
+            repo=ROOT,
+        )
+
+    assert runner.resolve_output_dir(
+        requested_output_dir=None,
+        evidence_scope=scope,
+        overwrite_canonical=True,
+    ) == runner.DEFAULT_OUTPUT_DIR

@@ -21,7 +21,7 @@ Main Computer does not have one monolithic "RAG feature." It has a retrieval pla
 | --- | --- |
 | Scan the public operations | [Agent and RAG Operations](agent-rag-operations.md) |
 | Understand retrieval methods | [RAG Retrieval Strategies](rag-retrieval-strategies.md) |
-| Understand graph-backed retrieval | [Graphify Retrieval](graphify-retrieval.md) |
+| Review the retired Graphify evaluation | [Graphify Retrieval](graphify-retrieval.md) |
 | Understand Ring 3 trust and consensus | [Byzantine RAG and Ring 3](byzantine-rag-ring3.md) |
 | Understand Website, game, and code editors | [Generated Editor Systems](generated-editor-systems.md) |
 | Understand natural-language console actions | [Text Console Agent](text-console-agent.md) |
@@ -51,7 +51,7 @@ A filename ending in `_smoke.py` does not by itself establish status. Some smoke
 - Data god mode is exposed by `main_computer/cli.py` and delegates to the Byzantine code-agent reference path.
 - Aider actions are mounted through `main_computer/viewport_routes_aider.py`.
 - Provider-neutral model values and providers live under `main_computer/models.py` and `main_computer/providers/`.
-- Graphify adapters and A/B scripts remain experimental evaluation surfaces.
+- Graphify-specific smoke and A/B scripts were retired after the decision suite did not meet the adoption gate. The deterministic baseline remains the default Website Builder discovery path.
 
 ## Non-negotiable safety boundaries
 
@@ -68,7 +68,7 @@ A filename ending in `_smoke.py` does not by itself establish status. Some smoke
 
 ## Provenance
 
-- Source snapshot: `main_computer_test-20260730-145547.zip`
+- Source snapshot: `main_computer_test-20260731-105403.zip`
 - Evidence status: source-inspected documentation.
 - Model-backed verification: not run for documentation generation.
 - Authority rule: mounted implementation and focused tests override this guide when they disagree.

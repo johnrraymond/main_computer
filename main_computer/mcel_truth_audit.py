@@ -19,8 +19,9 @@ Typical usage from the repository root::
 ``--check`` fails on truth-gate findings explicitly marked blocking. Missing or
 stale proof remains visible but non-blocking unless opt-in evidence policies
 are enabled. ``--release-gate`` discovers the latest runtime and acceptance
-reports, requires fresh proof, and binds evidence to the exact repository
-source fingerprint.
+canonical reports, requires fresh proof, and binds evidence to the exact
+repository source fingerprint. App/scenario-scoped reports remain diagnostic
+inputs and cannot silently replace repository-wide proof.
 """
 
 from __future__ import annotations
@@ -255,6 +256,76 @@ def _matches_evidence_schema(value: Any, *, label: str) -> bool:
     return schema in ACCEPTANCE_EVIDENCE_SCHEMAS
 
 
+def _declared_evidence_scope(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    scope = value.get("evidenceScope")
+    return dict(scope) if isinstance(scope, Mapping) else {}
+
+
+def evidence_scope_metadata(
+    *,
+    value: Any,
+    resolved_path: Path,
+    repo: Path,
+    label: str,
+) -> dict[str, Any]:
+    declared = _declared_evidence_scope(value)
+    canonical_path = (
+        DEFAULT_RUNTIME_EVIDENCE if label == "runtime" else DEFAULT_ACCEPTANCE_EVIDENCE
+    )
+    at_canonical_path = resolved_path.resolve() == _resolve_repo_path(canonical_path, repo).resolve()
+    if declared:
+        canonical = declared.get("canonical") is True
+        return {
+            **declared,
+            "status": "canonical" if canonical else "partial",
+            "canonical": canonical,
+            "atCanonicalPath": at_canonical_path,
+            "declared": True,
+        }
+    return {
+        "schema": "",
+        "kind": "legacy-unspecified",
+        "status": "legacy-canonical" if at_canonical_path else "unspecified",
+        "canonical": at_canonical_path,
+        "selectedApps": [],
+        "selectedScenarioIds": [],
+        "coveredApps": [],
+        "coveredScenarioIds": [],
+        "atCanonicalPath": at_canonical_path,
+        "declared": False,
+    }
+
+
+def evidence_freshness(
+    metadata: Mapping[str, Any],
+    *,
+    now: str,
+    max_age_hours: float,
+) -> dict[str, Any]:
+    if metadata.get("present") is not True:
+        return {"status": "absent", "fresh": False, "ageHours": None}
+    generated_at = _safe_string(metadata.get("generatedAt"))
+    generated = _parse_timestamp(generated_at)
+    current = _parse_timestamp(now)
+    if not generated or not current:
+        return {
+            "status": "unknown",
+            "fresh": False,
+            "ageHours": None,
+            "generatedAt": generated_at,
+        }
+    age_hours = max(0.0, (current - generated) / 3600.0)
+    fresh = age_hours <= float(max_age_hours)
+    return {
+        "status": "fresh" if fresh else "stale",
+        "fresh": fresh,
+        "ageHours": round(age_hours, 3),
+        "generatedAt": generated_at,
+    }
+
+
 def discover_latest_evidence_path(
     *,
     repo: Path,
@@ -276,6 +347,9 @@ def discover_latest_evidence_path(
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
         if not _matches_evidence_schema(value, label=label):
+            continue
+        declared_scope = _declared_evidence_scope(value)
+        if declared_scope and declared_scope.get("canonical") is False:
             continue
         top = value if isinstance(value, Mapping) else {}
         generated = _parse_timestamp(
@@ -340,6 +414,11 @@ def load_evidence(
                 "sha256": "",
                 "schema": "",
                 "generatedAt": "",
+                "evidenceScope": {
+                    "status": "missing",
+                    "canonical": False,
+                    "declared": False,
+                },
             },
         )
 
@@ -359,6 +438,11 @@ def load_evidence(
                 "sha256": "",
                 "schema": "",
                 "generatedAt": "",
+                "evidenceScope": {
+                    "status": "missing",
+                    "canonical": False,
+                    "declared": False,
+                },
             },
         )
 
@@ -394,6 +478,12 @@ def load_evidence(
             "generatedAt": _safe_string(
                 top.get("generatedAt") or top.get("timestamp") or top.get("finishedAt")
             ),
+            "evidenceScope": evidence_scope_metadata(
+                value=value,
+                resolved_path=resolved,
+                repo=repo,
+                label=label,
+            ),
             "repositoryProvenance": dict(provenance or {}),
         },
     )
@@ -421,6 +511,9 @@ def truth_eligible_evidence(evidence: EvidenceInput, binding: Mapping[str, Any])
     """Never allow explicitly mismatched or unsupported evidence to prove truth."""
 
     if binding.get("status") in {"mismatch", "unsupported"}:
+        return None
+    scope = _safe_dict(evidence.metadata.get("evidenceScope"))
+    if scope.get("status") == "partial":
         return None
     return evidence.value
 
@@ -782,6 +875,29 @@ def _count_values(values: Iterable[str]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def evidence_input_status(label: str, metadata: Mapping[str, Any]) -> str:
+    binding = _safe_dict(metadata.get("repositoryBinding"))
+    binding_status = _safe_string(binding.get("status")) or "absent"
+    if binding_status == "mismatch":
+        return "fingerprint-mismatch"
+    if binding_status == "unsupported":
+        return "provenance-unsupported"
+    if metadata.get("present") is not True:
+        return "missing-canonical"
+    scope = _safe_dict(metadata.get("evidenceScope"))
+    if scope.get("status") == "partial":
+        return "partial"
+    if label == "runtime":
+        freshness = _safe_dict(metadata.get("freshness"))
+        if freshness.get("status") == "stale":
+            return "stale"
+        if freshness.get("status") == "unknown":
+            return "freshness-unknown"
+    if binding_status == "exact":
+        return "canonical-exact"
+    return f"canonical-{binding_status}"
+
+
 def build_audit_report(
     *,
     truth_snapshot: Mapping[str, Any],
@@ -835,8 +951,12 @@ def build_audit_report(
         ("acceptance", acceptance_metadata),
     ):
         binding = _safe_dict(metadata.get("repositoryBinding"))
-        status = _safe_string(binding.get("status")) or "absent"
-        if status == "mismatch":
+        binding_status = _safe_string(binding.get("status")) or "absent"
+        scope = _safe_dict(metadata.get("evidenceScope"))
+        scope_status = _safe_string(scope.get("status")) or "missing"
+        required = require_fresh_runtime if label == "runtime" else require_acceptance
+
+        if binding_status == "mismatch":
             evidence_audit_reasons.append(
                 _audit_reason(
                     "audit-evidence-repository-mismatch",
@@ -851,7 +971,7 @@ def build_audit_report(
                     },
                 )
             )
-        elif status == "unsupported":
+        elif binding_status == "unsupported":
             evidence_audit_reasons.append(
                 _audit_reason(
                     "audit-evidence-provenance-unsupported",
@@ -865,10 +985,60 @@ def build_audit_report(
                     },
                 )
             )
+        elif required and metadata.get("present") is not True:
+            evidence_audit_reasons.append(
+                _audit_reason(
+                    f"audit-canonical-{label}-evidence-missing",
+                    f"The canonical {label} evidence report is missing.",
+                    category="required-evidence-gap",
+                    source="mcel-truth-audit-policy",
+                    detail={
+                        "label": label,
+                        "path": _safe_string(metadata.get("path")),
+                        "selection": _safe_string(metadata.get("selection")),
+                    },
+                )
+            )
+        elif required and scope_status == "partial":
+            evidence_audit_reasons.append(
+                _audit_reason(
+                    f"audit-{label}-evidence-partial-scope",
+                    f"The selected {label} evidence is app/scenario scoped and cannot satisfy the repository release gate.",
+                    category="required-evidence-gap",
+                    source="mcel-truth-audit-policy",
+                    detail={
+                        "label": label,
+                        "path": _safe_string(metadata.get("path")),
+                        "kind": _safe_string(scope.get("kind")),
+                        "selectedApps": _safe_list(scope.get("selectedApps")),
+                        "selectedScenarioIds": _safe_list(scope.get("selectedScenarioIds")),
+                    },
+                )
+            )
+        elif (
+            required
+            and label == "runtime"
+            and _safe_dict(metadata.get("freshness")).get("status") == "stale"
+        ):
+            freshness = _safe_dict(metadata.get("freshness"))
+            evidence_audit_reasons.append(
+                _audit_reason(
+                    "audit-runtime-evidence-stale",
+                    "The canonical runtime evidence is older than the configured freshness window.",
+                    category="required-evidence-gap",
+                    source="mcel-truth-audit-policy",
+                    detail={
+                        "label": label,
+                        "path": _safe_string(metadata.get("path")),
+                        "ageHours": freshness.get("ageHours"),
+                        "maxEvidenceAgeHours": float(max_evidence_age_hours),
+                    },
+                )
+            )
         elif (
             require_repo_match
             and metadata.get("present") is True
-            and status != "exact"
+            and binding_status != "exact"
         ):
             evidence_audit_reasons.append(
                 _audit_reason(
@@ -879,7 +1049,7 @@ def build_audit_report(
                     detail={
                         "label": label,
                         "path": _safe_string(metadata.get("path")),
-                        "bindingStatus": status,
+                        "bindingStatus": binding_status,
                     },
                 )
             )
@@ -952,6 +1122,10 @@ def build_audit_report(
                 _safe_dict(acceptance_metadata.get("repositoryBinding")).get("status")
             ) or "absent",
         },
+        "evidenceInputStatuses": {
+            "runtime": evidence_input_status("runtime", runtime_metadata),
+            "acceptance": evidence_input_status("acceptance", acceptance_metadata),
+        },
     }
 
     return {
@@ -1011,12 +1185,16 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     for key in ("runtime", "acceptance"):
         item = _safe_dict(evidence.get(key))
         binding = _safe_dict(item.get("repositoryBinding"))
+        scope = _safe_dict(item.get("evidenceScope"))
+        freshness = _safe_dict(item.get("freshness"))
         lines.append(
             f"- {key.title()}: "
             + (
                 f"`{_safe_string(item.get('path'))}` "
                 f"(selection `{_safe_string(item.get('selection'))}`, "
+                f"scope `{_safe_string(scope.get('status')) or 'unknown'}`, "
                 f"schema `{_safe_string(item.get('schema')) or 'unknown'}`, "
+                f"freshness `{_safe_string(freshness.get('status')) or 'unknown'}`, "
                 f"repository binding `{_safe_string(binding.get('status')) or 'unknown'}`, "
                 f"sha256 `{_safe_string(item.get('sha256'))}`)"
                 if item.get("present") is True
@@ -1128,7 +1306,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "- Missing acceptance proof is reported separately. Use `--require-acceptance` to make it an explicit CI requirement.",
             "- Evidence carrying a different repository fingerprint is rejected and cannot prove app truth.",
             "- Use `--require-repo-match` to reject otherwise unbound legacy evidence.",
-            "- `--release-gate` selects the latest reports and enables check, freshness, acceptance, and exact-repository policies together.",
+            "- `--release-gate` selects the canonical report paths and enables check, freshness, acceptance, and exact-repository policies together; `--latest-*` discovery ignores declared partial reports.",
             "- Promotion readiness is advisory and never mutates the app-surface registry.",
             "",
         ]
@@ -1175,16 +1353,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--latest-runtime-evidence",
         action="store_true",
         help=(
-            "Select the newest schema-valid FLOG report under "
-            f"{RUNTIME_EVIDENCE_SEARCH_ROOT}."
+            "Select the newest schema-valid canonical FLOG report under "
+            f"{RUNTIME_EVIDENCE_SEARCH_ROOT}; declared partial reports are ignored."
         ),
     )
     parser.add_argument(
         "--latest-acceptance-evidence",
         action="store_true",
         help=(
-            "Select the newest acceptance report under "
-            f"{ACCEPTANCE_EVIDENCE_SEARCH_ROOT}."
+            "Select the newest canonical acceptance report under "
+            f"{ACCEPTANCE_EVIDENCE_SEARCH_ROOT}; declared partial reports are ignored."
         ),
     )
     parser.add_argument(
@@ -1223,8 +1401,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--release-gate",
         action="store_true",
         help=(
-            "Release-grade shorthand: enable --check, latest runtime/acceptance discovery, "
-            "fresh runtime, acceptance, and exact repository matching."
+            "Release-grade shorthand: enable --check and require canonical fresh runtime, "
+            "canonical acceptance, and exact repository matching."
         ),
     )
     parser.add_argument(
@@ -1263,14 +1441,8 @@ def run_audit(args: argparse.Namespace, *, repo: Path | None = None) -> dict[str
     require_fresh_runtime = bool(args.require_fresh_runtime or release_gate)
     require_acceptance = bool(args.require_acceptance or release_gate)
     require_repo_match = bool(getattr(args, "require_repo_match", False) or release_gate)
-    latest_runtime = bool(
-        getattr(args, "latest_runtime_evidence", False)
-        or (release_gate and args.runtime_evidence is None)
-    )
-    latest_acceptance = bool(
-        getattr(args, "latest_acceptance_evidence", False)
-        or (release_gate and args.acceptance_evidence is None)
-    )
+    latest_runtime = bool(getattr(args, "latest_runtime_evidence", False))
+    latest_acceptance = bool(getattr(args, "latest_acceptance_evidence", False))
 
     runtime_path, runtime_selection, runtime_explicit = select_evidence_path(
         repo=repo,
@@ -1309,12 +1481,22 @@ def run_audit(args: argparse.Namespace, *, repo: Path | None = None) -> dict[str
     repository_provenance = build_repository_provenance(repo)
     runtime_binding = evidence_binding(runtime, repository_provenance)
     acceptance_binding = evidence_binding(acceptance, repository_provenance)
+    now = _safe_string(args.now) or _utc_now_iso()
     runtime_metadata = dict(runtime.metadata)
     runtime_metadata["repositoryBinding"] = runtime_binding
+    runtime_metadata["freshness"] = evidence_freshness(
+        runtime_metadata,
+        now=now,
+        max_age_hours=float(args.max_evidence_age_hours),
+    )
     acceptance_metadata = dict(acceptance.metadata)
     acceptance_metadata["repositoryBinding"] = acceptance_binding
+    acceptance_metadata["freshness"] = evidence_freshness(
+        acceptance_metadata,
+        now=now,
+        max_age_hours=float(args.max_evidence_age_hours),
+    )
 
-    now = _safe_string(args.now) or _utc_now_iso()
     bridge = run_truth_gate(
         repo=repo,
         runtime_evidence=truth_eligible_evidence(runtime, runtime_binding),
@@ -1359,6 +1541,7 @@ def _print_summary(report: Mapping[str, Any], paths: Mapping[str, str] | None) -
     print(f"semantic_runtime_proven: {summary.get('semanticRuntimeProvenCount', 0)}")
     print(f"promotion_ready: {summary.get('promotionReadyAppIds', [])}")
     print(f"evidence_bindings: {summary.get('evidenceBindingStatuses', {})}")
+    print(f"evidence_statuses: {summary.get('evidenceInputStatuses', {})}")
     if paths:
         print(f"json: {paths.get('json', '')}")
         print(f"markdown: {paths.get('markdown', '')}")
