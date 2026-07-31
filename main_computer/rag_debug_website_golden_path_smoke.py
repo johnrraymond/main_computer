@@ -90,6 +90,8 @@ from rag_generated_editor_discovery_grounding_smoke import (
     make_discovery_prompt,
     make_excerpt_patch_prompt,
     make_grounding_prompt,
+    get_verified_promotion_span,
+    promotion_boundary_literals,
     make_terminal_candidate_for_declared_result_mode,
     package_full_file_replacement_snapshot_artifact,
     promote_verified_excerpt_to_full_file,
@@ -254,38 +256,28 @@ def merge_check_results(*results: CheckResult) -> CheckResult:
     )
 
 
+
 def evidence_target_source(evidence: dict[str, Any] | None) -> tuple[str | None, str]:
-    if not isinstance(evidence, dict):
-        return None, ""
-    target_file = evidence.get("target_file")
-    if not isinstance(target_file, str) or not target_file:
-        return None, ""
-    file_info = evidence.get("files", {}).get(target_file, {})
-    content = file_info.get("content") if isinstance(file_info, dict) else None
-    return target_file, content if isinstance(content, str) else ""
+    target_file, source_span, _metadata = get_verified_promotion_span(evidence)
+    return target_file, source_span
+
 
 
 def preserved_excerpt_literals_for_promotion(source_excerpt: str) -> list[str]:
-    """Literals that prove a proposal returned the full SOURCE_EXCERPT, not a fragment."""
+    """Literals that prove a proposal returned the exact full promotion span."""
 
+    literals = promotion_boundary_literals(source_excerpt)
     candidates = [
-        "<!doctype html>",
-        "<html",
-        "<head>",
-        '<meta charset="utf-8">',
-        '<meta name="viewport"',
-        "<title>",
-        '<link rel="stylesheet" href="/style.css">',
-        "<body>",
         '<main class="debug-shell">',
         "<dl>",
         "</dl>",
         "</main>",
         '<script src="/script.js"></script>',
-        "</body>",
-        "</html>",
     ]
-    return [literal for literal in candidates if literal in source_excerpt]
+    for literal in candidates:
+        if literal in source_excerpt and literal not in literals:
+            literals.append(literal)
+    return literals
 
 
 def validate_patch_proposal_preserves_promotable_excerpt(
@@ -344,27 +336,31 @@ def validate_patch_proposal_preserves_promotable_excerpt(
     return CheckResult(not issues and not blocking_reasons, issues, warnings, blocking_reasons)
 
 
+
 def make_promotable_excerpt_patch_prompt(evidence: dict[str, Any], card: dict[str, Any]) -> str:
-    """Strengthen the shared patch prompt with the snapshot-promotion contract."""
+    """Strengthen the shared patch prompt with the exact promotion-span contract."""
 
     target_file, source_excerpt = evidence_target_source(evidence)
     required_literals = preserved_excerpt_literals_for_promotion(source_excerpt)
     promotion_contract = {
         "target_file": target_file,
-        "return_value": "patched_source must be the full final SOURCE_EXCERPT",
-        "do_not_return": "only the changed paragraph, only <main>, or any truncated fragment",
+        "return_value": "patched_source must be one complete final VERIFIED_PROMOTION_SPAN",
+        "do_not_return": "only the changed paragraph, only <main>, a truncated fragment, or a second document wrapper",
         "preserve_if_present": required_literals,
+        "mechanical_requirements": [
+            "one complete replacement span",
+            "every preserved boundary literal retained exactly",
+            "no duplicate h1",
+            "no additional html/head/body/doctype wrapper",
+            "content outside the verified span remains unchanged",
+        ],
     }
     return (
         make_excerpt_patch_prompt(evidence, card)
         + "\n\nPROMOTION_CONTRACT_FOR_SNAPSHOT_ARTIFACT:\n"
         + json.dumps(promotion_contract, separators=(",", ":"), ensure_ascii=False)
-        + "\nThe next deterministic gate will reject proposals that drop preserved SOURCE_EXCERPT context."
+        + "\nThe next deterministic gate rejects truncated spans, dropped boundaries, duplicate H1 elements, added document wrappers, and any full-file change outside the verified promotion span."
     )
-
-
-
-
 
 
 def summarize_patch_proposal_body_shape(
@@ -1454,6 +1450,7 @@ REPAIR_CONTEXT:
 """.strip()
 
 
+
 def make_patch_proposal_validation_repair_prompt(
     *,
     evidence: dict[str, Any],
@@ -1461,21 +1458,32 @@ def make_patch_proposal_validation_repair_prompt(
     previous_proposal: dict[str, Any] | None,
     validation_report: dict[str, Any],
 ) -> str:
-    """Ask the patch-proposal stage to repair a proposal that failed checks."""
+    """Repair a failed proposal using the complete exact promotion span."""
 
-    target_file = evidence["target_file"]
-    source = evidence["files"][target_file]["content"]
+    target_file, source, promotion_span = get_verified_promotion_span(evidence)
+    if not target_file or not source:
+        raise ValueError("verified promotion span is unavailable for patch repair")
     schema = {
         "mode": "claim_grounded_patch_proposal",
         "target_file": target_file,
-        "patched_source": "full final content for the provided SOURCE_EXCERPT, not the whole file",
+        "patched_source": "one complete full final replacement for VERIFIED_PROMOTION_SPAN",
         "grounding_ids_used": ["I1", "C1", "P1"],
     }
     promotion_contract = {
         "target_file": target_file,
-        "return_value": "patched_source must be the full final SOURCE_EXCERPT",
-        "do_not_return": "only the changed paragraph, only <main>, or any truncated fragment",
-        "preserve_if_present": preserved_excerpt_literals_for_promotion(source),
+        "span_start_line": promotion_span.get("start_line"),
+        "span_end_line": promotion_span.get("end_line"),
+        "span_sha256": promotion_span.get("sha256"),
+        "return_value": "patched_source must be the complete final VERIFIED_PROMOTION_SPAN",
+        "do_not_return": "only the changed paragraph, only <main>, a truncated fragment, or a second document wrapper",
+        "preserve_exactly": preserved_excerpt_literals_for_promotion(source),
+        "mechanical_requirements": [
+            "return exactly one complete replacement span",
+            "preserve every listed boundary literal exactly",
+            "do not add a duplicate h1",
+            "do not add an html/head/body/doctype wrapper not already present",
+            "do not change content outside the verified promotion span",
+        ],
     }
     repair_context = {
         "validation_report": validation_report,
@@ -1487,22 +1495,25 @@ Return exactly one valid JSON object. The first character must be {{ and the las
 No markdown. No prose. No comments.
 
 You are repairing the patch-proposal stage of a repo-edit pipeline.
-The previous proposal failed deterministic validation or did not satisfy the
-accepted grounding card. A common failure is returning only the changed <main>
-fragment; that is not promotable into a snapshot patch artifact.
+The previous proposal failed deterministic validation.
 
-Return the full final content for SOURCE_EXCERPT only.
-Do not return the whole repository file.
-Do not return only the edited paragraph, only <main>, or a truncated fragment.
-The repaired proposal must change the excerpt, satisfy all critical checks in
-ACCEPTED_GROUNDING_CARD, preserve the page structure requested by the task, and
-keep every PROMOTION_CONTRACT_FOR_SNAPSHOT_ARTIFACT preserved literal that is
-present in SOURCE_EXCERPT.
+Return one complete full final replacement for VERIFIED_PROMOTION_SPAN.
+Copy the entire span below, make only the requested grounded edit, and return
+the complete resulting span in patched_source.
+Do not return only the changed paragraph, only <main>, or a truncated fragment.
+Do not include excerpt headers.
+Preserve every PROMOTION_CONTRACT_FOR_SNAPSHOT_ARTIFACT boundary literal exactly.
+Do not add a second H1.
+Do not add a new <!doctype>, <html>, <head>, or <body> wrapper.
+Do not change content outside the requested grounded edit.
+The deterministic promoter will preserve content outside the verified span
+byte-for-byte and will reject any candidate that cannot be inserted as exactly
+one replacement span.
 
 JSON shape:
 {json.dumps(schema, separators=(",", ":"))}
 
-SOURCE_EXCERPT:
+VERIFIED_PROMOTION_SPAN:
 {source}
 
 ACCEPTED_GROUNDING_CARD:
@@ -2149,6 +2160,9 @@ def run_blessed_generated_editor_patch_artifact(
         "grounding": grounding_report,
         "patch_proposal": patch_report,
         "full_file_promotion": full_file_promotion_report,
+        "promotion_candidate_failures": list(
+            full_file_promotion_report.get("candidate_failures") or []
+        ),
         "artifact_packaging": artifact_packaging_report,
         "terminal_result": terminal_result,
         "selected_target_file": target_file,

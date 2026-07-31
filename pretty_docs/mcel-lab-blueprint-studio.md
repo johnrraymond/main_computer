@@ -1667,3 +1667,44 @@ It should let users inspect every meaningful aspect of an app, point at rendered
 It should be built from generic MCEL elements. New elements are allowed only when they describe reusable inspection concepts.
 
 The redesigned Lab is valuable only if it helps generate good-looking, solid apps. That means it must connect product intent, generic element semantics, layout geometry, source bindings, acid tests, and repair output into one coherent workflow.
+
+## Deployed runtime-conformance evidence
+
+MCEL Lab's deployed route has a dedicated read-only browser fixture:
+
+```bash
+python main_computer/mcel_lab_deployed_conformance.py \
+  --base-url http://127.0.0.1:8765
+```
+
+The fixture navigates to the real `/applications/mcel-lab` route and records
+repository-bound FLOG evidence at the authorized viewport profiles:
+
+- `1280 × 720` desktop;
+- `1440 × 900` desktop;
+- `900 × 900` stacked layout.
+
+The desktop profiles require exactly one visible authoritative work surface and
+at least `640 × 420` rendered space. Every profile checks direct right-rail
+children for inaccessible internal clipping, verifies that rail overflow is
+scrollable when content exceeds the rail height, rejects workbench sibling
+overlap, and requires the existing diagnostic-no-throw layer to pass. The
+stacked profile additionally requires a single grid column, visible/content-sized
+workbench flow, and non-overlapping source order.
+
+The fixture does not click, type, edit annotations, mount a different target,
+apply repairs, or mutate repository files. Its default output replaces the
+standard repository-bound runtime report at
+`runtime/reports/flog/mcel-runtime/mcel-runtime-flog-report.json`.
+
+Generate the matching acceptance evidence and bind both reports to the exact
+same repository state with:
+
+```bash
+python main_computer/mcel_acceptance_runner.py --app mcel-lab --check
+python main_computer/mcel_truth_audit.py --release-gate
+```
+
+A successful fixture run is runtime proof only. It does not promote MCEL Lab's
+declared maturity or authorize new product behavior.
+

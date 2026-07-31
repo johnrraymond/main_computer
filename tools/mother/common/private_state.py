@@ -8,6 +8,7 @@ from ctypes import wintypes
 import json
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import stat
 from typing import Any
 
@@ -1154,6 +1155,336 @@ def _secure_private_directories(
             )
 
 
+
+def prepare_private_state_bootstrap(
+    paths: PrivateStatePaths,
+    document: dict[str, Any],
+    *,
+    updated_at: str,
+    updated_by_action_id: str,
+    operation: OperationIdentity,
+) -> PrivateRecoveryClosure:
+    """Build a verified generation-one closure from an operator source document.
+
+    This function performs no filesystem writes.  It canonicalizes the supplied
+    document, creates an empty recovery manifest, binds both objects into exact
+    generation-one metadata, and returns a closure suitable for
+    :func:`install_verified_private_state`.
+    """
+
+    operation = _operation(operation)
+    _validate_paths(paths, operation)
+    if type(document) is not dict:
+        raise TypeError("document must be an exact dictionary")
+    _text(updated_at, "updated_at")
+    _text(updated_by_action_id, "updated_by_action_id")
+
+    try:
+        document_bytes = canonical_yaml(document)
+    except (TypeError, ValueError) as exc:
+        raise _error(
+            operation,
+            "MOTHER_STATE_MALFORMED_PRIVATE_STATE",
+            "bootstrap private-state document is not canonicalizable",
+            cause=exc,
+        ) from exc
+
+    # Reuse the production parser so bootstrap and steady-state reads enforce
+    # exactly the same schema and canonical representation.
+    _parse_document(document_bytes, operation)
+
+    manifest = PrivateRecoveryManifest(
+        manifest_version=_PRIVATE_MANIFEST_VERSION,
+        private_state_generation=1,
+        entries=(),
+    )
+    manifest_bytes = _manifest_bytes(manifest)
+    content_hash = sha256(document_bytes)
+    manifest_hash = sha256(manifest_bytes)
+    metadata = PrivateStateMetadata(
+        kind=_PRIVATE_METADATA_KIND,
+        private_state_kind=_PRIVATE_STATE_KIND,
+        generation=1,
+        content_hash=content_hash,
+        previous_content_hash=None,
+        recovery_manifest_hash=manifest_hash,
+        updated_at=updated_at,
+        updated_by_action_id=updated_by_action_id,
+    )
+    metadata_bytes = _metadata_bytes(metadata)
+    binding = PrivateStateBinding(
+        private_state_kind=_PRIVATE_STATE_KIND,
+        generation=1,
+        content_hash=content_hash,
+        recovery_manifest_hash=manifest_hash,
+    )
+    closure = PrivateRecoveryClosure(
+        source_paths=paths,
+        document_bytes=document_bytes,
+        metadata_bytes=metadata_bytes,
+        recovery_manifest_bytes=manifest_bytes,
+        recovery_objects=(),
+        binding=binding,
+        closure_hash=ordered_root(
+            (sha256(document_bytes), sha256(metadata_bytes), sha256(manifest_bytes))
+        ),
+    )
+    _verify_closure(closure, operation)
+    return closure
+
+
+
+def prepare_private_state_successor(
+    current: PrivateStateReadResult,
+    document: dict[str, Any],
+    *,
+    updated_at: str,
+    updated_by_action_id: str,
+    operation: OperationIdentity,
+) -> PrivateRecoveryClosure:
+    """Build the next exact private-state generation without performing I/O.
+
+    The predecessor bundle is embedded as private recovery material so a starter
+    identity rotation remains locally recoverable after publication.
+    """
+
+    operation = _operation(operation)
+    if not isinstance(current, PrivateStateReadResult):
+        raise TypeError("current must be a PrivateStateReadResult")
+    if type(document) is not dict:
+        raise TypeError("document must be an exact dictionary")
+    _text(updated_at, "updated_at")
+    _text(updated_by_action_id, "updated_by_action_id")
+    _verify_result(current, operation)
+
+    try:
+        document_bytes = canonical_yaml(document)
+    except (TypeError, ValueError) as exc:
+        raise _error(
+            operation,
+            "MOTHER_STATE_MALFORMED_PRIVATE_STATE",
+            "successor private-state document is not canonicalizable",
+            cause=exc,
+        ) from exc
+    _parse_document(document_bytes, operation)
+
+    generation = current.binding.generation + 1
+    prefix = f"predecessor/generation-{current.binding.generation:08d}"
+    predecessor_objects: list[PrivateRecoveryObject] = [
+        PrivateRecoveryObject(
+            relative_path=f"{prefix}/identity.private.yaml",
+            generation=generation,
+            content_hash=sha256(current.document_bytes),
+            payload=current.document_bytes,
+        ),
+        PrivateRecoveryObject(
+            relative_path=f"{prefix}/identity.private.meta.json",
+            generation=generation,
+            content_hash=sha256(_metadata_bytes(current.metadata)),
+            payload=_metadata_bytes(current.metadata),
+        ),
+        PrivateRecoveryObject(
+            relative_path=f"{prefix}/private-recovery/manifest.json",
+            generation=generation,
+            content_hash=sha256(_manifest_bytes(current.recovery_manifest)),
+            payload=_manifest_bytes(current.recovery_manifest),
+        ),
+    ]
+    for item in current.recovery_objects:
+        predecessor_objects.append(
+            PrivateRecoveryObject(
+                relative_path=f"{prefix}/private-recovery/objects/{item.relative_path}",
+                generation=generation,
+                content_hash=sha256(item.payload),
+                payload=item.payload,
+            )
+        )
+    recovery_objects = tuple(
+        sorted(predecessor_objects, key=lambda item: item.relative_path.encode("utf-8"))
+    )
+    entries = tuple(
+        PrivateRecoveryManifestEntry(
+            relative_path=item.relative_path,
+            generation=generation,
+            content_hash=item.content_hash,
+            byte_length=len(item.payload),
+        )
+        for item in recovery_objects
+    )
+    manifest = PrivateRecoveryManifest(
+        manifest_version=_PRIVATE_MANIFEST_VERSION,
+        private_state_generation=generation,
+        entries=entries,
+    )
+    manifest_bytes = _manifest_bytes(manifest)
+    content_hash = sha256(document_bytes)
+    manifest_hash = sha256(manifest_bytes)
+    metadata = PrivateStateMetadata(
+        kind=_PRIVATE_METADATA_KIND,
+        private_state_kind=_PRIVATE_STATE_KIND,
+        generation=generation,
+        content_hash=content_hash,
+        previous_content_hash=current.binding.content_hash,
+        recovery_manifest_hash=manifest_hash,
+        updated_at=updated_at,
+        updated_by_action_id=updated_by_action_id,
+    )
+    metadata_bytes = _metadata_bytes(metadata)
+    binding = PrivateStateBinding(
+        private_state_kind=_PRIVATE_STATE_KIND,
+        generation=generation,
+        content_hash=content_hash,
+        recovery_manifest_hash=manifest_hash,
+    )
+    members = [sha256(document_bytes), sha256(metadata_bytes), sha256(manifest_bytes)]
+    members.extend(sha256(canonical_json(_entry_wire(entry))) for entry in entries)
+    closure = PrivateRecoveryClosure(
+        source_paths=current.paths,
+        document_bytes=document_bytes,
+        metadata_bytes=metadata_bytes,
+        recovery_manifest_bytes=manifest_bytes,
+        recovery_objects=recovery_objects,
+        binding=binding,
+        closure_hash=ordered_root(members),
+    )
+    _verify_closure(closure, operation)
+    return closure
+
+
+def _starter_bundle_file_set(current: PrivateStateReadResult) -> set[Path]:
+    expected = {
+        current.paths.identity_file,
+        current.paths.metadata_file,
+        current.paths.recovery_manifest,
+    }
+    expected.update(
+        current.paths.recovery_objects_root / PurePosixPath(item.relative_path)
+        for item in current.recovery_objects
+    )
+    return expected
+
+
+def replace_verified_starter_private_state(
+    paths: PrivateStatePaths,
+    closure: PrivateRecoveryClosure,
+    expected_binding: PrivateStateBinding,
+    *,
+    operation: OperationIdentity,
+) -> PrivateStateInstallResult:
+    """Atomically replace a clean starter bundle with its exact successor.
+
+    This deliberately refuses a Mother root containing any durable state beyond
+    the committed private-state bundle. It is an initialization-time transition,
+    not the general distributed private-state rotation protocol.
+    """
+
+    operation = _operation(operation)
+    _validate_paths(paths, operation)
+    if not isinstance(expected_binding, PrivateStateBinding):
+        raise TypeError("expected_binding must be a PrivateStateBinding")
+    _verify_closure(closure, operation)
+    current = read_private_state(paths, operation=operation)
+    if current.binding != expected_binding:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "observed private state does not match expected starter binding",
+            retry_class="operator-decision",
+        )
+    if closure.binding.generation != current.binding.generation + 1:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "starter successor generation is not contiguous",
+            retry_class="operator-decision",
+        )
+    successor_metadata = _parse_metadata(closure.metadata_bytes, operation)
+    if successor_metadata.previous_content_hash != current.binding.content_hash:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "starter successor does not bind the installed predecessor",
+            retry_class="operator-decision",
+        )
+
+    actual_files = {path for path in paths.root.rglob("*") if path.is_file()}
+    if actual_files != _starter_bundle_file_set(current):
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "Mother root contains non-starter durable state; starter replacement is forbidden",
+            retry_class="operator-decision",
+        )
+
+    token = sha256(operation.operation_id.encode("utf-8")).digest[:16]
+    stage_root = paths.root.parent / f".{paths.root.name}.starter-stage-{token}"
+    backup_root = paths.root.parent / f".{paths.root.name}.starter-backup-{token}"
+    if stage_root.exists() or backup_root.exists():
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "starter rotation staging path already exists",
+            retry_class="operator-decision",
+        )
+    stage_paths = PrivateStatePaths(
+        root=stage_root,
+        identity_file=stage_root / "identity.private.yaml",
+        metadata_file=stage_root / "identity.private.meta.json",
+        recovery_objects_root=stage_root / "private-recovery" / "objects",
+        recovery_manifest=stage_root / "private-recovery" / "manifest.json",
+    )
+
+    swapped = False
+    try:
+        install_verified_private_state(stage_paths, closure, None, operation=operation)
+        staged = read_private_state(stage_paths, operation=operation)
+        if staged.binding != closure.binding:
+            raise RuntimeError("staged starter successor did not verify")
+        os.replace(paths.root, backup_root)
+        try:
+            os.replace(stage_root, paths.root)
+            swapped = True
+        except BaseException:
+            os.replace(backup_root, paths.root)
+            raise
+        verified = read_private_state(paths, operation=operation)
+        if verified.binding != closure.binding:
+            raise RuntimeError("installed starter successor did not verify")
+        shutil.rmtree(backup_root, ignore_errors=True)
+        return PrivateStateInstallResult(
+            True,
+            closure.binding,
+            sha256(closure.recovery_manifest_bytes),
+        )
+    except (MotherError, OSError, RuntimeError) as exc:
+        if swapped and backup_root.exists():
+            failed_root = paths.root.parent / f".{paths.root.name}.starter-failed-{token}"
+            try:
+                if failed_root.exists():
+                    shutil.rmtree(failed_root)
+                if paths.root.exists():
+                    os.replace(paths.root, failed_root)
+                os.replace(backup_root, paths.root)
+                shutil.rmtree(failed_root, ignore_errors=True)
+            except OSError:
+                pass
+        elif not paths.root.exists() and backup_root.exists():
+            try:
+                os.replace(backup_root, paths.root)
+            except OSError:
+                pass
+        if stage_root.exists():
+            shutil.rmtree(stage_root, ignore_errors=True)
+        if isinstance(exc, MotherError):
+            raise
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "starter private-state replacement failed",
+            retry_class="operator-decision",
+            cause=exc,
+        ) from exc
+
 def install_verified_private_state(
     paths: PrivateStatePaths,
     closure: PrivateRecoveryClosure,
@@ -1218,6 +1549,9 @@ __all__ = [
     "ResolvedValidatorIdentity",
     "build_recovery_closure",
     "install_verified_private_state",
+    "prepare_private_state_bootstrap",
+    "prepare_private_state_successor",
     "read_private_state",
+    "replace_verified_starter_private_state",
     "resolve_validator_ref",
 ]

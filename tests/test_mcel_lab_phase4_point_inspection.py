@@ -122,7 +122,7 @@ def test_phase_four_blueprints_share_generic_point_inspection_policy() -> None:
 def test_phase_four_shell_exposes_real_inspect_action_and_selected_element_surface() -> None:
     source = MCEL_LAB_HTML.read_text(encoding="utf-8")
     primary_start = source.index('class="mcel-lab-blueprint-primary mc-app-primary"')
-    primary_end = source.index("</main>", primary_start)
+    primary_end = source.index("</section>", primary_start)
     right_start = source.index('class="mcel-lab-blueprint-right-rail"')
     advanced_start = source.index("Advanced / Legacy proof lab")
     primary = source[primary_start:primary_end]

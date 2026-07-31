@@ -50,6 +50,8 @@ def test_mcel_lab_phase_two_renders_app_blueprint_aspect_inspector_shell() -> No
     assert 'id="mcel-blueprint-findings"' in source
     assert 'id="mcel-blueprint-validity-status"' in source
     assert 'class="mcel-lab-shell-card mcel-lab-work-area"' in source
+    assert '<section\n      class="mcel-lab-blueprint-primary mc-app-primary"' in source
+    assert '<main\n      class="mcel-lab-blueprint-primary mc-app-primary"' not in source
     assert 'id="mcel-blueprint-work-surface"' in source
     assert "Drill down" in source
     assert 'id="mcel-blueprint-mount-status"' in source
@@ -84,7 +86,7 @@ def test_mcel_lab_phase_two_exposes_static_targets_and_generic_aspects() -> None
 def test_mcel_lab_default_surface_moves_contract_drilldowns_to_right_rail() -> None:
     source = MCEL_LAB_HTML.read_text(encoding="utf-8")
     main_start = source.index('class="mcel-lab-blueprint-primary mc-app-primary"')
-    main_end = source.index("</main>", main_start)
+    main_end = source.index("</section>", main_start)
     right_rail_index = source.index('class="mcel-lab-blueprint-right-rail"')
     advanced_index = source.index("Advanced / Legacy proof lab")
 

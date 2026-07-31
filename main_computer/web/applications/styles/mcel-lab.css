@@ -7014,8 +7014,8 @@ body.mcel-modal-open {
 }
 
 .mcel-lab-blueprint-workbench {
-  --mcel-lab-workbench-block-size: clamp(620px, calc(100dvh - 250px), 780px);
-  grid-template-columns: minmax(300px, 0.82fr) minmax(640px, 2.12fr) minmax(300px, 1fr);
+  --mcel-lab-workbench-block-size: clamp(680px, calc(100dvh - 205px), 840px);
+  grid-template-columns: minmax(280px, 0.82fr) minmax(690px, 2.12fr) minmax(270px, 1fr);
   grid-template-areas: "navigation primary rail";
   block-size: var(--mcel-lab-workbench-block-size);
   min-block-size: 0;
@@ -7052,6 +7052,7 @@ body.mcel-modal-open {
 .mcel-lab-blueprint-right-rail {
   grid-area: rail;
   display: grid;
+  grid-auto-rows: max-content;
   align-content: start;
   gap: 12px;
   min-width: 0;
@@ -7199,7 +7200,7 @@ body.mcel-modal-open {
 
 .mcel-lab-work-area {
   display: grid;
-  grid-template-rows: auto minmax(280px, 1fr) auto auto;
+  grid-template-rows: auto minmax(420px, 1fr) auto auto;
   gap: 12px;
   min-height: 0;
   overflow: hidden;
@@ -7662,7 +7663,7 @@ body.mcel-modal-open {
 }
 
 
-@media (max-width: 1320px) {
+@media (max-width: 1420px) {
   .mcel-lab-blueprint-topbar {
     grid-template-columns: minmax(0, 1fr) repeat(2, minmax(160px, 220px));
   }

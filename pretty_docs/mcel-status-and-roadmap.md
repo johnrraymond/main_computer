@@ -100,13 +100,33 @@ Patch numbers are historical labels, not current truth. Use generated outputs an
 
 ## Authorized next code candidate
 
-No additional MCEL code candidate is authorized in this snapshot.
+The next authorized MCEL code candidate is repository-bound deployed runtime and acceptance evidence for MCEL Lab.
 
-The read-only browser producer in `mcel-browser-observation-producer.js` now requires a matching app, route, surface, and locator descriptor; proves that the locator resolves uniquely to the supplied attached root; and records the binding result in provenance. Capture uses the versioned `mcel.browser-observation.capture-limits.v1` policy with default limits and hard ceilings for elements, tree depth, facts, attributes, text payload, and state markers. Limit-driven omissions are explicit, deterministic, and recorded as partial capture rather than silently presented as complete.
+This is an evidence-closing candidate, not a feature-expansion candidate. Its bounded implementation may:
+
+- add a deterministic browser fixture that loads the deployed `/applications/mcel-lab` route at `1280 × 720`, `1440 × 900`, and the supported stacked-layout breakpoint;
+- exercise the existing authoritative work surface, right-rail overflow behavior, responsive layout, and self-diagnosis without mutating application state;
+- emit runtime evidence through the existing FLOG provenance boundary and execute the existing `mcel-lab.acceptance.semantic-runtime` binding through the acceptance runner;
+- update only directly coupled evidence plumbing, tests, and documentation needed to bind both results to the exact repository fingerprint.
+
+Completion requires all of the following:
+
+- the deployed route, rather than a generated stand-in page, is the measured surface;
+- exactly one authoritative work surface is observed;
+- applicable desktop layouts preserve at least the current `640 × 420` surface contract;
+- direct right-rail children are not internally clipped, overflow is scrollable when required, stacked layout returns to content-sized block flow, and sibling rectangles do not overlap;
+- the truth audit reports `runtime_evidence_binding: exact` and `acceptance_evidence_binding: exact` for evidence generated from the same repository state;
+- the requirements registry remains at 304 blocks with 0 errors, 0 warnings, and `strict_schema_ready: True`;
+- no declared application maturity is changed.
+
+Authorization ends at evidence production and binding. It does not authorize any application maturity promotion, new MCEL Lab product features, active browser exploration, browser mutation, repair application, or expansion of the observation producer.
+
+The read-only browser producer in `mcel-browser-observation-producer.js` still requires a matching app, route, surface, and locator descriptor; proves that the locator resolves uniquely to the supplied attached root; and records the binding result in provenance. Capture continues to use the versioned `mcel.browser-observation.capture-limits.v1` policy with default limits and hard ceilings for elements, tree depth, facts, attributes, text payload, and state markers. Limit-driven omissions remain explicit, deterministic, and recorded as partial capture rather than silently presented as complete.
 
 Redaction remains a non-functional contract stub: `mcel.redaction-policy.stub.v1` reports `not-implemented` and `redactedFactCount: 0`. It performs no masking and provides no sensitive-data protection. The producer continues to emit no verifying claims.
 
-Layout, visual, source, transition, ridge, and live-browser collection remain deferred. Any follow-on collector or redaction implementation must be separately authorized after this hardened boundary is reviewed.
+Layout, visual, source, transition, ridge, and general live-browser collection by the observation producer remain deferred. The authorized deployed-route fixture may collect only the bounded conformance and acceptance evidence listed above.
+
 
 ## Not authorized
 
@@ -133,4 +153,4 @@ python main_computer/mcel_truth_audit.py
 python -m pytest -q tests/test_mcel_documentation.py tests/test_mcel_documentation_authority.py tests/test_mcel_requirements_registry.py tests/test_mcel_app_truth_gate.py tests/test_mcel_truth_audit.py tests/test_mcel_observation_bundle.py tests/test_mcel_browser_observation_producer.py tests/test_mcel_document_editor_surface.py tests/test_mcel_document_editor_layout_fit.py
 ```
 
-A clean update must preserve registry validity, avoid accidental changes to machine-readable requirements, keep the truth audit report-only unless explicitly configured otherwise, and leave exactly one MCEL code-authorization section in this document. That section currently authorizes no follow-on implementation.
+A clean update must preserve registry validity, avoid accidental changes to machine-readable requirements, keep the truth audit report-only unless explicitly configured otherwise, and leave exactly one MCEL code-authorization section in this document. That section currently authorizes only the bounded MCEL Lab deployed runtime and acceptance evidence candidate described above.

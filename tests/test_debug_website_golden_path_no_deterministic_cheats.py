@@ -329,3 +329,407 @@ def test_golden_path_smoke_exposes_power_diagnostic_cli_flags() -> None:
     assert "diagnostic_summary.txt" in source
     assert "Blessed diagnostics collected" in source
 
+def test_verified_promotion_span_is_exact_contiguous_source(tmp_path) -> None:
+    from main_computer import rag_generated_editor_discovery_grounding_smoke as smoke
+
+    source = (
+        "<!doctype html>\n"
+        "<html>\n"
+        "<body>\n"
+        "<main>\n"
+        "<h1>Old heading</h1>\n"
+        "<p>Stable copy.</p>\n"
+        "</main>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    target = tmp_path / "index.html"
+    target.write_text(source, encoding="utf-8", newline="\n")
+    first = source.index("<h1>")
+    second = source.index("<p>")
+    selected = {
+        "target_file": "index.html",
+        "source_sha256": smoke.sha256_text(source),
+        "size_bytes": target.stat().st_size,
+        "anchors": [
+            {"id": "A1", "role": "edit_target", "exact_text": "<h1>Old heading</h1>", "offset": first},
+            {"id": "A2", "role": "preservation", "exact_text": "<p>Stable copy.</p>", "offset": second},
+        ],
+    }
+
+    evidence = smoke.make_verified_evidence_excerpt(
+        repo_root=tmp_path,
+        task="Update the heading.",
+        selected_candidate=selected,
+        max_evidence_chars=16000,
+        excerpt_window_lines=1,
+    )
+    target_file, span, metadata = smoke.get_verified_promotion_span(evidence)
+
+    assert target_file == "index.html"
+    expected = "<main>\n<h1>Old heading</h1>\n<p>Stable copy.</p>\n</main>\n"
+    assert span == expected
+    assert metadata["sha256"] == smoke.sha256_text(expected)
+    prompt = smoke.make_excerpt_patch_prompt(
+        evidence,
+        {"mode": "claim_grounding_card", "acceptance_checks": []},
+    )
+    assert "VERIFIED_PROMOTION_SPAN:" in prompt
+    assert expected in prompt
+    assert "Do not add a second H1." in prompt
+
+
+def test_patch_validator_rejects_duplicate_h1_and_added_wrapper(monkeypatch) -> None:
+    from main_computer import rag_generated_editor_discovery_grounding_smoke as smoke
+
+    monkeypatch.setattr(
+        smoke,
+        "validate_grounded_patch_proposal",
+        lambda **_kwargs: (smoke.CheckResult(True, [], [], []), "diff"),
+    )
+    source = "<main>\n<h1>Old heading</h1>\n<p>Stable copy.</p>\n</main>\n"
+    evidence = {
+        "target_file": "index.html",
+        "files": {
+            "index.html": {
+                "content": source,
+                "promotion_span": {
+                    "start_line": 4,
+                    "end_line": 7,
+                    "content": source,
+                    "sha256": smoke.sha256_text(source),
+                },
+            }
+        },
+    }
+    proposal = {
+        "mode": "claim_grounded_patch_proposal",
+        "target_file": "index.html",
+        "patched_source": (
+            "<body>\n<main>\n<h1>New heading</h1>\n"
+            "<h1>New heading</h1>\n<p>Stable copy.</p>\n</main>\n</body>\n"
+        ),
+    }
+
+    result, _diff = smoke.validate_patch_proposal(
+        proposal=proposal,
+        card={},
+        evidence=evidence,
+    )
+
+    assert not result.ok
+    combined = " ".join([*result.issues, *(result.blocking_reasons or [])])
+    assert "duplicate H1" in combined
+    assert "additional HTML document wrapper" in combined
+
+
+def test_promotion_preserves_outside_span_and_surfaces_candidate_failures(
+    tmp_path, monkeypatch
+) -> None:
+    from main_computer import rag_generated_editor_discovery_grounding_smoke as smoke
+
+    monkeypatch.setattr(
+        smoke,
+        "validate_grounded_patch_proposal",
+        lambda **_kwargs: (smoke.CheckResult(True, [], [], []), "diff"),
+    )
+    source = (
+        "<!doctype html>\n"
+        "<html>\n"
+        "<body>\n"
+        "<main>\n"
+        "<h1>Old heading</h1>\n"
+        "<p>Stable copy.</p>\n"
+        "</main>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    target = tmp_path / "index.html"
+    target.write_text(source, encoding="utf-8", newline="\n")
+    span = "<main>\n<h1>Old heading</h1>\n<p>Stable copy.</p>\n</main>\n"
+    evidence = {
+        "target_file": "index.html",
+        "files": {
+            "index.html": {
+                "content": span,
+                "line_ranges": [{"start_line": 4, "end_line": 7}],
+                "full_file_sha256": smoke.file_sha256(target),
+                "promotion_span": {
+                    "start_line": 4,
+                    "end_line": 7,
+                    "content": span,
+                    "sha256": smoke.sha256_text(span),
+                },
+            }
+        },
+    }
+    valid = {
+        "mode": "claim_grounded_patch_proposal",
+        "target_file": "index.html",
+        "patched_source": "<main>\n<h1>New heading</h1>\n<p>Stable copy.</p>\n</main>\n",
+        "grounding_ids_used": ["C1"],
+    }
+    result, report, _diff = smoke.promote_verified_excerpt_to_full_file(
+        repo_root=tmp_path,
+        evidence=evidence,
+        grounding_card={},
+        proposal=valid,
+        patch_result=smoke.CheckResult(True, [], [], []),
+        output_root=tmp_path / "out",
+    )
+
+    assert result.ok
+    assert report["outside_promotion_span_unchanged"] is True
+    replacement = Path(report["replacement_file"]).read_text(encoding="utf-8")
+    assert replacement.startswith("<!doctype html>\n<html>\n<body>\n")
+    assert replacement.endswith("</body>\n</html>\n")
+    assert replacement.count("<h1") == 1
+
+    duplicate = {
+        **valid,
+        "patched_source": (
+            "<main>\n<h1>New heading</h1>\n<h1>Duplicate</h1>\n"
+            "<p>Stable copy.</p>\n</main>\n"
+        ),
+    }
+    failed, failed_report, _failed_diff = smoke.promote_verified_excerpt_to_full_file(
+        repo_root=tmp_path,
+        evidence=evidence,
+        grounding_card={},
+        proposal=duplicate,
+        patch_result=smoke.CheckResult(True, [], [], []),
+        output_root=None,
+    )
+
+    assert not failed.ok
+    assert failed_report["candidate_failures"]
+    assert "structure checks" in failed_report["candidate_failures"][0]["reason"]
+
+
+def test_patch_repair_prompt_contains_complete_verified_span_contract() -> None:
+    from main_computer import rag_debug_website_golden_path_smoke as smoke
+    from main_computer import rag_generated_editor_discovery_grounding_smoke as discovery
+
+    span = "<main>\n<h1>Old heading</h1>\n<p>Stable copy.</p>\n</main>\n"
+    evidence = {
+        "target_file": "index.html",
+        "files": {
+            "index.html": {
+                "content": "// excerpt lines 4-7\n" + span,
+                "promotion_span": {
+                    "start_line": 4,
+                    "end_line": 7,
+                    "content": span,
+                    "sha256": discovery.sha256_text(span),
+                },
+            }
+        },
+    }
+    prompt = smoke.make_patch_proposal_validation_repair_prompt(
+        evidence=evidence,
+        grounding_card={"mode": "claim_grounding_card"},
+        previous_proposal={"patched_source": "<h1>Fragment</h1>"},
+        validation_report={"ok": False},
+    )
+
+    assert "VERIFIED_PROMOTION_SPAN:" in prompt
+    assert span in prompt
+    assert "Do not add a second H1." in prompt
+    assert "Do not add a new <!doctype>, <html>, <head>, or <body> wrapper." in prompt
+    assert "byte-for-byte" in prompt
+
+
+def test_golden_path_top_level_report_surfaces_promotion_candidate_failures() -> None:
+    source = SMOKE.read_text(encoding="utf-8")
+
+    assert '"promotion_candidate_failures"' in source
+    assert 'full_file_promotion_report.get("candidate_failures")' in source
+
+
+def test_full_file_promotion_scopes_negative_literal_checks_to_verified_span(tmp_path) -> None:
+    from main_computer import rag_generated_editor_discovery_grounding_smoke as smoke
+
+    source = (
+        "<!doctype html>\n"
+        "<html lang=\"en\">\n"
+        "<head>\n"
+        "<title>debug-site</title>\n"
+        "</head>\n"
+        "<body>\n"
+        "<main>\n"
+        "<h1>debug-site</h1>\n"
+        "<p>Stable copy.</p>\n"
+        "</main>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    span = (
+        "<body>\n"
+        "<main>\n"
+        "<h1>debug-site</h1>\n"
+        "<p>Stable copy.</p>\n"
+        "</main>\n"
+        "</body>\n"
+    )
+    replacement_span = span.replace(
+        "<h1>debug-site</h1>",
+        "<h1>Operations Test Workbench</h1>",
+    )
+    target = tmp_path / "index.html"
+    target.write_text(source, encoding="utf-8", newline="\n")
+    evidence = {
+        "target_file": "index.html",
+        "files": {
+            "index.html": {
+                "content": span,
+                "line_ranges": [{"start_line": 6, "end_line": 11}],
+                "full_file_sha256": smoke.file_sha256(target),
+                "promotion_span": {
+                    "start_line": 6,
+                    "end_line": 11,
+                    "content": span,
+                    "sha256": smoke.sha256_text(span),
+                },
+            }
+        },
+    }
+    card = {
+        "mode": "claim_grounding_card",
+        "target_file": "index.html",
+        "checks": [
+            {
+                "id": "P1",
+                "intent": "new_behavior",
+                "kind": "literal_must_contain",
+                "value": "<h1>Operations Test Workbench</h1>",
+                "critical": True,
+            },
+            {
+                "id": "P2",
+                "intent": "preservation",
+                "kind": "literal_must_not_contain",
+                "value": "debug-site",
+                "critical": True,
+            },
+        ],
+    }
+    proposal = {
+        "mode": "claim_grounded_patch_proposal",
+        "target_file": "index.html",
+        "patched_source": replacement_span,
+        "grounding_ids_used": ["P1", "P2"],
+    }
+
+    patch_result, _diff = smoke.validate_patch_proposal(
+        proposal=proposal,
+        card=card,
+        evidence=evidence,
+    )
+    assert patch_result.ok
+
+    result, report, _promotion_diff = smoke.promote_verified_excerpt_to_full_file(
+        repo_root=tmp_path,
+        evidence=evidence,
+        grounding_card=card,
+        proposal=proposal,
+        patch_result=patch_result,
+        output_root=tmp_path / "out",
+    )
+
+    assert result.ok
+    assert report["acceptance_check_scope"] == "verified_promotion_span"
+    assert report["full_file_validation_scope"] == "structure_and_outside_span_preservation"
+    promoted = Path(report["replacement_file"]).read_text(encoding="utf-8")
+    assert "<title>debug-site</title>" in promoted
+    assert "<h1>debug-site</h1>" not in promoted
+    assert promoted.count("<h1") == 1
+
+
+def test_negative_literal_check_still_blocks_when_old_literal_remains_in_promotion_span(
+    tmp_path,
+) -> None:
+    from main_computer import rag_generated_editor_discovery_grounding_smoke as smoke
+
+    source = (
+        "<!doctype html>\n"
+        "<html>\n"
+        "<body>\n"
+        "<main data-site=\"debug-site\">\n"
+        "<h1>debug-site</h1>\n"
+        "</main>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    span = (
+        "<body>\n"
+        "<main data-site=\"debug-site\">\n"
+        "<h1>debug-site</h1>\n"
+        "</main>\n"
+        "</body>\n"
+    )
+    target = tmp_path / "index.html"
+    target.write_text(source, encoding="utf-8", newline="\n")
+    evidence = {
+        "target_file": "index.html",
+        "files": {
+            "index.html": {
+                "content": span,
+                "line_ranges": [{"start_line": 3, "end_line": 7}],
+                "full_file_sha256": smoke.file_sha256(target),
+                "promotion_span": {
+                    "start_line": 3,
+                    "end_line": 7,
+                    "content": span,
+                    "sha256": smoke.sha256_text(span),
+                },
+            }
+        },
+    }
+    card = {
+        "mode": "claim_grounding_card",
+        "target_file": "index.html",
+        "checks": [
+            {
+                "id": "P1",
+                "intent": "new_behavior",
+                "kind": "literal_must_contain",
+                "value": "<h1>Operations Test Workbench</h1>",
+                "critical": True,
+            },
+            {
+                "id": "P2",
+                "intent": "preservation",
+                "kind": "literal_must_not_contain",
+                "value": "debug-site",
+                "critical": True,
+            },
+        ],
+    }
+    proposal = {
+        "mode": "claim_grounded_patch_proposal",
+        "target_file": "index.html",
+        "patched_source": span.replace(
+            "<h1>debug-site</h1>",
+            "<h1>Operations Test Workbench</h1>",
+        ),
+        "grounding_ids_used": ["P1", "P2"],
+    }
+
+    patch_result, _diff = smoke.validate_patch_proposal(
+        proposal=proposal,
+        card=card,
+        evidence=evidence,
+    )
+    assert not patch_result.ok
+    assert "check 'P2' failed" in " ".join(patch_result.blocking_reasons or [])
+
+    result, report, _promotion_diff = smoke.promote_verified_excerpt_to_full_file(
+        repo_root=tmp_path,
+        evidence=evidence,
+        grounding_card=card,
+        proposal=proposal,
+        patch_result=patch_result,
+        output_root=None,
+    )
+    assert not result.ok
+    assert "edit proposal was not verified" in report["blocking_reasons"]

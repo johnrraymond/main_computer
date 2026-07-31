@@ -2809,3 +2809,15 @@ def test_mcel_lab_visual_integrity_baseline_is_runtime_observable() -> None:
     assert "layout.visualIntegrityProbe" in diagnosis
     assert "visualIntegrityViolations" in diagnosis
 
+def test_mcel_lab_blueprint_surface_reserves_contract_height_and_content_sized_rail_rows() -> None:
+    css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert "--mcel-lab-workbench-block-size: clamp(680px, calc(100dvh - 205px), 840px);" in css
+    assert "grid-template-columns: minmax(280px, 0.82fr) minmax(690px, 2.12fr) minmax(270px, 1fr);" in css
+    assert "@media (max-width: 1420px) {" in css
+    assert "grid-template-rows: auto minmax(420px, 1fr) auto auto;" in css
+
+    rail_start = css.index(".mcel-lab-blueprint-right-rail {")
+    rail_end = css.index("}", rail_start)
+    rail_rule = css[rail_start:rail_end]
+    assert "grid-auto-rows: max-content;" in rail_rule

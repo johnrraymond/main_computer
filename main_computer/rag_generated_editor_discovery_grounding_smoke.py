@@ -54,7 +54,7 @@ from rag_generated_editor_claim_grounding_smoke import (
     raw_summary,
     sha256_text,
     validate_grounding_card,
-    validate_patch_proposal,
+    validate_patch_proposal as validate_grounded_patch_proposal,
     write_json,
     write_text,
 )
@@ -716,6 +716,7 @@ def validate_discovery_card(
     )
 
 
+
 def make_verified_evidence_excerpt(
     *,
     repo_root: Path,
@@ -753,11 +754,18 @@ def make_verified_evidence_excerpt(
     if len(excerpt_source) > max_evidence_chars:
         excerpt_source = excerpt_source[:max_evidence_chars] + "\n...<verified evidence excerpt truncated>"
 
+    source_lines = source.splitlines(keepends=True)
+    promotion_start_line = min(item["start_line"] for item in line_ranges)
+    promotion_end_line = max(item["end_line"] for item in line_ranges)
+    promotion_content = "".join(
+        source_lines[promotion_start_line - 1 : promotion_end_line]
+    )
+
     return {
         "mode": "verified_discovery_excerpt",
         "task": task,
         "target_file": target_file,
-        "proposal_scope": "verified_excerpt_not_full_file",
+        "proposal_scope": "verified_contiguous_promotion_span",
         "files": {
             target_file: {
                 "content": excerpt_source,
@@ -766,6 +774,13 @@ def make_verified_evidence_excerpt(
                 "full_file_size_bytes": selected_candidate["size_bytes"],
                 "line_ranges": line_ranges,
                 "verified_anchors": selected_candidate["anchors"],
+                "promotion_span": {
+                    "start_line": promotion_start_line,
+                    "end_line": promotion_end_line,
+                    "content": promotion_content,
+                    "sha256": sha256_text(promotion_content),
+                    "char_count": len(promotion_content),
+                },
             }
         },
         "trusted_rules": [],
@@ -773,14 +788,31 @@ def make_verified_evidence_excerpt(
     }
 
 
+
 def make_excerpt_patch_prompt(evidence: dict[str, Any], card: dict[str, Any]) -> str:
-    target_file = evidence["target_file"]
-    source = evidence["files"][target_file]["content"]
+    target_file, source, promotion_span = get_verified_promotion_span(evidence)
+    if not target_file or not source:
+        raise ValueError("verified promotion span is unavailable")
+
     schema = {
         "mode": "claim_grounded_patch_proposal",
         "target_file": target_file,
-        "patched_source": "full final content for the provided SOURCE_EXCERPT, not the whole file",
+        "patched_source": "one complete full final replacement for VERIFIED_PROMOTION_SPAN",
         "grounding_ids_used": ["I1", "C1", "P1"],
+    }
+    contract = {
+        "target_file": target_file,
+        "span_start_line": promotion_span.get("start_line"),
+        "span_end_line": promotion_span.get("end_line"),
+        "span_sha256": promotion_span.get("sha256"),
+        "required_boundary_literals": promotion_boundary_literals(source),
+        "requirements": [
+            "return exactly one complete replacement span",
+            "preserve every required boundary literal exactly",
+            "do not add a duplicate h1",
+            "do not add an html/head/body/doctype wrapper not already present in the span",
+            "leave all repository content outside the verified promotion span unchanged",
+        ],
     }
 
     return f"""
@@ -788,14 +820,24 @@ Return exactly one valid JSON object. The first character must be {{ and the las
 No markdown. No prose. No comments.
 
 You are the patch-proposal stage of a repo-edit pipeline.
-Propose the full patched content for the provided SOURCE_EXCERPT only.
-Do not return the whole repository file.
+Return one complete full final replacement for VERIFIED_PROMOTION_SPAN.
+Do not return the whole repository file unless VERIFIED_PROMOTION_SPAN is the whole file.
+Do not return only the changed paragraph, only <main>, or any truncated fragment.
+Do not include excerpt headers.
+Preserve every required boundary literal exactly.
+Do not add a second H1.
+Do not add a new <!doctype>, <html>, <head>, or <body> wrapper.
+Only content inside VERIFIED_PROMOTION_SPAN may change; deterministic promotion
+will preserve the full-file prefix and suffix byte-for-byte.
 The proposal must obey the accepted grounding card and pass its checks.
 
 JSON shape:
 {json.dumps(schema, separators=(",", ":"))}
 
-SOURCE_EXCERPT:
+VERIFIED_PROMOTION_CONTRACT:
+{json.dumps(contract, separators=(",", ":"), ensure_ascii=False)}
+
+VERIFIED_PROMOTION_SPAN:
 {source}
 
 ACCEPTED_GROUNDING_CARD:
@@ -1072,9 +1114,11 @@ def make_offline_grounding_card(evidence: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
 def make_offline_patch_proposal(evidence: dict[str, Any]) -> dict[str, Any]:
-    target_file = evidence["target_file"]
-    source = evidence["files"][target_file]["content"]
+    target_file, source, _promotion_span = get_verified_promotion_span(evidence)
+    if not target_file or not source:
+        raise ValueError("offline self-check requires a verified promotion span")
     return {
         "mode": "claim_grounded_patch_proposal",
         "target_file": target_file,
@@ -1094,6 +1138,204 @@ def strip_verified_excerpt_headers(text: str) -> str:
         if not re.match(r"^\s*(?://|#)\s*excerpt lines \d+\-\d+\s*$", line.strip())
     ]
     return "".join(stripped)
+
+
+def get_verified_promotion_span(
+    evidence: dict[str, Any] | None,
+) -> tuple[str | None, str, dict[str, Any]]:
+    """Return the exact contiguous source span that deterministic promotion replaces."""
+
+    if not isinstance(evidence, dict):
+        return None, "", {}
+    target_file = evidence.get("target_file")
+    if not isinstance(target_file, str) or not target_file:
+        return None, "", {}
+    file_info = evidence.get("files", {}).get(target_file, {})
+    if not isinstance(file_info, dict):
+        return target_file, "", {}
+
+    span = file_info.get("promotion_span")
+    if isinstance(span, dict):
+        content = span.get("content")
+        if isinstance(content, str) and content:
+            normalized = dict(span)
+            normalized.setdefault("sha256", sha256_text(content))
+            normalized.setdefault("char_count", len(content))
+            return target_file, content, normalized
+
+    content = file_info.get("content")
+    if not isinstance(content, str):
+        return target_file, "", {}
+    fallback = strip_verified_excerpt_headers(content)
+    return target_file, fallback, {
+        "start_line": None,
+        "end_line": None,
+        "content": fallback,
+        "sha256": sha256_text(fallback),
+        "char_count": len(fallback),
+        "fallback_from_excerpt_content": True,
+    }
+
+
+def promotion_boundary_literals(source_span: str) -> list[str]:
+    """Exact structural literals that prove a complete HTML promotion span."""
+
+    if not source_span:
+        return []
+    patterns = (
+        r"<!doctype[^>]*>",
+        r"<html\b[^>]*>",
+        r"</html\s*>",
+        r"<head\b[^>]*>",
+        r"</head\s*>",
+        r"<body\b[^>]*>",
+        r"</body\s*>",
+        r"<link\b[^>]*>",
+        r"<script\b[^>]*>\s*</script\s*>",
+    )
+    literals: list[str] = []
+    for pattern in patterns:
+        match = re.search(pattern, source_span, flags=re.IGNORECASE)
+        if match:
+            literal = match.group(0)
+            if literal not in literals:
+                literals.append(literal)
+    return literals
+
+
+def _html_structure_counts(source: str) -> dict[str, int]:
+    patterns = {
+        "doctype": r"<!doctype\b",
+        "html_open": r"<html\b",
+        "html_close": r"</html\s*>",
+        "head_open": r"<head\b",
+        "head_close": r"</head\s*>",
+        "body_open": r"<body\b",
+        "body_close": r"</body\s*>",
+        "h1_open": r"<h1\b",
+    }
+    return {
+        name: len(re.findall(pattern, source, flags=re.IGNORECASE))
+        for name, pattern in patterns.items()
+    }
+
+
+def validate_html_structure_transition(
+    *,
+    source: str,
+    candidate: str,
+    scope_label: str,
+) -> CheckResult:
+    """Validate structural invariants without changing semantic-check scope."""
+
+    issues: list[str] = []
+    blocking_reasons: list[str] = []
+    source_counts = _html_structure_counts(source)
+    candidate_counts = _html_structure_counts(candidate)
+
+    if source_counts["h1_open"] <= 1 and candidate_counts["h1_open"] > 1:
+        issues.append(
+            f"{scope_label} adds duplicate H1 elements ({candidate_counts['h1_open']} found)"
+        )
+        blocking_reasons.append(f"{scope_label} must not add a duplicate H1")
+
+    wrapper_names = (
+        "doctype", "html_open", "html_close",
+        "head_open", "head_close", "body_open", "body_close",
+    )
+    added_wrappers = [
+        name
+        for name in wrapper_names
+        if candidate_counts[name] > source_counts[name]
+    ]
+    if added_wrappers:
+        issues.append(
+            f"{scope_label} adds an additional HTML document wrapper: "
+            + ", ".join(added_wrappers)
+        )
+        blocking_reasons.append(
+            f"{scope_label} must not add a document wrapper outside the verified span"
+        )
+
+    return CheckResult(
+        not issues and not blocking_reasons,
+        issues,
+        [],
+        blocking_reasons,
+    )
+
+
+def validate_patch_proposal(
+    *,
+    proposal: dict[str, Any] | None,
+    card: dict[str, Any],
+    evidence: dict[str, Any],
+) -> tuple[CheckResult, str]:
+    """Validate semantic grounding plus exact promotion-span shape invariants."""
+
+    target_file, source_span, promotion_span = get_verified_promotion_span(evidence)
+    semantic_evidence = evidence
+    if target_file and source_span:
+        semantic_evidence = {
+            **evidence,
+            "files": {
+                **evidence.get("files", {}),
+                target_file: {
+                    **evidence.get("files", {}).get(target_file, {}),
+                    "content": source_span,
+                    "source_kind": "verified_promotion_span",
+                },
+            },
+        }
+
+    semantic_result, diff_text = validate_grounded_patch_proposal(
+        proposal=proposal,
+        card=card,
+        evidence=semantic_evidence,
+    )
+    issues = list(semantic_result.issues)
+    warnings = list(semantic_result.warnings or [])
+    blocking_reasons = list(semantic_result.blocking_reasons or [])
+
+    if not isinstance(proposal, dict):
+        return CheckResult(False, issues, warnings, blocking_reasons), diff_text
+    candidate = proposal.get("patched_source")
+    if not isinstance(candidate, str) or not candidate or not source_span:
+        return CheckResult(False, issues, warnings, blocking_reasons), diff_text
+
+    if re.search(r"^\s*(?://|#)\s*excerpt lines \d+\-\d+\s*$", candidate, flags=re.MULTILINE):
+        issues.append("patched_source must not contain excerpt header markers")
+        blocking_reasons.append("patch proposal must return one clean replacement span")
+
+    missing_boundaries = [
+        literal for literal in promotion_boundary_literals(source_span)
+        if literal not in candidate
+    ]
+    if missing_boundaries:
+        issues.append(
+            "patch proposal dropped required promotion boundary literals: "
+            + ", ".join(missing_boundaries)
+        )
+        blocking_reasons.append("patch proposal must preserve the complete verified promotion span")
+
+    structure_result = validate_html_structure_transition(
+        source=source_span,
+        candidate=candidate,
+        scope_label="patch proposal",
+    )
+    issues.extend(structure_result.issues)
+    warnings.extend(structure_result.warnings or [])
+    blocking_reasons.extend(structure_result.blocking_reasons or [])
+
+    if promotion_span.get("sha256") and sha256_text(source_span) != promotion_span["sha256"]:
+        blocking_reasons.append("verified promotion span hash is internally inconsistent")
+
+    return CheckResult(
+        not issues and not blocking_reasons,
+        issues,
+        warnings,
+        blocking_reasons,
+    ), diff_text
 
 
 def make_unified_diff_text(old: str, new: str, rel_path: str) -> str:
@@ -1335,6 +1577,7 @@ def terminal_result_is_accepted(report: dict[str, Any]) -> bool:
     )
 
 
+
 def promote_verified_excerpt_to_full_file(
     *,
     repo_root: Path,
@@ -1344,16 +1587,16 @@ def promote_verified_excerpt_to_full_file(
     patch_result: CheckResult,
     output_root: Path | None,
 ) -> tuple[CheckResult, dict[str, Any], str]:
-    """Materialize a verified excerpt edit as a full-file replacement payload.
+    """Promote one verified contiguous span into a full-file replacement.
 
-    This is intentionally a deterministic mutator boundary: model output may
-    propose an excerpt edit, but only this function can promote that nonterminal
-    proposal into a full-file replacement payload. Packaging that replacement
-    as a patch artifact is a separate terminal result mode.
+    Model output is accepted only as the complete replacement for the exact
+    promotion span recorded during discovery. The file prefix and suffix are
+    preserved deterministically and verified unchanged before materialization.
     """
     issues: list[str] = []
     warnings: list[str] = []
     blocking_reasons: list[str] = []
+    candidate_failures: list[dict[str, Any]] = []
     report: dict[str, Any] = {
         "ok": False,
         "scope": "not_promoted",
@@ -1366,6 +1609,10 @@ def promote_verified_excerpt_to_full_file(
         "diff_path": None,
         "before_sha256": None,
         "after_sha256": None,
+        "verified_promotion_span_sha256": None,
+        "outside_promotion_span_unchanged": False,
+        "outside_promotion_span": None,
+        "candidate_failures": candidate_failures,
         "issues": issues,
         "warnings": warnings,
         "blocking_reasons": blocking_reasons,
@@ -1425,86 +1672,131 @@ def promote_verified_excerpt_to_full_file(
         parsed_ranges.append((start_line, end_line))
 
     lines = source.splitlines(keepends=True)
-    if any(start_line < 1 or end_line < start_line or end_line > len(lines) for start_line, end_line in parsed_ranges):
+    if any(
+        start_line < 1
+        or end_line < start_line
+        or end_line > len(lines)
+        for start_line, end_line in parsed_ranges
+    ):
         issues.append("verified excerpt line range is outside the target file")
         return CheckResult(False, issues, warnings, blocking_reasons), report, ""
 
-    # Discovery may verify several nearby anchors, which creates several
-    # overlapping excerpt windows. The model is still asked to patch the visible
-    # excerpt body, so promotion should collapse those verified windows into one
-    # bounded contiguous span instead of requiring the evidence object to already
-    # contain a single range.
     start_line = min(start for start, _ in parsed_ranges)
     end_line = max(end for _, end in parsed_ranges)
     report["verified_line_ranges"] = [
-        {"start_line": start, "end_line": end} for start, end in parsed_ranges
+        {"start_line": start, "end_line": end}
+        for start, end in parsed_ranges
     ]
-    report["promotion_span"] = {"start_line": start_line, "end_line": end_line}
+    report["promotion_span"] = {
+        "start_line": start_line,
+        "end_line": end_line,
+    }
+
+    prefix = "".join(lines[: start_line - 1])
+    old_segment = "".join(lines[start_line - 1 : end_line])
+    suffix = "".join(lines[end_line:])
+    report["verified_promotion_span_sha256"] = sha256_text(old_segment)
+    report["outside_promotion_span"] = {
+        "prefix_sha256": sha256_text(prefix),
+        "suffix_sha256": sha256_text(suffix),
+        "prefix_chars": len(prefix),
+        "suffix_chars": len(suffix),
+    }
+
+    _span_target, recorded_span, recorded_metadata = get_verified_promotion_span(evidence)
+    if recorded_span and recorded_span != old_segment:
+        candidate_failures.append(
+            {
+                "reason": "recorded verified promotion span does not match the current target file",
+                "recorded_sha256": sha256_text(recorded_span),
+                "current_sha256": sha256_text(old_segment),
+            }
+        )
+        blocking_reasons.append("verified promotion span no longer matches the target file")
+        return CheckResult(False, issues, warnings, blocking_reasons), report, ""
+    if recorded_metadata.get("sha256") and recorded_metadata["sha256"] != sha256_text(old_segment):
+        candidate_failures.append(
+            {
+                "reason": "recorded verified promotion span hash does not match the current target file",
+                "recorded_sha256": recorded_metadata["sha256"],
+                "current_sha256": sha256_text(old_segment),
+            }
+        )
+        blocking_reasons.append("verified promotion span hash mismatch")
+        return CheckResult(False, issues, warnings, blocking_reasons), report, ""
 
     patched_source = proposal.get("patched_source")
     if not isinstance(patched_source, str) or not patched_source:
         issues.append("edit proposal missing patched_source")
         return CheckResult(False, issues, warnings, blocking_reasons), report, ""
 
-    old_segment = "".join(lines[start_line - 1 : end_line])
-    candidate_bodies: list[str] = []
-    for candidate in (strip_verified_excerpt_headers(patched_source), patched_source):
-        if candidate and candidate not in candidate_bodies:
-            candidate_bodies.append(candidate)
+    replacement_segment = patched_source
+    if old_segment.endswith("\n") and not replacement_segment.endswith("\n"):
+        replacement_segment += "\n"
 
-    candidate_failures: list[dict[str, Any]] = []
-    accepted_source: str | None = None
-    accepted_diff = ""
-    accepted_after_sha = ""
-
-    for candidate in candidate_bodies:
-        replacement_segment = candidate
-        if old_segment.endswith("\n") and not replacement_segment.endswith("\n"):
-            replacement_segment += "\n"
-
-        candidate_source = "".join(lines[: start_line - 1]) + replacement_segment + "".join(lines[end_line:])
-        if candidate_source == source:
-            candidate_failures.append({"reason": "candidate makes no full-file change"})
-            continue
-
-        full_evidence = {
-            "target_file": target_file,
-            "files": {
-                target_file: {
-                    "content": source,
-                    "source_kind": "full_file",
-                }
-            },
-        }
-        full_proposal = {
-            "mode": "claim_grounded_patch_proposal",
-            "target_file": target_file,
-            "patched_source": candidate_source,
-            "grounding_ids_used": proposal.get("grounding_ids_used", []),
-        }
-        full_check, full_diff = validate_patch_proposal(
-            proposal=full_proposal,
-            card=grounding_card,
-            evidence=full_evidence,
-        )
-        if full_check.ok:
-            accepted_source = candidate_source
-            accepted_diff = full_diff or make_unified_diff_text(source, candidate_source, target_file)
-            accepted_after_sha = sha256_text(candidate_source)
-            break
-
+    candidate_source = prefix + replacement_segment + suffix
+    if candidate_source == source:
         candidate_failures.append(
             {
-                "reason": "candidate full-file replacement failed grounding checks",
-                "issues": full_check.issues,
-                "warnings": full_check.warnings,
-                "blocking_reasons": full_check.blocking_reasons,
+                "reason": "candidate makes no full-file change",
+                "candidate_sha256": sha256_text(candidate_source),
             }
         )
-
-    if accepted_source is None:
         blocking_reasons.append("no candidate excerpt promotion produced a verified full-file replacement")
-        report["candidate_failures"] = candidate_failures
+        return CheckResult(False, issues, warnings, blocking_reasons), report, ""
+
+    if not candidate_source.startswith(prefix) or not candidate_source.endswith(suffix):
+        candidate_failures.append(
+            {
+                "reason": "candidate changed content outside the verified promotion span",
+            }
+        )
+        blocking_reasons.append("content outside the verified promotion span changed")
+        return CheckResult(False, issues, warnings, blocking_reasons), report, ""
+
+    # Acceptance checks are authored against and verified on the exact promotion
+    # span. Reapplying negative checks to the entire file can create false failures
+    # when the old literal legitimately remains outside that span, such as a site
+    # identifier preserved in <title> while the matching H1 is edited. The prefix
+    # and suffix are already preserved byte-for-byte, so full-file promotion needs
+    # only independent structure validation at this boundary.
+    full_structure_check = validate_html_structure_transition(
+        source=source,
+        candidate=candidate_source,
+        scope_label="candidate full-file replacement",
+    )
+    report["acceptance_check_scope"] = "verified_promotion_span"
+    report["full_file_validation_scope"] = "structure_and_outside_span_preservation"
+    if not full_structure_check.ok:
+        candidate_failures.append(
+            {
+                "reason": "candidate full-file replacement failed structure checks",
+                "candidate_sha256": sha256_text(candidate_source),
+                "issues": full_structure_check.issues,
+                "warnings": full_structure_check.warnings,
+                "blocking_reasons": full_structure_check.blocking_reasons,
+            }
+        )
+        blocking_reasons.append("no candidate excerpt promotion produced a verified full-file replacement")
+        return CheckResult(False, issues, warnings, blocking_reasons), report, ""
+
+    accepted_source = candidate_source
+    accepted_diff = make_unified_diff_text(source, candidate_source, target_file)
+    accepted_after_sha = sha256_text(candidate_source)
+    report["outside_promotion_span_unchanged"] = (
+        accepted_source[: len(prefix)] == prefix
+        and (
+            not suffix
+            or accepted_source[-len(suffix) :] == suffix
+        )
+    )
+    if not report["outside_promotion_span_unchanged"]:
+        candidate_failures.append(
+            {
+                "reason": "accepted candidate failed the outside-span preservation assertion",
+            }
+        )
+        blocking_reasons.append("content outside the verified promotion span changed")
         return CheckResult(False, issues, warnings, blocking_reasons), report, ""
 
     replacement_path: Path | None = None
@@ -1546,7 +1838,6 @@ def promote_verified_excerpt_to_full_file(
             "replacement_manifest": str(manifest_path) if manifest_path else None,
             "diff_path": str(diff_path) if diff_path else None,
             "after_sha256": accepted_after_sha,
-            "candidate_failures": candidate_failures,
         }
     )
     return CheckResult(True, issues, warnings, blocking_reasons), report, accepted_diff
@@ -1685,7 +1976,7 @@ def run_offline_self_check(repo_root: Path, result_mode: str = FULL_FILE_REPLACE
         "proposal_scope": (
             "packaged_snapshot_patch_artifact"
             if result_mode == PATCH_ARTIFACT and terminal_result_ok
-            else "promoted_full_file_replacement" if terminal_result_ok else "verified_excerpt_not_full_file"
+            else "promoted_full_file_replacement" if terminal_result_ok else "verified_contiguous_promotion_span"
         ),
         "generated_editor_real_repo_execution": False,
         "real_repo_modified": False,
@@ -2041,7 +2332,7 @@ def main() -> int:
         "proposal_scope": (
             "packaged_snapshot_patch_artifact"
             if args.result_mode == PATCH_ARTIFACT and terminal_result_ok
-            else "promoted_full_file_replacement" if terminal_result_ok else "verified_excerpt_not_full_file"
+            else "promoted_full_file_replacement" if terminal_result_ok else "verified_contiguous_promotion_span"
         ),
         "artifact_ready": artifact_ready,
         "selected_target_file": selected_target,

@@ -1,36 +1,10 @@
 # TODO
 
-- Extend the Phase D MCEL requirements registry beyond adoption mode:
-  - current parser/report: `tools/mcel_requirements_registry.py`.
-  - current test coverage: `tests/test_mcel_requirements_registry.py`.
-  - region normalization v1 is complete: all parsed `mcel-region` blocks now declare `region`, `role`, and `responsibility`.
-  - intent normalization v1 is complete: all parsed `mcel-intent` blocks now declare canonical `risk`, `requires`, and `produces` fields.
-  - use-case normalization v1 is complete: Code Editor and Git Tools now have roadmap `mcel-use-case` blocks, and Website Builder use cases no longer use mixed `current-plus-planned` status.
-  - registry strict-schema readiness is now clean: `python tools/mcel_requirements_registry.py` reports `warnings: 0` and `strict_schema_ready: True`.
-  - registry report v1 is available: `python tools/mcel_requirements_registry.py --report`.
-  - MCEL Lab payload v1 is available: `python tools/mcel_requirements_registry.py --lab-json`.
-  - browser comparison seed is loaded by `main_computer/web/applications/scripts/mcel-requirements-registry.js`.
-  - next target: compare the requirements payload to app blueprints, semantic adapters, source bindings, and missing-test reports inside MCEL Lab.
-  - keep app docs documentation-first; do not treat prose or planned requirements as implementation proof.
-- Use `pretty_docs/mcel-website-builder-requirements.md` as a parsed MCEL requirements source:
-  - compare saved-site editing, preview, runtime setup, publish planning, lane separation, and Git Tools handoff requirements against the live app and future semantic adapter.
-  - create MCEL Lab findings for missing adapter readiness, publish/commit/push boundary evidence, and preview/publish acceptance gaps.
-- Turn `pretty_docs/mcel-code-editor-requirements.md` into a parsed MCEL requirements source:
-  - validate `mcel-*` blocks in CI.
-  - compare Code Editor requirements against the live app blueprint and future domain adapter.
-  - create MCEL Lab findings for missing semantic intents, unsafe action placement, and unverified acceptance criteria.
-- Turn `pretty_docs/mcel-git-tools-requirements.md` into a parsed MCEL requirements source:
-  - validate Git Tools `mcel-*` blocks in CI.
-  - compare governed-push, read/inspect, file-triage, and recovery requirements against the live semantic adapter.
-  - create MCEL Lab findings for declared-only intents, project-card publishing gaps, and unverified remote-sync acceptance criteria.
-- Turn `pretty_docs/mcel-calculator-requirements.md` into a parsed MCEL requirements source:
-  - validate Calculator `mcel-*` blocks in CI.
-  - compare deterministic compute, graphing, Mathics, Q&A, and layout requirements against the live app and future semantic adapter.
-  - create MCEL Lab findings for missing adapter readiness, parser/evaluation boundaries, graph canvas ownership, and helper-panel layout semantics.
-- Turn `pretty_docs/mcel-file-explorer-requirements.md` into a parsed MCEL requirements source:
-  - validate File Explorer `mcel-*` blocks in CI.
-  - compare read-only roots, listing, bounded search, bounded preview, classification, mounted-path, and handoff requirements against the live app and future semantic adapter.
-  - create MCEL Lab findings for missing adapter readiness, root-boundary evidence, preview/readability limits, and navigation-list-preview layout semantics.
+- Keep MCEL planning anchored to `pretty_docs/mcel-status-and-roadmap.md`:
+  - requirements-registry normalization, MCEL Lab truth consumers, repository truth auditing, evidence provenance, acceptance binding, shared adapter tooling, application adapter expansion, and the Patch 43 Document Editor maturity correction are documented as complete milestones.
+  - current generated truth remains evidence-dependent; declared maturity is not proof, and the repository audit must be read with its runtime and acceptance evidence bindings.
+  - current authorized code work and explicit non-goals are recorded only in the canonical status document.
+  - keep app requirements documentation-first; prose and planned requirements are specification evidence, not implementation proof.
 - Expand diagnostics so every level displays the report in the viewport and records a consistent JSON artifact.
 - Add a full functional diagnostic path for the configured local Ollama model, with a clear skip/fail reason when the model is unavailable.
 - Bring `main_copmputer_production` test coverage up to parity with `main_computer_test`.
@@ -86,31 +60,19 @@
   - persist user-added catalog entries so they survive server restarts.
   - expose added catalog entries to Ollama in the same grounding context as marker-discovered projects.
   - add diagnostics/harness coverage for discovering, adding, and displaying uncataloged directories.
-- Create a built-in code editor interface similar to VS Code:
-  - project explorer.
-  - browse uncataloged directories separately from cataloged projects.
-  - add/promote a browsed directory into the main catalog from inside the editor.
-  - tabbed file editor.
-  - syntax highlighting.
-  - search across files.
-  - integrated terminal/command panel.
-  - diagnostics/problems panel.
-  - source-control/revision controls.
-  - frontend Git tools for viewing `git status` and running guarded Git commands.
-  - guarded model-assisted edits with preview diffs.
-  - connection to main computer tools, debug assets, and diagnostics.
-- Add an Applications area to the frontend:
-  - provide a launcher/catalog for local main-computer applications.
-  - add a task manager/top-style app that lists running processes, CPU/memory use, command names, and main-computer server state.
-  - add filtering/search/sort controls for process and resource views.
-  - add a terminal app that lets users run commands directly from the UI.
-  - add a WebGL demo app for exercising GPU/browser rendering inside the main computer viewport.
-  - add a spreadsheet application that can open, view, edit, and save Excel files.
-  - support workbook sheets, cell editing, formulas, basic formatting, import/export, and guarded file writes for spreadsheet changes.
-  - add a Project Omniscience app/page that runs and supervises the main computer's automated project actions.
-  - route terminal execution through the same guarded command-execution framework, including working directory selection, timeouts, stdout/stderr capture, exit codes, and audit logs.
-  - support command history, copyable output, and clear running/stopped/error states.
-  - connect Applications to the code editor, diagnostics, revision control, and agentic control loop so tools share the same safety and logging model.
+- Continue the existing built-in Code Editor toward VS Code-like workflows rather than treating it as greenfield:
+  - inventory the current project browsing, editing, search, Aider workbench, diagnostics, revision, and Git integration before assigning additional parity work.
+  - preserve already tested behavior while closing only verified gaps such as uncataloged-directory promotion, richer syntax services, cross-file search, terminal/command integration, diagnostics presentation, source-control workflows, and reviewable model-assisted edits.
+  - keep each missing workflow separately scoped and tied to executable acceptance proof.
+- Continue the existing Applications area rather than recreating its registered surfaces:
+  - preserve the current launcher/catalog and application routes.
+  - treat Code Editor, Terminal, Task Manager, Spreadsheet, Spreadsheet Smoke, WebGL, Git Tools, File Explorer, Website Builder, and MCEL Lab as implemented baselines whose remaining work is hardening, verification, or bounded feature expansion—not initial creation.
+  - inventory and harden the current Task Manager process/resource views; record any missing filter, sort, or server-state behavior as separately scoped gaps.
+  - inventory the current Terminal execution, history, and output behavior; close verified timeout, status, and audit gaps through the guarded command framework in separate patches.
+  - inventory the current Spreadsheet workbook, sheet, cell-editing, formula, import/export, formatting, and save behavior; close verified persistence or safety gaps separately.
+  - keep the existing WebGL demo as a rendering fixture and expand it only through separately verified requirements.
+  - keep Project Omniscience as a separately scoped future application rather than bundling it with maintenance of existing apps.
+  - connect existing applications to shared diagnostics, revision control, and agentic safety/logging only through bounded integration patches.
 - Integrate local agent-based actions using `../aider_integration_basis/aider_integration_basis` as the reference pattern:
   - keep the main computer as the UI/API head while local agent workers run behind guarded adapters.
   - reuse the basis ideas of validation, command building, subprocess execution, async bridging, mock-worker tests, and saved run outputs.

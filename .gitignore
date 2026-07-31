@@ -67,6 +67,10 @@ yarn-error.log*
 *.sqlite3
 *.db
 
+# Mother private durable state and bootstrap source material
+runtime/state/mother/
+runtime/state/*.private.yaml
+
 # Binary/media blobs
 *.png
 *.jpg

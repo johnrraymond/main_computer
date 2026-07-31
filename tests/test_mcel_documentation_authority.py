@@ -102,7 +102,19 @@ def test_status_document_is_the_only_authority_for_upcoming_mcel_code_work() -> 
     assert authority_documents == ["pretty_docs/mcel-status-and-roadmap.md"]
 
     status_text = corpus[STATUS_DOC]
-    assert "No additional MCEL code candidate is authorized in this snapshot." in status_text
+    assert len(AUTHORIZED_NEXT_HEADING.findall(status_text)) == 1
+    assert (
+        "The next authorized MCEL code candidate is repository-bound deployed runtime "
+        "and acceptance evidence for MCEL Lab."
+        in status_text
+    )
+    assert "`/applications/mcel-lab`" in status_text
+    assert "`1280 × 720`" in status_text
+    assert "`1440 × 900`" in status_text
+    assert "`runtime_evidence_binding: exact`" in status_text
+    assert "`acceptance_evidence_binding: exact`" in status_text
+    assert "no declared application maturity is changed" in status_text.casefold()
+    assert "does not authorize any application maturity promotion" in status_text
     assert "mcel-browser-observation-producer.js" in status_text
     assert "proves that the locator resolves uniquely to the supplied attached root" in status_text
     assert "mcel.browser-observation.capture-limits.v1" in status_text
@@ -110,9 +122,44 @@ def test_status_document_is_the_only_authority_for_upcoming_mcel_code_work() -> 
     assert "It performs no masking and provides no sensitive-data protection." in status_text
     assert "The producer continues to emit no verifying claims." in status_text
     assert (
-        "Layout, visual, source, transition, ridge, and live-browser collection remain deferred."
+        "Layout, visual, source, transition, ridge, and general live-browser collection "
+        "by the observation producer remain deferred."
         in status_text
     )
+
+
+def test_todo_treats_existing_application_surfaces_as_implemented_baselines() -> None:
+    text = TODO.read_text(encoding="utf-8")
+    folded = text.casefold()
+
+    stale_greenfield_phrases = (
+        "create a built-in code editor interface similar to vs code:",
+        "add an applications area to the frontend:",
+        "add a task manager/top-style app",
+        "add a terminal app",
+        "add a spreadsheet application",
+    )
+    for phrase in stale_greenfield_phrases:
+        assert phrase not in folded
+
+    assert "Continue the existing built-in Code Editor" in text
+    assert "Continue the existing Applications area" in text
+    assert (
+        "implemented baselines whose remaining work is hardening, verification, "
+        "or bounded feature expansion"
+        in text
+    )
+    for surface_name in (
+        "Code Editor",
+        "Terminal",
+        "Task Manager",
+        "Spreadsheet",
+        "Git Tools",
+        "File Explorer",
+        "Website Builder",
+        "MCEL Lab",
+    ):
+        assert surface_name in text
 
 
 def test_stale_mcel_planning_language_does_not_return() -> None:

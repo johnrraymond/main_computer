@@ -88,7 +88,7 @@ def test_phase_three_blueprints_define_hint_driven_mount_policies() -> None:
 def test_phase_three_lab_shell_has_contained_mount_surface_and_evidence_panel() -> None:
     source = MCEL_LAB_HTML.read_text(encoding="utf-8")
     primary_start = source.index('class="mcel-lab-blueprint-primary mc-app-primary"')
-    primary_end = source.index("</main>", primary_start)
+    primary_end = source.index("</section>", primary_start)
     right_rail_start = source.index('class="mcel-lab-blueprint-right-rail"')
     advanced_start = source.index("Advanced / Legacy proof lab")
     primary = source[primary_start:primary_end]

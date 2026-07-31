@@ -177,3 +177,51 @@ def test_semantic_oracle_rejects_source_fixture_mutation(tmp_path: Path) -> None
     assert result["details"]["source_fixture_changes"]["modified"] == [
         "operator-notes.txt"
     ]
+
+def test_aggregate_surfaces_promotion_candidate_failures_in_top_level_summary() -> None:
+    module = load_suite_module()
+
+    def lane(failures):
+        return {
+            "passed": False,
+            "quality_score": 0.5,
+            "elapsed_seconds": 1.0,
+            "stage_checks": {},
+            "discovery_index": {},
+            "provider_metrics": {"totals": {}},
+            "repair_counts": {},
+            "semantic_oracle": {"ok": False, "checks": {}},
+            "selected_target_file": "index.html",
+            "expected_target_file": "index.html",
+            "promotion_candidate_failures": failures,
+        }
+
+    report = module.aggregate(
+        [
+            {
+                "case_id": "promotion_failure",
+                "debug_site_id": "debug-bootstrap",
+                "repeat": 1,
+                "winner": "baseline",
+                "baseline": lane([]),
+                "graphify": lane(
+                    [
+                        {
+                            "reason": "candidate full-file replacement failed grounding or structure checks",
+                            "blocking_reasons": ["patch proposal must not add a duplicate H1"],
+                        }
+                    ]
+                ),
+            }
+        ]
+    )
+
+    graphify = report["graphify"]
+    assert graphify["promotion_candidate_failure_run_count"] == 1
+    assert graphify["promotion_candidate_failure_count"] == 1
+    assert graphify["promotion_candidate_failures"][0]["case_id"] == "promotion_failure"
+    assert (
+        graphify["promotion_candidate_failures"][0]["candidate_failures"][0]["reason"]
+        == "candidate full-file replacement failed grounding or structure checks"
+    )
+

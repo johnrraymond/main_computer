@@ -107,6 +107,90 @@
       "title": "Crypto Network Coolify Testnet Runbook",
       "kind": "markdown",
       "order": 50
+    },
+    {
+      "path": "agent-rag-overview.md",
+      "title": "Agent and RAG Overview",
+      "kind": "markdown",
+      "order": 51
+    },
+    {
+      "path": "agent-rag-operations.md",
+      "title": "Agent and RAG Operations",
+      "kind": "markdown",
+      "order": 52
+    },
+    {
+      "path": "rag-retrieval-strategies.md",
+      "title": "RAG Retrieval Strategies",
+      "kind": "markdown",
+      "order": 53
+    },
+    {
+      "path": "graphify-retrieval.md",
+      "title": "Graphify Retrieval",
+      "kind": "markdown",
+      "order": 54
+    },
+    {
+      "path": "byzantine-rag-ring3.md",
+      "title": "Byzantine RAG and Ring 3",
+      "kind": "markdown",
+      "order": 55
+    },
+    {
+      "path": "generated-editor-systems.md",
+      "title": "Generated Editor Systems",
+      "kind": "markdown",
+      "order": 56
+    },
+    {
+      "path": "text-console-agent.md",
+      "title": "Text Console Agent",
+      "kind": "markdown",
+      "order": 57
+    },
+    {
+      "path": "context-compaction.md",
+      "title": "Context Compaction",
+      "kind": "markdown",
+      "order": 58
+    },
+    {
+      "path": "multimodal-rag.md",
+      "title": "Multimodal RAG",
+      "kind": "markdown",
+      "order": 59
+    },
+    {
+      "path": "model-boundary.md",
+      "title": "Model Boundary",
+      "kind": "markdown",
+      "order": 60
+    },
+    {
+      "path": "agent-artifacts-and-apply.md",
+      "title": "Agent Artifacts and Apply",
+      "kind": "markdown",
+      "order": 61
+    },
+    {
+      "path": "agent-runtime-and-recovery.md",
+      "title": "Agent Runtime and Recovery",
+      "kind": "markdown",
+      "order": 62
+    },
+    {
+      "path": "agent-rag-evaluation.md",
+      "title": "Agent and RAG Evaluation",
+      "kind": "markdown",
+      "order": 63
+    },
+    {
+      "path": "agent-rag-module-map.md",
+      "title": "Agent and RAG Module Map",
+      "kind": "markdown",
+      "order": 64
     }
   ]
 }

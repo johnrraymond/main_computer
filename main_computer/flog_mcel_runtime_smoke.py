@@ -38,7 +38,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin
 
 try:
@@ -1030,6 +1030,8 @@ def run_browser_scenarios(
     emit_events: bool = False,
     require_zero_warnings: bool = True,
     viewport: dict[str, int] | None = None,
+    trial_probe: Callable[[Any, RuntimeScenario], dict[str, Any]] | None = None,
+    browser_executable: str | None = None,
 ) -> list[dict[str, Any]]:
     try:
         from playwright.sync_api import sync_playwright
@@ -1042,7 +1044,10 @@ def run_browser_scenarios(
     viewport = viewport or dict(DEFAULT_VIEWPORT)
     trials: list[dict[str, Any]] = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=not headed)
+        launch_options: dict[str, Any] = {"headless": not headed}
+        if browser_executable:
+            launch_options["executable_path"] = browser_executable
+        browser = playwright.chromium.launch(**launch_options)
         context = browser.new_context(viewport=viewport)
         try:
             for scenario in scenarios:
@@ -1182,6 +1187,11 @@ def run_browser_scenarios(
                         trial["classification"].setdefault("warnings", []).append(
                             f"MCEL app truth was not attached: {truth_error}"
                         )
+                    if trial_probe is not None:
+                        probe_result = trial_probe(page, scenario)
+                        if not isinstance(probe_result, dict):
+                            raise TypeError("runtime trial probe must return a dictionary")
+                        trial["supplementalEvidence"] = probe_result
                     if emit_events:
                         event = diagnostic_event_from_trial({**trial, "finishedAt": datetime.now(timezone.utc).isoformat()})
                         event_result = page.evaluate(
