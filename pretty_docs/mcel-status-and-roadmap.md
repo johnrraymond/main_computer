@@ -79,6 +79,7 @@ The current repository contains these active layers:
 | Read-only observation envelope | `mcel.observation-bundle.v1` |
 | DOM/authored-accessibility observation producer | `mcel-browser-observation-producer.js` |
 | SCM mutation isolation | canonical instances, revision-bound operation envelopes, duplicate refusal, and overlapping-operation refusal in `mcel-scm.js` |
+| Reviewed project mutation boundary | hash-guarded multi-file `modify`/`create` transactions, isolated validation, overlay dry-run, explicit reviewed apply, receipts, and best-effort rollback in `main_computer/mcel_project_edit_transaction.py` |
 
 ## Documented MCEL milestones
 
@@ -98,6 +99,14 @@ The current docs record these relevant milestones:
 - Deterministic evidence-workflow hardening separated canonical and scoped reports, added `mcel-evidence-scope-v1`, and protected canonical evidence behind explicit overwrite intent.
 
 Patch numbers are historical labels, not current truth. Use generated outputs and the authority order above for present-state decisions.
+
+## Reviewed project edit transaction
+
+The repository now contains `main_computer/mcel_project_edit_transaction.py`, a project-neutral mutation boundary for an already reviewed set of complete replacement files. It supports multi-file `modify` and `create` operations, exact before hashes, isolated staging, no-shell validation commands, directly rooted changed-files overlays, `new_patch.py --dry-run`, explicit reviewed apply, apply receipts, and best-effort rollback after ordinary write failures.
+
+This is infrastructure, not full-application semantic editing. It does not choose edits, bind semantic nodes to source ownership, expose Code Editor save or reviewed-patch endpoints, apply MCEL Lab repairs, support delete or rename, or claim filesystem-level crash atomicity. Its existence must not promote any application maturity or satisfy runtime and acceptance evidence by itself.
+
+The detailed contract and limitations are documented in `pretty_docs/mcel-project-edit-transaction.md`.
 
 ## Authorized next code candidate
 
@@ -140,7 +149,8 @@ The following remain out of scope until separately specified, policy-gated, and 
 
 - active browser exploration;
 - autonomous clicks, typing, navigation, or workflow execution;
-- source, state, runtime, filesystem, Git, publish, or network mutation;
+- autonomous or unreviewed source, state, runtime, filesystem, Git, publish, or network mutation;
+- direct source mutation from MCEL Lab observations, annotations, or repair proposals;
 - repair proposal application;
 - semantic intent assignment from appearance alone;
 - promotion of `observed` or `inferred` claims to `verified`;

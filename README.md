@@ -356,15 +356,16 @@ pretty_docs/mcel-system-guide.md
 pretty_docs/mcel-user-space-contract.md
 ```
 
-### Build an application
+### Build and edit an application
 
 ```text
 pretty_docs/mcel-application-authoring.md
 pretty_docs/mcel-code-studio-example.md
+pretty_docs/mcel-project-edit-transaction.md
 pretty_docs/mcel-requirements-language.md
 ```
 
-The authoring guide distinguishes live global APIs from the application-local layout facades used by Code Editor and Git Tools. It supports repository-aware development today, but it is not yet a standalone SDK or generated starter-app workflow. The user-space contract is the planning surface for deciding what application authors may rely on; internal law-module names are implementation detail.
+The authoring guide distinguishes live global APIs from the application-local layout facades used by Code Editor and Git Tools. It supports repository-aware development today, but it is not yet a standalone SDK or generated starter-app workflow. The project-edit transaction provides the shared hash-guarded, multi-file replacement boundary for staged validation, overlay packaging, dry-run, and explicit reviewed apply. It does not yet provide semantic edit planning or Code Editor and MCEL Lab bindings. The user-space contract is the planning surface for deciding what application authors may rely on; internal law-module names are implementation detail.
 
 ### Truth and evidence
 

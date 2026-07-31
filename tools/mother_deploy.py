@@ -85,6 +85,12 @@ from tools.mother.common.deployment_release import (
     verify_deployment_mutation_release,
     write_deployment_mutation_release,
 )
+from tools.mother.common.deployment_soft_replica import (
+    MotherDeploymentSoftReplicaError,
+    build_soft_replica_transaction,
+    verify_soft_replica_transaction,
+    write_soft_replica_transaction,
+)
 from tools.mother.common.deployment_standby import (
     MotherDeploymentStandbyError,
     run_deployment_standby_verification,
@@ -479,6 +485,30 @@ def _parser() -> argparse.ArgumentParser:
     _common(verify_birth)
     verify_birth.add_argument("--evidence", required=True)
     verify_birth.add_argument("--max-age-seconds", type=int, default=300)
+
+    stage_replica = subparsers.add_parser(
+        "stage-soft-replica",
+        help="compile the exact C-side non-validator replica configuration without network access",
+        allow_abbrev=False,
+    )
+    _common(stage_replica)
+    stage_replica.add_argument("--birth-evidence", required=True)
+    stage_replica.add_argument("--max-age-seconds", type=int, default=300)
+    stage_replica.add_argument("--created-at")
+    stage_replica.add_argument(
+        "--write-transaction",
+        action="store_true",
+        help="persist the canonical soft-replica transaction beneath Mother actions",
+    )
+
+    verify_replica = subparsers.add_parser(
+        "verify-soft-replica-transaction",
+        help="verify a staged C-side replica configuration against fresh birth evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_replica)
+    verify_replica.add_argument("--transaction", required=True)
+    verify_replica.add_argument("--max-age-seconds", type=int, default=300)
 
     return parser
 
@@ -970,6 +1000,39 @@ def _cmd_verify_genesis_birth_evidence(args: argparse.Namespace, private_state) 
     return 0
 
 
+def _cmd_stage_soft_replica(args: argparse.Namespace, private_state) -> int:
+    transaction = build_soft_replica_transaction(
+        _paths(args),
+        private_state,
+        Path(args.birth_evidence),
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = write_soft_replica_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("soft-replica-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(transaction, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_soft_replica_transaction(args: argparse.Namespace, private_state) -> int:
+    result = verify_soft_replica_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -1026,6 +1089,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_apply_genesis_birth(args, private_state)
         if args.command == "verify-genesis-birth-evidence":
             return _cmd_verify_genesis_birth_evidence(args, private_state)
+        if args.command == "stage-soft-replica":
+            return _cmd_stage_soft_replica(args, private_state)
+        if args.command == "verify-soft-replica-transaction":
+            return _cmd_verify_soft_replica_transaction(args, private_state)
         raise RuntimeError(f"unsupported command: {args.command}")
     except (
         CoolifyObservationError,
@@ -1041,6 +1108,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentPlanError,
         MotherDeploymentPreflightError,
         MotherDeploymentReleaseError,
+        MotherDeploymentSoftReplicaError,
         MotherDeploymentStandbyError,
         MotherDeploymentTransactionError,
     ) as exc:
