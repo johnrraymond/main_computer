@@ -23,6 +23,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import yaml
+
 from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
@@ -187,21 +189,132 @@ def _canonical_under(paths: PrivateStatePaths, path: Path, directory: tuple[str,
     return _load(candidate, label)
 
 
-def _service_compose(payload: Any) -> list[str]:
-    if not isinstance(payload, Mapping):
-        return []
-    values: list[str] = []
-    for key in ("docker_compose_raw", "docker_compose"):
-        value = payload.get(key)
-        if type(value) is not str or not value:
-            continue
-        values.append(value)
+class _StrictComposeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate mapping keys."""
+
+
+def _construct_unique_mapping(loader: _StrictComposeLoader, node: yaml.nodes.MappingNode, deep: bool = False):
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
         try:
-            decoded = base64.b64decode(value, validate=True).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            continue
-        values.append(decoded)
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_INVALID",
+                "Compose contains an unhashable mapping key",
+            ) from exc
+        if duplicate:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_INVALID",
+                f"Compose contains duplicate mapping key {key!r}",
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_StrictComposeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def _compose_document(value: str, label: str) -> Mapping[str, Any]:
+    try:
+        document = yaml.load(value, Loader=_StrictComposeLoader)
+    except MotherDeploymentGenesisBirthError:
+        raise
+    except yaml.YAMLError as exc:
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_INVALID",
+            f"{label} is not valid safe YAML",
+        ) from exc
+    if not isinstance(document, Mapping) or not isinstance(document.get("services"), Mapping):
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_INVALID",
+            f"{label} is not a Docker Compose mapping with services",
+        )
+    return document
+
+
+def _compose_semantic_sha256(value: str, label: str) -> str:
+    document = _compose_document(value, label)
+    try:
+        return hashlib.sha256(canonical_json(dict(document))).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_INVALID",
+            f"{label} cannot be represented canonically",
+        ) from exc
+
+
+def _compose_strings(payload: Any) -> list[str]:
+    """Return Compose candidates from supported Coolify response wrappers.
+
+    Coolify's public schema places the fields at the top level.  Some deployed
+    versions and clients wrap the service record, so support only a small,
+    explicit set of non-recursive wrappers rather than scanning arbitrary
+    response text.
+    """
+
+    records: list[Mapping[str, Any]] = []
+    if isinstance(payload, Mapping):
+        records.append(payload)
+        for key in ("data", "resource", "service"):
+            nested = payload.get(key)
+            if isinstance(nested, Mapping):
+                records.append(nested)
+    values: list[str] = []
+    for record in records:
+        for key in ("docker_compose_raw", "docker_compose"):
+            value = record.get(key)
+            if type(value) is not str or not value:
+                continue
+            values.append(value)
+            try:
+                decoded = base64.b64decode(value, validate=True).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                continue
+            values.append(decoded)
     return values
+
+
+def _match_service_compose(payload: Any, expected: str, label: str) -> dict[str, str]:
+    expected_bytes = hashlib.sha256(expected.encode("utf-8")).hexdigest()
+    expected_normalized = hashlib.sha256(
+        expected.replace("\r\n", "\n").rstrip().encode("utf-8")
+    ).hexdigest()
+    expected_semantic = _compose_semantic_sha256(expected, f"expected {label}")
+    candidates = _compose_strings(payload)
+    if not candidates:
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_UNAVAILABLE",
+            "Coolify service detail did not expose docker_compose_raw or docker_compose; "
+            "the API token may require read:sensitive permission",
+        )
+    invalid = 0
+    for candidate in candidates:
+        if hashlib.sha256(candidate.encode("utf-8")).hexdigest() == expected_bytes:
+            return {"mode": "exact-bytes", "semantic_sha256": expected_semantic}
+        normalized = candidate.replace("\r\n", "\n").rstrip()
+        if hashlib.sha256(normalized.encode("utf-8")).hexdigest() == expected_normalized:
+            return {"mode": "normalized-text", "semantic_sha256": expected_semantic}
+        try:
+            candidate_semantic = _compose_semantic_sha256(candidate, f"live {label}")
+        except MotherDeploymentGenesisBirthError:
+            invalid += 1
+            continue
+        if candidate_semantic == expected_semantic:
+            return {"mode": "canonical-compose-semantics", "semantic_sha256": expected_semantic}
+    if invalid == len(candidates):
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_INVALID",
+            "Coolify exposed Compose fields, but none contained valid safe Compose YAML",
+        )
+    raise MotherDeploymentGenesisBirthError(
+        "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_MISMATCH",
+        f"live {label} is not semantically equivalent to the released Compose",
+    )
 
 
 def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_address: str) -> str:
@@ -464,6 +577,12 @@ def build_genesis_birth_release(
     )
     proof_bytes = proof_compose.encode("utf-8")
     proof_sha = hashlib.sha256(proof_bytes).hexdigest()
+    original_semantic_sha = _compose_semantic_sha256(
+        chain["original_compose"], "released first-genesis Compose"
+    )
+    proof_semantic_sha = _compose_semantic_sha256(
+        proof_compose, "released internal proof Compose"
+    )
     body = {"name": chain["node"], "docker_compose_raw": base64.b64encode(proof_bytes).decode("ascii")}
     body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
     created_text = _timestamp(created_at)
@@ -498,9 +617,14 @@ def build_genesis_birth_release(
             "chain_id": chain["chain_id"],
             "genesis_sha256": chain["genesis_sha256"],
             "validator_set": [validator],
-            "original_compose_sha256": chain["original_compose_sha256"],
+            "original_compose": {
+                "sha256": chain["original_compose_sha256"],
+                "semantic_sha256": original_semantic_sha,
+                "canonical_text": chain["original_compose"],
+            },
             "proof_compose": {
                 "sha256": proof_sha,
+                "semantic_sha256": proof_semantic_sha,
                 "byte_length": len(proof_bytes),
                 "canonical_text": proof_compose,
                 "guardian_image": _PROOF_IMAGE,
@@ -601,7 +725,8 @@ def verify_genesis_birth_release(
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_SELECTION_MISMATCH", "birth release targets only the initial node")
     proof = plan.get("proof")
     compose = plan.get("proof_compose")
-    if not isinstance(proof, Mapping) or not isinstance(compose, Mapping) or not all([
+    original = plan.get("original_compose")
+    if not isinstance(proof, Mapping) or not isinstance(compose, Mapping) or not isinstance(original, Mapping) or not all([
         proof.get("manual_ssh_required") is False,
         proof.get("public_endpoint_created") is False,
         proof.get("guardian_internal_only") is True,
@@ -613,6 +738,13 @@ def verify_genesis_birth_release(
     canonical_text = compose.get("canonical_text")
     if type(canonical_text) is not str or hashlib.sha256(canonical_text.encode()).hexdigest() != compose.get("sha256"):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof Compose commitment is invalid")
+    if _compose_semantic_sha256(canonical_text, "released proof Compose") != compose.get("semantic_sha256"):
+        raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof Compose semantic commitment is invalid")
+    original_text = original.get("canonical_text")
+    if type(original_text) is not str or hashlib.sha256(original_text.encode()).hexdigest() != original.get("sha256"):
+        raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "original Compose commitment is invalid")
+    if _compose_semantic_sha256(original_text, "released original Compose") != original.get("semantic_sha256"):
+        raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "original Compose semantic commitment is invalid")
     execution_ref = release.get("genesis_execution")
     if not isinstance(execution_ref, Mapping):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "genesis execution binding is missing")
@@ -788,9 +920,29 @@ def execute_genesis_birth_release(
             raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED", "Coolify service inventory failed")
         detail_endpoint = f"/api/v1/services/{urllib.parse.quote(inspected['service_uuid'], safe='')}"
         detail = _http(controller, "GET", detail_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-        if not detail["ok"] or plan["original_compose_sha256"] not in {hashlib.sha256(value.encode()).hexdigest() for value in _service_compose(detail["payload"])}:
-            raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED", "live service does not expose the executed first-genesis Compose")
-        preconditions.append({"name": "executed-compose-binding", "status": detail["status"], "response_sha256": detail["response_sha256"], "verified": True})
+        if not detail["ok"]:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED",
+                f"Coolify service detail GET failed with HTTP {detail['status']}",
+            )
+        original_binding = _match_service_compose(
+            detail["payload"],
+            plan["original_compose"]["canonical_text"],
+            "executed first-genesis Compose",
+        )
+        if original_binding["semantic_sha256"] != plan["original_compose"]["semantic_sha256"]:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED",
+                "released original Compose semantic commitment changed",
+            )
+        preconditions.append({
+            "name": "executed-compose-binding",
+            "status": detail["status"],
+            "response_sha256": detail["response_sha256"],
+            "verified": True,
+            "binding_mode": original_binding["mode"],
+            "semantic_sha256": original_binding["semantic_sha256"],
+        })
         for mutation in plan["mutations"]:
             body = mutation.get("canonical_request_body")
             response = _http(controller, mutation["method"], mutation["endpoint"], body=dict(body) if isinstance(body, Mapping) else None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
@@ -816,9 +968,29 @@ def execute_genesis_birth_release(
         if not healthy:
             raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_NOT_HEALTHY", f"proof guardian did not reach running:healthy (last status {last_status!r})")
         detail = _http(controller, "GET", detail_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-        compose_values = _service_compose(detail["payload"])
-        if not detail["ok"] or plan["proof_compose"]["sha256"] not in {hashlib.sha256(value.encode()).hexdigest() for value in compose_values}:
-            raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_POSTCONDITION_FAILED", "live proof Compose commitment does not match")
+        if not detail["ok"]:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_POSTCONDITION_FAILED",
+                f"Coolify proof service detail GET failed with HTTP {detail['status']}",
+            )
+        proof_binding = _match_service_compose(
+            detail["payload"],
+            plan["proof_compose"]["canonical_text"],
+            "internal proof Compose",
+        )
+        if proof_binding["semantic_sha256"] != plan["proof_compose"]["semantic_sha256"]:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_POSTCONDITION_FAILED",
+                "released proof Compose semantic commitment changed",
+            )
+        preconditions.append({
+            "name": "proof-compose-binding",
+            "status": detail["status"],
+            "response_sha256": detail["response_sha256"],
+            "verified": True,
+            "binding_mode": proof_binding["mode"],
+            "semantic_sha256": proof_binding["semantic_sha256"],
+        })
     except MotherDeploymentGenesisBirthError as exc:
         failure = {"code": exc.code, "message": str(exc)[:512]}
     except Exception:

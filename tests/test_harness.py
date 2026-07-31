@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from main_computer.harness import HarnessCatalog, WidgetHarness, harness_workspace
 
@@ -40,15 +41,15 @@ class HarnessTests(unittest.TestCase):
 class HarnessWorkspaceTests(unittest.TestCase):
     def test_harness_workspace_is_home_derived_and_env_overridable(self) -> None:
         fake_home = Path("/tmp/main-computer-home")
-        with unittest.mock.patch.dict(__import__("os").environ, {
+        with mock.patch.dict(__import__("os").environ, {
             "MAIN_COMPUTER_HARNESS_WORKSPACE": "",
             "MAIN_COMPUTER_WORKSPACE": "",
         }, clear=False):
-            with unittest.mock.patch.object(Path, "home", return_value=fake_home):
+            with mock.patch.object(Path, "home", return_value=fake_home):
                 self.assertEqual(harness_workspace(), fake_home / "dsl")
 
         configured = Path("/tmp/harness-workspace")
-        with unittest.mock.patch.dict(__import__("os").environ, {"MAIN_COMPUTER_HARNESS_WORKSPACE": str(configured)}, clear=False):
+        with mock.patch.dict(__import__("os").environ, {"MAIN_COMPUTER_HARNESS_WORKSPACE": str(configured)}, clear=False):
             catalog = HarnessCatalog()
 
         self.assertEqual(catalog.projects[0].path, configured / "widget_project_001")

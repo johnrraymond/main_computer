@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+import yaml
 
 from tools import mother_deploy
 from tools.mother.common.deployment_genesis_birth import (
@@ -70,10 +71,22 @@ class _Response:
 
 
 class _BirthOpener:
-    def __init__(self, original_compose: str, proof_compose: str, *, healthy: bool = True) -> None:
+    def __init__(
+        self,
+        original_compose: str,
+        proof_compose: str,
+        *,
+        healthy: bool = True,
+        normalized_readback: bool = False,
+        wrapped_readback: bool = False,
+        omit_compose: bool = False,
+    ) -> None:
         self.original_compose = original_compose
         self.proof_compose = proof_compose
         self.healthy = healthy
+        self.normalized_readback = normalized_readback
+        self.wrapped_readback = wrapped_readback
+        self.omit_compose = omit_compose
         self.requests: list[tuple[str, str]] = []
         self.patched = False
 
@@ -90,7 +103,13 @@ class _BirthOpener:
             return _Response([{"uuid": "svc-mainneta-super1", "name": "mainneta-super1", "status": status}])
         if method == "GET" and path == "/api/v1/services/svc-mainneta-super1":
             compose = self.proof_compose if self.patched else self.original_compose
-            return _Response({"uuid": "svc-mainneta-super1", "name": "mainneta-super1", "docker_compose_raw": compose})
+            if self.omit_compose:
+                payload: dict[str, Any] = {"uuid": "svc-mainneta-super1", "name": "mainneta-super1"}
+            else:
+                if self.normalized_readback:
+                    compose = yaml.safe_dump(yaml.safe_load(compose), sort_keys=True)
+                payload = {"uuid": "svc-mainneta-super1", "name": "mainneta-super1", "docker_compose_raw": compose}
+            return _Response({"service": payload} if self.wrapped_readback else payload)
         if method == "PATCH" and path == "/api/v1/services/svc-mainneta-super1":
             body = json.loads(request.data.decode("utf-8"))
             import base64
@@ -179,6 +198,58 @@ def test_birth_executor_proves_chain_through_internal_guardian_and_coolify(tmp_p
     )
     assert verified["initial_chain_proven"] is True
     assert verified["next_phase"] == "stage-soft-replica-configuration"
+
+
+def test_birth_executor_accepts_semantically_equivalent_normalized_compose_readback(tmp_path: Path) -> None:
+    paths, private_state, _, _, genesis_release, release_path, digest, release = _birth_release(tmp_path)
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        release["proof_plan"]["proof_compose"]["canonical_text"],
+        normalized_readback=True,
+        wrapped_readback=True,
+    )
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-normalized-compose"),
+    )
+    assert result["status"] == "pass"
+    bindings = {
+        receipt["name"]: receipt.get("binding_mode")
+        for receipt in result["precondition_receipts"]
+    }
+    assert bindings["executed-compose-binding"] == "canonical-compose-semantics"
+    assert bindings["proof-compose-binding"] == "canonical-compose-semantics"
+
+
+def test_birth_executor_fails_closed_when_compose_fields_are_unavailable(tmp_path: Path) -> None:
+    paths, private_state, _, _, genesis_release, release_path, digest, release = _birth_release(tmp_path)
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        release["proof_plan"]["proof_compose"]["canonical_text"],
+        omit_compose=True,
+    )
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-compose-unavailable"),
+    )
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_UNAVAILABLE"
+    assert result["mutation_receipts"] == []
+    assert result["summary"]["live_mutation_performed"] is False
 
 
 def test_birth_executor_fails_closed_when_guardian_never_becomes_healthy(tmp_path: Path) -> None:
