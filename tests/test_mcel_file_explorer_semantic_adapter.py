@@ -406,7 +406,7 @@ def test_file_explorer_adapter_classifies_transport_failure_and_builds_safe_reco
     assert result["recoveryCoverage"]["coverageReady"] is True
 
 
-def test_actual_truth_gate_can_prove_file_explorer_semantic_runtime_with_bound_evidence() -> None:
+def test_truth_gate_withholds_file_explorer_semantic_runtime_without_binding_audit() -> None:
     requirements = SCRIPTS / "mcel-requirements-registry.js"
     surface = SCRIPTS / "mcel-app-surface-registry.js"
     truth_gate = SCRIPTS / "mcel-app-truth-gate.js"
@@ -489,8 +489,11 @@ def test_actual_truth_gate_can_prove_file_explorer_semantic_runtime_with_bound_e
     assert result["evidence"]["runtime"]["policyPassed"] is True
     assert result["claims"]["runtimeSurfaceProven"] is True
     assert result["claims"]["acceptanceProven"] is True
-    assert result["claims"]["semanticRuntimeProven"] is True
-    assert result["overallStatus"] == "semantic-runtime-proven"
+    assert result["adapter"]["operationalSemanticRuntimeReady"] is False
+    assert result["adapter"]["runtimeBindingReady"] is False
+    assert result["claims"]["semanticRuntimeProven"] is False
+    assert result["overallStatus"] == "runtime-proven"
+    assert "runtime-binding-not-proven" in result["findingCodes"]
     assert result["adapter"]["excludedPlannedIntentIds"] == ["openInOwningApp"]
     assert "missing-domain-adapter" not in result["findingCodes"]
     assert "required-intent-not-executable" not in result["findingCodes"]

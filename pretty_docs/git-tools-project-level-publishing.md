@@ -2,6 +2,9 @@
 
 This document captures one next desired Git Tools interaction model: project-level publishing and file triage. It is a product and implementation planning note, not a claim that the current UI already behaves this way. The broader documentation-first MCEL requirements contract for Git Tools lives in `pretty_docs/mcel-git-tools-requirements.md`; that contract records the app-level product laws, semantic intents, runtime status, safety boundaries, receipts, recovery, and acceptance criteria.
 
+The staged backend breakup and compatibility strategy is documented separately in `pretty_docs/git-tools-backend-decomposition.md`. That plan is non-authorizing and preserves this document's product behavior while implementation is migrated in bounded slices.
+
+
 ## Problem statement
 
 Git Tools currently treats the local Gitea workflow as part of the broader Git/Gitea server control area. That is useful for administration, but it buries actions that users think of as project actions.

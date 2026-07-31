@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from main_computer.config import MainComputerConfig
 
 
@@ -29,3 +31,22 @@ def test_config_defaults_to_unleashed_mode(monkeypatch) -> None:
     assert config.mode_label == "Unleashed Mode"
     assert config.guidance_level == "developer"
     assert config.safe_mode is False
+
+
+def test_config_default_workspace_is_home_derived_when_env_is_unset(monkeypatch) -> None:
+    fake_home = Path("/tmp/main-computer-home")
+    monkeypatch.delenv("MAIN_COMPUTER_WORKSPACE", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    config = MainComputerConfig.from_env()
+
+    assert config.workspace == fake_home / "dsl"
+
+
+def test_config_workspace_env_still_wins(monkeypatch) -> None:
+    configured = Path("/tmp/configured-workspace")
+    monkeypatch.setenv("MAIN_COMPUTER_WORKSPACE", str(configured))
+
+    config = MainComputerConfig.from_env()
+
+    assert config.workspace == configured

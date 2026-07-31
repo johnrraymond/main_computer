@@ -4,6 +4,8 @@
 
 This is the documentation-first requirements contract for the Git Tools app.
 
+Backend decomposition, read-path concurrency, and versioned evidence fan-out are planned in `pretty_docs/git-tools-backend-decomposition.md`. That planning document does not authorize implementation and does not alter current routes, runtime behavior, mutation boundaries, or maturity claims.
+
 The current implementation already has a substantial Git Tools workbench, project cards, status APIs, patch inventory helpers, Git ignore/filter/secrets workbenches, project-level publishing plans, and a real MCEL semantic adapter for a governed push slice. Patch 37 enrolled the live Git Tools workbench for runtime-baseline app-surface proof. Patch 38 closed the adapter coverage gap for read-only inspection and push preparation. Patch 39 made ignore-rule preview executable as evidence-only semantic execution, Patch 40 made commitSelectedFiles executable as a guarded commit-plan preflight lane, Patch 41 made prepareLocalGiteaTarget executable as a no-mutation Local Gitea target preflight, and Patch 42 promotes Git Tools to semantic-runtime after the truth audit marks it promotion-ready.
 
 So this document must be read as:

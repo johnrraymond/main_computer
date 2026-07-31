@@ -6,23 +6,23 @@ This file is intentionally narrow. It lists gaps that are visible in the checked
 
 ## 1. Dev/control helper entry-point paths
 
-The checked-in helper implementations live under `tools/`, not at the repository
-root:
+The checked-in helper entry points are split between the repository root and
+`tools/`:
 
-- `tools/dev-control.ps1`
+- `dev-control.ps1`
 - `tools/dev-chain-reset.py`
 - `tools/dev-chain-flow.py`
 - `tools/dev-chain-diagnosis.py`
 - `tools/dev-chain-wallet-smoke-guide.py`
 - `tools/dev-diagnosis.py`
 
-Documentation and operator examples should use the `tools/...` paths directly.
-Root-level compatibility wrappers are optional only if callers still need the old
-entry points.
+`dev-control.ps1` is the user-facing repository-root entry point consumed by the
+bootstrap scripts, runtime dispatch hints, export tooling, and focused tests.
+The dev-chain helpers remain under `tools/`.
 
 Current checked-in state:
 
-- `tools/dev-control.ps1` exists.
+- `dev-control.ps1` exists.
 - `tools/dev-chain-reset.py` exists.
 - `tools/dev-chain-flow.py` exists.
 - `tools/dev-chain-diagnosis.py` exists.
@@ -36,8 +36,9 @@ Current checked-in state:
 
 Needed closure:
 
-- Keep docs, tests, bootstrap output, and helper output aligned on the
-  `tools/...` paths, or intentionally add root wrappers and test those wrappers.
+- Keep docs, tests, bootstrap output, and helper output aligned on the current
+  checked-in entry points: `dev-control.ps1` at the repository root and the
+  remaining chain/diagnosis helpers under `tools/`.
 - Remove obsolete `dev-chain-smoke.py` / `dev-verify.py` references, or replace
   them with the current concrete smoke/diagnosis commands.
 

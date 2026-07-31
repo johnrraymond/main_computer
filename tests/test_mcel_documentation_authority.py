@@ -104,16 +104,19 @@ def test_status_document_is_the_only_authority_for_upcoming_mcel_code_work() -> 
     status_text = corpus[STATUS_DOC]
     assert len(AUTHORIZED_NEXT_HEADING.findall(status_text)) == 1
     assert (
-        "The next authorized MCEL code candidate is deterministic repository evidence "
-        "pipeline hardening."
+        "The next authorized MCEL code candidate is MCEL Lab semantic-form provenance "
+        "and conformance closure."
         in status_text
     )
+    assert "all 40 registered form primitives retain exact" in status_text
+    assert "MCEL Lab renders 9 primitive cards in 8 ordered groups" in status_text
+    assert "the unambiguous label `Contract status`" in status_text
+    assert "no primitive-level runtime-observable binding currently exists" in status_text
+    assert "does not authorize per-primitive `observed`, `missing`, or `unknown`" in status_text
+    assert "no declared application maturity is changed" in status_text.casefold()
+    assert "does not authorize source mutation" in status_text
     assert "`mcel-evidence-scope-v1`" in status_text
     assert "`--overwrite-canonical`" in status_text
-    assert "missing canonical, partial-scope, stale" in status_text
-    assert "latest-report discovery does not select a newer declared partial report" in status_text
-    assert "no declared application maturity is changed" in status_text.casefold()
-    assert "does not authorize any application maturity promotion" in status_text
     assert "mcel-browser-observation-producer.js" in status_text
     assert "proves that the locator resolves uniquely to the supplied attached root" in status_text
     assert "mcel.browser-observation.capture-limits.v1" in status_text

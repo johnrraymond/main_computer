@@ -567,14 +567,21 @@ requires:
   - Exported repair context is reviewable and never applies itself to live Lab source.
 ```
 
+### Semantic-form inspection provenance
+
+The existing Form aspect is registry-backed and read-only. Each primitive card shows its semantic kind, contract status, relationships, constraints, and exact requirements-document source range. Contract status describes the authored requirement block; it is not a runtime implementation verdict. The deployed MCEL Lab conformance fixture selects this aspect at the authorized desktop and stacked viewports and verifies card counts, ordered kind groups, provenance binding, clipping, and overlap.
+
 ```mcel-finding
 id: mcel-lab.finding.form-primitives-not-yet-first-class-ui
 app: mcel-lab
-status: specified
+status: deprecated
 aspect: semantic-form
 severity: warning
-problem: MCEL Lab has prose and hardcoded blueprint aspects, but its UI does not yet render parsed mcel-form-primitive blocks as a first-class app aspect.
-desired_behavior: The Lab should show subjects, actions, work surfaces, context, feedback, constraints, transients, and interruptions from the requirements registry before layout placement is inferred.
+problem: Historical gap: MCEL Lab originally described semantic form only in prose and hardcoded blueprint summaries.
+desired_behavior: Keep parsed subjects, actions, work surfaces, context, feedback, constraints, transients, and interruptions visible as a first-class read-only Form aspect with exact requirements-document provenance.
+required_checks:
+  - tests/test_mcel_lab_semantic_form_inspection.py
+  - tests/test_mcel_lab_deployed_conformance.py
 ```
 
 ```mcel-runtime-check
@@ -1685,15 +1692,19 @@ repository-bound FLOG evidence at the authorized viewport profiles:
 - `900 × 900` stacked layout.
 
 The desktop profiles require exactly one visible authoritative work surface and
-at least `640 × 420` rendered space. Every profile checks direct right-rail
-children for inaccessible internal clipping, verifies that rail overflow is
-scrollable when content exceeds the rail height, rejects workbench sibling
-overlap, and requires the existing diagnostic-no-throw layer to pass. The
-stacked profile additionally requires a single grid column, visible/content-sized
-workbench flow, and non-overlapping source order.
+at least `640 × 420` rendered space. Every profile selects MCEL Lab's existing
+Form aspect, requires 9 registry-backed primitive cards in 8 ordered kind groups
+with 2 context cards, and verifies that every card exposes exact source
+provenance plus the `Contract status` label. It also checks direct right-rail
+children and primitive cards for inaccessible internal clipping, verifies that
+overflow remains scrollable when content exceeds its owner, rejects workbench
+or primitive-card overlap, and requires the existing diagnostic-no-throw layer
+to pass. The stacked profile additionally requires a single grid column,
+visible/content-sized workbench flow, and non-overlapping source order.
 
-The fixture does not click, type, edit annotations, mount a different target,
-apply repairs, or mutate repository files. Its default output is app-scoped:
+The fixture changes only the inspector's selected app and aspect. It does not
+type, edit annotations, apply repairs, invoke application intents, or mutate
+repository files. Its default output is app-scoped:
 
 `runtime/reports/flog/mcel-lab-deployed-conformance/mcel-runtime-flog-report.json`
 

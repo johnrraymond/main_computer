@@ -163,6 +163,11 @@
             "Deterministic numeric result evidence remains canonical for computed answers.",
             "Model explanations and symbolic evaluations are derived evidence, not silent replacements for computed results."
           ],
+          "source": {
+            "end_line": 127,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 113
+          },
           "status": "specified"
         },
         {
@@ -179,6 +184,11 @@
             "Graphing derives visual evidence from expression and range state.",
             "Explanation actions must cite or preserve the deterministic result they explain."
           ],
+          "source": {
+            "end_line": 143,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 129
+          },
           "status": "specified"
         },
         {
@@ -195,6 +205,11 @@
             "Keeps computed result evidence authoritative over helper prose.",
             "Presents derived graph or helper evidence as part of the same calculation task."
           ],
+          "source": {
+            "end_line": 159,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 145
+          },
           "status": "specified"
         },
         {
@@ -211,6 +226,11 @@
             "Connects validation failures to the input or helper action that produced them.",
             "Helps users compare values without changing the calculation subject."
           ],
+          "source": {
+            "end_line": 175,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 161
+          },
           "status": "specified"
         },
         {
@@ -227,6 +247,11 @@
             "Supports user, developer, and automation audiences without changing the calculation session.",
             "Can be summarized compactly or expanded into findings when investigation is needed."
           ],
+          "source": {
+            "end_line": 191,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 177
+          },
           "status": "specified"
         },
         {
@@ -243,6 +268,11 @@
             "May produce derived evidence, receipts, warnings, or recovery instructions.",
             "Ends when the helper action resolves, is dismissed, or is superseded by a new calculation action."
           ],
+          "source": {
+            "end_line": 207,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 193
+          },
           "status": "specified"
         }
       ],
@@ -380,6 +410,11 @@
             "Source text, diagnostics, SCM evidence, and Aider context derive from the selected workspace subject.",
             "Generated runtime or proof artifacts are derived evidence, not canonical source."
           ],
+          "source": {
+            "end_line": 69,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 55
+          },
           "status": "specified"
         },
         {
@@ -396,6 +431,11 @@
             "Uses code-editor.form.work-surface.selected-source-editor as the authoritative work surface.",
             "May consume supporting context, evidence, and feedback without allowing those projections to mutate source implicitly."
           ],
+          "source": {
+            "end_line": 85,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 71
+          },
           "status": "specified"
         },
         {
@@ -412,6 +452,11 @@
             "Represents the selected file from code-editor.form.subject.source-workspace.",
             "May be implemented by Monaco or a mode-gated fallback, but exactly one editor surface may hold primary authority."
           ],
+          "source": {
+            "end_line": 101,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 87
+          },
           "status": "specified"
         },
         {
@@ -428,6 +473,11 @@
             "Supports editing, review, SCM evidence, and Aider context gathering.",
             "May project through any selection affordance that preserves subject identity and editing flow."
           ],
+          "source": {
+            "end_line": 117,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 103
+          },
           "status": "specified"
         },
         {
@@ -444,6 +494,11 @@
             "May be available on demand, adjacent, tabbed, collapsed, or deferred by layout inference.",
             "Shares viewport with the primary work surface only when it preserves primary authority and geometry."
           ],
+          "source": {
+            "end_line": 133,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 119
+          },
           "status": "specified"
         },
         {
@@ -460,6 +515,11 @@
             "May render as status text, badges, counters, inline findings, panels, or machine-readable reports.",
             "Supports users, developers, and automation without defining a physical slot."
           ],
+          "source": {
+            "end_line": 149,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 135
+          },
           "status": "specified"
         },
         {
@@ -476,6 +536,11 @@
             "May cover or annotate the app only while its explicit mode is active.",
             "Is shell/tool infrastructure when inert and a transient projection when active."
           ],
+          "source": {
+            "end_line": 165,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 151
+          },
           "status": "specified"
         }
       ],
@@ -488,8 +553,8 @@
         "read-only": 3
       },
       "mutation_intent_count": 4,
-      "open_finding_count": 3,
-      "planned_or_open_count": 44,
+      "open_finding_count": 2,
+      "planned_or_open_count": 43,
       "primary_user_goal": "Inspect, edit, preview, and safely change project source with AI assistance while preserving explicit write, patch, execution, and remote-mutation boundaries.",
       "prohibited_intent_count": 0,
       "region_count": 7,
@@ -543,7 +608,8 @@
       },
       "status": "specified",
       "status_counts": {
-        "open": 3,
+        "deprecated": 1,
+        "open": 2,
         "planned": 6,
         "specified": 35
       },
@@ -639,6 +705,11 @@
             "Preview content, metadata, category, and suggested app derive from the selected entry.",
             "Mounted-root evidence explains when a displayed path is backed by a host path mapping."
           ],
+          "source": {
+            "end_line": 171,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 157
+          },
           "status": "specified"
         },
         {
@@ -655,6 +726,11 @@
             "Preview derives evidence from the selected entry and documented preview limits.",
             "Handoff suggestions connect entry category to another Main Computer app."
           ],
+          "source": {
+            "end_line": 187,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 173
+          },
           "status": "specified"
         },
         {
@@ -671,6 +747,11 @@
             "Keeps selected entry identity connected to preview and classification evidence.",
             "Preserves read-only status as part of the inspection task."
           ],
+          "source": {
+            "end_line": 203,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 189
+          },
           "status": "specified"
         },
         {
@@ -687,6 +768,11 @@
             "Connects preview availability to size, type, readability, and safety limits.",
             "Connects selected entries to possible downstream app handoff."
           ],
+          "source": {
+            "end_line": 219,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 205
+          },
           "status": "specified"
         },
         {
@@ -703,6 +789,11 @@
             "Supports user safety, developer diagnosis, and automated contract checking.",
             "Distinguishes active browse problems from historical or resolved findings."
           ],
+          "source": {
+            "end_line": 235,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 221
+          },
           "status": "specified"
         },
         {
@@ -719,6 +810,11 @@
             "May highlight a selection, search result, classification change, or preview-loading lifecycle.",
             "Ends when the selection, query, preview, or handoff consideration changes."
           ],
+          "source": {
+            "end_line": 251,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 237
+          },
           "status": "specified"
         }
       ],
@@ -865,6 +961,11 @@
             "Patch inventory and file basket evidence derive from repository state but must remain distinguishable from executed Git actions.",
             "Publishing evidence connects repository state to an explicit governed target."
           ],
+          "source": {
+            "end_line": 110,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 96
+          },
           "status": "specified"
         },
         {
@@ -881,6 +982,11 @@
             "Mutation actions require preflight, explicit confirmation, execution boundary, and receipt.",
             "Recovery actions derive from failed preflight, failed execution, or stale repository evidence."
           ],
+          "source": {
+            "end_line": 126,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 112
+          },
           "status": "specified"
         },
         {
@@ -897,6 +1003,11 @@
             "Keeps evidence, intended mutation, confirmation, execution, and receipt connected.",
             "Presents advanced Git details as supporting evidence rather than default authority."
           ],
+          "source": {
+            "end_line": 142,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 128
+          },
           "status": "specified"
         },
         {
@@ -913,6 +1024,11 @@
             "Connects stale, missing, or conflicting evidence to preflight failures.",
             "Connects receipts and recovery suggestions to the operation that produced them."
           ],
+          "source": {
+            "end_line": 158,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 144
+          },
           "status": "specified"
         },
         {
@@ -929,6 +1045,11 @@
             "Supports user safety, developer diagnosis, and automation without changing repository state.",
             "Distinguishes active blockers from resolved or historical findings."
           ],
+          "source": {
+            "end_line": 174,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 160
+          },
           "status": "specified"
         },
         {
@@ -945,6 +1066,11 @@
             "May demand attention when action risk, missing evidence, conflict, or failure requires a user decision.",
             "Ends when the user confirms, cancels, receives a receipt, or switches repository subject."
           ],
+          "source": {
+            "end_line": 190,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 176
+          },
           "status": "specified"
         }
       ],
@@ -957,8 +1083,8 @@
         "remote-mutation": 2
       },
       "mutation_intent_count": 4,
-      "open_finding_count": 4,
-      "planned_or_open_count": 38,
+      "open_finding_count": 2,
+      "planned_or_open_count": 36,
       "primary_user_goal": "Inspect repository state, triage files, create safe commits, and publish selected project work through governed Git/Gitea actions without exposing raw Git plumbing as the default user path.",
       "prohibited_intent_count": 1,
       "region_count": 8,
@@ -996,8 +1122,9 @@
       },
       "status": "specified",
       "status_counts": {
+        "deprecated": 2,
         "implemented": 8,
-        "open": 4,
+        "open": 2,
         "partially-implemented": 4,
         "planned": 6,
         "prohibited": 1,
@@ -1098,6 +1225,11 @@
             "May represent MCEL Lab itself as a self-hosting target.",
             "Is loaded from documentation, blueprint core data, annotations, and runtime evidence."
           ],
+          "source": {
+            "end_line": 132,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 118
+          },
           "status": "specified"
         },
         {
@@ -1114,6 +1246,11 @@
             "Uses the blueprint inspection work surface as the authoritative workspace.",
             "Consumes supporting implementation evidence, selected-element evidence, validation feedback, and annotations."
           ],
+          "source": {
+            "end_line": 148,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 134
+          },
           "status": "specified"
         },
         {
@@ -1130,6 +1267,11 @@
             "Represents the selected AppBlueprint and current aspect.",
             "Hosts mounted app preview evidence without granting that preview primary Lab authority."
           ],
+          "source": {
+            "end_line": 164,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 150
+          },
           "status": "specified"
         },
         {
@@ -1146,6 +1288,11 @@
             "Filters the visible evidence, annotations, findings, and repair context.",
             "May render as controls, lists, command choices, tabs, or another inferred projection."
           ],
+          "source": {
+            "end_line": 180,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 166
+          },
           "status": "specified"
         },
         {
@@ -1162,6 +1309,11 @@
             "May be gathered from mounted previews, point inspection, annotation maps, source bindings, test bindings, and registry payloads.",
             "Supports repair planning without becoming a direct patch applicator."
           ],
+          "source": {
+            "end_line": 196,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 182
+          },
           "status": "specified"
         },
         {
@@ -1178,6 +1330,11 @@
             "May render as badges, receipts, inline findings, result summaries, or machine-readable packets.",
             "Serves users, developers, and automation without defining a physical slot."
           ],
+          "source": {
+            "end_line": 212,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 198
+          },
           "status": "specified"
         },
         {
@@ -1194,6 +1351,11 @@
             "Applies to annotation edits, repair plans, export packets, and patch artifact generation.",
             "Separates draft intent from implementation mutation."
           ],
+          "source": {
+            "end_line": 228,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 214
+          },
           "status": "specified"
         },
         {
@@ -1210,6 +1372,11 @@
             "Is active only while inspect mode is enabled or a selected element receipt is being reviewed.",
             "May annotate the mounted preview without mutating the mounted app."
           ],
+          "source": {
+            "end_line": 244,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 230
+          },
           "status": "specified"
         },
         {
@@ -1226,6 +1393,11 @@
             "Can block export or require review when evidence is stale or unsafe.",
             "Explains recovery actions before any patch artifact is generated."
           ],
+          "source": {
+            "end_line": 260,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 246
+          },
           "status": "specified"
         }
       ],
@@ -1237,7 +1409,7 @@
       },
       "mutation_intent_count": 4,
       "open_finding_count": 0,
-      "planned_or_open_count": 31,
+      "planned_or_open_count": 30,
       "primary_user_goal": "Select an app blueprint, inspect its semantic form and implementation evidence, annotate rendered elements, validate findings, and export repair context without directly rewriting live implementation files.",
       "prohibited_intent_count": 0,
       "region_count": 7,
@@ -1283,9 +1455,10 @@
       },
       "status": "specified",
       "status_counts": {
+        "deprecated": 1,
         "implemented": 4,
         "partially-implemented": 3,
-        "specified": 31
+        "specified": 30
       },
       "target_runtime_status": "scope-limited-semantic-runtime",
       "title": "MCEL Lab Blueprint Studio",
@@ -1375,6 +1548,11 @@
             "Author-owned source, local runtime data, generated files, deployment targets, and Git handoff evidence must remain distinguishable.",
             "Publish lane evidence derives from an explicit target and preflight state."
           ],
+          "source": {
+            "end_line": 220,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 206
+          },
           "status": "specified"
         },
         {
@@ -1391,6 +1569,11 @@
             "Preview actions derive evidence without publishing.",
             "Publish actions require target evidence, preflight, confirmation, execution, and receipt."
           ],
+          "source": {
+            "end_line": 236,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 222
+          },
           "status": "specified"
         },
         {
@@ -1407,6 +1590,11 @@
             "Keeps author-owned source, generated evidence, runtime setup, and publish state connected to the selected website project.",
             "Presents deployment evidence as a governed extension of the authoring workflow."
           ],
+          "source": {
+            "end_line": 252,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 238
+          },
           "status": "specified"
         },
         {
@@ -1423,6 +1611,11 @@
             "Connects runtime setup dependencies to explicit choices and receipts.",
             "Connects publish results to the lane and target that produced them."
           ],
+          "source": {
+            "end_line": 268,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 254
+          },
           "status": "specified"
         },
         {
@@ -1439,6 +1632,11 @@
             "Supports user safety, developer diagnosis, and automation without changing website source by itself.",
             "Distinguishes active issues from historical or resolved findings."
           ],
+          "source": {
+            "end_line": 284,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 270
+          },
           "status": "specified"
         },
         {
@@ -1455,6 +1653,11 @@
             "May demand attention when storage, deployment, or repository risk requires a user decision.",
             "Ends when the user confirms, cancels, receives a receipt, or switches website subject."
           ],
+          "source": {
+            "end_line": 300,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 286
+          },
           "status": "specified"
         }
       ],
@@ -1610,6 +1813,11 @@
             "Deterministic numeric result evidence remains canonical for computed answers.",
             "Model explanations and symbolic evaluations are derived evidence, not silent replacements for computed results."
           ],
+          "source": {
+            "end_line": 127,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 113
+          },
           "status": "specified"
         },
         {
@@ -1626,6 +1834,11 @@
             "Graphing derives visual evidence from expression and range state.",
             "Explanation actions must cite or preserve the deterministic result they explain."
           ],
+          "source": {
+            "end_line": 143,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 129
+          },
           "status": "specified"
         },
         {
@@ -1642,6 +1855,11 @@
             "Keeps computed result evidence authoritative over helper prose.",
             "Presents derived graph or helper evidence as part of the same calculation task."
           ],
+          "source": {
+            "end_line": 159,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 145
+          },
           "status": "specified"
         },
         {
@@ -1658,6 +1876,11 @@
             "Connects validation failures to the input or helper action that produced them.",
             "Helps users compare values without changing the calculation subject."
           ],
+          "source": {
+            "end_line": 175,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 161
+          },
           "status": "specified"
         },
         {
@@ -1674,6 +1897,11 @@
             "Supports user, developer, and automation audiences without changing the calculation session.",
             "Can be summarized compactly or expanded into findings when investigation is needed."
           ],
+          "source": {
+            "end_line": 191,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 177
+          },
           "status": "specified"
         },
         {
@@ -1690,6 +1918,11 @@
             "May produce derived evidence, receipts, warnings, or recovery instructions.",
             "Ends when the helper action resolves, is dismissed, or is superseded by a new calculation action."
           ],
+          "source": {
+            "end_line": 207,
+            "file": "pretty_docs/mcel-calculator-requirements.md",
+            "start_line": 193
+          },
           "status": "specified"
         }
       ],
@@ -1827,6 +2060,11 @@
             "Source text, diagnostics, SCM evidence, and Aider context derive from the selected workspace subject.",
             "Generated runtime or proof artifacts are derived evidence, not canonical source."
           ],
+          "source": {
+            "end_line": 69,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 55
+          },
           "status": "specified"
         },
         {
@@ -1843,6 +2081,11 @@
             "Uses code-editor.form.work-surface.selected-source-editor as the authoritative work surface.",
             "May consume supporting context, evidence, and feedback without allowing those projections to mutate source implicitly."
           ],
+          "source": {
+            "end_line": 85,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 71
+          },
           "status": "specified"
         },
         {
@@ -1859,6 +2102,11 @@
             "Represents the selected file from code-editor.form.subject.source-workspace.",
             "May be implemented by Monaco or a mode-gated fallback, but exactly one editor surface may hold primary authority."
           ],
+          "source": {
+            "end_line": 101,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 87
+          },
           "status": "specified"
         },
         {
@@ -1875,6 +2123,11 @@
             "Supports editing, review, SCM evidence, and Aider context gathering.",
             "May project through any selection affordance that preserves subject identity and editing flow."
           ],
+          "source": {
+            "end_line": 117,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 103
+          },
           "status": "specified"
         },
         {
@@ -1891,6 +2144,11 @@
             "May be available on demand, adjacent, tabbed, collapsed, or deferred by layout inference.",
             "Shares viewport with the primary work surface only when it preserves primary authority and geometry."
           ],
+          "source": {
+            "end_line": 133,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 119
+          },
           "status": "specified"
         },
         {
@@ -1907,6 +2165,11 @@
             "May render as status text, badges, counters, inline findings, panels, or machine-readable reports.",
             "Supports users, developers, and automation without defining a physical slot."
           ],
+          "source": {
+            "end_line": 149,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 135
+          },
           "status": "specified"
         },
         {
@@ -1923,6 +2186,11 @@
             "May cover or annotate the app only while its explicit mode is active.",
             "Is shell/tool infrastructure when inert and a transient projection when active."
           ],
+          "source": {
+            "end_line": 165,
+            "file": "pretty_docs/mcel-code-editor-requirements.md",
+            "start_line": 151
+          },
           "status": "specified"
         }
       ],
@@ -1935,8 +2203,8 @@
         "read-only": 3
       },
       "mutation_intent_count": 4,
-      "open_finding_count": 3,
-      "planned_or_open_count": 44,
+      "open_finding_count": 2,
+      "planned_or_open_count": 43,
       "primary_user_goal": "Inspect, edit, preview, and safely change project source with AI assistance while preserving explicit write, patch, execution, and remote-mutation boundaries.",
       "prohibited_intent_count": 0,
       "region_count": 7,
@@ -1990,7 +2258,8 @@
       },
       "status": "specified",
       "status_counts": {
-        "open": 3,
+        "deprecated": 1,
+        "open": 2,
         "planned": 6,
         "specified": 35
       },
@@ -2086,6 +2355,11 @@
             "Preview content, metadata, category, and suggested app derive from the selected entry.",
             "Mounted-root evidence explains when a displayed path is backed by a host path mapping."
           ],
+          "source": {
+            "end_line": 171,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 157
+          },
           "status": "specified"
         },
         {
@@ -2102,6 +2376,11 @@
             "Preview derives evidence from the selected entry and documented preview limits.",
             "Handoff suggestions connect entry category to another Main Computer app."
           ],
+          "source": {
+            "end_line": 187,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 173
+          },
           "status": "specified"
         },
         {
@@ -2118,6 +2397,11 @@
             "Keeps selected entry identity connected to preview and classification evidence.",
             "Preserves read-only status as part of the inspection task."
           ],
+          "source": {
+            "end_line": 203,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 189
+          },
           "status": "specified"
         },
         {
@@ -2134,6 +2418,11 @@
             "Connects preview availability to size, type, readability, and safety limits.",
             "Connects selected entries to possible downstream app handoff."
           ],
+          "source": {
+            "end_line": 219,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 205
+          },
           "status": "specified"
         },
         {
@@ -2150,6 +2439,11 @@
             "Supports user safety, developer diagnosis, and automated contract checking.",
             "Distinguishes active browse problems from historical or resolved findings."
           ],
+          "source": {
+            "end_line": 235,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 221
+          },
           "status": "specified"
         },
         {
@@ -2166,6 +2460,11 @@
             "May highlight a selection, search result, classification change, or preview-loading lifecycle.",
             "Ends when the selection, query, preview, or handoff consideration changes."
           ],
+          "source": {
+            "end_line": 251,
+            "file": "pretty_docs/mcel-file-explorer-requirements.md",
+            "start_line": 237
+          },
           "status": "specified"
         }
       ],
@@ -2312,6 +2611,11 @@
             "Patch inventory and file basket evidence derive from repository state but must remain distinguishable from executed Git actions.",
             "Publishing evidence connects repository state to an explicit governed target."
           ],
+          "source": {
+            "end_line": 110,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 96
+          },
           "status": "specified"
         },
         {
@@ -2328,6 +2632,11 @@
             "Mutation actions require preflight, explicit confirmation, execution boundary, and receipt.",
             "Recovery actions derive from failed preflight, failed execution, or stale repository evidence."
           ],
+          "source": {
+            "end_line": 126,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 112
+          },
           "status": "specified"
         },
         {
@@ -2344,6 +2653,11 @@
             "Keeps evidence, intended mutation, confirmation, execution, and receipt connected.",
             "Presents advanced Git details as supporting evidence rather than default authority."
           ],
+          "source": {
+            "end_line": 142,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 128
+          },
           "status": "specified"
         },
         {
@@ -2360,6 +2674,11 @@
             "Connects stale, missing, or conflicting evidence to preflight failures.",
             "Connects receipts and recovery suggestions to the operation that produced them."
           ],
+          "source": {
+            "end_line": 158,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 144
+          },
           "status": "specified"
         },
         {
@@ -2376,6 +2695,11 @@
             "Supports user safety, developer diagnosis, and automation without changing repository state.",
             "Distinguishes active blockers from resolved or historical findings."
           ],
+          "source": {
+            "end_line": 174,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 160
+          },
           "status": "specified"
         },
         {
@@ -2392,6 +2716,11 @@
             "May demand attention when action risk, missing evidence, conflict, or failure requires a user decision.",
             "Ends when the user confirms, cancels, receives a receipt, or switches repository subject."
           ],
+          "source": {
+            "end_line": 190,
+            "file": "pretty_docs/mcel-git-tools-requirements.md",
+            "start_line": 176
+          },
           "status": "specified"
         }
       ],
@@ -2404,8 +2733,8 @@
         "remote-mutation": 2
       },
       "mutation_intent_count": 4,
-      "open_finding_count": 4,
-      "planned_or_open_count": 38,
+      "open_finding_count": 2,
+      "planned_or_open_count": 36,
       "primary_user_goal": "Inspect repository state, triage files, create safe commits, and publish selected project work through governed Git/Gitea actions without exposing raw Git plumbing as the default user path.",
       "prohibited_intent_count": 1,
       "region_count": 8,
@@ -2443,8 +2772,9 @@
       },
       "status": "specified",
       "status_counts": {
+        "deprecated": 2,
         "implemented": 8,
-        "open": 4,
+        "open": 2,
         "partially-implemented": 4,
         "planned": 6,
         "prohibited": 1,
@@ -2545,6 +2875,11 @@
             "May represent MCEL Lab itself as a self-hosting target.",
             "Is loaded from documentation, blueprint core data, annotations, and runtime evidence."
           ],
+          "source": {
+            "end_line": 132,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 118
+          },
           "status": "specified"
         },
         {
@@ -2561,6 +2896,11 @@
             "Uses the blueprint inspection work surface as the authoritative workspace.",
             "Consumes supporting implementation evidence, selected-element evidence, validation feedback, and annotations."
           ],
+          "source": {
+            "end_line": 148,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 134
+          },
           "status": "specified"
         },
         {
@@ -2577,6 +2917,11 @@
             "Represents the selected AppBlueprint and current aspect.",
             "Hosts mounted app preview evidence without granting that preview primary Lab authority."
           ],
+          "source": {
+            "end_line": 164,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 150
+          },
           "status": "specified"
         },
         {
@@ -2593,6 +2938,11 @@
             "Filters the visible evidence, annotations, findings, and repair context.",
             "May render as controls, lists, command choices, tabs, or another inferred projection."
           ],
+          "source": {
+            "end_line": 180,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 166
+          },
           "status": "specified"
         },
         {
@@ -2609,6 +2959,11 @@
             "May be gathered from mounted previews, point inspection, annotation maps, source bindings, test bindings, and registry payloads.",
             "Supports repair planning without becoming a direct patch applicator."
           ],
+          "source": {
+            "end_line": 196,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 182
+          },
           "status": "specified"
         },
         {
@@ -2625,6 +2980,11 @@
             "May render as badges, receipts, inline findings, result summaries, or machine-readable packets.",
             "Serves users, developers, and automation without defining a physical slot."
           ],
+          "source": {
+            "end_line": 212,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 198
+          },
           "status": "specified"
         },
         {
@@ -2641,6 +3001,11 @@
             "Applies to annotation edits, repair plans, export packets, and patch artifact generation.",
             "Separates draft intent from implementation mutation."
           ],
+          "source": {
+            "end_line": 228,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 214
+          },
           "status": "specified"
         },
         {
@@ -2657,6 +3022,11 @@
             "Is active only while inspect mode is enabled or a selected element receipt is being reviewed.",
             "May annotate the mounted preview without mutating the mounted app."
           ],
+          "source": {
+            "end_line": 244,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 230
+          },
           "status": "specified"
         },
         {
@@ -2673,6 +3043,11 @@
             "Can block export or require review when evidence is stale or unsafe.",
             "Explains recovery actions before any patch artifact is generated."
           ],
+          "source": {
+            "end_line": 260,
+            "file": "pretty_docs/mcel-lab-blueprint-studio.md",
+            "start_line": 246
+          },
           "status": "specified"
         }
       ],
@@ -2684,7 +3059,7 @@
       },
       "mutation_intent_count": 4,
       "open_finding_count": 0,
-      "planned_or_open_count": 31,
+      "planned_or_open_count": 30,
       "primary_user_goal": "Select an app blueprint, inspect its semantic form and implementation evidence, annotate rendered elements, validate findings, and export repair context without directly rewriting live implementation files.",
       "prohibited_intent_count": 0,
       "region_count": 7,
@@ -2730,9 +3105,10 @@
       },
       "status": "specified",
       "status_counts": {
+        "deprecated": 1,
         "implemented": 4,
         "partially-implemented": 3,
-        "specified": 31
+        "specified": 30
       },
       "target_runtime_status": "scope-limited-semantic-runtime",
       "title": "MCEL Lab Blueprint Studio",
@@ -2822,6 +3198,11 @@
             "Author-owned source, local runtime data, generated files, deployment targets, and Git handoff evidence must remain distinguishable.",
             "Publish lane evidence derives from an explicit target and preflight state."
           ],
+          "source": {
+            "end_line": 220,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 206
+          },
           "status": "specified"
         },
         {
@@ -2838,6 +3219,11 @@
             "Preview actions derive evidence without publishing.",
             "Publish actions require target evidence, preflight, confirmation, execution, and receipt."
           ],
+          "source": {
+            "end_line": 236,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 222
+          },
           "status": "specified"
         },
         {
@@ -2854,6 +3240,11 @@
             "Keeps author-owned source, generated evidence, runtime setup, and publish state connected to the selected website project.",
             "Presents deployment evidence as a governed extension of the authoring workflow."
           ],
+          "source": {
+            "end_line": 252,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 238
+          },
           "status": "specified"
         },
         {
@@ -2870,6 +3261,11 @@
             "Connects runtime setup dependencies to explicit choices and receipts.",
             "Connects publish results to the lane and target that produced them."
           ],
+          "source": {
+            "end_line": 268,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 254
+          },
           "status": "specified"
         },
         {
@@ -2886,6 +3282,11 @@
             "Supports user safety, developer diagnosis, and automation without changing website source by itself.",
             "Distinguishes active issues from historical or resolved findings."
           ],
+          "source": {
+            "end_line": 284,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 270
+          },
           "status": "specified"
         },
         {
@@ -2902,6 +3303,11 @@
             "May demand attention when storage, deployment, or repository risk requires a user decision.",
             "Ends when the user confirms, cancels, receives a receipt, or switches website subject."
           ],
+          "source": {
+            "end_line": 300,
+            "file": "pretty_docs/mcel-website-builder-requirements.md",
+            "start_line": 286
+          },
           "status": "specified"
         }
       ],
@@ -3905,9 +4311,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 1189,
+                "end_line": 1187,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1166
+                "start_line": 1164
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -3946,9 +4352,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 1138,
+                "end_line": 1136,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1116
+                "start_line": 1114
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -4010,9 +4416,9 @@
               ],
               "severity": "critical",
               "source": {
-                "end_line": 1164,
+                "end_line": 1162,
                 "file": "pretty_docs/mcel-git-tools-requirements.md",
-                "start_line": 1140
+                "start_line": 1138
               },
               "source_binding": "git-tools.binding.project-workflow",
               "status": "specified",
@@ -4109,9 +4515,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 601,
+                "end_line": 608,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 580
+                "start_line": 587
               },
               "source_binding": "",
               "status": "specified",
@@ -4182,9 +4588,9 @@
               ],
               "severity": "error",
               "source": {
-                "end_line": 628,
+                "end_line": 635,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 603
+                "start_line": 610
               },
               "source_binding": "",
               "status": "specified",
@@ -4230,9 +4636,9 @@
               "required_regions": [],
               "severity": "warning",
               "source": {
-                "end_line": 683,
+                "end_line": 690,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 659
+                "start_line": 666
               },
               "source_binding": "",
               "status": "specified",
@@ -4281,9 +4687,9 @@
               "required_regions": [],
               "severity": "critical",
               "source": {
-                "end_line": 657,
+                "end_line": 664,
                 "file": "pretty_docs/mcel-lab-blueprint-studio.md",
-                "start_line": 630
+                "start_line": 637
               },
               "source_binding": "",
               "status": "specified",

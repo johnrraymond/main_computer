@@ -228,6 +228,18 @@ def test_runtime_checks_compile_into_browser_diagnosis_contracts() -> None:
     assert "calculator" in payload["runtime_diagnostic_contracts"]
     assert "mcel-lab" in payload["runtime_diagnostic_contracts"]
     assert payload["app_contracts"]["mcel-lab"]["form_primitive_count"] >= 8
+    all_form_primitives = [
+        primitive
+        for contract in payload["app_contracts"].values()
+        for primitive in contract["form_primitives"]
+    ]
+    assert len(all_form_primitives) == 40
+    assert all(
+        primitive["source"]["file"].startswith("pretty_docs/")
+        and primitive["source"]["start_line"] > 0
+        and primitive["source"]["end_line"] >= primitive["source"]["start_line"]
+        for primitive in all_form_primitives
+    )
 
 
 def test_intent_blocks_use_canonical_risk_and_io_fields() -> None:
@@ -434,7 +446,13 @@ def test_mcel_lab_form_primitives_register_self_hosting_contract() -> None:
     lab_contract = payload["app_contracts"]["mcel-lab"]
     assert lab_contract["contract_complete"] is True
     assert lab_contract["dominant_object"] == "AppBlueprint"
-    assert lab_contract["form_primitive_count"] >= 8
+    assert lab_contract["form_primitive_count"] == 9
+    assert len(lab_contract["form_primitives"]) == 9
+    for primitive in lab_contract["form_primitives"]:
+        source = primitive["source"]
+        assert source["file"] == "pretty_docs/mcel-lab-blueprint-studio.md"
+        assert source["start_line"] > 0
+        assert source["end_line"] >= source["start_line"]
 
 
 def test_registry_cli_emits_machine_readable_json_summary(tmp_path: Path) -> None:
@@ -580,6 +598,7 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
       totalBlocks: api.getSummary().total_blocks,
       gitUseCaseCount: gitContract.use_cases.length,
       labFormPrimitiveCount: labContract.form_primitive_count,
+      labFirstPrimitiveSource: labContract.form_primitives[0].source,
       labDominantObject: labContract.dominant_object,
       codeEditorOptionalSelectors: codeEditorDiagnosis.optionalRegions.map((entry) => entry.selector),
       codeEditorAllowedSelectors: codeEditorDiagnosis.allowedRegions.map((entry) => entry.selector),
@@ -604,7 +623,10 @@ def test_browser_requirements_registry_api_feeds_lab_comparison_snapshot() -> No
     assert data["appCount"] == 6
     assert data["totalBlocks"] >= 270
     assert data["gitUseCaseCount"] >= 4
-    assert data["labFormPrimitiveCount"] >= 8
+    assert data["labFormPrimitiveCount"] == 9
+    assert data["labFirstPrimitiveSource"]["file"] == "pretty_docs/mcel-lab-blueprint-studio.md"
+    assert data["labFirstPrimitiveSource"]["start_line"] > 0
+    assert data["labFirstPrimitiveSource"]["end_line"] >= data["labFirstPrimitiveSource"]["start_line"]
     assert data["labDominantObject"] == "AppBlueprint"
     assert ".code-studio-inspector" in data["codeEditorOptionalSelectors"]
     assert "#code-editor-mcel-tools-toggle" in data["codeEditorAllowedSelectors"]

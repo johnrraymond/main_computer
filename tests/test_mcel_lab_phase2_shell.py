@@ -23,6 +23,7 @@ GENERIC_ZONES = [
 
 GENERIC_ASPECTS = [
     "overview",
+    "form",
     "objects",
     "workflows",
     "layout",

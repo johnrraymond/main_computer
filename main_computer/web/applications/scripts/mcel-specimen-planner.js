@@ -945,6 +945,16 @@
           runtimeCoreReady &&
           fullApplicationSemanticReady
         );
+        const runtimeBindingReady = Boolean(
+          proofAuthorized &&
+          proof.runtimeBindingReady === true
+        );
+        const operationalSemanticRuntimeReady = Boolean(
+          semanticRuntimeReady &&
+          proofAuthorized &&
+          proof.operationalSemanticRuntimeReady === true &&
+          runtimeBindingReady
+        );
         const semanticRuntimeScope = proofAuthorized
           ? String(proof.semanticRuntimeScope || "unclassified")
           : "unclassified";
@@ -979,8 +989,28 @@
           genericAdapter,
           structuralSpecReady,
           semanticRuntimeReady,
+          operationalSemanticRuntimeReady,
           runtimeCoreReady,
           fullApplicationSemanticReady,
+          runtimeBindingCoverageAvailable: Boolean(
+            proofAuthorized && proof.runtimeBindingCoverageAvailable === true
+          ),
+          runtimeBindingAuditReady: Boolean(
+            proofAuthorized && proof.runtimeBindingAuditReady === true
+          ),
+          runtimeBindingReady,
+          runtimeBoundIntentCount: Number(
+            proofAuthorized ? proof.runtimeBoundIntentCount || 0 : 0
+          ),
+          adapterLocalIntentCount: Number(
+            proofAuthorized ? proof.adapterLocalIntentCount || 0 : 0
+          ),
+          unboundIntentCount: Number(
+            proofAuthorized ? proof.unboundIntentCount || 0 : 0
+          ),
+          unboundIntentIds: proofAuthorized
+            ? clone(proof.unboundIntentIds || [])
+            : [],
           semanticRuntimeScope,
           executableIntentCount: Number(proofAuthorized ? proof.executableIntentCount || 0 : 0),
           preflightOnlyIntentCount: Number(proofAuthorized ? proof.preflightOnlyIntentCount || 0 : 0),

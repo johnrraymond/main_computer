@@ -44,7 +44,7 @@ def _passing_trial(
             },
         },
         "supplementalEvidence": {
-            "schema": "mcel-lab-deployed-geometry-v1",
+            "schema": "mcel-lab-deployed-geometry-v2",
             "route": "/applications/mcel-lab",
             "hostMatchCount": 1,
             "editorMatchCount": 1,
@@ -68,6 +68,21 @@ def _passing_trial(
             "internallyClippedRailChildren": [],
             "siblingOverlaps": [],
             "stackedOrder": True,
+            "semanticForm": {
+                "selectedApp": "mcel-lab",
+                "selectedAspect": "form",
+                "viewerCount": 1,
+                "cardCount": 9,
+                "groupCount": 8,
+                "primitiveKindCounts": dict(deployed.EXPECTED_FORM_KIND_COUNTS),
+                "sourceBoundCardCount": 9,
+                "contractStatusCardCount": 9,
+                "sourceFactCardCount": 9,
+                "internallyClippedCardIds": [],
+                "cardOverlaps": [],
+                "workSurfaceOverflowRequired": True,
+                "workSurfaceScrollableWhenRequired": True,
+            },
         },
     }
 
@@ -112,6 +127,42 @@ def test_deployed_geometry_rejects_clipping_overlap_and_unscrollable_rail() -> N
     assert any("do not contain accessible internal content" in item for item in result["failures"])
     assert any("not scrollable" in item for item in result["failures"])
     assert any("sibling overlap" in item for item in result["failures"])
+
+
+def test_semantic_form_geometry_requires_registry_counts_provenance_and_fit() -> None:
+    passing = deployed.classify_geometry(
+        deployed.VIEWPORT_PROFILES[0],
+        _passing_trial(),
+    )
+    assert passing["status"] == "pass"
+
+    failing_trial = _passing_trial()
+    semantic_form = failing_trial["supplementalEvidence"]["semanticForm"]
+    semantic_form["cardCount"] = 8
+    semantic_form["groupCount"] = 7
+    semantic_form["primitiveKindCounts"]["context"] = 1
+    semantic_form["sourceBoundCardCount"] = 8
+    semantic_form["contractStatusCardCount"] = 8
+    semantic_form["sourceFactCardCount"] = 8
+    semantic_form["internallyClippedCardIds"] = ["mcel-lab.form.context.implementation-evidence"]
+    semantic_form["cardOverlaps"] = [{"left": "subject", "right": "action"}]
+    semantic_form["workSurfaceScrollableWhenRequired"] = False
+
+    failing = deployed.classify_geometry(
+        deployed.VIEWPORT_PROFILES[0],
+        failing_trial,
+    )
+
+    assert failing["status"] == "fail"
+    assert any("expected 9" in item for item in failing["failures"])
+    assert any("expected 8" in item for item in failing["failures"])
+    assert any("kind counts differ" in item for item in failing["failures"])
+    assert any("exact source provenance" in item for item in failing["failures"])
+    assert any("Contract status" in item for item in failing["failures"])
+    assert any("exposes its Source" in item for item in failing["failures"])
+    assert any("clip readable content" in item for item in failing["failures"])
+    assert any("primitive card overlap" in item for item in failing["failures"])
+    assert any("work surface is not scrollable" in item for item in failing["failures"])
 
 
 def test_stacked_geometry_requires_content_sized_single_column_source_order() -> None:
@@ -191,6 +242,7 @@ def test_deployed_report_preserves_flog_schema_and_marks_profile_failure(monkeyp
     assert report["mcelLabDeployedConformance"]["status"] == "fail"
     assert report["summary"]["status"] == "fail"
     assert report["summary"]["deployedConformanceStatus"] == "fail"
+    assert report["summary"]["semanticFormConformanceStatus"] == "fail"
 
 
 def test_documentation_defines_exact_deployed_evidence_sequence() -> None:

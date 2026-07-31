@@ -191,6 +191,12 @@
       "title": "Agent and RAG Module Map",
       "kind": "markdown",
       "order": 64
+    },
+    {
+      "path": "git-tools-backend-decomposition.md",
+      "title": "Git Tools Backend Decomposition Plan",
+      "kind": "markdown",
+      "order": 65
     }
   ]
 }

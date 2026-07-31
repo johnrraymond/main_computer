@@ -363,7 +363,7 @@ def test_calculator_adapter_blocks_invalid_or_mutating_requests_before_runtime()
     assert result["recoveryCoverage"]["coverageReady"] is True
 
 
-def test_actual_truth_gate_can_prove_calculator_semantic_runtime_with_bound_evidence() -> None:
+def test_truth_gate_withholds_calculator_semantic_runtime_without_binding_audit() -> None:
     surface = SCRIPTS / "mcel-app-surface-registry.js"
     truth_gate = SCRIPTS / "mcel-app-truth-gate.js"
     result = run_node_json(
@@ -447,7 +447,10 @@ def test_actual_truth_gate_can_prove_calculator_semantic_runtime_with_bound_evid
     assert result["evidence"]["runtime"]["policyPassed"] is True
     assert result["claims"]["runtimeSurfaceProven"] is True
     assert result["claims"]["acceptanceProven"] is True
-    assert result["claims"]["semanticRuntimeProven"] is True
-    assert result["overallStatus"] == "semantic-runtime-proven"
+    assert result["adapter"]["operationalSemanticRuntimeReady"] is False
+    assert result["adapter"]["runtimeBindingReady"] is False
+    assert result["claims"]["semanticRuntimeProven"] is False
+    assert result["overallStatus"] == "runtime-proven"
+    assert "runtime-binding-not-proven" in result["findingCodes"]
     assert "missing-domain-adapter" not in result["findingCodes"]
     assert "required-intent-not-executable" not in result["findingCodes"]

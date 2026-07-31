@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from main_computer.harness import WidgetHarness
+from main_computer.harness import HarnessCatalog, WidgetHarness, harness_workspace
 
 
 class HarnessTests(unittest.TestCase):
@@ -35,3 +35,21 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(any(check["name"] == "applications-webgl-loads-project-backed-demo" for check in report["checks"]))
         self.assertTrue(any(check["name"] == "applications-webgl-project-backed-after-editor-save" for check in report["checks"]))
         self.assertTrue(any(check["name"] == "applications-webgl-demo-save-persists" for check in report["checks"]))
+
+
+class HarnessWorkspaceTests(unittest.TestCase):
+    def test_harness_workspace_is_home_derived_and_env_overridable(self) -> None:
+        fake_home = Path("/tmp/main-computer-home")
+        with unittest.mock.patch.dict(__import__("os").environ, {
+            "MAIN_COMPUTER_HARNESS_WORKSPACE": "",
+            "MAIN_COMPUTER_WORKSPACE": "",
+        }, clear=False):
+            with unittest.mock.patch.object(Path, "home", return_value=fake_home):
+                self.assertEqual(harness_workspace(), fake_home / "dsl")
+
+        configured = Path("/tmp/harness-workspace")
+        with unittest.mock.patch.dict(__import__("os").environ, {"MAIN_COMPUTER_HARNESS_WORKSPACE": str(configured)}, clear=False):
+            catalog = HarnessCatalog()
+
+        self.assertEqual(catalog.projects[0].path, configured / "widget_project_001")
+        self.assertEqual(catalog.projects[-1].path, configured / "main_computer_test")

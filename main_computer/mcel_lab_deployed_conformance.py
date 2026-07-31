@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Deployed-route MCEL Lab runtime conformance fixture.
 
-This fixture measures the real ``/applications/mcel-lab`` route at the
-authorized desktop and stacked-layout viewports. It extends the existing MCEL
-runtime FLOG report with deterministic geometry evidence while preserving the
+This fixture measures the real ``/applications/mcel-lab`` route and its
+registry-backed Form aspect at the authorized desktop and stacked-layout
+viewports. It extends the existing MCEL runtime FLOG report with deterministic
+semantic-form provenance and geometry evidence while preserving the
 ``mcel-runtime-flog-report-v2`` schema consumed by the repository truth audit.
 
 Run from the repository root while the viewport server is already running::
@@ -33,7 +34,7 @@ except ImportError:  # Direct execution from the repository root.
 
 
 DEFAULT_OUTPUT_DIR = Path("runtime/reports/flog/mcel-lab-deployed-conformance")
-PROFILE_VERSION = "mcel-lab-deployed-conformance-v1"
+PROFILE_VERSION = "mcel-lab-deployed-conformance-v2"
 ROUTE = "/applications/mcel-lab"
 HOST_SELECTOR = ".mcel-lab-blueprint-primary"
 EDITOR_SELECTOR = "#mcel-blueprint-work-surface"
@@ -41,6 +42,18 @@ WORKBENCH_SELECTOR = ".mcel-lab-blueprint-workbench"
 RAIL_SELECTOR = ".mcel-lab-blueprint-right-rail"
 MIN_DESKTOP_WIDTH = 640
 MIN_DESKTOP_HEIGHT = 420
+EXPECTED_FORM_CARD_COUNT = 9
+EXPECTED_FORM_GROUP_COUNT = 8
+EXPECTED_FORM_KIND_COUNTS = {
+    "subject": 1,
+    "action": 1,
+    "work-surface": 1,
+    "context": 2,
+    "feedback": 1,
+    "constraint": 1,
+    "transient": 1,
+    "interruption": 1,
+}
 
 
 @dataclass(frozen=True)
@@ -74,7 +87,7 @@ VIEWPORT_PROFILES = (
 )
 
 
-GEOMETRY_PROBE_JS = r"""() => {
+GEOMETRY_PROBE_JS = r"""async () => {
   const visible = (element) => {
     if (!element) return false;
     const style = getComputedStyle(element);
@@ -103,10 +116,67 @@ GEOMETRY_PROBE_JS = r"""() => {
 
   const labelOf = (element, index) => {
     if (element.id) return `#${element.id}`;
+    const primitiveId = element.dataset?.mcelFormPrimitiveId;
+    if (primitiveId) return `[data-mcel-form-primitive-id="${primitiveId}"]`;
     const classes = Array.from(element.classList || []).slice(0, 3);
     if (classes.length) return `${element.tagName.toLowerCase()}.${classes.join(".")}`;
     return `${element.tagName.toLowerCase()}:nth-child(${index + 1})`;
   };
+
+  const overlapPairs = (elements) => {
+    const items = elements.map((element, index) => ({
+      selector: labelOf(element, index),
+      rect: rectOf(element)
+    }));
+    const overlaps = [];
+    for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
+        const left = items[leftIndex];
+        const right = items[rightIndex];
+        const intersectionWidth = Math.max(
+          0,
+          Math.min(left.rect.right, right.rect.right) - Math.max(left.rect.x, right.rect.x)
+        );
+        const intersectionHeight = Math.max(
+          0,
+          Math.min(left.rect.bottom, right.rect.bottom) - Math.max(left.rect.y, right.rect.y)
+        );
+        if (intersectionWidth > 1 && intersectionHeight > 1) {
+          overlaps.push({
+            left: left.selector,
+            right: right.selector,
+            intersectionWidth,
+            intersectionHeight
+          });
+        }
+      }
+    }
+    return overlaps;
+  };
+
+  const nextFrame = () => new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+
+  const appSelect = document.querySelector("#mcel-blueprint-app-select");
+  if (appSelect && appSelect.value !== "mcel-lab") {
+    appSelect.value = "mcel-lab";
+    appSelect.dispatchEvent(new Event("change", {bubbles: true}));
+    await nextFrame();
+    await nextFrame();
+  }
+
+  const aspectSelect = document.querySelector("#mcel-blueprint-aspect-select");
+  if (aspectSelect && aspectSelect.value !== "form") {
+    aspectSelect.value = "form";
+    aspectSelect.dispatchEvent(new Event("change", {bubbles: true}));
+    await nextFrame();
+    await nextFrame();
+  }
 
   const hostMatches = Array.from(document.querySelectorAll(".mcel-lab-blueprint-primary"))
     .filter(visible);
@@ -132,34 +202,9 @@ GEOMETRY_PROBE_JS = r"""() => {
     : [];
 
   const siblings = workbench
-    ? Array.from(workbench.children).filter(visible).map((element, index) => ({
-        selector: labelOf(element, index),
-        rect: rectOf(element)
-      }))
+    ? Array.from(workbench.children).filter(visible)
     : [];
-  const siblingOverlaps = [];
-  for (let leftIndex = 0; leftIndex < siblings.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < siblings.length; rightIndex += 1) {
-      const left = siblings[leftIndex];
-      const right = siblings[rightIndex];
-      const intersectionWidth = Math.max(
-        0,
-        Math.min(left.rect.right, right.rect.right) - Math.max(left.rect.x, right.rect.x)
-      );
-      const intersectionHeight = Math.max(
-        0,
-        Math.min(left.rect.bottom, right.rect.bottom) - Math.max(left.rect.y, right.rect.y)
-      );
-      if (intersectionWidth > 1 && intersectionHeight > 1) {
-        siblingOverlaps.push({
-          left: left.selector,
-          right: right.selector,
-          intersectionWidth,
-          intersectionHeight
-        });
-      }
-    }
-  }
+  const siblingOverlaps = overlapPairs(siblings);
 
   const workbenchStyle = workbench ? getComputedStyle(workbench) : null;
   const railStyle = rail ? getComputedStyle(rail) : null;
@@ -167,7 +212,7 @@ GEOMETRY_PROBE_JS = r"""() => {
     ? workbenchStyle.gridTemplateColumns.split(/\s+/).filter(Boolean)
     : [];
   const orderedSiblings = siblings
-    .slice()
+    .map((element, index) => ({selector: labelOf(element, index), rect: rectOf(element)}))
     .sort((left, right) => left.rect.y - right.rect.y || left.rect.x - right.rect.x);
   const stackedOrder = orderedSiblings.every((item, index) => {
     if (index === 0) return true;
@@ -180,8 +225,60 @@ GEOMETRY_PROBE_JS = r"""() => {
     railStyle && ["auto", "scroll"].includes(railStyle.overflowY)
   );
 
+  const workSurface = editorMatches[0] || null;
+  const workSurfaceStyle = workSurface ? getComputedStyle(workSurface) : null;
+  const formViewers = workSurface
+    ? Array.from(workSurface.querySelectorAll(
+        '.mcel-lab-form-primitive-viewer[data-mcel-form-primitive-mode="work-surface"]'
+      )).filter(visible)
+    : [];
+  const formViewer = formViewers[0] || null;
+  const formCards = formViewer
+    ? Array.from(formViewer.querySelectorAll(".mcel-lab-form-primitive-card")).filter(visible)
+    : [];
+  const formGroups = formViewer
+    ? Array.from(formViewer.querySelectorAll(".mcel-lab-form-primitive-group")).filter(visible)
+    : [];
+  const primitiveKindCounts = {};
+  formCards.forEach((card) => {
+    const kind = String(card.dataset.mcelFormPrimitiveKind || "").trim();
+    if (kind) primitiveKindCounts[kind] = (primitiveKindCounts[kind] || 0) + 1;
+  });
+  const sourceBoundCards = formCards.filter((card) => {
+    const start = Number.parseInt(card.dataset.mcelFormPrimitiveSourceStart || "", 10);
+    const end = Number.parseInt(card.dataset.mcelFormPrimitiveSourceEnd || "", 10);
+    return Boolean(
+      card.dataset.mcelFormPrimitiveSourceFile &&
+      Number.isFinite(start) &&
+      start > 0 &&
+      Number.isFinite(end) &&
+      end >= start
+    );
+  });
+  const cardsWithFact = (label) => formCards.filter((card) =>
+    Array.from(card.querySelectorAll(".mcel-lab-form-primitive-facts dt"))
+      .some((term) => term.textContent.trim() === label)
+  );
+  const internallyClippedFormCards = formCards.filter((card) => {
+    const style = getComputedStyle(card);
+    const horizontalOverflow = card.scrollWidth > card.clientWidth + 1;
+    const verticalOverflow = card.scrollHeight > card.clientHeight + 1;
+    const horizontalScrollable = ["auto", "scroll"].includes(style.overflowX);
+    const verticalScrollable = ["auto", "scroll"].includes(style.overflowY);
+    return (
+      (horizontalOverflow && !horizontalScrollable) ||
+      (verticalOverflow && !verticalScrollable)
+    );
+  });
+  const workSurfaceOverflowRequired = Boolean(
+    workSurface && workSurface.scrollHeight > workSurface.clientHeight + 1
+  );
+  const workSurfaceScrollableWhenRequired = !workSurfaceOverflowRequired || Boolean(
+    workSurfaceStyle && ["auto", "scroll"].includes(workSurfaceStyle.overflowY)
+  );
+
   return {
-    schema: "mcel-lab-deployed-geometry-v1",
+    schema: "mcel-lab-deployed-geometry-v2",
     route: location.pathname,
     hostMatchCount: hostMatches.length,
     editorMatchCount: editorMatches.length,
@@ -211,7 +308,26 @@ GEOMETRY_PROBE_JS = r"""() => {
       .filter((item) => item.internallyClipped)
       .map((item) => item.selector),
     siblingOverlaps,
-    stackedOrder
+    stackedOrder,
+    semanticForm: {
+      selectedApp: appSelect ? appSelect.value : "",
+      selectedAspect: aspectSelect ? aspectSelect.value : "",
+      viewerCount: formViewers.length,
+      viewerRect: rectOf(formViewer),
+      cardCount: formCards.length,
+      groupCount: formGroups.length,
+      primitiveKindCounts,
+      primitiveIds: formCards.map((card) => card.dataset.mcelFormPrimitiveId || ""),
+      sourceBoundCardCount: sourceBoundCards.length,
+      contractStatusCardCount: cardsWithFact("Contract status").length,
+      sourceFactCardCount: cardsWithFact("Source").length,
+      internallyClippedCardIds: internallyClippedFormCards.map(
+        (card) => card.dataset.mcelFormPrimitiveId || ""
+      ),
+      cardOverlaps: overlapPairs(formCards),
+      workSurfaceOverflowRequired,
+      workSurfaceScrollableWhenRequired
+    }
   };
 }"""
 
@@ -313,6 +429,67 @@ def classify_geometry(
     if overlaps:
         failures.append(f"{len(overlaps)} workbench sibling overlap(s) detected")
 
+    semantic_form = geometry.get("semanticForm")
+    if not isinstance(semantic_form, dict):
+        failures.append("semantic-form evidence is missing")
+        semantic_form = {}
+    else:
+        if semantic_form.get("selectedApp") != "mcel-lab":
+            failures.append("semantic-form probe did not select MCEL Lab")
+        if semantic_form.get("selectedAspect") != "form":
+            failures.append("semantic-form probe did not select the Form aspect")
+        if int(semantic_form.get("viewerCount") or 0) != 1:
+            failures.append("expected exactly one authoritative semantic-form work-surface viewer")
+        if int(semantic_form.get("cardCount") or 0) != EXPECTED_FORM_CARD_COUNT:
+            failures.append(
+                "semantic-form viewer rendered "
+                f"{int(semantic_form.get('cardCount') or 0)} cards; "
+                f"expected {EXPECTED_FORM_CARD_COUNT}"
+            )
+        if int(semantic_form.get("groupCount") or 0) != EXPECTED_FORM_GROUP_COUNT:
+            failures.append(
+                "semantic-form viewer rendered "
+                f"{int(semantic_form.get('groupCount') or 0)} groups; "
+                f"expected {EXPECTED_FORM_GROUP_COUNT}"
+            )
+        kind_counts = semantic_form.get("primitiveKindCounts")
+        if not isinstance(kind_counts, dict):
+            kind_counts = {}
+        observed_kind_counts = {
+            str(kind): int(kind_counts.get(kind) or 0)
+            for kind in EXPECTED_FORM_KIND_COUNTS
+        }
+        if observed_kind_counts != EXPECTED_FORM_KIND_COUNTS:
+            failures.append(
+                "semantic-form primitive kind counts differ from the registry-backed "
+                f"MCEL Lab contract: {observed_kind_counts}"
+            )
+        if int(semantic_form.get("sourceBoundCardCount") or 0) != EXPECTED_FORM_CARD_COUNT:
+            failures.append("not every semantic-form primitive card has exact source provenance")
+        if int(semantic_form.get("contractStatusCardCount") or 0) != EXPECTED_FORM_CARD_COUNT:
+            failures.append("not every semantic-form primitive card exposes Contract status")
+        if int(semantic_form.get("sourceFactCardCount") or 0) != EXPECTED_FORM_CARD_COUNT:
+            failures.append("not every semantic-form primitive card exposes its Source")
+        clipped_form_cards = semantic_form.get("internallyClippedCardIds")
+        if not isinstance(clipped_form_cards, list):
+            clipped_form_cards = []
+        if clipped_form_cards:
+            failures.append(
+                "semantic-form primitive cards clip readable content: "
+                + ", ".join(map(str, clipped_form_cards))
+            )
+        form_overlaps = semantic_form.get("cardOverlaps")
+        if not isinstance(form_overlaps, list):
+            form_overlaps = []
+        if form_overlaps:
+            failures.append(
+                f"{len(form_overlaps)} semantic-form primitive card overlap(s) detected"
+            )
+        if semantic_form.get("workSurfaceScrollableWhenRequired") is not True:
+            failures.append(
+                "semantic-form work surface is not scrollable while primitive content exceeds it"
+            )
+
     workbench = geometry.get("workbench")
     if not isinstance(workbench, dict):
         failures.append("workbench geometry is missing")
@@ -336,7 +513,7 @@ def classify_geometry(
         failures.append("diagnostic-no-throw layer did not pass")
 
     return {
-        "schema": "mcel-lab-deployed-conformance-result-v1",
+        "schema": "mcel-lab-deployed-conformance-result-v2",
         "profile": profile.to_dict(),
         "status": "pass" if not failures else "fail",
         "failures": list(dict.fromkeys(failures)),
@@ -371,11 +548,11 @@ def build_report(
         item.get("status") == "pass" for item in profile_results
     ) else "fail"
     report["source"]["deployedConformanceSource"] = (
-        "real /applications/mcel-lab route measured by Playwright at authorized viewports"
+        "real /applications/mcel-lab route and registry-backed Form aspect measured by Playwright at authorized viewports"
     )
     report["viewportProfiles"] = [profile.to_dict() for profile in VIEWPORT_PROFILES]
     report["mcelLabDeployedConformance"] = {
-        "schema": "mcel-lab-deployed-conformance-summary-v1",
+        "schema": "mcel-lab-deployed-conformance-summary-v2",
         "version": PROFILE_VERSION,
         "route": ROUTE,
         "hostSelector": HOST_SELECTOR,
@@ -390,6 +567,7 @@ def build_report(
         "profiles": profile_results,
     }
     report["summary"]["deployedConformanceStatus"] = profile_status
+    report["summary"]["semanticFormConformanceStatus"] = profile_status
     if profile_status != "pass":
         report["summary"]["status"] = "fail"
     return report
@@ -409,8 +587,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Route: `{conformance.get('route', '')}`",
         f"- Status: **{conformance.get('status', 'unknown')}**",
         "",
-        "| Viewport profile | Layout | Status | Work surface | Rail clipping | Sibling overlaps |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Viewport profile | Layout | Status | Work surface | Form cards | Provenance | Form clipping | Form overlaps |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for item in conformance.get("profiles") or []:
         profile = item.get("profile") if isinstance(item, dict) else {}
@@ -418,17 +596,22 @@ def render_markdown(report: dict[str, Any]) -> str:
         editor = geometry.get("editorRect") if isinstance(geometry, dict) else {}
         if not isinstance(editor, dict):
             editor = {}
-        clipped = geometry.get("internallyClippedRailChildren") if isinstance(geometry, dict) else []
-        overlaps = geometry.get("siblingOverlaps") if isinstance(geometry, dict) else []
+        semantic_form = geometry.get("semanticForm") if isinstance(geometry, dict) else {}
+        if not isinstance(semantic_form, dict):
+            semantic_form = {}
+        form_clipping = semantic_form.get("internallyClippedCardIds")
+        form_overlaps = semantic_form.get("cardOverlaps")
         lines.append(
-            "| {name} | {layout} | {status} | {width:.1f}×{height:.1f} | {clipped} | {overlaps} |".format(
+            "| {name} | {layout} | {status} | {width:.1f}×{height:.1f} | {cards} | {sources} | {clipped} | {overlaps} |".format(
                 name=profile.get("name", ""),
                 layout=profile.get("layout", ""),
                 status=item.get("status", "unknown") if isinstance(item, dict) else "unknown",
                 width=float(editor.get("width") or 0),
                 height=float(editor.get("height") or 0),
-                clipped=len(clipped) if isinstance(clipped, list) else 0,
-                overlaps=len(overlaps) if isinstance(overlaps, list) else 0,
+                cards=int(semantic_form.get("cardCount") or 0),
+                sources=int(semantic_form.get("sourceBoundCardCount") or 0),
+                clipped=len(form_clipping) if isinstance(form_clipping, list) else 0,
+                overlaps=len(form_overlaps) if isinstance(form_overlaps, list) else 0,
             )
         )
         for failure in item.get("failures") or []:
@@ -436,7 +619,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "This fixture is read-only. It navigates to the deployed route, waits for the existing diagnostics APIs, reads geometry and computed styles, and emits repository-bound evidence.",
+            "This fixture is read-only. It navigates to the deployed route, selects MCEL Lab's existing Form aspect, reads registry-backed primitive provenance plus geometry and computed styles, and emits repository-bound evidence.",
             "",
         ]
     )

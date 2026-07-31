@@ -83,7 +83,7 @@ def test_registry_requires_adapter_methods_before_authorizing_executable_readine
     )
     result = run_node_json(script)
 
-    assert result["registryVersion"] == "mcel-domain-adapter-registry-v4"
+    assert result["registryVersion"] == "mcel-domain-adapter-registry-v5"
     assert result["requiredAuthority"] == "mcel-domain-adapter-registry"
     assert result["authority"] == "mcel-domain-adapter-registry"
     assert result["registryProofPresent"] is True
@@ -163,6 +163,21 @@ def test_registry_can_authorize_readiness_only_for_a_complete_domain_adapter_sha
               verification: {{passed: true}}
             }};
           }},
+          getRuntimeBindingCoverage() {{
+            return {{
+              source: "test-runtime-binding-coverage",
+              verificationMode: "derived-runtime-binding-audit",
+              runtimeBindingReady: true,
+              requiredIntentIds: ["refreshStatus"],
+              entries: [{{
+                intentId: "refreshStatus",
+                status: "runtime-bound",
+                runtimeBound: true,
+                bindingSource: "test.refresh"
+              }}],
+              verification: {{passed: true}}
+            }};
+          }},
           mapEvidence() {{ return [{{receiptId: "receipt-refreshStatus"}}]; }}
         }});
         const plan = planner.planFor("git-tools");
@@ -174,6 +189,8 @@ def test_registry_can_authorize_readiness_only_for_a_complete_domain_adapter_sha
           ready: readiness.semanticRuntimeReady,
           runtimeCoreReady: readiness.runtimeCoreReady,
           fullApplicationSemanticReady: readiness.fullApplicationSemanticReady,
+          operationalSemanticRuntimeReady: readiness.operationalSemanticRuntimeReady,
+          runtimeBindingReady: readiness.runtimeBindingReady,
           semanticRuntimeScope: readiness.semanticRuntimeScope,
           adapterKind: readiness.adapterKind,
           missing: readiness.missingSemantics,
@@ -191,6 +208,8 @@ def test_registry_can_authorize_readiness_only_for_a_complete_domain_adapter_sha
     assert result["ready"] is True
     assert result["runtimeCoreReady"] is True
     assert result["fullApplicationSemanticReady"] is True
+    assert result["operationalSemanticRuntimeReady"] is True
+    assert result["runtimeBindingReady"] is True
     assert result["semanticRuntimeScope"] == "safe-read-complete"
     assert result["adapterKind"] == "executable-semantic-workbench"
     assert result["missing"] == []
@@ -324,6 +343,8 @@ def test_registry_separates_runtime_core_from_full_application_intent_coverage()
     assert readiness["runtimeCoreReady"] is True
     assert readiness["fullApplicationSemanticReady"] is False
     assert readiness["semanticRuntimeReady"] is False
+    assert readiness["operationalSemanticRuntimeReady"] is False
+    assert readiness["runtimeBindingReady"] is False
     assert readiness["semanticRuntimeScope"] == "safe-read-partial"
     assert readiness["executableIntentCount"] == 1
     assert readiness["declaredOnlyIntentCount"] == 1

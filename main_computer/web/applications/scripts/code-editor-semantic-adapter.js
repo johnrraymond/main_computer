@@ -15,6 +15,7 @@
     const RECOVERY_PLAN_SCHEMA_VERSION = "code-editor-recovery-plan-v1";
     const RECOVERY_COVERAGE_VERSION = "code-editor-recovery-coverage-v1";
     const INTENT_COVERAGE_SCHEMA_VERSION = "code-editor-intent-coverage-v1";
+    const RUNTIME_BINDING_COVERAGE_SCHEMA_VERSION = "code-editor-runtime-binding-coverage-v1";
     const SEMANTIC_RUNTIME_SCOPE = "code-editor-source-safe-authoring-v1";
     const MAX_RECEIPTS = 100;
     const ADAPTER_TOOLKIT = global.McelSemanticAdapterToolkit || (
@@ -96,6 +97,13 @@
         runtimeMethod: "",
         mutates: true
       })
+    ]);
+
+    const ADAPTER_LOCAL_RUNTIME_INTENT_IDS = new Set([
+      "inspectWorkspace",
+      "openFile",
+      "editDraft",
+      "previewAiderPlan"
     ]);
 
     const FAILURE_DEFINITIONS = Object.freeze({
@@ -767,6 +775,60 @@
       };
     }
 
+    function getRuntimeBindingCoverage() {
+      if (!Object.keys(runtimeBindings).length) bindRuntimeFromGlobal();
+      const executableDefinitions = INTENT_DEFINITIONS.filter(
+        (intent) => intent.status === "executable"
+      );
+      const entries = executableDefinitions.map((intent) => {
+        const directRuntimeBound = hasRuntimeMethod(intent.runtimeMethod);
+        const adapterLocal = ADAPTER_LOCAL_RUNTIME_INTENT_IDS.has(intent.id);
+        const runtimeBound = directRuntimeBound || adapterLocal;
+        const fallbackMethods = [];
+        if (intent.id === "saveFile" && hasRuntimeMethod("persistLiveWorkspaceFromSource")) {
+          fallbackMethods.push("persistLiveWorkspaceFromSource");
+        }
+        return {
+          intentId: intent.id,
+          runtimeMethod: intent.runtimeMethod,
+          status: directRuntimeBound
+            ? "runtime-bound"
+            : (adapterLocal ? "adapter-local" : "unbound"),
+          runtimeBound,
+          bindingSource: directRuntimeBound
+            ? `runtime.${intent.runtimeMethod}`
+            : (
+              adapterLocal
+                ? `code-editor-semantic-adapter.${intent.id}`
+                : "runtime-binding-unavailable"
+            ),
+          fallbackMethods,
+          fallbackAuthorizesRuntimeBinding: false
+        };
+      });
+      const unboundIntentIds = entries
+        .filter((entry) => entry.runtimeBound !== true)
+        .map((entry) => entry.intentId)
+        .sort();
+      return {
+        schema: RUNTIME_BINDING_COVERAGE_SCHEMA_VERSION,
+        appId: APP_ID,
+        source: ADAPTER_ID,
+        verificationMode: "derived-runtime-binding-audit",
+        runtimeBindingReady: unboundIntentIds.length === 0,
+        requiredIntentIds: entries.map((entry) => entry.intentId),
+        entries,
+        unboundIntentIds,
+        verification: {
+          passed: true,
+          derivedFromCallableRuntimeMethods: true,
+          adapterLocalIntentIds: Array.from(ADAPTER_LOCAL_RUNTIME_INTENT_IDS).sort(),
+          localStoragePersistenceDoesNotAuthorizeSaveFile: true,
+          reviewedPatchRequiresApplyReviewedPatchMethod: true
+        }
+      };
+    }
+
     function resultSnapshot(result) {
       if (!result || typeof result !== "object") return result;
       return Object.fromEntries(
@@ -1092,7 +1154,8 @@
       classifyFailure,
       buildRecoveryOptions,
       getRecoveryCoverage,
-      getIntentCoverage
+      getIntentCoverage,
+      getRuntimeBindingCoverage
     };
 
     let registrationReadiness = null;
@@ -1112,6 +1175,7 @@
       RECOVERY_PLAN_SCHEMA_VERSION,
       RECOVERY_COVERAGE_VERSION,
       INTENT_COVERAGE_SCHEMA_VERSION,
+      RUNTIME_BINDING_COVERAGE_SCHEMA_VERSION,
       SEMANTIC_RUNTIME_SCOPE,
       TOOLKIT_VERSION: ADAPTER_TOOLKIT.VERSION,
       INTENT_DEFINITIONS,

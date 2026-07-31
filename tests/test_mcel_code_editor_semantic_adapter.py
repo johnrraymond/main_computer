@@ -67,6 +67,7 @@ def test_code_editor_adapter_proves_source_safe_semantic_runtime_scope() -> None
             """
             const readiness = registry.evaluateAdapterReadiness("code-editor");
             const coverage = adapter.getIntentCoverage();
+            const runtimeBindings = adapter.getRuntimeBindingCoverage();
             const recovery = adapter.getRecoveryCoverage();
             const intents = adapter.listIntents();
             const objects = adapter.listObjects();
@@ -76,6 +77,7 @@ def test_code_editor_adapter_proves_source_safe_semantic_runtime_scope() -> None
               version: adapter.version,
               readiness,
               coverage,
+              runtimeBindings,
               recovery,
               registered: registry.listAdapters(),
               intentStatuses: Object.fromEntries(
@@ -96,6 +98,13 @@ def test_code_editor_adapter_proves_source_safe_semantic_runtime_scope() -> None
     assert readiness["semanticRuntimeReady"] is True
     assert readiness["runtimeCoreReady"] is True
     assert readiness["fullApplicationSemanticReady"] is True
+    assert readiness["operationalSemanticRuntimeReady"] is False
+    assert readiness["runtimeBindingCoverageAvailable"] is True
+    assert readiness["runtimeBindingAuditReady"] is True
+    assert readiness["runtimeBindingReady"] is False
+    assert readiness["runtimeBoundIntentCount"] == 4
+    assert readiness["adapterLocalIntentCount"] == 4
+    assert readiness["unboundIntentIds"] == ["applyReviewedPatch", "saveFile"]
     assert readiness["adapterExecutable"] is True
     assert readiness["actionPlannerReady"] is True
     assert readiness["capabilityProviderReady"] is True
@@ -110,6 +119,14 @@ def test_code_editor_adapter_proves_source_safe_semantic_runtime_scope() -> None
     assert result["coverage"]["fullApplicationSemanticReady"] is True
     assert len(result["coverage"]["entries"]) == 7
     assert result["coverage"]["verification"]["passed"] is True
+    assert result["runtimeBindings"]["runtimeBindingReady"] is False
+    assert result["runtimeBindings"]["unboundIntentIds"] == [
+        "applyReviewedPatch",
+        "saveFile",
+    ]
+    assert result["runtimeBindings"]["verification"][
+        "localStoragePersistenceDoesNotAuthorizeSaveFile"
+    ] is True
     assert result["recovery"]["coverageReady"] is True
     assert result["intentStatuses"] == {
         "inspectWorkspace": "executable",
@@ -254,10 +271,12 @@ def test_code_editor_adapter_executes_source_safe_workflow_with_receipts() -> No
                 recoveryPath: "restore snapshot"
               });
               const receipts = adapter.listReceipts();
+              const readiness = registry.evaluateAdapterReadiness("code-editor");
               process.stdout.write(JSON.stringify({
                 inspect, open, edit, save, preview, apply,
                 calls,
                 receipts,
+                readiness,
                 state: adapter.getState()
               }));
             })().catch((error) => {
@@ -285,6 +304,9 @@ def test_code_editor_adapter_executes_source_safe_workflow_with_receipts() -> No
     ]
     assert len(result["receipts"]) == 6
     assert all(receipt["schema"] == "mcel-semantic-receipt-v1" for receipt in result["receipts"])
+    assert result["readiness"]["operationalSemanticRuntimeReady"] is True
+    assert result["readiness"]["runtimeBindingReady"] is True
+    assert result["readiness"]["unboundIntentIds"] == []
     assert result["state"]["activeFile"]["path"] == "src/app.js"
     assert result["state"]["dirtyDraft"]["dirty"] is False
     assert result["state"]["aiderPlan"]["status"] == "previewed"

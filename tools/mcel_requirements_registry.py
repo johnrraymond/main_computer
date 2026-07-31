@@ -999,6 +999,11 @@ def build_app_contract_summaries(registry: RequirementsRegistry) -> list[dict[st
                         "meaning": block.fields.get("meaning", ""),
                         "relationships": block.fields.get("relationships", []),
                         "constraints": block.fields.get("constraints", []),
+                        "source": {
+                            "file": block.source_file,
+                            "start_line": block.start_line,
+                            "end_line": block.end_line,
+                        },
                     }
                     for block in form_primitive_blocks
                 ],

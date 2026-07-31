@@ -348,14 +348,23 @@ NSIS is only needed for installer creation. It is not required to run the system
 
 Start with the canonical status document. It distinguishes declared maturity, adapter coverage, repository-bound proof, and authorized future work.
 
-### Start here
+### Conceptual and contract path
 
 ```text
 pretty_docs/mcel-status-and-roadmap.md
 pretty_docs/mcel-system-guide.md
 pretty_docs/mcel-user-space-contract.md
-pretty_docs/mcel-application-authoring.md
 ```
+
+### Build an application
+
+```text
+pretty_docs/mcel-application-authoring.md
+pretty_docs/mcel-code-studio-example.md
+pretty_docs/mcel-requirements-language.md
+```
+
+The authoring guide distinguishes live global APIs from the application-local layout facades used by Code Editor and Git Tools. It supports repository-aware development today, but it is not yet a standalone SDK or generated starter-app workflow. The user-space contract is the planning surface for deciding what application authors may rely on; internal law-module names are implementation detail.
 
 ### Truth and evidence
 
@@ -389,7 +398,9 @@ pretty_docs/mcel-surface-extractors.md
 pretty_docs/mcel-surface-roundtrip.md
 ```
 
-The system guide explains the source/runtime/serialization boundary, evidence packets, proof obligations, the subsumption lattice, and the adoption-case gate. The requirements language defines the shared `mcel-*` grammar and registry workflow. The truth-gate and repository-audit documents define how requirements, adapters, surface policy, runtime evidence, acceptance evidence, and epistemic claims are combined without treating prose as proof. The status and roadmap document is the sole human-readable authority for current MCEL state and upcoming code work.
+MCEL Lab is the self-hosting app-aspect inspector for developing good-looking solid apps. Its blueprint workflow preserves source bindings, findings, and refactor annotations as reviewable evidence.
+
+The system guide explains the source/runtime/serialization boundary, evidence packets, proof obligations, the subsumption lattice, and the adoption-case gate. The application-authoring guide gives the current repository-aware build sequence and maps its conceptual file responsibilities to the live Git Tools implementation. The requirements language defines the shared `mcel-*` grammar and registry workflow. The truth-gate and repository-audit documents define how requirements, adapters, surface policy, runtime evidence, acceptance evidence, and epistemic claims are combined without treating prose as proof. The status and roadmap document is the sole human-readable authority for current MCEL state and upcoming code work.
 
 ## Git Tools documentation
 

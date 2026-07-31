@@ -141,6 +141,14 @@ var McelAppTruthGate = (() => {
       intentCoverageAuditReady: state.intentCoverageAuditReady === true,
       fullApplicationSemanticReady: state.fullApplicationSemanticReady === true,
       semanticRuntimeReady: state.semanticRuntimeReady === true,
+      operationalSemanticRuntimeReady: state.operationalSemanticRuntimeReady === true,
+      runtimeBindingCoverageAvailable: state.runtimeBindingCoverageAvailable === true,
+      runtimeBindingAuditReady: state.runtimeBindingAuditReady === true,
+      runtimeBindingReady: state.runtimeBindingReady === true,
+      runtimeBoundIntentCount: Number(state.runtimeBoundIntentCount || 0),
+      adapterLocalIntentCount: Number(state.adapterLocalIntentCount || 0),
+      unboundIntentCount: Number(state.unboundIntentCount || 0),
+      unboundIntentIds: uniqueStrings(state.unboundIntentIds),
       semanticRuntimeScope: safeString(state.semanticRuntimeScope || "unclassified"),
       executableIntentCount: Number(state.executableIntentCount || 0),
       preflightOnlyIntentCount: Number(state.preflightOnlyIntentCount || 0),
@@ -565,6 +573,28 @@ var McelAppTruthGate = (() => {
       ));
     }
 
+    if (
+      adapter.registered &&
+      adapter.fullApplicationSemanticReady &&
+      !adapter.operationalSemanticRuntimeReady
+    ) {
+      findings.push(finding(
+        "runtime-binding-not-proven",
+        "warning",
+        "Semantic intent coverage is complete, but one or more executable intents lack audited callable runtime bindings.",
+        {
+          appId: adapter.appId,
+          runtimeBindingCoverageAvailable: adapter.runtimeBindingCoverageAvailable,
+          runtimeBindingAuditReady: adapter.runtimeBindingAuditReady,
+          runtimeBindingReady: adapter.runtimeBindingReady,
+          runtimeBoundIntentCount: adapter.runtimeBoundIntentCount,
+          adapterLocalIntentCount: adapter.adapterLocalIntentCount,
+          unboundIntentCount: adapter.unboundIntentCount,
+          unboundIntentIds: adapter.unboundIntentIds
+        }
+      ));
+    }
+
     if (!surface.registered || !surface.conformanceRequired) {
       findings.push(finding(
         "app-not-enrolled",
@@ -657,7 +687,7 @@ var McelAppTruthGate = (() => {
       }
     }
 
-    if (runtime.claimedSemanticRuntimeReady && !adapter.fullApplicationSemanticReady) {
+    if (runtime.claimedSemanticRuntimeReady && !adapter.operationalSemanticRuntimeReady) {
       findings.push(finding(
         "semantic-readiness-overclaimed",
         "error",
@@ -666,6 +696,9 @@ var McelAppTruthGate = (() => {
           appId: adapter.appId,
           runtimeCoreReady: adapter.runtimeCoreReady,
           fullApplicationSemanticReady: adapter.fullApplicationSemanticReady,
+          operationalSemanticRuntimeReady: adapter.operationalSemanticRuntimeReady,
+          runtimeBindingReady: adapter.runtimeBindingReady,
+          unboundIntentIds: adapter.unboundIntentIds,
           semanticRuntimeScope: adapter.semanticRuntimeScope
         },
         true
@@ -732,7 +765,7 @@ var McelAppTruthGate = (() => {
       (epistemic.valid && epistemic.truthGateEligible);
     const semanticRuntimeProven =
       specified &&
-      adapter.fullApplicationSemanticReady &&
+      adapter.operationalSemanticRuntimeReady &&
       runtimeSurfaceProven &&
       acceptanceProven &&
       epistemicClaimsProven;
@@ -740,7 +773,7 @@ var McelAppTruthGate = (() => {
     return {
       specified,
       implementationPresent,
-      partiallyImplemented: implementationPresent && !adapter.fullApplicationSemanticReady,
+      partiallyImplemented: implementationPresent && !adapter.operationalSemanticRuntimeReady,
       runtimeSurfaceProven,
       acceptanceProven,
       epistemicClaimsProven,

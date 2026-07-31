@@ -2,7 +2,7 @@
   (function createMcelDomainAdapterRegistry(global) {
     if (!global) return;
 
-    const REGISTRY_VERSION = "mcel-domain-adapter-registry-v4";
+    const REGISTRY_VERSION = "mcel-domain-adapter-registry-v5";
     const AUTHORITY = "mcel-domain-adapter-registry";
 
     const REQUIRED_METHODS_BY_READINESS_FIELD = Object.freeze({
@@ -262,6 +262,180 @@
       }
     }
 
+    const RUNTIME_BINDING_STATUSES = Object.freeze([
+      "runtime-bound",
+      "adapter-local",
+      "unbound"
+    ]);
+
+    function validateRuntimeBindingCoverage(coverage = {}, intentCoverage = {}) {
+      const executableIntentIds = normalizedStringList(
+        (intentCoverage.entries || [])
+          .filter((entry) => entry?.status === "executable")
+          .map((entry) => entry?.intentId)
+      );
+      const requiredIntentIds = normalizedStringList(coverage.requiredIntentIds);
+      const entries = Array.isArray(coverage.entries)
+        ? coverage.entries.map(clonePlain)
+        : [];
+      const classifiedIntentIds = normalizedStringList(
+        entries.map((entry) => entry?.intentId)
+      );
+      const missingIntentIds = executableIntentIds.filter(
+        (intentId) => !classifiedIntentIds.includes(intentId)
+      );
+      const unexpectedIntentIds = classifiedIntentIds.filter(
+        (intentId) => !executableIntentIds.includes(intentId)
+      );
+      const duplicateIntentIds = classifiedIntentIds.filter(
+        (intentId) => entries.filter((entry) => entry?.intentId === intentId).length > 1
+      );
+      const invalidEntries = entries
+        .filter((entry) => (
+          !entry ||
+          !executableIntentIds.includes(String(entry.intentId || "")) ||
+          !RUNTIME_BINDING_STATUSES.includes(String(entry.status || "")) ||
+          typeof entry.bindingSource !== "string" ||
+          !entry.bindingSource.trim() ||
+          entry.runtimeBound !== ["runtime-bound", "adapter-local"].includes(String(entry.status || ""))
+        ))
+        .map((entry) => String(entry?.intentId || "unknown"));
+      const boundIntentIds = normalizedStringList(
+        entries
+          .filter((entry) => entry?.runtimeBound === true)
+          .map((entry) => entry?.intentId)
+      );
+      const adapterLocalIntentIds = normalizedStringList(
+        entries
+          .filter((entry) => entry?.status === "adapter-local")
+          .map((entry) => entry?.intentId)
+      );
+      const unboundIntentIds = normalizedStringList([
+        ...missingIntentIds,
+        ...entries
+          .filter((entry) => entry?.status === "unbound" || entry?.runtimeBound !== true)
+          .map((entry) => entry?.intentId)
+      ]);
+      const derivedRuntimeBindingReady = Boolean(
+        executableIntentIds.length > 0 &&
+        missingIntentIds.length === 0 &&
+        unexpectedIntentIds.length === 0 &&
+        duplicateIntentIds.length === 0 &&
+        invalidEntries.length === 0 &&
+        unboundIntentIds.length === 0
+      );
+      const checks = {
+        derivedAudit:
+          coverage.verificationMode === "derived-runtime-binding-audit" &&
+          coverage.verification?.passed === true,
+        executableIntentsDeclared: executableIntentIds.length > 0,
+        requiredIntentSetMatches:
+          requiredIntentIds.length === executableIntentIds.length &&
+          requiredIntentIds.every((intentId) => executableIntentIds.includes(intentId)),
+        allExecutableIntentsClassified: missingIntentIds.length === 0,
+        noUnexpectedIntents: unexpectedIntentIds.length === 0,
+        noDuplicateIntents: duplicateIntentIds.length === 0,
+        validEntries: invalidEntries.length === 0,
+        readinessClaimMatchesDerivation:
+          coverage.runtimeBindingReady === derivedRuntimeBindingReady
+      };
+      const auditPassed = Object.values(checks).every(Boolean);
+      return {
+        passed: auditPassed,
+        runtimeBindingReady: Boolean(auditPassed && derivedRuntimeBindingReady),
+        checks,
+        executableIntentIds,
+        requiredIntentIds,
+        classifiedIntentIds,
+        missingIntentIds,
+        unexpectedIntentIds,
+        duplicateIntentIds,
+        invalidEntries,
+        boundIntentIds,
+        adapterLocalIntentIds,
+        unboundIntentIds
+      };
+    }
+
+    function runtimeBindingCoverageFor(adapter, intentCoverage = {}) {
+      const executableIntentIds = normalizedStringList(
+        (intentCoverage.entries || [])
+          .filter((entry) => entry?.status === "executable")
+          .map((entry) => entry?.intentId)
+      );
+      if (!adapter || !callable(adapter, "getRuntimeBindingCoverage")) {
+        return {
+          available: false,
+          auditReady: false,
+          runtimeBindingReady: false,
+          coverage: null,
+          validation: {
+            passed: false,
+            runtimeBindingReady: false,
+            checks: {
+              derivedAudit: false,
+              executableIntentsDeclared: executableIntentIds.length > 0,
+              requiredIntentSetMatches: false,
+              allExecutableIntentsClassified: false,
+              noUnexpectedIntents: true,
+              noDuplicateIntents: true,
+              validEntries: false,
+              readinessClaimMatchesDerivation: false
+            },
+            executableIntentIds,
+            requiredIntentIds: [],
+            classifiedIntentIds: [],
+            missingIntentIds: executableIntentIds,
+            unexpectedIntentIds: [],
+            duplicateIntentIds: [],
+            invalidEntries: [],
+            boundIntentIds: [],
+            adapterLocalIntentIds: [],
+            unboundIntentIds: executableIntentIds
+          },
+          error: null
+        };
+      }
+      try {
+        const coverage = clonePlain(adapter.getRuntimeBindingCoverage()) || {};
+        const validation = validateRuntimeBindingCoverage(coverage, intentCoverage);
+        return {
+          available: true,
+          auditReady: validation.passed,
+          runtimeBindingReady: validation.runtimeBindingReady,
+          coverage,
+          validation,
+          error: null
+        };
+      } catch (error) {
+        return {
+          available: true,
+          auditReady: false,
+          runtimeBindingReady: false,
+          coverage: null,
+          validation: {
+            passed: false,
+            runtimeBindingReady: false,
+            checks: {},
+            executableIntentIds,
+            requiredIntentIds: [],
+            classifiedIntentIds: [],
+            missingIntentIds: executableIntentIds,
+            unexpectedIntentIds: [],
+            duplicateIntentIds: [],
+            invalidEntries: [],
+            boundIntentIds: [],
+            adapterLocalIntentIds: [],
+            unboundIntentIds: executableIntentIds
+          },
+          error: {
+            name: error?.name || "Error",
+            message: error?.message || String(error)
+          }
+        };
+      }
+    }
+
     function appIdFor(appOrPlan, maybePlan) {
       if (typeof appOrPlan === "object" && appOrPlan) {
         return normalizeId(appOrPlan.app || appOrPlan.appId || appOrPlan.id);
@@ -344,7 +518,19 @@
         runtimeCoreReady &&
         intentCoverage.coverageReady
       );
+      // Compatibility: semanticRuntimeReady remains the contract-level readiness
+      // signal used by older consumers. Operational readiness is stricter and
+      // additionally requires callable runtime-binding evidence.
       const semanticRuntimeReady = fullApplicationSemanticReady;
+      const runtimeBindingCoverage = runtimeBindingCoverageFor(
+        adapter,
+        intentCoverage.coverage || {}
+      );
+      const runtimeBindingReady = Boolean(
+        fullApplicationSemanticReady &&
+        runtimeBindingCoverage.runtimeBindingReady
+      );
+      const operationalSemanticRuntimeReady = runtimeBindingReady;
       const coverageEntries = intentCoverage.coverage?.entries || [];
       const statusCounts = intentCoverage.validation?.statusCounts || {};
       const incompleteIntentIds =
@@ -369,8 +555,27 @@
         adapterVersion: summary?.version || "",
         registryAdapterPresent: Boolean(adapter),
         semanticRuntimeReady,
+        operationalSemanticRuntimeReady,
         runtimeCoreReady,
         fullApplicationSemanticReady,
+        runtimeBindingCoverageAvailable: runtimeBindingCoverage.available,
+        runtimeBindingAuditReady: runtimeBindingCoverage.auditReady,
+        runtimeBindingReady,
+        runtimeBoundIntentCount: Number(
+          runtimeBindingCoverage.validation?.boundIntentIds?.length || 0
+        ),
+        adapterLocalIntentCount: Number(
+          runtimeBindingCoverage.validation?.adapterLocalIntentIds?.length || 0
+        ),
+        unboundIntentCount: Number(
+          runtimeBindingCoverage.validation?.unboundIntentIds?.length || 0
+        ),
+        unboundIntentIds: clonePlain(
+          runtimeBindingCoverage.validation?.unboundIntentIds || []
+        ),
+        runtimeBindingCoverage: clonePlain(runtimeBindingCoverage.coverage),
+        runtimeBindingCoverageValidation: clonePlain(runtimeBindingCoverage.validation),
+        runtimeBindingCoverageError: clonePlain(runtimeBindingCoverage.error),
         semanticRuntimeScope: intentCoverage.semanticRuntimeScope,
         executableIntentCount: Number(statusCounts.executable || 0),
         preflightOnlyIntentCount: Number(statusCounts["preflight-only"] || 0),
@@ -402,11 +607,18 @@
         requiredMethods: clonePlain(REQUIRED_METHODS_BY_READINESS_FIELD),
         missingMethods,
         claim: fullApplicationSemanticReady
-          ? "The registered MCEL domain adapter proves runtime-core and full intent-level semantic coverage."
+          ? "The registered MCEL domain adapter proves runtime-core and full intent-level semantic contract coverage."
           : (
             runtimeCoreReady
               ? `Runtime core is ready, but application semantic coverage is partial (${intentCoverage.semanticRuntimeScope}).`
               : "No registered MCEL domain adapter currently proves executable semantic runtime-core readiness."
+          ),
+        operationalClaim: operationalSemanticRuntimeReady
+          ? "All executable intents in the current semantic scope have audited callable runtime bindings or explicit adapter-local implementations."
+          : (
+            fullApplicationSemanticReady
+              ? `Semantic contract coverage is complete, but runtime binding proof is incomplete for: ${(runtimeBindingCoverage.validation?.unboundIntentIds || []).join(", ") || "unclassified executable intents"}.`
+              : "Operational semantic runtime readiness cannot pass before semantic contract coverage is complete."
           )
       };
     }
@@ -458,8 +670,10 @@
       REQUIRED_METHODS_BY_READINESS_FIELD,
       READINESS_FIELDS,
       INTENT_COVERAGE_STATUSES,
+      RUNTIME_BINDING_STATUSES,
       validateRecoveryCoverage,
       validateIntentCoverage,
+      validateRuntimeBindingCoverage,
       registerAdapter,
       unregisterAdapter,
       clearAdapters,

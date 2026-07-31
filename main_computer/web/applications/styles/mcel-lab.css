@@ -7235,6 +7235,13 @@ body.mcel-modal-open {
     rgba(2, 6, 23, 0.32);
 }
 
+.mcel-lab-work-surface[data-mcel-mount-state="form-primitives"] {
+  align-content: start;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .mcel-lab-work-surface-empty {
   place-self: center;
   max-width: 48ch;
@@ -7570,8 +7577,10 @@ body.mcel-modal-open {
 }
 
 .mcel-lab-form-primitive-facts dd {
+  min-width: 0;
   margin: 0;
   color: rgba(226, 232, 240, 0.82);
+  overflow-wrap: anywhere;
 }
 
 .mcel-lab-form-primitive-values {

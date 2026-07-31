@@ -566,6 +566,29 @@
       parent.appendChild(wrap);
     }
 
+    function mcelBlueprintShellFormPrimitiveSource(primitive) {
+      const source = primitive?.source && typeof primitive.source === "object"
+        ? primitive.source
+        : {};
+      const file = String(source.file || "").trim();
+      const startLine = Number.parseInt(source.start_line, 10);
+      const endLine = Number.parseInt(source.end_line, 10);
+      const hasStartLine = Number.isFinite(startLine) && startLine > 0;
+      const hasEndLine = Number.isFinite(endLine) && endLine >= startLine;
+      let label = file || "source unavailable";
+      if (file && hasStartLine) {
+        label = hasEndLine && endLine !== startLine
+          ? `${file}:${startLine}-${endLine}`
+          : `${file}:${startLine}`;
+      }
+      return {
+        file,
+        startLine: hasStartLine ? startLine : null,
+        endLine: hasEndLine ? endLine : null,
+        label
+      };
+    }
+
     function mcelBlueprintShellRenderFormPrimitiveViewer(parent, blueprint, options = {}) {
       if (!parent) return;
       const primitives = mcelBlueprintShellFormPrimitives(blueprint);
@@ -623,6 +646,14 @@
           card.className = "mcel-lab-form-primitive-card";
           card.dataset.mcelFormPrimitiveId = primitive?.id || "";
           card.dataset.mcelFormPrimitiveKind = kind;
+          const source = mcelBlueprintShellFormPrimitiveSource(primitive);
+          card.dataset.mcelFormPrimitiveSourceFile = source.file;
+          card.dataset.mcelFormPrimitiveSourceStart = source.startLine === null ? "" : String(source.startLine);
+          card.dataset.mcelFormPrimitiveSourceEnd = source.endLine === null ? "" : String(source.endLine);
+          card.setAttribute(
+            "aria-label",
+            `${primitive?.id || kind} ${mcelBlueprintShellFormPrimitiveKindLabel(kind)} primitive`
+          );
 
           const cardTitle = document.createElement("strong");
           cardTitle.textContent = primitive?.id || kind;
@@ -632,7 +663,8 @@
           const facts = document.createElement("dl");
           facts.className = "mcel-lab-form-primitive-facts";
           mcelBlueprintShellAppendFact(facts, "Kind", kind);
-          mcelBlueprintShellAppendFact(facts, "Status", primitive?.status || "unspecified");
+          mcelBlueprintShellAppendFact(facts, "Contract status", primitive?.status || "unspecified");
+          mcelBlueprintShellAppendFact(facts, "Source", source.label);
           card.append(cardTitle, meaning, facts);
 
           mcelBlueprintShellAppendPrimitiveValues(card, "Relationships", primitive?.relationships);

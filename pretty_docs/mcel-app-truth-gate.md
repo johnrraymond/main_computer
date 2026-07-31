@@ -18,7 +18,7 @@ The truth gate does not inspect the live DOM, open applications, execute intents
 The truth gate is an aggregator, not a second registry.
 
 - `McelRequirementsRegistry` remains authoritative for declared application requirements.
-- `McelDomainAdapterRegistry` remains authoritative for executable semantic readiness.
+- `McelDomainAdapterRegistry` remains authoritative for semantic contract coverage and audited runtime-binding readiness.
 - `McelAppSurfaceRegistry` remains authoritative for surface enrollment and required conformance layers.
 - FLOG and other runners remain authoritative for captured runtime evidence.
 - Acceptance runners remain authoritative for acceptance-test results.
@@ -93,11 +93,31 @@ The gate derives these claims:
 
 - a present, strict-schema-valid, complete requirements contract;
 - `fullApplicationSemanticReady` from the domain-adapter registry;
+- `operationalSemanticRuntimeReady`, which additionally requires audited callable runtime bindings or explicit adapter-local implementations for every executable intent in the current scope;
 - fresh runtime evidence that passes the app-surface policy;
 - completed runtime diagnosis;
 - passing acceptance evidence when acceptance contracts are declared.
 
 A passing FLOG surface report alone never proves full application semantics.
+
+### Contract coverage versus operational readiness
+
+The adapter registry intentionally keeps two different states:
+
+```text
+fullApplicationSemanticReady
+    semantic intent contract is complete for the declared current scope
+
+operationalSemanticRuntimeReady
+    fullApplicationSemanticReady is true
+    and every executable intent has audited runtime-binding coverage
+```
+
+An `executionBinding` string is only a declaration. It does not establish that the named method is callable in the loaded runtime.
+
+Adapters that support the operational gate expose `getRuntimeBindingCoverage()`. The registry validates that coverage against the executable intents in `getIntentCoverage()`. Missing coverage, missing intent entries, invalid entries, or any `unbound` executable intent keep `operationalSemanticRuntimeReady` false.
+
+`adapter-local` is a valid binding status only when the adapter contains the complete bounded implementation itself. A convenience fallback that changes browser-local state but does not perform the declared source mutation must not authorize operational readiness. For example, Code Editor local-storage workspace persistence does not prove `saveFile`, and `applyReviewedPatch` requires a callable `applyReviewedPatch` runtime method.
 
 ## Overall statuses
 
@@ -153,6 +173,7 @@ The first truth-gate contract defines these principal finding codes:
 - `requirements-schema-invalid`
 - `missing-domain-adapter`
 - `required-intent-not-executable`
+- `runtime-binding-not-proven`
 - `app-not-enrolled`
 - `runtime-evidence-missing`
 - `runtime-evidence-stale`
@@ -163,7 +184,7 @@ The first truth-gate contract defines these principal finding codes:
 - `acceptance-test-failed`
 - `semantic-readiness-overclaimed`
 
-Blocking findings are reserved for evidence or contracts that directly contradict a claimed proof, such as failed required surface layers, incomplete diagnosis, failed acceptance evidence, or explicit semantic overclaim.
+`runtime-binding-not-proven` is non-blocking by itself: it records incomplete operational implementation rather than contradictory evidence. Blocking findings are reserved for evidence or contracts that directly contradict a claimed proof, such as failed required surface layers, incomplete diagnosis, failed acceptance evidence, or explicit semantic overclaim.
 
 Missing evidence generally produces `verification-incomplete`, not a fabricated failure of the underlying application.
 

@@ -47,6 +47,12 @@ window.MainComputerGitToolsLayoutController
 
 Do not call application-local success a global MCEL guarantee. Promote a behavior into `mcel-contract.js` and `mcel-core.js` only after it has a stable schema, reusable implementation, and cross-application evidence.
 
+### Greenfield readiness
+
+A repository-aware developer can build a bounded new MCEL application today by combining the live global `window.MCEL` source/runtime lifecycle with an application-owned contract, resolver, controller, and evidence path patterned after Code Editor or Git Tools.
+
+This guide is not yet a standalone application SDK. MCEL does not currently provide a generated starter application, a canonical minimal reference app, or the proposed generic application-layout facade. Until those exist, treat source inspection, existing application tests, and application-local integration as part of the development input. Do not infer a global guarantee from an application-specific global such as `MainComputerGitToolsLayout`.
+
 ## 1. Division of responsibility
 
 ### HTML owns concrete structure
@@ -1183,6 +1189,16 @@ MainComputerGitToolsLayoutController.exportPreferences();
 
 These are application APIs. They are intentionally not advertised as generic `window.MCEL` guarantees.
 
+For a new application today:
+
+1. use `window.MCEL` for the supported source, compile, audit, repair, proof, and serialization lifecycle;
+2. keep any layout contract, resolver, preferences, and controller under an application-owned namespace;
+3. preserve the source/runtime serialization boundary instead of saving generated runtime DOM;
+4. add application-local tests and FLOG evidence for the layouts and operations the application claims; and
+5. promote behavior into the global facade only after the shared schema and cross-application proof exist.
+
+An application that does not need user-mutable semantic layout does not need to reproduce the full Code Editor or Git Tools controller surface.
+
 ### Global application-layout facade remains proposed
 
 A reusable platform facade is still a future integration:
@@ -1199,23 +1215,27 @@ Promotion requires one shared normalized schema and behavior proven across contr
 
 ## 15. Recommended application file structure
 
+The following is a greenfield responsibility map, not an inventory of current Git Tools filenames and not a mandatory one-file-per-responsibility rule:
+
 ```text
 main_computer/web/applications/
   apps/
-    git-tools.html
+    <app>.html
 
   scripts/
-    git-tools-contract.js
-    git-tools-state.js
-    git-tools-actions.js
-    git-tools-layout.js
-    git-tools.js
+    <app>-layout-contract.js
+    <app>-state.js
+    <app>-actions.js
+    <app>-semantic-adapter.js
+    <app>.js
 
   styles/
-    git-tools.css
+    <app>.css
 ```
 
-### `git-tools.html`
+Small applications may combine state and actions. Large applications may split them into several feature modules. Preserve the responsibility boundaries even when the physical file count differs.
+
+### `<app>.html`
 
 Contains:
 
@@ -1226,52 +1246,53 @@ Contains:
 - no browser measurements;
 - no generated wrappers.
 
-### `git-tools-contract.js`
+### `<app>-layout-contract.js`
 
-Contains immutable data:
+When semantic layout is required, contains:
 
-- units;
-- relationships;
-- phases;
-- legal layout placements;
-- fallback order;
-- hard and soft constraints;
-- visual roles;
-- user-mutability.
+- immutable application contract data;
+- units, relationships, phases, and legal placements;
+- fallback order and hard versus soft constraints;
+- application-local resolution and preference normalization;
+- user-operation dispatch, undo, reset, and export behavior; and
+- generated runtime layout traits that are removed during serialization.
 
-### `git-tools-state.js`
+The contract data remains declarative even when the same file also exposes the current application-local resolver and controller. Do not describe that controller as a generic `window.MCEL` API.
 
-Contains:
+### `<app>-state.js` and `<app>-actions.js`
 
-- application state;
-- current phase;
-- named signals;
-- semantic transitions.
+Contain application state and behavior:
 
-### `git-tools-actions.js`
-
-Contains:
-
-- API calls;
-- commands;
-- mutations;
+- current phase and named signals;
+- semantic transitions;
+- API calls, commands, and mutations; and
 - conversion of results into state transitions.
 
-### `git-tools-layout.js`
+They change semantic state rather than assigning layout coordinates.
 
-Contains only integration with the generic MCEL layout runtime:
+### `<app>-semantic-adapter.js`
 
-- contract registration;
-- user-operation dispatch;
-- preference loading and saving;
-- reset and undo;
-- resolver explanations.
+Add this layer when the application participates in MCEL requirements, intent, capability, recovery, or evidence comparison. It exposes the application's semantic state and operations to the domain-adapter registry without moving application behavior into the registry itself.
 
-It should not contain application-specific pixel geometry.
+### `<app>.js`
 
-### `git-tools.js`
+Bootstraps the application modules after their dependencies are loaded. It should preserve existing IDs, event hooks, and backend actions while connecting the application to MCEL.
 
-Bootstraps the pieces.
+### Current Git Tools mapping
+
+Git Tools is a mature, decomposed application, not the literal starter layout above. Its current responsibility mapping is:
+
+| Responsibility | Current repository file |
+| --- | --- |
+| Markup | `apps/git-tools.html` |
+| Application-local layout contract, resolver, preferences, and controller | `scripts/git-tools-layout-contract.js` |
+| MCEL enrichment and mounting integration | `scripts/git-tools-mcel.js` |
+| Requirements-facing semantic adapter | `scripts/git-tools-semantic-adapter.js` |
+| Workflow and feature state/actions | `scripts/git-tools-project-workflow.js` and other focused `git-tools-*.js` modules |
+| Application entry point | `scripts/git-tools.js` |
+| Styles | `styles/git-tools.css` |
+
+The repository application entry point must load or include dependencies before the bootstrap module. Copy responsibilities and verified behavior from existing applications; do not copy their filenames as though they were a generic platform contract.
 
 ## 16. Normalization and consensus rules
 
@@ -1378,6 +1399,23 @@ FLOG should verify:
 Candidate search is a fallback for incomplete or failed hints, not the default authoring mechanism.
 
 ## 19. Authoring checklist
+
+### Current implementation sequence
+
+Use this order for a bounded new application:
+
+1. Choose one stable application ID and root element.
+2. Add understandable HTML, native controls and landmarks, stable semantic IDs, and application CSS.
+3. Load the live MCEL facade and application modules in dependency order.
+4. Add only supported `data-mc` source types and platform traits.
+5. Add an application-local layout contract and controller only when the application needs semantic layout resolution or user layout operations.
+6. Add requirements blocks and a semantic adapter when the application participates in requirements, intent, capability, recovery, or evidence comparison.
+7. Compile and audit at the runtime boundary; serialize through `MCEL.serialize()` before save or export.
+8. Add targeted tests for source stability, existing behavior, deterministic compilation, clean serialization, and any application-local layout operations.
+9. Add FLOG and acceptance evidence only for behavior actually exercised in the required environment.
+10. Keep maturity and proof claims aligned with the repository truth gate; missing runtime evidence remains missing proof.
+
+This sequence is the current repository-aware path. It does not imply that the proposed generic application-layout facade exists.
 
 Before calling an MCEL application properly authored:
 

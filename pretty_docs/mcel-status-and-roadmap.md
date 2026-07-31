@@ -95,39 +95,43 @@ The current docs record these relevant milestones:
 - Patch 43 parked Document Editor at `runtime-baseline` until its requirements and semantic adapter are truth-auditable.
 - The read-only browser observation producer established deterministic DOM and authored-accessibility capture into repository-bound observation bundles using static fixtures.
 - The producer hardening pass added exact surface-binding validation and deterministic capture ceilings before any additional lens or live-browser integration.
+- Deterministic evidence-workflow hardening separated canonical and scoped reports, added `mcel-evidence-scope-v1`, and protected canonical evidence behind explicit overwrite intent.
 
 Patch numbers are historical labels, not current truth. Use generated outputs and the authority order above for present-state decisions.
 
 ## Authorized next code candidate
 
-The next authorized MCEL code candidate is deterministic repository evidence pipeline hardening.
+The next authorized MCEL code candidate is MCEL Lab semantic-form provenance and conformance closure.
 
-This is an evidence-integrity candidate, not a feature-expansion candidate. Its bounded implementation may:
+This is a closure candidate for an existing read-only inspector, not a new semantic-form feature or an implementation-status inference system. Its bounded implementation may:
 
-- add explicit canonical versus app/scenario-scoped metadata to runtime and acceptance evidence;
-- keep unfiltered FLOG and acceptance runs on the canonical report paths while routing filtered runs to deterministic scoped directories by default;
-- require an explicit `--overwrite-canonical` operator decision before partial evidence may replace a canonical all-app report;
-- make the truth audit select canonical evidence for `--release-gate`, ignore declared partial reports during latest-report discovery, and identify missing canonical, partial-scope, stale, and repository-fingerprint-mismatch conditions separately;
-- update only directly coupled evidence plumbing, tests, and documentation.
+- preserve exact requirements-document source file and line ranges on compact `form_primitives` payload entries;
+- display primitive provenance and the unambiguous label `Contract status` in the existing semantic-form viewer;
+- make the static shell's aspect selector include the already supported Form aspect;
+- retire the stale finding that claims parsed form primitives are not rendered;
+- extend the existing read-only MCEL Lab deployed-route fixture to select the Form aspect and verify primitive counts, kind grouping, provenance binding, clipping, and overlap at the authorized viewports;
+- update only directly coupled registry plumbing, generated browser payload, viewer markup or styling, tests, and documentation.
 
 Completion requires all of the following:
 
-- an unfiltered runtime or acceptance run still writes the established canonical report;
-- `--app mcel-lab` and other filtered runs do not change canonical evidence unless `--overwrite-canonical` is supplied;
-- the MCEL Lab deployed-route fixture writes app-scoped evidence by default;
-- evidence reports declare `mcel-evidence-scope-v1` scope metadata;
-- the truth audit reports distinct evidence-input statuses for canonical exact proof, missing canonical proof, partial proof, stale runtime proof, and fingerprint mismatch;
-- latest-report discovery does not select a newer declared partial report over canonical evidence;
+- all 40 registered form primitives retain exact `source.file`, `source.start_line`, and `source.end_line` provenance in the Lab payload;
+- MCEL Lab renders 9 primitive cards in 8 ordered groups, including 2 context cards;
+- every rendered primitive card exposes a contract-status label and documentation source without claiming implementation proof;
+- an app with no parsed form primitives retains a truthful empty state;
+- the Form aspect has no internally clipped primitive cards or sibling overlaps at 1280×720, 1440×900, and the 900×900 stacked layout;
+- the stale `mcel-lab.finding.form-primitives-not-yet-first-class-ui` finding is deprecated and linked to executable proof;
 - the requirements registry remains at 304 blocks with 0 errors, 0 warnings, and `strict_schema_ready: True`;
-- no declared application maturity is changed.
+- canonical runtime and acceptance evidence remain exact, and no declared application maturity is changed.
 
-Authorization ends at evidence production, selection, and diagnostics. It does not authorize any application maturity promotion, new MCEL Lab product features, active browser exploration, browser mutation, repair application, or expansion of the observation producer.
+Authorization ends at provenance, viewer consistency, stale-finding cleanup, and read-only conformance proof. It does not authorize per-primitive `observed`, `missing`, or `unknown` implementation badges, because no primitive-level runtime-observable binding currently exists. It also does not authorize source mutation, repair application, active browser exploration, browser mutation, or application maturity promotion.
+
+The completed evidence-workflow hardening remains authoritative: unfiltered runs write canonical evidence, filtered runs default to deterministic scoped directories, reports declare `mcel-evidence-scope-v1`, and partial evidence cannot replace canonical reports without `--overwrite-canonical`.
 
 The read-only browser producer in `mcel-browser-observation-producer.js` still requires a matching app, route, surface, and locator descriptor; proves that the locator resolves uniquely to the supplied attached root; and records the binding result in provenance. Capture continues to use the versioned `mcel.browser-observation.capture-limits.v1` policy with default limits and hard ceilings for elements, tree depth, facts, attributes, text payload, and state markers. Limit-driven omissions remain explicit, deterministic, and recorded as partial capture rather than silently presented as complete.
 
 Redaction remains a non-functional contract stub: `mcel.redaction-policy.stub.v1` reports `not-implemented` and `redactedFactCount: 0`. It performs no masking and provides no sensitive-data protection. The producer continues to emit no verifying claims.
 
-Layout, visual, source, transition, ridge, and general live-browser collection by the observation producer remain deferred. The authorized evidence-pipeline work may alter only report scope, output routing, evidence selection, diagnostics, and directly coupled tests or documentation.
+Layout, visual, source, transition, ridge, and general live-browser collection by the observation producer remain deferred. The authorized semantic-form closure may alter only requirements provenance, existing viewer consistency, read-only Form-aspect conformance evidence, and directly coupled tests or documentation.
 
 
 ## Not authorized
@@ -152,7 +156,7 @@ Use these commands to re-establish the documentation baseline:
 python tools/mcel_requirements_registry.py
 python tools/mcel_requirements_registry.py --report
 python main_computer/mcel_truth_audit.py
-python -m pytest -q tests/test_mcel_documentation.py tests/test_mcel_documentation_authority.py tests/test_mcel_requirements_registry.py tests/test_mcel_app_truth_gate.py tests/test_mcel_truth_audit.py tests/test_mcel_observation_bundle.py tests/test_mcel_browser_observation_producer.py tests/test_mcel_document_editor_surface.py tests/test_mcel_document_editor_layout_fit.py
+python -m pytest -q tests/test_mcel_documentation.py tests/test_mcel_documentation_authority.py tests/test_mcel_requirements_registry.py tests/test_mcel_app_blueprint_contracts.py tests/test_mcel_lab_phase2_shell.py tests/test_mcel_lab_semantic_form_inspection.py tests/test_mcel_lab_deployed_conformance.py tests/test_mcel_app_truth_gate.py tests/test_mcel_truth_audit.py tests/test_mcel_observation_bundle.py tests/test_mcel_browser_observation_producer.py tests/test_mcel_document_editor_surface.py tests/test_mcel_document_editor_layout_fit.py
 ```
 
 A clean update must preserve registry validity, avoid accidental changes to machine-readable requirements, keep the truth audit report-only unless explicitly configured otherwise, and leave exactly one MCEL code-authorization section in this document. That section currently authorizes only the bounded MCEL Lab deployed runtime and acceptance evidence candidate described above.

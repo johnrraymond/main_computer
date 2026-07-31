@@ -296,7 +296,10 @@ def test_requirements_backed_blueprints_expose_semantic_form_primitives() -> Non
     } <= set(result["appIds"])
     assert result["codeEditor"]["formPrimitiveCount"] >= 6
     assert result["calculator"]["formPrimitiveCount"] >= 6
-    assert result["lab"]["requirementsContract"]["formPrimitiveCount"] >= 8
+    assert result["lab"]["requirementsContract"]["formPrimitiveCount"] == 9
+    assert result["lab"]["formPrimitives"][0]["source"]["file"] == "pretty_docs/mcel-lab-blueprint-studio.md"
+    assert result["lab"]["formPrimitives"][0]["source"]["start_line"] > 0
+    assert result["lab"]["formPrimitives"][0]["source"]["end_line"] >= result["lab"]["formPrimitives"][0]["source"]["start_line"]
     assert "form" in result["codeEditor"]["aspectIds"]
     assert "semantic-form-primitives" in [group["id"] for group in result["codeEditor"]["detailGroups"]]
     assert "subject" in result["codeEditor"]["formPrimitiveKinds"]

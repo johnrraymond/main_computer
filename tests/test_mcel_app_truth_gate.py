@@ -104,6 +104,14 @@ def fake_registry_prelude(
               intentCoverageAuditReady: true,
               fullApplicationSemanticReady: {str(full_semantic_ready).lower()},
               semanticRuntimeReady: {str(full_semantic_ready).lower()},
+              operationalSemanticRuntimeReady: {str(full_semantic_ready).lower()},
+              runtimeBindingCoverageAvailable: true,
+              runtimeBindingAuditReady: true,
+              runtimeBindingReady: {str(full_semantic_ready).lower()},
+              runtimeBoundIntentCount: {2 if full_semantic_ready else 0},
+              adapterLocalIntentCount: 0,
+              unboundIntentCount: {0 if full_semantic_ready else 2},
+              unboundIntentIds: {json.dumps([] if full_semantic_ready else ["intent.one", "intent.two"])},
               semanticRuntimeScope: "full-application",
               executableIntentCount: 2,
               preflightOnlyIntentCount: 0,
@@ -221,6 +229,8 @@ def test_complete_authorities_and_fresh_evidence_prove_semantic_runtime() -> Non
     assert truth["overallStatus"] == "semantic-runtime-proven"
     assert truth["requirements"]["contractComplete"] is True
     assert truth["adapter"]["fullApplicationSemanticReady"] is True
+    assert truth["adapter"]["operationalSemanticRuntimeReady"] is True
+    assert truth["adapter"]["runtimeBindingReady"] is True
     assert truth["evidence"]["runtime"]["fresh"] is True
     assert truth["evidence"]["runtime"]["policyPassed"] is True
     assert truth["claims"]["runtimeSurfaceProven"] is True
@@ -685,3 +695,46 @@ def test_actual_registries_produce_component_truth_without_runtime_evidence() ->
         "acceptance-test-missing",
     ]:
         assert code in truth["findingCodes"]
+
+def test_contract_complete_adapter_without_runtime_bindings_cannot_prove_semantic_runtime() -> None:
+    script = load_truth_gate(
+        fake_registry_prelude()
+        + """
+        const originalEvaluate = domainAdapterRegistry.evaluateAdapterReadiness;
+        domainAdapterRegistry.evaluateAdapterReadiness = function(appId) {
+          return {
+            ...originalEvaluate(appId),
+            operationalSemanticRuntimeReady: false,
+            runtimeBindingCoverageAvailable: true,
+            runtimeBindingAuditReady: true,
+            runtimeBindingReady: false,
+            runtimeBoundIntentCount: 1,
+            adapterLocalIntentCount: 1,
+            unboundIntentCount: 1,
+            unboundIntentIds: ["applyReviewedPatch"]
+          };
+        };
+        const truth = gate.evaluateAppTruth("demo", {
+          requirementsRegistry,
+          domainAdapterRegistry,
+          appSurfaceRegistry,
+          runtimeEvidence,
+          acceptanceEvidence,
+          now: "2026-07-27T12:00:00Z"
+        });
+        process.stdout.write(JSON.stringify(truth));
+        """
+    )
+    truth = run_node_json(script)
+
+    assert truth["adapter"]["fullApplicationSemanticReady"] is True
+    assert truth["adapter"]["operationalSemanticRuntimeReady"] is False
+    assert truth["claims"]["runtimeSurfaceProven"] is True
+    assert truth["claims"]["semanticRuntimeProven"] is False
+    assert truth["overallStatus"] == "runtime-proven"
+    findings = {finding["code"]: finding for finding in truth["findings"]}
+    assert findings["runtime-binding-not-proven"]["blocking"] is False
+    assert findings["runtime-binding-not-proven"]["detail"]["unboundIntentIds"] == [
+        "applyReviewedPatch"
+    ]
+
