@@ -15,7 +15,7 @@ var McelApplicationPackages = (() => {
   }
 
   const PAYLOAD = deepFreeze({
-  "catalogFingerprint": "sha256:f3f0f0f3cb90bd81b16a1448c5e67037d66b4da784e01184d9008018fb2a1688",
+  "catalogFingerprint": "sha256:7c93124269e4450caa9ba91464ad1a42c38ea75dc85dd9e464140a5be3da496a",
   "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
   "format": "mcel-application-package-browser-catalog-v1",
   "packageCount": 1,
@@ -26,7 +26,6 @@ var McelApplicationPackages = (() => {
       "conformance": {
         "currentMode": "structural-only",
         "missingBridges": [
-          "operation-linked-browser-observation",
           "app-oriented-proof-orchestration"
         ],
         "targetMode": "semantic-runtime-proven"
@@ -41,7 +40,7 @@ var McelApplicationPackages = (() => {
         "surface": "mcel_apps/contract-counter/contracts/surface.js"
       },
       "fileCount": 20,
-      "fingerprint": "sha256:fa2971e4891dd066e67d8e2e6854bb01906fea2e5e692535efda3ed6882931e2",
+      "fingerprint": "sha256:9e1d6653cd9cf12b12f2cb385f09aa77b9319780d4236d4d727ef501f7e4708c",
       "fingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
       "manifest": "mcel_apps/contract-counter/mcel.app.json",
       "packageRoot": "mcel_apps/contract-counter",
@@ -53,8 +52,8 @@ var McelApplicationPackages = (() => {
       },
       "runtimeProjection": {
         "documentUrl": "applications/mcel-packages/contract-counter/src/index.html",
-        "fileCount": 9,
-        "fingerprint": "sha256:4e0fefd5c7b5de98cd12fd5e01dcdff9ec6c3aceeef9bfeb492f308cc7fde3a2",
+        "fileCount": 10,
+        "fingerprint": "sha256:b981ae2652a850c9586efb56d84fff52959966346bb3110035a2314f152b0a2f",
         "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1",
         "manifest": "main_computer/web/applications/mcel-packages/contract-counter/mcel.runtime.json",
         "manifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",

@@ -44,10 +44,13 @@ MCEL_LAYER_INVENTORY = {
         "main_computer/web/applications/scripts/mcel-browser-observer.js",
         "main_computer/web/applications/scripts/mcel-browser-runner.js",
         "main_computer/web/applications/scripts/mcel-browser-observation-producer.js",
+        "main_computer/web/applications/scripts/mcel-application-operation-observer.js",
     ],
     "semantic-surface": [
         "main_computer/web/applications/scripts/mcel-app-blueprints-core.js",
         "main_computer/web/applications/scripts/mcel-application-package-catalog.js",
+        "main_computer/web/applications/scripts/mcel-application-package-host.js",
+        "main_computer/web/mcel-package-host.html",
         "main_computer/web/applications/scripts/mcel-app-surface-conformance.js",
         "main_computer/web/applications/scripts/mcel-app-surface-registry.js",
         "main_computer/web/applications/scripts/mcel-app-truth-gate.js",

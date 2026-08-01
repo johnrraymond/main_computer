@@ -30,7 +30,6 @@
     "currentMode": "structural-only",
     "targetMode": "semantic-runtime-proven",
     "missingBridges": [
-      "operation-linked-browser-observation",
       "app-oriented-proof-orchestration"
     ]
   }

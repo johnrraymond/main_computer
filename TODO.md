@@ -100,4 +100,4 @@
 - Full Ethereum-style integration.
 - Integrate a dedicated Chromium-based frontend (e.g., via Electron or a similar framework) directly into the project for a more robust, standalone application experience.
 
-- MCEL scaffolding: Wave 6A package-local acceptance discovery is complete; continue from `pretty_docs/mcel-status-and-roadmap.md` for operation-linked browser observation.
+- MCEL scaffolding: Wave 6B operation-linked browser observation is complete; continue from `pretty_docs/mcel-status-and-roadmap.md` for app-oriented proof orchestration.

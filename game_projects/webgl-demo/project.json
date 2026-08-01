@@ -3175,7 +3175,7 @@
   "scripts": [],
   "metadata": {
     "createdBy": "Main Computer Scene Store",
-    "revision": 13,
+    "revision": 14,
     "phase": "phase-5-shuttle-boarding-combat",
     "controlScheme": "pointer-look-wasd-phaser-combat",
     "starterScene": "shuttlecraft-boarding-defense",
@@ -3183,6 +3183,930 @@
     "lookAroundEnabled": true,
     "viewportShowsMotherShip": true,
     "viewportShowsStars": true,
+    "spaceNavigation": {
+      "enabled": true,
+      "schema": "game.spaceNavigation.v1",
+      "definitionVersion": "game.spaceNavigation.definition.v1",
+      "stateVersion": "game.spaceNavigation.state.v1",
+      "startSystem": "system.solace-reach",
+      "policy": {
+        "jumpMode": "adjacent-only",
+        "directJumpRequiresRoute": true,
+        "mapPositionAuthoritative": false,
+        "allowDirectedRoutes": true
+      },
+      "arrivalProfiles": {
+        "arrival.bridge-retain-player": {
+          "mode": "retain-player",
+          "sceneId": "default-empty-scene",
+          "location": "bridge.deck",
+          "description": "Keep the player on the mother-ship bridge while the active local system changes."
+        }
+      },
+      "systems": [
+        {
+          "id": "system.solace-reach",
+          "label": "Solace Reach",
+          "region": "region.origin",
+          "mapPosition": [
+            0,
+            -3
+          ],
+          "localSpaceId": "space.solace-reach",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.vela-gate",
+          "label": "Vela Gate",
+          "region": "region.origin",
+          "mapPosition": [
+            2,
+            -2
+          ],
+          "localSpaceId": "space.vela-gate",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.carina-watch",
+          "label": "Carina Watch",
+          "region": "region.origin",
+          "mapPosition": [
+            3,
+            0
+          ],
+          "localSpaceId": "space.carina-watch",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.orison",
+          "label": "Orison",
+          "region": "region.origin",
+          "mapPosition": [
+            2,
+            2
+          ],
+          "localSpaceId": "space.orison",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.cinder",
+          "label": "Cinder",
+          "region": "region.origin",
+          "mapPosition": [
+            0,
+            3
+          ],
+          "localSpaceId": "space.cinder",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.lumen",
+          "label": "Lumen",
+          "region": "region.origin",
+          "mapPosition": [
+            -2,
+            2
+          ],
+          "localSpaceId": "space.lumen",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.ardent",
+          "label": "Ardent",
+          "region": "region.origin",
+          "mapPosition": [
+            -3,
+            0
+          ],
+          "localSpaceId": "space.ardent",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.pax",
+          "label": "Pax",
+          "region": "region.origin",
+          "mapPosition": [
+            -2,
+            -2
+          ],
+          "localSpaceId": "space.pax",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.meridian-prime",
+          "label": "Meridian Prime",
+          "region": "region.meridian",
+          "mapPosition": [
+            10,
+            -3
+          ],
+          "localSpaceId": "space.meridian-prime",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.tethys",
+          "label": "Tethys",
+          "region": "region.meridian",
+          "mapPosition": [
+            12,
+            -2
+          ],
+          "localSpaceId": "space.tethys",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.ilyra",
+          "label": "Ilyra",
+          "region": "region.meridian",
+          "mapPosition": [
+            13,
+            0
+          ],
+          "localSpaceId": "space.ilyra",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.daedalus",
+          "label": "Daedalus",
+          "region": "region.meridian",
+          "mapPosition": [
+            12,
+            2
+          ],
+          "localSpaceId": "space.daedalus",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.nacre",
+          "label": "Nacre",
+          "region": "region.meridian",
+          "mapPosition": [
+            10,
+            3
+          ],
+          "localSpaceId": "space.nacre",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.sable",
+          "label": "Sable",
+          "region": "region.meridian",
+          "mapPosition": [
+            8,
+            2
+          ],
+          "localSpaceId": "space.sable",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.vesper",
+          "label": "Vesper",
+          "region": "region.meridian",
+          "mapPosition": [
+            7,
+            0
+          ],
+          "localSpaceId": "space.vesper",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.kestrel",
+          "label": "Kestrel",
+          "region": "region.meridian",
+          "mapPosition": [
+            8,
+            -2
+          ],
+          "localSpaceId": "space.kestrel",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.helix-prime",
+          "label": "Helix Prime",
+          "region": "region.helix",
+          "mapPosition": [
+            20,
+            5
+          ],
+          "localSpaceId": "space.helix-prime",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.aster",
+          "label": "Aster",
+          "region": "region.helix",
+          "mapPosition": [
+            22,
+            6
+          ],
+          "localSpaceId": "space.aster",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.calyx",
+          "label": "Calyx",
+          "region": "region.helix",
+          "mapPosition": [
+            23,
+            8
+          ],
+          "localSpaceId": "space.calyx",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.remora",
+          "label": "Remora",
+          "region": "region.helix",
+          "mapPosition": [
+            22,
+            10
+          ],
+          "localSpaceId": "space.remora",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.talon",
+          "label": "Talon",
+          "region": "region.helix",
+          "mapPosition": [
+            20,
+            11
+          ],
+          "localSpaceId": "space.talon",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.eos",
+          "label": "Eos",
+          "region": "region.helix",
+          "mapPosition": [
+            18,
+            10
+          ],
+          "localSpaceId": "space.eos",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.morrow",
+          "label": "Morrow",
+          "region": "region.helix",
+          "mapPosition": [
+            17,
+            8
+          ],
+          "localSpaceId": "space.morrow",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.halcyon",
+          "label": "Halcyon",
+          "region": "region.helix",
+          "mapPosition": [
+            18,
+            6
+          ],
+          "localSpaceId": "space.halcyon",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.crown-prime",
+          "label": "Crown Prime",
+          "region": "region.crown",
+          "mapPosition": [
+            20,
+            -11
+          ],
+          "localSpaceId": "space.crown-prime",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.regulus",
+          "label": "Regulus",
+          "region": "region.crown",
+          "mapPosition": [
+            22,
+            -10
+          ],
+          "localSpaceId": "space.regulus",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.chiron",
+          "label": "Chiron",
+          "region": "region.crown",
+          "mapPosition": [
+            23,
+            -8
+          ],
+          "localSpaceId": "space.chiron",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.bellatrix",
+          "label": "Bellatrix",
+          "region": "region.crown",
+          "mapPosition": [
+            22,
+            -6
+          ],
+          "localSpaceId": "space.bellatrix",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.kepler",
+          "label": "Kepler",
+          "region": "region.crown",
+          "mapPosition": [
+            20,
+            -5
+          ],
+          "localSpaceId": "space.kepler",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.lyra",
+          "label": "Lyra",
+          "region": "region.crown",
+          "mapPosition": [
+            18,
+            -6
+          ],
+          "localSpaceId": "space.lyra",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.antares",
+          "label": "Antares",
+          "region": "region.crown",
+          "mapPosition": [
+            17,
+            -8
+          ],
+          "localSpaceId": "space.antares",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.seraph",
+          "label": "Seraph",
+          "region": "region.crown",
+          "mapPosition": [
+            18,
+            -10
+          ],
+          "localSpaceId": "space.seraph",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.verge-prime",
+          "label": "Verge Prime",
+          "region": "region.verge",
+          "mapPosition": [
+            30,
+            -3
+          ],
+          "localSpaceId": "space.verge-prime",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.rook",
+          "label": "Rook",
+          "region": "region.verge",
+          "mapPosition": [
+            32,
+            -2
+          ],
+          "localSpaceId": "space.rook",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.fenris",
+          "label": "Fenris",
+          "region": "region.verge",
+          "mapPosition": [
+            33,
+            0
+          ],
+          "localSpaceId": "space.fenris",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.nyx",
+          "label": "Nyx",
+          "region": "region.verge",
+          "mapPosition": [
+            32,
+            2
+          ],
+          "localSpaceId": "space.nyx",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.osprey",
+          "label": "Osprey",
+          "region": "region.verge",
+          "mapPosition": [
+            30,
+            3
+          ],
+          "localSpaceId": "space.osprey",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.tempest",
+          "label": "Tempest",
+          "region": "region.verge",
+          "mapPosition": [
+            28,
+            2
+          ],
+          "localSpaceId": "space.tempest",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.bastion",
+          "label": "Bastion",
+          "region": "region.verge",
+          "mapPosition": [
+            27,
+            0
+          ],
+          "localSpaceId": "space.bastion",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        },
+        {
+          "id": "system.axiom",
+          "label": "Axiom",
+          "region": "region.verge",
+          "mapPosition": [
+            28,
+            -2
+          ],
+          "localSpaceId": "space.axiom",
+          "arrivalProfile": "arrival.bridge-retain-player"
+        }
+      ],
+      "routes": [
+        {
+          "id": "route.solace-reach-vela-gate",
+          "from": "system.solace-reach",
+          "to": "system.vela-gate",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.vela-gate-carina-watch",
+          "from": "system.vela-gate",
+          "to": "system.carina-watch",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.carina-watch-orison",
+          "from": "system.carina-watch",
+          "to": "system.orison",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.orison-cinder",
+          "from": "system.orison",
+          "to": "system.cinder",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.cinder-lumen",
+          "from": "system.cinder",
+          "to": "system.lumen",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.lumen-ardent",
+          "from": "system.lumen",
+          "to": "system.ardent",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.ardent-pax",
+          "from": "system.ardent",
+          "to": "system.pax",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.pax-solace-reach",
+          "from": "system.pax",
+          "to": "system.solace-reach",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.meridian-prime-tethys",
+          "from": "system.meridian-prime",
+          "to": "system.tethys",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.tethys-ilyra",
+          "from": "system.tethys",
+          "to": "system.ilyra",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.ilyra-daedalus",
+          "from": "system.ilyra",
+          "to": "system.daedalus",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.daedalus-nacre",
+          "from": "system.daedalus",
+          "to": "system.nacre",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.nacre-sable",
+          "from": "system.nacre",
+          "to": "system.sable",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.sable-vesper",
+          "from": "system.sable",
+          "to": "system.vesper",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.vesper-kestrel",
+          "from": "system.vesper",
+          "to": "system.kestrel",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.kestrel-meridian-prime",
+          "from": "system.kestrel",
+          "to": "system.meridian-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.helix-prime-aster",
+          "from": "system.helix-prime",
+          "to": "system.aster",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.aster-calyx",
+          "from": "system.aster",
+          "to": "system.calyx",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.calyx-remora",
+          "from": "system.calyx",
+          "to": "system.remora",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.remora-talon",
+          "from": "system.remora",
+          "to": "system.talon",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.talon-eos",
+          "from": "system.talon",
+          "to": "system.eos",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.eos-morrow",
+          "from": "system.eos",
+          "to": "system.morrow",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.morrow-halcyon",
+          "from": "system.morrow",
+          "to": "system.halcyon",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.halcyon-helix-prime",
+          "from": "system.halcyon",
+          "to": "system.helix-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.crown-prime-regulus",
+          "from": "system.crown-prime",
+          "to": "system.regulus",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.regulus-chiron",
+          "from": "system.regulus",
+          "to": "system.chiron",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.chiron-bellatrix",
+          "from": "system.chiron",
+          "to": "system.bellatrix",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.bellatrix-kepler",
+          "from": "system.bellatrix",
+          "to": "system.kepler",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.kepler-lyra",
+          "from": "system.kepler",
+          "to": "system.lyra",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.lyra-antares",
+          "from": "system.lyra",
+          "to": "system.antares",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.antares-seraph",
+          "from": "system.antares",
+          "to": "system.seraph",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.seraph-crown-prime",
+          "from": "system.seraph",
+          "to": "system.crown-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.verge-prime-rook",
+          "from": "system.verge-prime",
+          "to": "system.rook",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.rook-fenris",
+          "from": "system.rook",
+          "to": "system.fenris",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.fenris-nyx",
+          "from": "system.fenris",
+          "to": "system.nyx",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.nyx-osprey",
+          "from": "system.nyx",
+          "to": "system.osprey",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.osprey-tempest",
+          "from": "system.osprey",
+          "to": "system.tempest",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.tempest-bastion",
+          "from": "system.tempest",
+          "to": "system.bastion",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.bastion-axiom",
+          "from": "system.bastion",
+          "to": "system.axiom",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.axiom-verge-prime",
+          "from": "system.axiom",
+          "to": "system.verge-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 4500,
+          "worldTimeCost": 4
+        },
+        {
+          "id": "route.vela-gate-meridian-prime",
+          "from": "system.vela-gate",
+          "to": "system.meridian-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.pax-kestrel",
+          "from": "system.pax",
+          "to": "system.kestrel",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.tethys-helix-prime",
+          "from": "system.tethys",
+          "to": "system.helix-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.ilyra-halcyon",
+          "from": "system.ilyra",
+          "to": "system.halcyon",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.sable-crown-prime",
+          "from": "system.sable",
+          "to": "system.crown-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.vesper-seraph",
+          "from": "system.vesper",
+          "to": "system.seraph",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.aster-verge-prime",
+          "from": "system.aster",
+          "to": "system.verge-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.eos-rook",
+          "from": "system.eos",
+          "to": "system.rook",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.regulus-axiom",
+          "from": "system.regulus",
+          "to": "system.axiom",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.antares-bastion",
+          "from": "system.antares",
+          "to": "system.bastion",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        }
+      ],
+      "stateDefaults": {
+        "currentSystemId": "system.solace-reach",
+        "plottedRouteId": null,
+        "travelPhase": "in-system",
+        "elapsedWorldTime": 0,
+        "discoveredSystems": [
+          "system.solace-reach",
+          "system.vela-gate",
+          "system.carina-watch",
+          "system.orison",
+          "system.cinder",
+          "system.lumen",
+          "system.ardent",
+          "system.pax",
+          "system.meridian-prime",
+          "system.tethys",
+          "system.ilyra",
+          "system.daedalus",
+          "system.nacre",
+          "system.sable",
+          "system.vesper",
+          "system.kestrel",
+          "system.helix-prime",
+          "system.aster",
+          "system.calyx",
+          "system.remora",
+          "system.talon",
+          "system.eos",
+          "system.morrow",
+          "system.halcyon",
+          "system.crown-prime",
+          "system.regulus",
+          "system.chiron",
+          "system.bellatrix",
+          "system.kepler",
+          "system.lyra",
+          "system.antares",
+          "system.seraph",
+          "system.verge-prime",
+          "system.rook",
+          "system.fenris",
+          "system.nyx",
+          "system.osprey",
+          "system.tempest",
+          "system.bastion",
+          "system.axiom"
+        ]
+      },
+      "validation": {
+        "requireUniqueSystemIds": true,
+        "requireUniqueRouteIds": true,
+        "requireRouteReferences": true,
+        "requireDistinctRouteEndpoints": true,
+        "requireAtLeastOneRoutePerSystem": true,
+        "requireStartReachability": true,
+        "requireArrivalProfiles": true,
+        "requireStateReferences": true,
+        "requireUniqueMapPositions": true
+      }
+    },
     "renderer": "raw-webgl-vertex-mesh",
     "actualHullBounds": true,
     "movementEnabled": true,

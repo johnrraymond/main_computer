@@ -12,6 +12,7 @@ def test_generated_browser_code_uses_the_generic_package_mount() -> None:
     assert "MCEL.mountApplicationPackage" in runtime
     assert "appId" in runtime
     assert "mcel.runtime.json" in runtime
+    assert "import.meta.url" in runtime
     assert "canonicalState.count" not in runtime
     assert "count += 1" not in runtime
     assert "not implemented" not in runtime

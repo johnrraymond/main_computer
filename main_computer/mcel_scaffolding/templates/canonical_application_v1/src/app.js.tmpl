@@ -4,7 +4,7 @@ const status = root?.querySelector("[data-mcel-runtime-status]");
 export const requiredMcelApplicationRuntime = Object.freeze({
   packageSchema: "mcel.application-package.v1",
   appId: {{APP_ID_JSON}},
-  manifestUrl: "../mcel.runtime.json",
+  manifestUrl: new URL("../mcel.runtime.json", import.meta.url).href,
   mountMethod: "MCEL.mountApplicationPackage",
   requiredBehavior: Object.freeze([
     "resolve the validated browser-safe package projection",

@@ -2,7 +2,7 @@
 
 This document specifies the target MCEL application-scaffolding feature and the canonical application template that the feature must generate.
 
-It is the implementation contract for the complete feature. Waves 2 through 5A provide deterministic scaffolding, package discovery, browser-safe projection, SCM-controlled operations, and generic semantic-surface mounting. Wave 6A now provides package-local acceptance discovery and app-scoped execution through the existing acceptance authority. It does not claim operation-linked independent browser observation, app-oriented proof orchestration, or semantic-runtime promotion. Current implementation status remains controlled by `pretty_docs/mcel-status-and-roadmap.md` and generated repository evidence.
+It is the implementation contract for the complete feature. Waves 2 through 5A provide deterministic scaffolding, package discovery, browser-safe projection, SCM-controlled operations, and generic semantic-surface mounting. Wave 6A provides package-local acceptance discovery and app-scoped execution through the existing acceptance authority. Wave 6B now provides a generic real-browser package host and operation-linked independent browser observation. It does not claim app-oriented proof orchestration or semantic-runtime promotion. Current implementation status remains controlled by `pretty_docs/mcel-status-and-roadmap.md` and generated repository evidence.
 
 ## Purpose
 
@@ -72,11 +72,11 @@ This document uses the following status labels.
 | `fixture-target` | The canonical fixture must eventually exercise this behavior. |
 | `deferred` | The behavior is intentionally outside the first implementation cut. |
 
-The repository-local `mcel.application-package.v1` shape is live for scaffold generation, structural validation, repository and browser discovery, SCM-controlled semantic operations, generic browser mounting, and package-local acceptance discovery. The installed `mcel app ...` command, operation-linked independent browser observation, and proof orchestration remain proposed.
+The repository-local `mcel.application-package.v1` shape is live for scaffold generation, structural validation, repository and browser discovery, SCM-controlled semantic operations, generic browser mounting, package-local acceptance discovery, and operation-linked independent browser observation. The installed `mcel app ...` command and proof orchestration remain proposed.
 
 ## Current implementation checkpoint
 
-Wave 6A is live at the package-local acceptance-discovery boundary:
+Wave 6B is live at the operation-linked browser-observation boundary:
 
 ```text
 tools/mcel_create_app.py                 live
@@ -89,11 +89,11 @@ browser-safe package catalog             live
 adapter-to-SCM application runtime       live
 generic semantic surface projection      live
 package-local acceptance discovery       live
-operation-linked browser observation     missing
+operation-linked browser observation     live
 app-oriented proof orchestration         missing
 ```
 
-The live generator creates the complete target package shape under the repository-root `mcel_apps/` directory by default. `tools/mcel_application_packages.py` discovers and fingerprints canonical packages. `tools/mcel_application_runtime_projection.py` deterministically copies only browser-executable domain, intent, adapter, surface, layout, document, script, and style files into `main_computer/web/applications/mcel-packages/`, with a source-bound runtime manifest. The generated browser catalog carries the matching projection fingerprint and browser URLs. `MCEL.mountApplicationPackage()` verifies package, catalog, and projection identity; loads declared modules; compiles intents through `mcel-scm.js`; validates authored semantic ridges; binds controls to intents; and renders committed state and operation receipts. Generated packages remain `structural-only` because operation-linked independent observation and proof orchestration are unresolved. Package-local acceptance is now discovered from the package manifest, requirements, and package-relative binding file and is executed by the existing acceptance runner.
+The live generator creates the complete target package shape under the repository-root `mcel_apps/` directory by default. `tools/mcel_application_packages.py` discovers and fingerprints canonical packages. `tools/mcel_application_runtime_projection.py` deterministically copies only browser-executable domain, intent, adapter, surface, layout, document, script, and style files into `main_computer/web/applications/mcel-packages/`, with a source-bound runtime manifest. The generated browser catalog carries the matching projection fingerprint and browser URLs. `MCEL.mountApplicationPackage()` verifies package, catalog, and projection identity; loads declared modules; compiles intents through `mcel-scm.js`; validates authored semantic ridges; binds controls to intents; and renders committed state and operation receipts. Generated packages remain `structural-only` because proof orchestration is unresolved. Package-local acceptance is discovered from the package manifest, requirements, and package-relative binding file. The generic package host mounts the projected application in Chromium, and `mcel_application_observation_runner.py` independently compares committed SCM state and receipts against the rendered semantic nodes.
 
 ## The four artifacts
 
@@ -533,10 +533,11 @@ Blueprint syntax                    pass
 Golden fixture equivalence          pass
 Generated tests collect             pass
 Application package discovery       pass
-Browser compatibility registration  missing
-Adapter-to-SCM application bridge   missing
-Generic surface projection          missing
+Browser compatibility registration  pass
+Adapter-to-SCM application bridge   pass
+Generic surface projection          pass
 Package-local acceptance discovery  pass
+Operation-linked browser observation pass
 App-oriented proof command          missing
 ```
 
@@ -807,14 +808,14 @@ Verified exit gate:
 - no direct canonical mutation from browser code;
 - no success display before commit;
 - source packages remain outside the served tree;
-- requirements, tests, acceptance, and observation files are excluded from browser projection;
+- requirements, tests, and acceptance files are excluded from browser projection; executable observation contracts are included;
 - package, catalog, and projection fingerprint mismatches are refused;
 - surface identity, regions, nodes, controls, and layout-region declarations are validated;
 - mount and unmount are deterministic;
 - rendered values derive from committed state;
 - semantic identities survive rendering.
 
-This wave does not emit independent browser observations, enroll Contract Counter as `semantic-runtime-proven`, or add a launcher route.
+This wave does not itself emit independent browser observations or enroll Contract Counter as `semantic-runtime-proven`; the generic launcher and observation authority are supplied by Wave 6B.
 
 ### Wave 6A: Package-local acceptance discovery
 
@@ -838,22 +839,34 @@ python main_computer/mcel_acceptance_runner.py --app contract-counter --check
 
 Contract Counter executes increment, reset, stale, duplicate, prohibited, and failed-postcondition paths through the shared SCM-controlled runtime. No central acceptance-binding edit is required.
 
-### Wave 6B: Operation-linked browser observation
+### Wave 6B: Operation-linked browser observation — implemented
 
-Deliver:
+Live implementation:
 
-- controlled post-operation browser observation;
-- canonical-state/browser-state comparison;
-- repository-bound observation evidence.
+- `main_computer/web/mcel-package-host.html`, a generic package host rather than an app-specific route;
+- `mcel-application-package-host.js`, which loads the validated runtime projection and actual generated app module;
+- `mcel-application-operation-observer.js`, which independently reads semantic nodes and visible receipt data after a committed SCM operation;
+- browser-safe projection of the package observation contract;
+- `main_computer/mcel_application_observation_runner.py`, which runs the app in Playwright Chromium and writes app-scoped JSON and Markdown evidence.
 
-Exit gate:
+Verified comparison contract:
 
 ```text
 accepted increment
-→ canonical count 1
-→ visible count 1
-→ independently bound evidence
+→ SCM canonical count 1 at revision 1
+→ semantic projection renders count 1
+→ independent DOM capture observes count 1
+→ visible receipt operation and revision match SCM
+→ package, projection, catalog, and repository fingerprints are bound
 ```
+
+Required command:
+
+```bat
+python main_computer/mcel_application_observation_runner.py --app contract-counter --check
+```
+
+Tampered state text, tampered receipts, missing semantic nodes, surface mismatch, refused operations, and stale package or runtime-projection fingerprints are hard failures. This wave does not promote Contract Counter beyond `structural-only`; final proof orchestration remains separate.
 
 ### Wave 7: App-oriented proof orchestration
 

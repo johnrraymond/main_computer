@@ -1052,15 +1052,23 @@ var McelApplicationRuntime = (() => {
       await readRuntimeManifest(manifestUrl, request)
     );
     const loader = request.moduleLoader || defaultModuleLoader;
-    const [domain, intents, adapter, surface, layout] = await Promise.all([
+    const [domain, intents, adapter, surface, layout, observation] = await Promise.all([
       loadDeclaredModule(manifestUrl, manifest.modules.domain, loader, "domain"),
       loadDeclaredModule(manifestUrl, manifest.modules.intents, loader, "intents"),
       loadDeclaredModule(manifestUrl, manifest.modules.adapter, loader, "adapter"),
       loadDeclaredModule(manifestUrl, manifest.modules.surface, loader, "surface"),
-      loadDeclaredModule(manifestUrl, manifest.modules.layout, loader, "layout")
+      loadDeclaredModule(manifestUrl, manifest.modules.layout, loader, "layout"),
+      manifest.modules.observation
+        ? loadDeclaredModule(manifestUrl, manifest.modules.observation, loader, "observation")
+        : Promise.resolve(null)
     ]);
     const appId = packageRecord.appId;
-    if (safeString(domain?.appId) !== appId || safeString(adapter?.appId) !== appId || safeString(surface?.appId) !== appId) {
+    if (
+      safeString(domain?.appId) !== appId
+      || safeString(adapter?.appId) !== appId
+      || safeString(surface?.appId) !== appId
+      || (observation && safeString(observation?.appId) !== appId)
+    ) {
       throwViolation("APPLICATION_RUNTIME_MODULE_IDENTITY_MISMATCH", {
         phase: "mount-package",
         appId,
@@ -1160,6 +1168,7 @@ var McelApplicationRuntime = (() => {
       root,
       surface: deepFreeze(cloneValue(surface)),
       layout: deepFreeze(cloneValue(layout)),
+      observation: observation ? deepFreeze(cloneValue(observation)) : null,
       dispatch,
       render,
       readState() {

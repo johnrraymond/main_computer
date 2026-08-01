@@ -1,10 +1,30 @@
 export const {{APP_CLASS_NAME}}Observation = Object.freeze({
   schema: "mcel.observation-contract.v1",
   appId: {{APP_ID_JSON}},
-  currentStatus: "declaration-only",
+  currentStatus: "operation-linked",
   observations: Object.freeze([
-    Object.freeze({ id: "{{APP_ID}}.observe.value", source: "browser-dom", semanticNodeId: "{{APP_ID}}.value", property: "textContent" }),
-    Object.freeze({ id: "{{APP_ID}}.observe.value-visible", source: "browser-geometry", semanticNodeId: "{{APP_ID}}.value", property: "visible" }),
-    Object.freeze({ id: "{{APP_ID}}.observe.receipt", source: "browser-dom", semanticNodeId: "{{APP_ID}}.latest-receipt", property: "textContent" })
+    Object.freeze({
+      id: "{{APP_ID}}.observe.value",
+      source: "browser-dom",
+      semanticNodeId: "{{APP_ID}}.value",
+      property: "textContent",
+      compareToStatePath: "count",
+      normalization: "string"
+    }),
+    Object.freeze({
+      id: "{{APP_ID}}.observe.value-visible",
+      source: "browser-geometry",
+      semanticNodeId: "{{APP_ID}}.value",
+      property: "visible",
+      expected: true,
+      normalization: "boolean"
+    }),
+    Object.freeze({
+      id: "{{APP_ID}}.observe.receipt",
+      source: "browser-dom",
+      semanticNodeId: "{{APP_ID}}.latest-receipt",
+      property: "textContent",
+      compareToOperationReceipt: true
+    })
   ])
 });

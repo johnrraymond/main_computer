@@ -12,7 +12,8 @@ def test_generated_package_does_not_claim_unearned_semantic_runtime_proof() -> N
     requirements = (PACKAGE_ROOT / "requirements.md").read_text(encoding="utf-8")
 
     assert manifest["conformance"]["currentMode"] == "structural-only"
-    assert manifest["conformance"]["missingBridges"]
+    assert manifest["conformance"]["missingBridges"] == ["app-oriented-proof-orchestration"]
     assert "package-local-acceptance-discovery" not in manifest["conformance"]["missingBridges"]
+    assert "operation-linked-browser-observation" not in manifest["conformance"]["missingBridges"]
     assert "current_runtime_status: structural-only" in requirements
     assert "semantic-runtime-proven" == manifest["conformance"]["targetMode"]

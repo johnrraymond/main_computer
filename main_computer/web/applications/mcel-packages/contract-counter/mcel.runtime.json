@@ -3,7 +3,6 @@
   "conformance": {
     "currentMode": "structural-only",
     "missingBridges": [
-      "operation-linked-browser-observation",
       "app-oriented-proof-orchestration"
     ],
     "targetMode": "semantic-runtime-proven"
@@ -25,14 +24,18 @@
       "export": "ContractCounterLayout",
       "path": "contracts/layout.js"
     },
+    "observation": {
+      "export": "ContractCounterObservation",
+      "path": "contracts/observation.js"
+    },
     "surface": {
       "export": "ContractCounterSurface",
       "path": "contracts/surface.js"
     }
   },
   "projection": {
-    "fileCount": 9,
-    "fingerprint": "sha256:4e0fefd5c7b5de98cd12fd5e01dcdff9ec6c3aceeef9bfeb492f308cc7fde3a2",
+    "fileCount": 10,
+    "fingerprint": "sha256:b981ae2652a850c9586efb56d84fff52959966346bb3110035a2314f152b0a2f",
     "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1"
   },
   "runtime": {
@@ -42,9 +45,9 @@
   },
   "schema": "mcel.application-runtime-projection.v1",
   "source": {
-    "catalogFingerprint": "sha256:f3f0f0f3cb90bd81b16a1448c5e67037d66b4da784e01184d9008018fb2a1688",
+    "catalogFingerprint": "sha256:7c93124269e4450caa9ba91464ad1a42c38ea75dc85dd9e464140a5be3da496a",
     "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
-    "packageFingerprint": "sha256:fa2971e4891dd066e67d8e2e6854bb01906fea2e5e692535efda3ed6882931e2",
+    "packageFingerprint": "sha256:9e1d6653cd9cf12b12f2cb385f09aa77b9319780d4236d4d727ef501f7e4708c",
     "packageFingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
     "packageRoot": "mcel_apps/contract-counter"
   },

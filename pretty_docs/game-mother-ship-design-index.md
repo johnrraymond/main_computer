@@ -16,8 +16,10 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-mother-ship-bridge-route-plan.md` | Focused route plan for filling out the rest of the ship so the player can reach the bridge |
 | `pretty_docs/game-runtime-rearchitecture-plan.md` | Architecture plan for moving games from hardcoded renderer behavior to a data-driven runtime |
 | `pretty_docs/game-definition-schema-v1.md` | Human-readable guide to the first game definition schema |
+| `pretty_docs/game-warp-navigation-definition.md` | Project-level contract and forty-system reference graph for adjacent-route warp travel |
 | `pretty_docs/game-patch-aware-content-architecture.md` | Patch-aware content tiers, metadata, acceptance checks, and validation loop |
 | `game_projects/schema/game-definition.v1.schema.json` | Machine-readable JSON Schema for future game definition data |
+| `game_projects/schema/space-navigation.v1.schema.json` | Machine-readable JSON Schema for project-level warp-navigation data |
 | `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 | `pretty_docs/game-runtime-patch-C-rooms-and-movement.md` | Patch C implementation note for extracting mother-ship rooms, movement bounds, exits, and spawns into level data |
 | `pretty_docs/game-runtime-patch-D-interactables.md` | Patch D implementation note for extracting mother-ship terminals, prompts, ranges, and E-key action ids into interactable data |
@@ -68,6 +70,8 @@ Shuttle defense
 → starboard access to Bay Operations
 → first interior-state doors, terminals, objectives, and branch stubs
 ```
+
+The forty-system warp graph is now authored under `project.metadata.spaceNavigation`, but no runtime reads or executes it yet. Warp validation, navigation state, bridge controls, and presentation remain subsequent patches.
 
 The remaining bridge work is not just state logic. Every newly reachable region must have matching visible modeling, walkable bounds, location-gated prompts, and objective text.
 

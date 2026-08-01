@@ -1,6 +1,6 @@
 # {{APP_TITLE}}
 
-This package is generated from `mcel.canonical-application-template.v1`. Its semantic intents execute through the shared SCM-controlled application runtime, and its declared surface can now mount through the browser-safe runtime projection. The complete application remains `structural-only` because operation-linked observation, package-local acceptance discovery, and proof orchestration are still target contracts.
+This package is generated from `mcel.canonical-application-template.v1`. Its semantic intents execute through the shared SCM-controlled application runtime, and its declared surface can now mount through the browser-safe runtime projection. The complete application remains `structural-only` because app-oriented proof orchestration is still a target contract; package-local acceptance and operation-linked browser observation are live.
 
 ```mcel-app
 id: {{APP_ID}}
@@ -163,7 +163,7 @@ app: {{APP_ID}}
 status: open
 aspect: implementation
 severity: blocking
-problem: The generated package is structurally valid, discoverable, executable through the shared SCM-controlled application runtime, mountable through generic semantic-surface projection, and discoverable by the package-local acceptance runner, but operation-linked browser observation and app-oriented proof orchestration are not yet live.
+problem: The generated package is structurally valid, discoverable, executable through the shared SCM-controlled application runtime, mountable through generic semantic-surface projection, and discoverable by the package-local acceptance runner, and operation-linked browser observation is live, but app-oriented proof orchestration is not yet live.
 desired_behavior: MCEL mounts, observes, and proves the package without user-authored central registry edits or application-local mutation authority.
 ```
 
@@ -178,5 +178,5 @@ required_intents:
   - increment
   - reset
   - direct-set refusal
-readiness_gate: Bind the mounted SCM-controlled operation results to operation-linked observation and later repository-bound proof; package-local acceptance execution is live.
+readiness_gate: Compose the live package, SCM runtime, semantic projection, package-local acceptance, and operation-linked browser observation authorities under repository-bound app-oriented proof.
 ```

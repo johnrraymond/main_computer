@@ -84,7 +84,7 @@ def test_scaffolding_document_is_linked_from_current_authorities() -> None:
     assert canonical_path in TODO.read_text(encoding="utf-8")
 
 
-def test_scaffolding_wave6a_live_boundary_is_documented_without_truth_promotion() -> None:
+def test_scaffolding_wave6b_live_boundary_is_documented_without_truth_promotion() -> None:
     scaffolding = SCAFFOLDING_DOC.read_text(encoding="utf-8")
     authoring = AUTHORING_DOC.read_text(encoding="utf-8")
     system = SYSTEM_GUIDE.read_text(encoding="utf-8")
@@ -92,10 +92,11 @@ def test_scaffolding_wave6a_live_boundary_is_documented_without_truth_promotion(
     assert "## Current implementation checkpoint" in scaffolding
     assert "tools/mcel_create_app.py                 live" in scaffolding
     assert "repository package discovery             live" in scaffolding
-    assert "Wave 6A is live at the package-local acceptance-discovery boundary" in scaffolding
+    assert "Wave 6B is live at the operation-linked browser-observation boundary" in scaffolding
     assert "browser-safe package catalog             live" in scaffolding
     assert "adapter-to-SCM application runtime       live" in scaffolding
     assert "package-local acceptance discovery       live" in scaffolding
+    assert "operation-linked browser observation     live" in scaffolding
     assert "mcel_apps/" in scaffolding
     assert "structural-only" in scaffolding
 
@@ -104,7 +105,7 @@ def test_scaffolding_wave6a_live_boundary_is_documented_without_truth_promotion(
     assert "generic semantic surface mount are now live" in system
 
 
-def test_scaffolding_wave6a_contract_names_live_acceptance_without_proof_claims() -> None:
+def test_scaffolding_wave6b_contract_names_live_observation_without_proof_claims() -> None:
     scaffolding = SCAFFOLDING_DOC.read_text(encoding="utf-8")
     status = STATUS_DOC.read_text(encoding="utf-8")
 
@@ -119,4 +120,7 @@ def test_scaffolding_wave6a_contract_names_live_acceptance_without_proof_claims(
     assert "mcel_acceptance_runner.py --app contract-counter --check" in scaffolding
     assert "Wave 5A is complete." in status
     assert "Wave 6A is complete." in status
+    assert "### Wave 6B: Operation-linked browser observation — implemented" in scaffolding
+    assert "mcel_application_observation_runner.py --app contract-counter --check" in scaffolding
+    assert "Wave 6B is complete." in status
     assert "Contract Counter remains `structural-only`" in status

@@ -129,6 +129,15 @@ from tools.mother.common.deployment_validator_admission_executor import (
     inspect_validator_admission_release,
     verify_validator_admission_evidence,
 )
+from tools.mother.common.deployment_validator_quorum_recovery import (
+    MotherDeploymentValidatorQuorumRecoveryError,
+    build_validator_quorum_recovery_release,
+    execute_validator_quorum_recovery_release,
+    inspect_validator_quorum_recovery_release,
+    verify_validator_quorum_recovery_evidence,
+    verify_validator_quorum_recovery_release,
+    write_validator_quorum_recovery_release,
+)
 from tools.mother.common.deployment_standby import (
     MotherDeploymentStandbyError,
     run_deployment_standby_verification,
@@ -700,6 +709,54 @@ def _parser() -> argparse.ArgumentParser:
     _common(verify_admission_evidence)
     verify_admission_evidence.add_argument("--evidence", required=True)
     verify_admission_evidence.add_argument("--max-age-seconds", type=int, default=300)
+
+    release_quorum = subparsers.add_parser(
+        "release-validator-quorum-recovery",
+        help="release one exact two-validator QBFT quorum reset without casting a vote",
+        allow_abbrev=False,
+    )
+    _common(release_quorum)
+    release_quorum.add_argument("--transaction", required=True)
+    release_quorum.add_argument("--acknowledge-validator-admission-transaction-sha256", required=True)
+    release_quorum.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_quorum.add_argument("--expires-in-seconds", type=int, default=300)
+    release_quorum.add_argument("--created-at")
+    release_quorum.add_argument("--write-release", action="store_true")
+
+    verify_quorum_release = subparsers.add_parser(
+        "verify-validator-quorum-recovery-release",
+        help="verify an expiring two-validator quorum-recovery release",
+        allow_abbrev=False,
+    )
+    _common(verify_quorum_release)
+    verify_quorum_release.add_argument("--release", required=True)
+    verify_quorum_release.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_quorum_release.add_argument("--max-age-seconds", type=int, default=300)
+
+    apply_quorum = subparsers.add_parser(
+        "apply-validator-quorum-recovery",
+        help="inspect or execute the exact C-then-A QBFT quorum reset",
+        allow_abbrev=False,
+    )
+    _common(apply_quorum)
+    apply_quorum.add_argument("--release", required=True)
+    apply_quorum.add_argument("--acknowledge-release-sha256", required=True)
+    apply_quorum.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_quorum.add_argument("--max-age-seconds", type=int, default=300)
+    apply_quorum.add_argument("--timeout", type=float, default=30.0)
+    apply_quorum.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_quorum.add_argument("--max-wait-seconds", type=float, default=360.0)
+    apply_quorum.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_quorum.add_argument("--execute", action="store_true")
+
+    verify_quorum_evidence = subparsers.add_parser(
+        "verify-validator-quorum-recovery-evidence",
+        help="verify persisted two-validator quorum-recovery evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_quorum_evidence)
+    verify_quorum_evidence.add_argument("--evidence", required=True)
+    verify_quorum_evidence.add_argument("--max-age-seconds", type=int, default=300)
 
     return parser
 
@@ -1448,6 +1505,71 @@ def _cmd_verify_validator_admission_evidence(args: argparse.Namespace, private_s
     return 0
 
 
+def _cmd_release_validator_quorum_recovery(args: argparse.Namespace, private_state) -> int:
+    release = build_validator_quorum_recovery_release(
+        _paths(args), private_state, Path(args.transaction),
+        acknowledged_transaction_sha256=args.acknowledge_validator_admission_transaction_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_validator_quorum_recovery_release(
+            _paths(args), release,
+            operation=_operation("validator-quorum-recovery-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_quorum_recovery_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_validator_quorum_recovery_release(
+        _paths(args), private_state, Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_validator_quorum_recovery(args: argparse.Namespace, private_state) -> int:
+    common = dict(
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    if not args.execute:
+        result = inspect_validator_quorum_recovery_release(
+            _paths(args), private_state, Path(args.release), **common
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_validator_quorum_recovery_release(
+        _paths(args), private_state, Path(args.release), **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("apply-validator-quorum-recovery", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_validator_quorum_recovery_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_validator_quorum_recovery_evidence(
+        _paths(args), private_state, Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -1534,6 +1656,14 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_apply_validator_admission(args, private_state)
         if args.command == "verify-validator-admission-evidence":
             return _cmd_verify_validator_admission_evidence(args, private_state)
+        if args.command == "release-validator-quorum-recovery":
+            return _cmd_release_validator_quorum_recovery(args, private_state)
+        if args.command == "verify-validator-quorum-recovery-release":
+            return _cmd_verify_validator_quorum_recovery_release(args, private_state)
+        if args.command == "apply-validator-quorum-recovery":
+            return _cmd_apply_validator_quorum_recovery(args, private_state)
+        if args.command == "verify-validator-quorum-recovery-evidence":
+            return _cmd_verify_validator_quorum_recovery_evidence(args, private_state)
         raise RuntimeError(f"unsupported command: {args.command}")
     except (
         CoolifyObservationError,
@@ -1556,6 +1686,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentValidatorAdmissionError,
         MotherDeploymentValidatorAdmissionReleaseError,
         MotherDeploymentValidatorAdmissionExecutorError,
+        MotherDeploymentValidatorQuorumRecoveryError,
         MotherDeploymentStandbyError,
         MotherDeploymentTransactionError,
     ) as exc:

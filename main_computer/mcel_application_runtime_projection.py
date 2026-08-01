@@ -3,8 +3,9 @@
 Wave 5A keeps canonical packages under the repository-root ``mcel_apps`` authority
 and projects only the files required to mount an application in a browser.  The
 projection is deterministic, contains source and catalog fingerprints, and never
-copies requirements, tests, acceptance contracts, observation contracts, or other
-development-only package contents into the served web tree.
+copies requirements, tests, acceptance contracts, or other development-only
+package contents into the served web tree. Operation-linked observation contracts
+are browser-safe and are projected once they become executable.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM = "sha256-mcel-runtime-projection-v1"
 DEFAULT_RUNTIME_PROJECTION_ROOT = "main_computer/web/applications/mcel-packages"
 RUNTIME_MANIFEST_NAME = "mcel.runtime.json"
 
-_BROWSER_CONTRACT_KEYS = ("domain", "intents", "adapter", "surface", "layout")
+_BROWSER_CONTRACT_KEYS = ("domain", "intents", "adapter", "surface", "layout", "observation")
 _BROWSER_RUNTIME_KEYS = ("document", "script", "style")
 
 
@@ -209,6 +210,7 @@ def build_application_runtime_projection(
             "adapter": {"path": "contracts/adapter.js", "export": f"{class_name}Adapter"},
             "surface": {"path": "contracts/surface.js", "export": f"{class_name}Surface"},
             "layout": {"path": "contracts/layout.js", "export": f"{class_name}Layout"},
+            "observation": {"path": "contracts/observation.js", "export": f"{class_name}Observation"},
         },
         "runtime": {
             "document": "src/index.html",

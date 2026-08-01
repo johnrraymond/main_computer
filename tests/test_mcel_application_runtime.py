@@ -555,7 +555,8 @@ const root = {{
     intents: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/intents.js"),
     adapter: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/adapter.js"),
     surface: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/surface.js"),
-    layout: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/layout.js")
+    layout: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/layout.js"),
+    observation: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/observation.js")
   }};
   try {{
     await McelApplicationRuntime.mountApplicationPackage({{

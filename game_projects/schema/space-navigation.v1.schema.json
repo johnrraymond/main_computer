@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "game.spaceNavigation.v1",
+  "title": "Main Computer Space Navigation Definition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "enabled",
+    "schema",
+    "definitionVersion",
+    "stateVersion",
+    "startSystem",
+    "policy",
+    "arrivalProfiles",
+    "systems",
+    "routes",
+    "stateDefaults",
+    "validation"
+  ],
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "schema": {
+      "const": "game.spaceNavigation.v1"
+    },
+    "definitionVersion": {
+      "const": "game.spaceNavigation.definition.v1"
+    },
+    "stateVersion": {
+      "const": "game.spaceNavigation.state.v1"
+    },
+    "startSystem": {
+      "$ref": "#/$defs/id"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "arrivalProfiles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/arrivalProfile"
+      }
+    },
+    "systems": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/system"
+      }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/route"
+      }
+    },
+    "stateDefaults": {
+      "$ref": "#/$defs/stateDefaults"
+    },
+    "validation": {
+      "$ref": "#/$defs/validation"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "position": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jumpMode",
+        "directJumpRequiresRoute",
+        "mapPositionAuthoritative",
+        "allowDirectedRoutes"
+      ],
+      "properties": {
+        "jumpMode": {
+          "const": "adjacent-only"
+        },
+        "directJumpRequiresRoute": {
+          "const": true
+        },
+        "mapPositionAuthoritative": {
+          "const": false
+        },
+        "allowDirectedRoutes": {
+          "type": "boolean"
+        }
+      }
+    },
+    "arrivalProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "sceneId",
+        "location"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "retain-player",
+            "spawn-player"
+          ]
+        },
+        "sceneId": {
+          "$ref": "#/$defs/id"
+        },
+        "location": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "region",
+        "mapPosition",
+        "localSpaceId",
+        "arrivalProfile"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "region": {
+          "$ref": "#/$defs/id"
+        },
+        "mapPosition": {
+          "$ref": "#/$defs/position"
+        },
+        "localSpaceId": {
+          "$ref": "#/$defs/id"
+        },
+        "arrivalProfile": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "bidirectional",
+        "presentationDurationMs",
+        "worldTimeCost"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "bidirectional": {
+          "type": "boolean"
+        },
+        "presentationDurationMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "worldTimeCost": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "stateDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currentSystemId",
+        "plottedRouteId",
+        "travelPhase",
+        "elapsedWorldTime",
+        "discoveredSystems"
+      ],
+      "properties": {
+        "currentSystemId": {
+          "$ref": "#/$defs/id"
+        },
+        "plottedRouteId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "travelPhase": {
+          "enum": [
+            "in-system",
+            "course-plotted",
+            "warp-charging",
+            "in-warp",
+            "arriving"
+          ]
+        },
+        "elapsedWorldTime": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "discoveredSystems": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requireUniqueSystemIds",
+        "requireUniqueRouteIds",
+        "requireRouteReferences",
+        "requireDistinctRouteEndpoints",
+        "requireAtLeastOneRoutePerSystem",
+        "requireStartReachability",
+        "requireArrivalProfiles",
+        "requireStateReferences",
+        "requireUniqueMapPositions"
+      ],
+      "properties": {
+        "requireUniqueSystemIds": {
+          "const": true
+        },
+        "requireUniqueRouteIds": {
+          "const": true
+        },
+        "requireRouteReferences": {
+          "const": true
+        },
+        "requireDistinctRouteEndpoints": {
+          "const": true
+        },
+        "requireAtLeastOneRoutePerSystem": {
+          "const": true
+        },
+        "requireStartReachability": {
+          "const": true
+        },
+        "requireArrivalProfiles": {
+          "const": true
+        },
+        "requireStateReferences": {
+          "const": true
+        },
+        "requireUniqueMapPositions": {
+          "const": true
+        }
+      }
+    }
+  }
+}

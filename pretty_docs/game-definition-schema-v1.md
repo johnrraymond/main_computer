@@ -10,6 +10,8 @@ game_projects/schema/game-definition.v1.schema.json
 
 The schema is intentionally focused on the systems that have caused defects during mother-ship expansion: rooms, movement bounds, exits, props, terminals, objectives, encounters, and validation hints.
 
+Campaign-scale system-to-system travel is intentionally separate. Its project-level contract is documented in `pretty_docs/game-warp-navigation-definition.md` and defined by `game_projects/schema/space-navigation.v1.schema.json`.
+
 ## Top-level shape
 
 ```json
