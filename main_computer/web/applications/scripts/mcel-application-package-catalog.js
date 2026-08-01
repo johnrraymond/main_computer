@@ -15,7 +15,7 @@ var McelApplicationPackages = (() => {
   }
 
   const PAYLOAD = deepFreeze({
-  "catalogFingerprint": "sha256:c7c1d8dcebf26f02773cf594556c24278dad6d011081ec6f81efa167f30ba76e",
+  "catalogFingerprint": "sha256:f3f0f0f3cb90bd81b16a1448c5e67037d66b4da784e01184d9008018fb2a1688",
   "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
   "format": "mcel-application-package-browser-catalog-v1",
   "packageCount": 1,
@@ -26,7 +26,6 @@ var McelApplicationPackages = (() => {
       "conformance": {
         "currentMode": "structural-only",
         "missingBridges": [
-          "package-local-acceptance-discovery",
           "operation-linked-browser-observation",
           "app-oriented-proof-orchestration"
         ],
@@ -41,8 +40,8 @@ var McelApplicationPackages = (() => {
         "observation": "mcel_apps/contract-counter/contracts/observation.js",
         "surface": "mcel_apps/contract-counter/contracts/surface.js"
       },
-      "fileCount": 18,
-      "fingerprint": "sha256:048870f6c4acf9f18a8505b10a5e5e0ddfa0dc4740d37c3e5d32663d2223840e",
+      "fileCount": 20,
+      "fingerprint": "sha256:fa2971e4891dd066e67d8e2e6854bb01906fea2e5e692535efda3ed6882931e2",
       "fingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
       "manifest": "mcel_apps/contract-counter/mcel.app.json",
       "packageRoot": "mcel_apps/contract-counter",
@@ -55,7 +54,7 @@ var McelApplicationPackages = (() => {
       "runtimeProjection": {
         "documentUrl": "applications/mcel-packages/contract-counter/src/index.html",
         "fileCount": 9,
-        "fingerprint": "sha256:036d890b452ec22d233ab751751ac3201748acf616e3d27a1792805f6a875756",
+        "fingerprint": "sha256:4e0fefd5c7b5de98cd12fd5e01dcdff9ec6c3aceeef9bfeb492f308cc7fde3a2",
         "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1",
         "manifest": "main_computer/web/applications/mcel-packages/contract-counter/mcel.runtime.json",
         "manifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",

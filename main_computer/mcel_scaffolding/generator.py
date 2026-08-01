@@ -28,7 +28,6 @@ DEFAULT_OUTPUT_DIRECTORY = "mcel_apps"
 APP_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 PLACEHOLDER_PATTERN = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 TARGET_GAPS = (
-    "package-local-acceptance-discovery",
     "operation-linked-browser-observation",
     "app-oriented-proof-orchestration",
 )

@@ -3,23 +3,105 @@
   "templateId": "mcel.canonical-application-template",
   "version": "1.0.0",
   "files": [
-    {"source": "mcel.app.json.tmpl", "target": "mcel.app.json", "ownership": "generator-owned"},
-    {"source": "requirements.md.tmpl", "target": "requirements.md", "ownership": "user-owned"},
-    {"source": "blueprint.json.tmpl", "target": "blueprint.json", "ownership": "user-owned"},
-    {"source": "contracts/domain.js.tmpl", "target": "contracts/domain.js", "ownership": "user-owned"},
-    {"source": "contracts/intents.js.tmpl", "target": "contracts/intents.js", "ownership": "user-owned"},
-    {"source": "contracts/adapter.js.tmpl", "target": "contracts/adapter.js", "ownership": "user-owned"},
-    {"source": "contracts/surface.js.tmpl", "target": "contracts/surface.js", "ownership": "user-owned"},
-    {"source": "contracts/layout.js.tmpl", "target": "contracts/layout.js", "ownership": "user-owned"},
-    {"source": "contracts/observation.js.tmpl", "target": "contracts/observation.js", "ownership": "user-owned"},
-    {"source": "contracts/acceptance.js.tmpl", "target": "contracts/acceptance.js", "ownership": "user-owned"},
-    {"source": "src/index.html.tmpl", "target": "src/index.html", "ownership": "user-owned"},
-    {"source": "src/app.js.tmpl", "target": "src/app.js", "ownership": "user-owned"},
-    {"source": "src/app.css.tmpl", "target": "src/app.css", "ownership": "user-owned"},
-    {"source": "tests/test_package.py.tmpl", "target": "tests/test_package.py", "ownership": "user-owned"},
-    {"source": "tests/test_operations.py.tmpl", "target": "tests/test_operations.py", "ownership": "user-owned"},
-    {"source": "tests/test_surface.py.tmpl", "target": "tests/test_surface.py", "ownership": "user-owned"},
-    {"source": "tests/test_browser.py.tmpl", "target": "tests/test_browser.py", "ownership": "user-owned"},
-    {"source": "tests/test_truth.py.tmpl", "target": "tests/test_truth.py", "ownership": "user-owned"}
+    {
+      "source": "mcel.app.json.tmpl",
+      "target": "mcel.app.json",
+      "ownership": "generator-owned"
+    },
+    {
+      "source": "requirements.md.tmpl",
+      "target": "requirements.md",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "blueprint.json.tmpl",
+      "target": "blueprint.json",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "contracts/domain.js.tmpl",
+      "target": "contracts/domain.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "contracts/intents.js.tmpl",
+      "target": "contracts/intents.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "contracts/adapter.js.tmpl",
+      "target": "contracts/adapter.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "contracts/surface.js.tmpl",
+      "target": "contracts/surface.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "contracts/layout.js.tmpl",
+      "target": "contracts/layout.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "contracts/observation.js.tmpl",
+      "target": "contracts/observation.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "contracts/acceptance.js.tmpl",
+      "target": "contracts/acceptance.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "src/index.html.tmpl",
+      "target": "src/index.html",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "src/app.js.tmpl",
+      "target": "src/app.js",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "src/app.css.tmpl",
+      "target": "src/app.css",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "tests/test_package.py.tmpl",
+      "target": "tests/test_package.py",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "tests/test_operations.py.tmpl",
+      "target": "tests/test_operations.py",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "tests/test_surface.py.tmpl",
+      "target": "tests/test_surface.py",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "tests/mcel_acceptance_bindings.json.tmpl",
+      "target": "tests/mcel_acceptance_bindings.json",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "tests/test_acceptance.py.tmpl",
+      "target": "tests/test_acceptance.py",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "tests/test_browser.py.tmpl",
+      "target": "tests/test_browser.py",
+      "ownership": "user-owned"
+    },
+    {
+      "source": "tests/test_truth.py.tmpl",
+      "target": "tests/test_truth.py",
+      "ownership": "user-owned"
+    }
   ]
 }

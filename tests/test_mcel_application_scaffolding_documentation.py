@@ -44,7 +44,8 @@ def test_mcel_application_scaffolding_document_defines_the_complete_program() ->
         "MCEL 1.0 target mode",
         "Adapter-to-SCM application runtime",
         "Generic semantic surface projection",
-        "Package-local acceptance and observation",
+        "Package-local acceptance discovery",
+        "Operation-linked browser observation",
         "App-oriented proof orchestration",
         "mcel app create contract-counter --prove",
     ]
@@ -69,6 +70,7 @@ def test_scaffolding_status_remains_truthful_and_non_authorizing() -> None:
     assert "browser-safe package catalog: implemented" in status
     assert "adapter-to-SCM application bridge: implemented" in status
     assert "browser-safe package loading and semantic projection: implemented" in status
+    assert "package-local acceptance discovery: implemented" in status
     assert "checked-in browser-mountable reference application: implemented" in status
     assert "No later scaffolding wave is authorized by this status entry." in status
 
@@ -82,7 +84,7 @@ def test_scaffolding_document_is_linked_from_current_authorities() -> None:
     assert canonical_path in TODO.read_text(encoding="utf-8")
 
 
-def test_scaffolding_wave5_live_boundary_is_documented_without_truth_promotion() -> None:
+def test_scaffolding_wave6a_live_boundary_is_documented_without_truth_promotion() -> None:
     scaffolding = SCAFFOLDING_DOC.read_text(encoding="utf-8")
     authoring = AUTHORING_DOC.read_text(encoding="utf-8")
     system = SYSTEM_GUIDE.read_text(encoding="utf-8")
@@ -90,9 +92,10 @@ def test_scaffolding_wave5_live_boundary_is_documented_without_truth_promotion()
     assert "## Current implementation checkpoint" in scaffolding
     assert "tools/mcel_create_app.py                 live" in scaffolding
     assert "repository package discovery             live" in scaffolding
-    assert "Wave 5A is live at the browser-safe package-mount and semantic-projection boundary" in scaffolding
+    assert "Wave 6A is live at the package-local acceptance-discovery boundary" in scaffolding
     assert "browser-safe package catalog             live" in scaffolding
     assert "adapter-to-SCM application runtime       live" in scaffolding
+    assert "package-local acceptance discovery       live" in scaffolding
     assert "mcel_apps/" in scaffolding
     assert "structural-only" in scaffolding
 
@@ -101,7 +104,7 @@ def test_scaffolding_wave5_live_boundary_is_documented_without_truth_promotion()
     assert "generic semantic surface mount are now live" in system
 
 
-def test_scaffolding_wave5_contract_names_live_mount_without_proof_claims() -> None:
+def test_scaffolding_wave6a_contract_names_live_acceptance_without_proof_claims() -> None:
     scaffolding = SCAFFOLDING_DOC.read_text(encoding="utf-8")
     status = STATUS_DOC.read_text(encoding="utf-8")
 
@@ -111,6 +114,9 @@ def test_scaffolding_wave5_contract_names_live_mount_without_proof_claims() -> N
     assert "### Wave 5: Generic semantic surface projection — implemented" in scaffolding
     assert "mcel_application_runtime_projection.py" in scaffolding
     assert "MCEL.mountApplicationPackage()" in scaffolding
-    assert "This wave does not discover package-local acceptance" in scaffolding
+    assert "### Wave 6A: Package-local acceptance discovery" in scaffolding
+    assert "mcel.package-acceptance-bindings.v1" in scaffolding
+    assert "mcel_acceptance_runner.py --app contract-counter --check" in scaffolding
     assert "Wave 5A is complete." in status
+    assert "Wave 6A is complete." in status
     assert "Contract Counter remains `structural-only`" in status

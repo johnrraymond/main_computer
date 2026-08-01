@@ -38,6 +38,8 @@
     "src/app.css"
   ],
   "testHints": [
+    "tests/mcel_acceptance_bindings.json",
+    "tests/test_acceptance.py",
     "tests/test_package.py",
     "tests/test_operations.py",
     "tests/test_surface.py",

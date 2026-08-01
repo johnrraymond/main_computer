@@ -108,6 +108,8 @@ def test_mcel_create_app_generates_structurally_valid_package(tmp_path: Path) ->
     assert manifest["conformance"]["currentMode"] == "structural-only"
     assert manifest["conformance"]["targetMode"] == "semantic-runtime-proven"
     assert set(manifest["conformance"]["missingBridges"]) == set(result.target_gaps)
+    assert manifest["tests"]["acceptanceBindings"] == "tests/mcel_acceptance_bindings.json"
+    assert "package-local-acceptance-discovery" not in manifest["conformance"]["missingBridges"]
 
 
 def test_mcel_create_app_is_byte_deterministic_and_path_independent(tmp_path: Path) -> None:
@@ -254,4 +256,4 @@ def test_template_rendering_substitutes_identity_without_contract_counter_leakag
     assert 'id="sample-app-app"' in files["src/index.html"]
     assert "Contract Counter" not in joined
     assert "contract-counter" not in joined
-    assert "{{" not in joined
+    assert generator_module.PLACEHOLDER_PATTERN.search(joined) is None

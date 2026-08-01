@@ -55,6 +55,7 @@ def test_repository_catalog_discovers_checked_in_contract_counter() -> None:
     assert record.contracts["adapter"] == "mcel_apps/contract-counter/contracts/adapter.js"
     assert record.runtime["document"] == "mcel_apps/contract-counter/src/index.html"
     assert record.tests_root == "mcel_apps/contract-counter/tests"
+    assert record.acceptance_bindings == "mcel_apps/contract-counter/tests/mcel_acceptance_bindings.json"
     assert record.fingerprint is not None and record.fingerprint.startswith("sha256:")
     assert record.fingerprint_algorithm == PACKAGE_FINGERPRINT_ALGORITHM
     assert record.conformance["currentMode"] == "structural-only"
@@ -276,4 +277,44 @@ def test_repository_catalog_ignores_generated_python_cache_files(tmp_path: Path)
 
     assert catalog.ok is True
     assert catalog.packages[0].valid is True
-    assert catalog.packages[0].file_count == 18
+    assert catalog.packages[0].file_count == 20
+
+
+def test_repository_catalog_refuses_package_acceptance_selector_escape(tmp_path: Path) -> None:
+    package = _copy_package(tmp_path)
+    bindings_path = package / "tests" / "mcel_acceptance_bindings.json"
+    bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
+    bindings["bindings"][0]["selectors"] = ["../outside.py"]
+    _write_json(bindings_path, bindings)
+
+    catalog = build_application_package_catalog(tmp_path)
+
+    assert catalog.ok is False
+    assert "unsafe-package-acceptance-selector" in _error_codes(catalog.packages[0])
+
+
+def test_repository_catalog_refuses_package_acceptance_app_identity_mismatch(tmp_path: Path) -> None:
+    package = _copy_package(tmp_path)
+    bindings_path = package / "tests" / "mcel_acceptance_bindings.json"
+    bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
+    bindings["appId"] = "other-app"
+    _write_json(bindings_path, bindings)
+
+    catalog = build_application_package_catalog(tmp_path)
+
+    assert catalog.ok is False
+    assert "acceptance-binding-app-id-mismatch" in _error_codes(catalog.packages[0])
+
+
+def test_repository_catalog_refuses_acceptance_binding_file_outside_tests_root(tmp_path: Path) -> None:
+    package = _copy_package(tmp_path)
+    manifest_path = package / "mcel.app.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tests"]["acceptanceBindings"] = "mcel_acceptance_bindings.json"
+    _write_json(manifest_path, manifest)
+    shutil.copy2(package / "tests" / "mcel_acceptance_bindings.json", package / "mcel_acceptance_bindings.json")
+
+    catalog = build_application_package_catalog(tmp_path)
+
+    assert catalog.ok is False
+    assert "package-acceptance-bindings-outside-tests-root" in _error_codes(catalog.packages[0])

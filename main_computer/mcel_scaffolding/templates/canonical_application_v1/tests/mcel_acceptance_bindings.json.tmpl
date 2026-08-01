@@ -1,0 +1,15 @@
+{
+  "schema": "mcel.package-acceptance-bindings.v1",
+  "appId": {{APP_ID_JSON}},
+  "bindings": [
+    {
+      "id": "{{APP_ID}}.binding.operation-control",
+      "acceptanceContractId": "{{APP_ID}}.acceptance.operation-control",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py::test_package_acceptance_operation_control"
+      ],
+      "notes": "Executes the package through the shared SCM-controlled MCEL application runtime."
+    }
+  ]
+}

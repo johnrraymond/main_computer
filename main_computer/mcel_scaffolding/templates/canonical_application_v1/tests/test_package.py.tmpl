@@ -21,6 +21,7 @@ def test_generated_package_manifest_resolves_every_declared_authority() -> None:
     references = [manifest["requirements"], manifest["blueprint"]]
     references.extend(manifest["contracts"].values())
     references.extend(manifest["runtime"].values())
+    references.append(manifest["tests"]["acceptanceBindings"])
     for relative_path in references:
         assert (PACKAGE_ROOT / relative_path).is_file(), relative_path
 
@@ -33,3 +34,4 @@ def test_generated_package_reports_current_and_target_conformance_honestly() -> 
     assert conformance["targetMode"] == "semantic-runtime-proven"
     assert "adapter-to-scm-application-runtime" not in conformance["missingBridges"]
     assert "generic-semantic-surface-projection" not in conformance["missingBridges"]
+    assert "package-local-acceptance-discovery" not in conformance["missingBridges"]

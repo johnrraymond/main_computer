@@ -23,13 +23,13 @@
     "style": "src/app.css"
   },
   "tests": {
-    "root": "tests"
+    "root": "tests",
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json"
   },
   "conformance": {
     "currentMode": "structural-only",
     "targetMode": "semantic-runtime-proven",
     "missingBridges": [
-      "package-local-acceptance-discovery",
       "operation-linked-browser-observation",
       "app-oriented-proof-orchestration"
     ]

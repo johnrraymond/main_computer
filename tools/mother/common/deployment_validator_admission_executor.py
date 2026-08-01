@@ -387,6 +387,126 @@ def _verified_service(
     })
 
 
+def _verified_replica_service(
+    *,
+    controller: Any,
+    controller_id: str,
+    node: str,
+    service_uuid: str,
+    expected_compose: str,
+    recovery: Mapping[str, Any],
+    initial_precondition_mode: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    receipts: list[dict[str, Any]],
+    phase: str,
+) -> str:
+    inventory = _http(
+        controller,
+        "GET",
+        "/api/v1/services",
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    inventory_receipt = {
+        "name": f"{phase}-running-state",
+        "controller_id": controller_id,
+        "method": "GET",
+        "endpoint": "/api/v1/services",
+        "status": inventory["status"],
+        "response_sha256": inventory["response_sha256"],
+        "verified": False,
+    }
+    receipts.append(inventory_receipt)
+    if not inventory["ok"]:
+        raise MotherDeploymentValidatorAdmissionExecutorError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_PRECONDITION_FAILED",
+            f"{controller_id} service inventory failed with HTTP {inventory['status']}",
+        )
+    record = _service_record(inventory["payload"], service_uuid, node)
+    status = _service_status(record)
+
+    endpoint = f"/api/v1/services/{service_uuid}"
+    detail = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    detail_receipt = {
+        "name": f"{phase}-compose-binding",
+        "controller_id": controller_id,
+        "method": "GET",
+        "endpoint": endpoint,
+        "status": detail["status"],
+        "response_sha256": detail["response_sha256"],
+        "verified": False,
+    }
+    receipts.append(detail_receipt)
+    if not detail["ok"]:
+        raise MotherDeploymentValidatorAdmissionExecutorError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_PRECONDITION_FAILED",
+            f"{controller_id} service detail failed with HTTP {detail['status']}",
+        )
+    _service_record(detail["payload"], service_uuid, node)
+
+    mode = "normal-replica-proof-compose"
+    compose_label = "C synchronization-proof Compose"
+    candidate_compose = expected_compose
+    if status != "running:healthy":
+        accepted = recovery.get("accepted_service_statuses")
+        stale = recovery.get("stale_replica_compose")
+        valid = (
+            recovery.get("allowed") is True
+            and recovery.get("cause_code") == "sole-validator-sync-guardian-invalidated-by-candidate-activation"
+            and recovery.get("requires_initial_precondition_mode") == "known-validator-set-order-recovery"
+            and initial_precondition_mode == "known-validator-set-order-recovery"
+            and type(accepted) is list
+            and status in accepted
+            and recovery.get("read_only") is True
+            and isinstance(stale, Mapping)
+            and type(stale.get("canonical_text")) is str
+            and stale.get("canonical_text") == expected_compose
+        )
+        if not valid:
+            inventory_receipt["service_status"] = status
+            raise MotherDeploymentValidatorAdmissionExecutorError(
+                "MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_SERVICE_UNHEALTHY",
+                f"{node} is not running:healthy and is not in the exact post-admission guardian-drift state",
+            )
+        mode = "known-post-admission-replica-guardian-drift"
+        compose_label = "exact stale C sole-validator synchronization guardian Compose"
+        candidate_compose = stale["canonical_text"]
+
+    try:
+        binding = _match_service_compose(detail["payload"], candidate_compose, compose_label)
+    except MotherDeploymentGenesisBirthError as exc:
+        code = (
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_REPLICA_RECOVERY_COMPOSE_MISMATCH"
+            if mode.startswith("known-")
+            else "MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_COMPOSE_MISMATCH"
+        )
+        raise MotherDeploymentValidatorAdmissionExecutorError(code, _safe_message(exc)) from exc
+    inventory_receipt.update({
+        "verified": True,
+        "service_status": status,
+        "precondition_mode": mode,
+    })
+    detail_receipt.update({
+        "verified": True,
+        "binding_mode": binding["mode"],
+        "semantic_sha256": binding["semantic_sha256"],
+        "precondition_mode": mode,
+    })
+    return mode
+
+
 def _verified_initial_service(
     *,
     controller: Any,
@@ -607,11 +727,17 @@ def execute_validator_admission_release(
     observations: list[dict[str, Any]] = []
     failure: dict[str, str] | None = None
     initial_precondition_mode = "not-checked"
+    replica_precondition_mode = "not-checked"
 
     try:
         recovery = release.get("known_failed_guardian_recovery")
         order_recovery = release.get("known_order_sensitive_guardian_recovery")
-        if not isinstance(recovery, Mapping) or not isinstance(order_recovery, Mapping):
+        replica_recovery = release.get("known_replica_post_admission_guardian_recovery")
+        if (
+            not isinstance(recovery, Mapping)
+            or not isinstance(order_recovery, Mapping)
+            or not isinstance(replica_recovery, Mapping)
+        ):
             raise MotherDeploymentValidatorAdmissionExecutorError(
                 "MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_INVALID",
                 "known guardian recovery bindings are missing",
@@ -629,13 +755,14 @@ def execute_validator_admission_release(
             opener=opener,
             receipts=preconditions,
         )
-        _verified_service(
+        replica_precondition_mode = _verified_replica_service(
             controller=controller_c,
             controller_id="coolify-c",
             node=replica["node"],
             service_uuid=replica["service_uuid"],
             expected_compose=replica["proof_compose"]["canonical_text"],
-            compose_label="C synchronization-proof Compose",
+            recovery=replica_recovery,
+            initial_precondition_mode=initial_precondition_mode,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
@@ -772,13 +899,14 @@ def execute_validator_admission_release(
             receipts=preconditions,
             phase="initial-chain-after-admission",
         )
-        _verified_service(
+        replica_precondition_mode = _verified_replica_service(
             controller=controller_c,
             controller_id="coolify-c",
             node=replica["node"],
             service_uuid=replica["service_uuid"],
             expected_compose=replica["proof_compose"]["canonical_text"],
-            compose_label="C synchronization-proof Compose after admission",
+            recovery=replica_recovery,
+            initial_precondition_mode=initial_precondition_mode,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
@@ -799,6 +927,7 @@ def execute_validator_admission_release(
     live_mutation = any(item.get("live_write_acknowledged") is True for item in receipts)
     known_recovery_used = initial_precondition_mode.startswith("known-")
     order_recovery_used = initial_precondition_mode == "known-validator-set-order-recovery"
+    replica_guardian_drift_used = replica_precondition_mode == "known-post-admission-replica-guardian-drift"
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -839,6 +968,8 @@ def execute_validator_admission_release(
             "initial_precondition_mode": initial_precondition_mode,
             "known_guardian_recovery_used": known_recovery_used,
             "validator_set_order_recovery_used": order_recovery_used,
+            "replica_precondition_mode": replica_precondition_mode,
+            "replica_guardian_drift_recovery_used": replica_guardian_drift_used,
         },
         "authority": {
             "release_consumed": True,
@@ -862,6 +993,9 @@ def execute_validator_admission_release(
             "stop_on_first_failure": True,
             "known_failed_guardian_recovery_allowed": True,
             "known_order_sensitive_guardian_recovery_allowed": True,
+            "known_replica_post_admission_guardian_recovery_allowed": True,
+            "replica_precondition_mode": replica_precondition_mode,
+            "replica_guardian_drift_recovery_used": replica_guardian_drift_used,
         },
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
@@ -878,7 +1012,10 @@ def execute_validator_admission_release(
             "blocks_advancing": complete,
             "latest_block_fresh": complete,
             "initial_node_running_healthy": complete,
-            "replica_node_running_healthy": complete,
+            "replica_node_running_healthy": complete and not replica_guardian_drift_used,
+            "replica_node_reachable_via_initial_peer": complete,
+            "replica_guardian_drift_recovery_used": replica_guardian_drift_used,
+            "replica_precondition_mode": replica_precondition_mode,
             "replica_node_read_only": True,
             "known_guardian_recovery_used": known_recovery_used,
             "validator_set_order_recovery_used": order_recovery_used,

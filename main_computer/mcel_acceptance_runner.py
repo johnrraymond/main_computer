@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Run repository-bound MCEL acceptance evidence.
 
-The requirements registry is the authority for declared ``mcel-acceptance``
-contracts.  This runner loads those contracts, joins them to the narrow
-execution mappings in ``mcel_acceptance_bindings.json``, executes pytest
-selectors, and writes repository-bound JSON/Markdown evidence.
+The central requirements registry and validated MCEL application packages are
+the authorities for declared ``mcel-acceptance`` contracts. This runner joins
+legacy central bindings with package-local ``mcel.package-acceptance-bindings.v1``
+files, executes pytest selectors, and writes repository-bound JSON/Markdown
+evidence carrying package provenance where applicable.
 
-A contract is proven only when it is currently enforceable, has an explicit
-binding, collects tests, and every bound test passes.  Planned/draft contracts
+A contract is proven only when it is currently enforceable, has one explicit
+binding, collects tests, and every bound test passes. Planned/draft contracts
 remain visible as future obligations but do not block current acceptance.
 """
 
@@ -28,16 +29,23 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 try:
+    from .mcel_application_packages import build_application_package_catalog
     from .mcel_evidence_provenance import build_repository_provenance
     from .mcel_node_runtime import prepend_node_to_path, resolve_node_executable
 except ImportError:  # Direct script execution from the repository root.
-    from mcel_evidence_provenance import build_repository_provenance
-    from mcel_node_runtime import prepend_node_to_path, resolve_node_executable
+    _REPOSITORY_IMPORT_ROOT = Path(__file__).resolve().parents[1]
+    if str(_REPOSITORY_IMPORT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPOSITORY_IMPORT_ROOT))
+    from main_computer.mcel_application_packages import build_application_package_catalog
+    from main_computer.mcel_evidence_provenance import build_repository_provenance
+    from main_computer.mcel_node_runtime import prepend_node_to_path, resolve_node_executable
 
 
 REPORT_SCHEMA = "mcel-acceptance-evidence-report-v1"
 REPORT_VERSION = "mcel-acceptance-runner-v1"
 BINDING_SCHEMA = "mcel-acceptance-bindings-v1"
+PACKAGE_BINDING_SCHEMA = "mcel.package-acceptance-bindings.v1"
+BINDING_SOURCES_SCHEMA = "mcel.acceptance-binding-sources.v1"
 DEFAULT_BINDINGS = Path("main_computer/mcel_acceptance_bindings.json")
 DEFAULT_OUTPUT_DIR = Path("runtime/reports/mcel-acceptance")
 ENFORCEABLE_STATUSES = frozenset(
@@ -61,6 +69,11 @@ class Binding:
     runner: str
     selectors: tuple[str, ...]
     notes: str
+    source_kind: str = "central"
+    source_path: str = ""
+    package_root: str = ""
+    package_fingerprint: str = ""
+    declared_selectors: tuple[str, ...] = ()
 
 
 def repo_root_from_script() -> Path:
@@ -260,6 +273,9 @@ def load_bindings(path: Path, repo: Path) -> tuple[dict[str, Binding], dict[str,
             runner=runner,
             selectors=selectors,
             notes=safe_string(item.get("notes")),
+            source_kind="central",
+            source_path=repo_display_path(resolved, repo),
+            declared_selectors=selectors,
         )
 
     return result, {
@@ -269,6 +285,296 @@ def load_bindings(path: Path, repo: Path) -> tuple[dict[str, Binding], dict[str,
         "sha256": sha256_bytes(raw),
         "bindingCount": len(result),
     }
+
+
+
+def _requirements_registry_tool(repo: Path):
+    repo_text = str(repo.resolve())
+    if repo_text not in sys.path:
+        sys.path.insert(0, repo_text)
+    try:
+        from tools import mcel_requirements_registry as registry_tool
+    except ImportError as exc:
+        raise McelAcceptanceError(
+            "Could not import tools.mcel_requirements_registry for package requirements."
+        ) from exc
+    return registry_tool
+
+
+def _package_relative_selector(
+    selector: str,
+    *,
+    package_root: PurePosixPath,
+    tests_root: PurePosixPath,
+) -> tuple[PurePosixPath, str]:
+    raw = safe_string(selector).replace("\\", "/")
+    source_text, separator, suffix = raw.partition("::")
+    source = PurePosixPath(source_text)
+    if (
+        not source_text
+        or source.is_absolute()
+        or "." in source.parts
+        or ".." in source.parts
+        or source.suffix != ".py"
+    ):
+        raise McelAcceptanceError(
+            f"Unsafe or unsupported package pytest selector: {selector!r}"
+        )
+    try:
+        source.relative_to(tests_root)
+    except ValueError as exc:
+        raise McelAcceptanceError(
+            f"Package pytest selector escapes the declared tests root: {selector!r}"
+        ) from exc
+    repository_source = PurePosixPath(package_root, source)
+    executable = repository_source.as_posix()
+    if separator:
+        executable += "::" + suffix
+    return repository_source, executable
+
+
+def load_package_acceptance(
+    repo: Path,
+) -> tuple[list[Any], dict[str, Binding], dict[str, Any]]:
+    catalog = build_application_package_catalog(repo)
+    if not catalog.ok or catalog.invalid_count or catalog.errors:
+        messages = [issue.message for issue in catalog.errors]
+        for record in catalog.packages:
+            messages.extend(issue.message for issue in record.errors)
+        raise McelAcceptanceError(
+            "Repository application-package catalog is invalid"
+            + (f": {'; '.join(messages[:5])}" if messages else ".")
+        )
+
+    registry_tool = _requirements_registry_tool(repo)
+    contracts: list[Any] = []
+    bindings: dict[str, Binding] = {}
+    binding_ids: set[str] = set()
+    packages: list[dict[str, Any]] = []
+
+    for record in catalog.packages:
+        if not record.valid or not record.app_id or not record.fingerprint:
+            raise McelAcceptanceError(
+                f"Application package {record.package_root!r} is not valid for acceptance discovery."
+            )
+        if not record.requirements or not record.tests_root or not record.acceptance_bindings:
+            raise McelAcceptanceError(
+                f"Application package {record.app_id!r} does not declare package-local acceptance inputs."
+            )
+
+        requirements_path = repo / Path(record.requirements)
+        package_blocks, package_errors = registry_tool.extract_blocks_from_file(
+            requirements_path,
+            repo,
+        )
+        if package_errors:
+            raise McelAcceptanceError(
+                f"Application package {record.app_id!r} requirements are invalid: "
+                + "; ".join(issue.message for issue in package_errors[:5])
+            )
+        package_contracts = [
+            block
+            for block in package_blocks
+            if block.block_type == "mcel-acceptance"
+        ]
+        if not package_contracts:
+            raise McelAcceptanceError(
+                f"Application package {record.app_id!r} declares no mcel-acceptance contract."
+            )
+        wrong_contract_apps = [
+            block.block_id
+            for block in package_contracts
+            if safe_string(block.app) != record.app_id
+        ]
+        if wrong_contract_apps:
+            raise McelAcceptanceError(
+                f"Application package {record.app_id!r} contains acceptance contracts for another app: "
+                + ", ".join(sorted(wrong_contract_apps))
+            )
+        contract_ids = {block.block_id for block in package_contracts}
+
+        binding_path = repo / Path(record.acceptance_bindings)
+        raw = binding_path.read_bytes()
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise McelAcceptanceError(
+                f"Package acceptance binding file is not valid UTF-8 JSON: {record.acceptance_bindings}"
+            ) from exc
+        if not isinstance(payload, Mapping) or payload.get("schema") != PACKAGE_BINDING_SCHEMA:
+            raise McelAcceptanceError(
+                f"Package acceptance binding file must use schema {PACKAGE_BINDING_SCHEMA!r}: "
+                f"{record.acceptance_bindings}"
+            )
+        if safe_string(payload.get("appId")) != record.app_id:
+            raise McelAcceptanceError(
+                f"Package acceptance binding appId disagrees with package {record.app_id!r}."
+            )
+
+        package_root = PurePosixPath(record.package_root)
+        tests_root_repository = PurePosixPath(record.tests_root)
+        try:
+            tests_root = tests_root_repository.relative_to(package_root)
+        except ValueError as exc:
+            raise McelAcceptanceError(
+                f"Package tests root escapes package root: {record.tests_root}"
+            ) from exc
+
+        package_binding_count = 0
+        targeted_contracts: set[str] = set()
+        for index, item in enumerate(payload.get("bindings") or []):
+            if not isinstance(item, Mapping):
+                raise McelAcceptanceError(
+                    f"Package acceptance binding #{index + 1} for {record.app_id} is not an object."
+                )
+            binding_id = safe_string(item.get("id"))
+            app_id = safe_string(item.get("appId") or payload.get("appId"))
+            contract_id = safe_string(item.get("acceptanceContractId") or item.get("contractId"))
+            runner = safe_string(item.get("runner") or "pytest").lower()
+            declared_selectors = tuple(
+                safe_string(value)
+                for value in (item.get("selectors") or [])
+                if safe_string(value)
+            )
+            if not binding_id or not app_id or not contract_id:
+                raise McelAcceptanceError(
+                    f"Package acceptance binding #{index + 1} requires id, appId, and acceptanceContractId."
+                )
+            if app_id != record.app_id:
+                raise McelAcceptanceError(
+                    f"Package acceptance binding {binding_id!r} appId disagrees with package identity."
+                )
+            if binding_id in binding_ids:
+                raise McelAcceptanceError(
+                    f"Duplicate package acceptance binding id: {binding_id}"
+                )
+            if contract_id in bindings or contract_id in targeted_contracts:
+                raise McelAcceptanceError(
+                    f"Multiple package acceptance bindings target the same contract: {contract_id}"
+                )
+            if contract_id not in contract_ids:
+                raise McelAcceptanceError(
+                    f"Package acceptance binding {binding_id!r} targets unknown contract {contract_id!r}."
+                )
+            if runner != "pytest":
+                raise McelAcceptanceError(
+                    f"Unsupported package acceptance runner {runner!r} for binding {binding_id}."
+                )
+            if not declared_selectors:
+                raise McelAcceptanceError(
+                    f"Package acceptance binding {binding_id} has no pytest selectors."
+                )
+
+            executable_selectors: list[str] = []
+            for selector in declared_selectors:
+                source, executable = _package_relative_selector(
+                    selector,
+                    package_root=package_root,
+                    tests_root=tests_root,
+                )
+                if not (repo / Path(*source.parts)).is_file():
+                    raise McelAcceptanceError(
+                        f"Package acceptance binding {binding_id} references a missing test file: "
+                        f"{source.as_posix()}"
+                    )
+                executable_selectors.append(executable)
+
+            binding_ids.add(binding_id)
+            targeted_contracts.add(contract_id)
+            bindings[contract_id] = Binding(
+                binding_id=binding_id,
+                app_id=app_id,
+                contract_id=contract_id,
+                runner=runner,
+                selectors=tuple(executable_selectors),
+                notes=safe_string(item.get("notes")),
+                source_kind="package",
+                source_path=record.acceptance_bindings,
+                package_root=record.package_root,
+                package_fingerprint=record.fingerprint,
+                declared_selectors=declared_selectors,
+            )
+            package_binding_count += 1
+
+        contracts.extend(package_contracts)
+        packages.append(
+            {
+                "appId": record.app_id,
+                "packageRoot": record.package_root,
+                "packageFingerprint": record.fingerprint,
+                "packageFingerprintAlgorithm": record.fingerprint_algorithm,
+                "requirements": record.requirements,
+                "acceptanceBindings": record.acceptance_bindings,
+                "acceptanceBindingsSha256": sha256_bytes(raw),
+                "acceptanceContractCount": len(package_contracts),
+                "bindingCount": package_binding_count,
+            }
+        )
+
+    return contracts, bindings, {
+        "schema": PACKAGE_BINDING_SCHEMA,
+        "packageCount": len(packages),
+        "bindingCount": len(bindings),
+        "acceptanceContractCount": len(contracts),
+        "packages": packages,
+        "packageCatalogFingerprint": catalog.fingerprint,
+        "packageCatalogFingerprintAlgorithm": catalog.fingerprint_algorithm,
+    }
+
+
+def combine_acceptance_sources(
+    *,
+    central_contracts: Sequence[Any],
+    central_bindings: Mapping[str, Binding],
+    central_metadata: Mapping[str, Any],
+    package_contracts: Sequence[Any],
+    package_bindings: Mapping[str, Binding],
+    package_metadata: Mapping[str, Any],
+) -> tuple[list[Any], dict[str, Binding], dict[str, Any]]:
+    contracts = sorted(
+        [*central_contracts, *package_contracts],
+        key=lambda block: (safe_string(block.app), block.block_id),
+    )
+    contract_counts = Counter(block.block_id for block in contracts)
+    duplicate_contracts = sorted(
+        contract_id for contract_id, count in contract_counts.items() if count > 1
+    )
+    if duplicate_contracts:
+        raise McelAcceptanceError(
+            "Duplicate acceptance contract ids across central and package sources: "
+            + ", ".join(duplicate_contracts)
+        )
+
+    binding_ids = Counter(
+        binding.binding_id
+        for binding in [*central_bindings.values(), *package_bindings.values()]
+    )
+    duplicate_binding_ids = sorted(
+        binding_id for binding_id, count in binding_ids.items() if count > 1
+    )
+    if duplicate_binding_ids:
+        raise McelAcceptanceError(
+            "Duplicate acceptance binding ids across central and package sources: "
+            + ", ".join(duplicate_binding_ids)
+        )
+    duplicate_targets = sorted(set(central_bindings).intersection(package_bindings))
+    if duplicate_targets:
+        raise McelAcceptanceError(
+            "Acceptance contracts are bound by both central and package sources: "
+            + ", ".join(duplicate_targets)
+        )
+
+    bindings = dict(central_bindings)
+    bindings.update(package_bindings)
+    metadata = {
+        "schema": BINDING_SOURCES_SCHEMA,
+        "bindingCount": len(bindings),
+        "centralBindingCount": len(central_bindings),
+        "packageBindingCount": len(package_bindings),
+        "central": dict(central_metadata),
+        "packages": dict(package_metadata),
+    }
+    return contracts, bindings, metadata
 
 
 def validate_bindings(contracts: Sequence[Any], bindings: Mapping[str, Binding]) -> None:
@@ -419,7 +725,12 @@ def contract_result(
         "target": safe_string(block.fields.get("target") or block.fields.get("scope")),
         "source": source,
         "bindingId": binding.binding_id if binding else "",
+        "bindingSource": binding.source_kind if binding else "",
+        "bindingSourcePath": binding.source_path if binding else "",
+        "packageRoot": binding.package_root if binding else "",
+        "packageFingerprint": binding.package_fingerprint if binding else "",
         "selectors": list(binding.selectors) if binding else [],
+        "declaredSelectors": list(binding.declared_selectors) if binding else [],
         "notes": binding.notes if binding else "",
     }
     if not enforceable:
@@ -552,8 +863,17 @@ def build_report(
             "valid": bool(registry.valid),
             "strictSchemaReady": bool(registry.strict_schema_ready),
             "acceptanceContractCount": len(contracts),
+            "centralAcceptanceContractCount": sum(
+                1 for block in contracts if not str(block.source_file).startswith("mcel_apps/")
+            ),
+            "packageAcceptanceContractCount": sum(
+                1 for block in contracts if str(block.source_file).startswith("mcel_apps/")
+            ),
         },
         "bindingCatalog": dict(binding_metadata),
+        "applicationPackages": list(
+            ((binding_metadata.get("packages") or {}).get("packages") or [])
+        ),
         "summary": {
             "appCount": len(results),
             "appStatusCounts": dict(sorted(app_status_counts.items())),
@@ -615,6 +935,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                     f"- Enforceable: `{str(contract.get('enforceable') is True).lower()}`",
                     f"- Evidence status: `{safe_string(contract.get('status'))}`",
                     f"- Binding: `{safe_string(contract.get('bindingId')) or 'none'}`",
+                    f"- Binding source: `{safe_string(contract.get('bindingSource')) or 'none'}`",
+                    f"- Package fingerprint: `{safe_string(contract.get('packageFingerprint')) or 'not-applicable'}`",
                     f"- Tests collected: `{int(contract.get('testCount') or 0)}`",
                 ]
             )
@@ -681,8 +1003,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     repo = (args.repo_root or repo_root_from_script()).resolve()
     try:
         registry = load_requirements_registry(repo)
-        contracts = acceptance_contracts(registry)
-        bindings, binding_metadata = load_bindings(args.bindings, repo)
+        central_contracts = acceptance_contracts(registry)
+        central_bindings, central_binding_metadata = load_bindings(args.bindings, repo)
+        package_contracts, package_bindings, package_binding_metadata = load_package_acceptance(repo)
+        contracts, bindings, binding_metadata = combine_acceptance_sources(
+            central_contracts=central_contracts,
+            central_bindings=central_bindings,
+            central_metadata=central_binding_metadata,
+            package_contracts=package_contracts,
+            package_bindings=package_bindings,
+            package_metadata=package_binding_metadata,
+        )
         validate_bindings(contracts, bindings)
         selected_apps = {safe_string(value) for value in args.app if safe_string(value)}
         known_apps = {safe_string(block.app) for block in contracts}

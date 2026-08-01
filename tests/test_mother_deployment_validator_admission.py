@@ -677,3 +677,47 @@ def test_admission_executor_reconciles_exact_order_sensitive_guardian(tmp_path: 
     assert result["summary"]["validator_admission_reconciled"] is True
     assert result["summary"]["initial_precondition_mode"] == "known-validator-set-order-recovery"
     assert result["summary"]["validator_vote_state"] == "reconciled-active-after-order-sensitive-guardian"
+
+
+def test_admission_release_binds_exact_post_admission_replica_guardian_drift(tmp_path: Path) -> None:
+    _, _, _, _, _, release, _, _ = _release_fixture(tmp_path)
+    recovery = release["known_replica_post_admission_guardian_recovery"]
+    replica = release["replica_precondition"]
+    assert recovery["allowed"] is True
+    assert recovery["cause_code"] == "sole-validator-sync-guardian-invalidated-by-candidate-activation"
+    assert recovery["requires_initial_precondition_mode"] == "known-validator-set-order-recovery"
+    assert recovery["read_only"] is True
+    assert recovery["stale_replica_compose"]["canonical_text"] == replica["proof_compose"]["canonical_text"]
+    assert recovery["expected_pre_admission_validator_set"] == release["execution_plan"]["current_validator_set"]
+    assert recovery["expected_post_admission_validator_set"] == release["execution_plan"]["desired_validator_set"]
+
+
+def test_admission_executor_accepts_exact_c_guardian_drift_only_during_order_recovery(tmp_path: Path) -> None:
+    paths, private_state, _, _, _, release, release_path, release_digest = _release_fixture(tmp_path)
+    opener = _AdmissionOpener(
+        release,
+        c_healthy=False,
+        recovery_mode=True,
+        recovery_compose_override=release["known_order_sensitive_guardian_recovery"]["broken_admission_compose"]["canonical_text"],
+    )
+    result = execute_validator_admission_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        selected_nodes=("mainnetc-super1",),
+        opener=opener,
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        operation=_operation("validator-admission-replica-guardian-drift"),
+    )
+    assert result["status"] == "pass"
+    assert result["summary"]["validator_activation_proven"] is True
+    assert result["summary"]["replica_node_running_healthy"] is False
+    assert result["summary"]["replica_node_reachable_via_initial_peer"] is True
+    assert result["summary"]["replica_guardian_drift_recovery_used"] is True
+    assert result["summary"]["replica_precondition_mode"] == "known-post-admission-replica-guardian-drift"
+    assert any(
+        receipt.get("precondition_mode") == "known-post-admission-replica-guardian-drift"
+        for receipt in result["precondition_receipts"]
+    )

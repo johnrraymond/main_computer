@@ -175,7 +175,8 @@ browser-safe package catalog: implemented
 browser-safe package loading and semantic projection: implemented
 adapter-to-SCM application bridge: implemented
 generic semantic surface projection: implemented
-package-local acceptance discovery: not implemented
+package-local acceptance discovery: implemented
+operation-linked browser observation: not implemented
 app-oriented proof command: not implemented
 ```
 
@@ -187,9 +188,11 @@ Wave 3B is complete. `tools/mcel_application_package_browser_catalog.py` determi
 
 Wave 4 is complete. `mcel-application-runtime.js` compiles declared application intents into SCM-controlled transitions and exposes immutable application instances through the MCEL facade. Contract Counter increment, reset, stale, duplicate, prohibited, undeclared-write, and failed-postcondition paths are executable.
 
-Wave 5A is complete. `tools/mcel_application_runtime_projection.py` generates and checks a browser-safe package projection containing only executable contracts and runtime assets. `MCEL.mountApplicationPackage()` verifies source-package, catalog, and projection fingerprints, loads declared modules, validates semantic surface ridges and layout-region declarations, binds controls to intents, projects committed state, renders truthful receipts, and supports deterministic unmount. Contract Counter remains `structural-only` because package-local acceptance discovery, operation-linked independent browser observation, and proof orchestration remain open.
+Wave 5A is complete. `tools/mcel_application_runtime_projection.py` generates and checks a browser-safe package projection containing only executable contracts and runtime assets. `MCEL.mountApplicationPackage()` verifies source-package, catalog, and projection fingerprints, loads declared modules, validates semantic surface ridges and layout-region declarations, binds controls to intents, projects committed state, renders truthful receipts, and supports deterministic unmount.
 
-No later scaffolding wave is authorized by this status entry. Later waves must close package-local evidence discovery, browser observation, and proof orchestration without weakening the target fixture.
+Wave 6A is complete. Generated packages declare `tests.acceptanceBindings`; package validation and repository package authority reject mismatched identities, unknown contracts, unsupported runners, selector traversal, and selectors outside the package tests root. `mcel_acceptance_runner.py` now combines legacy central bindings with validated package-local contracts and bindings, executes Contract Counter through the shared SCM runtime, writes app-scoped evidence, and binds that evidence to the package fingerprint. Contract Counter remains `structural-only` because operation-linked independent browser observation and proof orchestration remain open.
+
+No later scaffolding wave is authorized by this status entry. Later waves must close browser observation and proof orchestration without weakening the target fixture.
 
 ## Verification commands
 
@@ -201,6 +204,7 @@ python tools/mcel_requirements_registry.py --report
 python tools/mcel_application_packages.py
 python tools/mcel_application_runtime_projection.py --check
 python tools/mcel_application_package_browser_catalog.py --check
+python main_computer/mcel_acceptance_runner.py --app contract-counter --check
 python main_computer/mcel_truth_audit.py
 python -m pytest -q tests/test_mcel_documentation.py tests/test_mcel_documentation_authority.py tests/test_mcel_requirements_registry.py tests/test_mcel_application_scaffolding_documentation.py tests/test_mcel_create_app.py tests/test_mcel_application_packages.py tests/test_mcel_application_package_browser_catalog.py tests/test_mcel_application_runtime_projection.py tests/test_mcel_application_runtime.py tests/test_mcel_app_blueprint_contracts.py tests/test_mcel_lab_phase2_shell.py tests/test_mcel_lab_semantic_form_inspection.py tests/test_mcel_lab_deployed_conformance.py tests/test_mcel_app_truth_gate.py tests/test_mcel_truth_audit.py tests/test_mcel_observation_bundle.py tests/test_mcel_browser_observation_producer.py tests/test_mcel_document_editor_surface.py tests/test_mcel_document_editor_layout_fit.py
 ```

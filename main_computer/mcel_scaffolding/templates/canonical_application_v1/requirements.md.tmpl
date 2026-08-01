@@ -163,7 +163,7 @@ app: {{APP_ID}}
 status: open
 aspect: implementation
 severity: blocking
-problem: The generated package is structurally valid, discoverable, executable through the shared SCM-controlled application runtime, and mountable through generic semantic-surface projection, but package-local acceptance discovery, operation-linked browser observation, and app-oriented proof orchestration are not yet live.
+problem: The generated package is structurally valid, discoverable, executable through the shared SCM-controlled application runtime, mountable through generic semantic-surface projection, and discoverable by the package-local acceptance runner, but operation-linked browser observation and app-oriented proof orchestration are not yet live.
 desired_behavior: MCEL mounts, observes, and proves the package without user-authored central registry edits or application-local mutation authority.
 ```
 
@@ -178,5 +178,5 @@ required_intents:
   - increment
   - reset
   - direct-set refusal
-readiness_gate: Bind the mounted SCM-controlled operation results to package-local acceptance, operation-linked observation, and later repository-bound proof.
+readiness_gate: Bind the mounted SCM-controlled operation results to operation-linked observation and later repository-bound proof; package-local acceptance execution is live.
 ```

@@ -7,9 +7,9 @@ contracts into repository-bound execution evidence.
 
 The runner does not define product truth. Authorities remain separated:
 
-- `pretty_docs/*.md` `mcel-acceptance` blocks declare acceptance obligations;
-- `main_computer/mcel_acceptance_bindings.json` maps enforceable contract IDs to
-  concrete pytest selectors;
+- `pretty_docs/*.md` and validated package `requirements.md` files declare `mcel-acceptance` obligations;
+- `main_computer/mcel_acceptance_bindings.json` maps legacy central contracts to concrete pytest selectors;
+- package `tests/mcel_acceptance_bindings.json` files map package contracts to package-relative selectors;
 - pytest execution proves or rejects those bindings;
 - `McelAppTruthGate` consumes the app-level result;
 - `mcel_truth_audit.py --release-gate` binds the report to the exact repository
@@ -37,6 +37,7 @@ Run one app without replacing the canonical all-app report:
 
 ```bash
 python main_computer/mcel_acceptance_runner.py --app file-explorer
+python main_computer/mcel_acceptance_runner.py --app contract-counter --check
 ```
 
 The scoped report is written under:
@@ -108,9 +109,9 @@ An enforceable contract may report:
 
 Only `pass` proves an enforceable contract.
 
-## Binding catalog
+## Binding catalogs
 
-The binding catalog uses schema:
+The legacy central binding catalog uses schema:
 
 ```text
 mcel-acceptance-bindings-v1
@@ -140,7 +141,18 @@ Safety rules:
 - missing test files are an error;
 - a zero-test pytest result is not a pass.
 
-The catalog is an execution map, not a second requirements registry.
+The catalogs are execution maps, not second requirements registries.
+
+
+Generated application packages use:
+
+```text
+mcel.package-acceptance-bindings.v1
+```
+
+The package manifest declares the file through `tests.acceptanceBindings`. Its selectors are package-relative and must remain beneath the package's declared tests root. Package validation rejects mismatched app identities, unknown acceptance contract IDs, duplicate targets, unsupported runners, traversal, symlink escapes, and missing test files.
+
+The acceptance runner combines central and package sources without merging their authority. Duplicate contract IDs, duplicate binding IDs, or a contract bound both centrally and locally are fatal. Package execution evidence records the source package root, package fingerprint, binding-file hash, declared selector, and resolved repository selector.
 
 
 Binding precision rule:
@@ -164,7 +176,8 @@ It includes:
 
 - deterministic repository provenance;
 - requirements-registry metadata;
-- binding-catalog hash;
+- central binding-catalog hash and package binding-file hashes;
+- validated application-package fingerprints;
 - app-level pass/fail results;
 - contract-level declaration and execution status;
 - pytest command, return code, duration, counts, and bounded output;
@@ -192,3 +205,7 @@ visible as `not-due`.
 
 The runner still exposes real failures. Precision removes false amplification;
 it does not suppress a failing bound contract.
+
+## Package-local baseline
+
+Contract Counter declares `contract-counter.acceptance.operation-control` in `mcel_apps/contract-counter/requirements.md` and binds it locally through `tests/mcel_acceptance_bindings.json`. The bound test executes increment, reset, stale, duplicate, prohibited, and failed-postcondition paths through `mcel-application-runtime.js` layered over `mcel-scm.js`. The app-scoped command returns passing evidence without a central binding-catalog edit.

@@ -764,6 +764,29 @@ def build_validator_admission_release(
             "replacement_admission_compose_sha256": compose_sha,
             "scope": "reconcile-exact-known-order-sensitive-guardian",
         },
+        "known_replica_post_admission_guardian_recovery": {
+            "allowed": True,
+            "cause_code": "sole-validator-sync-guardian-invalidated-by-candidate-activation",
+            "requires_initial_precondition_mode": "known-validator-set-order-recovery",
+            "accepted_service_statuses": [
+                "degraded:unhealthy",
+                "exited",
+                "running:unhealthy",
+                "starting:unhealthy",
+            ],
+            "stale_replica_compose": {
+                "canonical_text": chain["replica_compose"]["canonical_text"],
+                "sha256": _sha256(chain["replica_compose"].get("sha256"), "replica proof Compose SHA-256"),
+                "semantic_sha256": _compose_semantic_sha256(
+                    chain["replica_compose"]["canonical_text"], "C synchronization proof Compose"
+                ),
+            },
+            "expected_pre_admission_validator_set": [initial_validator],
+            "expected_post_admission_validator_set": desired,
+            "candidate_node_id": chain["candidate_node_id"],
+            "read_only": True,
+            "scope": "accept-exact-stale-sync-guardian-after-possible-admission",
+        },
         "replica_precondition": {
             "node": "mainnetc-super1",
             "controller_id": "coolify-c",
@@ -866,6 +889,7 @@ def build_validator_admission_release(
             "automatic_rollback_performed": False,
             "known_failed_guardian_recovery_allowed": True,
             "known_order_sensitive_guardian_recovery_allowed": True,
+            "known_replica_post_admission_guardian_recovery_allowed": True,
         },
         "remaining_blockers": [
             {
@@ -886,6 +910,7 @@ def build_validator_admission_release(
             "public_endpoint_created": False,
             "known_failed_guardian_recovery_allowed": True,
             "known_order_sensitive_guardian_recovery_allowed": True,
+            "known_replica_post_admission_guardian_recovery_allowed": True,
             "next_phase_after_apply": "stage-post-admission-steady-state",
         },
         "validator_admission_release_sha256": None,
@@ -1020,6 +1045,7 @@ def verify_validator_admission_release(
         "manual_ssh_required": False,
         "public_endpoint_created": False,
         "known_failed_guardian_recovery_allowed": True,
+        "known_replica_post_admission_guardian_recovery_allowed": True,
         "remaining_blocker_codes": ["MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_NOT_IMPLEMENTED"],
     }
 

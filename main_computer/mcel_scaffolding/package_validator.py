@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 PACKAGE_SCHEMA = "mcel.application-package.v1"
 BLUEPRINT_SCHEMA = "mcel.application-blueprint.v1"
+PACKAGE_ACCEPTANCE_BINDING_SCHEMA = "mcel.package-acceptance-bindings.v1"
 REQUIRED_PACKAGE_FILES = (
     "mcel.app.json",
     "requirements.md",
@@ -25,6 +26,8 @@ REQUIRED_PACKAGE_FILES = (
     "src/index.html",
     "src/app.js",
     "src/app.css",
+    "tests/mcel_acceptance_bindings.json",
+    "tests/test_acceptance.py",
     "tests/test_package.py",
     "tests/test_operations.py",
     "tests/test_surface.py",
@@ -112,8 +115,115 @@ def _manifest_references(manifest: Mapping[str, Any]) -> list[tuple[str, Any]]:
     tests = manifest.get("tests")
     if isinstance(tests, dict):
         references.append(("tests.root", tests.get("root")))
+        references.append(("tests.acceptanceBindings", tests.get("acceptanceBindings")))
     return references
 
+
+
+
+def _selector_source_path(raw: Any) -> PurePosixPath | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    source = raw.strip().split("::", 1)[0].replace("\\", "/")
+    path = PurePosixPath(source)
+    if path.is_absolute() or not path.parts or "." in path.parts or ".." in path.parts or path.suffix != ".py":
+        return None
+    return path
+
+
+def _requirements_acceptance_contracts(requirements: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for match in FENCE_PATTERN.finditer(requirements):
+        if match.group(1) != "mcel-acceptance":
+            continue
+        body = match.group(2)
+        identifier = ID_PATTERN.search(body)
+        app_match = re.search(r"^app:\s*(\S+)\s*$", body, re.MULTILINE)
+        if identifier:
+            result[identifier.group(1)] = app_match.group(1) if app_match else ""
+    return result
+
+
+def _validate_acceptance_bindings(
+    normalized: Mapping[str, str],
+    manifest: Mapping[str, Any],
+    requirements: str,
+    errors: list[PackageValidationIssue],
+) -> None:
+    tests = manifest.get("tests")
+    if not isinstance(tests, Mapping):
+        errors.append(PackageValidationIssue("missing-tests-contract", "Manifest tests contract is missing.", "mcel.app.json"))
+        return
+    tests_root = _safe_manifest_path(tests.get("root"))
+    bindings_path = _safe_manifest_path(tests.get("acceptanceBindings"))
+    if tests_root is None:
+        errors.append(PackageValidationIssue("unsafe-manifest-reference", "Manifest reference tests.root is invalid.", "mcel.app.json"))
+        return
+    if bindings_path is None:
+        errors.append(PackageValidationIssue("unsafe-manifest-reference", "Manifest reference tests.acceptanceBindings is invalid.", "mcel.app.json"))
+        return
+    tests_root_path = PurePosixPath(tests_root)
+    try:
+        PurePosixPath(bindings_path).relative_to(tests_root_path)
+    except ValueError:
+        errors.append(PackageValidationIssue("package-acceptance-bindings-outside-tests-root", "Package acceptance binding file must remain beneath the declared tests root.", bindings_path))
+    payload = _load_json(normalized, bindings_path, errors)
+    if not isinstance(payload, Mapping):
+        return
+    if payload.get("schema") != PACKAGE_ACCEPTANCE_BINDING_SCHEMA:
+        errors.append(PackageValidationIssue("unsupported-package-acceptance-binding-schema", "Package acceptance binding file uses an unsupported schema.", bindings_path))
+    app_id = manifest.get("appId")
+    if payload.get("appId") != app_id:
+        errors.append(PackageValidationIssue("acceptance-binding-app-id-mismatch", "Package acceptance binding appId must equal manifest appId.", bindings_path))
+    declared_contracts = _requirements_acceptance_contracts(requirements)
+    binding_ids: set[str] = set()
+    contract_ids: set[str] = set()
+    bindings = payload.get("bindings")
+    if not isinstance(bindings, list) or not bindings:
+        errors.append(PackageValidationIssue("missing-package-acceptance-bindings", "Package acceptance binding file must contain a non-empty bindings list.", bindings_path))
+        return
+    for index, binding in enumerate(bindings):
+        label = f"Package acceptance binding #{index + 1}"
+        if not isinstance(binding, Mapping):
+            errors.append(PackageValidationIssue("invalid-package-acceptance-binding", f"{label} must be an object.", bindings_path))
+            continue
+        binding_id = binding.get("id")
+        contract_id = binding.get("acceptanceContractId")
+        runner = binding.get("runner", "pytest")
+        selectors = binding.get("selectors")
+        if not isinstance(binding_id, str) or not binding_id:
+            errors.append(PackageValidationIssue("missing-package-acceptance-binding-id", f"{label} requires id.", bindings_path))
+        elif binding_id in binding_ids:
+            errors.append(PackageValidationIssue("duplicate-package-acceptance-binding-id", f"Duplicate package acceptance binding id {binding_id!r}.", bindings_path))
+        else:
+            binding_ids.add(binding_id)
+        if not isinstance(contract_id, str) or not contract_id:
+            errors.append(PackageValidationIssue("missing-package-acceptance-contract-id", f"{label} requires acceptanceContractId.", bindings_path))
+        elif contract_id in contract_ids:
+            errors.append(PackageValidationIssue("duplicate-package-acceptance-contract-target", f"Multiple package bindings target {contract_id!r}.", bindings_path))
+        else:
+            contract_ids.add(contract_id)
+            if contract_id not in declared_contracts:
+                errors.append(PackageValidationIssue("unknown-package-acceptance-contract", f"Package binding targets unknown acceptance contract {contract_id!r}.", bindings_path))
+            elif declared_contracts[contract_id] != app_id:
+                errors.append(PackageValidationIssue("package-acceptance-contract-app-id-mismatch", f"Acceptance contract {contract_id!r} does not belong to manifest appId.", "requirements.md"))
+        if runner != "pytest":
+            errors.append(PackageValidationIssue("unsupported-package-acceptance-runner", f"{label} uses unsupported runner {runner!r}.", bindings_path))
+        if not isinstance(selectors, list) or not selectors:
+            errors.append(PackageValidationIssue("missing-package-acceptance-selectors", f"{label} requires pytest selectors.", bindings_path))
+            continue
+        for selector in selectors:
+            source = _selector_source_path(selector)
+            if source is None:
+                errors.append(PackageValidationIssue("unsafe-package-acceptance-selector", f"Unsafe or unsupported package acceptance selector {selector!r}.", bindings_path))
+                continue
+            try:
+                source.relative_to(tests_root_path)
+            except ValueError:
+                errors.append(PackageValidationIssue("package-acceptance-selector-outside-tests-root", f"Package acceptance selector {selector!r} escapes the declared tests root.", bindings_path))
+                continue
+            if source.as_posix() not in normalized:
+                errors.append(PackageValidationIssue("missing-package-acceptance-selector", f"Package acceptance selector {selector!r} does not resolve.", source.as_posix()))
 
 def validate_package_files(
     files: Mapping[str, str],
@@ -235,6 +345,9 @@ def validate_package_files(
                 "requirements.md",
             )
         )
+
+    if isinstance(manifest, dict):
+        _validate_acceptance_bindings(normalized, manifest, requirements, errors)
 
     return PackageValidationResult(
         ok=not errors,

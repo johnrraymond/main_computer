@@ -1,0 +1,15 @@
+{
+  "schema": "mcel.package-acceptance-bindings.v1",
+  "appId": "contract-counter",
+  "bindings": [
+    {
+      "id": "contract-counter.binding.operation-control",
+      "acceptanceContractId": "contract-counter.acceptance.operation-control",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py::test_package_acceptance_operation_control"
+      ],
+      "notes": "Executes the package through the shared SCM-controlled MCEL application runtime."
+    }
+  ]
+}

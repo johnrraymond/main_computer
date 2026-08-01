@@ -272,6 +272,7 @@ def test_cli_lists_contracts_without_running_pytest() -> None:
     assert "file-explorer.acceptance.read-only-browse-preview" in completed.stdout
     assert "calculator.acceptance.no-hidden-mutation" in completed.stdout
     assert "unbound" in completed.stdout
+    assert "contract-counter.acceptance.operation-control" in completed.stdout
 
 
 def test_documentation_defines_release_sequence_and_no_overclaim_rules() -> None:
@@ -355,3 +356,94 @@ def test_app_scoped_output_requires_explicit_canonical_overwrite() -> None:
         evidence_scope=scope,
         overwrite_canonical=True,
     ) == runner.DEFAULT_OUTPUT_DIR
+
+
+def test_package_local_acceptance_is_discovered_with_package_provenance() -> None:
+    contracts, bindings, metadata = runner.load_package_acceptance(ROOT)
+
+    assert [block.block_id for block in contracts] == [
+        "contract-counter.acceptance.operation-control"
+    ]
+    bound = bindings["contract-counter.acceptance.operation-control"]
+    assert bound.source_kind == "package"
+    assert bound.source_path == "mcel_apps/contract-counter/tests/mcel_acceptance_bindings.json"
+    assert bound.declared_selectors == (
+        "tests/test_acceptance.py::test_package_acceptance_operation_control",
+    )
+    assert bound.selectors == (
+        "mcel_apps/contract-counter/tests/test_acceptance.py::test_package_acceptance_operation_control",
+    )
+    assert bound.package_fingerprint.startswith("sha256:")
+    assert metadata["packageCount"] == 1
+    assert metadata["bindingCount"] == 1
+    assert metadata["packages"][0]["packageFingerprint"] == bound.package_fingerprint
+
+
+def test_central_and_package_binding_identity_collision_is_refused() -> None:
+    block = FakeBlock(
+        block_id="demo.acceptance.one",
+        app="demo",
+        status="specified",
+        fields={"requires": ["demo"]},
+    )
+    central = binding()
+    package = runner.Binding(
+        binding_id=central.binding_id,
+        app_id="package-demo",
+        contract_id="package-demo.acceptance.one",
+        runner="pytest",
+        selectors=("mcel_apps/package-demo/tests/test_acceptance.py",),
+        notes="",
+        source_kind="package",
+    )
+    package_block = FakeBlock(
+        block_id="package-demo.acceptance.one",
+        app="package-demo",
+        status="specified",
+        fields={"requires": ["demo"]},
+        source_file="mcel_apps/package-demo/requirements.md",
+    )
+
+    with pytest.raises(runner.McelAcceptanceError, match="Duplicate acceptance binding ids"):
+        runner.combine_acceptance_sources(
+            central_contracts=[block],
+            central_bindings={central.contract_id: central},
+            central_metadata={},
+            package_contracts=[package_block],
+            package_bindings={package.contract_id: package},
+            package_metadata={},
+        )
+
+
+def test_contract_counter_app_scoped_acceptance_cli_passes_with_package_fingerprint(tmp_path: Path) -> None:
+    output = tmp_path / "acceptance"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--app",
+            "contract-counter",
+            "--output-dir",
+            str(output),
+            "--check",
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=90,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "status: pass" in completed.stdout
+    assert "evidence_scope: app-scoped" in completed.stdout
+    assert "enforceable_contracts: 1" in completed.stdout
+    assert "passed_contracts: 1" in completed.stdout
+
+    report = json.loads((output / "mcel-acceptance-report.json").read_text(encoding="utf-8"))
+    contract = report["results"][0]["contracts"][0]
+    assert contract["bindingSource"] == "package"
+    assert contract["packageFingerprint"].startswith("sha256:")
+    assert report["applicationPackages"][0]["appId"] == "contract-counter"
+    assert report["applicationPackages"][0]["packageFingerprint"] == contract["packageFingerprint"]

@@ -58,6 +58,7 @@ class ApplicationPackageRecord:
     contracts: Mapping[str, str]
     runtime: Mapping[str, str]
     tests_root: str | None
+    acceptance_bindings: str | None
     template: Mapping[str, str]
     conformance: Mapping[str, Any]
     fingerprint: str | None
@@ -79,6 +80,7 @@ class ApplicationPackageRecord:
             "contracts": dict(sorted(self.contracts.items())),
             "runtime": dict(sorted(self.runtime.items())),
             "testsRoot": self.tests_root,
+            "acceptanceBindings": self.acceptance_bindings,
             "template": dict(sorted(self.template.items())),
             "conformance": _canonical_value(self.conformance),
             "fingerprint": self.fingerprint,
@@ -389,8 +391,10 @@ def _build_record(
     }
     tests = manifest.get("tests")
     tests_root = None
+    acceptance_bindings = None
     if isinstance(tests, Mapping):
         tests_root = _join_repository_reference(package_root, tests.get("root"))
+        acceptance_bindings = _join_repository_reference(package_root, tests.get("acceptanceBindings"))
 
     template = _mapping_of_strings(manifest.get("template"))
     conformance = manifest.get("conformance") if isinstance(manifest.get("conformance"), Mapping) else {}
@@ -409,6 +413,7 @@ def _build_record(
         contracts=contracts,
         runtime=runtime,
         tests_root=tests_root,
+        acceptance_bindings=acceptance_bindings,
         template=template,
         conformance=_canonical_value(conformance),
         fingerprint=fingerprint,
