@@ -132,9 +132,12 @@ from tools.mother.common.deployment_validator_admission_executor import (
 from tools.mother.common.deployment_validator_quorum_recovery import (
     MotherDeploymentValidatorQuorumRecoveryError,
     build_validator_quorum_recovery_release,
+    diagnose_validator_quorum_runtime,
     execute_validator_quorum_recovery_release,
     inspect_validator_quorum_recovery_release,
+    reconcile_validator_quorum_recovery,
     verify_validator_quorum_recovery_evidence,
+    verify_validator_quorum_recovery_reconciliation,
     verify_validator_quorum_recovery_release,
     write_validator_quorum_recovery_release,
 )
@@ -748,6 +751,36 @@ def _parser() -> argparse.ArgumentParser:
     apply_quorum.add_argument("--max-wait-seconds", type=float, default=360.0)
     apply_quorum.add_argument("--poll-interval-seconds", type=float, default=5.0)
     apply_quorum.add_argument("--execute", action="store_true")
+
+    reconcile_quorum = subparsers.add_parser(
+        "reconcile-validator-quorum-recovery",
+        help="reconcile a failed aggregate-health receipt from exact healthy quorum components",
+        allow_abbrev=False,
+    )
+    _common(reconcile_quorum)
+    reconcile_quorum.add_argument("--evidence", required=True)
+    reconcile_quorum.add_argument("--max-age-seconds", type=int, default=86400)
+    reconcile_quorum.add_argument("--timeout", type=float, default=30.0)
+    reconcile_quorum.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+
+    verify_quorum_reconciliation = subparsers.add_parser(
+        "verify-validator-quorum-recovery-reconciliation",
+        help="verify canonical component-scoped quorum recovery reconciliation evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_quorum_reconciliation)
+    verify_quorum_reconciliation.add_argument("--reconciliation", required=True)
+    verify_quorum_reconciliation.add_argument("--max-age-seconds", type=int, default=300)
+
+    diagnose_quorum = subparsers.add_parser(
+        "diagnose-validator-quorum-runtime",
+        help="collect read-only redacted Coolify runtime diagnostics for failed quorum recovery",
+        allow_abbrev=False,
+    )
+    _common(diagnose_quorum)
+    diagnose_quorum.add_argument("--evidence", required=True)
+    diagnose_quorum.add_argument("--timeout", type=float, default=30.0)
+    diagnose_quorum.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
 
     verify_quorum_evidence = subparsers.add_parser(
         "verify-validator-quorum-recovery-evidence",
@@ -1560,6 +1593,46 @@ def _cmd_apply_validator_quorum_recovery(args: argparse.Namespace, private_state
     return 0 if result.get("status") == "pass" else 1
 
 
+def _cmd_reconcile_validator_quorum_recovery(args: argparse.Namespace, private_state) -> int:
+    result = reconcile_validator_quorum_recovery(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("reconcile-validator-quorum-recovery", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_quorum_recovery_reconciliation(args: argparse.Namespace, private_state) -> int:
+    result = verify_validator_quorum_recovery_reconciliation(
+        _paths(args),
+        private_state,
+        Path(args.reconciliation),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_diagnose_validator_quorum_runtime(args: argparse.Namespace, private_state) -> int:
+    result = diagnose_validator_quorum_runtime(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("diagnose-validator-quorum-runtime", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_verify_validator_quorum_recovery_evidence(args: argparse.Namespace, private_state) -> int:
     result = verify_validator_quorum_recovery_evidence(
         _paths(args), private_state, Path(args.evidence),
@@ -1662,6 +1735,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_validator_quorum_recovery_release(args, private_state)
         if args.command == "apply-validator-quorum-recovery":
             return _cmd_apply_validator_quorum_recovery(args, private_state)
+        if args.command == "reconcile-validator-quorum-recovery":
+            return _cmd_reconcile_validator_quorum_recovery(args, private_state)
+        if args.command == "verify-validator-quorum-recovery-reconciliation":
+            return _cmd_verify_validator_quorum_recovery_reconciliation(args, private_state)
+        if args.command == "diagnose-validator-quorum-runtime":
+            return _cmd_diagnose_validator_quorum_runtime(args, private_state)
         if args.command == "verify-validator-quorum-recovery-evidence":
             return _cmd_verify_validator_quorum_recovery_evidence(args, private_state)
         raise RuntimeError(f"unsupported command: {args.command}")

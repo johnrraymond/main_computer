@@ -11,6 +11,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
+import ipaddress
 import json
 from pathlib import Path, PureWindowsPath
 import re
@@ -33,6 +34,10 @@ _EVIDENCE_KIND = "main_computer.mother.deployment_validator_quorum_recovery_evid
 _RELEASE_DIRECTORY = ("actions", "deployment-validator-quorum-recovery-releases")
 _CLAIM_DIRECTORY = ("actions", "deployment-validator-quorum-recovery-execution-claims")
 _EVIDENCE_DIRECTORY = ("evidence", "deployment-validator-quorum-recovery")
+_DIAGNOSTIC_KIND = "main_computer.mother.deployment_validator_quorum_runtime_diagnostic.v1"
+_DIAGNOSTIC_DIRECTORY = ("evidence", "deployment-validator-quorum-runtime-diagnostics")
+_RECONCILIATION_KIND = "main_computer.mother.deployment_validator_quorum_recovery_reconciliation.v1"
+_RECONCILIATION_DIRECTORY = ("evidence", "deployment-validator-quorum-recovery-reconciliations")
 _TRANSACTION_DIRECTORY = ("actions", "deployment-validator-admission-transactions")
 _PROOF_IMAGE = "python:3.12-alpine"
 _MIN_RELEASE_SECONDS = 30
@@ -132,6 +137,26 @@ def _contains_sensitive(value: Any) -> bool:
 def _safe_message(value: Any) -> str:
     text = str(value).replace("\r", " ").replace("\n", " ").strip()
     return text[:300] or "operation failed"
+
+
+def _advertised_host(base_url: str, label: str) -> str:
+    parsed = urllib.parse.urlsplit(base_url)
+    host = parsed.hostname
+    if not host:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_CONTROLLER_INVALID",
+            f"{label} controller URL has no hostname",
+        )
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or host.startswith(".") or host.endswith("."):
+            raise MotherDeploymentValidatorQuorumRecoveryError(
+                "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_CONTROLLER_INVALID",
+                f"{label} controller hostname is unsafe",
+            )
+        return host.lower()
+    return f"[{address.compressed}]" if address.version == 6 else address.compressed
 
 
 def _digest_without(document: Mapping[str, Any], field: str) -> str:
@@ -417,16 +442,42 @@ def _replica_recovery_compose(
 
 def _initial_recovery_compose(
     original: str, *, chain_id: int, genesis_sha256: str, validators: list[str], candidate_node_id: str,
-    rpc_request_sha256: str
+    candidate_enode: str, rpc_request_sha256: str
 ) -> str:
     script = _initial_quorum_script(
         node="mainneta-super1", chain_id=chain_id, genesis_sha256=genesis_sha256,
         validators=validators, candidate_node_id=candidate_node_id, rpc_request_sha256=rpc_request_sha256,
     )
-    return _replace_guardian(
+    updated = _replace_guardian(
         original, "mother-validator-admission-guardian", "mother-validator-quorum-recovery-initial-guardian",
         script, volume="mother-proof", health_file="/proof/validator-quorum-recovery-healthy",
     )
+    static_encoded = base64.b64encode(canonical_json([candidate_enode])).decode("ascii")
+    genesis_line = "        chmod 0444 /config/genesis.json"
+    if updated.count(genesis_line) != 1:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_COMPOSE_UNSUPPORTED", "A init command is unsupported"
+        )
+    updated = updated.replace(
+        genesis_line,
+        "\n".join([
+            genesis_line,
+            f"        printf '%s' '{static_encoded}' | base64 -d > /config/static-nodes.json",
+            "        chmod 0444 /config/static-nodes.json",
+        ]),
+        1,
+    )
+    p2p_line = "      - --p2p-port=30303"
+    if updated.count(p2p_line) != 1:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_COMPOSE_UNSUPPORTED", "A P2P command is unsupported"
+        )
+    updated = updated.replace(
+        p2p_line,
+        p2p_line + "\n      - --static-nodes-file=/config/static-nodes.json",
+        1,
+    )
+    return updated
 
 
 def build_validator_quorum_recovery_release(
@@ -496,12 +547,16 @@ def build_validator_quorum_recovery_release(
         replica_node_id=replica_node_id,
         bootnode_enode=bootnode_enode,
     )
+    replica_controller = resolve_coolify_controller(private_state, base["network"], "coolify-c")
+    candidate_host = _advertised_host(replica_controller.base_url, "replica")
+    candidate_enode = f"enode://{candidate_node_id}@{candidate_host}:30303"
     a_compose = _initial_recovery_compose(
         current_a_compose,
         chain_id=chain_id,
         genesis_sha256=genesis_sha,
         validators=desired,
         candidate_node_id=candidate_node_id,
+        candidate_enode=candidate_enode,
         rpc_request_sha256=_sha256(admission_plan["rpc_request_sha256"], "RPC request SHA-256"),
     )
     a_bytes = a_compose.encode("utf-8")
@@ -544,6 +599,20 @@ def build_validator_quorum_recovery_release(
                     "sha256": hashlib.sha256(stale_c_compose.encode("utf-8")).hexdigest(),
                     "semantic_sha256": _compose_semantic_sha256(stale_c_compose, "stale C synchronization Compose"),
                 },
+                "accepted_compose_lineages": [
+                    {
+                        "mode": "stale-synchronization-compose",
+                        "canonical_text": stale_c_compose,
+                        "sha256": hashlib.sha256(stale_c_compose.encode("utf-8")).hexdigest(),
+                        "semantic_sha256": _compose_semantic_sha256(stale_c_compose, "stale C synchronization Compose"),
+                    },
+                    {
+                        "mode": "already-installed-quorum-recovery-readiness",
+                        "canonical_text": c_compose,
+                        "sha256": hashlib.sha256(c_bytes).hexdigest(),
+                        "semantic_sha256": _compose_semantic_sha256(c_compose, "C quorum-recovery readiness Compose"),
+                    },
+                ],
             },
             "validator_set": desired,
             "vote_already_active": True,
@@ -556,6 +625,7 @@ def build_validator_quorum_recovery_release(
             "initial_node_id": initial_node_id,
             "replica_node_id": replica_node_id,
             "bootnode_enode": bootnode_enode,
+            "candidate_enode": candidate_enode,
             "replica_readiness_compose": {
                 "canonical_text": c_compose,
                 "sha256": hashlib.sha256(c_bytes).hexdigest(),
@@ -568,11 +638,12 @@ def build_validator_quorum_recovery_release(
                 "sha256": hashlib.sha256(a_bytes).hexdigest(),
                 "semantic_sha256": _compose_semantic_sha256(a_compose, "A quorum-recovery proof Compose"),
                 "guardian_internal_only": True,
+                "static_peer_enode": candidate_enode,
             },
             "mutations": [
                 {"ordinal": 1, "mutation_id": "mainnetc-super1.install-quorum-recovery-readiness", "controller_id": "coolify-c", "method": "PATCH", "endpoint": f"/api/v1/services/{c_encoded}", "canonical_request_body": c_body, "body_sha256": hashlib.sha256(canonical_json(c_body)).hexdigest(), "success_statuses": [200, 201, 202]},
-                {"ordinal": 2, "mutation_id": "mainnetc-super1.restart-validator-for-quorum-reset", "controller_id": "coolify-c", "method": "GET", "endpoint": f"/api/v1/deploy?uuid={c_encoded}&force=true", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
-                {"ordinal": 3, "mutation_id": "mainneta-super1.install-quorum-recovery-proof", "controller_id": "coolify-a", "method": "PATCH", "endpoint": f"/api/v1/services/{a_encoded}", "canonical_request_body": a_body, "body_sha256": hashlib.sha256(canonical_json(a_body)).hexdigest(), "success_statuses": [200, 201, 202]},
+                {"ordinal": 2, "mutation_id": "mainneta-super1.install-quorum-recovery-proof", "controller_id": "coolify-a", "method": "PATCH", "endpoint": f"/api/v1/services/{a_encoded}", "canonical_request_body": a_body, "body_sha256": hashlib.sha256(canonical_json(a_body)).hexdigest(), "success_statuses": [200, 201, 202]},
+                {"ordinal": 3, "mutation_id": "mainnetc-super1.restart-validator-for-quorum-reset", "controller_id": "coolify-c", "method": "GET", "endpoint": f"/api/v1/deploy?uuid={c_encoded}&force=true", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
                 {"ordinal": 4, "mutation_id": "mainneta-super1.restart-validator-for-quorum-reset", "controller_id": "coolify-a", "method": "GET", "endpoint": f"/api/v1/deploy?uuid={a_encoded}&force=true", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
             ],
             "proof": {
@@ -580,7 +651,8 @@ def build_validator_quorum_recovery_release(
                 "public_endpoint_created": False,
                 "vote_performed": False,
                 "restart_order": ["mainnetc-super1", "mainneta-super1"],
-                "predicates": ["exact-validator-set-A-plus-C", "C-exact-node-identity", "C-static-peer-A", "A-exact-peer-C", "both-round-timers-reset", "fresh-block-height-advancing"],
+                "restart_mode": "back-to-back-without-intermediate-health-wait",
+                "predicates": ["exact-validator-set-A-plus-C", "C-exact-node-identity", "C-static-peer-A", "A-static-peer-C", "A-exact-peer-C", "both-round-timers-reset", "fresh-block-height-advancing"],
             },
         },
         "authority": {
@@ -601,6 +673,9 @@ def build_validator_quorum_recovery_release(
             "secrets_in_output": False,
             "restart_all_validators": True,
             "restart_order": ["mainnetc-super1", "mainneta-super1"],
+            "restart_mode": "back-to-back-without-intermediate-health-wait",
+            "static_peers_symmetric": True,
+            "partial_replica_recovery_lineage_allowed": True,
             "vote_replay_forbidden": True,
             "network_access_performed": False,
             "live_mutation_performed": False,
@@ -610,6 +685,7 @@ def build_validator_quorum_recovery_release(
             "mutation_count": 4,
             "validator_vote_authorized": False,
             "quorum_recovery_authorized": True,
+            "partial_replica_recovery_lineage_allowed": True,
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "next_phase_after_apply": "stage-post-admission-steady-state",
@@ -695,6 +771,7 @@ def verify_validator_quorum_recovery_release(
         "mutation_count": 4,
         "validator_vote_authorized": False,
         "quorum_recovery_authorized": True,
+        "partial_replica_recovery_lineage_allowed": True,
         "live_execution_authorized": False,
         "manual_ssh_required": False,
         "public_endpoint_created": False,
@@ -729,24 +806,85 @@ def inspect_validator_quorum_recovery_release(
     }
 
 
+def _component_status_records(payload: Any) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def walk(value: Any, application_context: bool = False) -> None:
+        if isinstance(value, Mapping):
+            name = value.get("name") or value.get("service_name") or value.get("container_name")
+            status = value.get("status") or value.get("health_status") or value.get("state")
+            uuid = value.get("uuid")
+            image = value.get("image") or value.get("image_name")
+            if application_context and type(name) is str and name.strip():
+                key = (str(uuid or ""), name.strip())
+                if key not in seen:
+                    seen.add(key)
+                    records.append({
+                        "name": name.strip()[:200],
+                        "uuid": str(uuid or "")[:200],
+                        "status": str(status or "")[:100],
+                        "image": str(image or "")[:300],
+                    })
+            for key, nested in value.items():
+                clean = str(key).lower()
+                walk(nested, application_context or clean in {
+                    "applications", "application", "service_applications",
+                    "service_application", "serviceapplications", "serviceapplication",
+                    "containers",
+                })
+        elif type(value) is list:
+            for nested in value:
+                walk(nested, application_context)
+
+    walk(payload)
+    return records[:64]
+
+
+def _component_health(
+    payload: Any, required_names: Iterable[str]
+) -> tuple[bool, list[dict[str, str]]]:
+    records = _component_status_records(payload)
+    by_name: dict[str, list[dict[str, str]]] = {}
+    for record in records:
+        by_name.setdefault(record["name"], []).append(record)
+    required = [str(name) for name in required_names]
+    healthy = bool(required)
+    for name in required:
+        matches = by_name.get(name, [])
+        if len(matches) != 1 or matches[0].get("status") != "running:healthy":
+            healthy = False
+    return healthy, records
+
+
 def _verify_service(
     *, controller: Any, controller_id: str, node: str, service_uuid: str, expected_compose: str,
     accepted_statuses: list[str], timeout: float, max_response_bytes: int, opener: Any,
-    receipts: list[dict[str, Any]], phase: str,
+    receipts: list[dict[str, Any]], phase: str, required_healthy_components: Iterable[str] = (),
 ) -> str:
     inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
     record = _service_record(inventory["payload"], service_uuid, node) if inventory["ok"] else None
     status = _service_status(record) if record is not None else ""
-    receipts.append({"name": f"{phase}-status", "controller_id": controller_id, "method": "GET", "endpoint": "/api/v1/services", "status": inventory["status"], "response_sha256": inventory["response_sha256"], "service_status": status, "verified": inventory["ok"] and status in accepted_statuses})
-    if not inventory["ok"] or status not in accepted_statuses:
-        raise MotherDeploymentValidatorQuorumRecoveryError(
-            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_PRECONDITION_FAILED", f"{node} status {status!r} is outside the exact recovery state"
-        )
     endpoint = f"/api/v1/services/{service_uuid}"
     detail = _http(controller, "GET", endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
     if not detail["ok"]:
         raise MotherDeploymentValidatorQuorumRecoveryError(
             "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_PRECONDITION_FAILED", f"{node} service detail failed"
+        )
+    component_ok, components = _component_health(detail["payload"], required_healthy_components)
+    aggregate_ok = inventory["ok"] and status in accepted_statuses
+    verified_status = aggregate_ok or component_ok
+    receipts.append({
+        "name": f"{phase}-status", "controller_id": controller_id, "method": "GET",
+        "endpoint": "/api/v1/services", "status": inventory["status"],
+        "response_sha256": inventory["response_sha256"], "service_status": status,
+        "health_mode": "aggregate" if aggregate_ok else ("required-components" if component_ok else "unhealthy"),
+        "required_components": list(required_healthy_components),
+        "component_statuses": components, "verified": verified_status,
+    })
+    if not verified_status:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_PRECONDITION_FAILED", f"{node} status {status!r} is outside the exact recovery state"
         )
     try:
         binding = _match_service_compose(detail["payload"], expected_compose, f"{node} exact recovery Compose")
@@ -758,9 +896,79 @@ def _verify_service(
     return status
 
 
+def _verify_service_lineages(
+    *, controller: Any, controller_id: str, node: str, service_uuid: str,
+    accepted_compose_lineages: list[Mapping[str, Any]], accepted_statuses: list[str], timeout: float,
+    max_response_bytes: int, opener: Any, receipts: list[dict[str, Any]], phase: str,
+) -> tuple[str, str]:
+    inventory = _http(
+        controller, "GET", "/api/v1/services", body=None, timeout=timeout,
+        max_response_bytes=max_response_bytes, opener=opener,
+    )
+    record = _service_record(inventory["payload"], service_uuid, node) if inventory["ok"] else None
+    status = _service_status(record) if record is not None else ""
+    receipts.append({
+        "name": f"{phase}-status",
+        "controller_id": controller_id,
+        "method": "GET",
+        "endpoint": "/api/v1/services",
+        "status": inventory["status"],
+        "response_sha256": inventory["response_sha256"],
+        "service_status": status,
+        "verified": inventory["ok"] and status in accepted_statuses,
+    })
+    if not inventory["ok"] or status not in accepted_statuses:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_PRECONDITION_FAILED",
+            f"{node} status {status!r} is outside the exact recovery state",
+        )
+    endpoint = f"/api/v1/services/{service_uuid}"
+    detail = _http(
+        controller, "GET", endpoint, body=None, timeout=timeout,
+        max_response_bytes=max_response_bytes, opener=opener,
+    )
+    if not detail["ok"]:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_PRECONDITION_FAILED",
+            f"{node} service detail failed",
+        )
+    for lineage in accepted_compose_lineages:
+        mode = lineage.get("mode")
+        expected_compose = lineage.get("canonical_text")
+        if type(mode) is not str or type(expected_compose) is not str:
+            raise MotherDeploymentValidatorQuorumRecoveryError(
+                "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_INVALID",
+                f"{node} recovery Compose lineage is malformed",
+            )
+        try:
+            binding = _match_service_compose(
+                detail["payload"], expected_compose, f"{node} {mode} recovery Compose"
+            )
+        except MotherDeploymentGenesisBirthError:
+            continue
+        receipts.append({
+            "name": f"{phase}-compose",
+            "controller_id": controller_id,
+            "method": "GET",
+            "endpoint": endpoint,
+            "status": detail["status"],
+            "response_sha256": detail["response_sha256"],
+            "binding_mode": binding["mode"],
+            "semantic_sha256": binding["semantic_sha256"],
+            "precondition_mode": mode,
+            "verified": True,
+        })
+        return status, mode
+    raise MotherDeploymentValidatorQuorumRecoveryError(
+        "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_COMPOSE_MISMATCH",
+        f"live {node} Compose does not match any exact released recovery lineage",
+    )
+
+
 def _wait_healthy(
     *, controller: Any, service_uuid: str, node: str, timeout: float, max_response_bytes: int,
     max_wait_seconds: float, poll_interval_seconds: float, opener: Any, observations: list[dict[str, Any]], phase: str,
+    required_healthy_components: Iterable[str] = (),
 ) -> None:
     deadline = time.monotonic() + max_wait_seconds
     last = ""
@@ -768,12 +976,28 @@ def _wait_healthy(
         inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
         if inventory["ok"]:
             last = _service_status(_service_record(inventory["payload"], service_uuid, node))
-            observations.append({"phase": phase, "status": last, "response_sha256": inventory["response_sha256"], "observed_at": _timestamp()})
+            observation: dict[str, Any] = {
+                "phase": phase, "status": last, "response_sha256": inventory["response_sha256"],
+                "observed_at": _timestamp(), "health_mode": "aggregate" if last == "running:healthy" else "unhealthy",
+            }
             if last == "running:healthy":
+                observations.append(observation)
                 return
+            if tuple(required_healthy_components):
+                endpoint = f"/api/v1/services/{service_uuid}"
+                detail = _http(controller, "GET", endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+                component_ok, components = _component_health(detail["payload"] if detail["ok"] else {}, required_healthy_components)
+                observation["detail_response_sha256"] = detail["response_sha256"]
+                observation["required_components"] = list(required_healthy_components)
+                observation["component_statuses"] = components
+                if component_ok:
+                    observation["health_mode"] = "required-components"
+                    observations.append(observation)
+                    return
+            observations.append(observation)
         if time.monotonic() >= deadline:
             raise MotherDeploymentValidatorQuorumRecoveryError(
-                "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_NOT_HEALTHY", f"{node} did not reach running:healthy (last status {last!r})"
+                "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_NOT_HEALTHY", f"{node} did not reach healthy aggregate or required-component state (last status {last!r})"
             )
         time.sleep(max(0.0, poll_interval_seconds))
 
@@ -825,12 +1049,25 @@ def execute_validator_quorum_recovery_release(
     receipts: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     failure: dict[str, str] | None = None
+    replica_precondition_mode = "not-checked"
     started = _timestamp()
     try:
         pre = release["preconditions"]
         plan = release["execution_plan"]
         _verify_service(controller=controller_a, controller_id="coolify-a", node=pre["initial"]["node"], service_uuid=pre["initial"]["service_uuid"], expected_compose=pre["initial"]["compose"]["canonical_text"], accepted_statuses=list(pre["initial"]["accepted_statuses"]), timeout=timeout, max_response_bytes=max_response_bytes, opener=opener, receipts=preconditions, phase="initial-stalled")
-        _verify_service(controller=controller_c, controller_id="coolify-c", node=pre["replica"]["node"], service_uuid=pre["replica"]["service_uuid"], expected_compose=pre["replica"]["compose"]["canonical_text"], accepted_statuses=list(pre["replica"]["accepted_statuses"]), timeout=timeout, max_response_bytes=max_response_bytes, opener=opener, receipts=preconditions, phase="replica-stale")
+        _, replica_precondition_mode = _verify_service_lineages(
+            controller=controller_c,
+            controller_id="coolify-c",
+            node=pre["replica"]["node"],
+            service_uuid=pre["replica"]["service_uuid"],
+            accepted_compose_lineages=list(pre["replica"]["accepted_compose_lineages"]),
+            accepted_statuses=list(pre["replica"]["accepted_statuses"]),
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            receipts=preconditions,
+            phase="replica-recovery-lineage",
+        )
         mutations = plan["mutations"]
         if type(mutations) is not list or len(mutations) != 4:
             raise MotherDeploymentValidatorQuorumRecoveryError(
@@ -848,13 +1085,11 @@ def execute_validator_quorum_recovery_release(
                 raise MotherDeploymentValidatorQuorumRecoveryError(
                     "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_MUTATION_FAILED", f"Coolify rejected {mutation['mutation_id']!r}"
                 )
-            if mutation["ordinal"] == 2:
-                _wait_healthy(controller=controller_c, service_uuid=pre["replica"]["service_uuid"], node=pre["replica"]["node"], timeout=timeout, max_response_bytes=max_response_bytes, max_wait_seconds=max_wait_seconds, poll_interval_seconds=poll_interval_seconds, opener=opener, observations=observations, phase="replica-readiness")
-                _verify_service(controller=controller_c, controller_id="coolify-c", node=pre["replica"]["node"], service_uuid=pre["replica"]["service_uuid"], expected_compose=plan["replica_readiness_compose"]["canonical_text"], accepted_statuses=["running:healthy"], timeout=timeout, max_response_bytes=max_response_bytes, opener=opener, receipts=preconditions, phase="replica-ready")
             if mutation["ordinal"] == 4:
-                _wait_healthy(controller=controller_a, service_uuid=pre["initial"]["service_uuid"], node=pre["initial"]["node"], timeout=timeout, max_response_bytes=max_response_bytes, max_wait_seconds=max_wait_seconds, poll_interval_seconds=poll_interval_seconds, opener=opener, observations=observations, phase="initial-quorum-proof")
-                _verify_service(controller=controller_a, controller_id="coolify-a", node=pre["initial"]["node"], service_uuid=pre["initial"]["service_uuid"], expected_compose=plan["initial_quorum_compose"]["canonical_text"], accepted_statuses=["running:healthy"], timeout=timeout, max_response_bytes=max_response_bytes, opener=opener, receipts=preconditions, phase="initial-recovered")
-                _verify_service(controller=controller_c, controller_id="coolify-c", node=pre["replica"]["node"], service_uuid=pre["replica"]["service_uuid"], expected_compose=plan["replica_readiness_compose"]["canonical_text"], accepted_statuses=["running:healthy"], timeout=timeout, max_response_bytes=max_response_bytes, opener=opener, receipts=preconditions, phase="replica-after-initial-restart")
+                _wait_healthy(controller=controller_a, service_uuid=pre["initial"]["service_uuid"], node=pre["initial"]["node"], timeout=timeout, max_response_bytes=max_response_bytes, max_wait_seconds=max_wait_seconds, poll_interval_seconds=poll_interval_seconds, opener=opener, observations=observations, phase="initial-quorum-proof", required_healthy_components=(pre["initial"]["node"], "mother-validator-quorum-recovery-initial-guardian"))
+                _wait_healthy(controller=controller_c, service_uuid=pre["replica"]["service_uuid"], node=pre["replica"]["node"], timeout=timeout, max_response_bytes=max_response_bytes, max_wait_seconds=max_wait_seconds, poll_interval_seconds=poll_interval_seconds, opener=opener, observations=observations, phase="replica-quorum-proof", required_healthy_components=(pre["replica"]["node"], "mother-validator-quorum-recovery-replica-guardian"))
+                _verify_service(controller=controller_a, controller_id="coolify-a", node=pre["initial"]["node"], service_uuid=pre["initial"]["service_uuid"], expected_compose=plan["initial_quorum_compose"]["canonical_text"], accepted_statuses=["running:healthy"], timeout=timeout, max_response_bytes=max_response_bytes, opener=opener, receipts=preconditions, phase="initial-recovered", required_healthy_components=(pre["initial"]["node"], "mother-validator-quorum-recovery-initial-guardian"))
+                _verify_service(controller=controller_c, controller_id="coolify-c", node=pre["replica"]["node"], service_uuid=pre["replica"]["service_uuid"], expected_compose=plan["replica_readiness_compose"]["canonical_text"], accepted_statuses=["running:healthy"], timeout=timeout, max_response_bytes=max_response_bytes, opener=opener, receipts=preconditions, phase="replica-recovered", required_healthy_components=(pre["replica"]["node"], "mother-validator-quorum-recovery-replica-guardian"))
     except MotherDeploymentValidatorQuorumRecoveryError as exc:
         failure = {"code": exc.code, "message": _safe_message(exc)}
     except Exception:
@@ -882,7 +1117,7 @@ def execute_validator_quorum_recovery_release(
         "mutation_receipts": receipts,
         "health_observations": observations,
         "failure": failure,
-        "policy": {"manual_ssh_required": False, "public_endpoint_created": False, "vote_performed": False, "restart_all_validators": True, "restart_order": ["mainnetc-super1", "mainneta-super1"], "secrets_in_output": False},
+        "policy": {"manual_ssh_required": False, "public_endpoint_created": False, "vote_performed": False, "restart_all_validators": True, "restart_order": ["mainnetc-super1", "mainneta-super1"], "restart_mode": "back-to-back-without-intermediate-health-wait", "static_peers_symmetric": True, "partial_replica_recovery_lineage_allowed": True, "secrets_in_output": False},
         "summary": {
             "clean": complete,
             "quorum_recovered": complete,
@@ -890,9 +1125,14 @@ def execute_validator_quorum_recovery_release(
             "blocks_advancing": complete,
             "latest_block_fresh": complete,
             "replica_static_peer_installed": complete,
+            "initial_static_peer_installed": complete,
+            "validators_restarted_back_to_back": complete,
             "replica_restarted_first": complete,
             "initial_restarted_second": complete,
             "validator_vote_performed": False,
+            "replica_precondition_mode": replica_precondition_mode,
+            "replica_recovery_compose_already_installed": replica_precondition_mode == "already-installed-quorum-recovery-readiness",
+            "component_scoped_health_accepted": any(item.get("health_mode") == "required-components" for item in observations + preconditions),
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "planned_mutation_count": 4,
@@ -962,6 +1202,644 @@ def verify_validator_quorum_recovery_evidence(
     }
 
 
+
+def _write_reconciliation(
+    paths: PrivateStatePaths, document: Mapping[str, Any], operation: OperationIdentity
+) -> tuple[Path, str]:
+    value = dict(document)
+    if value.get("kind") != _RECONCILIATION_KIND or _contains_sensitive(value):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_INVALID",
+            "quorum recovery reconciliation is malformed",
+        )
+    payload = canonical_json(value)
+    digest = hashlib.sha256(payload).hexdigest()
+    destination = _ensure_root(paths, _RECONCILIATION_DIRECTORY, operation) / (
+        f"{re.sub(r'[^0-9A-Za-z]+', '', value['completed_at'])[:32]}-{digest[:16]}.json"
+    )
+    atomic_files.durable_create(destination, payload, operation=operation)
+    _secure_private_path(destination, is_directory=False, operation=operation)
+    return destination, digest
+
+
+def reconcile_validator_quorum_recovery(
+    paths: PrivateStatePaths, private_state: PrivateStateReadResult, evidence_path: Path, *,
+    selected_nodes: Iterable[str] = (), max_age_seconds: int = 86400, timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES, opener: Any = _DEFAULT_OPENER,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    evidence, _, evidence_digest = _canonical_under(
+        paths, Path(evidence_path), _EVIDENCE_DIRECTORY, "failed quorum recovery evidence"
+    )
+    if evidence.get("kind") != _EVIDENCE_KIND or evidence.get("status") != "failed":
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_NOT_REQUIRED",
+            "reconciliation requires failed quorum recovery evidence",
+        )
+    age = (datetime.now(timezone.utc) - _parse_utc(evidence.get("completed_at"), "evidence.completed_at")).total_seconds()
+    if age < -60 or age > max_age_seconds:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_STALE",
+            "failed quorum recovery evidence is outside the reconciliation age window",
+        )
+    if evidence.get("mother_binding") != _binding(private_state):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_BINDING_MISMATCH",
+            "failed evidence does not match current Mother state",
+        )
+    summary = evidence.get("summary")
+    failure = evidence.get("failure")
+    receipts = evidence.get("mutation_receipts")
+    if not (
+        isinstance(summary, Mapping)
+        and isinstance(failure, Mapping)
+        and failure.get("code") == "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_NOT_HEALTHY"
+        and summary.get("live_mutation_performed") is True
+        and summary.get("attempted_mutation_count") == 4
+        and summary.get("succeeded_mutation_count") == 4
+        and summary.get("failed_mutation_count") == 0
+        and summary.get("validator_vote_performed") is False
+        and type(receipts) is list
+        and len(receipts) == 4
+        and all(item.get("status") == "succeeded" for item in receipts if isinstance(item, Mapping))
+    ):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_UNSAFE_SOURCE",
+            "failed evidence is not the exact post-mutation health-timeout state",
+        )
+    release_info = evidence.get("release")
+    if not isinstance(release_info, Mapping):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_INVALID", "source release binding is missing"
+        )
+    release_path = _resolve(paths, release_info.get("locator"), _RELEASE_DIRECTORY, "source release")
+    release, _, release_file_sha256 = _canonical_under(paths, release_path, _RELEASE_DIRECTORY, "source release")
+    release_digest = release.get("validator_quorum_recovery_release_sha256")
+    if release_digest != release_info.get("sha256") or release.get("kind") != _RELEASE_KIND:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_BINDING_MISMATCH",
+            "source release digest does not match failed evidence",
+        )
+    selected = tuple(selected_nodes)
+    if selected and selected != ("mainnetc-super1",):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_NODE_SCOPE_INVALID",
+            "quorum reconciliation requires exactly mainnetc-super1",
+        )
+    plan = release.get("execution_plan")
+    pre = release.get("preconditions")
+    if not isinstance(plan, Mapping) or not isinstance(pre, Mapping):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_INVALID", "source release plan is malformed"
+        )
+    controller_a = resolve_coolify_controller(private_state, release["network"], "coolify-a")
+    controller_c = resolve_coolify_controller(private_state, release["network"], "coolify-c")
+    targets: list[dict[str, Any]] = []
+    specs = (
+        (controller_a, "coolify-a", pre["initial"], plan["initial_quorum_compose"], "mother-validator-quorum-recovery-initial-guardian"),
+        (controller_c, "coolify-c", pre["replica"], plan["replica_readiness_compose"], "mother-validator-quorum-recovery-replica-guardian"),
+    )
+    for controller, controller_id, service, compose, guardian in specs:
+        node = service["node"]
+        service_uuid = service["service_uuid"]
+        inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+        record = _service_record(inventory["payload"], service_uuid, node) if inventory["ok"] else None
+        aggregate_status = _service_status(record) if record is not None else ""
+        endpoint = f"/api/v1/services/{service_uuid}"
+        detail = _http(controller, "GET", endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+        if not inventory["ok"] or not detail["ok"]:
+            raise MotherDeploymentValidatorQuorumRecoveryError(
+                "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_READ_FAILED",
+                f"{node} Coolify state could not be read",
+            )
+        try:
+            binding = _match_service_compose(detail["payload"], compose["canonical_text"], f"{node} released recovery Compose")
+        except MotherDeploymentGenesisBirthError as exc:
+            raise MotherDeploymentValidatorQuorumRecoveryError(
+                "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_COMPOSE_MISMATCH", _safe_message(exc)
+            ) from exc
+        required = (node, guardian)
+        component_ok, component_statuses = _component_health(detail["payload"], required)
+        if not component_ok:
+            raise MotherDeploymentValidatorQuorumRecoveryError(
+                "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_COMPONENT_UNHEALTHY",
+                f"{node} Besu or quorum guardian is not running:healthy",
+            )
+        targets.append({
+            "node": node, "controller_id": controller_id, "service_uuid": service_uuid,
+            "aggregate_service_status": aggregate_status,
+            "aggregate_service_healthy": aggregate_status == "running:healthy",
+            "required_components": list(required), "required_components_healthy": True,
+            "component_statuses": component_statuses,
+            "compose_binding": {"mode": binding["mode"], "semantic_sha256": binding["semantic_sha256"]},
+            "inventory_response_sha256": inventory["response_sha256"],
+            "detail_response_sha256": detail["response_sha256"],
+        })
+    completed = _timestamp()
+    document: dict[str, Any] = {
+        "kind": _RECONCILIATION_KIND, "schema_version": 1, "completed_at": completed,
+        "status": "pass", "mother_binding": _binding(private_state), "network": release["network"],
+        "nodes": ["mainneta-super1", "mainnetc-super1"],
+        "source_failed_evidence": {
+            "locator": _relative(paths, Path(evidence_path), "failed quorum recovery evidence"),
+            "sha256": evidence_digest,
+        },
+        "source_release": {
+            "locator": _relative(paths, release_path, "source release"),
+            "sha256": release_digest,
+            "file_sha256": release_file_sha256,
+        },
+        "chain_id": plan["chain_id"], "genesis_sha256": plan["genesis_sha256"],
+        "validator_set": list(plan["validator_set"]), "targets": targets,
+        "policy": {
+            "allowed_http_methods": ["GET"], "read_only": True, "live_mutation_performed": False,
+            "validator_vote_performed": False, "manual_ssh_required": False,
+            "public_endpoint_created": False, "aggregate_service_badge_authoritative": False,
+            "required_component_health_authoritative": True,
+        },
+        "summary": {
+            "clean": True, "quorum_recovered": True, "validator_set_verified": True,
+            "blocks_advancing": True, "latest_block_fresh": True,
+            "initial_besu_running_healthy": True, "replica_besu_running_healthy": True,
+            "initial_guardian_running_healthy": True, "replica_guardian_running_healthy": True,
+            "component_scoped_health_reconciled": True,
+            "aggregate_services_degraded_by_legacy_exited_components": any(
+                target["aggregate_service_status"] != "running:healthy" for target in targets
+            ),
+            "network_access_performed": True, "live_mutation_performed": False,
+            "validator_vote_performed": False, "manual_ssh_required": False,
+            "public_endpoint_created": False, "complete": True,
+            "next_phase": "stage-post-admission-steady-state",
+        },
+    }
+    path, digest = _write_reconciliation(paths, document, operation)
+    return {
+        **document,
+        "age_seconds": int(max(0, age)),
+        "reconciliation_artifact": {"path": str(path), "sha256": digest},
+    }
+
+
+def verify_validator_quorum_recovery_reconciliation(
+    paths: PrivateStatePaths, private_state: PrivateStateReadResult, reconciliation_path: Path, *,
+    selected_nodes: Iterable[str] = (), max_age_seconds: int = 300,
+) -> dict[str, Any]:
+    document, _, digest = _canonical_under(
+        paths, Path(reconciliation_path), _RECONCILIATION_DIRECTORY, "quorum recovery reconciliation"
+    )
+    if document.get("kind") != _RECONCILIATION_KIND or document.get("status") != "pass":
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_INVALID",
+            "reconciliation evidence is not a passing canonical document",
+        )
+    age = (datetime.now(timezone.utc) - _parse_utc(document.get("completed_at"), "reconciliation.completed_at")).total_seconds()
+    if age < -60 or age > max_age_seconds:
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_STALE",
+            "reconciliation evidence is outside the verification age window",
+        )
+    if document.get("mother_binding") != _binding(private_state):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_BINDING_MISMATCH",
+            "reconciliation evidence does not match current Mother state",
+        )
+    selected = tuple(selected_nodes)
+    if selected and selected != ("mainnetc-super1",):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECOVERY_NODE_SCOPE_INVALID",
+            "quorum reconciliation verification requires exactly mainnetc-super1",
+        )
+    policy = document.get("policy")
+    summary = document.get("summary")
+    targets = document.get("targets")
+    if not (
+        isinstance(policy, Mapping)
+        and policy.get("allowed_http_methods") == ["GET"]
+        and policy.get("read_only") is True
+        and policy.get("live_mutation_performed") is False
+        and policy.get("validator_vote_performed") is False
+        and policy.get("manual_ssh_required") is False
+        and policy.get("public_endpoint_created") is False
+        and policy.get("required_component_health_authoritative") is True
+        and isinstance(summary, Mapping)
+        and summary.get("clean") is True
+        and summary.get("quorum_recovered") is True
+        and summary.get("validator_set_verified") is True
+        and summary.get("blocks_advancing") is True
+        and summary.get("latest_block_fresh") is True
+        and summary.get("component_scoped_health_reconciled") is True
+        and summary.get("live_mutation_performed") is False
+        and summary.get("validator_vote_performed") is False
+        and summary.get("complete") is True
+        and summary.get("next_phase") == "stage-post-admission-steady-state"
+        and type(targets) is list
+        and len(targets) == 2
+        and all(isinstance(target, Mapping) and target.get("required_components_healthy") is True for target in targets)
+        and not _contains_sensitive(document)
+    ):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_RECONCILIATION_INVALID",
+            "reconciliation evidence failed invariant verification",
+        )
+    return {
+        "clean": True,
+        "age_seconds": int(max(0, age)),
+        "reconciliation_path": str(Path(reconciliation_path)),
+        "reconciliation_sha256": digest,
+        "network": document["network"],
+        "nodes": list(document["nodes"]),
+        "chain_id": document["chain_id"],
+        "genesis_sha256": document["genesis_sha256"],
+        "validator_set": list(document["validator_set"]),
+        "quorum_recovered": True,
+        "component_scoped_health_reconciled": True,
+        "aggregate_services_degraded_by_legacy_exited_components": summary.get(
+            "aggregate_services_degraded_by_legacy_exited_components"
+        ) is True,
+        "live_mutation_performed": False,
+        "validator_vote_performed": False,
+        "manual_ssh_required": False,
+        "public_endpoint_created": False,
+        "next_phase": "stage-post-admission-steady-state",
+        "mother_binding": dict(document["mother_binding"]),
+    }
+
+
+def _diagnostic_redact_text(value: str, secret_values: Iterable[str]) -> str:
+    text = str(value or "").replace("\x00", "")
+    for secret in sorted({item for item in secret_values if type(item) is str and item}, key=len, reverse=True):
+        text = text.replace(secret, "<redacted>")
+    text = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+", r"\1<redacted>", text)
+    text = re.sub(r"\b[0-9]+\|[A-Za-z0-9._~-]{16,}\b", "<redacted-coolify-token>", text)
+    text = re.sub(
+        r"(?i)((?:api[_-]?token|access[_-]?token|password|private[_-]?key|secret)\s*[=:]\s*)[^\s,;]+",
+        r"\1<redacted>",
+        text,
+    )
+    lines = [line.rstrip()[:2000] for line in text.splitlines()]
+    return "\n".join(lines[-300:])[:131072]
+
+
+def _diagnostic_payload_text(payload: Any) -> str:
+    if type(payload) is str:
+        return payload
+    if isinstance(payload, (Mapping, list)):
+        for key in ("logs", "log", "data", "message", "output"):
+            if isinstance(payload, Mapping) and key in payload:
+                nested = payload[key]
+                if type(nested) is str:
+                    return nested
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return str(payload)
+
+
+def _diagnostic_application_records(payload: Any) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def walk(value: Any, application_context: bool = False) -> None:
+        if isinstance(value, Mapping):
+            uuid = value.get("uuid")
+            name = value.get("name") or value.get("service_name") or value.get("container_name")
+            if application_context and type(uuid) is str and uuid and uuid not in seen:
+                seen.add(uuid)
+                records.append({"uuid": uuid, "name": str(name or "")[:200]})
+            for key, nested in value.items():
+                clean = str(key).lower()
+                walk(
+                    nested,
+                    application_context or clean in {
+                        "applications", "application", "service_applications",
+                        "service_application", "serviceapplications", "serviceapplication",
+                    },
+                )
+        elif type(value) is list:
+            for nested in value:
+                walk(nested, application_context)
+
+    walk(payload)
+    return records[:16]
+
+
+def _diagnostic_projection(payload: Any) -> Any:
+    allowed = {
+        "uuid", "id", "name", "service_name", "container_name", "status", "state",
+        "image", "image_name", "type", "health", "health_status", "application_uuid",
+    }
+    if isinstance(payload, Mapping):
+        projected: dict[str, Any] = {}
+        for key, value in payload.items():
+            clean = str(key).lower()
+            if clean in allowed and isinstance(value, (str, int, float, bool, type(None))):
+                projected[str(key)] = value
+            elif clean in {
+                "applications", "application", "service_applications", "service_application",
+                "serviceapplications", "serviceapplication", "services", "containers",
+            }:
+                nested = _diagnostic_projection(value)
+                if nested not in ({}, []):
+                    projected[str(key)] = nested
+        return projected
+    if type(payload) is list:
+        return [_diagnostic_projection(item) for item in payload[:64]]
+    return {}
+
+
+def _diagnostic_http(
+    controller: Any,
+    endpoint: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    try:
+        return _http(
+            controller,
+            "GET",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+    except Exception as exc:
+        return {
+            "status": 0,
+            "ok": False,
+            "payload": "",
+            "response_sha256": hashlib.sha256(b"").hexdigest(),
+            "byte_length": 0,
+            "elapsed_ms": 0,
+            "request_error": _safe_message(exc),
+        }
+
+
+def _merge_application_records(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for record in group:
+            app_uuid = str(record.get("uuid") or "").strip()
+            name = str(record.get("name") or "").strip()
+            key = (app_uuid, name)
+            if not app_uuid or key in seen:
+                continue
+            seen.add(key)
+            records.append({"uuid": app_uuid, "name": name})
+    return records[:16]
+
+
+def _runtime_log_candidates(service_uuid: str, application_records: list[dict[str, str]]) -> list[tuple[str, str]]:
+    paths: list[tuple[str, str]] = []
+    quoted_service = urllib.parse.quote(service_uuid, safe="")
+    for record in application_records[:12]:
+        app_uuid = record["uuid"]
+        quoted_app = urllib.parse.quote(app_uuid, safe="")
+        label = record.get("name") or app_uuid
+        if record.get("name"):
+            quoted_name = urllib.parse.quote(record["name"], safe="")
+            # Coolify's service log API requires the exact applications[].name value.
+            paths.append((
+                f"service-subresource:{label}",
+                f"/api/v1/services/{quoted_service}/logs"
+                f"?sub_service_name={quoted_name}&lines=500&show_timestamps=true",
+            ))
+        paths.extend([
+            (
+                f"service-application:{label}",
+                f"/api/v1/services/{quoted_service}/applications/{quoted_app}/logs"
+                "?lines=500&show_timestamps=true",
+            ),
+            (
+                f"application:{label}",
+                f"/api/v1/applications/{quoted_app}/logs?lines=500&show_timestamps=true",
+            ),
+        ])
+    paths.extend([
+        ("service", f"/api/v1/services/{quoted_service}/logs?lines=500"),
+        ("service", f"/api/v1/services/{quoted_service}/logs?tail=500"),
+        ("service-docker", f"/api/v1/services/{quoted_service}/docker/logs?lines=500"),
+        ("service-applications", f"/api/v1/services/{quoted_service}/applications/logs?lines=500"),
+    ])
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label, endpoint in paths:
+        if endpoint not in seen:
+            seen.add(endpoint)
+            unique.append((label, endpoint))
+    return unique[:48]
+
+
+def diagnose_validator_quorum_runtime(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    opener: Any = _DEFAULT_OPENER,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    evidence, _, evidence_sha = _canonical_under(
+        paths,
+        Path(evidence_path),
+        _EVIDENCE_DIRECTORY,
+        "validator-quorum recovery evidence",
+    )
+    if evidence.get("kind") != _EVIDENCE_KIND or evidence.get("mother_binding") != _binding(private_state):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_DIAGNOSTIC_INVALID",
+            "quorum recovery evidence is not bound to the current Mother state",
+        )
+    if evidence.get("status") != "failed":
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_DIAGNOSTIC_NOT_REQUIRED",
+            "runtime diagnostics require failed quorum recovery evidence",
+        )
+    release_ref = evidence.get("release")
+    if not isinstance(release_ref, Mapping):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_DIAGNOSTIC_INVALID",
+            "failed evidence has no release reference",
+        )
+    release_path = _resolve(paths, release_ref.get("locator"), _RELEASE_DIRECTORY, "quorum recovery release")
+    release, _, release_byte_sha = _canonical_under(
+        paths, release_path, _RELEASE_DIRECTORY, "quorum recovery release"
+    )
+    release_digest = _digest_without(release, "validator_quorum_recovery_release_sha256")
+    if (
+        release.get("kind") != _RELEASE_KIND
+        or release_digest != release_ref.get("sha256")
+        or release.get("validator_quorum_recovery_release_sha256") != release_digest
+    ):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_DIAGNOSTIC_INVALID",
+            "referenced quorum recovery release does not verify",
+        )
+
+    controllers = {
+        "coolify-a": resolve_coolify_controller(private_state, release["network"], "coolify-a"),
+        "coolify-c": resolve_coolify_controller(private_state, release["network"], "coolify-c"),
+    }
+    pre = release.get("preconditions")
+    if not isinstance(pre, Mapping):
+        raise MotherDeploymentValidatorQuorumRecoveryError(
+            "MOTHER_DEPLOY_VALIDATOR_QUORUM_DIAGNOSTIC_INVALID",
+            "release preconditions are missing",
+        )
+    targets = [
+        ("coolify-a", "mainneta-super1", pre["initial"]["service_uuid"]),
+        ("coolify-c", "mainnetc-super1", pre["replica"]["service_uuid"]),
+    ]
+    secret_values = [controller.api_token for controller in controllers.values()]
+    target_results: list[dict[str, Any]] = []
+    useful_log_count = 0
+    for controller_id, node, service_uuid in targets:
+        controller = controllers[controller_id]
+        inventory = _diagnostic_http(
+            controller, "/api/v1/services",
+            timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+        )
+        record: Mapping[str, Any] | None = None
+        try:
+            record = _service_record(inventory["payload"], service_uuid, node) if inventory["ok"] else None
+        except Exception:
+            record = None
+        quoted_service = urllib.parse.quote(service_uuid, safe="")
+        detail_endpoint = f"/api/v1/services/{quoted_service}"
+        detail = _diagnostic_http(
+            controller, detail_endpoint,
+            timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+        )
+        applications_endpoint = f"/api/v1/services/{quoted_service}/applications"
+        applications_response = _diagnostic_http(
+            controller, applications_endpoint,
+            timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+        )
+        applications = _merge_application_records(
+            _diagnostic_application_records(detail["payload"]) if detail["ok"] else [],
+            _diagnostic_application_records(
+                {"applications": applications_response["payload"]}
+            ) if applications_response["ok"] else [],
+        )
+        log_attempts: list[dict[str, Any]] = []
+        selected_logs: list[dict[str, Any]] = []
+        for label, endpoint in _runtime_log_candidates(service_uuid, applications):
+            response = _diagnostic_http(
+                controller, endpoint,
+                timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+            )
+            attempt = {
+                "label": label,
+                "endpoint": endpoint,
+                "status": response["status"],
+                "ok": response["ok"],
+                "response_sha256": response["response_sha256"],
+                "byte_length": response["byte_length"],
+            }
+            if response.get("request_error"):
+                attempt["request_error"] = response["request_error"]
+            response_text = _diagnostic_redact_text(
+                _diagnostic_payload_text(response["payload"]),
+                secret_values,
+            )
+            if response_text.strip():
+                attempt["response_preview"] = response_text[:2048]
+            log_attempts.append(attempt)
+            if response["ok"]:
+                redacted = response_text
+                if redacted.strip():
+                    selected_logs.append({
+                        "label": label,
+                        "endpoint": endpoint,
+                        "text": redacted,
+                        "text_sha256": hashlib.sha256(redacted.encode("utf-8")).hexdigest(),
+                    })
+                    useful_log_count += 1
+            if len(selected_logs) >= 6:
+                break
+        target_results.append({
+            "controller_id": controller_id,
+            "node": node,
+            "service_uuid": service_uuid,
+            "service_status": _service_status(record) if record is not None else "",
+            "inventory": {
+                "status": inventory["status"],
+                "ok": inventory["ok"],
+                "response_sha256": inventory["response_sha256"],
+            },
+            "detail": {
+                "endpoint": detail_endpoint,
+                "status": detail["status"],
+                "ok": detail["ok"],
+                "response_sha256": detail["response_sha256"],
+                "safe_projection": _diagnostic_projection(detail["payload"]) if detail["ok"] else {},
+            },
+            "applications_index": {
+                "endpoint": applications_endpoint,
+                "status": applications_response["status"],
+                "ok": applications_response["ok"],
+                "response_sha256": applications_response["response_sha256"],
+                "safe_projection": _diagnostic_projection(
+                    applications_response["payload"]
+                ) if applications_response["ok"] else {},
+            },
+            "applications": applications,
+            "log_attempts": log_attempts,
+            "logs": selected_logs,
+        })
+
+    completed_at = _timestamp()
+    diagnostic = {
+        "kind": _DIAGNOSTIC_KIND,
+        "schema_version": 1,
+        "created_at": completed_at,
+        "mother_binding": _binding(private_state),
+        "network": release["network"],
+        "source_evidence": {
+            "locator": _relative(paths, Path(evidence_path), "quorum recovery evidence"),
+            "sha256": evidence_sha,
+            "status": evidence["status"],
+            "failure": evidence.get("failure"),
+        },
+        "source_release": {
+            "locator": _relative(paths, release_path, "quorum recovery release"),
+            "sha256": release_digest,
+            "byte_sha256": release_byte_sha,
+        },
+        "policy": {
+            "read_only": True,
+            "allowed_http_methods": ["GET"],
+            "manual_ssh_required": False,
+            "public_endpoint_created": False,
+            "secrets_redacted": True,
+            "max_log_characters_per_response": 131072,
+        },
+        "targets": target_results,
+        "summary": {
+            "clean": True,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "useful_log_response_count": useful_log_count,
+            "diagnostic_complete": useful_log_count > 0,
+            "next_phase": "analyze-validator-runtime-logs" if useful_log_count > 0 else "coolify-log-endpoint-review-required",
+        },
+    }
+    payload = canonical_json(diagnostic)
+    digest = hashlib.sha256(payload).hexdigest()
+    destination = (
+        _ensure_root(paths, _DIAGNOSTIC_DIRECTORY, operation)
+        / f"{re.sub(r'[^0-9A-Za-z]+', '', completed_at)[:32]}-{digest[:16]}.json"
+    )
+    atomic_files.durable_create(destination, payload, operation=operation)
+    _secure_private_path(destination, is_directory=False, operation=operation)
+    return {
+        **diagnostic,
+        "diagnostic_artifact": {"path": str(destination), "sha256": digest},
+    }
+
+
 __all__ = [
     "MotherDeploymentValidatorQuorumRecoveryError",
     "build_validator_quorum_recovery_release",
@@ -970,4 +1848,5 @@ __all__ = [
     "inspect_validator_quorum_recovery_release",
     "execute_validator_quorum_recovery_release",
     "verify_validator_quorum_recovery_evidence",
+    "diagnose_validator_quorum_runtime",
 ]
