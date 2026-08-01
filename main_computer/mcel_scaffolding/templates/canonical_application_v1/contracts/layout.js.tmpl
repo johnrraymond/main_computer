@@ -1,0 +1,15 @@
+export const {{APP_CLASS_NAME}}Layout = Object.freeze({
+  schema: "mcel.layout-grammar.v1",
+  surfaceId: "{{APP_ID}}.surface.primary",
+  regions: Object.freeze({
+    "{{APP_ID}}.region.shell": Object.freeze({ direction: "column", alignment: "center", gap: "medium", padding: "large", minInlineSize: 240, maxInlineSize: 640 }),
+    "{{APP_ID}}.region.value": Object.freeze({ inlineSize: "fill", blockSize: "content", textAlignment: "center" }),
+    "{{APP_ID}}.region.controls": Object.freeze({ direction: "row", wrap: true, alignment: "center", gap: "small" }),
+    "{{APP_ID}}.region.evidence": Object.freeze({ inlineSize: "fill", blockSize: "content", scrollOwner: false })
+  }),
+  constraints: Object.freeze([
+    Object.freeze({ id: "{{APP_ID}}.layout.value-before-controls", relation: "before", first: "{{APP_ID}}.region.value", second: "{{APP_ID}}.region.controls" }),
+    Object.freeze({ id: "{{APP_ID}}.layout.controls-before-evidence", relation: "before", first: "{{APP_ID}}.region.controls", second: "{{APP_ID}}.region.evidence" }),
+    Object.freeze({ id: "{{APP_ID}}.layout.controls-usable", relation: "minimum-control-size", target: "{{APP_ID}}.region.controls", inline: 44, block: 44 })
+  ])
+});

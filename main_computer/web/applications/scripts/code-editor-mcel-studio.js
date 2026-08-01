@@ -7126,6 +7126,157 @@
         setStatus("Monaco draft applied to source and persisted through SCM saveFile.");
       }
 
+
+      function codeEditorProjectRepoDir(payload = {}) {
+        return String(
+          payload.repo_dir ??
+          payload.repoDir ??
+          root.querySelector("#aider-repo")?.value ??
+          "."
+        ).trim() || ".";
+      }
+
+      function codeEditorProjectRoot(payload = {}) {
+        return String(payload.project_root ?? payload.projectRoot ?? ".").trim() || ".";
+      }
+
+      async function postCodeEditorProjectRequest(endpoint, payload = {}) {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        let data = null;
+        try {
+          data = await response.json();
+        } catch {
+          data = {ok: false, error: `Invalid JSON response from ${endpoint}`};
+        }
+        if (!response.ok || data?.ok === false) {
+          const error = new Error(data?.error || data?.reason || `HTTP ${response.status}`);
+          error.code = data?.failed_stage || data?.code || "code-editor-project-request-failed";
+          error.response = data;
+          throw error;
+        }
+        return data;
+      }
+
+      async function loadProjectManifest(payload = {}) {
+        const data = await postCodeEditorProjectRequest(
+          "/api/applications/editor/project/manifest",
+          {
+            repo_dir: codeEditorProjectRepoDir(payload),
+            project_root: codeEditorProjectRoot(payload)
+          }
+        );
+        const files = Array.isArray(data.files)
+          ? data.files.map((file, index) => ({
+              id: `project-file-${index + 1}`,
+              path: String(file.path || ""),
+              language: String(file.language || "plaintext"),
+              field: "",
+              required: false,
+              textLength: Number(file.size || 0),
+              sha256: String(file.sha256 || "")
+            })).filter((file) => file.path)
+          : [];
+        return {
+          ok: true,
+          status: "pass",
+          projectManifest: data,
+          workspace: {
+            id: `code-editor.project.${data.project_manifest_sha256 || "unknown"}`,
+            title: codeEditorProjectRoot(payload),
+            summary: "Repository-backed MCEL Code Editor project manifest.",
+            fileCount: files.length,
+            files,
+            source: "editor-project-manifest-endpoint"
+          },
+          activeFile: files[0] || null
+        };
+      }
+
+      async function saveFile(payload = {}) {
+        const replacementText = payload.replacement_text ??
+          payload.replacementText ??
+          payload.text ??
+          payload.draftText ??
+          payload.newText;
+        const data = await postCodeEditorProjectRequest(
+          "/api/applications/editor/project/file/save",
+          {
+            repo_dir: codeEditorProjectRepoDir(payload),
+            project_root: codeEditorProjectRoot(payload),
+            path: payload.path ?? payload.filePath ?? payload.selectedPath ?? studioState.selectedPath,
+            expected_before_sha256: payload.expected_before_sha256 ?? payload.expectedBeforeSha256,
+            replacement_text: replacementText,
+            explicit_save: payload.explicitSave === true || payload.confirmed === true || payload.approved === true,
+            stale_source_checked: payload.staleSourceChecked === true || payload.sourceFreshnessChecked === true,
+            write_policy: payload.writePolicy || "author-owned-source",
+            validation_profile: payload.validationProfile || payload.validation_profile || "none",
+            require_project_manifest: payload.requireProjectManifest === true || payload.require_project_manifest === true
+          }
+        );
+        return {
+          ...data,
+          ok: true,
+          status: "pass",
+          savedPath: data.savedPath || payload.path || payload.filePath || payload.selectedPath || ""
+        };
+      }
+
+      async function prepareProjectEditTransaction(payload = {}) {
+        const patch = payload.reviewedPatch || payload.patchArtifact || {};
+        const changes = payload.changes ||
+          payload.replacementFiles ||
+          patch.changes ||
+          patch.replacementFiles ||
+          [];
+        return postCodeEditorProjectRequest(
+          "/api/applications/editor/project/transaction/prepare",
+          {
+            repo_dir: codeEditorProjectRepoDir(payload),
+            project_root: codeEditorProjectRoot(payload),
+            changes,
+            validation_profile: payload.validationProfile || payload.validation_profile || "none"
+          }
+        );
+      }
+
+      async function applyReviewedPatch(payload = {}) {
+        const patch = payload.reviewedPatch || payload.patchArtifact || {};
+        let handle = payload.handle ||
+          payload.transactionHandle ||
+          payload.transaction_handle ||
+          patch.handle ||
+          patch.transactionHandle ||
+          patch.transaction_handle ||
+          "";
+        let prepared = null;
+        if (!handle) {
+          prepared = await prepareProjectEditTransaction(payload);
+          handle = prepared.handle;
+        }
+        const applied = await postCodeEditorProjectRequest(
+          "/api/applications/editor/project/transaction/apply",
+          {
+            repo_dir: codeEditorProjectRepoDir(payload),
+            handle,
+            reviewed: payload.reviewed === true,
+            approved: payload.approved === true,
+            confirmed: payload.confirmed === true,
+            require_project_manifest: payload.requireProjectManifest === true || payload.require_project_manifest === true
+          }
+        );
+        return {
+          ...applied,
+          ok: true,
+          status: "pass",
+          preparedTransaction: prepared?.transaction || null,
+          changedFiles: applied.changedFiles || []
+        };
+      }
+
       tabButtons.forEach((button) => {
         button.addEventListener("click", () => {
           const panel = button.dataset.codeStudioTab || "source";
@@ -7281,6 +7432,11 @@
         renderScmReplayExpectationFailuresInProofDock,
         buildGenericScmReplayFixtures,
         runGenericScmReplayFixturePack,
+        inspectWorkspace: loadProjectManifest,
+        loadProjectManifest,
+        saveFile,
+        prepareProjectEditTransaction,
+        applyReviewedPatch,
         persistLiveWorkspaceFromSource,
         hydratePersistedLiveWorkspace,
         clearPersistedLiveWorkspace,

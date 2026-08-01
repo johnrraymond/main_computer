@@ -44,6 +44,26 @@ Application-local layout contracts are now live in Code Editor and Git Tools. Th
 
 Use the user-space contract, not internal law names, when deciding whether a builder workflow can rely on MCEL. The current planning rule is: source traits are the durable input, generated runtime structure is discardable, serialization is the source firewall, repair is bounded regeneration, reports are gates, browser facts are snapshots, and adoption is narrow and reversible.
 
+## Target application scaffolding
+
+The target greenfield developer experience is specified in `pretty_docs/mcel-application-scaffolding.md`. It defines a deterministic generator, a versioned application package, a golden fixture, and a checked-in Contract Counter reference app.
+
+That specification works forward from the ideal MCEL 1.0 application while identifying the bridges required from current requirements, adapter, SCM, surface, layout, observation, acceptance, and truth authorities. Its deterministic repository-local generator, structural validator, golden fixture, read-only package catalog, browser-safe package metadata and runtime projections, SCM-controlled application-operation runtime, and generic semantic surface mount are now live; package-local acceptance, independent operation-linked browser observation, and application proof remain missing. It does not supersede the repository-aware executable authoring path in `pretty_docs/mcel-application-authoring.md`. Current code authorization remains exclusively in `pretty_docs/mcel-status-and-roadmap.md`.
+
+The target application spine is:
+
+```text
+application package
+→ requirements and blueprint
+→ semantic adapter
+→ SCM-controlled operation
+→ committed state
+→ semantic surface projection
+→ browser observation
+→ acceptance evidence
+→ repository-bound truth
+```
+
 ## Current truth authorities
 
 | Question | Authority |

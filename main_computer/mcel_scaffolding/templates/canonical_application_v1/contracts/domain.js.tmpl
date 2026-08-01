@@ -1,0 +1,20 @@
+export const {{APP_CLASS_NAME}}Domain = Object.freeze({
+  schema: "mcel.application-domain.v1",
+  appId: {{APP_ID_JSON}},
+  initialState: Object.freeze({ count: 0, revision: 0 }),
+  invariantReads: Object.freeze(["state.count", "state.revision"]),
+  invariants: Object.freeze([
+    Object.freeze({
+      id: "{{APP_ID}}.invariant.count-nonnegative",
+      check(state) {
+        return Number.isInteger(state?.count) && state.count >= 0;
+      }
+    }),
+    Object.freeze({
+      id: "{{APP_ID}}.invariant.revision-nonnegative",
+      check(state) {
+        return Number.isInteger(state?.revision) && state.revision >= 0;
+      }
+    })
+  ])
+});

@@ -1,0 +1,37 @@
+{
+  "schema": "mcel.application-package.v1",
+  "appId": "contract-counter",
+  "title": "Contract Counter",
+  "template": {
+    "id": "mcel.canonical-application-template",
+    "version": "1.0.0"
+  },
+  "requirements": "requirements.md",
+  "blueprint": "blueprint.json",
+  "contracts": {
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "adapter": "contracts/adapter.js",
+    "surface": "contracts/surface.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "acceptance": "contracts/acceptance.js"
+  },
+  "runtime": {
+    "document": "src/index.html",
+    "script": "src/app.js",
+    "style": "src/app.css"
+  },
+  "tests": {
+    "root": "tests"
+  },
+  "conformance": {
+    "currentMode": "structural-only",
+    "targetMode": "semantic-runtime-proven",
+    "missingBridges": [
+      "package-local-acceptance-discovery",
+      "operation-linked-browser-observation",
+      "app-oriented-proof-orchestration"
+    ]
+  }
+}

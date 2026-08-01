@@ -1,0 +1,182 @@
+# {{APP_TITLE}}
+
+This package is generated from `mcel.canonical-application-template.v1`. Its semantic intents execute through the shared SCM-controlled application runtime, and its declared surface can now mount through the browser-safe runtime projection. The complete application remains `structural-only` because operation-linked observation, package-local acceptance discovery, and proof orchestration are still target contracts.
+
+```mcel-app
+id: {{APP_ID}}
+title: {{APP_TITLE}}
+status: specified
+current_runtime_status: structural-only
+target_runtime_status: fullApplicationSemanticReady
+dominant_object: Counter state
+primary_user_goal: Exercise the complete MCEL application contract through one visible state transition.
+current_sources:
+  - mcel.app.json
+  - blueprint.json
+  - contracts/domain.js
+  - contracts/intents.js
+  - contracts/adapter.js
+  - contracts/surface.js
+  - contracts/layout.js
+  - contracts/observation.js
+  - contracts/acceptance.js
+  - src/index.html
+  - src/app.js
+  - src/app.css
+verification:
+  - generated package structural validation
+  - package-local scaffold tests
+```
+
+```mcel-use-case
+id: {{APP_ID}}.use-case.counter
+app: {{APP_ID}}
+status: specified
+type: primary
+primary_object: Counter state
+user_goal: Increment or reset the counter only through declared semantic intents.
+acceptance: The visible count and latest result must derive from committed canonical state once the target application runtime exists.
+```
+
+```mcel-object
+id: {{APP_ID}}.object.counter-state
+app: {{APP_ID}}
+status: specified
+object: Counter state
+identity: One canonical state object for the generated application instance.
+state_model:
+  - count is a nonnegative integer
+  - revision is a nonnegative integer
+owned_by: The shared adapter-to-SCM application runtime owns commitment; browser code owns no canonical mutation.
+```
+
+```mcel-region
+id: {{APP_ID}}.region.primary
+app: {{APP_ID}}
+status: specified
+region: Primary counter surface
+role: primary
+responsibility: Display committed count, expose declared controls, and show the latest operation result.
+```
+
+```mcel-requirement
+id: {{APP_ID}}.requirement.increment
+app: {{APP_ID}}
+status: specified
+type: behavior
+aspect: actions
+object: Counter state
+requirement: A successful increment operation increases count and revision by exactly one.
+acceptance: Starting at count 0 and revision 0, one accepted increment yields count 1 and revision 1.
+```
+
+```mcel-requirement
+id: {{APP_ID}}.requirement.refusal
+app: {{APP_ID}}
+status: specified
+type: safety
+aspect: actions
+object: Counter state
+requirement: Stale, duplicate, prohibited, undeclared-write, and failed-postcondition operations must not create an additional canonical effect.
+acceptance: Each refusal case leaves canonical count and revision unchanged and emits a classified result.
+```
+
+```mcel-intent
+id: {{APP_ID}}.intent.increment
+app: {{APP_ID}}
+status: specified
+intent: increment
+risk: local-state
+requires:
+  - current expected revision
+  - unique operation id
+produces:
+  - count plus one
+  - revision plus one
+  - operation receipt
+```
+
+```mcel-intent
+id: {{APP_ID}}.intent.reset
+app: {{APP_ID}}
+status: specified
+intent: reset
+risk: local-state
+requires:
+  - current expected revision
+  - unique operation id
+produces:
+  - count zero
+  - revision plus one
+  - operation receipt
+```
+
+```mcel-intent
+id: {{APP_ID}}.intent.direct-set
+app: {{APP_ID}}
+status: prohibited
+intent: direct-set
+risk: prohibited
+requires:
+  - explicit refusal
+produces:
+  - no canonical mutation
+```
+
+```mcel-acceptance
+id: {{APP_ID}}.acceptance.operation-control
+app: {{APP_ID}}
+status: specified
+requires:
+  - accepted increment commits exactly once
+  - reset commits exactly once
+  - stale revision is refused
+  - duplicate operation has no additional effect
+  - direct-set is refused
+  - failed postcondition leaves canonical state unchanged
+```
+
+```mcel-evidence
+id: {{APP_ID}}.evidence.operation-receipt
+app: {{APP_ID}}
+status: specified
+evidence: Application operation receipt
+proves: A declared intent passed controlled mutation checks and committed one canonical transition.
+source: Shared `mcel-application-runtime.js` layered over `mcel-scm.js`.
+freshness: Bound to operation id and application revision; repository binding remains part of later proof orchestration.
+```
+
+```mcel-boundary
+id: {{APP_ID}}.boundary.browser-canonical-state
+app: {{APP_ID}}
+status: specified
+boundary: Browser projection versus canonical state authority
+left_side: Browser controls and visible semantic nodes
+right_side: Controlled canonical state and operation ledger
+rule: Browser code dispatches declared intent and renders committed state; it does not assign canonical state.
+prohibited_confusion: Visible text or a local variable must not be treated as proof of canonical mutation.
+```
+
+```mcel-finding
+id: {{APP_ID}}.finding.platform-gaps
+app: {{APP_ID}}
+status: open
+aspect: implementation
+severity: blocking
+problem: The generated package is structurally valid, discoverable, executable through the shared SCM-controlled application runtime, and mountable through generic semantic-surface projection, but package-local acceptance discovery, operation-linked browser observation, and app-oriented proof orchestration are not yet live.
+desired_behavior: MCEL mounts, observes, and proves the package without user-authored central registry edits or application-local mutation authority.
+```
+
+```mcel-adapter
+id: {{APP_ID}}.adapter.contract
+app: {{APP_ID}}
+status: specified
+adapter: {{APP_ID}} semantic adapter
+current_runtime_status: scm-controlled
+target_runtime_status: fullApplicationSemanticReady
+required_intents:
+  - increment
+  - reset
+  - direct-set refusal
+readiness_gate: Bind the mounted SCM-controlled operation results to package-local acceptance, operation-linked observation, and later repository-bound proof.
+```

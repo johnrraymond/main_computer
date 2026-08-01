@@ -91,6 +91,44 @@ from tools.mother.common.deployment_soft_replica import (
     verify_soft_replica_transaction,
     write_soft_replica_transaction,
 )
+from tools.mother.common.deployment_soft_replica_release import (
+    MotherDeploymentSoftReplicaReleaseError,
+    build_soft_replica_release,
+    verify_soft_replica_release,
+    write_soft_replica_release,
+)
+from tools.mother.common.deployment_soft_replica_executor import (
+    MotherDeploymentSoftReplicaExecutorError,
+    execute_released_soft_replica,
+    inspect_released_soft_replica,
+)
+from tools.mother.common.deployment_soft_replica_sync import (
+    MotherDeploymentSoftReplicaSyncError,
+    build_soft_replica_sync_release,
+    execute_soft_replica_sync_release,
+    inspect_soft_replica_sync_release,
+    verify_soft_replica_sync_evidence,
+    verify_soft_replica_sync_release,
+    write_soft_replica_sync_release,
+)
+from tools.mother.common.deployment_validator_admission import (
+    MotherDeploymentValidatorAdmissionError,
+    build_validator_admission_transaction,
+    verify_validator_admission_transaction,
+    write_validator_admission_transaction,
+)
+from tools.mother.common.deployment_validator_admission_release import (
+    MotherDeploymentValidatorAdmissionReleaseError,
+    build_validator_admission_release,
+    verify_validator_admission_release,
+    write_validator_admission_release,
+)
+from tools.mother.common.deployment_validator_admission_executor import (
+    MotherDeploymentValidatorAdmissionExecutorError,
+    execute_validator_admission_release,
+    inspect_validator_admission_release,
+    verify_validator_admission_evidence,
+)
 from tools.mother.common.deployment_standby import (
     MotherDeploymentStandbyError,
     run_deployment_standby_verification,
@@ -509,6 +547,159 @@ def _parser() -> argparse.ArgumentParser:
     _common(verify_replica)
     verify_replica.add_argument("--transaction", required=True)
     verify_replica.add_argument("--max-age-seconds", type=int, default=300)
+
+    release_replica = subparsers.add_parser(
+        "release-soft-replica",
+        help="authorize one exact C-side soft-replica configuration for a short window",
+        allow_abbrev=False,
+    )
+    _common(release_replica)
+    release_replica.add_argument("--transaction", required=True)
+    release_replica.add_argument("--acknowledge-soft-replica-transaction-sha256", required=True)
+    release_replica.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_replica.add_argument("--expires-in-seconds", type=int, default=300)
+    release_replica.add_argument("--created-at")
+    release_replica.add_argument("--write-release", action="store_true")
+
+    verify_replica_release = subparsers.add_parser(
+        "verify-soft-replica-release",
+        help="verify one expiring C-side soft-replica release",
+        allow_abbrev=False,
+    )
+    _common(verify_replica_release)
+    verify_replica_release.add_argument("--release", required=True)
+    verify_replica_release.add_argument("--max-age-seconds", type=int, default=300)
+    verify_replica_release.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+
+    apply_replica = subparsers.add_parser(
+        "apply-soft-replica",
+        help="inspect or consume one exact C-side soft-replica release",
+        allow_abbrev=False,
+    )
+    _common(apply_replica)
+    apply_replica.add_argument("--release", required=True)
+    apply_replica.add_argument("--acknowledge-release-sha256", required=True)
+    apply_replica.add_argument("--max-age-seconds", type=int, default=300)
+    apply_replica.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_replica.add_argument("--timeout", type=float, default=30.0)
+    apply_replica.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_replica.add_argument("--execute", action="store_true")
+
+    release_replica_sync = subparsers.add_parser(
+        "release-soft-replica-sync",
+        help="release one internal-only C synchronization proof without validator admission",
+        allow_abbrev=False,
+    )
+    _common(release_replica_sync)
+    release_replica_sync.add_argument("--execution", required=True)
+    release_replica_sync.add_argument("--acknowledge-soft-replica-execution-sha256", required=True)
+    release_replica_sync.add_argument("--execution-max-age-seconds", type=int, default=86400)
+    release_replica_sync.add_argument("--expires-in-seconds", type=int, default=300)
+    release_replica_sync.add_argument("--created-at")
+    release_replica_sync.add_argument("--write-release", action="store_true")
+
+    verify_replica_sync_release = subparsers.add_parser(
+        "verify-soft-replica-sync-release",
+        help="verify one expiring internal-only C synchronization proof release",
+        allow_abbrev=False,
+    )
+    _common(verify_replica_sync_release)
+    verify_replica_sync_release.add_argument("--release", required=True)
+    verify_replica_sync_release.add_argument("--max-age-seconds", type=int, default=300)
+    verify_replica_sync_release.add_argument("--execution-max-age-seconds", type=int, default=86400)
+
+    apply_replica_sync = subparsers.add_parser(
+        "apply-soft-replica-sync",
+        help="install C's internal synchronization guardian and prove synchronization without SSH",
+        allow_abbrev=False,
+    )
+    _common(apply_replica_sync)
+    apply_replica_sync.add_argument("--release", required=True)
+    apply_replica_sync.add_argument("--acknowledge-release-sha256", required=True)
+    apply_replica_sync.add_argument("--max-age-seconds", type=int, default=300)
+    apply_replica_sync.add_argument("--execution-max-age-seconds", type=int, default=86400)
+    apply_replica_sync.add_argument("--timeout", type=float, default=30.0)
+    apply_replica_sync.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_replica_sync.add_argument("--max-wait-seconds", type=float, default=240.0)
+    apply_replica_sync.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_replica_sync.add_argument("--execute", action="store_true")
+
+    verify_replica_sync = subparsers.add_parser(
+        "verify-soft-replica-sync-evidence",
+        help="verify persisted internal C synchronization evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_replica_sync)
+    verify_replica_sync.add_argument("--evidence", required=True)
+    verify_replica_sync.add_argument("--max-age-seconds", type=int, default=300)
+
+    stage_admission = subparsers.add_parser(
+        "stage-validator-admission",
+        help="compile one exact C validator-addition vote without casting it",
+        allow_abbrev=False,
+    )
+    _common(stage_admission)
+    stage_admission.add_argument("--sync-evidence", required=True)
+    stage_admission.add_argument("--max-age-seconds", type=int, default=300)
+    stage_admission.add_argument("--created-at")
+    stage_admission.add_argument("--write-transaction", action="store_true")
+
+    verify_admission = subparsers.add_parser(
+        "verify-validator-admission-transaction",
+        help="verify a staged validator-admission transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_admission)
+    verify_admission.add_argument("--transaction", required=True)
+    verify_admission.add_argument("--max-age-seconds", type=int, default=300)
+
+    release_admission = subparsers.add_parser(
+        "release-validator-admission",
+        help="release one exact internal QBFT validator-addition vote",
+        allow_abbrev=False,
+    )
+    _common(release_admission)
+    release_admission.add_argument("--transaction", required=True)
+    release_admission.add_argument("--acknowledge-validator-admission-transaction-sha256", required=True)
+    release_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_admission.add_argument("--expires-in-seconds", type=int, default=300)
+    release_admission.add_argument("--created-at")
+    release_admission.add_argument("--write-release", action="store_true")
+
+    verify_admission_release = subparsers.add_parser(
+        "verify-validator-admission-release",
+        help="verify an expiring validator-admission release",
+        allow_abbrev=False,
+    )
+    _common(verify_admission_release)
+    verify_admission_release.add_argument("--release", required=True)
+    verify_admission_release.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_admission_release.add_argument("--max-age-seconds", type=int, default=300)
+
+    apply_admission = subparsers.add_parser(
+        "apply-validator-admission",
+        help="inspect or execute one released internal validator-admission vote",
+        allow_abbrev=False,
+    )
+    _common(apply_admission)
+    apply_admission.add_argument("--release", required=True)
+    apply_admission.add_argument("--acknowledge-release-sha256", required=True)
+    apply_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_admission.add_argument("--max-age-seconds", type=int, default=300)
+    apply_admission.add_argument("--timeout", type=float, default=30.0)
+    apply_admission.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_admission.add_argument("--max-wait-seconds", type=float, default=300.0)
+    apply_admission.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_admission.add_argument("--execute", action="store_true")
+
+    verify_admission_evidence = subparsers.add_parser(
+        "verify-validator-admission-evidence",
+        help="verify persisted validator-admission activation evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_admission_evidence)
+    verify_admission_evidence.add_argument("--evidence", required=True)
+    verify_admission_evidence.add_argument("--max-age-seconds", type=int, default=300)
 
     return parser
 
@@ -1033,6 +1224,230 @@ def _cmd_verify_soft_replica_transaction(args: argparse.Namespace, private_state
     return 0
 
 
+def _cmd_release_soft_replica(args: argparse.Namespace, private_state) -> int:
+    release = build_soft_replica_release(
+        _paths(args), private_state, Path(args.transaction),
+        acknowledged_transaction_sha256=args.acknowledge_soft_replica_transaction_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_soft_replica_release(
+            _paths(args), release,
+            operation=_operation("soft-replica-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_soft_replica_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_soft_replica_release(
+        _paths(args), private_state, Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_soft_replica(args: argparse.Namespace, private_state) -> int:
+    common = dict(
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    if not args.execute:
+        result = inspect_released_soft_replica(_paths(args), private_state, Path(args.release), **common)
+        result["execute_requested"] = False
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_released_soft_replica(
+        _paths(args), private_state, Path(args.release), **common,
+        timeout=args.timeout, max_response_bytes=args.max_response_bytes,
+        operation=_operation("apply-soft-replica", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_release_soft_replica_sync(args: argparse.Namespace, private_state) -> int:
+    release = build_soft_replica_sync_release(
+        _paths(args), private_state, Path(args.execution),
+        acknowledged_soft_replica_execution_sha256=args.acknowledge_soft_replica_execution_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        execution_max_age_seconds=args.execution_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_soft_replica_sync_release(
+            _paths(args), release,
+            operation=_operation("soft-replica-sync-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_soft_replica_sync_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_soft_replica_sync_release(
+        _paths(args), private_state, Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        execution_max_age_seconds=args.execution_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_soft_replica_sync(args: argparse.Namespace, private_state) -> int:
+    common = dict(
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        execution_max_age_seconds=args.execution_max_age_seconds,
+    )
+    if not args.execute:
+        result = inspect_soft_replica_sync_release(
+            _paths(args), private_state, Path(args.release), **common
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_soft_replica_sync_release(
+        _paths(args), private_state, Path(args.release), **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("apply-soft-replica-sync", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_soft_replica_sync_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_soft_replica_sync_evidence(
+        _paths(args), private_state, Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_stage_validator_admission(args: argparse.Namespace, private_state) -> int:
+    transaction = build_validator_admission_transaction(
+        _paths(args),
+        private_state,
+        Path(args.sync_evidence),
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = write_validator_admission_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("validator-admission-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(transaction, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_admission_transaction(args: argparse.Namespace, private_state) -> int:
+    result = verify_validator_admission_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_validator_admission(args: argparse.Namespace, private_state) -> int:
+    release = build_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=args.acknowledge_validator_admission_transaction_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_validator_admission_release(
+            _paths(args),
+            release,
+            operation=_operation("validator-admission-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_admission_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_validator_admission(args: argparse.Namespace, private_state) -> int:
+    common = dict(
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    if not args.execute:
+        result = inspect_validator_admission_release(
+            _paths(args), private_state, Path(args.release), **common
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("apply-validator-admission", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_validator_admission_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_validator_admission_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -1093,6 +1508,32 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_stage_soft_replica(args, private_state)
         if args.command == "verify-soft-replica-transaction":
             return _cmd_verify_soft_replica_transaction(args, private_state)
+        if args.command == "release-soft-replica":
+            return _cmd_release_soft_replica(args, private_state)
+        if args.command == "verify-soft-replica-release":
+            return _cmd_verify_soft_replica_release(args, private_state)
+        if args.command == "apply-soft-replica":
+            return _cmd_apply_soft_replica(args, private_state)
+        if args.command == "release-soft-replica-sync":
+            return _cmd_release_soft_replica_sync(args, private_state)
+        if args.command == "verify-soft-replica-sync-release":
+            return _cmd_verify_soft_replica_sync_release(args, private_state)
+        if args.command == "apply-soft-replica-sync":
+            return _cmd_apply_soft_replica_sync(args, private_state)
+        if args.command == "verify-soft-replica-sync-evidence":
+            return _cmd_verify_soft_replica_sync_evidence(args, private_state)
+        if args.command == "stage-validator-admission":
+            return _cmd_stage_validator_admission(args, private_state)
+        if args.command == "verify-validator-admission-transaction":
+            return _cmd_verify_validator_admission_transaction(args, private_state)
+        if args.command == "release-validator-admission":
+            return _cmd_release_validator_admission(args, private_state)
+        if args.command == "verify-validator-admission-release":
+            return _cmd_verify_validator_admission_release(args, private_state)
+        if args.command == "apply-validator-admission":
+            return _cmd_apply_validator_admission(args, private_state)
+        if args.command == "verify-validator-admission-evidence":
+            return _cmd_verify_validator_admission_evidence(args, private_state)
         raise RuntimeError(f"unsupported command: {args.command}")
     except (
         CoolifyObservationError,
@@ -1109,6 +1550,12 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentPreflightError,
         MotherDeploymentReleaseError,
         MotherDeploymentSoftReplicaError,
+        MotherDeploymentSoftReplicaReleaseError,
+        MotherDeploymentSoftReplicaExecutorError,
+        MotherDeploymentSoftReplicaSyncError,
+        MotherDeploymentValidatorAdmissionError,
+        MotherDeploymentValidatorAdmissionReleaseError,
+        MotherDeploymentValidatorAdmissionExecutorError,
         MotherDeploymentStandbyError,
         MotherDeploymentTransactionError,
     ) as exc:

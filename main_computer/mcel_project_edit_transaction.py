@@ -418,6 +418,29 @@ def _project_manifest(project_root: Path) -> tuple[list[dict[str, Any]], str]:
     return files, _canonical_json_sha256(files)
 
 
+def inspect_project_manifest(
+    *,
+    repo_root: Path,
+    project_root: object = ".",
+) -> dict[str, Any]:
+    """Return the exact project manifest used by edit transaction freshness checks."""
+
+    repo_root = Path(repo_root).resolve()
+    if not repo_root.is_dir():
+        raise ProjectEditTransactionError("repo_detection", f"Repository root does not exist: {repo_root}")
+    project_root_relative, project_root_path = _normalize_project_root(repo_root, project_root)
+    files, manifest_sha256 = _project_manifest(project_root_path)
+    return {
+        "ok": True,
+        "format": "mcel-project-manifest-v1",
+        "repo_root_name": repo_root.name,
+        "project_root": project_root_relative,
+        "project_manifest_sha256": manifest_sha256,
+        "file_count": len(files),
+        "files": files,
+    }
+
+
 def _copy_project(project_root: Path, staged_project: Path) -> None:
     def ignore(directory: str, names: list[str]) -> set[str]:
         base = Path(directory)

@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "main_computer" / "web" / "applications" / "scripts"
 REGISTRY = SCRIPTS / "mcel-domain-adapter-registry.js"
 ADAPTER = SCRIPTS / "code-editor-semantic-adapter.js"
+STUDIO = SCRIPTS / "code-editor-mcel-studio.js"
 TOOLKIT = SCRIPTS / "mcel-semantic-adapter-toolkit.js"
 REQUIREMENTS = SCRIPTS / "mcel-requirements-registry.js"
 SHELL = ROOT / "main_computer" / "web" / "applications.html"
@@ -42,6 +43,21 @@ def adapter_prelude(body: str) -> str:
         {body}
         """
     )
+
+
+def test_code_editor_live_runtime_exports_repository_transaction_bindings() -> None:
+    source = STUDIO.read_text(encoding="utf-8")
+    assert 'async function loadProjectManifest(payload = {})' in source
+    assert 'async function saveFile(payload = {})' in source
+    assert 'async function prepareProjectEditTransaction(payload = {})' in source
+    assert 'async function applyReviewedPatch(payload = {})' in source
+    assert '"/api/applications/editor/project/manifest"' in source
+    assert '"/api/applications/editor/project/file/save"' in source
+    assert '"/api/applications/editor/project/transaction/prepare"' in source
+    assert '"/api/applications/editor/project/transaction/apply"' in source
+    assert "inspectWorkspace: loadProjectManifest" in source
+    assert "saveFile," in source
+    assert "applyReviewedPatch," in source
 
 
 def test_code_editor_adapter_loads_after_toolkit_and_before_truth_consumers() -> None:
@@ -198,6 +214,31 @@ def test_code_editor_adapter_blocks_hidden_mutations_and_unreviewed_application(
     }
     assert result["run"]["status"] == "blocked"
     assert result["run"]["blockers"][0]["code"] == "command-execution-prohibited"
+
+
+def test_code_editor_adapter_accepts_server_issued_transaction_handle_as_reviewed_patch_evidence() -> None:
+    result = run_node_json(
+        adapter_prelude(
+            """
+            adapter.setRuntimeBindings({
+              applyReviewedPatch() {
+                return {ok: true, changedFiles: ["src/app.js"]};
+              }
+            });
+            const preflight = adapter.preflightIntent("applyReviewedPatch", {
+              transactionHandle: "0123456789abcdef0123456789abcdef",
+              reviewed: true,
+              approved: true,
+              staleSourceChecked: true,
+              recoveryPath: "transaction receipt and source hashes"
+            });
+            process.stdout.write(JSON.stringify(preflight));
+            """
+        )
+    )
+
+    assert result["status"] == "pass"
+    assert result["allowed"] is True
 
 
 def test_code_editor_adapter_executes_source_safe_workflow_with_receipts() -> None:

@@ -51,7 +51,24 @@ Do not call application-local success a global MCEL guarantee. Promote a behavio
 
 A repository-aware developer can build a bounded new MCEL application today by combining the live global `window.MCEL` source/runtime lifecycle with an application-owned contract, resolver, controller, and evidence path patterned after Code Editor or Git Tools.
 
-This guide is not yet a standalone application SDK. MCEL does not currently provide a generated starter application, a canonical minimal reference app, or the proposed generic application-layout facade. Until those exist, treat source inspection, existing application tests, and application-local integration as part of the development input. Do not infer a global guarantee from an application-specific global such as `MainComputerGitToolsLayout`.
+This guide is not yet a standalone application SDK. MCEL now provides a deterministic structural scaffold generator, a golden canonical package fixture, read-only repository discovery, a generated browser-safe package catalog, an SCM-controlled application-operation runtime, and generic package mounting with semantic state/control projection. It does not yet discover package-local acceptance, emit operation-linked independent browser observations, or prove generated packages through an app-oriented proof path. Until those bridges exist, treat source inspection, existing application tests, and application-local integration as part of the development input. Do not infer a global guarantee from an application-specific global such as `MainComputerGitToolsLayout`.
+
+### Target generated authoring path
+
+The canonical target for greenfield MCEL authoring is specified in `pretty_docs/mcel-application-scaffolding.md`. That program defines a deterministic application generator, a versioned package contract, a golden generated fixture, and the Contract Counter reference application.
+
+The scaffolding specification is the complete implementation contract. `tools/mcel_create_app.py`, structural package validation, the golden fixture, repository package discovery, the browser-safe package catalog, and the SCM-controlled application-operation runtime are live in this snapshot. The installed `mcel app create` command, package-local acceptance discovery, independent browser proof, and app-oriented proof command remain proposed. Use the current repository-aware sequence below for executable application integration and label the missing template APIs as proposed.
+
+The long-term distinction is:
+
+```text
+current path:
+  manually integrate a bounded application with live MCEL authorities
+
+target path:
+  generate one self-contained MCEL application package
+  and let MCEL discover, execute, observe, and prove it
+```
 
 ## 1. Division of responsibility
 
@@ -1214,6 +1231,8 @@ MCEL.resetUserLayout();
 Promotion requires one shared normalized schema and behavior proven across contrasting applications. Until then, keep application contracts shaped similarly, but do not hide their application-local status.
 
 ## 15. Recommended application file structure
+
+The structure in this section documents the current repository-aware path. The target generated package and its file-ownership rules are specified separately in `pretty_docs/mcel-application-scaffolding.md`; do not mistake that proposed package for a live loader or SDK.
 
 The following is a greenfield responsibility map, not an inventory of current Git Tools filenames and not a mandatory one-file-per-responsibility rule:
 

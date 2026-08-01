@@ -158,6 +158,39 @@ The following remain out of scope until separately specified, policy-gated, and 
 
 SCM operation guards remove one mutation-safety prerequisite. They do not authorize active exploration by themselves.
 
+## Specified application-scaffolding program
+
+`pretty_docs/mcel-application-scaffolding.md` specifies the live deterministic structural generator, a versioned canonical package, a golden generated fixture, and the future runnable Contract Counter reference application. The program is intended to expose and close the missing application spine by working forward from the desired MCEL 1.0 package and backward from existing requirements, adapter, SCM, surface, layout, observation, acceptance, provenance, and truth authorities.
+
+Current status:
+
+```text
+specification: documented
+generator core: implemented
+structural package validator: implemented
+golden fixture: implemented
+checked-in browser-mountable reference application: implemented
+repository package discovery: implemented
+browser-safe package catalog: implemented
+browser-safe package loading and semantic projection: implemented
+adapter-to-SCM application bridge: implemented
+generic semantic surface projection: implemented
+package-local acceptance discovery: not implemented
+app-oriented proof command: not implemented
+```
+
+Wave 2 is complete. `tools/mcel_create_app.py` creates the deterministic canonical package under `mcel_apps/`, refuses unsafe identifiers and collisions, supports write-free dry runs and machine-readable results, validates the generated package structurally, and is locked to a byte-equivalent Contract Counter golden fixture.
+
+Wave 3A is complete. `tools/mcel_application_packages.py` now discovers direct-child packages, validates every declared path against repository-bound package contents, rejects unsafe paths, symlinks, duplicate identities, and directory/manifest/blueprint disagreement, and emits deterministic per-package and catalog fingerprints.
+
+Wave 3B is complete. `tools/mcel_application_package_browser_catalog.py` deterministically generates and checks the browser-safe `mcel-application-package-catalog.js` artifact from the validated repository catalog. Browser-side MCEL tooling can inspect Contract Counter package metadata through `McelApplicationPackages`, while package modules remain unexecuted, the app-surface registry remains unenrolled, and Contract Counter remains `structural-only`.
+
+Wave 4 is complete. `mcel-application-runtime.js` compiles declared application intents into SCM-controlled transitions and exposes immutable application instances through the MCEL facade. Contract Counter increment, reset, stale, duplicate, prohibited, undeclared-write, and failed-postcondition paths are executable.
+
+Wave 5A is complete. `tools/mcel_application_runtime_projection.py` generates and checks a browser-safe package projection containing only executable contracts and runtime assets. `MCEL.mountApplicationPackage()` verifies source-package, catalog, and projection fingerprints, loads declared modules, validates semantic surface ridges and layout-region declarations, binds controls to intents, projects committed state, renders truthful receipts, and supports deterministic unmount. Contract Counter remains `structural-only` because package-local acceptance discovery, operation-linked independent browser observation, and proof orchestration remain open.
+
+No later scaffolding wave is authorized by this status entry. Later waves must close package-local evidence discovery, browser observation, and proof orchestration without weakening the target fixture.
+
 ## Verification commands
 
 Use these commands to re-establish the documentation baseline:
@@ -165,8 +198,11 @@ Use these commands to re-establish the documentation baseline:
 ```bat
 python tools/mcel_requirements_registry.py
 python tools/mcel_requirements_registry.py --report
+python tools/mcel_application_packages.py
+python tools/mcel_application_runtime_projection.py --check
+python tools/mcel_application_package_browser_catalog.py --check
 python main_computer/mcel_truth_audit.py
-python -m pytest -q tests/test_mcel_documentation.py tests/test_mcel_documentation_authority.py tests/test_mcel_requirements_registry.py tests/test_mcel_app_blueprint_contracts.py tests/test_mcel_lab_phase2_shell.py tests/test_mcel_lab_semantic_form_inspection.py tests/test_mcel_lab_deployed_conformance.py tests/test_mcel_app_truth_gate.py tests/test_mcel_truth_audit.py tests/test_mcel_observation_bundle.py tests/test_mcel_browser_observation_producer.py tests/test_mcel_document_editor_surface.py tests/test_mcel_document_editor_layout_fit.py
+python -m pytest -q tests/test_mcel_documentation.py tests/test_mcel_documentation_authority.py tests/test_mcel_requirements_registry.py tests/test_mcel_application_scaffolding_documentation.py tests/test_mcel_create_app.py tests/test_mcel_application_packages.py tests/test_mcel_application_package_browser_catalog.py tests/test_mcel_application_runtime_projection.py tests/test_mcel_application_runtime.py tests/test_mcel_app_blueprint_contracts.py tests/test_mcel_lab_phase2_shell.py tests/test_mcel_lab_semantic_form_inspection.py tests/test_mcel_lab_deployed_conformance.py tests/test_mcel_app_truth_gate.py tests/test_mcel_truth_audit.py tests/test_mcel_observation_bundle.py tests/test_mcel_browser_observation_producer.py tests/test_mcel_document_editor_surface.py tests/test_mcel_document_editor_layout_fit.py
 ```
 
 A clean update must preserve registry validity, avoid accidental changes to machine-readable requirements, keep the truth audit report-only unless explicitly configured otherwise, and leave exactly one MCEL code-authorization section in this document. That section currently authorizes only the bounded MCEL Lab deployed runtime and acceptance evidence candidate described above.

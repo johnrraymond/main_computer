@@ -1,0 +1,56 @@
+{
+  "appId": "contract-counter",
+  "conformance": {
+    "currentMode": "structural-only",
+    "missingBridges": [
+      "package-local-acceptance-discovery",
+      "operation-linked-browser-observation",
+      "app-oriented-proof-orchestration"
+    ],
+    "targetMode": "semantic-runtime-proven"
+  },
+  "modules": {
+    "adapter": {
+      "export": "ContractCounterAdapter",
+      "path": "contracts/adapter.js"
+    },
+    "domain": {
+      "export": "ContractCounterDomain",
+      "path": "contracts/domain.js"
+    },
+    "intents": {
+      "export": "ContractCounterIntents",
+      "path": "contracts/intents.js"
+    },
+    "layout": {
+      "export": "ContractCounterLayout",
+      "path": "contracts/layout.js"
+    },
+    "surface": {
+      "export": "ContractCounterSurface",
+      "path": "contracts/surface.js"
+    }
+  },
+  "projection": {
+    "fileCount": 9,
+    "fingerprint": "sha256:036d890b452ec22d233ab751751ac3201748acf616e3d27a1792805f6a875756",
+    "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1"
+  },
+  "runtime": {
+    "document": "src/index.html",
+    "script": "src/app.js",
+    "style": "src/app.css"
+  },
+  "schema": "mcel.application-runtime-projection.v1",
+  "source": {
+    "catalogFingerprint": "sha256:c7c1d8dcebf26f02773cf594556c24278dad6d011081ec6f81efa167f30ba76e",
+    "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
+    "packageFingerprint": "sha256:048870f6c4acf9f18a8505b10a5e5e0ddfa0dc4740d37c3e5d32663d2223840e",
+    "packageFingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
+    "packageRoot": "mcel_apps/contract-counter"
+  },
+  "surface": {
+    "rootSelector": "#contract-counter-app"
+  },
+  "title": "Contract Counter"
+}

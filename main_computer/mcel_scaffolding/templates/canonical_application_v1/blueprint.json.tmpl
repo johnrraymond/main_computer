@@ -1,0 +1,47 @@
+{
+  "schema": "mcel.application-blueprint.v1",
+  "appId": {{APP_ID_JSON}},
+  "label": {{APP_TITLE_JSON}},
+  "route": "/applications/{{APP_ID}}",
+  "rootSelector": "#{{APP_ID}}-app",
+  "dominantObject": "Counter state",
+  "purpose": "Expose the complete MCEL application contract through a deliberately small counter domain.",
+  "aspects": [
+    "overview",
+    "form",
+    "objects",
+    "workflows",
+    "layout",
+    "actions",
+    "evidence",
+    "source",
+    "tests"
+  ],
+  "layoutZones": [
+    "identity",
+    "primary",
+    "actions",
+    "evidence",
+    "status"
+  ],
+  "sourceHints": [
+    "requirements.md",
+    "contracts/domain.js",
+    "contracts/intents.js",
+    "contracts/adapter.js",
+    "contracts/surface.js",
+    "contracts/layout.js",
+    "contracts/observation.js",
+    "contracts/acceptance.js",
+    "src/index.html",
+    "src/app.js",
+    "src/app.css"
+  ],
+  "testHints": [
+    "tests/test_package.py",
+    "tests/test_operations.py",
+    "tests/test_surface.py",
+    "tests/test_browser.py",
+    "tests/test_truth.py"
+  ]
+}

@@ -197,6 +197,12 @@
       "title": "Git Tools Backend Decomposition Plan",
       "kind": "markdown",
       "order": 65
+    },
+    {
+      "path": "mcel-application-scaffolding.md",
+      "title": "MCEL Application Scaffolding",
+      "kind": "markdown",
+      "order": 66
     }
   ]
 }

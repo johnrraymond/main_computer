@@ -24,6 +24,7 @@ MCEL_LAYER_INVENTORY = {
     ],
     "strict-composition": [
         "main_computer/web/applications/scripts/mcel-scm.js",
+        "main_computer/web/applications/scripts/mcel-application-runtime.js",
     ],
     "law-internal": [
         "main_computer/web/applications/scripts/mcel-law-registry.js",
@@ -46,6 +47,7 @@ MCEL_LAYER_INVENTORY = {
     ],
     "semantic-surface": [
         "main_computer/web/applications/scripts/mcel-app-blueprints-core.js",
+        "main_computer/web/applications/scripts/mcel-application-package-catalog.js",
         "main_computer/web/applications/scripts/mcel-app-surface-conformance.js",
         "main_computer/web/applications/scripts/mcel-app-surface-registry.js",
         "main_computer/web/applications/scripts/mcel-app-truth-gate.js",
@@ -153,6 +155,14 @@ CORE_FACADE_METHODS = [
     "createOperation",
     "transition",
     "exportScmEvidence",
+    "defineApplication",
+    "applicationDefinition",
+    "listApplicationDefinitions",
+    "createApplicationInstance",
+    "readApplicationState",
+    "createApplicationOperation",
+    "dispatchApplicationIntent",
+    "exportApplicationEvidence",
     "listChromes",
     "normalizeChrome",
     "describeChrome",

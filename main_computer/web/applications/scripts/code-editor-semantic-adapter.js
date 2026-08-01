@@ -525,6 +525,10 @@
       if (payload.reviewedPatch && typeof payload.reviewedPatch === "object") return payload.reviewedPatch;
       if (payload.patchArtifact && typeof payload.patchArtifact === "object") return payload.patchArtifact;
       if (Array.isArray(payload.replacementFiles)) return {replacementFiles: payload.replacementFiles};
+      const transactionHandle = safeString(
+        payload.handle || payload.transactionHandle || payload.transaction_handle
+      );
+      if (transactionHandle) return {transactionHandle};
       return null;
     }
 

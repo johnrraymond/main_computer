@@ -2403,6 +2403,18 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/editor/read":
         self._handle_editor_read()
         return
+    if self.path == "/api/applications/editor/project/manifest":
+        self._handle_editor_project_manifest()
+        return
+    if self.path == "/api/applications/editor/project/file/save":
+        self._handle_editor_project_file_save()
+        return
+    if self.path == "/api/applications/editor/project/transaction/prepare":
+        self._handle_editor_project_transaction_prepare()
+        return
+    if self.path == "/api/applications/editor/project/transaction/apply":
+        self._handle_editor_project_transaction_apply()
+        return
     if self.path == "/api/applications/file-explorer/roots":
         self._handle_file_explorer_roots()
         return

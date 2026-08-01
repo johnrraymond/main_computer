@@ -62,7 +62,8 @@ Version one deliberately does not support:
 - symlink-backed project trees or transaction paths;
 - autonomous edit selection;
 - direct MCEL Lab repair application;
-- Code Editor endpoint binding;
+- semantic-node-to-source ownership or autonomous edit planning;
+- arbitrary browser-supplied validation commands;
 - filesystem-level crash atomicity.
 
 Deletion and rename remain unsupported because the normal changed-files overlay cannot express them. Process or machine failure can interrupt a multi-file apply even though each individual replacement uses an atomic temporary-file rename. The receipt therefore reports `crash_atomicity: false`.
@@ -150,6 +151,38 @@ The apply writes:
 project_edit_apply_receipt.json
 ```
 
+## Code Editor HTTP bridge
+
+Code Editor now exposes the transaction through four local application endpoints:
+
+```text
+POST /api/applications/editor/project/manifest
+POST /api/applications/editor/project/file/save
+POST /api/applications/editor/project/transaction/prepare
+POST /api/applications/editor/project/transaction/apply
+```
+
+The browser bridge provides `MainComputerCodeStudio.inspectWorkspace`, `saveFile`,
+`prepareProjectEditTransaction`, and `applyReviewedPatch`.
+
+The endpoint boundary adds several restrictions beyond the Python API:
+
+- transaction reports are stored outside the edited project;
+- apply accepts only opaque transaction handles issued by the local server;
+- callers cannot submit filesystem paths to transaction reports or artifacts;
+- explicit file save requires source freshness evidence and an author-owned-source write policy;
+- reviewed apply requires `reviewed=true` plus `approved=true` or `confirmed=true`;
+- browser-provided validation command arrays are rejected;
+- the only exposed validation profiles are `none` and the server-defined `python-compileall`.
+
+`project/manifest` returns the same file hashes and project-manifest hash used by the
+transaction service. `project/file/save` prepares, dry-runs, and immediately applies one
+hash-guarded modification. The two transaction endpoints preserve the separate prepare and
+reviewed-apply phases for multi-file `modify` and `create` sets.
+
+This bridge makes the mutation methods callable. It does not supply a visual review UI,
+derive source ownership from MCEL semantic nodes, or generate a multi-file edit plan.
+
 ## Authority checks
 
 Preparation fails unless all of the following hold:
@@ -192,12 +225,17 @@ The caller remains responsible for selecting bounded and trustworthy commands. T
 
 The transaction reuses the replacement-file and `new_patch.py` safety model already proven by Website Builder, but it is project-neutral and supports multiple files.
 
+It is now connected to `MainComputerCodeStudio.saveFile` and
+`MainComputerCodeStudio.applyReviewedPatch` through the guarded local HTTP bridge described
+above.
+
 It is not yet connected to:
 
-- `MainComputerCodeStudio.saveFile`;
-- `MainComputerCodeStudio.applyReviewedPatch`;
+- a complete visual transaction review surface;
 - MCEL Lab annotation export;
 - semantic-node-to-source ownership;
 - model-generated multi-file planning.
 
-Those are later integration steps. Until they are implemented and runtime-proven, the existence of this module must not make Code Editor or MCEL Lab operationally ready for full-application editing.
+The callable bridge removes the missing mutation binding, but repository-bound runtime and
+acceptance evidence are still required before Code Editor can be claimed as operationally
+proven for full-application editing.

@@ -16,6 +16,7 @@
       const supervisor = typeof McelLabSupervisor !== "undefined" ? McelLabSupervisor : window.McelLabSupervisor;
       const registry = typeof McelLabLawRegistry !== "undefined" ? McelLabLawRegistry : window.McelLabLawRegistry;
       const scm = typeof McelLabScm !== "undefined" ? McelLabScm : window.McelLabScm;
+      const applicationRuntime = typeof McelApplicationRuntime !== "undefined" ? McelApplicationRuntime : window.McelApplicationRuntime;
 
       const debugTimeline = [];
 
@@ -393,6 +394,51 @@
         return requireScm().exportEvidence(instance);
       }
 
+      function requireApplicationRuntime() {
+        if (!applicationRuntime) throw new Error("MCEL application runtime is not loaded.");
+        return applicationRuntime;
+      }
+
+      function defineApplication(spec, options = {}) {
+        return requireApplicationRuntime().defineApplication(spec, options);
+      }
+
+      function applicationDefinition(appId) {
+        return requireApplicationRuntime().applicationDefinition(appId);
+      }
+
+      function listApplicationDefinitions() {
+        return requireApplicationRuntime().listApplicationDefinitions();
+      }
+
+      function createApplicationInstance(definitionOrAppId, options = {}) {
+        return requireApplicationRuntime().createApplicationInstance(definitionOrAppId, options);
+      }
+
+      function readApplicationState(instance) {
+        return requireApplicationRuntime().readApplicationState(instance);
+      }
+
+      function createApplicationOperation(instance, scope = "application-operation") {
+        return requireApplicationRuntime().createApplicationOperation(instance, scope);
+      }
+
+      function dispatchApplicationIntent(instance, request = {}) {
+        return requireApplicationRuntime().dispatchApplicationIntent(instance, request);
+      }
+
+      function exportApplicationEvidence(instance) {
+        return requireApplicationRuntime().exportApplicationEvidence(instance);
+      }
+
+      function mountApplicationPackage(request = {}) {
+        return requireApplicationRuntime().mountApplicationPackage(request);
+      }
+
+      function applicationPackageMount(root) {
+        return requireApplicationRuntime().applicationPackageMount(root);
+      }
+
       function defineRoute(name, manifest, options = {}) {
         return requireScm().defineRoute(name, manifest, options);
       }
@@ -514,6 +560,16 @@
         repairComponent,
         transition,
         exportScmEvidence,
+        defineApplication,
+        applicationDefinition,
+        listApplicationDefinitions,
+        createApplicationInstance,
+        readApplicationState,
+        createApplicationOperation,
+        dispatchApplicationIntent,
+        exportApplicationEvidence,
+        mountApplicationPackage,
+        applicationPackageMount,
         defineRoute,
         validateRouteManifest,
         listRouteDefinitions,
@@ -539,6 +595,7 @@
         workbench,
         browserRunner,
         scm,
+        applicationRuntime,
         laws: registry
       });
     })();

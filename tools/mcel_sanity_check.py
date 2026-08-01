@@ -9,7 +9,7 @@ Version 1 is intentionally deterministic and static.  It does not inspect live
 browser layout; that remains the job of ``MCEL.diagnose(appId)``.  Instead it
 checks documentation coverage, semantic app-form primitive adoption, runtime
 check linkage, diagnostic code spelling, and whether the generated browser
-registry is fresh relative to the docs-derived payload.
+requirements registry and browser application-package catalog are fresh relative to their repository authorities.
 """
 
 from __future__ import annotations
@@ -32,6 +32,15 @@ from tools.mcel_requirements_registry import (  # noqa: E402
     build_lab_payload,
     build_registry,
     repo_root_from_here,
+)
+from main_computer.mcel_application_runtime_projection import (  # noqa: E402
+    InvalidRuntimeProjectionSource,
+    check_runtime_projections,
+)
+from main_computer.mcel_application_package_browser_catalog import (  # noqa: E402
+    InvalidRepositoryPackageCatalog,
+    default_browser_catalog_path,
+    expected_browser_catalog_javascript,
 )
 
 
@@ -530,6 +539,75 @@ def _check_browser_registry_freshness(report: SanityReport, registry: Requiremen
         )
 
 
+
+def _check_application_runtime_projection_freshness(report: SanityReport) -> None:
+    try:
+        fresh, projection_root, _ = check_runtime_projections(report.repo_root)
+    except InvalidRuntimeProjectionSource as exc:
+        report.add(
+            "error",
+            "invalid-application-runtime-projection-source",
+            f"Repository application packages cannot produce browser runtime projections: {exc}",
+            file="mcel_apps",
+        )
+        return
+    except OSError as exc:
+        report.add(
+            "error",
+            "unreadable-application-runtime-projection",
+            f"Could not read browser application runtime projections: {exc}",
+            file="main_computer/web/applications/mcel-packages",
+        )
+        return
+
+    if not fresh:
+        report.add(
+            "error",
+            "stale-application-runtime-projection",
+            "Browser-safe MCEL application runtime projections do not match validated repository packages.",
+            file=_relative_path(projection_root, report.repo_root),
+        )
+
+def _check_browser_application_package_catalog_freshness(report: SanityReport) -> None:
+    catalog_js = default_browser_catalog_path(report.repo_root)
+    if not catalog_js.exists():
+        report.add(
+            "error",
+            "missing-browser-application-package-catalog",
+            "Generated browser application-package catalog is missing.",
+            file=_relative_path(catalog_js, report.repo_root),
+        )
+        return
+
+    try:
+        actual = catalog_js.read_text(encoding="utf-8")
+        expected = expected_browser_catalog_javascript(report.repo_root)
+    except InvalidRepositoryPackageCatalog as exc:
+        report.add(
+            "error",
+            "invalid-application-package-catalog",
+            f"Repository application packages cannot produce a browser catalog: {exc}",
+            file="mcel_apps",
+        )
+        return
+    except OSError as exc:
+        report.add(
+            "error",
+            "unreadable-browser-application-package-catalog",
+            f"Could not read generated browser application-package catalog: {exc}",
+            file=_relative_path(catalog_js, report.repo_root),
+        )
+        return
+
+    if actual != expected:
+        report.add(
+            "error",
+            "stale-browser-application-package-catalog",
+            "Generated browser application-package catalog does not match the validated repository package catalog.",
+            file=_relative_path(catalog_js, report.repo_root),
+        )
+
+
 def _check_diagnostic_code_shapes(report: SanityReport) -> None:
     scripts_root = report.repo_root / "main_computer/web/applications/scripts"
     diagnostic_files = [
@@ -582,6 +660,8 @@ def run_sanity_check(repo_root: Path | str | None = None, *, strict: bool = Fals
     _check_form_primitives(report, registry)
     _check_runtime_linkage(report, registry)
     _check_browser_registry_freshness(report, registry)
+    _check_application_runtime_projection_freshness(report)
+    _check_browser_application_package_catalog_freshness(report)
     _check_diagnostic_code_shapes(report)
 
     report.issues.sort(

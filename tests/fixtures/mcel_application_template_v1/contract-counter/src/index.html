@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contract Counter</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main
+    id="contract-counter-app"
+    class="mcel-starter-app"
+    data-mcel-surface-id="contract-counter.surface.primary"
+    data-mcel-region-id="contract-counter.region.shell"
+  >
+    <header data-mcel-layout-zone="identity">
+      <h1>Contract Counter</h1>
+      <p>Canonical MCEL application scaffold</p>
+    </header>
+
+    <output
+      class="counter-value"
+      data-mcel-layout-zone="primary"
+      data-mcel-node-id="contract-counter.value"
+      data-mcel-region-id="contract-counter.region.value"
+      aria-live="polite"
+    >0</output>
+
+    <div
+      class="counter-controls"
+      data-mcel-layout-zone="actions"
+      data-mcel-region-id="contract-counter.region.controls"
+      role="toolbar"
+      aria-label="Counter controls"
+    >
+      <button type="button" data-mcel-node-id="contract-counter.increment-control" data-mcel-intent-id="increment">Increment</button>
+      <button type="button" data-mcel-node-id="contract-counter.reset-control" data-mcel-intent-id="reset">Reset</button>
+    </div>
+
+    <section data-mcel-layout-zone="evidence" data-mcel-region-id="contract-counter.region.evidence" aria-labelledby="contract-counter-latest-result-title">
+      <h2 id="contract-counter-latest-result-title">Latest result</h2>
+      <pre data-mcel-node-id="contract-counter.latest-receipt">No operation has been executed.</pre>
+    </section>
+
+    <p class="runtime-status" data-mcel-layout-zone="status" data-mcel-runtime-status="structural-only">
+      SCM-controlled operations and generic semantic-surface projection are ready; proof evidence remains pending.
+    </p>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

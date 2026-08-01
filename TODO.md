@@ -4,6 +4,7 @@
   - requirements-registry normalization, MCEL Lab truth consumers, repository truth auditing, evidence provenance, acceptance binding, shared adapter tooling, application adapter expansion, and the Patch 43 Document Editor maturity correction are documented as complete milestones.
   - current generated truth remains evidence-dependent; declared maturity is not proof, and the repository audit must be read with its runtime and acceptance evidence bindings.
   - current authorized code work and explicit non-goals are recorded only in the canonical status document.
+  - keep the live structural generator, repository package catalog, browser-safe metadata catalog and runtime projection, canonical package, golden fixture, browser-mountable Contract Counter, and platform convergence plan anchored to `pretty_docs/mcel-application-scaffolding.md`; generic mounting does not authorize acceptance proof, independent browser evidence, or application maturity changes.
   - keep app requirements documentation-first; prose and planned requirements are specification evidence, not implementation proof.
 - Expand diagnostics so every level displays the report in the viewport and records a consistent JSON artifact.
 - Add a full functional diagnostic path for the configured local Ollama model, with a clear skip/fail reason when the model is unavailable.
