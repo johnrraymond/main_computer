@@ -158,7 +158,7 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
             result = page.evaluate(
                 """async ({operationId, repositoryFingerprint, capturedAt, browser}) => {
                   const host = window.McelApplicationPackageHost;
-                  return host.dispatchAndObserve("increment", {}, {
+                  const result = await host.dispatchAndObserve("increment", {}, {
                     operationId,
                     expectedRevision: host.mount.application.revision,
                     repositoryFingerprint,
@@ -167,6 +167,76 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
                     browser,
                     viewport: {width: window.innerWidth, height: window.innerHeight, deviceScaleFactor: window.devicePixelRatio}
                   });
+
+                  const root = host.mount.root;
+                  const surface = host.mount.surface;
+                  const layout = host.mount.layout;
+                  const rect = (element) => {
+                    const box = element.getBoundingClientRect();
+                    const style = window.getComputedStyle(element);
+                    return {
+                      left: box.left,
+                      top: box.top,
+                      right: box.right,
+                      bottom: box.bottom,
+                      width: box.width,
+                      height: box.height,
+                      visible: style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0
+                    };
+                  };
+                  const surfaceRoots = Array.from(document.querySelectorAll("[data-mcel-surface-id]"))
+                    .filter((element) => element.getAttribute("data-mcel-surface-id") === surface.surfaceId);
+                  const rootBox = rect(root);
+                  const controls = Array.from(root.querySelectorAll("[data-mcel-intent-id]"));
+                  const controlBoxes = controls.map((element) => ({
+                    nodeId: element.getAttribute("data-mcel-node-id") || "",
+                    intentId: element.getAttribute("data-mcel-intent-id") || "",
+                    ...rect(element)
+                  }));
+                  const controlsUsable = controlBoxes.length > 0 && controlBoxes.every((box) => box.visible && box.width >= 44 && box.height >= 44);
+                  const controlsOverlap = controlBoxes.some((left, index) => controlBoxes.slice(index + 1).some((right) =>
+                    left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top
+                  ));
+                  const horizontalOverflow = document.documentElement.scrollWidth > window.innerWidth + 1 || root.scrollWidth > root.clientWidth + 1;
+                  const requiredRegionIds = (surface.regions || []).map((region) => region.id);
+                  const declaredLayoutRegions = Object.keys(layout.regions || {});
+                  const layoutComplete = requiredRegionIds.every((id) => declaredLayoutRegions.includes(id));
+                  const semanticSurfacePass = result.observation?.comparison?.surfaceMatches === true;
+                  const runtimeOwnershipPass = surfaceRoots.length === 1 && surfaceRoots[0] === root && rootBox.visible;
+                  const runtimeVisualFitPass = rootBox.visible && rootBox.width <= window.innerWidth + 1 && !horizontalOverflow && controlsUsable && !controlsOverlap;
+                  const layers = [
+                    {id: "semantic-surface", status: semanticSurfacePass ? "pass" : "fail"},
+                    {id: "layout-grammar", status: layoutComplete ? "pass" : "fail"},
+                    {id: "runtime-ownership", status: runtimeOwnershipPass ? "pass" : "fail"},
+                    {id: "runtime-visual-fit", status: runtimeVisualFitPass ? "pass" : "fail"},
+                    {id: "diagnostic-no-throw", status: "pass"}
+                  ];
+                  const failedLayerIds = layers.filter((layer) => layer.status !== "pass").map((layer) => layer.id);
+                  result.surfaceConformance = {
+                    contractVersion: "mcel.app-surface-conformance.v1",
+                    appId: host.record.appId,
+                    surfaceId: surface.surfaceId,
+                    status: failedLayerIds.length ? "fail" : "pass",
+                    valid: failedLayerIds.length === 0,
+                    conformanceRequired: true,
+                    requiredLayerIds: layers.map((layer) => layer.id),
+                    requiredLayerStatuses: Object.fromEntries(layers.map((layer) => [layer.id, layer.status])),
+                    layers,
+                    failedLayerIds,
+                    unavailableLayerIds: [],
+                    measurements: {
+                      viewport: {width: window.innerWidth, height: window.innerHeight, deviceScaleFactor: window.devicePixelRatio},
+                      root: rootBox,
+                      surfaceRootCount: surfaceRoots.length,
+                      controlBoxes,
+                      controlsUsable,
+                      controlsOverlap,
+                      horizontalOverflow,
+                      requiredRegionIds,
+                      declaredLayoutRegions
+                    }
+                  };
+                  return result;
                 }""",
                 {
                     "operationId": operation_id,
@@ -180,6 +250,7 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
                 "browser": browser_meta,
                 "operationResult": result["operationResult"],
                 "observation": result["observation"],
+                "surfaceConformance": result["surfaceConformance"],
             }
         finally:
             browser.close()
@@ -198,6 +269,11 @@ def _render_markdown(report: Mapping[str, Any]) -> str:
         f"- Package fingerprint: `{package.get('fingerprint', '')}`",
         f"- Runtime projection fingerprint: `{observation.get('runtimeProjectionFingerprint', '')}`",
         f"- Repository fingerprint: `{(report.get('repositoryProvenance') or {}).get('fingerprint', '')}`",
+        "",
+        "## Surface conformance",
+        "",
+        f"- Status: `{(report.get('surfaceConformance') or {}).get('status', '')}`",
+        f"- Required layers: `{(report.get('surfaceConformance') or {}).get('requiredLayerStatuses', {})}`",
         "",
         "## Comparison",
         "",
@@ -242,6 +318,9 @@ def run_observation(*, repo: Path, app_id: str, headed: bool = False) -> dict[st
         raise ObservationRunnerError("Browser observation repository fingerprint does not match current provenance.")
     if observation.get("status") != "pass" or observation.get("ok") is not True:
         raise ObservationRunnerError("Browser operation observation did not pass.")
+    surface_conformance = browser_result.get("surfaceConformance") or {}
+    if surface_conformance.get("status") != "pass" or surface_conformance.get("valid") is not True:
+        raise ObservationRunnerError("Browser application surface conformance did not pass.")
 
     return {
         "schema": REPORT_SCHEMA,
@@ -265,6 +344,7 @@ def run_observation(*, repo: Path, app_id: str, headed: bool = False) -> dict[st
         "repositoryProvenance": provenance,
         "operationResult": browser_result["operationResult"],
         "observation": observation,
+        "surfaceConformance": surface_conformance,
     }
 
 

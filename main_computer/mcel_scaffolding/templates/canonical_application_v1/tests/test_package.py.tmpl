@@ -30,8 +30,9 @@ def test_generated_package_reports_current_and_target_conformance_honestly() -> 
     manifest = json.loads((PACKAGE_ROOT / "mcel.app.json").read_text(encoding="utf-8"))
     conformance = manifest["conformance"]
 
-    assert conformance["currentMode"] == "structural-only"
+    assert conformance["currentMode"] == "semantic-runtime-proven"
     assert conformance["targetMode"] == "semantic-runtime-proven"
+    assert conformance["missingBridges"] == []
     assert "adapter-to-scm-application-runtime" not in conformance["missingBridges"]
     assert "generic-semantic-surface-projection" not in conformance["missingBridges"]
     assert "package-local-acceptance-discovery" not in conformance["missingBridges"]

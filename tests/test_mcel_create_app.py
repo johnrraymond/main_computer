@@ -14,6 +14,7 @@ from main_computer.mcel_scaffolding import (
     generate_application,
     render_package_files,
     validate_app_id,
+    validate_package_files,
     validate_package_path,
 )
 from main_computer.mcel_scaffolding import generator as generator_module
@@ -105,7 +106,7 @@ def test_mcel_create_app_generates_structurally_valid_package(tmp_path: Path) ->
     ).ok
 
     manifest = json.loads((package_root / "mcel.app.json").read_text(encoding="utf-8"))
-    assert manifest["conformance"]["currentMode"] == "structural-only"
+    assert manifest["conformance"]["currentMode"] == "semantic-runtime-proven"
     assert manifest["conformance"]["targetMode"] == "semantic-runtime-proven"
     assert set(manifest["conformance"]["missingBridges"]) == set(result.target_gaps)
     assert manifest["tests"]["acceptanceBindings"] == "tests/mcel_acceptance_bindings.json"
@@ -219,7 +220,7 @@ def test_mcel_create_app_cli_json_result_is_machine_readable_and_write_free(tmp_
     assert payload["schema"] == "mcel.create-app-result.v1"
     assert payload["result_code"] == "dry_run_valid"
     assert payload["validation"]["ok"] is True
-    assert "Target integrations still missing" in completed.stderr
+    assert "Target integrations: complete" in completed.stderr
     assert not output_root.exists()
 
 
@@ -257,3 +258,36 @@ def test_template_rendering_substitutes_identity_without_contract_counter_leakag
     assert "Contract Counter" not in joined
     assert "contract-counter" not in joined
     assert generator_module.PLACEHOLDER_PATTERN.search(joined) is None
+
+
+def test_package_validator_requires_current_mode_and_gap_consistency() -> None:
+    _template, _title, files = render_package_files("sample-app", "Sample Application")
+    manifest = json.loads(files["mcel.app.json"])
+
+    manifest["conformance"]["currentMode"] = "semantic-runtime-proven"
+    manifest["conformance"]["missingBridges"] = ["still-open"]
+    files_with_open_gap = dict(files)
+    files_with_open_gap["mcel.app.json"] = json.dumps(manifest, indent=2) + "\n"
+    result = validate_package_files(
+        files_with_open_gap,
+        expected_app_id="sample-app",
+        expected_title="Sample Application",
+        expected_template_id="mcel.canonical-application-template",
+        expected_template_version="1.0.0",
+    )
+    assert not result.ok
+    assert "proven-package-with-open-gap" in {issue.code for issue in result.errors}
+
+    manifest["conformance"]["currentMode"] = "structural-only"
+    manifest["conformance"]["missingBridges"] = []
+    files_without_gap = dict(files)
+    files_without_gap["mcel.app.json"] = json.dumps(manifest, indent=2) + "\n"
+    result = validate_package_files(
+        files_without_gap,
+        expected_app_id="sample-app",
+        expected_title="Sample Application",
+        expected_template_id="mcel.canonical-application-template",
+        expected_template_version="1.0.0",
+    )
+    assert not result.ok
+    assert "missing-target-gaps" in {issue.code for issue in result.errors}

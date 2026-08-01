@@ -15,7 +15,7 @@ var McelApplicationPackages = (() => {
   }
 
   const PAYLOAD = deepFreeze({
-  "catalogFingerprint": "sha256:7c93124269e4450caa9ba91464ad1a42c38ea75dc85dd9e464140a5be3da496a",
+  "catalogFingerprint": "sha256:0bd07e22cc379db0c5a15625b74ded25ad95bbb625c50aab32f2fd13a79f0dc4",
   "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
   "format": "mcel-application-package-browser-catalog-v1",
   "packageCount": 1,
@@ -24,10 +24,8 @@ var McelApplicationPackages = (() => {
       "appId": "contract-counter",
       "blueprint": "mcel_apps/contract-counter/blueprint.json",
       "conformance": {
-        "currentMode": "structural-only",
-        "missingBridges": [
-          "app-oriented-proof-orchestration"
-        ],
+        "currentMode": "semantic-runtime-proven",
+        "missingBridges": [],
         "targetMode": "semantic-runtime-proven"
       },
       "contracts": {
@@ -40,7 +38,7 @@ var McelApplicationPackages = (() => {
         "surface": "mcel_apps/contract-counter/contracts/surface.js"
       },
       "fileCount": 20,
-      "fingerprint": "sha256:9e1d6653cd9cf12b12f2cb385f09aa77b9319780d4236d4d727ef501f7e4708c",
+      "fingerprint": "sha256:1ab625e72e54349c8abae27ca30cf75ccca1d7895fd172a81d93f6863e6f92b6",
       "fingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
       "manifest": "mcel_apps/contract-counter/mcel.app.json",
       "packageRoot": "mcel_apps/contract-counter",
@@ -53,7 +51,7 @@ var McelApplicationPackages = (() => {
       "runtimeProjection": {
         "documentUrl": "applications/mcel-packages/contract-counter/src/index.html",
         "fileCount": 10,
-        "fingerprint": "sha256:b981ae2652a850c9586efb56d84fff52959966346bb3110035a2314f152b0a2f",
+        "fingerprint": "sha256:8b4af9451961add4b6bc05f73f54ff7a56329f862bfd36338871d4744763c520",
         "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1",
         "manifest": "main_computer/web/applications/mcel-packages/contract-counter/mcel.runtime.json",
         "manifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",

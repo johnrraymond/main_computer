@@ -32,6 +32,18 @@ def test_observation_runner_builds_package_bound_app_scoped_report(monkeypatch) 
                 "repositoryFingerprint": provenance["fingerprint"],
                 "comparison": {"stateMatches": True, "receiptMatches": True, "surfaceMatches": True},
             },
+            "surfaceConformance": {
+                "status": "pass",
+                "valid": True,
+                "surfaceId": "contract-counter.surface.primary",
+                "requiredLayerStatuses": {
+                    "semantic-surface": "pass",
+                    "layout-grammar": "pass",
+                    "runtime-ownership": "pass",
+                    "runtime-visual-fit": "pass",
+                    "diagnostic-no-throw": "pass",
+                },
+            },
         }
 
     monkeypatch.setattr(runner, "_run_browser", fake_browser)
@@ -53,14 +65,28 @@ def test_observation_runner_markdown_exposes_independent_comparisons() -> None:
             "browser": {"engine": "playwright-chromium"},
             "package": {"fingerprint": "sha256:package"},
             "repositoryProvenance": {"fingerprint": "repo"},
+            "surfaceConformance": {"status": "pass", "requiredLayerStatuses": {"semantic-surface": "pass"}},
             "observation": {
                 "operationId": "op-1",
                 "runtimeProjectionFingerprint": "sha256:projection",
                 "comparison": {"stateMatches": True, "receiptMatches": True, "surfaceMatches": True},
             },
+            "surfaceConformance": {
+                "status": "pass",
+                "valid": True,
+                "surfaceId": "contract-counter.surface.primary",
+                "requiredLayerStatuses": {
+                    "semantic-surface": "pass",
+                    "layout-grammar": "pass",
+                    "runtime-ownership": "pass",
+                    "runtime-visual-fit": "pass",
+                    "diagnostic-no-throw": "pass",
+                },
+            },
         }
     )
 
+    assert "Surface conformance" in markdown
     assert "Canonical/browser state: `True`" in markdown
     assert "Visible receipt: `True`" in markdown
     assert "Surface identity: `True`" in markdown

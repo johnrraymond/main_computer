@@ -72,7 +72,8 @@ def test_scaffolding_status_remains_truthful_and_non_authorizing() -> None:
     assert "browser-safe package loading and semantic projection: implemented" in status
     assert "package-local acceptance discovery: implemented" in status
     assert "checked-in browser-mountable reference application: implemented" in status
-    assert "No later scaffolding wave is authorized by this status entry." in status
+    assert "app-oriented proof command: implemented" in status
+    assert "No later scaffolding code wave is authorized by this status entry" in status
 
 
 def test_scaffolding_document_is_linked_from_current_authorities() -> None:
@@ -84,7 +85,7 @@ def test_scaffolding_document_is_linked_from_current_authorities() -> None:
     assert canonical_path in TODO.read_text(encoding="utf-8")
 
 
-def test_scaffolding_wave6b_live_boundary_is_documented_without_truth_promotion() -> None:
+def test_scaffolding_wave7_live_boundary_is_documented_with_independent_truth_promotion() -> None:
     scaffolding = SCAFFOLDING_DOC.read_text(encoding="utf-8")
     authoring = AUTHORING_DOC.read_text(encoding="utf-8")
     system = SYSTEM_GUIDE.read_text(encoding="utf-8")
@@ -92,20 +93,20 @@ def test_scaffolding_wave6b_live_boundary_is_documented_without_truth_promotion(
     assert "## Current implementation checkpoint" in scaffolding
     assert "tools/mcel_create_app.py                 live" in scaffolding
     assert "repository package discovery             live" in scaffolding
-    assert "Wave 6B is live at the operation-linked browser-observation boundary" in scaffolding
+    assert "app-oriented proof orchestration         implemented" in scaffolding
     assert "browser-safe package catalog             live" in scaffolding
     assert "adapter-to-SCM application runtime       live" in scaffolding
     assert "package-local acceptance discovery       live" in scaffolding
     assert "operation-linked browser observation     live" in scaffolding
     assert "mcel_apps/" in scaffolding
-    assert "structural-only" in scaffolding
+    assert "semantic-runtime-proven" in scaffolding
 
-    assert "deterministic structural scaffold generator" in authoring
+    assert "deterministic canonical scaffold generator" in authoring
     assert "generic package mounting with semantic state/control projection" in authoring
-    assert "generic semantic surface mount are now live" in system
+    assert "app-oriented proof orchestration are live" in system
 
 
-def test_scaffolding_wave6b_contract_names_live_observation_without_proof_claims() -> None:
+def test_scaffolding_wave7_contract_names_live_observation_and_proof() -> None:
     scaffolding = SCAFFOLDING_DOC.read_text(encoding="utf-8")
     status = STATUS_DOC.read_text(encoding="utf-8")
 
@@ -123,4 +124,7 @@ def test_scaffolding_wave6b_contract_names_live_observation_without_proof_claims
     assert "### Wave 6B: Operation-linked browser observation — implemented" in scaffolding
     assert "mcel_application_observation_runner.py --app contract-counter --check" in scaffolding
     assert "Wave 6B is complete." in status
-    assert "Contract Counter remains `structural-only`" in status
+    assert "### Wave 7: App-oriented proof orchestration — implemented" in scaffolding
+    assert "mcel_app_prove.py --app contract-counter --check" in scaffolding
+    assert "Wave 7 is complete." in status
+    assert "canonical `semantic-runtime-proven` template fixture" in status

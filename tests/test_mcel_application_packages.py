@@ -58,7 +58,7 @@ def test_repository_catalog_discovers_checked_in_contract_counter() -> None:
     assert record.acceptance_bindings == "mcel_apps/contract-counter/tests/mcel_acceptance_bindings.json"
     assert record.fingerprint is not None and record.fingerprint.startswith("sha256:")
     assert record.fingerprint_algorithm == PACKAGE_FINGERPRINT_ALGORITHM
-    assert record.conformance["currentMode"] == "structural-only"
+    assert record.conformance["currentMode"] == "semantic-runtime-proven"
     assert record.conformance["targetMode"] == "semantic-runtime-proven"
     assert "application-package-discovery" not in record.conformance["missingBridges"]
 
@@ -264,7 +264,7 @@ def test_repository_catalog_human_report_has_fast_readout() -> None:
     assert "packages: 1" in completed.stdout
     assert "contract-counter" in completed.stdout
     assert "package: valid" in completed.stdout
-    assert "current conformance: structural-only" in completed.stdout
+    assert "current conformance: semantic-runtime-proven" in completed.stdout
 
 
 def test_repository_catalog_ignores_generated_python_cache_files(tmp_path: Path) -> None:

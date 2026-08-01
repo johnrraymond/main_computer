@@ -44,7 +44,7 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
 
     package = payload["packages"][0]
     assert package["appId"] == "contract-counter"
-    assert package["conformance"]["currentMode"] == "structural-only"
+    assert package["conformance"]["currentMode"] == "semantic-runtime-proven"
     assert package["runtime"]["document"] == "mcel_apps/contract-counter/src/index.html"
     assert package["runtimeProjection"]["manifestUrl"] == "applications/mcel-packages/contract-counter/mcel.runtime.json"
     assert package["runtimeProjection"]["fingerprint"].startswith("sha256:")
@@ -201,7 +201,7 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
         "missing": None,
         "title": "Contract Counter",
         "titleAfterCopyMutation": "Contract Counter",
-        "currentMode": "structural-only",
+        "currentMode": "semantic-runtime-proven",
         "adapterPath": "mcel_apps/contract-counter/contracts/adapter.js",
         "runtimeManifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",
         "executableKeys": [],

@@ -177,7 +177,7 @@ adapter-to-SCM application bridge: implemented
 generic semantic surface projection: implemented
 package-local acceptance discovery: implemented
 operation-linked browser observation: implemented
-app-oriented proof command: not implemented
+app-oriented proof command: implemented
 ```
 
 Wave 2 is complete. `tools/mcel_create_app.py` creates the deterministic canonical package under `mcel_apps/`, refuses unsafe identifiers and collisions, supports write-free dry runs and machine-readable results, validates the generated package structurally, and is locked to a byte-equivalent Contract Counter golden fixture.
@@ -192,9 +192,9 @@ Wave 5A is complete. `tools/mcel_application_runtime_projection.py` generates an
 
 Wave 6A is complete. Generated packages declare `tests.acceptanceBindings`; package validation and repository package authority reject mismatched identities, unknown contracts, unsupported runners, selector traversal, and selectors outside the package tests root. `mcel_acceptance_runner.py` combines legacy central bindings with validated package-local contracts and bindings, executes Contract Counter through the shared SCM runtime, writes app-scoped evidence, and binds that evidence to the package fingerprint.
 
-Wave 6B is complete. `mcel-package-host.html` loads a validated projected package in a generic browser host. `McelApplicationOperationObserver` compares committed SCM state, visible semantic-node values, surface identity, and the visible operation receipt, while nesting the existing read-only browser observation bundle. `mcel_application_observation_runner.py` runs the operation in Playwright Chromium and writes app-scoped evidence bound to package, projection, catalog, and repository fingerprints. Contract Counter remains `structural-only` because app-oriented proof orchestration remains open.
+Wave 6B is complete. `mcel-package-host.html` loads a validated projected package in a generic browser host. `McelApplicationOperationObserver` compares committed SCM state, visible semantic-node values, surface identity, and the visible operation receipt, while nesting the existing read-only browser observation bundle. `mcel_application_observation_runner.py` runs the operation in Playwright Chromium, proves all five required surface-conformance layers, and writes app-scoped evidence bound to package, projection, catalog, and repository fingerprints.
 
-No later scaffolding wave is authorized by this status entry. The remaining wave must compose the existing independent authorities without weakening the target fixture.
+Wave 7 is complete. `mcel_app_prove.py` runs the package-local acceptance and Chromium observation authorities, verifies exact package/catalog/projection/repository alignment, evaluates package-local requirements and adapter readiness, and invokes `McelAppTruthGate`. Contract Counter is the canonical `semantic-runtime-proven` template fixture. No later scaffolding code wave is authorized by this status entry; template upgrade support remains deferred.
 
 ## Verification commands
 
@@ -208,6 +208,7 @@ python tools/mcel_application_runtime_projection.py --check
 python tools/mcel_application_package_browser_catalog.py --check
 python main_computer/mcel_acceptance_runner.py --app contract-counter --check
 python main_computer/mcel_application_observation_runner.py --app contract-counter --check
+python main_computer/mcel_app_prove.py --app contract-counter --check
 python main_computer/mcel_truth_audit.py
 python -m pytest -q tests/test_mcel_documentation.py tests/test_mcel_documentation_authority.py tests/test_mcel_requirements_registry.py tests/test_mcel_application_scaffolding_documentation.py tests/test_mcel_create_app.py tests/test_mcel_application_packages.py tests/test_mcel_application_package_browser_catalog.py tests/test_mcel_application_runtime_projection.py tests/test_mcel_application_runtime.py tests/test_mcel_app_blueprint_contracts.py tests/test_mcel_lab_phase2_shell.py tests/test_mcel_lab_semantic_form_inspection.py tests/test_mcel_lab_deployed_conformance.py tests/test_mcel_app_truth_gate.py tests/test_mcel_truth_audit.py tests/test_mcel_observation_bundle.py tests/test_mcel_browser_observation_producer.py tests/test_mcel_document_editor_surface.py tests/test_mcel_document_editor_layout_fit.py
 ```

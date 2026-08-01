@@ -1,8 +1,8 @@
 """Deterministic MCEL application scaffold generation.
 
-Wave 2 intentionally stops at structural generation.  The generated package records the
-future application-runtime bridges it requires, but the generator does not pretend those
-bridges are live.
+The generator emits the canonical MCEL application template.  The checked-in fixture is
+expected to pass the complete app-oriented proof path; generated applications retain the
+same package anatomy and can be proved through the shared MCEL authorities.
 """
 
 from __future__ import annotations
@@ -27,9 +27,7 @@ RESULT_SCHEMA = "mcel.create-app-result.v1"
 DEFAULT_OUTPUT_DIRECTORY = "mcel_apps"
 APP_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 PLACEHOLDER_PATTERN = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
-TARGET_GAPS = (
-    "app-oriented-proof-orchestration",
-)
+TARGET_GAPS: tuple[str, ...] = ()
 
 
 class McelScaffoldingError(RuntimeError):

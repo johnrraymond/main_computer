@@ -52,9 +52,12 @@ def _human_success(result: dict[str, Any]) -> str:
         f"Destination: {result['destination']}",
         f"Files: {len(result['created_files'])}",
         f"Structural validation: {'pass' if validation['ok'] else 'fail'}",
-        "Target integrations still missing:",
     ]
-    lines.extend(f"  - {gap}" for gap in result["target_gaps"])
+    if result["target_gaps"]:
+        lines.append("Target integrations still missing:")
+        lines.extend(f"  - {gap}" for gap in result["target_gaps"])
+    else:
+        lines.append("Target integrations: complete")
     return "\n".join(lines)
 
 

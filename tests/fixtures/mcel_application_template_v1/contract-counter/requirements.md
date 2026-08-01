@@ -1,12 +1,12 @@
 # Contract Counter
 
-This package is generated from `mcel.canonical-application-template.v1`. Its semantic intents execute through the shared SCM-controlled application runtime, and its declared surface can now mount through the browser-safe runtime projection. The complete application remains `structural-only` because app-oriented proof orchestration is still a target contract; package-local acceptance and operation-linked browser observation are live.
+This package is generated from `mcel.canonical-application-template.v1`. Its semantic intents execute through the shared SCM-controlled application runtime, its declared surface mounts through the browser-safe runtime projection, package-local acceptance and operation-linked browser observation are live, and app-oriented proof orchestration composes those independent authorities into repository-bound semantic-runtime proof.
 
 ```mcel-app
 id: contract-counter
 title: Contract Counter
 status: specified
-current_runtime_status: structural-only
+current_runtime_status: semantic-runtime-proven
 target_runtime_status: fullApplicationSemanticReady
 dominant_object: Counter state
 primary_user_goal: Exercise the complete MCEL application contract through one visible state transition.
@@ -143,7 +143,7 @@ status: specified
 evidence: Application operation receipt
 proves: A declared intent passed controlled mutation checks and committed one canonical transition.
 source: Shared `mcel-application-runtime.js` layered over `mcel-scm.js`.
-freshness: Bound to operation id and application revision; repository binding remains part of later proof orchestration.
+freshness: Bound to operation id and application revision; app-oriented proof requires exact current package and repository provenance.
 ```
 
 ```mcel-boundary
@@ -160,11 +160,11 @@ prohibited_confusion: Visible text or a local variable must not be treated as pr
 ```mcel-finding
 id: contract-counter.finding.platform-gaps
 app: contract-counter
-status: open
+status: verified
 aspect: implementation
-severity: blocking
-problem: The generated package is structurally valid, discoverable, executable through the shared SCM-controlled application runtime, mountable through generic semantic-surface projection, and discoverable by the package-local acceptance runner, and operation-linked browser observation is live, but app-oriented proof orchestration is not yet live.
-desired_behavior: MCEL mounts, observes, and proves the package without user-authored central registry edits or application-local mutation authority.
+severity: info
+problem: The generated package now composes package discovery, SCM-controlled execution, semantic-surface projection, package-local acceptance, operation-linked browser observation, provenance, and the app truth gate without bespoke central integration.
+desired_behavior: Preserve this complete app-oriented proof path as the canonical template fixture.
 ```
 
 ```mcel-adapter
@@ -172,11 +172,11 @@ id: contract-counter.adapter.contract
 app: contract-counter
 status: specified
 adapter: contract-counter semantic adapter
-current_runtime_status: scm-controlled
+current_runtime_status: fullApplicationSemanticReady
 target_runtime_status: fullApplicationSemanticReady
 required_intents:
   - increment
   - reset
   - direct-set refusal
-readiness_gate: Compose the live package, SCM runtime, semantic projection, package-local acceptance, and operation-linked browser observation authorities under repository-bound app-oriented proof.
+readiness_gate: App-oriented proof must keep package, SCM runtime, semantic projection, acceptance, observation, provenance, and truth-gate evidence independently inspectable and exactly aligned.
 ```

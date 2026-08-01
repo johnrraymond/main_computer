@@ -308,13 +308,18 @@ def validate_package_files(
         if not isinstance(conformance, dict):
             errors.append(PackageValidationIssue("missing-conformance-contract", "Manifest conformance contract is missing.", "mcel.app.json"))
         else:
-            if conformance.get("currentMode") != "structural-only":
-                errors.append(PackageValidationIssue("invalid-current-mode", "Wave 2 generated packages must report structural-only current capability.", "mcel.app.json"))
+            current_mode = conformance.get("currentMode")
+            if current_mode not in {"structural-only", "semantic-runtime-proven"}:
+                errors.append(PackageValidationIssue("invalid-current-mode", "Generated package current mode must be structural-only or semantic-runtime-proven.", "mcel.app.json"))
             if conformance.get("targetMode") != "semantic-runtime-proven":
                 errors.append(PackageValidationIssue("invalid-target-mode", "Generated package target mode must be semantic-runtime-proven.", "mcel.app.json"))
             gaps = conformance.get("missingBridges")
-            if not isinstance(gaps, list) or not gaps:
-                errors.append(PackageValidationIssue("missing-target-gaps", "Generated package must report unresolved target bridges.", "mcel.app.json"))
+            if not isinstance(gaps, list) or not all(isinstance(item, str) and item for item in gaps):
+                errors.append(PackageValidationIssue("invalid-target-gaps", "Generated package missingBridges must be a string list.", "mcel.app.json"))
+            elif current_mode == "structural-only" and not gaps:
+                errors.append(PackageValidationIssue("missing-target-gaps", "A structural-only package must report unresolved target bridges.", "mcel.app.json"))
+            elif current_mode == "semantic-runtime-proven" and gaps:
+                errors.append(PackageValidationIssue("proven-package-with-open-gap", "A semantic-runtime-proven package must not report unresolved target bridges.", "mcel.app.json"))
 
     blueprint = _load_json(normalized, "blueprint.json", errors)
     if isinstance(blueprint, dict):
