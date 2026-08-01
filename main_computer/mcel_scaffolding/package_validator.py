@@ -107,10 +107,12 @@ def _manifest_references(manifest: Mapping[str, Any]) -> list[tuple[str, Any]]:
         ("requirements", manifest.get("requirements")),
         ("blueprint", manifest.get("blueprint")),
     ]
-    for group_name in ("contracts", "runtime"):
+    for group_name in ("authoring", "contracts", "runtime"):
         group = manifest.get(group_name)
         if isinstance(group, dict):
             for key, value in sorted(group.items()):
+                if group_name == "authoring" and key in {"schema", "status"}:
+                    continue
                 references.append((f"{group_name}.{key}", value))
     tests = manifest.get("tests")
     if isinstance(tests, dict):
@@ -309,15 +311,15 @@ def validate_package_files(
             errors.append(PackageValidationIssue("missing-conformance-contract", "Manifest conformance contract is missing.", "mcel.app.json"))
         else:
             current_mode = conformance.get("currentMode")
-            if current_mode not in {"structural-only", "semantic-runtime-proven"}:
-                errors.append(PackageValidationIssue("invalid-current-mode", "Generated package current mode must be structural-only or semantic-runtime-proven.", "mcel.app.json"))
+            if current_mode not in {"forward-specification", "structural-only", "semantic-runtime-proven"}:
+                errors.append(PackageValidationIssue("invalid-current-mode", "Application package current mode must be forward-specification, structural-only, or semantic-runtime-proven.", "mcel.app.json"))
             if conformance.get("targetMode") != "semantic-runtime-proven":
                 errors.append(PackageValidationIssue("invalid-target-mode", "Generated package target mode must be semantic-runtime-proven.", "mcel.app.json"))
             gaps = conformance.get("missingBridges")
             if not isinstance(gaps, list) or not all(isinstance(item, str) and item for item in gaps):
                 errors.append(PackageValidationIssue("invalid-target-gaps", "Generated package missingBridges must be a string list.", "mcel.app.json"))
-            elif current_mode == "structural-only" and not gaps:
-                errors.append(PackageValidationIssue("missing-target-gaps", "A structural-only package must report unresolved target bridges.", "mcel.app.json"))
+            elif current_mode in {"forward-specification", "structural-only"} and not gaps:
+                errors.append(PackageValidationIssue("missing-target-gaps", f"A {current_mode} package must report unresolved target bridges.", "mcel.app.json"))
             elif current_mode == "semantic-runtime-proven" and gaps:
                 errors.append(PackageValidationIssue("proven-package-with-open-gap", "A semantic-runtime-proven package must not report unresolved target bridges.", "mcel.app.json"))
 
@@ -373,7 +375,10 @@ def validate_package_path(
         return PackageValidationResult(False, (issue,), (), 0)
     for path in sorted(package_root.rglob("*")):
         if path.is_file():
-            relative = path.relative_to(package_root).as_posix()
+            relative_path = path.relative_to(package_root)
+            if "__pycache__" in relative_path.parts or path.suffix in {".pyc", ".pyo"}:
+                continue
+            relative = relative_path.as_posix()
             try:
                 files[relative] = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:

@@ -1,0 +1,54 @@
+{
+  "schema": "mcel.application-blueprint.v1",
+  "appId": "contract-workbench",
+  "label": "Contract Operations Workbench",
+  "route": "/applications/contract-workbench",
+  "rootSelector": "#contract-workbench-app",
+  "dominantObject": "Contract collection and quote workflow",
+  "purpose": "Serve as the forward specification and TDD acid application for dynamic, payload-bearing, asynchronous MCEL applications.",
+  "aspects": [
+    "overview",
+    "form",
+    "objects",
+    "workflows",
+    "layout",
+    "actions",
+    "evidence",
+    "source",
+    "tests"
+  ],
+  "layoutZones": [
+    "identity",
+    "editor",
+    "summary",
+    "filters",
+    "collection",
+    "evidence",
+    "status"
+  ],
+  "sourceHints": [
+    "application.js",
+    "forward-specification.json",
+    "requirements.md",
+    "contracts/domain.js",
+    "contracts/intents.js",
+    "contracts/adapter.js",
+    "contracts/surface.js",
+    "contracts/layout.js",
+    "contracts/observation.js",
+    "contracts/acceptance.js",
+    "src/index.html",
+    "src/app.js",
+    "src/app.css"
+  ],
+  "testHints": [
+    "tests/mcel_acceptance_bindings.json",
+    "tests/test_acceptance.py",
+    "tests/test_package.py",
+    "tests/test_operations.py",
+    "tests/test_surface.py",
+    "tests/test_browser.py",
+    "tests/test_truth.py",
+    "tests/test_forward_spec.py"
+  ]
+}

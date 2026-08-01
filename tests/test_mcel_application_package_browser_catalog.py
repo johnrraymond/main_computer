@@ -39,10 +39,10 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
 
     assert payload["schema"] == BROWSER_CATALOG_SCHEMA
     assert payload["format"] == BROWSER_CATALOG_FORMAT
-    assert payload["packageCount"] == 1
+    assert payload["packageCount"] == 2
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
 
-    package = payload["packages"][0]
+    package = next(item for item in payload["packages"] if item["appId"] == "contract-counter")
     assert package["appId"] == "contract-counter"
     assert package["conformance"]["currentMode"] == "semantic-runtime-proven"
     assert package["runtime"]["document"] == "mcel_apps/contract-counter/src/index.html"
@@ -55,6 +55,7 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
         "manifest",
         "requirements",
         "blueprint",
+        "authoring",
         "contracts",
         "runtime",
         "testsRoot",
@@ -126,7 +127,7 @@ def test_browser_catalog_cli_check_and_json_output() -> None:
     payload = json.loads(completed.stdout)
     assert payload["schema"] == "mcel.application-package-browser-catalog-result.v1"
     assert payload["resultCode"] == "browser_catalog_fresh"
-    assert payload["packageCount"] == 1
+    assert payload["packageCount"] == 2
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
 
 
@@ -196,7 +197,7 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
     assert payload == {
         "schema": BROWSER_CATALOG_SCHEMA,
         "format": BROWSER_CATALOG_FORMAT,
-        "packageCount": 1,
+        "packageCount": 2,
         "hasCounter": True,
         "missing": None,
         "title": "Contract Counter",

@@ -203,6 +203,12 @@
       "title": "MCEL Application Scaffolding",
       "kind": "markdown",
       "order": 66
+    },
+    {
+      "path": "mcel-forward-specification-acid-app.md",
+      "title": "MCEL Forward-Specification Acid Application",
+      "kind": "markdown",
+      "order": 67
     }
   ]
 }

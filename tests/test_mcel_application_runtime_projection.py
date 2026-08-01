@@ -31,8 +31,8 @@ def _copy_package(target_root: Path) -> None:
 
 def test_runtime_projection_contains_only_browser_execution_files() -> None:
     projection_set = build_runtime_projection_set(ROOT)
-    assert projection_set.package_count == 1
-    projection = projection_set.projections[0]
+    assert projection_set.package_count == 2
+    projection = next(item for item in projection_set.projections if item.app_id == "contract-counter")
 
     assert projection.app_id == "contract-counter"
     assert projection.fingerprint_algorithm == RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM
@@ -76,7 +76,7 @@ def test_checked_in_runtime_projection_is_fresh() -> None:
 
     assert fresh is True
     assert destination == PROJECTION_ROOT
-    assert projection_set.package_count == 1
+    assert projection_set.package_count == 2
 
 
 def test_projection_check_detects_changed_and_extra_files(tmp_path: Path) -> None:
@@ -106,7 +106,7 @@ def test_runtime_projection_cli_check_and_json() -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     payload = json.loads(completed.stdout)
     assert payload["resultCode"] == "runtime_projection_fresh"
-    assert payload["packageCount"] == 1
+    assert payload["packageCount"] == 2
     assert payload["changed"] is False
 
 

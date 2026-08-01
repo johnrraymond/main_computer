@@ -1,0 +1,15 @@
+{
+  "schema": "mcel.package-acceptance-bindings.v1",
+  "appId": "contract-workbench",
+  "bindings": [
+    {
+      "id": "contract-workbench.binding.complete-application",
+      "acceptanceContractId": "contract-workbench.acceptance.complete-application",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py::test_forward_acceptance_contract_is_complete"
+      ],
+      "notes": "The contract remains planned until every forward runtime bridge is closed."
+    }
+  ]
+}

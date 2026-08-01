@@ -33,7 +33,7 @@
   },
   "projection": {
     "fileCount": 10,
-    "fingerprint": "sha256:8b4af9451961add4b6bc05f73f54ff7a56329f862bfd36338871d4744763c520",
+    "fingerprint": "sha256:dd6aa8357f8fd8ac9f1bf0f055fb76e0a70ee018e4c6bec3a470e1bebe8f349e",
     "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1"
   },
   "runtime": {
@@ -43,7 +43,7 @@
   },
   "schema": "mcel.application-runtime-projection.v1",
   "source": {
-    "catalogFingerprint": "sha256:0bd07e22cc379db0c5a15625b74ded25ad95bbb625c50aab32f2fd13a79f0dc4",
+    "catalogFingerprint": "sha256:f481c04ca937a347aa4a22d888df175a739e960c381acdb2b8bc98a2cccea990",
     "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
     "packageFingerprint": "sha256:1ab625e72e54349c8abae27ca30cf75ccca1d7895fd172a81d93f6863e6f92b6",
     "packageFingerprintAlgorithm": "sha256-mcel-package-path-content-v1",

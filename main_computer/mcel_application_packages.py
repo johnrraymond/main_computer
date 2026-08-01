@@ -55,6 +55,7 @@ class ApplicationPackageRecord:
     manifest: str
     requirements: str | None
     blueprint: str | None
+    authoring: Mapping[str, str]
     contracts: Mapping[str, str]
     runtime: Mapping[str, str]
     tests_root: str | None
@@ -77,6 +78,7 @@ class ApplicationPackageRecord:
             "manifest": self.manifest,
             "requirements": self.requirements,
             "blueprint": self.blueprint,
+            "authoring": dict(sorted(self.authoring.items())),
             "contracts": dict(sorted(self.contracts.items())),
             "runtime": dict(sorted(self.runtime.items())),
             "testsRoot": self.tests_root,
@@ -379,6 +381,11 @@ def _build_record(
 
     requirements = _join_repository_reference(package_root, manifest.get("requirements"))
     blueprint_path = _join_repository_reference(package_root, manifest.get("blueprint"))
+    authoring = {
+        key: reference
+        for key, raw in sorted(_mapping_of_strings(manifest.get("authoring")).items())
+        if key not in {"schema", "status"} and (reference := _join_repository_reference(package_root, raw)) is not None
+    }
     contracts = {
         key: reference
         for key, raw in sorted(_mapping_of_strings(manifest.get("contracts")).items())
@@ -410,6 +417,7 @@ def _build_record(
         manifest=manifest_path,
         requirements=requirements,
         blueprint=blueprint_path,
+        authoring=authoring,
         contracts=contracts,
         runtime=runtime,
         tests_root=tests_root,

@@ -427,7 +427,14 @@ def run_app_proof(
         raise AppProofError("The repository application-package catalog is invalid.")
     record = _package_record(catalog, app_id)
     conformance = dict(record.conformance or {})
-    if conformance.get("currentMode") != "semantic-runtime-proven":
+    current_mode = conformance.get("currentMode")
+    if current_mode == "forward-specification":
+        gaps = ", ".join(conformance.get("missingBridges") or []) or "unspecified runtime bridges"
+        raise AppProofError(
+            "The application is a forward specification and is not eligible for semantic-runtime proof; "
+            f"unresolved bridges: {gaps}."
+        )
+    if current_mode != "semantic-runtime-proven":
         raise AppProofError("The application package has not declared the completed semantic-runtime template.")
     if list(conformance.get("missingBridges") or []):
         raise AppProofError("The application package still declares open MCEL platform bridges.")

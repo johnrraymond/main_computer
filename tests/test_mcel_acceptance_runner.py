@@ -362,7 +362,8 @@ def test_package_local_acceptance_is_discovered_with_package_provenance() -> Non
     contracts, bindings, metadata = runner.load_package_acceptance(ROOT)
 
     assert [block.block_id for block in contracts] == [
-        "contract-counter.acceptance.operation-control"
+        "contract-counter.acceptance.operation-control",
+        "contract-workbench.acceptance.complete-application",
     ]
     bound = bindings["contract-counter.acceptance.operation-control"]
     assert bound.source_kind == "package"
@@ -374,9 +375,13 @@ def test_package_local_acceptance_is_discovered_with_package_provenance() -> Non
         "mcel_apps/contract-counter/tests/test_acceptance.py::test_package_acceptance_operation_control",
     )
     assert bound.package_fingerprint.startswith("sha256:")
-    assert metadata["packageCount"] == 1
-    assert metadata["bindingCount"] == 1
-    assert metadata["packages"][0]["packageFingerprint"] == bound.package_fingerprint
+    assert metadata["packageCount"] == 2
+    assert metadata["bindingCount"] == 2
+    counter = next(item for item in metadata["packages"] if item["appId"] == "contract-counter")
+    assert counter["packageFingerprint"] == bound.package_fingerprint
+    forward = bindings["contract-workbench.acceptance.complete-application"]
+    assert forward.source_kind == "package"
+    assert forward.source_path == "mcel_apps/contract-workbench/tests/mcel_acceptance_bindings.json"
 
 
 def test_central_and_package_binding_identity_collision_is_refused() -> None:

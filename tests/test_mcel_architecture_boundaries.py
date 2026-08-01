@@ -48,6 +48,7 @@ MCEL_LAYER_INVENTORY = {
     ],
     "semantic-surface": [
         "main_computer/web/applications/scripts/mcel-app-blueprints-core.js",
+        "main_computer/web/applications/scripts/mcel-app-definition.js",
         "main_computer/web/applications/scripts/mcel-application-package-catalog.js",
         "main_computer/web/applications/scripts/mcel-application-package-host.js",
         "main_computer/web/mcel-package-host.html",

@@ -100,4 +100,4 @@
 - Full Ethereum-style integration.
 - Integrate a dedicated Chromium-based frontend (e.g., via Electron or a similar framework) directly into the project for a more robust, standalone application experience.
 
-- MCEL scaffolding: Waves 2 through 7 are complete; preserve Contract Counter as the canonical semantic-runtime-proven fixture and continue only with separately authorized template-upgrade work.
+- MCEL scaffolding: Waves 2 through 7 are complete; preserve Contract Counter as the canonical semantic-runtime-proven fixture. The separately authorized next boundary is `mcel_apps/contract-workbench/`, a forward-specification acid app whose passing definition tests and strict expected runtime blockers drive dynamic MCEL development. Do not simplify that app to fit the current runtime; close its named bridges in implementation waves. Template-upgrade work remains deferred.

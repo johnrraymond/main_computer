@@ -196,6 +196,8 @@ Wave 6B is complete. `mcel-package-host.html` loads a validated projected packag
 
 Wave 7 is complete. `mcel_app_prove.py` runs the package-local acceptance and Chromium observation authorities, verifies exact package/catalog/projection/repository alignment, evaluates package-local requirements and adapter readiness, and invokes `McelAppTruthGate`. Contract Counter is the canonical `semantic-runtime-proven` template fixture. No later scaffolding code wave is authorized by this status entry; template upgrade support remains deferred.
 
+The next authorized application boundary is the separate Contract Operations Workbench forward specification in `mcel_apps/contract-workbench/`. It does not alter or replace Contract Counter. It defines the desired dynamic application interface before shared runtime support exists, including local/provisional/derived state, typed payload extraction, properties, conditionals, keyed collections, item actions, capability-backed async work, cancellation, dynamic observation, intent-complete proof, and multi-instance isolation. Its valid mode is `forward-specification`; it is deliberately ineligible for semantic-runtime proof until every named bridge closes. See `pretty_docs/mcel-forward-specification-acid-app.md`.
+
 ## Verification commands
 
 Use these commands to re-establish the documentation baseline:

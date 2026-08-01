@@ -70,6 +70,7 @@ def _browser_record(record: ApplicationPackageRecord, runtime_projection: Mappin
         "manifest": record.manifest,
         "requirements": record.requirements,
         "blueprint": record.blueprint,
+        "authoring": dict(sorted(record.authoring.items())),
         "contracts": dict(sorted(record.contracts.items())),
         "runtime": dict(sorted(record.runtime.items())),
         "testsRoot": record.tests_root,
