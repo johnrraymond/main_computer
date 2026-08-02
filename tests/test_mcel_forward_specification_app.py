@@ -28,8 +28,10 @@ def test_repository_catalog_exposes_the_authoring_source_without_promoting_the_a
     assert record.authoring == {
         "definition": "mcel_apps/contract-workbench/application.js",
         "featureMatrix": "mcel_apps/contract-workbench/forward-specification.json",
+        "normalizedDefinition": "mcel_apps/contract-workbench/generated/mcel.application.normalized.json",
     }
     assert record.conformance["currentMode"] == "forward-specification"
+    assert "application-definition-normalization" not in record.conformance["missingBridges"]
 
 
 def test_forward_app_can_be_projected_for_inspection_but_not_proven() -> None:

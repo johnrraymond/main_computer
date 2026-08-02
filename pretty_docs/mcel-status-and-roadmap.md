@@ -198,6 +198,8 @@ Wave 7 is complete. `mcel_app_prove.py` runs the package-local acceptance and Ch
 
 The next authorized application boundary is the separate Contract Operations Workbench forward specification in `mcel_apps/contract-workbench/`. It does not alter or replace Contract Counter. It defines the desired dynamic application interface before shared runtime support exists, including local/provisional/derived state, typed payload extraction, properties, conditionals, keyed collections, item actions, capability-backed async work, cancellation, dynamic observation, intent-complete proof, and multi-instance isolation. Its valid mode is `forward-specification`; it is deliberately ineligible for semantic-runtime proof until every named bridge closes. See `pretty_docs/mcel-forward-specification-acid-app.md`.
 
+The first Workbench implementation bridge is complete. `tools/mcel_application_definition.py` evaluates the human-owned `application.js`, emits a canonical normalized definition and seven deterministic explicit contract modules, records source and definition fingerprints, and detects manual drift with `--check`. The Workbench remains `forward-specification`; only `application-definition-normalization` has been removed from its missing bridges.
+
 ## Verification commands
 
 Use these commands to re-establish the documentation baseline:

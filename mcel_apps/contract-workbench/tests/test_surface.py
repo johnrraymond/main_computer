@@ -25,7 +25,7 @@ def test_html_supplies_static_hosts_and_dynamic_templates() -> None:
 def test_surface_contract_declares_dynamic_projection_vocabulary() -> None:
     source = (PACKAGE / "contracts/surface.js").read_text(encoding="utf-8")
     for kind in ("input", "property", "conditional", "collection", "operation-evidence"):
-        assert f'kind: "{kind}"' in source
-    assert 'keyPath: "id"' in source
-    assert 'fromItemKey: true' in source
-    assert 'fromItemField: "quantity"' in source
+        assert f'"kind": "{kind}"' in source
+    assert '"keyPath": "id"' in source
+    assert '"fromItemKey": true' in source
+    assert '"fromItemField": "quantity"' in source

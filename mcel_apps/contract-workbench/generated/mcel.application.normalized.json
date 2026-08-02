@@ -1,0 +1,1545 @@
+{
+  "appId": "contract-workbench",
+  "definition": {
+    "acceptance": [
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "itemCountDelta": 1,
+          "operationStatus": "committed",
+          "stableKey": "contract-1"
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.add",
+        "kind": "acceptance",
+        "operationId": "add-contract",
+        "when": {
+          "intentId": "add-contract",
+          "payload": {
+            "category": "materials",
+            "name": "Steel",
+            "quantity": 12
+          }
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalStateUnchanged": true,
+          "code": "CONTRACT_NAME_REQUIRED",
+          "conditionalValidationVisible": true,
+          "operationStatus": "refused"
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.validation",
+        "kind": "acceptance",
+        "operationId": "add-contract",
+        "when": {
+          "intentId": "add-contract",
+          "payload": {
+            "category": "materials",
+            "name": "",
+            "quantity": 0
+          }
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "keyedItemAbsent": true,
+          "operationStatus": "committed"
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.remove",
+        "kind": "acceptance",
+        "operationId": "remove-contract",
+        "when": {
+          "intentId": "remove-contract",
+          "itemKey": "contract-1"
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "operationStatus": "committed",
+          "visibleQuantity": "18"
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.update",
+        "kind": "acceptance",
+        "operationId": "update-quantity",
+        "when": {
+          "intentId": "update-quantity",
+          "itemField": {
+            "quantity": 18
+          },
+          "itemKey": "contract-1"
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalStateUnchanged": true,
+          "collectionMatchesDerivedState": true
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.filter-sort",
+        "kind": "acceptance",
+        "operationId": "",
+        "when": {
+          "localState": {
+            "filterText": "steel",
+            "sortMode": "quantity"
+          }
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "oneCanonicalCommit": true,
+          "operationStatus": "committed",
+          "provisionalEventsVisibleBeforeCommit": true
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.quote",
+        "kind": "acceptance",
+        "operationId": "request-quote",
+        "when": {
+          "intentId": "request-quote",
+          "itemKey": "contract-1"
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalStateUnchanged": true,
+          "operationStatus": "cancelled",
+          "provisionalStateClosed": true
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.cancel",
+        "kind": "acceptance",
+        "operationId": "cancel-quote",
+        "when": {
+          "intentId": "cancel-quote",
+          "itemKey": "contract-1"
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalStateUnchanged": true,
+          "code": "REVISION_STALE"
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.stale",
+        "kind": "acceptance",
+        "operationId": "add-contract",
+        "when": {
+          "actualRevision": 1,
+          "expectedRevision": 0,
+          "intentId": "add-contract"
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalStateUnchanged": true,
+          "code": "OPERATION_DUPLICATE"
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.duplicate",
+        "kind": "acceptance",
+        "operationId": "add-contract",
+        "when": {
+          "intentId": "add-contract",
+          "reuseOperationId": true
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalStateUnchanged": true,
+          "code": "INTENT_PROHIBITED"
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.prohibited",
+        "kind": "acceptance",
+        "operationId": "direct-set",
+        "when": {
+          "intentId": "direct-set"
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "isolatedCanonicalState": true,
+          "isolatedLocalState": true,
+          "isolatedReceipts": true
+        },
+        "given": {},
+        "id": "contract-workbench.acceptance.multi-instance",
+        "kind": "acceptance",
+        "operationId": "",
+        "when": {
+          "mountInstances": 2,
+          "mutateInstance": 1
+        }
+      }
+    ],
+    "capabilities": {
+      "quotes": {
+        "description": "Request independently streamed quote reports and reconcile them before one canonical commit.",
+        "id": "contract-workbench.quote-service",
+        "kind": "capability",
+        "operations": {
+          "requestQuote": {
+            "cancellable": true,
+            "request": {
+              "describe": {
+                "fields": [
+                  "category",
+                  "contractId",
+                  "quantity"
+                ]
+              },
+              "kind": "schema",
+              "name": "object"
+            },
+            "response": {
+              "describe": {
+                "fields": [
+                  "amount",
+                  "source"
+                ]
+              },
+              "kind": "schema",
+              "name": "object"
+            },
+            "stream": true
+          }
+        },
+        "risk": "external-read-stream"
+      }
+    },
+    "id": "contract-workbench",
+    "invariants": [
+      {
+        "check": {
+          "kind": "function",
+          "sha256": "sha256:93f6eb0478c4815153e98200dd7e2c1c02b6db3bfa5edfbe61d21a068c51a207"
+        },
+        "description": "",
+        "id": "contract-workbench.invariant.contracts-array",
+        "kind": "invariant",
+        "reads": [
+          "contracts"
+        ]
+      },
+      {
+        "check": {
+          "kind": "function",
+          "sha256": "sha256:60ab48f869cdf3c2ee75c4864633a3a52a8e39e31b0ad169259beb61601b17fc"
+        },
+        "description": "",
+        "id": "contract-workbench.invariant.contract-keys-unique",
+        "kind": "invariant",
+        "reads": [
+          "contracts"
+        ]
+      },
+      {
+        "check": {
+          "kind": "function",
+          "sha256": "sha256:7ef96f1eaa49cc27132c9b8ddf771f981f602d6a5cf2135acccedb28a9420492"
+        },
+        "description": "",
+        "id": "contract-workbench.invariant.contract-values-valid",
+        "kind": "invariant",
+        "reads": [
+          "contracts"
+        ]
+      },
+      {
+        "check": {
+          "kind": "function",
+          "sha256": "sha256:244f49f64c6c0e378c1239534cb237eb565cda0f1d8ee9a0f4aff15d021e06b3"
+        },
+        "description": "",
+        "id": "contract-workbench.invariant.revision-nonnegative",
+        "kind": "invariant",
+        "reads": [
+          "revision"
+        ]
+      }
+    ],
+    "layout": {
+      "constraints": [
+        {
+          "first": "contract-workbench.region.editor",
+          "id": "contract-workbench.layout.editor-before-summary",
+          "relation": "before",
+          "second": "contract-workbench.region.summary"
+        },
+        {
+          "first": "contract-workbench.region.summary",
+          "id": "contract-workbench.layout.summary-before-filters",
+          "relation": "before",
+          "second": "contract-workbench.region.filters"
+        },
+        {
+          "first": "contract-workbench.region.filters",
+          "id": "contract-workbench.layout.filters-before-collection",
+          "relation": "before",
+          "second": "contract-workbench.region.collection"
+        },
+        {
+          "first": "contract-workbench.region.collection",
+          "id": "contract-workbench.layout.collection-before-evidence",
+          "relation": "before",
+          "second": "contract-workbench.region.evidence"
+        },
+        {
+          "block": 44,
+          "id": "contract-workbench.layout.controls-usable",
+          "inline": 44,
+          "relation": "minimum-control-size",
+          "target": "contract-workbench.region.shell"
+        },
+        {
+          "id": "contract-workbench.layout.collection-key-order",
+          "relation": "canonical-order",
+          "target": "contract-workbench.items"
+        },
+        {
+          "id": "contract-workbench.layout.no-page-horizontal-overflow",
+          "relation": "no-horizontal-overflow",
+          "target": "contract-workbench.region.shell"
+        }
+      ],
+      "regions": {
+        "contract-workbench.region.collection": {
+          "blockSize": "content",
+          "direction": "column",
+          "gap": "small",
+          "scrollOwner": false
+        },
+        "contract-workbench.region.editor": {
+          "direction": "grid",
+          "gap": "small",
+          "responsiveColumns": {
+            "compact": 1,
+            "wide": 4
+          }
+        },
+        "contract-workbench.region.evidence": {
+          "blockSize": "content",
+          "direction": "column",
+          "gap": "small",
+          "scrollOwner": false
+        },
+        "contract-workbench.region.filters": {
+          "direction": "grid",
+          "gap": "small",
+          "responsiveColumns": {
+            "compact": 1,
+            "wide": 2
+          }
+        },
+        "contract-workbench.region.shell": {
+          "direction": "column",
+          "gap": "medium",
+          "maxInlineSize": 1120,
+          "minInlineSize": 320,
+          "padding": "large"
+        },
+        "contract-workbench.region.summary": {
+          "direction": "row",
+          "gap": "small",
+          "wrap": true
+        }
+      },
+      "responsiveModes": [
+        "compact",
+        "wide"
+      ],
+      "schema": "mcel.layout-grammar.v1",
+      "surfaceId": "contract-workbench.surface.primary"
+    },
+    "multiInstance": {
+      "isolation": [
+        "canonical-state",
+        "local-state",
+        "provisional-state",
+        "operation-ledger",
+        "receipts",
+        "dom-roots"
+      ],
+      "minimumInstances": 2,
+      "required": true
+    },
+    "observations": [
+      {
+        "compareToLatestReceiptPath": "",
+        "compareToOperationReceipt": false,
+        "compareToProvisionalStatePath": "",
+        "compareToStatePredicate": null,
+        "expect": {
+          "$undefined": true
+        },
+        "fields": {},
+        "id": "contract-workbench.observe.total",
+        "keyPath": "",
+        "kind": "observation",
+        "minimumInstances": 0,
+        "nodeId": "contract-workbench.total-quantity",
+        "normalization": "string",
+        "observationKind": "property",
+        "property": "textContent",
+        "requireIsolated": [],
+        "requireItemControls": [],
+        "requireOrderMatch": false,
+        "source": "browser-dom",
+        "statePath": "totalQuantity"
+      },
+      {
+        "compareToLatestReceiptPath": "message",
+        "compareToOperationReceipt": false,
+        "compareToProvisionalStatePath": "",
+        "compareToStatePredicate": null,
+        "expect": {
+          "$undefined": true
+        },
+        "fields": {},
+        "id": "contract-workbench.observe.validation",
+        "keyPath": "",
+        "kind": "observation",
+        "minimumInstances": 0,
+        "nodeId": "contract-workbench.validation",
+        "normalization": "",
+        "observationKind": "conditional",
+        "property": "",
+        "requireIsolated": [],
+        "requireItemControls": [],
+        "requireOrderMatch": false,
+        "source": "browser-dom",
+        "statePath": ""
+      },
+      {
+        "compareToLatestReceiptPath": "",
+        "compareToOperationReceipt": false,
+        "compareToProvisionalStatePath": "",
+        "compareToStatePredicate": {
+          "path": "visibleContracts",
+          "predicate": "empty"
+        },
+        "expect": {
+          "$undefined": true
+        },
+        "fields": {},
+        "id": "contract-workbench.observe.empty",
+        "keyPath": "",
+        "kind": "observation",
+        "minimumInstances": 0,
+        "nodeId": "contract-workbench.empty-state",
+        "normalization": "",
+        "observationKind": "conditional",
+        "property": "",
+        "requireIsolated": [],
+        "requireItemControls": [],
+        "requireOrderMatch": false,
+        "source": "browser-dom",
+        "statePath": ""
+      },
+      {
+        "compareToLatestReceiptPath": "",
+        "compareToOperationReceipt": false,
+        "compareToProvisionalStatePath": "",
+        "compareToStatePredicate": null,
+        "expect": {
+          "$undefined": true
+        },
+        "fields": {
+          "category": "category",
+          "name": "name",
+          "quantity": "quantity",
+          "quoteAmount": "quoteAmount",
+          "quoteStatus": "quoteStatus"
+        },
+        "id": "contract-workbench.observe.items",
+        "keyPath": "id",
+        "kind": "observation",
+        "minimumInstances": 0,
+        "nodeId": "contract-workbench.items",
+        "normalization": "",
+        "observationKind": "collection",
+        "property": "",
+        "requireIsolated": [],
+        "requireItemControls": [
+          "update-quantity",
+          "remove-contract",
+          "request-quote",
+          "cancel-quote"
+        ],
+        "requireOrderMatch": true,
+        "source": "browser-dom",
+        "statePath": "visibleContracts"
+      },
+      {
+        "compareToLatestReceiptPath": "",
+        "compareToOperationReceipt": false,
+        "compareToProvisionalStatePath": "quoteProgress",
+        "compareToStatePredicate": null,
+        "expect": {
+          "$undefined": true
+        },
+        "fields": {},
+        "id": "contract-workbench.observe.progress",
+        "keyPath": "",
+        "kind": "observation",
+        "minimumInstances": 0,
+        "nodeId": "contract-workbench.items",
+        "normalization": "",
+        "observationKind": "provisional",
+        "property": "",
+        "requireIsolated": [],
+        "requireItemControls": [],
+        "requireOrderMatch": false,
+        "source": "browser-dom",
+        "statePath": ""
+      },
+      {
+        "compareToLatestReceiptPath": "",
+        "compareToOperationReceipt": true,
+        "compareToProvisionalStatePath": "",
+        "compareToStatePredicate": null,
+        "expect": {
+          "$undefined": true
+        },
+        "fields": {},
+        "id": "contract-workbench.observe.receipt",
+        "keyPath": "",
+        "kind": "observation",
+        "minimumInstances": 0,
+        "nodeId": "contract-workbench.latest-receipt",
+        "normalization": "",
+        "observationKind": "receipt",
+        "property": "",
+        "requireIsolated": [],
+        "requireItemControls": [],
+        "requireOrderMatch": false,
+        "source": "browser-dom",
+        "statePath": ""
+      },
+      {
+        "compareToLatestReceiptPath": "",
+        "compareToOperationReceipt": false,
+        "compareToProvisionalStatePath": "",
+        "compareToStatePredicate": null,
+        "expect": {
+          "isolatedReceipts": true,
+          "isolatedState": true
+        },
+        "fields": {},
+        "id": "contract-workbench.observe.multi-instance",
+        "keyPath": "",
+        "kind": "observation",
+        "minimumInstances": 2,
+        "nodeId": "",
+        "normalization": "",
+        "observationKind": "multi-instance",
+        "property": "",
+        "requireIsolated": [
+          "state",
+          "local-state",
+          "provisional-state",
+          "operation-ledger",
+          "receipts",
+          "roots"
+        ],
+        "requireItemControls": [],
+        "requireOrderMatch": false,
+        "source": "browser-dom",
+        "statePath": ""
+      }
+    ],
+    "operations": {
+      "add-contract": {
+        "cancel": {
+          "$undefined": true
+        },
+        "cancellable": false,
+        "cancels": "",
+        "commit": {
+          "$undefined": true
+        },
+        "concurrency": "serial-per-application",
+        "ensures": {
+          "kind": "function",
+          "sha256": "sha256:fa864aa1ebcd337503cab0a7b17d63d57a53298dd2443dc3d57413d8ff7803a0"
+        },
+        "id": "add-contract",
+        "kind": "operation",
+        "operationKind": "mutation",
+        "payload": {
+          "category": {
+            "kind": "payload-source",
+            "nodeId": "contract-workbench.draft-category",
+            "normalize": "",
+            "parse": "",
+            "property": "value",
+            "sourceKind": "node-property"
+          },
+          "name": {
+            "kind": "payload-source",
+            "nodeId": "contract-workbench.draft-name",
+            "normalize": "trim",
+            "parse": "",
+            "property": "value",
+            "sourceKind": "node-property"
+          },
+          "quantity": {
+            "kind": "payload-source",
+            "nodeId": "contract-workbench.draft-quantity",
+            "normalize": "",
+            "parse": "integer",
+            "property": "value",
+            "sourceKind": "node-property"
+          }
+        },
+        "preflight": {
+          "kind": "function",
+          "sha256": "sha256:1d8590a48a7e01ccf461570d18b888957bd46d42e26865bd14bb843e1a142136"
+        },
+        "provisionalPath": "",
+        "reads": [
+          "contracts",
+          "nextContractId",
+          "revision"
+        ],
+        "reason": "",
+        "receive": {
+          "$undefined": true
+        },
+        "risk": "local-state",
+        "run": {
+          "$undefined": true
+        },
+        "transition": {
+          "kind": "function",
+          "sha256": "sha256:5515b33ba0282d66f212438b3b36dc05cf819b4cbff39dddc9e4f370aacc36b2"
+        },
+        "uses": [],
+        "writes": [
+          "contracts",
+          "nextContractId",
+          "revision"
+        ]
+      },
+      "cancel-quote": {
+        "cancel": {
+          "$undefined": true
+        },
+        "cancellable": false,
+        "cancels": "request-quote",
+        "commit": {
+          "$undefined": true
+        },
+        "concurrency": "serial-per-application",
+        "ensures": {
+          "$undefined": true
+        },
+        "id": "cancel-quote",
+        "kind": "operation",
+        "operationKind": "cancel",
+        "payload": {
+          "contractId": {
+            "kind": "payload-source",
+            "sourceKind": "item-key"
+          }
+        },
+        "preflight": {
+          "$undefined": true
+        },
+        "provisionalPath": "",
+        "reads": [
+          "quoteProgress"
+        ],
+        "reason": "Cancel the active quote operation for the selected stable item key.",
+        "receive": {
+          "$undefined": true
+        },
+        "risk": "local-state",
+        "run": {
+          "$undefined": true
+        },
+        "transition": {
+          "$undefined": true
+        },
+        "uses": [],
+        "writes": [
+          "quoteProgress"
+        ]
+      },
+      "clear-all": {
+        "cancel": {
+          "$undefined": true
+        },
+        "cancellable": false,
+        "cancels": "",
+        "commit": {
+          "$undefined": true
+        },
+        "concurrency": "serial-per-application",
+        "ensures": {
+          "kind": "function",
+          "sha256": "sha256:29a8bcb3cfaa312db7bce5c2bcd4c8df807820d4976fa039c142bb8df8bd93f1"
+        },
+        "id": "clear-all",
+        "kind": "operation",
+        "operationKind": "mutation",
+        "payload": {},
+        "preflight": {
+          "$undefined": true
+        },
+        "provisionalPath": "",
+        "reads": [
+          "contracts",
+          "revision"
+        ],
+        "reason": "",
+        "receive": {
+          "$undefined": true
+        },
+        "risk": "local-state",
+        "run": {
+          "$undefined": true
+        },
+        "transition": {
+          "kind": "function",
+          "sha256": "sha256:52ab650d16a6e18d7feb7bcc8a39c856edae172ac20da79032f4506e8f7073ce"
+        },
+        "uses": [],
+        "writes": [
+          "contracts",
+          "revision"
+        ]
+      },
+      "direct-set": {
+        "cancel": {
+          "$undefined": true
+        },
+        "cancellable": false,
+        "cancels": "",
+        "commit": {
+          "$undefined": true
+        },
+        "concurrency": "serial-per-application",
+        "ensures": {
+          "$undefined": true
+        },
+        "id": "direct-set",
+        "kind": "operation",
+        "operationKind": "prohibited",
+        "payload": {},
+        "preflight": {
+          "$undefined": true
+        },
+        "provisionalPath": "",
+        "reads": [],
+        "reason": "Arbitrary canonical assignment bypasses declared MCEL operations.",
+        "receive": {
+          "$undefined": true
+        },
+        "risk": "prohibited",
+        "run": {
+          "$undefined": true
+        },
+        "transition": {
+          "$undefined": true
+        },
+        "uses": [],
+        "writes": []
+      },
+      "remove-contract": {
+        "cancel": {
+          "$undefined": true
+        },
+        "cancellable": false,
+        "cancels": "",
+        "commit": {
+          "$undefined": true
+        },
+        "concurrency": "serial-per-application",
+        "ensures": {
+          "kind": "function",
+          "sha256": "sha256:92d476fe56c43fb4126df437c818ecef8230ee65730cf63ad9c60e4b69802955"
+        },
+        "id": "remove-contract",
+        "kind": "operation",
+        "operationKind": "mutation",
+        "payload": {
+          "contractId": {
+            "kind": "payload-source",
+            "sourceKind": "item-key"
+          }
+        },
+        "preflight": {
+          "kind": "function",
+          "sha256": "sha256:85feb50d805ec2533576e5f005ea9c2299d2d3f3b9c71b34656fb8a3c54eb9cc"
+        },
+        "provisionalPath": "",
+        "reads": [
+          "contracts",
+          "revision"
+        ],
+        "reason": "",
+        "receive": {
+          "$undefined": true
+        },
+        "risk": "local-state",
+        "run": {
+          "$undefined": true
+        },
+        "transition": {
+          "kind": "function",
+          "sha256": "sha256:bfec93df6260f49d7f96ff304b2a6625feb5b4a34326dba93a2da5c9f33ac4af"
+        },
+        "uses": [],
+        "writes": [
+          "contracts",
+          "revision"
+        ]
+      },
+      "request-quote": {
+        "cancel": {
+          "$undefined": true
+        },
+        "cancellable": true,
+        "cancels": "",
+        "commit": {
+          "kind": "function",
+          "sha256": "sha256:6ec0e2f4ec5acdd0de7d96f592557bfacf48d9839933be32f24a2d88b29bf023"
+        },
+        "concurrency": "latest-per-item-key",
+        "ensures": {
+          "kind": "function",
+          "sha256": "sha256:3430b8f85476ede16f66f311af4fa5b33f00c1899da537eb59377785b90f906e"
+        },
+        "id": "request-quote",
+        "kind": "operation",
+        "operationKind": "async",
+        "payload": {
+          "contractId": {
+            "kind": "payload-source",
+            "sourceKind": "item-key"
+          }
+        },
+        "preflight": {
+          "$undefined": true
+        },
+        "provisionalPath": "quoteProgress",
+        "reads": [
+          "contracts",
+          "revision"
+        ],
+        "reason": "",
+        "receive": {
+          "kind": "function",
+          "sha256": "sha256:f8cacf2af43bcd02c5d033c3e4907d2b855fbd76427962f40b16bf8162885bc2"
+        },
+        "risk": "external-read-stream",
+        "run": {
+          "kind": "function",
+          "sha256": "sha256:ed8136cc67de0e928a85c2990ed44c00fec992be5240041fa781fa8bde451cc4"
+        },
+        "transition": {
+          "$undefined": true
+        },
+        "uses": [
+          "quotes"
+        ],
+        "writes": [
+          "contracts",
+          "revision"
+        ]
+      },
+      "update-quantity": {
+        "cancel": {
+          "$undefined": true
+        },
+        "cancellable": false,
+        "cancels": "",
+        "commit": {
+          "$undefined": true
+        },
+        "concurrency": "serial-per-application",
+        "ensures": {
+          "kind": "function",
+          "sha256": "sha256:e9f650fafd29ce95a4302e1876be93398b9b6471bc608e052b8259a89bade454"
+        },
+        "id": "update-quantity",
+        "kind": "operation",
+        "operationKind": "mutation",
+        "payload": {
+          "contractId": {
+            "kind": "payload-source",
+            "sourceKind": "item-key"
+          },
+          "quantity": {
+            "kind": "payload-source",
+            "normalize": "",
+            "parse": "integer",
+            "path": "quantity",
+            "property": "value",
+            "sourceKind": "item-field"
+          }
+        },
+        "preflight": {
+          "kind": "function",
+          "sha256": "sha256:6a2921c43176e8cf315348765bbc1cce6d74c1434deb39f4da265416aa368352"
+        },
+        "provisionalPath": "",
+        "reads": [
+          "contracts",
+          "revision"
+        ],
+        "reason": "",
+        "receive": {
+          "$undefined": true
+        },
+        "risk": "local-state",
+        "run": {
+          "$undefined": true
+        },
+        "transition": {
+          "kind": "function",
+          "sha256": "sha256:e474f659b088d3862584739f6bd88da8974f31bf9f56ee78da27b0dcc5ce975b"
+        },
+        "uses": [],
+        "writes": [
+          "contracts",
+          "revision"
+        ]
+      }
+    },
+    "requiredRuntimeFeatures": [
+      "capability-operation-runtime",
+      "conditional-projection",
+      "control-payload-extraction",
+      "derived-state",
+      "dynamic-browser-observation",
+      "dynamic-input-binding",
+      "dynamic-item-control-binding",
+      "dynamic-property-projection",
+      "keyed-collection-reconciliation",
+      "multi-instance-proof",
+      "operation-cancellation",
+      "operation-concurrency-policy",
+      "provisional-state",
+      "provisional-state-runtime",
+      "renderer-local-state"
+    ],
+    "schema": "mcel.application-definition.v1",
+    "state": {
+      "canSubmit": {
+        "authority": "derived",
+        "compute": {
+          "kind": "function",
+          "sha256": "sha256:bb2c7bfc95c19b9e75e4c90405d77cb84b10ffdf60b14d8a61a3c02cd45a788e"
+        },
+        "description": "",
+        "kind": "state",
+        "reads": [
+          "draftName",
+          "draftQuantity"
+        ],
+        "schema": {
+          "describe": {},
+          "kind": "schema",
+          "name": "boolean"
+        }
+      },
+      "contracts": {
+        "authority": "canonical",
+        "description": "Committed contracts in stable key order.",
+        "initial": [],
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "item": "object"
+          },
+          "kind": "schema",
+          "name": "array"
+        }
+      },
+      "draftCategory": {
+        "authority": "renderer-local",
+        "description": "",
+        "initial": "materials",
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "allowed": [
+              "materials",
+              "services",
+              "transport"
+            ]
+          },
+          "kind": "schema",
+          "name": "one-of"
+        }
+      },
+      "draftName": {
+        "authority": "renderer-local",
+        "description": "",
+        "initial": "",
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "maxLength": null,
+            "minLength": 0
+          },
+          "kind": "schema",
+          "name": "string"
+        }
+      },
+      "draftQuantity": {
+        "authority": "renderer-local",
+        "description": "",
+        "initial": "1",
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "maxLength": null,
+            "minLength": 0
+          },
+          "kind": "schema",
+          "name": "string"
+        }
+      },
+      "filterText": {
+        "authority": "renderer-local",
+        "description": "",
+        "initial": "",
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "maxLength": null,
+            "minLength": 0
+          },
+          "kind": "schema",
+          "name": "string"
+        }
+      },
+      "nextContractId": {
+        "authority": "canonical",
+        "description": "",
+        "initial": 1,
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "maximum": null,
+            "minimum": 1
+          },
+          "kind": "schema",
+          "name": "integer"
+        }
+      },
+      "quoteProgress": {
+        "authority": "provisional",
+        "description": "Per-contract external quote progress that is not canonical until reconciliation commits.",
+        "initial": {},
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "fields": []
+          },
+          "kind": "schema",
+          "name": "object"
+        }
+      },
+      "revision": {
+        "authority": "canonical",
+        "description": "",
+        "initial": 0,
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "maximum": null,
+            "minimum": 0
+          },
+          "kind": "schema",
+          "name": "integer"
+        }
+      },
+      "sortMode": {
+        "authority": "renderer-local",
+        "description": "",
+        "initial": "name",
+        "kind": "state",
+        "schema": {
+          "describe": {
+            "allowed": [
+              "name",
+              "quantity",
+              "category"
+            ]
+          },
+          "kind": "schema",
+          "name": "one-of"
+        }
+      },
+      "totalQuantity": {
+        "authority": "derived",
+        "compute": {
+          "kind": "function",
+          "sha256": "sha256:20b88bac035f651993a1d395ada6c93e75ad017143e36d534b024a1fbff22e40"
+        },
+        "description": "",
+        "kind": "state",
+        "reads": [
+          "contracts"
+        ],
+        "schema": {
+          "describe": {
+            "maximum": null,
+            "minimum": 0
+          },
+          "kind": "schema",
+          "name": "integer"
+        }
+      },
+      "visibleContracts": {
+        "authority": "derived",
+        "compute": {
+          "kind": "function",
+          "sha256": "sha256:b16798d4c7d20d130b3481aad8c249843835f1c139186840062d85d5fa965838"
+        },
+        "description": "",
+        "kind": "state",
+        "reads": [
+          "contracts",
+          "filterText",
+          "sortMode"
+        ],
+        "schema": {
+          "describe": {
+            "item": "object"
+          },
+          "kind": "schema",
+          "name": "array"
+        }
+      }
+    },
+    "surface": {
+      "id": "contract-workbench.surface.primary",
+      "kind": "surface",
+      "nodes": [
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.draft-name",
+          "inputType": "text",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "draftName",
+          "nodeKind": "input",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.editor",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.draft-quantity",
+          "inputType": "number",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "draftQuantity",
+          "nodeKind": "input",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.editor",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.draft-category",
+          "inputType": "select",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "draftCategory",
+          "nodeKind": "input",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.editor",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.add-control",
+          "inputType": "",
+          "intentId": "add-contract",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "control",
+          "payload": {
+            "category": {
+              "kind": "payload-source",
+              "nodeId": "contract-workbench.draft-category",
+              "normalize": "",
+              "parse": "",
+              "property": "value",
+              "sourceKind": "node-property"
+            },
+            "name": {
+              "kind": "payload-source",
+              "nodeId": "contract-workbench.draft-name",
+              "normalize": "trim",
+              "parse": "",
+              "property": "value",
+              "sourceKind": "node-property"
+            },
+            "quantity": {
+              "kind": "payload-source",
+              "nodeId": "contract-workbench.draft-quantity",
+              "normalize": "",
+              "parse": "integer",
+              "property": "value",
+              "sourceKind": "node-property"
+            }
+          },
+          "property": "",
+          "regionId": "contract-workbench.region.editor",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {
+            "property": "textContent"
+          },
+          "id": "contract-workbench.validation",
+          "inputType": "",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "conditional",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.editor",
+          "source": {
+            "kind": "projection-source",
+            "path": "message",
+            "sourceKind": "latest-receipt"
+          },
+          "statePath": "",
+          "templateId": "contract-workbench.validation-message",
+          "transform": "",
+          "when": {
+            "predicate": "nonempty"
+          }
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.total-quantity",
+          "inputType": "",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "property",
+          "payload": {},
+          "property": "textContent",
+          "regionId": "contract-workbench.region.summary",
+          "source": null,
+          "statePath": "totalQuantity",
+          "templateId": "",
+          "transform": "string",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.visible-count",
+          "inputType": "",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "property",
+          "payload": {},
+          "property": "textContent",
+          "regionId": "contract-workbench.region.summary",
+          "source": null,
+          "statePath": "visibleContracts.length",
+          "templateId": "",
+          "transform": "string",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.filter-text",
+          "inputType": "search",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "filterText",
+          "nodeKind": "input",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.filters",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.sort-mode",
+          "inputType": "select",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "sortMode",
+          "nodeKind": "input",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.filters",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {
+            "literal": "No contracts match the current view."
+          },
+          "id": "contract-workbench.empty-state",
+          "inputType": "",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "conditional",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.collection",
+          "source": null,
+          "statePath": "visibleContracts",
+          "templateId": "contract-workbench.empty-state-template",
+          "transform": "",
+          "when": {
+            "predicate": "empty"
+          }
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.items",
+          "inputType": "",
+          "intentId": "",
+          "item": {
+            "controls": {
+              "cancel": {
+                "intentId": "cancel-quote",
+                "payload": {
+                  "contractId": {
+                    "fromItemKey": true
+                  }
+                },
+                "selector": "[data-mcel-item-intent='cancel-quote']"
+              },
+              "quote": {
+                "intentId": "request-quote",
+                "payload": {
+                  "contractId": {
+                    "fromItemKey": true
+                  }
+                },
+                "selector": "[data-mcel-item-intent='request-quote']"
+              },
+              "remove": {
+                "intentId": "remove-contract",
+                "payload": {
+                  "contractId": {
+                    "fromItemKey": true
+                  }
+                },
+                "selector": "[data-mcel-item-intent='remove-contract']"
+              },
+              "update": {
+                "intentId": "update-quantity",
+                "payload": {
+                  "contractId": {
+                    "fromItemKey": true
+                  },
+                  "quantity": {
+                    "fromItemField": "quantity",
+                    "parse": "integer",
+                    "property": "value"
+                  }
+                },
+                "selector": "[data-mcel-item-intent='update-quantity']"
+              }
+            },
+            "fields": {
+              "category": {
+                "itemPath": "category",
+                "property": "textContent",
+                "selector": "[data-mcel-item-field='category']"
+              },
+              "name": {
+                "itemPath": "name",
+                "property": "textContent",
+                "selector": "[data-mcel-item-field='name']"
+              },
+              "quantity": {
+                "itemPath": "quantity",
+                "parse": "integer",
+                "property": "value",
+                "selector": "[data-mcel-item-field='quantity']"
+              },
+              "quoteAmount": {
+                "itemPath": "quoteAmount",
+                "property": "textContent",
+                "selector": "[data-mcel-item-field='quote-amount']",
+                "transform": "currency-integer"
+              },
+              "quoteStatus": {
+                "itemPath": "quoteStatus",
+                "property": "textContent",
+                "selector": "[data-mcel-item-field='quote-status']"
+              }
+            }
+          },
+          "keyPath": "id",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "collection",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.collection",
+          "source": null,
+          "statePath": "visibleContracts",
+          "templateId": "contract-workbench.item",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.clear-control",
+          "inputType": "",
+          "intentId": "clear-all",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "control",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.collection",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        },
+        {
+          "accessibility": {},
+          "content": {},
+          "id": "contract-workbench.latest-receipt",
+          "inputType": "",
+          "intentId": "",
+          "item": {},
+          "keyPath": "",
+          "kind": "surface-node",
+          "localPath": "",
+          "nodeKind": "operation-evidence",
+          "payload": {},
+          "property": "",
+          "regionId": "contract-workbench.region.evidence",
+          "source": null,
+          "statePath": "",
+          "templateId": "",
+          "transform": "",
+          "when": {}
+        }
+      ],
+      "regions": [
+        {
+          "id": "contract-workbench.region.shell",
+          "role": "application"
+        },
+        {
+          "id": "contract-workbench.region.editor",
+          "role": "form"
+        },
+        {
+          "id": "contract-workbench.region.summary",
+          "role": "status"
+        },
+        {
+          "id": "contract-workbench.region.filters",
+          "role": "search"
+        },
+        {
+          "id": "contract-workbench.region.collection",
+          "role": "list"
+        },
+        {
+          "id": "contract-workbench.region.evidence",
+          "role": "status"
+        }
+      ],
+      "root": "#contract-workbench-app"
+    },
+    "title": "Contract Operations Workbench"
+  },
+  "definitionFingerprint": "sha256:5a31101dfe05f5349f72fb55fdb45592f069b9e8390b849cb7564e4d83e29554",
+  "normalizer": "mcel-application-definition-normalizer-v1",
+  "schema": "mcel.application-definition.normalized.v1",
+  "source": "mcel_apps/contract-workbench/application.js",
+  "sourceSha256": "e76fe9eba0262914b8307797b28b893b56bdbec03ee795e9d57583fbb1672128"
+}

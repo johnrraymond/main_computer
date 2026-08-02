@@ -53,7 +53,9 @@ def test_application_definition_exercises_the_required_operation_shapes() -> Non
         "prohibited": 1,
     }
     assert payload["capabilityCount"] == 1
-    assert payload["acceptanceCount"] == 9
+    assert payload["invariantCount"] == 4
+    assert payload["acceptanceCount"] == 11
+    assert payload["observationCount"] == 7
 
 
 def test_sync_transition_semantics_are_already_defined() -> None:

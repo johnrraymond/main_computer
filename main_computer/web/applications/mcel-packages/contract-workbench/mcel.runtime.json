@@ -3,7 +3,6 @@
   "conformance": {
     "currentMode": "forward-specification",
     "missingBridges": [
-      "application-definition-normalization",
       "capability-operation-runtime",
       "conditional-projection",
       "control-payload-extraction",
@@ -51,7 +50,7 @@
   },
   "projection": {
     "fileCount": 10,
-    "fingerprint": "sha256:d9937ef8a7d77713095b281a0364317dd81bc916ceea19ac335b9a3c1cd00a39",
+    "fingerprint": "sha256:6bb2db5f059812a76a8ef801ecaabeee239a0defd1c9f7df524a2c1960d93e17",
     "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1"
   },
   "runtime": {
@@ -61,9 +60,9 @@
   },
   "schema": "mcel.application-runtime-projection.v1",
   "source": {
-    "catalogFingerprint": "sha256:f481c04ca937a347aa4a22d888df175a739e960c381acdb2b8bc98a2cccea990",
+    "catalogFingerprint": "sha256:8fb6ca718bfcab42f1f8c7fb79d344fadef9f6865a84c4fecc070b1b05453e80",
     "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
-    "packageFingerprint": "sha256:526c171eeeac3769579d70e099559685d9cfd989c4dbb5e6b09ef955e6bbcd91",
+    "packageFingerprint": "sha256:2ce2d25c5fd116192b639a17bb6a0f5e0a829689c8768abf4d6e832847117072",
     "packageFingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
     "packageRoot": "mcel_apps/contract-workbench"
   },

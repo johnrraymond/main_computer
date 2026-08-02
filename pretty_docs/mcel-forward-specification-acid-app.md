@@ -35,7 +35,7 @@ It uses the declaration-only library:
 main_computer/web/applications/scripts/mcel-app-definition.js
 ```
 
-That library currently validates and freezes the desired application definition. It does not render dynamic nodes, run capabilities, reconcile collections, or issue semantic-runtime proof.
+That library validates and freezes the desired application definition. `tools/mcel_application_definition.py` now normalizes that source into deterministic explicit domain, intent, adapter, surface, layout, acceptance, and observation contracts plus `generated/mcel.application.normalized.json`. The generated files remain inspectable and fingerprinted, while executable operation and invariant behavior is generated from the one human-owned source. The library still does not render dynamic nodes, run capabilities, reconcile collections, or issue semantic-runtime proof.
 
 The definition declares:
 
@@ -90,7 +90,6 @@ These prove that:
 
 Runtime-dependent obligations are encoded as strict expected failures with stable codes. They include:
 
-- application-definition normalization;
 - renderer-local state;
 - provisional state and commit;
 - derived state;
@@ -113,16 +112,15 @@ An unexpected pass is treated as a test failure until the corresponding bridge i
 
 The recommended implementation sequence is:
 
-1. Normalize `application.js` into the explicit package contracts.
-2. Add renderer-local and derived state evaluation.
-3. Add dynamic input binding and payload extraction.
-4. Add safe property projection.
-5. Add conditional template projection.
-6. Add stable keyed collection reconciliation and item controls.
-7. Add provisional state and capability-backed async operations.
-8. Add cancellation and concurrency policies.
-9. Add collection, conditional, provisional, and multi-instance browser observation.
-10. Add intent-complete proof coverage and promote the app only after every obligation passes.
+1. Add renderer-local and derived state evaluation.
+2. Add dynamic input binding and payload extraction.
+3. Add safe property projection.
+4. Add conditional template projection.
+5. Add stable keyed collection reconciliation and item controls.
+6. Add provisional state and capability-backed async operations.
+7. Add cancellation and concurrency policies.
+8. Add collection, conditional, provisional, and multi-instance browser observation.
+9. Add intent-complete proof coverage and promote the app only after every obligation passes.
 
 ## Non-goals
 

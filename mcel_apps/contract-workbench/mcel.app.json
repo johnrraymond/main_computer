@@ -1,42 +1,16 @@
 {
-  "schema": "mcel.application-package.v1",
   "appId": "contract-workbench",
-  "title": "Contract Operations Workbench",
-  "template": {
-    "id": "mcel.forward-specification-acid-application",
-    "version": "0.1.0"
-  },
-  "requirements": "requirements.md",
-  "blueprint": "blueprint.json",
   "authoring": {
-    "schema": "mcel.application-definition.v1",
-    "status": "forward-specification",
     "definition": "application.js",
-    "featureMatrix": "forward-specification.json"
+    "featureMatrix": "forward-specification.json",
+    "normalizedDefinition": "generated/mcel.application.normalized.json",
+    "schema": "mcel.application-definition.v1",
+    "status": "forward-specification"
   },
-  "contracts": {
-    "domain": "contracts/domain.js",
-    "intents": "contracts/intents.js",
-    "adapter": "contracts/adapter.js",
-    "surface": "contracts/surface.js",
-    "layout": "contracts/layout.js",
-    "observation": "contracts/observation.js",
-    "acceptance": "contracts/acceptance.js"
-  },
-  "runtime": {
-    "document": "src/index.html",
-    "script": "src/app.js",
-    "style": "src/app.css"
-  },
-  "tests": {
-    "root": "tests",
-    "acceptanceBindings": "tests/mcel_acceptance_bindings.json"
-  },
+  "blueprint": "blueprint.json",
   "conformance": {
     "currentMode": "forward-specification",
-    "targetMode": "semantic-runtime-proven",
     "missingBridges": [
-      "application-definition-normalization",
       "capability-operation-runtime",
       "conditional-projection",
       "control-payload-extraction",
@@ -53,6 +27,47 @@
       "provisional-state",
       "provisional-state-runtime",
       "renderer-local-state"
-    ]
-  }
+    ],
+    "targetMode": "semantic-runtime-proven"
+  },
+  "contracts": {
+    "acceptance": "contracts/acceptance.js",
+    "adapter": "contracts/adapter.js",
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "surface": "contracts/surface.js"
+  },
+  "normalization": {
+    "definitionFingerprint": "sha256:5a31101dfe05f5349f72fb55fdb45592f069b9e8390b849cb7564e4d83e29554",
+    "generatedContracts": [
+      "domain",
+      "intents",
+      "adapter",
+      "surface",
+      "layout",
+      "acceptance",
+      "observation"
+    ],
+    "normalizer": "mcel-application-definition-normalizer-v1",
+    "schema": "mcel.application-definition-normalization.v1",
+    "sourceSha256": "e76fe9eba0262914b8307797b28b893b56bdbec03ee795e9d57583fbb1672128"
+  },
+  "requirements": "requirements.md",
+  "runtime": {
+    "document": "src/index.html",
+    "script": "src/app.js",
+    "style": "src/app.css"
+  },
+  "schema": "mcel.application-package.v1",
+  "template": {
+    "id": "mcel.forward-specification-acid-application",
+    "version": "0.1.0"
+  },
+  "tests": {
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json",
+    "root": "tests"
+  },
+  "title": "Contract Operations Workbench"
 }

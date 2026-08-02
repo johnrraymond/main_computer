@@ -45,5 +45,5 @@ def test_feature_matrix_matches_manifest_and_application_inventory() -> None:
     manifest_ids = set(manifest["conformance"]["missingBridges"])
     assert matrix_ids == manifest_ids
     assert inspected <= matrix_ids
-    assert matrix_ids - inspected == {"application-definition-normalization", "intent-complete-proof"}
+    assert matrix_ids - inspected == {"intent-complete-proof"}
     assert len({entry["code"] for entry in matrix["features"]}) == len(matrix["features"])

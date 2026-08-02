@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -141,6 +142,20 @@ from tools.mother.common.deployment_validator_quorum_recovery import (
     verify_validator_quorum_recovery_release,
     write_validator_quorum_recovery_release,
 )
+from tools.mother.common.deployment_post_admission_steady_state import (
+    MotherDeploymentPostAdmissionSteadyStateError,
+    build_post_admission_steady_state_release,
+    build_post_admission_steady_state_transaction,
+    execute_post_admission_steady_state_release,
+    inspect_post_admission_steady_state_release,
+    reconcile_post_admission_steady_state,
+    verify_post_admission_steady_state_evidence,
+    verify_post_admission_steady_state_reconciliation,
+    verify_post_admission_steady_state_release,
+    verify_post_admission_steady_state_transaction,
+    write_post_admission_steady_state_release,
+    write_post_admission_steady_state_transaction,
+)
 from tools.mother.common.deployment_standby import (
     MotherDeploymentStandbyError,
     run_deployment_standby_verification,
@@ -177,6 +192,41 @@ def _selected_nodes(raw_values: list[str]) -> tuple[str, ...]:
     for raw in raw_values:
         selected.extend(item.strip() for item in raw.split(",") if item.strip())
     return tuple(selected)
+
+
+def _compact_post_admission_artifact(value: Any) -> Any:
+    """Remove duplicated heavy payloads from CLI output after durable persistence."""
+    if isinstance(value, dict):
+        return {
+            key: _compact_post_admission_artifact(item)
+            for key, item in value.items()
+            if key not in {"canonical_text", "canonical_request_body"}
+        }
+    if isinstance(value, list):
+        return [_compact_post_admission_artifact(item) for item in value]
+    return value
+
+
+def _compact_post_admission_execution(result: dict[str, Any]) -> dict[str, Any]:
+    """Return the operational verdict while leaving full receipts in evidence on disk."""
+    keys = (
+        "kind",
+        "started_at",
+        "completed_at",
+        "status",
+        "network",
+        "nodes",
+        "release",
+        "execution_claim",
+        "chain_id",
+        "genesis_sha256",
+        "validator_set",
+        "guardian_refresh_gate",
+        "failure",
+        "summary",
+        "evidence",
+    )
+    return {key: result[key] for key in keys if key in result}
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
@@ -790,6 +840,112 @@ def _parser() -> argparse.ArgumentParser:
     _common(verify_quorum_evidence)
     verify_quorum_evidence.add_argument("--evidence", required=True)
     verify_quorum_evidence.add_argument("--max-age-seconds", type=int, default=300)
+
+    stage_steady = subparsers.add_parser(
+        "stage-post-admission-steady-state",
+        help="compile exact A/C steady-state Compose documents from passing quorum reconciliation",
+        allow_abbrev=False,
+    )
+    _common(stage_steady)
+    stage_steady.add_argument("--reconciliation", required=True)
+    stage_steady.add_argument("--max-age-seconds", type=int, default=86400)
+    stage_steady.add_argument("--created-at")
+    stage_steady.add_argument("--write-transaction", action="store_true")
+    stage_steady.add_argument(
+        "--full-output",
+        action="store_true",
+        help="print embedded Compose and request bodies even after writing the transaction",
+    )
+
+    verify_steady_transaction = subparsers.add_parser(
+        "verify-post-admission-steady-state-transaction",
+        help="verify the offline post-admission steady-state cleanup transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_steady_transaction)
+    verify_steady_transaction.add_argument("--transaction", required=True)
+    verify_steady_transaction.add_argument("--max-age-seconds", type=int, default=86400)
+
+    release_steady = subparsers.add_parser(
+        "release-post-admission-steady-state",
+        help="authorize one exact C-then-A steady-state cleanup for a short window",
+        allow_abbrev=False,
+    )
+    _common(release_steady)
+    release_steady.add_argument("--transaction", required=True)
+    release_steady.add_argument(
+        "--acknowledge-post-admission-steady-state-transaction-sha256",
+        required=True,
+    )
+    release_steady.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_steady.add_argument("--expires-in-seconds", type=int, default=300)
+    release_steady.add_argument("--created-at")
+    release_steady.add_argument("--write-release", action="store_true")
+    release_steady.add_argument(
+        "--full-output",
+        action="store_true",
+        help="print embedded Compose and request bodies even after writing the release",
+    )
+
+    verify_steady_release = subparsers.add_parser(
+        "verify-post-admission-steady-state-release",
+        help="verify an expiring post-admission steady-state cleanup release",
+        allow_abbrev=False,
+    )
+    _common(verify_steady_release)
+    verify_steady_release.add_argument("--release", required=True)
+    verify_steady_release.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_steady_release.add_argument("--max-age-seconds", type=int, default=300)
+
+    apply_steady = subparsers.add_parser(
+        "apply-post-admission-steady-state",
+        help="inspect or execute the exact C-health-gate-then-A steady-state cleanup",
+        allow_abbrev=False,
+    )
+    _common(apply_steady)
+    apply_steady.add_argument("--release", required=True)
+    apply_steady.add_argument("--acknowledge-release-sha256", required=True)
+    apply_steady.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_steady.add_argument("--max-age-seconds", type=int, default=300)
+    apply_steady.add_argument("--timeout", type=float, default=30.0)
+    apply_steady.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_steady.add_argument("--max-wait-seconds", type=float, default=360.0)
+    apply_steady.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_steady.add_argument("--execute", action="store_true")
+    apply_steady.add_argument(
+        "--full-output",
+        action="store_true",
+        help="print complete execution receipts instead of the persisted-evidence summary",
+    )
+
+    verify_steady_evidence = subparsers.add_parser(
+        "verify-post-admission-steady-state-evidence",
+        help="verify persisted post-admission steady-state cleanup evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_steady_evidence)
+    verify_steady_evidence.add_argument("--evidence", required=True)
+    verify_steady_evidence.add_argument("--max-age-seconds", type=int, default=300)
+
+    reconcile_steady = subparsers.add_parser(
+        "reconcile-post-admission-steady-state",
+        help="read-only reconcile the exact C-steady/A-recovered state after a consumed cleanup release",
+        allow_abbrev=False,
+    )
+    _common(reconcile_steady)
+    reconcile_steady.add_argument("--evidence", required=True)
+    reconcile_steady.add_argument("--max-age-seconds", type=int, default=86400)
+    reconcile_steady.add_argument("--timeout", type=float, default=30.0)
+    reconcile_steady.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+
+    verify_steady_reconciliation = subparsers.add_parser(
+        "verify-post-admission-steady-state-reconciliation",
+        help="verify canonical read-only C-steady/A-recovered reconciliation evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_steady_reconciliation)
+    verify_steady_reconciliation.add_argument("--reconciliation", required=True)
+    verify_steady_reconciliation.add_argument("--max-age-seconds", type=int, default=300)
 
     return parser
 
@@ -1643,6 +1799,159 @@ def _cmd_verify_validator_quorum_recovery_evidence(args: argparse.Namespace, pri
     return 0
 
 
+def _cmd_stage_post_admission_steady_state(args: argparse.Namespace, private_state) -> int:
+    transaction = build_post_admission_steady_state_transaction(
+        _paths(args),
+        private_state,
+        Path(args.reconciliation),
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = write_post_admission_steady_state_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("post-admission-steady-state-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    output = (
+        transaction
+        if args.full_output or not args.write_transaction
+        else _compact_post_admission_artifact(transaction)
+    )
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_post_admission_steady_state_transaction(args: argparse.Namespace, private_state) -> int:
+    result = verify_post_admission_steady_state_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_post_admission_steady_state(args: argparse.Namespace, private_state) -> int:
+    release = build_post_admission_steady_state_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=args.acknowledge_post_admission_steady_state_transaction_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_post_admission_steady_state_release(
+            _paths(args),
+            release,
+            operation=_operation("post-admission-steady-state-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    output = (
+        release
+        if args.full_output or not args.write_release
+        else _compact_post_admission_artifact(release)
+    )
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_post_admission_steady_state_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_post_admission_steady_state_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_post_admission_steady_state(args: argparse.Namespace, private_state) -> int:
+    common = dict(
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    if not args.execute:
+        result = inspect_post_admission_steady_state_release(
+            _paths(args), private_state, Path(args.release), **common
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_post_admission_steady_state_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("apply-post-admission-steady-state", args.network, args.operation_id),
+    )
+    output = result if args.full_output else _compact_post_admission_execution(result)
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_post_admission_steady_state_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_post_admission_steady_state_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_reconcile_post_admission_steady_state(args: argparse.Namespace, private_state) -> int:
+    result = reconcile_post_admission_steady_state(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation(
+            "reconcile-post-admission-steady-state",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_post_admission_steady_state_reconciliation(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_post_admission_steady_state_reconciliation(
+        _paths(args),
+        private_state,
+        Path(args.reconciliation),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -1743,6 +2052,22 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_diagnose_validator_quorum_runtime(args, private_state)
         if args.command == "verify-validator-quorum-recovery-evidence":
             return _cmd_verify_validator_quorum_recovery_evidence(args, private_state)
+        if args.command == "stage-post-admission-steady-state":
+            return _cmd_stage_post_admission_steady_state(args, private_state)
+        if args.command == "verify-post-admission-steady-state-transaction":
+            return _cmd_verify_post_admission_steady_state_transaction(args, private_state)
+        if args.command == "release-post-admission-steady-state":
+            return _cmd_release_post_admission_steady_state(args, private_state)
+        if args.command == "verify-post-admission-steady-state-release":
+            return _cmd_verify_post_admission_steady_state_release(args, private_state)
+        if args.command == "apply-post-admission-steady-state":
+            return _cmd_apply_post_admission_steady_state(args, private_state)
+        if args.command == "verify-post-admission-steady-state-evidence":
+            return _cmd_verify_post_admission_steady_state_evidence(args, private_state)
+        if args.command == "reconcile-post-admission-steady-state":
+            return _cmd_reconcile_post_admission_steady_state(args, private_state)
+        if args.command == "verify-post-admission-steady-state-reconciliation":
+            return _cmd_verify_post_admission_steady_state_reconciliation(args, private_state)
         raise RuntimeError(f"unsupported command: {args.command}")
     except (
         CoolifyObservationError,
@@ -1766,6 +2091,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentValidatorAdmissionReleaseError,
         MotherDeploymentValidatorAdmissionExecutorError,
         MotherDeploymentValidatorQuorumRecoveryError,
+        MotherDeploymentPostAdmissionSteadyStateError,
         MotherDeploymentStandbyError,
         MotherDeploymentTransactionError,
     ) as exc:

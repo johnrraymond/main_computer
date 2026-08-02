@@ -3,22 +3,101 @@
   "appId": "contract-workbench",
   "policy": "The application is the desired interface. MCEL must advance until this unchanged definition can be proven.",
   "features": [
-    {"id": "application-definition-normalization", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_APPLICATION_DEFINITION_NORMALIZATION_UNAVAILABLE"},
-    {"id": "renderer-local-state", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_RENDERER_LOCAL_STATE_UNSUPPORTED"},
-    {"id": "provisional-state", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_PROVISIONAL_STATE_UNSUPPORTED"},
-    {"id": "derived-state", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_DERIVED_STATE_UNSUPPORTED"},
-    {"id": "dynamic-input-binding", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_DYNAMIC_INPUT_BINDING_UNSUPPORTED"},
-    {"id": "control-payload-extraction", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_CONTROL_PAYLOAD_BINDING_UNSUPPORTED"},
-    {"id": "dynamic-property-projection", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_DYNAMIC_PROPERTY_UNSUPPORTED"},
-    {"id": "conditional-projection", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_CONDITIONAL_NODE_UNSUPPORTED"},
-    {"id": "keyed-collection-reconciliation", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_COLLECTION_NODE_UNSUPPORTED"},
-    {"id": "dynamic-item-control-binding", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_DYNAMIC_ITEM_CONTROL_UNSUPPORTED"},
-    {"id": "capability-operation-runtime", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"},
-    {"id": "provisional-state-runtime", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_PROVISIONAL_COMMIT_RUNTIME_UNSUPPORTED"},
-    {"id": "operation-cancellation", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_OPERATION_CANCELLATION_UNSUPPORTED"},
-    {"id": "operation-concurrency-policy", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_OPERATION_CONCURRENCY_POLICY_UNSUPPORTED"},
-    {"id": "dynamic-browser-observation", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_DYNAMIC_BROWSER_OBSERVATION_UNSUPPORTED"},
-    {"id": "intent-complete-proof", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_INTENT_COMPLETE_PROOF_UNSUPPORTED"},
-    {"id": "multi-instance-proof", "status": "specified", "expectedCurrentResult": "blocked", "code": "MCEL_MULTI_INSTANCE_PROOF_UNSUPPORTED"}
+    {
+      "id": "renderer-local-state",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_RENDERER_LOCAL_STATE_UNSUPPORTED"
+    },
+    {
+      "id": "provisional-state",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_PROVISIONAL_STATE_UNSUPPORTED"
+    },
+    {
+      "id": "derived-state",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_DERIVED_STATE_UNSUPPORTED"
+    },
+    {
+      "id": "dynamic-input-binding",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_DYNAMIC_INPUT_BINDING_UNSUPPORTED"
+    },
+    {
+      "id": "control-payload-extraction",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_CONTROL_PAYLOAD_BINDING_UNSUPPORTED"
+    },
+    {
+      "id": "dynamic-property-projection",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_DYNAMIC_PROPERTY_UNSUPPORTED"
+    },
+    {
+      "id": "conditional-projection",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_CONDITIONAL_NODE_UNSUPPORTED"
+    },
+    {
+      "id": "keyed-collection-reconciliation",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_COLLECTION_NODE_UNSUPPORTED"
+    },
+    {
+      "id": "dynamic-item-control-binding",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_DYNAMIC_ITEM_CONTROL_UNSUPPORTED"
+    },
+    {
+      "id": "capability-operation-runtime",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"
+    },
+    {
+      "id": "provisional-state-runtime",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_PROVISIONAL_COMMIT_RUNTIME_UNSUPPORTED"
+    },
+    {
+      "id": "operation-cancellation",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_OPERATION_CANCELLATION_UNSUPPORTED"
+    },
+    {
+      "id": "operation-concurrency-policy",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_OPERATION_CONCURRENCY_POLICY_UNSUPPORTED"
+    },
+    {
+      "id": "dynamic-browser-observation",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_DYNAMIC_BROWSER_OBSERVATION_UNSUPPORTED"
+    },
+    {
+      "id": "intent-complete-proof",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_INTENT_COMPLETE_PROOF_UNSUPPORTED"
+    },
+    {
+      "id": "multi-instance-proof",
+      "status": "specified",
+      "expectedCurrentResult": "blocked",
+      "code": "MCEL_MULTI_INSTANCE_PROOF_UNSUPPORTED"
+    }
   ]
 }

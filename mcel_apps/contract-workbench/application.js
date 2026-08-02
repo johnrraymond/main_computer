@@ -100,6 +100,39 @@ const ContractWorkbenchApplication = mcel.defineApplication({
     quotes: QuoteService
   },
 
+  invariants: [
+    mcel.invariant("contract-workbench.invariant.contracts-array",
+      (state) => Array.isArray(state?.contracts),
+      {reads: ["contracts"]}
+    ),
+    mcel.invariant("contract-workbench.invariant.contract-keys-unique",
+      (state) => {
+        const ids = (state?.contracts || []).map((contract) => contract.id);
+        return ids.length === new Set(ids).size;
+      },
+      {reads: ["contracts"]}
+    ),
+    mcel.invariant("contract-workbench.invariant.contract-values-valid",
+      (state) => (state?.contracts || []).every((contract) => (
+        typeof contract?.id === "string"
+        && contract.id.length > 0
+        && typeof contract.name === "string"
+        && contract.name.length > 0
+        && ["materials", "services", "transport"].includes(contract.category)
+        && Number.isInteger(contract.quantity)
+        && contract.quantity > 0
+        && ["idle", "running", "quoted", "partial", "failed", "cancelled"].includes(contract.quoteStatus)
+        && Number.isInteger(contract.quoteAmount)
+        && contract.quoteAmount >= 0
+      )),
+      {reads: ["contracts"]}
+    ),
+    mcel.invariant("contract-workbench.invariant.revision-nonnegative",
+      (state) => Number.isInteger(state?.revision) && state.revision >= 0,
+      {reads: ["revision"]}
+    )
+  ],
+
   operations: {
     "add-contract": mcel.operation.mutation({
       payload: {
@@ -323,10 +356,29 @@ const ContractWorkbenchApplication = mcel.defineApplication({
             quoteAmount: {selector: "[data-mcel-item-field='quote-amount']", itemPath: "quoteAmount", property: "textContent", transform: "currency-integer"}
           },
           controls: {
-            update: {selector: "[data-mcel-item-intent='update-quantity']", intentId: "update-quantity"},
-            remove: {selector: "[data-mcel-item-intent='remove-contract']", intentId: "remove-contract"},
-            quote: {selector: "[data-mcel-item-intent='request-quote']", intentId: "request-quote"},
-            cancel: {selector: "[data-mcel-item-intent='cancel-quote']", intentId: "cancel-quote"}
+            update: {
+              selector: "[data-mcel-item-intent='update-quantity']",
+              intentId: "update-quantity",
+              payload: {
+                contractId: {fromItemKey: true},
+                quantity: {fromItemField: "quantity", property: "value", parse: "integer"}
+              }
+            },
+            remove: {
+              selector: "[data-mcel-item-intent='remove-contract']",
+              intentId: "remove-contract",
+              payload: {contractId: {fromItemKey: true}}
+            },
+            quote: {
+              selector: "[data-mcel-item-intent='request-quote']",
+              intentId: "request-quote",
+              payload: {contractId: {fromItemKey: true}}
+            },
+            cancel: {
+              selector: "[data-mcel-item-intent='cancel-quote']",
+              intentId: "cancel-quote",
+              payload: {contractId: {fromItemKey: true}}
+            }
           }
         }
       }),
@@ -337,38 +389,104 @@ const ContractWorkbenchApplication = mcel.defineApplication({
 
   layout: {
     schema: "mcel.layout-grammar.v1",
+    surfaceId: "contract-workbench.surface.primary",
     responsiveModes: ["compact", "wide"],
-    requiredControlSize: {inline: 44, block: 44},
-    collectionOwnsVerticalGrowth: true,
-    evidenceFollowsCollection: true
+    regions: {
+      "contract-workbench.region.shell": {direction: "column", gap: "medium", padding: "large", minInlineSize: 320, maxInlineSize: 1120},
+      "contract-workbench.region.editor": {direction: "grid", responsiveColumns: {compact: 1, wide: 4}, gap: "small"},
+      "contract-workbench.region.summary": {direction: "row", wrap: true, gap: "small"},
+      "contract-workbench.region.filters": {direction: "grid", responsiveColumns: {compact: 1, wide: 2}, gap: "small"},
+      "contract-workbench.region.collection": {direction: "column", gap: "small", blockSize: "content", scrollOwner: false},
+      "contract-workbench.region.evidence": {direction: "column", gap: "small", blockSize: "content", scrollOwner: false}
+    },
+    constraints: [
+      {id: "contract-workbench.layout.editor-before-summary", relation: "before", first: "contract-workbench.region.editor", second: "contract-workbench.region.summary"},
+      {id: "contract-workbench.layout.summary-before-filters", relation: "before", first: "contract-workbench.region.summary", second: "contract-workbench.region.filters"},
+      {id: "contract-workbench.layout.filters-before-collection", relation: "before", first: "contract-workbench.region.filters", second: "contract-workbench.region.collection"},
+      {id: "contract-workbench.layout.collection-before-evidence", relation: "before", first: "contract-workbench.region.collection", second: "contract-workbench.region.evidence"},
+      {id: "contract-workbench.layout.controls-usable", relation: "minimum-control-size", target: "contract-workbench.region.shell", inline: 44, block: 44},
+      {id: "contract-workbench.layout.collection-key-order", relation: "canonical-order", target: "contract-workbench.items"},
+      {id: "contract-workbench.layout.no-page-horizontal-overflow", relation: "no-horizontal-overflow", target: "contract-workbench.region.shell"}
+    ]
   },
 
   acceptance: [
-    mcel.acceptance("contract-workbench.acceptance.add", {operationId: "add-contract", expect: {status: "committed", itemCountDelta: 1}}),
-    mcel.acceptance("contract-workbench.acceptance.validation", {operationId: "add-contract", expect: {status: "refused", code: "CONTRACT_QUANTITY_INVALID"}}),
-    mcel.acceptance("contract-workbench.acceptance.remove", {operationId: "remove-contract", expect: {status: "committed", keyedItemAbsent: true}}),
-    mcel.acceptance("contract-workbench.acceptance.update", {operationId: "update-quantity", expect: {status: "committed", itemFieldMatches: true}}),
-    mcel.acceptance("contract-workbench.acceptance.quote", {operationId: "request-quote", expect: {status: "committed", provisionalBeforeCanonical: true}}),
-    mcel.acceptance("contract-workbench.acceptance.cancel", {operationId: "cancel-quote", expect: {status: "cancelled", canonicalStateUnchanged: true}}),
-    mcel.acceptance("contract-workbench.acceptance.stale", {operationId: "add-contract", expect: {code: "REVISION_STALE", canonicalStateUnchanged: true}}),
-    mcel.acceptance("contract-workbench.acceptance.duplicate", {operationId: "add-contract", expect: {code: "OPERATION_DUPLICATE", canonicalStateUnchanged: true}}),
-    mcel.acceptance("contract-workbench.acceptance.prohibited", {operationId: "direct-set", expect: {code: "INTENT_PROHIBITED", canonicalStateUnchanged: true}})
+    mcel.acceptance("contract-workbench.acceptance.add", {
+      operationId: "add-contract",
+      when: {intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}},
+      expect: {operationStatus: "committed", itemCountDelta: 1, stableKey: "contract-1"}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.validation", {
+      operationId: "add-contract",
+      when: {intentId: "add-contract", payload: {name: "", quantity: 0, category: "materials"}},
+      expect: {operationStatus: "refused", code: "CONTRACT_NAME_REQUIRED", conditionalValidationVisible: true, canonicalStateUnchanged: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.remove", {
+      operationId: "remove-contract",
+      when: {intentId: "remove-contract", itemKey: "contract-1"},
+      expect: {operationStatus: "committed", keyedItemAbsent: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.update", {
+      operationId: "update-quantity",
+      when: {intentId: "update-quantity", itemKey: "contract-1", itemField: {quantity: 18}},
+      expect: {operationStatus: "committed", visibleQuantity: "18"}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.filter-sort", {
+      when: {localState: {filterText: "steel", sortMode: "quantity"}},
+      expect: {canonicalStateUnchanged: true, collectionMatchesDerivedState: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.quote", {
+      operationId: "request-quote",
+      when: {intentId: "request-quote", itemKey: "contract-1"},
+      expect: {provisionalEventsVisibleBeforeCommit: true, oneCanonicalCommit: true, operationStatus: "committed"}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.cancel", {
+      operationId: "cancel-quote",
+      when: {intentId: "cancel-quote", itemKey: "contract-1"},
+      expect: {operationStatus: "cancelled", canonicalStateUnchanged: true, provisionalStateClosed: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.stale", {
+      operationId: "add-contract",
+      when: {intentId: "add-contract", expectedRevision: 0, actualRevision: 1},
+      expect: {code: "REVISION_STALE", canonicalStateUnchanged: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.duplicate", {
+      operationId: "add-contract",
+      when: {intentId: "add-contract", reuseOperationId: true},
+      expect: {code: "OPERATION_DUPLICATE", canonicalStateUnchanged: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.prohibited", {
+      operationId: "direct-set",
+      when: {intentId: "direct-set"},
+      expect: {code: "INTENT_PROHIBITED", canonicalStateUnchanged: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.multi-instance", {
+      when: {mountInstances: 2, mutateInstance: 1},
+      expect: {isolatedCanonicalState: true, isolatedLocalState: true, isolatedReceipts: true}
+    })
   ],
 
   observations: [
-    mcel.observe("contract-workbench.observe.total", {kind: "property", nodeId: "contract-workbench.total-quantity", statePath: "totalQuantity", property: "textContent"}),
-    mcel.observe("contract-workbench.observe.validation", {kind: "conditional", nodeId: "contract-workbench.validation"}),
-    mcel.observe("contract-workbench.observe.empty", {kind: "conditional", nodeId: "contract-workbench.empty-state"}),
+    mcel.observe("contract-workbench.observe.total", {kind: "property", nodeId: "contract-workbench.total-quantity", statePath: "totalQuantity", property: "textContent", normalization: "string"}),
+    mcel.observe("contract-workbench.observe.validation", {kind: "conditional", nodeId: "contract-workbench.validation", compareToLatestReceiptPath: "message"}),
+    mcel.observe("contract-workbench.observe.empty", {kind: "conditional", nodeId: "contract-workbench.empty-state", compareToStatePredicate: {path: "visibleContracts", predicate: "empty"}}),
     mcel.observe("contract-workbench.observe.items", {
       kind: "collection",
       nodeId: "contract-workbench.items",
       statePath: "visibleContracts",
       keyPath: "id",
       requireOrderMatch: true,
-      fields: {name: "name", category: "category", quantity: "quantity", quoteStatus: "quoteStatus", quoteAmount: "quoteAmount"}
+      fields: {name: "name", category: "category", quantity: "quantity", quoteStatus: "quoteStatus", quoteAmount: "quoteAmount"},
+      requireItemControls: ["update-quantity", "remove-contract", "request-quote", "cancel-quote"]
     }),
-    mcel.observe("contract-workbench.observe.receipt", {kind: "receipt", nodeId: "contract-workbench.latest-receipt"}),
-    mcel.observe("contract-workbench.observe.multi-instance", {kind: "multi-instance", expect: {isolatedState: true, isolatedReceipts: true}})
+    mcel.observe("contract-workbench.observe.progress", {kind: "provisional", nodeId: "contract-workbench.items", compareToProvisionalStatePath: "quoteProgress"}),
+    mcel.observe("contract-workbench.observe.receipt", {kind: "receipt", nodeId: "contract-workbench.latest-receipt", compareToOperationReceipt: true}),
+    mcel.observe("contract-workbench.observe.multi-instance", {
+      kind: "multi-instance",
+      minimumInstances: 2,
+      requireIsolated: ["state", "local-state", "provisional-state", "operation-ledger", "receipts", "roots"],
+      expect: {isolatedState: true, isolatedReceipts: true}
+    })
   ],
 
   multiInstance: {

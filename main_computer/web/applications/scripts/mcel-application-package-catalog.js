@@ -15,7 +15,7 @@ var McelApplicationPackages = (() => {
   }
 
   const PAYLOAD = deepFreeze({
-  "catalogFingerprint": "sha256:f481c04ca937a347aa4a22d888df175a739e960c381acdb2b8bc98a2cccea990",
+  "catalogFingerprint": "sha256:8fb6ca718bfcab42f1f8c7fb79d344fadef9f6865a84c4fecc070b1b05453e80",
   "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
   "format": "mcel-application-package-browser-catalog-v1",
   "packageCount": 2,
@@ -52,7 +52,7 @@ var McelApplicationPackages = (() => {
       "runtimeProjection": {
         "documentUrl": "applications/mcel-packages/contract-counter/src/index.html",
         "fileCount": 10,
-        "fingerprint": "sha256:dd6aa8357f8fd8ac9f1bf0f055fb76e0a70ee018e4c6bec3a470e1bebe8f349e",
+        "fingerprint": "sha256:ffc9e224d7711436591203bb8e64931c3346f9a5f3c43dcb23a97e936707decd",
         "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1",
         "manifest": "main_computer/web/applications/mcel-packages/contract-counter/mcel.runtime.json",
         "manifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",
@@ -72,13 +72,13 @@ var McelApplicationPackages = (() => {
       "appId": "contract-workbench",
       "authoring": {
         "definition": "mcel_apps/contract-workbench/application.js",
-        "featureMatrix": "mcel_apps/contract-workbench/forward-specification.json"
+        "featureMatrix": "mcel_apps/contract-workbench/forward-specification.json",
+        "normalizedDefinition": "mcel_apps/contract-workbench/generated/mcel.application.normalized.json"
       },
       "blueprint": "mcel_apps/contract-workbench/blueprint.json",
       "conformance": {
         "currentMode": "forward-specification",
         "missingBridges": [
-          "application-definition-normalization",
           "capability-operation-runtime",
           "conditional-projection",
           "control-payload-extraction",
@@ -107,8 +107,8 @@ var McelApplicationPackages = (() => {
         "observation": "mcel_apps/contract-workbench/contracts/observation.js",
         "surface": "mcel_apps/contract-workbench/contracts/surface.js"
       },
-      "fileCount": 23,
-      "fingerprint": "sha256:526c171eeeac3769579d70e099559685d9cfd989c4dbb5e6b09ef955e6bbcd91",
+      "fileCount": 24,
+      "fingerprint": "sha256:2ce2d25c5fd116192b639a17bb6a0f5e0a829689c8768abf4d6e832847117072",
       "fingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
       "manifest": "mcel_apps/contract-workbench/mcel.app.json",
       "packageRoot": "mcel_apps/contract-workbench",
@@ -121,7 +121,7 @@ var McelApplicationPackages = (() => {
       "runtimeProjection": {
         "documentUrl": "applications/mcel-packages/contract-workbench/src/index.html",
         "fileCount": 10,
-        "fingerprint": "sha256:d9937ef8a7d77713095b281a0364317dd81bc916ceea19ac335b9a3c1cd00a39",
+        "fingerprint": "sha256:6bb2db5f059812a76a8ef801ecaabeee239a0defd1c9f7df524a2c1960d93e17",
         "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1",
         "manifest": "main_computer/web/applications/mcel-packages/contract-workbench/mcel.runtime.json",
         "manifestUrl": "applications/mcel-packages/contract-workbench/mcel.runtime.json",

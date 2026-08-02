@@ -1,77 +1,242 @@
-export const ContractWorkbenchSurface = Object.freeze({
-  schema: "mcel.semantic-surface-ir.v1",
-  appId: "contract-workbench",
-  surfaceId: "contract-workbench.surface.primary",
-  currentRuntimeStatus: "forward-specification",
-  regions: Object.freeze([
-    Object.freeze({id: "contract-workbench.region.shell", role: "application"}),
-    Object.freeze({id: "contract-workbench.region.editor", role: "form"}),
-    Object.freeze({id: "contract-workbench.region.summary", role: "status"}),
-    Object.freeze({id: "contract-workbench.region.filters", role: "search"}),
-    Object.freeze({id: "contract-workbench.region.collection", role: "list"}),
-    Object.freeze({id: "contract-workbench.region.evidence", role: "status"})
-  ]),
-  nodes: Object.freeze([
-    Object.freeze({id: "contract-workbench.draft-name", kind: "input", localPath: "draftName", property: "value", inputType: "text", regionId: "contract-workbench.region.editor"}),
-    Object.freeze({id: "contract-workbench.draft-quantity", kind: "input", localPath: "draftQuantity", property: "value", inputType: "number", parse: "integer", regionId: "contract-workbench.region.editor"}),
-    Object.freeze({id: "contract-workbench.draft-category", kind: "input", localPath: "draftCategory", property: "value", inputType: "select", regionId: "contract-workbench.region.editor"}),
-    Object.freeze({
-      id: "contract-workbench.add-control",
-      kind: "control",
-      intentId: "add-contract",
-      regionId: "contract-workbench.region.editor",
-      payload: Object.freeze({
-        name: Object.freeze({fromNode: "contract-workbench.draft-name", property: "value", normalize: "trim"}),
-        quantity: Object.freeze({fromNode: "contract-workbench.draft-quantity", property: "value", parse: "integer"}),
-        category: Object.freeze({fromNode: "contract-workbench.draft-category", property: "value"})
-      })
-    }),
-    Object.freeze({
-      id: "contract-workbench.validation",
-      kind: "conditional",
-      source: Object.freeze({fromLatestReceipt: "message"}),
-      templateId: "contract-workbench.validation-message",
-      when: Object.freeze({predicate: "nonempty"}),
-      content: Object.freeze({property: "textContent"}),
-      regionId: "contract-workbench.region.editor"
-    }),
-    Object.freeze({id: "contract-workbench.total-quantity", kind: "property", statePath: "totalQuantity", property: "textContent", transform: "string", regionId: "contract-workbench.region.summary"}),
-    Object.freeze({id: "contract-workbench.visible-count", kind: "property", statePath: "visibleContracts.length", property: "textContent", transform: "string", regionId: "contract-workbench.region.summary"}),
-    Object.freeze({id: "contract-workbench.filter-text", kind: "input", localPath: "filterText", property: "value", inputType: "search", regionId: "contract-workbench.region.filters"}),
-    Object.freeze({id: "contract-workbench.sort-mode", kind: "input", localPath: "sortMode", property: "value", inputType: "select", regionId: "contract-workbench.region.filters"}),
-    Object.freeze({
-      id: "contract-workbench.empty-state",
-      kind: "conditional",
-      statePath: "visibleContracts",
-      templateId: "contract-workbench.empty-state-template",
-      when: Object.freeze({predicate: "empty"}),
-      content: Object.freeze({literal: "No contracts match the current view."}),
-      regionId: "contract-workbench.region.collection"
-    }),
-    Object.freeze({
-      id: "contract-workbench.items",
-      kind: "collection",
-      statePath: "visibleContracts",
-      keyPath: "id",
-      templateId: "contract-workbench.item",
-      regionId: "contract-workbench.region.collection",
-      item: Object.freeze({
-        fields: Object.freeze({
-          name: Object.freeze({selector: "[data-mcel-item-field='name']", itemPath: "name", property: "textContent"}),
-          category: Object.freeze({selector: "[data-mcel-item-field='category']", itemPath: "category", property: "textContent"}),
-          quantity: Object.freeze({selector: "[data-mcel-item-field='quantity']", itemPath: "quantity", property: "value", parse: "integer"}),
-          quoteStatus: Object.freeze({selector: "[data-mcel-item-field='quote-status']", itemPath: "quoteStatus", property: "textContent"}),
-          quoteAmount: Object.freeze({selector: "[data-mcel-item-field='quote-amount']", itemPath: "quoteAmount", property: "textContent", transform: "currency-integer"})
-        }),
-        controls: Object.freeze({
-          update: Object.freeze({selector: "[data-mcel-item-intent='update-quantity']", intentId: "update-quantity", payload: Object.freeze({contractId: Object.freeze({fromItemKey: true}), quantity: Object.freeze({fromItemField: "quantity", property: "value", parse: "integer"})})}),
-          remove: Object.freeze({selector: "[data-mcel-item-intent='remove-contract']", intentId: "remove-contract", payload: Object.freeze({contractId: Object.freeze({fromItemKey: true})})}),
-          quote: Object.freeze({selector: "[data-mcel-item-intent='request-quote']", intentId: "request-quote", payload: Object.freeze({contractId: Object.freeze({fromItemKey: true})})}),
-          cancel: Object.freeze({selector: "[data-mcel-item-intent='cancel-quote']", intentId: "cancel-quote", payload: Object.freeze({contractId: Object.freeze({fromItemKey: true})})})
-        })
-      })
-    }),
-    Object.freeze({id: "contract-workbench.clear-control", kind: "control", intentId: "clear-all", regionId: "contract-workbench.region.collection"}),
-    Object.freeze({id: "contract-workbench.latest-receipt", kind: "operation-evidence", regionId: "contract-workbench.region.evidence"})
-  ])
+// Generated by mcel-application-definition-normalizer-v1.
+// Source authority: mcel_apps/contract-workbench/application.js
+// Definition fingerprint: sha256:5a31101dfe05f5349f72fb55fdb45592f069b9e8390b849cb7564e4d83e29554
+// Do not edit this file directly.
+
+function deepFreeze(value, seen = new Set()) {
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  Reflect.ownKeys(value).forEach((key) => deepFreeze(value[key], seen));
+  return Object.freeze(value);
+}
+
+export const ContractWorkbenchSurface = deepFreeze({
+  "appId": "contract-workbench",
+  "currentRuntimeStatus": "forward-specification",
+  "definitionFingerprint": "sha256:5a31101dfe05f5349f72fb55fdb45592f069b9e8390b849cb7564e4d83e29554",
+  "nodes": [
+    {
+      "id": "contract-workbench.draft-name",
+      "inputType": "text",
+      "kind": "input",
+      "localPath": "draftName",
+      "regionId": "contract-workbench.region.editor"
+    },
+    {
+      "id": "contract-workbench.draft-quantity",
+      "inputType": "number",
+      "kind": "input",
+      "localPath": "draftQuantity",
+      "regionId": "contract-workbench.region.editor"
+    },
+    {
+      "id": "contract-workbench.draft-category",
+      "inputType": "select",
+      "kind": "input",
+      "localPath": "draftCategory",
+      "regionId": "contract-workbench.region.editor"
+    },
+    {
+      "id": "contract-workbench.add-control",
+      "intentId": "add-contract",
+      "kind": "control",
+      "payload": {
+        "category": {
+          "fromNode": "contract-workbench.draft-category",
+          "property": "value"
+        },
+        "name": {
+          "fromNode": "contract-workbench.draft-name",
+          "normalize": "trim",
+          "property": "value"
+        },
+        "quantity": {
+          "fromNode": "contract-workbench.draft-quantity",
+          "parse": "integer",
+          "property": "value"
+        }
+      },
+      "regionId": "contract-workbench.region.editor"
+    },
+    {
+      "content": {
+        "property": "textContent"
+      },
+      "id": "contract-workbench.validation",
+      "kind": "conditional",
+      "regionId": "contract-workbench.region.editor",
+      "source": {
+        "fromLatestReceipt": "message"
+      },
+      "templateId": "contract-workbench.validation-message",
+      "when": {
+        "predicate": "nonempty"
+      }
+    },
+    {
+      "id": "contract-workbench.total-quantity",
+      "kind": "property",
+      "property": "textContent",
+      "regionId": "contract-workbench.region.summary",
+      "statePath": "totalQuantity",
+      "transform": "string"
+    },
+    {
+      "id": "contract-workbench.visible-count",
+      "kind": "property",
+      "property": "textContent",
+      "regionId": "contract-workbench.region.summary",
+      "statePath": "visibleContracts.length",
+      "transform": "string"
+    },
+    {
+      "id": "contract-workbench.filter-text",
+      "inputType": "search",
+      "kind": "input",
+      "localPath": "filterText",
+      "regionId": "contract-workbench.region.filters"
+    },
+    {
+      "id": "contract-workbench.sort-mode",
+      "inputType": "select",
+      "kind": "input",
+      "localPath": "sortMode",
+      "regionId": "contract-workbench.region.filters"
+    },
+    {
+      "content": {
+        "literal": "No contracts match the current view."
+      },
+      "id": "contract-workbench.empty-state",
+      "kind": "conditional",
+      "regionId": "contract-workbench.region.collection",
+      "statePath": "visibleContracts",
+      "templateId": "contract-workbench.empty-state-template",
+      "when": {
+        "predicate": "empty"
+      }
+    },
+    {
+      "id": "contract-workbench.items",
+      "item": {
+        "controls": {
+          "cancel": {
+            "intentId": "cancel-quote",
+            "payload": {
+              "contractId": {
+                "fromItemKey": true
+              }
+            },
+            "selector": "[data-mcel-item-intent='cancel-quote']"
+          },
+          "quote": {
+            "intentId": "request-quote",
+            "payload": {
+              "contractId": {
+                "fromItemKey": true
+              }
+            },
+            "selector": "[data-mcel-item-intent='request-quote']"
+          },
+          "remove": {
+            "intentId": "remove-contract",
+            "payload": {
+              "contractId": {
+                "fromItemKey": true
+              }
+            },
+            "selector": "[data-mcel-item-intent='remove-contract']"
+          },
+          "update": {
+            "intentId": "update-quantity",
+            "payload": {
+              "contractId": {
+                "fromItemKey": true
+              },
+              "quantity": {
+                "fromItemField": "quantity",
+                "parse": "integer",
+                "property": "value"
+              }
+            },
+            "selector": "[data-mcel-item-intent='update-quantity']"
+          }
+        },
+        "fields": {
+          "category": {
+            "itemPath": "category",
+            "property": "textContent",
+            "selector": "[data-mcel-item-field='category']"
+          },
+          "name": {
+            "itemPath": "name",
+            "property": "textContent",
+            "selector": "[data-mcel-item-field='name']"
+          },
+          "quantity": {
+            "itemPath": "quantity",
+            "parse": "integer",
+            "property": "value",
+            "selector": "[data-mcel-item-field='quantity']"
+          },
+          "quoteAmount": {
+            "itemPath": "quoteAmount",
+            "property": "textContent",
+            "selector": "[data-mcel-item-field='quote-amount']",
+            "transform": "currency-integer"
+          },
+          "quoteStatus": {
+            "itemPath": "quoteStatus",
+            "property": "textContent",
+            "selector": "[data-mcel-item-field='quote-status']"
+          }
+        }
+      },
+      "keyPath": "id",
+      "kind": "collection",
+      "regionId": "contract-workbench.region.collection",
+      "statePath": "visibleContracts",
+      "templateId": "contract-workbench.item"
+    },
+    {
+      "id": "contract-workbench.clear-control",
+      "intentId": "clear-all",
+      "kind": "control",
+      "regionId": "contract-workbench.region.collection"
+    },
+    {
+      "id": "contract-workbench.latest-receipt",
+      "kind": "operation-evidence",
+      "regionId": "contract-workbench.region.evidence"
+    }
+  ],
+  "regions": [
+    {
+      "id": "contract-workbench.region.shell",
+      "role": "application"
+    },
+    {
+      "id": "contract-workbench.region.editor",
+      "role": "form"
+    },
+    {
+      "id": "contract-workbench.region.summary",
+      "role": "status"
+    },
+    {
+      "id": "contract-workbench.region.filters",
+      "role": "search"
+    },
+    {
+      "id": "contract-workbench.region.collection",
+      "role": "list"
+    },
+    {
+      "id": "contract-workbench.region.evidence",
+      "role": "status"
+    }
+  ],
+  "schema": "mcel.semantic-surface-ir.v1",
+  "surfaceId": "contract-workbench.surface.primary"
 });

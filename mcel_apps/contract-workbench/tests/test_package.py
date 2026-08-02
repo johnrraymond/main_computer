@@ -21,7 +21,10 @@ def test_forward_package_declares_human_authoring_authority() -> None:
         "status": "forward-specification",
         "definition": "application.js",
         "featureMatrix": "forward-specification.json",
+        "normalizedDefinition": "generated/mcel.application.normalized.json",
     }
     assert manifest["conformance"]["currentMode"] == "forward-specification"
     assert manifest["conformance"]["targetMode"] == "semantic-runtime-proven"
     assert manifest["conformance"]["missingBridges"]
+    assert "application-definition-normalization" not in manifest["conformance"]["missingBridges"]
+    assert manifest["normalization"]["schema"] == "mcel.application-definition-normalization.v1"

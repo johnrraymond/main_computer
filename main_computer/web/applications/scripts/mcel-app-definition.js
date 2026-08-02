@@ -315,6 +315,16 @@ var McelAppDefinition = (() => {
     }
   });
 
+  function invariant(id, check, options = {}) {
+    if (typeof check !== "function") fail("MCEL_APP_INVARIANT_CHECK_REQUIRED", "Invariant requires a check function.");
+    return descriptor("invariant", {
+      id: assertIdentifier(id, "MCEL_APP_INVARIANT_ID_INVALID", "Invariant id"),
+      reads: Array.isArray(options.reads) ? options.reads.map(normalizeStatePath) : [],
+      check,
+      description: safeString(options.description)
+    });
+  }
+
   function acceptance(id, specification = {}) {
     return descriptor("acceptance", {
       id: assertIdentifier(id, "MCEL_APP_ACCEPTANCE_ID_INVALID", "Acceptance id"),
@@ -330,12 +340,21 @@ var McelAppDefinition = (() => {
     return descriptor("observation", {
       id: assertIdentifier(id, "MCEL_APP_OBSERVATION_ID_INVALID", "Observation id"),
       observationKind: safeString(specification.kind || "property"),
+      source: safeString(specification.source || "browser-dom"),
       nodeId: safeString(specification.nodeId),
       statePath: specification.statePath ? normalizeStatePath(specification.statePath) : "",
       property: safeString(specification.property),
+      normalization: safeString(specification.normalization),
       keyPath: specification.keyPath ? normalizeStatePath(specification.keyPath) : "",
       fields: cloneValue(specification.fields || {}),
       requireOrderMatch: specification.requireOrderMatch === true,
+      requireItemControls: cloneValue(specification.requireItemControls || []),
+      compareToLatestReceiptPath: safeString(specification.compareToLatestReceiptPath),
+      compareToStatePredicate: cloneValue(specification.compareToStatePredicate || null),
+      compareToProvisionalStatePath: safeString(specification.compareToProvisionalStatePath),
+      compareToOperationReceipt: specification.compareToOperationReceipt === true,
+      minimumInstances: Number.isInteger(specification.minimumInstances) ? specification.minimumInstances : 0,
+      requireIsolated: cloneValue(specification.requireIsolated || []),
       expect: cloneValue(specification.expect)
     });
   }
@@ -460,6 +479,8 @@ var McelAppDefinition = (() => {
 
     const normalizedSurface = specification.surface;
     if (!isDescriptor(normalizedSurface, "surface")) fail("MCEL_APP_SURFACE_DESCRIPTOR_REQUIRED", "Application requires a surface descriptor.");
+    const normalizedInvariants = Array.isArray(specification.invariants) ? specification.invariants : [];
+    if (!normalizedInvariants.every((entry) => isDescriptor(entry, "invariant"))) fail("MCEL_APP_INVARIANT_DESCRIPTOR_REQUIRED", "Invariant entries require descriptors.");
     const normalizedAcceptance = Array.isArray(specification.acceptance) ? specification.acceptance : [];
     if (!normalizedAcceptance.every((entry) => isDescriptor(entry, "acceptance"))) fail("MCEL_APP_ACCEPTANCE_DESCRIPTOR_REQUIRED", "Acceptance entries require descriptors.");
     const normalizedObservations = Array.isArray(specification.observations) ? specification.observations : [];
@@ -474,6 +495,7 @@ var McelAppDefinition = (() => {
       operations: normalizedOperations,
       surface: normalizedSurface,
       layout: deepFreeze(cloneValue(specification.layout || {})),
+      invariants: normalizedInvariants,
       acceptance: normalizedAcceptance,
       observations: normalizedObservations,
       multiInstance: deepFreeze(cloneValue(specification.multiInstance || {required: false}))
@@ -505,6 +527,7 @@ var McelAppDefinition = (() => {
       operationKindCounts,
       nodeKindCounts,
       capabilityCount: Object.keys(application.capabilities).length,
+      invariantCount: application.invariants.length,
       acceptanceCount: application.acceptance.length,
       observationCount: application.observations.length,
       requiredRuntimeFeatures: [...application.requiredRuntimeFeatures]
@@ -520,6 +543,7 @@ var McelAppDefinition = (() => {
     operation,
     node,
     surface,
+    invariant,
     acceptance,
     observe,
     defineApplication,
