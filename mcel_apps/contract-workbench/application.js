@@ -240,8 +240,14 @@ const ContractWorkbenchApplication = mcel.defineApplication({
         }, {signal});
       },
       receive({provisional, event, payload}) {
-        const current = provisional[payload.contractId] || {received: 0, expected: 0, reports: [], failures: []};
-        const next = {...current};
+        const current = provisional[payload.contractId] || {
+          status: "running",
+          received: 0,
+          expected: 0,
+          reports: [],
+          failures: []
+        };
+        const next = {...current, status: "running"};
         if (event.type === "quote.started") next.expected = event.expected || 0;
         if (event.type === "quote.received") {
           next.received += 1;
@@ -315,6 +321,9 @@ const ContractWorkbenchApplication = mcel.defineApplication({
         id: "contract-workbench.add-control",
         regionId: "contract-workbench.region.editor",
         intentId: "add-contract",
+        properties: [
+          {statePath: "canSubmit", property: "disabled", transform: "not"}
+        ],
         payload: {
           name: mcel.source.nodeValue("contract-workbench.draft-name", {normalize: "trim"}),
           quantity: mcel.source.nodeValue("contract-workbench.draft-quantity", {parse: "integer"}),
@@ -352,7 +361,18 @@ const ContractWorkbenchApplication = mcel.defineApplication({
             name: {selector: "[data-mcel-item-field='name']", itemPath: "name", property: "textContent"},
             category: {selector: "[data-mcel-item-field='category']", itemPath: "category", property: "textContent"},
             quantity: {selector: "[data-mcel-item-field='quantity']", itemPath: "quantity", property: "value", parse: "integer"},
-            quoteStatus: {selector: "[data-mcel-item-field='quote-status']", itemPath: "quoteStatus", property: "textContent"},
+            quoteStatus: {
+              selector: "[data-mcel-item-field='quote-status']",
+              itemPath: "quoteStatus",
+              property: "textContent",
+              provisional: {
+                statePath: "quoteProgress",
+                keyFromItem: true,
+                valuePath: "status",
+                transform: "quote-progress",
+                fallback: "item"
+              }
+            },
             quoteAmount: {selector: "[data-mcel-item-field='quote-amount']", itemPath: "quoteAmount", property: "textContent", transform: "currency-integer"}
           },
           controls: {

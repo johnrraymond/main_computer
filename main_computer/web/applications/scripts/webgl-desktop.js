@@ -1106,6 +1106,8 @@
         mode: "game-surface",
         label: `Vertex-built shuttle boarding-defense surface: ${scene.name || scene.id}`,
         projectId,
+        project: candidate?.project || webglProjectState.project,
+        spaceNavigation: candidate?.project?.metadata?.spaceNavigation || webglProjectState.project?.metadata?.spaceNavigation || null,
         selectedObjectId,
         assets: Array.isArray(candidate?.assets) ? candidate.assets : [],
         showLabels: true,

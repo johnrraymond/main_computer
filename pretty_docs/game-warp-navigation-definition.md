@@ -220,7 +220,7 @@ in-warp
 arriving
 ```
 
-Patch 1 does not transition between them.
+Patch 1 originally reserved these phases. The browser runtime now executes them as documented in `pretty_docs/game-warp-navigation-runtime.md`.
 
 ## Validation contract
 
@@ -238,7 +238,7 @@ state references resolve
 map positions are unique
 ```
 
-The repository contract test also proves that the current forty-system fixture satisfies these rules. That test protects the authored map; it is not the browser/runtime validator planned for Patch 2.
+The repository contract test proves that the current forty-system fixture satisfies these rules. The browser runtime now performs its own definition validation before accepting the graph.
 
 ## Patch boundary
 
@@ -251,13 +251,6 @@ human-readable contract documentation
 repository-level definition checks
 ```
 
-The next patches remain separate:
-
-```text
-Patch 2: runtime-facing definition validator
-Patch 3: deterministic navigation state and jump transaction
-Patch 4: bridge navigation console and warp presentation
-Patch 5: executable end-to-end warp proof
-```
+The runtime-facing validator, deterministic jump transaction, bridge navigation console, warp presentation, and executable browser-contract proof are now implemented. Discovery, multi-jump pathfinding, encounters, save-game persistence, and differentiated destination scenes remain future work.
 
 No runtime should infer a route from map distance, duplicate neighbor lists into systems, or replace the current system merely because an animation timer expired.

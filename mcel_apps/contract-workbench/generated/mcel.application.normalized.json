@@ -846,7 +846,7 @@
         "reason": "",
         "receive": {
           "kind": "function",
-          "sha256": "sha256:f8cacf2af43bcd02c5d033c3e4907d2b855fbd76427962f40b16bf8162885bc2"
+          "sha256": "sha256:d91a8b1c83c822dcfde36ade5cb1f28ab1e5bbdb56cccfb32b4237f7a912ebc6"
         },
         "risk": "external-read-stream",
         "run": {
@@ -1148,6 +1148,7 @@
           "localPath": "draftName",
           "nodeKind": "input",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.editor",
           "source": null,
@@ -1168,6 +1169,7 @@
           "localPath": "draftQuantity",
           "nodeKind": "input",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.editor",
           "source": null,
@@ -1188,6 +1190,7 @@
           "localPath": "draftCategory",
           "nodeKind": "input",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.editor",
           "source": null,
@@ -1233,6 +1236,13 @@
               "sourceKind": "node-property"
             }
           },
+          "properties": [
+            {
+              "property": "disabled",
+              "statePath": "canSubmit",
+              "transform": "not"
+            }
+          ],
           "property": "",
           "regionId": "contract-workbench.region.editor",
           "source": null,
@@ -1255,6 +1265,7 @@
           "localPath": "",
           "nodeKind": "conditional",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.editor",
           "source": {
@@ -1281,6 +1292,7 @@
           "localPath": "",
           "nodeKind": "property",
           "payload": {},
+          "properties": [],
           "property": "textContent",
           "regionId": "contract-workbench.region.summary",
           "source": null,
@@ -1301,6 +1313,7 @@
           "localPath": "",
           "nodeKind": "property",
           "payload": {},
+          "properties": [],
           "property": "textContent",
           "regionId": "contract-workbench.region.summary",
           "source": null,
@@ -1321,6 +1334,7 @@
           "localPath": "filterText",
           "nodeKind": "input",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.filters",
           "source": null,
@@ -1341,6 +1355,7 @@
           "localPath": "sortMode",
           "nodeKind": "input",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.filters",
           "source": null,
@@ -1363,6 +1378,7 @@
           "localPath": "",
           "nodeKind": "conditional",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.collection",
           "source": null,
@@ -1449,6 +1465,13 @@
               "quoteStatus": {
                 "itemPath": "quoteStatus",
                 "property": "textContent",
+                "provisional": {
+                  "fallback": "item",
+                  "keyFromItem": true,
+                  "statePath": "quoteProgress",
+                  "transform": "quote-progress",
+                  "valuePath": "status"
+                },
                 "selector": "[data-mcel-item-field='quote-status']"
               }
             }
@@ -1458,6 +1481,7 @@
           "localPath": "",
           "nodeKind": "collection",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.collection",
           "source": null,
@@ -1478,6 +1502,7 @@
           "localPath": "",
           "nodeKind": "control",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.collection",
           "source": null,
@@ -1498,6 +1523,7 @@
           "localPath": "",
           "nodeKind": "operation-evidence",
           "payload": {},
+          "properties": [],
           "property": "",
           "regionId": "contract-workbench.region.evidence",
           "source": null,
@@ -1537,9 +1563,9 @@
     },
     "title": "Contract Operations Workbench"
   },
-  "definitionFingerprint": "sha256:5a31101dfe05f5349f72fb55fdb45592f069b9e8390b849cb7564e4d83e29554",
+  "definitionFingerprint": "sha256:d81ea56e758a11da3b80e97eb26080ccdfec8e5ca719cee6bde191cb637fe865",
   "normalizer": "mcel-application-definition-normalizer-v1",
   "schema": "mcel.application-definition.normalized.v1",
   "source": "mcel_apps/contract-workbench/application.js",
-  "sourceSha256": "e76fe9eba0262914b8307797b28b893b56bdbec03ee795e9d57583fbb1672128"
+  "sourceSha256": "09e77804646bbdea34e486183dc986fe01074db8893d72dac850d81a6c1e2743"
 }

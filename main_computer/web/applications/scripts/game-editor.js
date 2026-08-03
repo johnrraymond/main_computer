@@ -1384,6 +1384,8 @@
         mode: "game-editor",
         label: `Game Editor scene: ${normalizedScene.name || normalizedScene.id}`,
         projectId: gameEditorState.projectId,
+        project: gameEditorState.project,
+        spaceNavigation: gameEditorState.project?.metadata?.spaceNavigation || null,
         selectedObjectId: gameEditorState.selectedObjectId,
         assets: gameEditorState.assets,
         showLabels: true,

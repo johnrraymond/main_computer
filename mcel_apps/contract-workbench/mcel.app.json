@@ -11,22 +11,9 @@
   "conformance": {
     "currentMode": "forward-specification",
     "missingBridges": [
-      "capability-operation-runtime",
-      "conditional-projection",
-      "control-payload-extraction",
-      "derived-state",
       "dynamic-browser-observation",
-      "dynamic-input-binding",
-      "dynamic-item-control-binding",
-      "dynamic-property-projection",
       "intent-complete-proof",
-      "keyed-collection-reconciliation",
-      "multi-instance-proof",
-      "operation-cancellation",
-      "operation-concurrency-policy",
-      "provisional-state",
-      "provisional-state-runtime",
-      "renderer-local-state"
+      "multi-instance-proof"
     ],
     "targetMode": "semantic-runtime-proven"
   },
@@ -40,7 +27,7 @@
     "surface": "contracts/surface.js"
   },
   "normalization": {
-    "definitionFingerprint": "sha256:5a31101dfe05f5349f72fb55fdb45592f069b9e8390b849cb7564e4d83e29554",
+    "definitionFingerprint": "sha256:d81ea56e758a11da3b80e97eb26080ccdfec8e5ca719cee6bde191cb637fe865",
     "generatedContracts": [
       "domain",
       "intents",
@@ -52,7 +39,7 @@
     ],
     "normalizer": "mcel-application-definition-normalizer-v1",
     "schema": "mcel.application-definition-normalization.v1",
-    "sourceSha256": "e76fe9eba0262914b8307797b28b893b56bdbec03ee795e9d57583fbb1672128"
+    "sourceSha256": "09e77804646bbdea34e486183dc986fe01074db8893d72dac850d81a6c1e2743"
   },
   "requirements": "requirements.md",
   "runtime": {

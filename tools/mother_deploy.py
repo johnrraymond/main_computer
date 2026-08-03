@@ -142,6 +142,44 @@ from tools.mother.common.deployment_validator_quorum_recovery import (
     verify_validator_quorum_recovery_release,
     write_validator_quorum_recovery_release,
 )
+from tools.mother.common.deployment_mainnet_soak import (
+    MotherDeploymentMainnetSoakError,
+    run_mainnet_steady_state_soak,
+    verify_mainnet_steady_state_soak_evidence,
+)
+from tools.mother.common.deployment_private_rpc import (
+    MotherDeploymentPrivateRpcError,
+    build_private_rpc_transaction,
+    verify_private_rpc_transaction,
+    write_private_rpc_transaction,
+)
+from tools.mother.common.deployment_private_rpc_identity import (
+    MotherDeploymentPrivateRpcIdentityError,
+    inspect_private_rpc_identity_reservation,
+    reserve_private_rpc_identity,
+    verify_private_rpc_identity,
+)
+from tools.mother.common.deployment_validator_rpc_canary import (
+    MotherDeploymentValidatorRpcCanaryError,
+    build_validator_rpc_canary_transaction,
+    inspect_validator_rpc_canary_identity_reservation,
+    reserve_validator_rpc_canary_identity,
+    verify_validator_rpc_canary_identity,
+    verify_validator_rpc_canary_transaction,
+    write_validator_rpc_canary_transaction,
+)
+from tools.mother.common.deployment_validator_rpc_canary_funding import (
+    MotherDeploymentValidatorRpcCanaryFundingError,
+    build_validator_rpc_canary_funding_release,
+    build_validator_rpc_canary_funding_transaction,
+    execute_validator_rpc_canary_funding_release,
+    inspect_validator_rpc_canary_funding_release,
+    verify_validator_rpc_canary_funding_evidence,
+    verify_validator_rpc_canary_funding_release,
+    verify_validator_rpc_canary_funding_transaction,
+    write_validator_rpc_canary_funding_release,
+    write_validator_rpc_canary_funding_transaction,
+)
 from tools.mother.common.deployment_post_admission_steady_state import (
     MotherDeploymentPostAdmissionSteadyStateError,
     build_post_admission_steady_state_release,
@@ -155,6 +193,18 @@ from tools.mother.common.deployment_post_admission_steady_state import (
     verify_post_admission_steady_state_transaction,
     write_post_admission_steady_state_release,
     write_post_admission_steady_state_transaction,
+)
+from tools.mother.common.deployment_post_admission_steady_state_continuation import (
+    MotherDeploymentPostAdmissionSteadyStateContinuationError,
+    build_post_admission_steady_state_continuation_release,
+    build_post_admission_steady_state_continuation_transaction,
+    execute_post_admission_steady_state_continuation_release,
+    inspect_post_admission_steady_state_continuation_release,
+    verify_post_admission_steady_state_continuation_evidence,
+    verify_post_admission_steady_state_continuation_release,
+    verify_post_admission_steady_state_continuation_transaction,
+    write_post_admission_steady_state_continuation_release,
+    write_post_admission_steady_state_continuation_transaction,
 )
 from tools.mother.common.deployment_standby import (
     MotherDeploymentStandbyError,
@@ -946,6 +996,311 @@ def _parser() -> argparse.ArgumentParser:
     _common(verify_steady_reconciliation)
     verify_steady_reconciliation.add_argument("--reconciliation", required=True)
     verify_steady_reconciliation.add_argument("--max-age-seconds", type=int, default=300)
+
+    stage_steady_continuation = subparsers.add_parser(
+        "stage-post-admission-steady-state-continuation",
+        help="compile the exact A-only continuation from a passing mixed-state reconciliation",
+        allow_abbrev=False,
+    )
+    _common(stage_steady_continuation)
+    stage_steady_continuation.add_argument("--reconciliation", required=True)
+    stage_steady_continuation.add_argument("--max-age-seconds", type=int, default=86400)
+    stage_steady_continuation.add_argument("--created-at")
+    stage_steady_continuation.add_argument("--write-transaction", action="store_true")
+    stage_steady_continuation.add_argument("--full-output", action="store_true")
+
+    verify_steady_continuation_transaction = subparsers.add_parser(
+        "verify-post-admission-steady-state-continuation-transaction",
+        help="verify the offline A-only steady-state continuation transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_steady_continuation_transaction)
+    verify_steady_continuation_transaction.add_argument("--transaction", required=True)
+    verify_steady_continuation_transaction.add_argument("--max-age-seconds", type=int, default=86400)
+
+    release_steady_continuation = subparsers.add_parser(
+        "release-post-admission-steady-state-continuation",
+        help="authorize one exact A-only steady-state continuation",
+        allow_abbrev=False,
+    )
+    _common(release_steady_continuation)
+    release_steady_continuation.add_argument("--transaction", required=True)
+    release_steady_continuation.add_argument(
+        "--acknowledge-post-admission-steady-state-continuation-transaction-sha256",
+        required=True,
+    )
+    release_steady_continuation.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_steady_continuation.add_argument("--expires-in-seconds", type=int, default=300)
+    release_steady_continuation.add_argument("--created-at")
+    release_steady_continuation.add_argument("--write-release", action="store_true")
+    release_steady_continuation.add_argument("--full-output", action="store_true")
+
+    verify_steady_continuation_release = subparsers.add_parser(
+        "verify-post-admission-steady-state-continuation-release",
+        help="verify an expiring A-only steady-state continuation release",
+        allow_abbrev=False,
+    )
+    _common(verify_steady_continuation_release)
+    verify_steady_continuation_release.add_argument("--release", required=True)
+    verify_steady_continuation_release.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_steady_continuation_release.add_argument("--max-age-seconds", type=int, default=300)
+
+    apply_steady_continuation = subparsers.add_parser(
+        "apply-post-admission-steady-state-continuation",
+        help="inspect or execute the exact C-refresh-gated A-only continuation",
+        allow_abbrev=False,
+    )
+    _common(apply_steady_continuation)
+    apply_steady_continuation.add_argument("--release", required=True)
+    apply_steady_continuation.add_argument("--acknowledge-release-sha256", required=True)
+    apply_steady_continuation.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_steady_continuation.add_argument("--max-age-seconds", type=int, default=300)
+    apply_steady_continuation.add_argument("--timeout", type=float, default=30.0)
+    apply_steady_continuation.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_steady_continuation.add_argument("--max-wait-seconds", type=float, default=360.0)
+    apply_steady_continuation.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_steady_continuation.add_argument("--execute", action="store_true")
+    apply_steady_continuation.add_argument("--full-output", action="store_true")
+
+    verify_steady_continuation_evidence = subparsers.add_parser(
+        "verify-post-admission-steady-state-continuation-evidence",
+        help="verify persisted A-only steady-state continuation evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_steady_continuation_evidence)
+    verify_steady_continuation_evidence.add_argument("--evidence", required=True)
+    verify_steady_continuation_evidence.add_argument("--max-age-seconds", type=int, default=300)
+    verify_steady_continuation_evidence.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+
+    run_mainnet_soak = subparsers.add_parser(
+        "run-mainnet-steady-state-soak",
+        help="run a GET-only A/C steady-state soak from canonical continuation evidence",
+        allow_abbrev=False,
+    )
+    _common(run_mainnet_soak)
+    run_mainnet_soak.add_argument("--baseline-evidence", required=True)
+    run_mainnet_soak.add_argument("--baseline-max-age-seconds", type=int, default=604800)
+    run_mainnet_soak.add_argument("--duration-seconds", type=int, default=1800)
+    run_mainnet_soak.add_argument("--observation-interval-seconds", type=int, default=60)
+    run_mainnet_soak.add_argument("--timeout", type=float, default=30.0)
+    run_mainnet_soak.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    run_mainnet_soak.add_argument("--full-output", action="store_true")
+
+    verify_mainnet_soak = subparsers.add_parser(
+        "verify-mainnet-steady-state-soak-evidence",
+        help="verify canonical persisted GET-only A/C soak evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_mainnet_soak)
+    verify_mainnet_soak.add_argument("--evidence", required=True)
+    verify_mainnet_soak.add_argument("--max-age-seconds", type=int, default=300)
+    verify_mainnet_soak.add_argument("--baseline-max-age-seconds", type=int, default=604800)
+
+    reserve_private_rpc_identity_parser = subparsers.add_parser(
+        "reserve-private-rpc-identity",
+        help="reserve one protected non-validator RPC identity without network access",
+        allow_abbrev=False,
+    )
+    _common(reserve_private_rpc_identity_parser)
+    reserve_private_rpc_identity_parser.add_argument(
+        "--service-name",
+        default="mainnet-rpc1",
+    )
+    reserve_private_rpc_identity_parser.add_argument(
+        "--write-identity",
+        action="store_true",
+    )
+
+    verify_private_rpc_identity_parser = subparsers.add_parser(
+        "verify-private-rpc-identity",
+        help="verify one protected non-validator RPC identity artifact",
+        allow_abbrev=False,
+    )
+    _common(verify_private_rpc_identity_parser)
+    verify_private_rpc_identity_parser.add_argument("--identity", required=True)
+    verify_private_rpc_identity_parser.add_argument("--service-name")
+
+    stage_private_rpc = subparsers.add_parser(
+        "stage-private-rpc-transaction",
+        help="compile one private non-validator mainnet RPC service without network access",
+        allow_abbrev=False,
+    )
+    _common(stage_private_rpc)
+    stage_private_rpc.add_argument("--soak-evidence", required=True)
+    stage_private_rpc.add_argument("--soak-max-age-seconds", type=int, default=86400)
+    stage_private_rpc.add_argument(
+        "--controller-id",
+        required=True,
+        choices=("coolify-a", "coolify-c"),
+    )
+    stage_private_rpc.add_argument("--service-name", default="mainnet-rpc1")
+    stage_private_rpc.add_argument("--environment-name", default="mainnet")
+    stage_private_rpc.add_argument(
+        "--identity",
+        help="protected identity artifact from reserve-private-rpc-identity",
+    )
+    stage_private_rpc.add_argument("--rpc-node-id")
+    stage_private_rpc.add_argument("--rpc-node-address")
+    stage_private_rpc.add_argument("--write-transaction", action="store_true")
+    stage_private_rpc.add_argument("--full-output", action="store_true")
+
+    verify_private_rpc = subparsers.add_parser(
+        "verify-private-rpc-transaction",
+        help="verify an offline private non-validator RPC transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_private_rpc)
+    verify_private_rpc.add_argument("--transaction", required=True)
+    verify_private_rpc.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_private_rpc.add_argument("--soak-max-age-seconds", type=int, default=86400)
+
+    reserve_validator_rpc_canary_identity_parser = subparsers.add_parser(
+        "reserve-validator-rpc-canary-identity",
+        help="reserve a protected non-validator wallet for internal validator-RPC canaries",
+        allow_abbrev=False,
+    )
+    _common(reserve_validator_rpc_canary_identity_parser)
+    reserve_validator_rpc_canary_identity_parser.add_argument(
+        "--canary-name",
+        default="mainnet-canary1",
+    )
+    reserve_validator_rpc_canary_identity_parser.add_argument(
+        "--write-identity",
+        action="store_true",
+    )
+
+    verify_validator_rpc_canary_identity_parser = subparsers.add_parser(
+        "verify-validator-rpc-canary-identity",
+        help="verify a protected validator-RPC canary wallet artifact",
+        allow_abbrev=False,
+    )
+    _common(verify_validator_rpc_canary_identity_parser)
+    verify_validator_rpc_canary_identity_parser.add_argument("--identity", required=True)
+    verify_validator_rpc_canary_identity_parser.add_argument("--canary-name")
+
+    stage_validator_rpc_canary = subparsers.add_parser(
+        "stage-validator-rpc-canary-transaction",
+        help="compile an offline A-submit/C-verify internal validator-RPC canary",
+        allow_abbrev=False,
+    )
+    _common(stage_validator_rpc_canary)
+    stage_validator_rpc_canary.add_argument("--soak-evidence", required=True)
+    stage_validator_rpc_canary.add_argument("--soak-max-age-seconds", type=int, default=86400)
+    stage_validator_rpc_canary.add_argument("--identity", required=True)
+    stage_validator_rpc_canary.add_argument("--canary-name", default="mainnet-canary1")
+    stage_validator_rpc_canary.add_argument("--environment-name", default="mainnet")
+    stage_validator_rpc_canary.add_argument(
+        "--foundry-image",
+        default="ghcr.io/foundry-rs/foundry:latest",
+    )
+    stage_validator_rpc_canary.add_argument("--write-transaction", action="store_true")
+    stage_validator_rpc_canary.add_argument("--full-output", action="store_true")
+
+    verify_validator_rpc_canary = subparsers.add_parser(
+        "verify-validator-rpc-canary-transaction",
+        help="verify an offline internal validator-RPC canary transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_validator_rpc_canary)
+    verify_validator_rpc_canary.add_argument("--transaction", required=True)
+    verify_validator_rpc_canary.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary.add_argument("--soak-max-age-seconds", type=int, default=86400)
+
+    stage_validator_rpc_canary_funding = subparsers.add_parser(
+        "stage-validator-rpc-canary-funding-transaction",
+        help="compile an offline exact capped funding plan for the validator-RPC canary",
+        allow_abbrev=False,
+    )
+    _common(stage_validator_rpc_canary_funding)
+    stage_validator_rpc_canary_funding.add_argument("--canary-transaction", required=True)
+    stage_validator_rpc_canary_funding.add_argument(
+        "--canary-transaction-max-age-seconds", type=int, default=86400
+    )
+    stage_validator_rpc_canary_funding.add_argument(
+        "--soak-max-age-seconds", type=int, default=86400
+    )
+    stage_validator_rpc_canary_funding.add_argument("--write-transaction", action="store_true")
+    stage_validator_rpc_canary_funding.add_argument("--full-output", action="store_true")
+
+    verify_validator_rpc_canary_funding = subparsers.add_parser(
+        "verify-validator-rpc-canary-funding-transaction",
+        help="verify an offline exact capped validator-RPC canary funding transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_validator_rpc_canary_funding)
+    verify_validator_rpc_canary_funding.add_argument("--transaction", required=True)
+    verify_validator_rpc_canary_funding.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_funding.add_argument(
+        "--canary-transaction-max-age-seconds", type=int, default=86400
+    )
+    verify_validator_rpc_canary_funding.add_argument(
+        "--soak-max-age-seconds", type=int, default=86400
+    )
+
+    release_validator_rpc_canary_funding = subparsers.add_parser(
+        "release-validator-rpc-canary-funding",
+        help="issue an expiring one-use release for the exact capped canary funding transaction",
+        allow_abbrev=False,
+    )
+    _common(release_validator_rpc_canary_funding)
+    release_validator_rpc_canary_funding.add_argument("--transaction", required=True)
+    release_validator_rpc_canary_funding.add_argument(
+        "--acknowledge-validator-rpc-canary-funding-transaction-sha256",
+        required=True,
+    )
+    release_validator_rpc_canary_funding.add_argument("--expires-in-seconds", type=int, default=300)
+    release_validator_rpc_canary_funding.add_argument(
+        "--recovery-evidence",
+        help="bind one exact prior post-create UUID failure for orphan cleanup",
+    )
+    release_validator_rpc_canary_funding.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_validator_rpc_canary_funding.add_argument("--canary-transaction-max-age-seconds", type=int, default=86400)
+    release_validator_rpc_canary_funding.add_argument("--soak-max-age-seconds", type=int, default=86400)
+    release_validator_rpc_canary_funding.add_argument("--write-release", action="store_true")
+    release_validator_rpc_canary_funding.add_argument("--full-output", action="store_true")
+
+    verify_validator_rpc_canary_funding_release_parser = subparsers.add_parser(
+        "verify-validator-rpc-canary-funding-release",
+        help="verify an expiring one-use validator-RPC canary funding release",
+        allow_abbrev=False,
+    )
+    _common(verify_validator_rpc_canary_funding_release_parser)
+    verify_validator_rpc_canary_funding_release_parser.add_argument("--release", required=True)
+    verify_validator_rpc_canary_funding_release_parser.add_argument("--max-age-seconds", type=int, default=300)
+    verify_validator_rpc_canary_funding_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_funding_release_parser.add_argument("--canary-transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_funding_release_parser.add_argument("--soak-max-age-seconds", type=int, default=86400)
+
+    apply_validator_rpc_canary_funding = subparsers.add_parser(
+        "apply-validator-rpc-canary-funding",
+        help="inspect or execute exactly one capped canary funding release",
+        allow_abbrev=False,
+    )
+    _common(apply_validator_rpc_canary_funding)
+    apply_validator_rpc_canary_funding.add_argument("--release", required=True)
+    apply_validator_rpc_canary_funding.add_argument("--acknowledge-release-sha256", required=True)
+    apply_validator_rpc_canary_funding.add_argument("--execute", action="store_true")
+    apply_validator_rpc_canary_funding.add_argument("--max-age-seconds", type=int, default=300)
+    apply_validator_rpc_canary_funding.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary_funding.add_argument("--canary-transaction-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary_funding.add_argument("--soak-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary_funding.add_argument("--timeout", type=float, default=30.0)
+    apply_validator_rpc_canary_funding.add_argument("--max-response-bytes", type=int, default=1048576)
+    apply_validator_rpc_canary_funding.add_argument("--max-wait-seconds", type=float, default=300.0)
+    apply_validator_rpc_canary_funding.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_validator_rpc_canary_funding.add_argument("--full-output", action="store_true")
+
+    verify_validator_rpc_canary_funding_evidence_parser = subparsers.add_parser(
+        "verify-validator-rpc-canary-funding-evidence",
+        help="verify persisted cross-validator canary funding evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_validator_rpc_canary_funding_evidence_parser)
+    verify_validator_rpc_canary_funding_evidence_parser.add_argument("--evidence", required=True)
+    verify_validator_rpc_canary_funding_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_funding_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_funding_evidence_parser.add_argument("--canary-transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_funding_evidence_parser.add_argument("--soak-max-age-seconds", type=int, default=86400)
 
     return parser
 
@@ -1952,6 +2307,745 @@ def _cmd_verify_post_admission_steady_state_reconciliation(
     return 0
 
 
+
+def _cmd_stage_post_admission_steady_state_continuation(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    transaction = build_post_admission_steady_state_continuation_transaction(
+        _paths(args),
+        private_state,
+        Path(args.reconciliation),
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = (
+            write_post_admission_steady_state_continuation_transaction(
+                _paths(args),
+                transaction,
+                operation=_operation(
+                    "post-admission-steady-state-continuation-transaction",
+                    args.network,
+                    args.operation_id,
+                ),
+            )
+        )
+        transaction = {
+            **transaction,
+            "transaction_artifact": {
+                "path": str(path),
+                "sha256": digest,
+            },
+        }
+    output = (
+        transaction
+        if args.full_output or not args.write_transaction
+        else _compact_post_admission_artifact(transaction)
+    )
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_post_admission_steady_state_continuation_transaction(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_post_admission_steady_state_continuation_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_post_admission_steady_state_continuation(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    release = build_post_admission_steady_state_continuation_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=(
+            args.acknowledge_post_admission_steady_state_continuation_transaction_sha256
+        ),
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_post_admission_steady_state_continuation_release(
+            _paths(args),
+            release,
+            operation=_operation(
+                "post-admission-steady-state-continuation-release",
+                args.network,
+                args.operation_id,
+            ),
+        )
+        release = {
+            **release,
+            "release_artifact": {
+                "path": str(path),
+                "sha256": digest,
+            },
+        }
+    output = (
+        release
+        if args.full_output or not args.write_release
+        else _compact_post_admission_artifact(release)
+    )
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_post_admission_steady_state_continuation_release(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_post_admission_steady_state_continuation_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_post_admission_steady_state_continuation(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    common = dict(
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    if not args.execute:
+        result = inspect_post_admission_steady_state_continuation_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            **common,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_post_admission_steady_state_continuation_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation(
+            "apply-post-admission-steady-state-continuation",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    output = (
+        result
+        if args.full_output
+        else _compact_post_admission_execution(result)
+    )
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_post_admission_steady_state_continuation_evidence(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_post_admission_steady_state_continuation_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_run_mainnet_steady_state_soak(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = run_mainnet_steady_state_soak(
+        _paths(args),
+        private_state,
+        Path(args.baseline_evidence),
+        selected_nodes=_selected_nodes(args.node),
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        duration_seconds=args.duration_seconds,
+        observation_interval_seconds=args.observation_interval_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation(
+            "run-mainnet-steady-state-soak",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    output = result if args.full_output else {
+        "status": result["status"],
+        "network": result["network"],
+        "nodes": result["nodes"],
+        "chain_id": result["chain_id"],
+        "genesis_sha256": result["genesis_sha256"],
+        "validator_set": result["validator_set"],
+        "summary": result["summary"],
+        "timing": result["timing"],
+        "evidence": result["evidence"],
+    }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_mainnet_steady_state_soak_evidence(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_mainnet_steady_state_soak_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_reserve_private_rpc_identity(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "reserve-private-rpc-identity",
+        args.network,
+        args.operation_id,
+    )
+    if args.write_identity:
+        result = reserve_private_rpc_identity(
+            _paths(args),
+            private_state,
+            service_name=args.service_name,
+            network=args.network,
+            operation=operation,
+        )
+    else:
+        result = inspect_private_rpc_identity_reservation(
+            _paths(args),
+            private_state,
+            service_name=args.service_name,
+            network=args.network,
+            operation=operation,
+        )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_private_rpc_identity(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_private_rpc_identity(
+        _paths(args),
+        private_state,
+        Path(args.identity),
+        network=args.network,
+        service_name=args.service_name,
+        operation=_operation(
+            "verify-private-rpc-identity",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_stage_private_rpc_transaction(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    if args.identity:
+        if args.rpc_node_id is not None or args.rpc_node_address is not None:
+            raise MotherDeploymentPrivateRpcError(
+                "MOTHER_DEPLOY_PRIVATE_RPC_INVALID",
+                "--identity cannot be combined with --rpc-node-id or --rpc-node-address",
+            )
+        identity = verify_private_rpc_identity(
+            _paths(args),
+            private_state,
+            Path(args.identity),
+            network=args.network,
+            service_name=args.service_name,
+            operation=_operation(
+                "stage-private-rpc-identity",
+                args.network,
+                args.operation_id,
+            ),
+        )
+        rpc_node_id = identity["node_id"]
+        rpc_node_address = identity["address"]
+    else:
+        if args.rpc_node_id is None or args.rpc_node_address is None:
+            raise MotherDeploymentPrivateRpcError(
+                "MOTHER_DEPLOY_PRIVATE_RPC_INVALID",
+                "provide --identity or both --rpc-node-id and --rpc-node-address",
+            )
+        rpc_node_id = args.rpc_node_id
+        rpc_node_address = args.rpc_node_address
+
+    transaction = build_private_rpc_transaction(
+        _paths(args),
+        private_state,
+        Path(args.soak_evidence),
+        controller_id=args.controller_id,
+        rpc_node_id=rpc_node_id,
+        rpc_node_address=rpc_node_address,
+        service_name=args.service_name,
+        environment_name=args.environment_name,
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        soak_max_age_seconds=args.soak_max_age_seconds,
+    )
+    result = dict(transaction)
+    if args.write_transaction:
+        path, digest = write_private_rpc_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation(
+                "stage-private-rpc-transaction",
+                args.network,
+                args.operation_id,
+            ),
+        )
+        result["transaction_artifact"] = {
+            "path": str(path),
+            "sha256": digest,
+        }
+    if args.full_output:
+        output = result
+    else:
+        output = {
+            "status": "pass",
+            "network": result["network"],
+            "staged_scope": result["staged_scope"],
+            "chain": result["chain"],
+            "placement": result["placement"],
+            "identity": result["identity"],
+            "validator_peers": result["validator_peers"],
+            "required_secret_bindings": result["required_secret_bindings"],
+            "authority": result["authority"],
+            "summary": result["summary"],
+            "transaction_sha256": result["private_rpc_transaction_sha256"],
+            **(
+                {"transaction_artifact": result["transaction_artifact"]}
+                if "transaction_artifact" in result
+                else {}
+            ),
+        }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_private_rpc_transaction(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_private_rpc_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_reserve_validator_rpc_canary_identity(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "reserve-validator-rpc-canary-identity",
+        args.network,
+        args.operation_id,
+    )
+    if args.write_identity:
+        result = reserve_validator_rpc_canary_identity(
+            _paths(args),
+            private_state,
+            canary_name=args.canary_name,
+            network=args.network,
+            operation=operation,
+        )
+    else:
+        result = inspect_validator_rpc_canary_identity_reservation(
+            _paths(args),
+            private_state,
+            canary_name=args.canary_name,
+            network=args.network,
+            operation=operation,
+        )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_rpc_canary_identity(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_validator_rpc_canary_identity(
+        _paths(args),
+        private_state,
+        Path(args.identity),
+        network=args.network,
+        canary_name=args.canary_name,
+        operation=_operation(
+            "verify-validator-rpc-canary-identity",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_stage_validator_rpc_canary_transaction(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "stage-validator-rpc-canary-transaction",
+        args.network,
+        args.operation_id,
+    )
+    transaction = build_validator_rpc_canary_transaction(
+        _paths(args),
+        private_state,
+        Path(args.soak_evidence),
+        Path(args.identity),
+        canary_name=args.canary_name,
+        environment_name=args.environment_name,
+        foundry_image=args.foundry_image,
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=operation,
+    )
+    result = dict(transaction)
+    if args.write_transaction:
+        path, digest = write_validator_rpc_canary_transaction(
+            _paths(args),
+            transaction,
+            operation=operation,
+        )
+        result["transaction_artifact"] = {
+            "path": str(path),
+            "sha256": digest,
+        }
+    if args.full_output:
+        output = result
+    else:
+        output = {
+            "status": "pass",
+            "network": result["network"],
+            "staged_scope": result["staged_scope"],
+            "chain": result["chain"],
+            "identity": result["identity"],
+            "validator_services": result["validator_services"],
+            "canary_contract": result["canary_contract"],
+            "fee_policy": result["fee_policy"],
+            "required_secret_bindings": result["required_secret_bindings"],
+            "authority": result["authority"],
+            "summary": result["summary"],
+            "transaction_sha256": result["validator_rpc_canary_transaction_sha256"],
+            **(
+                {"transaction_artifact": result["transaction_artifact"]}
+                if "transaction_artifact" in result
+                else {}
+            ),
+        }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_rpc_canary_transaction(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_validator_rpc_canary_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=_operation(
+            "verify-validator-rpc-canary-transaction",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_stage_validator_rpc_canary_funding_transaction(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "stage-validator-rpc-canary-funding-transaction",
+        args.network,
+        args.operation_id,
+    )
+    transaction = build_validator_rpc_canary_funding_transaction(
+        _paths(args),
+        private_state,
+        Path(args.canary_transaction),
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.canary_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=operation,
+    )
+    result = dict(transaction)
+    if args.write_transaction:
+        path, digest = write_validator_rpc_canary_funding_transaction(
+            _paths(args),
+            transaction,
+            operation=operation,
+        )
+        result["transaction_artifact"] = {"path": str(path), "sha256": digest}
+    if args.full_output:
+        output = result
+    else:
+        output = {
+            "status": "pass",
+            "network": result["network"],
+            "staged_scope": result["staged_scope"],
+            "chain": result["chain"],
+            "funding_source": result["funding_source"],
+            "destination": result["destination"],
+            "funding_policy": result["funding_policy"],
+            "required_secret_bindings": result["required_secret_bindings"],
+            "authority": result["authority"],
+            "summary": result["summary"],
+            "transaction_sha256": result[
+                "validator_rpc_canary_funding_transaction_sha256"
+            ],
+            **(
+                {"transaction_artifact": result["transaction_artifact"]}
+                if "transaction_artifact" in result
+                else {}
+            ),
+        }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_rpc_canary_funding_transaction(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_validator_rpc_canary_funding_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        canary_transaction_max_age_seconds=args.canary_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=_operation(
+            "verify-validator-rpc-canary-funding-transaction",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_validator_rpc_canary_funding(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "release-validator-rpc-canary-funding",
+        args.network,
+        args.operation_id,
+    )
+    release = build_validator_rpc_canary_funding_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=(
+            args.acknowledge_validator_rpc_canary_funding_transaction_sha256
+        ),
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        canary_transaction_max_age_seconds=args.canary_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        recovery_evidence_path=(
+            Path(args.recovery_evidence) if args.recovery_evidence else None
+        ),
+        operation=operation,
+    )
+    result = dict(release)
+    if args.write_release:
+        path, digest = write_validator_rpc_canary_funding_release(
+            _paths(args),
+            release,
+            operation=operation,
+        )
+        result["release_artifact"] = {"path": str(path), "sha256": digest}
+    if args.full_output:
+        output = result
+    else:
+        output = {
+            "status": "pass",
+            "network": result["network"],
+            "expires_at": result["expires_at"],
+            "chain": result["chain"],
+            "funding_source": result["funding_source"],
+            "destination": result["destination"],
+            "funding_policy": result["funding_policy"],
+            "authority": result["authority"],
+            "policy": result["policy"],
+            "recovery": result.get("recovery"),
+            "release_sha256": result["validator_rpc_canary_funding_release_sha256"],
+            **(
+                {"release_artifact": result["release_artifact"]}
+                if "release_artifact" in result
+                else {}
+            ),
+        }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_rpc_canary_funding_release(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_validator_rpc_canary_funding_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        canary_transaction_max_age_seconds=args.canary_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=_operation(
+            "verify-validator-rpc-canary-funding-release",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_validator_rpc_canary_funding(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "apply-validator-rpc-canary-funding",
+        args.network,
+        args.operation_id,
+    )
+    if args.execute:
+        result = execute_validator_rpc_canary_funding_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            acknowledged_release_sha256=args.acknowledge_release_sha256,
+            selected_nodes=_selected_nodes(args.node),
+            max_age_seconds=args.max_age_seconds,
+            transaction_max_age_seconds=args.transaction_max_age_seconds,
+            canary_transaction_max_age_seconds=args.canary_transaction_max_age_seconds,
+            soak_max_age_seconds=args.soak_max_age_seconds,
+            timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+            max_wait_seconds=args.max_wait_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+            operation=operation,
+        )
+        output = result if args.full_output else {
+            "status": result["status"],
+            "network": result["network"],
+            "chain_id": result["chain_id"],
+            "canary_address": result["canary_address"],
+            "transfer_value_wei": result["transfer_value_wei"],
+            "funding_transaction_hash": result["funding_transaction_hash"],
+            "summary": result["summary"],
+            "evidence": result["evidence"],
+        }
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0 if result["status"] == "pass" else 1
+    result = inspect_validator_rpc_canary_funding_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        canary_transaction_max_age_seconds=args.canary_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=operation,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_rpc_canary_funding_evidence(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_validator_rpc_canary_funding_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        canary_transaction_max_age_seconds=args.canary_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=_operation(
+            "verify-validator-rpc-canary-funding-evidence",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -2068,6 +3162,50 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_reconcile_post_admission_steady_state(args, private_state)
         if args.command == "verify-post-admission-steady-state-reconciliation":
             return _cmd_verify_post_admission_steady_state_reconciliation(args, private_state)
+        if args.command == "stage-post-admission-steady-state-continuation":
+            return _cmd_stage_post_admission_steady_state_continuation(args, private_state)
+        if args.command == "verify-post-admission-steady-state-continuation-transaction":
+            return _cmd_verify_post_admission_steady_state_continuation_transaction(args, private_state)
+        if args.command == "release-post-admission-steady-state-continuation":
+            return _cmd_release_post_admission_steady_state_continuation(args, private_state)
+        if args.command == "verify-post-admission-steady-state-continuation-release":
+            return _cmd_verify_post_admission_steady_state_continuation_release(args, private_state)
+        if args.command == "apply-post-admission-steady-state-continuation":
+            return _cmd_apply_post_admission_steady_state_continuation(args, private_state)
+        if args.command == "verify-post-admission-steady-state-continuation-evidence":
+            return _cmd_verify_post_admission_steady_state_continuation_evidence(args, private_state)
+        if args.command == "run-mainnet-steady-state-soak":
+            return _cmd_run_mainnet_steady_state_soak(args, private_state)
+        if args.command == "verify-mainnet-steady-state-soak-evidence":
+            return _cmd_verify_mainnet_steady_state_soak_evidence(args, private_state)
+        if args.command == "reserve-private-rpc-identity":
+            return _cmd_reserve_private_rpc_identity(args, private_state)
+        if args.command == "verify-private-rpc-identity":
+            return _cmd_verify_private_rpc_identity(args, private_state)
+        if args.command == "stage-private-rpc-transaction":
+            return _cmd_stage_private_rpc_transaction(args, private_state)
+        if args.command == "verify-private-rpc-transaction":
+            return _cmd_verify_private_rpc_transaction(args, private_state)
+        if args.command == "reserve-validator-rpc-canary-identity":
+            return _cmd_reserve_validator_rpc_canary_identity(args, private_state)
+        if args.command == "verify-validator-rpc-canary-identity":
+            return _cmd_verify_validator_rpc_canary_identity(args, private_state)
+        if args.command == "stage-validator-rpc-canary-transaction":
+            return _cmd_stage_validator_rpc_canary_transaction(args, private_state)
+        if args.command == "verify-validator-rpc-canary-transaction":
+            return _cmd_verify_validator_rpc_canary_transaction(args, private_state)
+        if args.command == "stage-validator-rpc-canary-funding-transaction":
+            return _cmd_stage_validator_rpc_canary_funding_transaction(args, private_state)
+        if args.command == "verify-validator-rpc-canary-funding-transaction":
+            return _cmd_verify_validator_rpc_canary_funding_transaction(args, private_state)
+        if args.command == "release-validator-rpc-canary-funding":
+            return _cmd_release_validator_rpc_canary_funding(args, private_state)
+        if args.command == "verify-validator-rpc-canary-funding-release":
+            return _cmd_verify_validator_rpc_canary_funding_release(args, private_state)
+        if args.command == "apply-validator-rpc-canary-funding":
+            return _cmd_apply_validator_rpc_canary_funding(args, private_state)
+        if args.command == "verify-validator-rpc-canary-funding-evidence":
+            return _cmd_verify_validator_rpc_canary_funding_evidence(args, private_state)
         raise RuntimeError(f"unsupported command: {args.command}")
     except (
         CoolifyObservationError,
@@ -2091,6 +3229,12 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentValidatorAdmissionReleaseError,
         MotherDeploymentValidatorAdmissionExecutorError,
         MotherDeploymentValidatorQuorumRecoveryError,
+        MotherDeploymentPostAdmissionSteadyStateContinuationError,
+        MotherDeploymentMainnetSoakError,
+        MotherDeploymentPrivateRpcIdentityError,
+        MotherDeploymentPrivateRpcError,
+        MotherDeploymentValidatorRpcCanaryError,
+        MotherDeploymentValidatorRpcCanaryFundingError,
         MotherDeploymentPostAdmissionSteadyStateError,
         MotherDeploymentStandbyError,
         MotherDeploymentTransactionError,

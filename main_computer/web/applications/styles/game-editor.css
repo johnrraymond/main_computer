@@ -2716,3 +2716,174 @@
   }
 }
 
+
+/* Warp Navigation Patch: project-level system graph, bridge console, and travel presentation. */
+.scene-shuttle3d-navigation-panel {
+  position: absolute;
+  top: 50px;
+  right: 14px;
+  z-index: 11;
+  display: grid;
+  gap: 9px;
+  width: min(340px, calc(100% - 28px));
+  padding: 12px;
+  border: 1px solid rgba(34, 211, 238, 0.58);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(8, 47, 73, 0.96), rgba(2, 6, 23, 0.94)),
+    repeating-linear-gradient(90deg, rgba(125, 211, 252, 0.05) 0 1px, transparent 1px 22px);
+  color: #e0f2fe;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.035em;
+  box-shadow:
+    0 0 30px rgba(34, 211, 238, 0.24),
+    0 18px 42px rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(10px);
+}
+
+.scene-shuttle3d-navigation-panel[hidden] {
+  display: none;
+}
+
+.scene-shuttle3d-navigation-header,
+.scene-shuttle3d-navigation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scene-shuttle3d-navigation-header strong {
+  color: #fef08a;
+  font-size: 0.82rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.scene-shuttle3d-navigation-close {
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: #bae6fd;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scene-shuttle3d-navigation-current {
+  color: #a5f3fc;
+  font-size: 0.78rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+}
+
+.scene-shuttle3d-navigation-time,
+.scene-shuttle3d-navigation-status {
+  color: #bae6fd;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.scene-shuttle3d-navigation-label {
+  display: grid;
+  gap: 5px;
+  color: #93c5fd;
+  text-transform: uppercase;
+}
+
+.scene-shuttle3d-navigation-select {
+  width: 100%;
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  border-radius: 9px;
+  padding: 8px 9px;
+  background: rgba(15, 23, 42, 0.94);
+  color: #e0f2fe;
+  font: inherit;
+  cursor: pointer;
+}
+
+.scene-shuttle3d-navigation-actions {
+  justify-content: flex-start;
+}
+
+.scene-shuttle3d-navigation-actions button {
+  border: 1px solid rgba(125, 211, 252, 0.52);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: rgba(14, 116, 144, 0.62);
+  color: #cffafe;
+  font: inherit;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.scene-shuttle3d-navigation-actions .scene-shuttle3d-navigation-engage {
+  border-color: rgba(250, 204, 21, 0.72);
+  background: rgba(146, 64, 14, 0.82);
+  color: #fef9c3;
+  box-shadow: 0 0 15px rgba(250, 204, 21, 0.2);
+}
+
+.scene-shuttle3d-navigation-actions button:disabled,
+.scene-shuttle3d-navigation-select:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.scene-shuttle3d-navigation-progress {
+  overflow: hidden;
+  height: 7px;
+  border: 1px solid rgba(125, 211, 252, 0.36);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.86);
+}
+
+.scene-shuttle3d-navigation-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #22d3ee, #fef08a);
+  box-shadow: 0 0 14px rgba(34, 211, 238, 0.6);
+  transition: width 80ms linear;
+}
+
+.scene-shuttle3d-warp-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: 62px;
+  z-index: 9;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.scene-shuttle3d-warp-overlay[hidden] {
+  display: none;
+}
+
+.scene-shuttle3d-warp-readout {
+  padding: 8px 14px;
+  border: 1px solid rgba(207, 250, 254, 0.52);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.78);
+  color: #ecfeff;
+  font-size: 0.72rem;
+  font-weight: 950;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.28);
+  backdrop-filter: blur(7px);
+}
+
+.scene-shuttle3d[data-warp-phase="warp-charging"] .scene-shuttle3d-warp-readout {
+  border-color: rgba(250, 204, 21, 0.68);
+  color: #fef9c3;
+}
+
+.scene-shuttle3d[data-warp-phase="arriving"] .scene-shuttle3d-warp-readout {
+  border-color: rgba(134, 239, 172, 0.68);
+  color: #dcfce7;
+}
+

@@ -42,8 +42,25 @@ def test_feature_matrix_matches_manifest_and_application_inventory() -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     inspected = set(json.loads(completed.stdout))
     matrix_ids = {entry["id"] for entry in matrix["features"]}
+    implemented_ids = {entry["id"] for entry in matrix["implementedFeatures"]}
     manifest_ids = set(manifest["conformance"]["missingBridges"])
     assert matrix_ids == manifest_ids
-    assert inspected <= matrix_ids
+    assert implemented_ids == {
+        "renderer-local-state",
+        "derived-state",
+        "dynamic-input-binding",
+        "control-payload-extraction",
+        "dynamic-property-projection",
+        "conditional-projection",
+        "keyed-collection-reconciliation",
+        "dynamic-item-control-binding",
+        "provisional-state",
+        "provisional-state-runtime",
+        "capability-operation-runtime",
+        "operation-cancellation",
+        "operation-concurrency-policy",
+    }
+    assert inspected <= matrix_ids | implemented_ids
     assert matrix_ids - inspected == {"intent-complete-proof"}
+    assert inspected - matrix_ids == implemented_ids
     assert len({entry["code"] for entry in matrix["features"]}) == len(matrix["features"])

@@ -424,8 +424,9 @@
         },
         "display": {
           "type": "string",
-          "description": "Optional content display program rendered by a prop. Patch P currently supports enemyShipTactical for viewscreen props.",
+          "description": "Optional content display program rendered by a prop. Supported viewscreen programs include systemPlanet and the legacy enemyShipTactical display.",
           "examples": [
+            "systemPlanet",
             "enemyShipTactical"
           ]
         },

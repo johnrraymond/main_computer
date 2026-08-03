@@ -271,6 +271,19 @@ var McelAppDefinition = (() => {
     }
   });
 
+  function normalizeProjectionProperties(properties) {
+    if (properties === undefined || properties === null) return [];
+    if (!Array.isArray(properties)) fail("MCEL_APP_NODE_PROPERTIES_INVALID", "Surface node properties must be an array.");
+    return properties.map((entry, index) => {
+      if (!isPlainObject(entry)) fail("MCEL_APP_NODE_PROPERTY_INVALID", `Surface node property at index ${index} must be an object.`);
+      return deepFreeze({
+        statePath: entry.statePath ? normalizeStatePath(entry.statePath) : "",
+        property: safeString(entry.property),
+        transform: safeString(entry.transform)
+      });
+    });
+  }
+
   function nodeDescriptor(nodeKind, specification = {}) {
     if (!isPlainObject(specification)) fail("MCEL_APP_NODE_INVALID", "Surface node specification must be an object.");
     return descriptor("surface-node", {
@@ -284,6 +297,7 @@ var McelAppDefinition = (() => {
       localPath: specification.localPath ? normalizeStatePath(specification.localPath) : "",
       intentId: safeString(specification.intentId),
       payload: normalizePayload(specification.payload),
+      properties: normalizeProjectionProperties(specification.properties),
       source: specification.source || null,
       templateId: safeString(specification.templateId),
       when: cloneValue(specification.when || {}),
@@ -398,7 +412,7 @@ var McelAppDefinition = (() => {
     });
     application.surface.nodes.forEach((entry) => {
       if (entry.nodeKind === "input") features.add("dynamic-input-binding");
-      if (entry.nodeKind === "property") features.add("dynamic-property-projection");
+      if (entry.nodeKind === "property" || entry.properties.length) features.add("dynamic-property-projection");
       if (entry.nodeKind === "conditional") features.add("conditional-projection");
       if (entry.nodeKind === "collection") {
         features.add("keyed-collection-reconciliation");
@@ -427,6 +441,11 @@ var McelAppDefinition = (() => {
       if (entry.intentId && !operationIds.has(entry.intentId)) fail("MCEL_APP_NODE_INTENT_UNKNOWN", `Surface node ${entry.id} references unknown operation ${entry.intentId}.`);
       if (entry.statePath && !stateIds.has(entry.statePath.split(".")[0])) fail("MCEL_APP_NODE_STATE_UNKNOWN", `Surface node ${entry.id} references unknown state ${entry.statePath}.`);
       if (entry.localPath && !stateIds.has(entry.localPath.split(".")[0])) fail("MCEL_APP_NODE_STATE_UNKNOWN", `Surface node ${entry.id} references unknown local state ${entry.localPath}.`);
+      entry.properties.forEach((propertyEntry) => {
+        if (!propertyEntry.statePath || !stateIds.has(propertyEntry.statePath.split(".")[0])) {
+          fail("MCEL_APP_NODE_STATE_UNKNOWN", `Surface node ${entry.id} property references unknown state ${propertyEntry.statePath || "<empty>"}.`);
+        }
+      });
       listItemControlIntents(entry.item).forEach((intentId) => {
         if (!operationIds.has(intentId)) fail("MCEL_APP_ITEM_INTENT_UNKNOWN", `Collection ${entry.id} references unknown item operation ${intentId}.`);
       });

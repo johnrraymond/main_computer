@@ -419,12 +419,36 @@
         return requireApplicationRuntime().readApplicationState(instance);
       }
 
+      function readApplicationLocalState(instance) {
+        return requireApplicationRuntime().readApplicationLocalState(instance);
+      }
+
+      function readApplicationDerivedState(instance) {
+        return requireApplicationRuntime().readApplicationDerivedState(instance);
+      }
+
+      function readApplicationProvisionalState(instance) {
+        return requireApplicationRuntime().readApplicationProvisionalState(instance);
+      }
+
+      function readApplicationViewState(instance) {
+        return requireApplicationRuntime().readApplicationViewState(instance);
+      }
+
+      function updateApplicationLocalState(instance, patch = {}) {
+        return requireApplicationRuntime().updateApplicationLocalState(instance, patch);
+      }
+
       function createApplicationOperation(instance, scope = "application-operation") {
         return requireApplicationRuntime().createApplicationOperation(instance, scope);
       }
 
       function dispatchApplicationIntent(instance, request = {}) {
         return requireApplicationRuntime().dispatchApplicationIntent(instance, request);
+      }
+
+      function abortApplicationOperations(instance, reason = "manual") {
+        return requireApplicationRuntime().abortApplicationOperations(instance, reason);
       }
 
       function exportApplicationEvidence(instance) {
@@ -565,8 +589,14 @@
         listApplicationDefinitions,
         createApplicationInstance,
         readApplicationState,
+        readApplicationLocalState,
+        readApplicationDerivedState,
+        readApplicationProvisionalState,
+        readApplicationViewState,
+        updateApplicationLocalState,
         createApplicationOperation,
         dispatchApplicationIntent,
+        abortApplicationOperations,
         exportApplicationEvidence,
         mountApplicationPackage,
         applicationPackageMount,

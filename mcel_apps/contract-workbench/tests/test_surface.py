@@ -29,3 +29,6 @@ def test_surface_contract_declares_dynamic_projection_vocabulary() -> None:
     assert '"keyPath": "id"' in source
     assert '"fromItemKey": true' in source
     assert '"fromItemField": "quantity"' in source
+    assert '"property": "disabled"' in source
+    assert '"statePath": "canSubmit"' in source
+    assert '"transform": "not"' in source

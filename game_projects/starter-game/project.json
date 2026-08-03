@@ -2350,23 +2350,35 @@
                 "location": "engineering.access"
               },
               "objective.bridge-access": {
-                "label": "Proceed to the bridge and identify the enemy ship on the viewscreen.",
+                "label": "Proceed to the bridge and inspect the main viewscreen.",
                 "location": "corridor.main"
               },
               "objective.bridge-screen": {
-                "label": "Use the bridge viewscreen to track the enemy ship.",
+                "label": "Use the bridge viewscreen controls to identify the current target.",
                 "location": "bridge.deck"
               },
               "objective.enemy-track": {
-                "label": "Enemy ship tracked on the bridge tactical display.",
+                "label": "Enemy raider centered on the bridge viewscreen.",
                 "location": "bridge.deck"
               },
               "objective.enemy-attack": {
-                "label": "Use the bridge tactical console to fire on the enemy ship.",
+                "label": "Fire the bridge tactical console at the enemy raider.",
                 "location": "bridge.deck"
               },
               "objective.enemy-disabled": {
-                "label": "Enemy raider disabled. Hold the bridge and await next orders.",
+                "label": "Enemy raider destroyed. Open navigation and choose the next system.",
+                "location": "bridge.deck"
+              },
+              "objective.planet-view": {
+                "label": "Center the current system planet on the bridge viewscreen.",
+                "location": "bridge.deck"
+              },
+              "objective.planet-scan": {
+                "label": "Run a planetary scan from the bridge tactical/sensor console.",
+                "location": "bridge.deck"
+              },
+              "objective.planet-surveyed": {
+                "label": "Planetary survey complete. Open navigation and choose the next system.",
                 "location": "bridge.deck"
               }
             },
@@ -2431,9 +2443,14 @@
                 "state": "standby"
               },
               "terminal.bridge-tactical": {
-                "label": "Bridge Tactical Console",
+                "label": "Bridge Tactical Console / Sensor Array",
                 "location": "bridge.deck",
                 "state": "ready"
+              },
+              "terminal.bridge-navigation": {
+                "label": "Bridge Navigation Console",
+                "location": "bridge.deck",
+                "state": "standby"
               }
             },
             "flags": {
@@ -2444,7 +2461,12 @@
               "bridgeTacticalShotsFired": 0,
               "bridgeTacticalLastFireAtMs": 0,
               "enemyShipHullPercent": 100,
-              "enemyShipDisabled": false
+              "enemyShipDisabled": false,
+              "currentSystemPlanetSurveyed": false,
+              "lastSurveyedPlanetId": "",
+              "lastSurveyedSystemId": "",
+              "planetScansCompleted": 0,
+              "planetScanLastAtMs": 0
             },
             "interactables": [
               {
@@ -2657,7 +2679,7 @@
               {
                 "id": "terminal.bridge-tactical",
                 "kind": "terminal",
-                "label": "Bridge Tactical Console",
+                "label": "Bridge Tactical Console / Sensor Array",
                 "location": "bridge.deck",
                 "position": [
                   2.85,
@@ -2665,7 +2687,7 @@
                 ],
                 "range": 1.85,
                 "action": "fireBridgeTacticalConsole",
-                "prompt": "Press E to fire Bridge Tactical Console.",
+                "prompt": "Press E to use the bridge tactical console / sensor array.",
                 "visual": {
                   "color": "#f97316",
                   "activeColor": "#fef3c7",
@@ -2688,10 +2710,33 @@
                 ],
                 "range": 2.45,
                 "action": "trackEnemyShipOnViewscreen",
-                "prompt": "Press E to use Bridge Viewscreen.",
+                "prompt": "Press E to use the bridge viewscreen controls.",
                 "visual": {
                   "color": "#22d3ee",
                   "activeColor": "#fef3c7",
+                  "radiusScale": 0.32,
+                  "height": 0.66,
+                  "activeHeight": 0.96,
+                  "baseSize": 0.2,
+                  "terminalPanel": true,
+                  "routeBeam": false
+                }
+              },
+              {
+                "id": "terminal.bridge-navigation",
+                "kind": "terminal",
+                "label": "Bridge Navigation Console",
+                "location": "bridge.deck",
+                "position": [
+                  -2.85,
+                  -36.7
+                ],
+                "range": 2.45,
+                "action": "openBridgeNavigationConsole",
+                "prompt": "Press E to use Bridge Navigation.",
+                "visual": {
+                  "color": "#22d3ee",
+                  "activeColor": "#fef08a",
                   "radiusScale": 0.32,
                   "height": 0.66,
                   "activeHeight": 0.96,
@@ -2765,45 +2810,65 @@
               },
               "trackEnemyShipOnViewscreen": {
                 "id": "trackEnemyShipOnViewscreen",
-                "label": "Track enemy ship on bridge viewscreen",
+                "label": "Acquire bridge viewscreen target",
                 "handler": "trackEnemyShipOnViewscreen",
-                "status": "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.",
+                "status": "Current target centered on the main viewscreen.",
                 "changesState": [
                   "terminals[terminal.bridge-viewscreen].state",
-                  "flags.enemyShipOnBridgeViewscreen",
                   "flags.bridgeViewscreenTrackingActive",
+                  "flags.enemyShipOnBridgeViewscreen",
+                  "flags.lastSurveyedPlanetId",
+                  "flags.lastSurveyedSystemId",
                   "flags.bridgeViewscreenInteractedAtMs",
                   "objectiveId",
                   "lastInteractionStatus"
                 ],
-                "successStatus": "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console to fire.",
+                "successStatus": "Current target centered on the main viewscreen.",
                 "nextObjective": [
                   "objective.enemy-attack",
-                  "objective.enemy-disabled"
+                  "objective.enemy-disabled",
+                  "objective.planet-scan",
+                  "objective.planet-surveyed"
                 ]
               },
               "fireBridgeTacticalConsole": {
                 "id": "fireBridgeTacticalConsole",
-                "label": "Fire Bridge Tactical Console",
+                "label": "Fire tactical weapons or scan planet",
                 "handler": "fireBridgeTacticalConsole",
                 "changesState": [
                   "terminals[terminal.bridge-viewscreen].state",
                   "terminals[terminal.bridge-tactical].state",
                   "flags.bridgeViewscreenTrackingActive",
-                  "flags.enemyShipOnBridgeViewscreen",
-                  "flags.bridgeTacticalArmed",
-                  "flags.bridgeTacticalShotsFired",
-                  "flags.bridgeTacticalLastFireAtMs",
                   "flags.enemyShipHullPercent",
                   "flags.enemyShipDisabled",
+                  "flags.bridgeTacticalShotsFired",
+                  "flags.bridgeTacticalLastFireAtMs",
+                  "flags.currentSystemPlanetSurveyed",
+                  "flags.lastSurveyedPlanetId",
+                  "flags.lastSurveyedSystemId",
+                  "flags.planetScansCompleted",
+                  "flags.planetScanLastAtMs",
                   "objectiveId",
                   "lastInteractionStatus"
                 ],
-                "successStatus": "Bridge tactical console fired. Enemy raider hull updated.",
+                "successStatus": "Bridge tactical / sensor action completed.",
                 "nextObjective": [
                   "objective.enemy-attack",
-                  "objective.enemy-disabled"
-                ]
+                  "objective.enemy-disabled",
+                  "objective.planet-surveyed"
+                ],
+                "status": "Planetary sensor sweep complete. Navigation is ready for the next jump."
+              },
+              "openBridgeNavigationConsole": {
+                "id": "openBridgeNavigationConsole",
+                "label": "Open Bridge Navigation Console",
+                "handler": "openBridgeNavigationConsole",
+                "status": "Bridge navigation online. Plot an adjacent course and engage warp.",
+                "changesState": [
+                  "terminals[terminal.bridge-navigation].state",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Bridge navigation online. Plot an adjacent course and engage warp."
               }
             },
             "validation": {
@@ -2914,9 +2979,9 @@
                   1.05,
                   0.52
                 ],
-                "color": "#f97316",
+                "color": "#22d3ee",
                 "emissive": true,
-                "label": "Tactical console marker"
+                "label": "Planetary sensor console marker"
               },
               {
                 "id": "prop.display.bridge-viewscreen",
@@ -2934,9 +2999,9 @@
                 "color": "#38bdf8",
                 "emissive": true,
                 "facing": "north",
-                "display": "enemyShipTactical",
-                "target": "enemyShip",
-                "label": "Bridge enemy ship tactical viewscreen"
+                "display": "systemPlanet",
+                "target": "currentSystemPlanet",
+                "label": "Bridge current-system planetary viewscreen"
               },
               {
                 "id": "prop.bridge-viewscreen-status",
@@ -2952,8 +3017,8 @@
                 ],
                 "color": "#38bdf8",
                 "emissive": true,
-                "target": "enemyShip",
-                "label": "Enemy ship status panel"
+                "target": "currentSystemPlanet",
+                "label": "Current planet status panel"
               },
               {
                 "id": "prop.console.bay-ops-terminal",
@@ -3006,7 +3071,7 @@
                   0.42,
                   0.74
                 ],
-                "color": "#ef4444",
+                "color": "#22d3ee",
                 "emissive": true,
                 "facing": "south",
                 "target": "terminal.bridge-viewscreen",
@@ -3025,11 +3090,11 @@
                   0.54,
                   0.82
                 ],
-                "color": "#f97316",
+                "color": "#22d3ee",
                 "emissive": true,
                 "facing": "west",
                 "target": "terminal.bridge-tactical",
-                "label": "Bridge tactical console body"
+                "label": "Bridge planetary sensor console body"
               },
               {
                 "id": "prop.marker.bay-ops-terminal",
@@ -3128,10 +3193,46 @@
                   0.36,
                   0.66
                 ],
-                "color": "#ef4444",
+                "color": "#22d3ee",
                 "emissive": true,
                 "target": "terminal.bridge-viewscreen",
                 "label": "Bridge viewscreen marker"
+              },
+              {
+                "id": "prop.console.bridge-navigation",
+                "room": "bridge.deck",
+                "kind": "terminal-console",
+                "position": [
+                  -2.85,
+                  -36.7
+                ],
+                "size": [
+                  0.95,
+                  0.54,
+                  0.82
+                ],
+                "color": "#22d3ee",
+                "emissive": true,
+                "facing": "east",
+                "target": "terminal.bridge-navigation",
+                "label": "Bridge navigation console body"
+              },
+              {
+                "id": "prop.marker.bridge-navigation",
+                "room": "bridge.deck",
+                "kind": "map-marker",
+                "position": [
+                  -2.85,
+                  -36.7
+                ],
+                "size": [
+                  0.36,
+                  0.66
+                ],
+                "color": "#22d3ee",
+                "emissive": true,
+                "target": "terminal.bridge-navigation",
+                "label": "Bridge navigation marker"
               }
             ]
           }
@@ -3184,7 +3285,27 @@
             -3
           ],
           "localSpaceId": "space.solace-reach",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.haven",
+            "label": "Haven",
+            "classification": "temperate",
+            "radiusScale": 1.02,
+            "surfaceColor": "#2f855a",
+            "secondaryColor": "#2563eb",
+            "atmosphereColor": "#93c5fd",
+            "cloudColor": "#f8fafc",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#94a3b8",
+              "innerRadius": 1.45,
+              "outerRadius": 1.85,
+              "tiltDegrees": 8
+            },
+            "rotationPeriodHours": 26,
+            "description": "A green-blue refuge world with broad inland seas."
+          }
         },
         {
           "id": "system.vela-gate",
@@ -3195,7 +3316,27 @@
             -2
           ],
           "localSpaceId": "space.vela-gate",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.velaris",
+            "label": "Velaris",
+            "classification": "oceanic",
+            "radiusScale": 1.08,
+            "surfaceColor": "#0f766e",
+            "secondaryColor": "#1d4ed8",
+            "atmosphereColor": "#67e8f9",
+            "cloudColor": "#e0f2fe",
+            "moonCount": 2,
+            "rings": {
+              "enabled": true,
+              "color": "#bae6fd",
+              "innerRadius": 1.35,
+              "outerRadius": 1.78,
+              "tiltDegrees": 21
+            },
+            "rotationPeriodHours": 31,
+            "description": "A deep ocean planet crossed by luminous storm belts."
+          }
         },
         {
           "id": "system.carina-watch",
@@ -3206,7 +3347,27 @@
             0
           ],
           "localSpaceId": "space.carina-watch",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.carina",
+            "label": "Carina",
+            "classification": "desert",
+            "radiusScale": 0.94,
+            "surfaceColor": "#c2410c",
+            "secondaryColor": "#f59e0b",
+            "atmosphereColor": "#fdba74",
+            "cloudColor": "#ffedd5",
+            "moonCount": 0,
+            "rings": {
+              "enabled": false,
+              "color": "#fbbf24",
+              "innerRadius": 1.4,
+              "outerRadius": 1.8,
+              "tiltDegrees": 14
+            },
+            "rotationPeriodHours": 19,
+            "description": "A dry world of copper dunes and salt basins."
+          }
         },
         {
           "id": "system.orison",
@@ -3217,7 +3378,27 @@
             2
           ],
           "localSpaceId": "space.orison",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.orison",
+            "label": "Orison",
+            "classification": "gas-giant",
+            "radiusScale": 1.28,
+            "surfaceColor": "#a855f7",
+            "secondaryColor": "#f472b6",
+            "atmosphereColor": "#ddd6fe",
+            "cloudColor": "#fae8ff",
+            "moonCount": 5,
+            "rings": {
+              "enabled": true,
+              "color": "#e9d5ff",
+              "innerRadius": 1.28,
+              "outerRadius": 1.95,
+              "tiltDegrees": 11
+            },
+            "rotationPeriodHours": 12,
+            "description": "A violet gas giant with a bright equatorial ring."
+          }
         },
         {
           "id": "system.cinder",
@@ -3228,7 +3409,27 @@
             3
           ],
           "localSpaceId": "space.cinder",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.cinderfall",
+            "label": "Cinderfall",
+            "classification": "volcanic",
+            "radiusScale": 0.88,
+            "surfaceColor": "#7f1d1d",
+            "secondaryColor": "#ef4444",
+            "atmosphereColor": "#fb923c",
+            "cloudColor": "#fed7aa",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#f97316",
+              "innerRadius": 1.35,
+              "outerRadius": 1.7,
+              "tiltDegrees": 4
+            },
+            "rotationPeriodHours": 41,
+            "description": "A volcanic planet veined by continent-scale lava fields."
+          }
         },
         {
           "id": "system.lumen",
@@ -3239,7 +3440,27 @@
             2
           ],
           "localSpaceId": "space.lumen",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.lumina",
+            "label": "Lumina",
+            "classification": "ice",
+            "radiusScale": 0.96,
+            "surfaceColor": "#bfdbfe",
+            "secondaryColor": "#e0f2fe",
+            "atmosphereColor": "#67e8f9",
+            "cloudColor": "#ffffff",
+            "moonCount": 2,
+            "rings": {
+              "enabled": true,
+              "color": "#dbeafe",
+              "innerRadius": 1.42,
+              "outerRadius": 1.82,
+              "tiltDegrees": 17
+            },
+            "rotationPeriodHours": 53,
+            "description": "A frozen world whose fractured ice glows from below."
+          }
         },
         {
           "id": "system.ardent",
@@ -3250,7 +3471,27 @@
             0
           ],
           "localSpaceId": "space.ardent",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.ardentia",
+            "label": "Ardentia",
+            "classification": "jungle",
+            "radiusScale": 1.04,
+            "surfaceColor": "#166534",
+            "secondaryColor": "#65a30d",
+            "atmosphereColor": "#86efac",
+            "cloudColor": "#dcfce7",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#84cc16",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 27
+            },
+            "rotationPeriodHours": 22,
+            "description": "A humid jungle planet wrapped in emerald cloud systems."
+          }
         },
         {
           "id": "system.pax",
@@ -3261,7 +3502,27 @@
             -2
           ],
           "localSpaceId": "space.pax",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.paxora",
+            "label": "Paxora",
+            "classification": "temperate",
+            "radiusScale": 1.0,
+            "surfaceColor": "#15803d",
+            "secondaryColor": "#0284c7",
+            "atmosphereColor": "#7dd3fc",
+            "cloudColor": "#f0f9ff",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#38bdf8",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 3
+            },
+            "rotationPeriodHours": 24,
+            "description": "A mild continental world with stable blue oceans."
+          }
         },
         {
           "id": "system.meridian-prime",
@@ -3272,7 +3533,27 @@
             -3
           ],
           "localSpaceId": "space.meridian-prime",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.meridia",
+            "label": "Meridia",
+            "classification": "rocky",
+            "radiusScale": 0.91,
+            "surfaceColor": "#78716c",
+            "secondaryColor": "#a8a29e",
+            "atmosphereColor": "#cbd5e1",
+            "cloudColor": "#f8fafc",
+            "moonCount": 0,
+            "rings": {
+              "enabled": false,
+              "color": "#94a3b8",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 6
+            },
+            "rotationPeriodHours": 37,
+            "description": "A mineral-rich rocky world scored by ancient impacts."
+          }
         },
         {
           "id": "system.tethys",
@@ -3283,7 +3564,27 @@
             -2
           ],
           "localSpaceId": "space.tethys",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.tethys",
+            "label": "Tethys",
+            "classification": "oceanic",
+            "radiusScale": 1.1,
+            "surfaceColor": "#0369a1",
+            "secondaryColor": "#0e7490",
+            "atmosphereColor": "#22d3ee",
+            "cloudColor": "#ecfeff",
+            "moonCount": 3,
+            "rings": {
+              "enabled": false,
+              "color": "#67e8f9",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 19
+            },
+            "rotationPeriodHours": 29,
+            "description": "A stormy water world with only scattered volcanic islands."
+          }
         },
         {
           "id": "system.ilyra",
@@ -3294,7 +3595,27 @@
             0
           ],
           "localSpaceId": "space.ilyra",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.ilyria",
+            "label": "Ilyria",
+            "classification": "temperate",
+            "radiusScale": 1.03,
+            "surfaceColor": "#4d7c0f",
+            "secondaryColor": "#2563eb",
+            "atmosphereColor": "#93c5fd",
+            "cloudColor": "#f8fafc",
+            "moonCount": 2,
+            "rings": {
+              "enabled": true,
+              "color": "#d9f99d",
+              "innerRadius": 1.36,
+              "outerRadius": 1.7,
+              "tiltDegrees": 9
+            },
+            "rotationPeriodHours": 27,
+            "description": "A fertile ringed world with long archipelagos."
+          }
         },
         {
           "id": "system.daedalus",
@@ -3305,7 +3626,27 @@
             2
           ],
           "localSpaceId": "space.daedalus",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.daedalon",
+            "label": "Daedalon",
+            "classification": "barren",
+            "radiusScale": 0.86,
+            "surfaceColor": "#57534e",
+            "secondaryColor": "#a16207",
+            "atmosphereColor": "#d6d3d1",
+            "cloudColor": "#fafaf9",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#a8a29e",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 31
+            },
+            "rotationPeriodHours": 61,
+            "description": "A barren high-gravity world of ridges and metallic plains."
+          }
         },
         {
           "id": "system.nacre",
@@ -3316,7 +3657,27 @@
             3
           ],
           "localSpaceId": "space.nacre",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.nacria",
+            "label": "Nacria",
+            "classification": "oceanic",
+            "radiusScale": 0.98,
+            "surfaceColor": "#0f766e",
+            "secondaryColor": "#0891b2",
+            "atmosphereColor": "#5eead4",
+            "cloudColor": "#ccfbf1",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#2dd4bf",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 13
+            },
+            "rotationPeriodHours": 18,
+            "description": "A pale ocean world covered by nacreous cloud decks."
+          }
         },
         {
           "id": "system.sable",
@@ -3327,7 +3688,27 @@
             2
           ],
           "localSpaceId": "space.sable",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.sable",
+            "label": "Sable",
+            "classification": "carbon",
+            "radiusScale": 0.92,
+            "surfaceColor": "#111827",
+            "secondaryColor": "#374151",
+            "atmosphereColor": "#a78bfa",
+            "cloudColor": "#e5e7eb",
+            "moonCount": 1,
+            "rings": {
+              "enabled": true,
+              "color": "#64748b",
+              "innerRadius": 1.32,
+              "outerRadius": 1.68,
+              "tiltDegrees": 24
+            },
+            "rotationPeriodHours": 44,
+            "description": "A dark carbon world with amethyst atmospheric haze."
+          }
         },
         {
           "id": "system.vesper",
@@ -3338,7 +3719,27 @@
             0
           ],
           "localSpaceId": "space.vesper",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.vespara",
+            "label": "Vespara",
+            "classification": "desert",
+            "radiusScale": 1.01,
+            "surfaceColor": "#b45309",
+            "secondaryColor": "#f97316",
+            "atmosphereColor": "#fbbf24",
+            "cloudColor": "#fffbeb",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#fdba74",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 16
+            },
+            "rotationPeriodHours": 33,
+            "description": "A warm desert planet with vast ochre canyon networks."
+          }
         },
         {
           "id": "system.kestrel",
@@ -3349,7 +3750,27 @@
             -2
           ],
           "localSpaceId": "space.kestrel",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.kestrel",
+            "label": "Kestrel",
+            "classification": "mountain",
+            "radiusScale": 0.97,
+            "surfaceColor": "#475569",
+            "secondaryColor": "#64748b",
+            "atmosphereColor": "#bae6fd",
+            "cloudColor": "#f8fafc",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#94a3b8",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 23
+            },
+            "rotationPeriodHours": 30,
+            "description": "A rugged alpine world dominated by young mountain chains."
+          }
         },
         {
           "id": "system.helix-prime",
@@ -3360,7 +3781,27 @@
             5
           ],
           "localSpaceId": "space.helix-prime",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.helion",
+            "label": "Helion",
+            "classification": "gas-giant",
+            "radiusScale": 1.34,
+            "surfaceColor": "#f59e0b",
+            "secondaryColor": "#f97316",
+            "atmosphereColor": "#fde68a",
+            "cloudColor": "#fff7ed",
+            "moonCount": 7,
+            "rings": {
+              "enabled": true,
+              "color": "#fef3c7",
+              "innerRadius": 1.25,
+              "outerRadius": 1.9,
+              "tiltDegrees": 7
+            },
+            "rotationPeriodHours": 10,
+            "description": "A golden gas giant with turbulent amber bands."
+          }
         },
         {
           "id": "system.aster",
@@ -3371,7 +3812,27 @@
             6
           ],
           "localSpaceId": "space.aster",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.asteria",
+            "label": "Asteria",
+            "classification": "temperate",
+            "radiusScale": 1.06,
+            "surfaceColor": "#16a34a",
+            "secondaryColor": "#0ea5e9",
+            "atmosphereColor": "#7dd3fc",
+            "cloudColor": "#f0fdf4",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#86efac",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 12
+            },
+            "rotationPeriodHours": 25,
+            "description": "A bright garden world beneath a dense starfield."
+          }
         },
         {
           "id": "system.calyx",
@@ -3382,7 +3843,27 @@
             8
           ],
           "localSpaceId": "space.calyx",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.calyx",
+            "label": "Calyx",
+            "classification": "jungle",
+            "radiusScale": 1.09,
+            "surfaceColor": "#14532d",
+            "secondaryColor": "#4d7c0f",
+            "atmosphereColor": "#6ee7b7",
+            "cloudColor": "#d1fae5",
+            "moonCount": 4,
+            "rings": {
+              "enabled": true,
+              "color": "#a7f3d0",
+              "innerRadius": 1.38,
+              "outerRadius": 1.84,
+              "tiltDegrees": 29
+            },
+            "rotationPeriodHours": 34,
+            "description": "A massive jungle planet with a thin silver ring."
+          }
         },
         {
           "id": "system.remora",
@@ -3393,7 +3874,27 @@
             10
           ],
           "localSpaceId": "space.remora",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.remora",
+            "label": "Remora",
+            "classification": "oceanic",
+            "radiusScale": 0.95,
+            "surfaceColor": "#155e75",
+            "secondaryColor": "#1e40af",
+            "atmosphereColor": "#67e8f9",
+            "cloudColor": "#e0f2fe",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#38bdf8",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 18
+            },
+            "rotationPeriodHours": 21,
+            "description": "A compact ocean planet with powerful polar currents."
+          }
         },
         {
           "id": "system.talon",
@@ -3404,7 +3905,27 @@
             11
           ],
           "localSpaceId": "space.talon",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.talon",
+            "label": "Talon",
+            "classification": "rocky",
+            "radiusScale": 0.89,
+            "surfaceColor": "#78350f",
+            "secondaryColor": "#a16207",
+            "atmosphereColor": "#fbbf24",
+            "cloudColor": "#fef3c7",
+            "moonCount": 0,
+            "rings": {
+              "enabled": false,
+              "color": "#f59e0b",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 35
+            },
+            "rotationPeriodHours": 47,
+            "description": "A sharp-ridged rocky world rich in iron and sulfur."
+          }
         },
         {
           "id": "system.eos",
@@ -3415,7 +3936,27 @@
             10
           ],
           "localSpaceId": "space.eos",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.eos",
+            "label": "Eos",
+            "classification": "temperate",
+            "radiusScale": 1.0,
+            "surfaceColor": "#22c55e",
+            "secondaryColor": "#0284c7",
+            "atmosphereColor": "#fda4af",
+            "cloudColor": "#fff1f2",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#fb7185",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 5
+            },
+            "rotationPeriodHours": 23,
+            "description": "A dawn-lit world with rose-colored upper atmosphere."
+          }
         },
         {
           "id": "system.morrow",
@@ -3426,7 +3967,27 @@
             8
           ],
           "localSpaceId": "space.morrow",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.morrow",
+            "label": "Morrow",
+            "classification": "ice",
+            "radiusScale": 0.93,
+            "surfaceColor": "#94a3b8",
+            "secondaryColor": "#bfdbfe",
+            "atmosphereColor": "#a5f3fc",
+            "cloudColor": "#f8fafc",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#cbd5e1",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 39
+            },
+            "rotationPeriodHours": 68,
+            "description": "A dim ice planet orbiting near the edge of its system."
+          }
         },
         {
           "id": "system.halcyon",
@@ -3437,7 +3998,27 @@
             6
           ],
           "localSpaceId": "space.halcyon",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.halcyon",
+            "label": "Halcyon",
+            "classification": "temperate",
+            "radiusScale": 1.07,
+            "surfaceColor": "#15803d",
+            "secondaryColor": "#0369a1",
+            "atmosphereColor": "#5eead4",
+            "cloudColor": "#ecfeff",
+            "moonCount": 3,
+            "rings": {
+              "enabled": true,
+              "color": "#99f6e4",
+              "innerRadius": 1.33,
+              "outerRadius": 1.74,
+              "tiltDegrees": 15
+            },
+            "rotationPeriodHours": 28,
+            "description": "A calm blue-green world girdled by a narrow ring."
+          }
         },
         {
           "id": "system.crown-prime",
@@ -3448,7 +4029,27 @@
             -11
           ],
           "localSpaceId": "space.crown-prime",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.corona",
+            "label": "Corona",
+            "classification": "gas-giant",
+            "radiusScale": 1.3,
+            "surfaceColor": "#f97316",
+            "secondaryColor": "#eab308",
+            "atmosphereColor": "#fde047",
+            "cloudColor": "#fef9c3",
+            "moonCount": 6,
+            "rings": {
+              "enabled": false,
+              "color": "#facc15",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 2
+            },
+            "rotationPeriodHours": 9,
+            "description": "A hot gas giant blazing beneath its system's bright star."
+          }
         },
         {
           "id": "system.regulus",
@@ -3459,7 +4060,27 @@
             -10
           ],
           "localSpaceId": "space.regulus",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.regulus",
+            "label": "Regulus",
+            "classification": "desert",
+            "radiusScale": 1.02,
+            "surfaceColor": "#ea580c",
+            "secondaryColor": "#facc15",
+            "atmosphereColor": "#fdba74",
+            "cloudColor": "#fff7ed",
+            "moonCount": 1,
+            "rings": {
+              "enabled": true,
+              "color": "#fed7aa",
+              "innerRadius": 1.3,
+              "outerRadius": 1.72,
+              "tiltDegrees": 26
+            },
+            "rotationPeriodHours": 38,
+            "description": "A ringed desert world marked by enormous dry seas."
+          }
         },
         {
           "id": "system.chiron",
@@ -3470,7 +4091,27 @@
             -8
           ],
           "localSpaceId": "space.chiron",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.chiron",
+            "label": "Chiron",
+            "classification": "rocky",
+            "radiusScale": 0.9,
+            "surfaceColor": "#52525b",
+            "secondaryColor": "#71717a",
+            "atmosphereColor": "#c4b5fd",
+            "cloudColor": "#f5f3ff",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#a78bfa",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 32
+            },
+            "rotationPeriodHours": 49,
+            "description": "A fractured rocky planet with violet auroral storms."
+          }
         },
         {
           "id": "system.bellatrix",
@@ -3481,7 +4122,27 @@
             -6
           ],
           "localSpaceId": "space.bellatrix",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.bellara",
+            "label": "Bellara",
+            "classification": "oceanic",
+            "radiusScale": 1.12,
+            "surfaceColor": "#0c4a6e",
+            "secondaryColor": "#2563eb",
+            "atmosphereColor": "#38bdf8",
+            "cloudColor": "#e0f2fe",
+            "moonCount": 4,
+            "rings": {
+              "enabled": true,
+              "color": "#93c5fd",
+              "innerRadius": 1.36,
+              "outerRadius": 1.88,
+              "tiltDegrees": 20
+            },
+            "rotationPeriodHours": 35,
+            "description": "A large ringed ocean planet with deep cobalt seas."
+          }
         },
         {
           "id": "system.kepler",
@@ -3492,7 +4153,27 @@
             -5
           ],
           "localSpaceId": "space.kepler",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.kepleria",
+            "label": "Kepleria",
+            "classification": "temperate",
+            "radiusScale": 0.99,
+            "surfaceColor": "#3f6212",
+            "secondaryColor": "#0284c7",
+            "atmosphereColor": "#7dd3fc",
+            "cloudColor": "#f0fdf4",
+            "moonCount": 1,
+            "rings": {
+              "enabled": false,
+              "color": "#84cc16",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 10
+            },
+            "rotationPeriodHours": 24,
+            "description": "A balanced terrestrial world with broad grasslands."
+          }
         },
         {
           "id": "system.lyra",
@@ -3503,7 +4184,27 @@
             -6
           ],
           "localSpaceId": "space.lyra",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.lyria",
+            "label": "Lyria",
+            "classification": "ice",
+            "radiusScale": 0.97,
+            "surfaceColor": "#dbeafe",
+            "secondaryColor": "#93c5fd",
+            "atmosphereColor": "#67e8f9",
+            "cloudColor": "#ffffff",
+            "moonCount": 3,
+            "rings": {
+              "enabled": true,
+              "color": "#e0f2fe",
+              "innerRadius": 1.34,
+              "outerRadius": 1.8,
+              "tiltDegrees": 28
+            },
+            "rotationPeriodHours": 57,
+            "description": "A ringed ice world reflecting blue-white starlight."
+          }
         },
         {
           "id": "system.antares",
@@ -3514,7 +4215,27 @@
             -8
           ],
           "localSpaceId": "space.antares",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.antares",
+            "label": "Antares",
+            "classification": "volcanic",
+            "radiusScale": 1.05,
+            "surfaceColor": "#991b1b",
+            "secondaryColor": "#dc2626",
+            "atmosphereColor": "#fb923c",
+            "cloudColor": "#ffedd5",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#ef4444",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 8
+            },
+            "rotationPeriodHours": 17,
+            "description": "A massive volcanic world under a red giant sun."
+          }
         },
         {
           "id": "system.seraph",
@@ -3525,7 +4246,27 @@
             -10
           ],
           "localSpaceId": "space.seraph",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.seraph",
+            "label": "Seraph",
+            "classification": "cloud",
+            "radiusScale": 1.16,
+            "surfaceColor": "#f8fafc",
+            "secondaryColor": "#fde68a",
+            "atmosphereColor": "#f9a8d4",
+            "cloudColor": "#ffffff",
+            "moonCount": 4,
+            "rings": {
+              "enabled": true,
+              "color": "#fce7f3",
+              "innerRadius": 1.3,
+              "outerRadius": 1.82,
+              "tiltDegrees": 33
+            },
+            "rotationPeriodHours": 14,
+            "description": "A luminous cloud world with a faint rose ring."
+          }
         },
         {
           "id": "system.verge-prime",
@@ -3536,7 +4277,27 @@
             -3
           ],
           "localSpaceId": "space.verge-prime",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.veridia",
+            "label": "Veridia",
+            "classification": "jungle",
+            "radiusScale": 1.08,
+            "surfaceColor": "#166534",
+            "secondaryColor": "#15803d",
+            "atmosphereColor": "#34d399",
+            "cloudColor": "#d1fae5",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#4ade80",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 18
+            },
+            "rotationPeriodHours": 32,
+            "description": "A dense jungle world at the frontier of mapped space."
+          }
         },
         {
           "id": "system.rook",
@@ -3547,7 +4308,27 @@
             -2
           ],
           "localSpaceId": "space.rook",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.rook",
+            "label": "Rook",
+            "classification": "barren",
+            "radiusScale": 0.87,
+            "surfaceColor": "#292524",
+            "secondaryColor": "#57534e",
+            "atmosphereColor": "#94a3b8",
+            "cloudColor": "#e7e5e4",
+            "moonCount": 0,
+            "rings": {
+              "enabled": false,
+              "color": "#78716c",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 42
+            },
+            "rotationPeriodHours": 73,
+            "description": "A small barren planet resembling a black stone fortress."
+          }
         },
         {
           "id": "system.fenris",
@@ -3558,7 +4339,27 @@
             0
           ],
           "localSpaceId": "space.fenris",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.fenris",
+            "label": "Fenris",
+            "classification": "ice",
+            "radiusScale": 1.01,
+            "surfaceColor": "#64748b",
+            "secondaryColor": "#bfdbfe",
+            "atmosphereColor": "#a5f3fc",
+            "cloudColor": "#f8fafc",
+            "moonCount": 3,
+            "rings": {
+              "enabled": false,
+              "color": "#cbd5e1",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 37
+            },
+            "rotationPeriodHours": 62,
+            "description": "A cold wolf-gray world with deep glacial trenches."
+          }
         },
         {
           "id": "system.nyx",
@@ -3569,7 +4370,27 @@
             2
           ],
           "localSpaceId": "space.nyx",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.nyxa",
+            "label": "Nyxa",
+            "classification": "carbon",
+            "radiusScale": 0.94,
+            "surfaceColor": "#030712",
+            "secondaryColor": "#1f2937",
+            "atmosphereColor": "#818cf8",
+            "cloudColor": "#e0e7ff",
+            "moonCount": 1,
+            "rings": {
+              "enabled": true,
+              "color": "#4f46e5",
+              "innerRadius": 1.31,
+              "outerRadius": 1.73,
+              "tiltDegrees": 44
+            },
+            "rotationPeriodHours": 51,
+            "description": "A near-black ringed planet beneath an indigo haze."
+          }
         },
         {
           "id": "system.osprey",
@@ -3580,7 +4401,27 @@
             3
           ],
           "localSpaceId": "space.osprey",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.osprey",
+            "label": "Osprey",
+            "classification": "temperate",
+            "radiusScale": 1.03,
+            "surfaceColor": "#4d7c0f",
+            "secondaryColor": "#0ea5e9",
+            "atmosphereColor": "#7dd3fc",
+            "cloudColor": "#ecfeff",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#22d3ee",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 22
+            },
+            "rotationPeriodHours": 27,
+            "description": "A breezy temperate planet of islands and shallow seas."
+          }
         },
         {
           "id": "system.tempest",
@@ -3591,7 +4432,27 @@
             2
           ],
           "localSpaceId": "space.tempest",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.tempest",
+            "label": "Tempest",
+            "classification": "gas-giant",
+            "radiusScale": 1.36,
+            "surfaceColor": "#1d4ed8",
+            "secondaryColor": "#7c3aed",
+            "atmosphereColor": "#22d3ee",
+            "cloudColor": "#e0e7ff",
+            "moonCount": 8,
+            "rings": {
+              "enabled": true,
+              "color": "#a5b4fc",
+              "innerRadius": 1.24,
+              "outerRadius": 1.92,
+              "tiltDegrees": 36
+            },
+            "rotationPeriodHours": 8,
+            "description": "A huge storm giant encircled by an electric blue ring."
+          }
         },
         {
           "id": "system.bastion",
@@ -3602,7 +4463,27 @@
             0
           ],
           "localSpaceId": "space.bastion",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.bastion",
+            "label": "Bastion",
+            "classification": "mountain",
+            "radiusScale": 1.0,
+            "surfaceColor": "#334155",
+            "secondaryColor": "#78716c",
+            "atmosphereColor": "#cbd5e1",
+            "cloudColor": "#f8fafc",
+            "moonCount": 2,
+            "rings": {
+              "enabled": false,
+              "color": "#94a3b8",
+              "innerRadius": 1.4,
+              "outerRadius": 1.75,
+              "tiltDegrees": 30
+            },
+            "rotationPeriodHours": 46,
+            "description": "A high-gravity mountain world with fortress-like plateaus."
+          }
         },
         {
           "id": "system.axiom",
@@ -3613,7 +4494,27 @@
             -2
           ],
           "localSpaceId": "space.axiom",
-          "arrivalProfile": "arrival.bridge-retain-player"
+          "arrivalProfile": "arrival.bridge-retain-player",
+          "primaryPlanet": {
+            "id": "planet.axioma",
+            "label": "Axioma",
+            "classification": "artificial",
+            "radiusScale": 0.98,
+            "surfaceColor": "#0f172a",
+            "secondaryColor": "#0891b2",
+            "atmosphereColor": "#22d3ee",
+            "cloudColor": "#ecfeff",
+            "moonCount": 3,
+            "rings": {
+              "enabled": true,
+              "color": "#67e8f9",
+              "innerRadius": 1.29,
+              "outerRadius": 1.76,
+              "tiltDegrees": 0
+            },
+            "rotationPeriodHours": 20,
+            "description": "An engineered world whose geometric seas reveal artificial origins."
+          }
         }
       ],
       "routes": [
@@ -4075,7 +4976,9 @@
         "requireStartReachability": true,
         "requireArrivalProfiles": true,
         "requireStateReferences": true,
-        "requireUniqueMapPositions": true
+        "requireUniqueMapPositions": true,
+        "requirePrimaryPlanetPerSystem": true,
+        "requireUniquePlanetIds": true
       }
     },
     "renderer": "raw-webgl-vertex-mesh",

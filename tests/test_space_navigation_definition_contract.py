@@ -52,6 +52,9 @@ class SpaceNavigationDefinitionContractTests(unittest.TestCase):
         )
         self.assertEqual(schema["$defs"]["policy"]["properties"]["jumpMode"]["const"], "adjacent-only")
         self.assertFalse(schema["$defs"]["policy"]["properties"]["mapPositionAuthoritative"]["const"])
+        self.assertIn("primaryPlanet", schema["$defs"]["system"]["required"])
+        self.assertFalse(schema["$defs"]["planet"]["additionalProperties"])
+        self.assertEqual(schema["$defs"]["planet"]["properties"]["moonCount"]["minimum"], 0)
 
     def test_default_projects_share_one_forty_system_definition(self) -> None:
         definitions = [_space_navigation(_load_json(path)) for path in PROJECT_PATHS]
@@ -73,11 +76,19 @@ class SpaceNavigationDefinitionContractTests(unittest.TestCase):
         system_ids = [system["id"] for system in systems]
         route_ids = [route["id"] for route in routes]
         local_space_ids = [system["localSpaceId"] for system in systems]
+        planets = [system["primaryPlanet"] for system in systems]
+        planet_ids = [planet["id"] for planet in planets]
+        planet_labels = [planet["label"] for planet in planets]
         map_positions = [tuple(system["mapPosition"]) for system in systems]
 
         self.assertEqual(len(system_ids), len(set(system_ids)))
         self.assertEqual(len(route_ids), len(set(route_ids)))
         self.assertEqual(len(local_space_ids), len(set(local_space_ids)))
+        self.assertEqual(len(planet_ids), 40)
+        self.assertEqual(len(planet_ids), len(set(planet_ids)))
+        self.assertEqual(len(planet_labels), len(set(planet_labels)))
+        self.assertTrue(all(planet["description"] for planet in planets))
+        self.assertTrue(all(planet["rings"]["outerRadius"] > planet["rings"]["innerRadius"] for planet in planets))
         self.assertEqual(len(map_positions), len(set(map_positions)))
         self.assertTrue(all(len(position) == 2 for position in map_positions))
         self.assertTrue(all(math.isfinite(value) for position in map_positions for value in position))

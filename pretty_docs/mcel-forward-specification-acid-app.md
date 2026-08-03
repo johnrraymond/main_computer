@@ -35,7 +35,7 @@ It uses the declaration-only library:
 main_computer/web/applications/scripts/mcel-app-definition.js
 ```
 
-That library validates and freezes the desired application definition. `tools/mcel_application_definition.py` now normalizes that source into deterministic explicit domain, intent, adapter, surface, layout, acceptance, and observation contracts plus `generated/mcel.application.normalized.json`. The generated files remain inspectable and fingerprinted, while executable operation and invariant behavior is generated from the one human-owned source. The library still does not render dynamic nodes, run capabilities, reconcile collections, or issue semantic-runtime proof.
+That library validates and freezes the desired application definition. `tools/mcel_application_definition.py` now normalizes that source into deterministic explicit domain, intent, adapter, surface, layout, acceptance, and observation contracts plus `generated/mcel.application.normalized.json`. The generated files remain inspectable and fingerprinted, while executable operation and invariant behavior is generated from the one human-owned source. The shared runtime now evaluates local, derived, and provisional state; binds static inputs; extracts typed static and item-control payloads; projects safe properties and conditional templates; reconciles stable keyed rows; injects declared capability providers; consumes streamed events; projects provisional row progress; and performs one final SCM commit. It still does not implement cancellation, declared concurrency policy, dynamic browser observation, multi-instance proof, or intent-complete proof for the Workbench.
 
 The definition declares:
 
@@ -88,20 +88,8 @@ These prove that:
 
 ### Strict expected failures
 
-Runtime-dependent obligations are encoded as strict expected failures with stable codes. They include:
+Runtime-dependent obligations are encoded as strict expected failures with stable codes. The remaining blockers include:
 
-- renderer-local state;
-- provisional state and commit;
-- derived state;
-- dynamic input binding;
-- control payload extraction;
-- dynamic property projection;
-- conditional projection;
-- keyed collection reconciliation;
-- dynamic item control binding;
-- capability-backed operations;
-- cancellation;
-- concurrency policy;
 - dynamic browser observation;
 - intent-complete proof;
 - multi-instance proof.
@@ -112,13 +100,18 @@ An unexpected pass is treated as a test failure until the corresponding bridge i
 
 The recommended implementation sequence is:
 
-1. Add renderer-local and derived state evaluation.
-2. Add dynamic input binding and payload extraction.
-3. Add safe property projection.
-4. Add conditional template projection.
-5. Add stable keyed collection reconciliation and item controls.
-6. Add provisional state and capability-backed async operations.
-7. Add cancellation and concurrency policies.
+Completed:
+
+1. Renderer-local and derived state evaluation.
+2. Dynamic input binding and typed static-control payload extraction.
+3. Safe `textContent` and `disabled` property projection.
+4. Conditional template projection from state and structured receipt messages.
+5. Stable keyed collection reconciliation and item controls.
+6. Provisional state and capability-backed async operations with one final SCM commit.
+7. Cancellation, late-event suppression, and `latest-per-item-key` concurrency authority.
+
+Next:
+
 8. Add collection, conditional, provisional, and multi-instance browser observation.
 9. Add intent-complete proof coverage and promote the app only after every obligation passes.
 

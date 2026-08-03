@@ -27,4 +27,14 @@ def test_forward_package_declares_human_authoring_authority() -> None:
     assert manifest["conformance"]["targetMode"] == "semantic-runtime-proven"
     assert manifest["conformance"]["missingBridges"]
     assert "application-definition-normalization" not in manifest["conformance"]["missingBridges"]
+    assert "renderer-local-state" not in manifest["conformance"]["missingBridges"]
+    assert "derived-state" not in manifest["conformance"]["missingBridges"]
+    assert "dynamic-input-binding" not in manifest["conformance"]["missingBridges"]
+    assert "control-payload-extraction" not in manifest["conformance"]["missingBridges"]
+    assert "keyed-collection-reconciliation" not in manifest["conformance"]["missingBridges"]
+    assert "dynamic-item-control-binding" not in manifest["conformance"]["missingBridges"]
+    assert "provisional-state" not in manifest["conformance"]["missingBridges"]
+    assert "provisional-state-runtime" not in manifest["conformance"]["missingBridges"]
+    assert "capability-operation-runtime" not in manifest["conformance"]["missingBridges"]
+    assert len(manifest["conformance"]["missingBridges"]) == 3
     assert manifest["normalization"]["schema"] == "mcel.application-definition-normalization.v1"

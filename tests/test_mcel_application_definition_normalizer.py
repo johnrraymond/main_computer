@@ -112,4 +112,51 @@ def test_manifest_closes_only_the_normalization_bridge() -> None:
     assert manifest["normalization"]["normalizer"] == NORMALIZER_VERSION
     assert manifest["normalization"]["definitionFingerprint"].startswith("sha256:")
     assert "application-definition-normalization" not in manifest["conformance"]["missingBridges"]
-    assert len(manifest["conformance"]["missingBridges"]) == 16
+    assert "renderer-local-state" not in manifest["conformance"]["missingBridges"]
+    assert "derived-state" not in manifest["conformance"]["missingBridges"]
+    assert "dynamic-input-binding" not in manifest["conformance"]["missingBridges"]
+    assert "control-payload-extraction" not in manifest["conformance"]["missingBridges"]
+    assert "keyed-collection-reconciliation" not in manifest["conformance"]["missingBridges"]
+    assert "dynamic-item-control-binding" not in manifest["conformance"]["missingBridges"]
+    assert "provisional-state" not in manifest["conformance"]["missingBridges"]
+    assert "provisional-state-runtime" not in manifest["conformance"]["missingBridges"]
+    assert "capability-operation-runtime" not in manifest["conformance"]["missingBridges"]
+    assert len(manifest["conformance"]["missingBridges"]) == 3
+
+
+def test_generated_domain_materializes_runtime_state_and_capability_definitions() -> None:
+    source = """
+      import {ContractWorkbenchDomain as domain} from './mcel_apps/contract-workbench/contracts/domain.js';
+      const local=domain.rendererLocalStateDefinitions.map((entry)=>({id:entry.id,initial:entry.initial,schema:entry.schema.name}));
+      const derived=domain.derivedState.map((entry)=>({id:entry.id,reads:entry.reads,schema:entry.schema.name,computeType:typeof entry.compute}));
+      const provisional=domain.provisionalStateDefinitions.map((entry)=>({id:entry.id,initial:entry.initial,schema:entry.schema.name}));
+      const capabilities=Object.fromEntries(Object.entries(domain.capabilities).map(([alias,entry])=>[alias,{id:entry.id,operations:Object.keys(entry.operations)}]));
+      process.stdout.write(JSON.stringify({local,derived,provisional,capabilities}));
+    """
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "--input-type=module", "-e", source],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    payload = json.loads(completed.stdout)
+    assert [entry["id"] for entry in payload["local"]] == [
+        "draftCategory",
+        "draftName",
+        "draftQuantity",
+        "filterText",
+        "sortMode",
+    ]
+    assert [entry["id"] for entry in payload["derived"]] == [
+        "canSubmit",
+        "totalQuantity",
+        "visibleContracts",
+    ]
+    assert all(entry["computeType"] == "function" for entry in payload["derived"])
+    assert payload["provisional"] == [{"id": "quoteProgress", "initial": {}, "schema": "object"}]
+    assert payload["capabilities"] == {
+        "quotes": {"id": "contract-workbench.quote-service", "operations": ["requestQuote"]}
+    }

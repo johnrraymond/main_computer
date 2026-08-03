@@ -14,8 +14,8 @@ PROJECT_PATHS = (
     ROOT / "game_projects" / "starter-game" / "project.json",
     ROOT / "game_projects" / "new-game" / "project.json",
 )
-SUPPORTED_SYSTEM_TARGETS = {"enemyShip"}
-SUPPORTED_DISPLAY_PROGRAMS = {"enemyShipTactical"}
+SUPPORTED_SYSTEM_TARGETS = {"enemyShip", "currentSystemPlanet"}
+SUPPORTED_DISPLAY_PROGRAMS = {"enemyShipTactical", "systemPlanet"}
 MOTHER_SHIP_INTERIOR_SCHEMA = "game.motherShipInterior.v1"
 MOTHER_SHIP_INTERIOR_DEFINITION_VERSION = "game.motherShipInterior.definition.v2"
 MOTHER_SHIP_INTERIOR_STATE_VERSION = "game.motherShipInterior.state.v1"
@@ -344,16 +344,18 @@ class MotherShipDefinitionHarnessTests(unittest.TestCase):
                 viewscreens.append(prop)
                 if display == "enemyShipTactical" and target != "enemyShip":
                     problems.append(f"{label}: prop {prop_id} enemyShipTactical display must target enemyShip")
+                if display == "systemPlanet" and target != "currentSystemPlanet":
+                    problems.append(f"{label}: prop {prop_id} systemPlanet display must target currentSystemPlanet")
 
         bridge_viewscreen = [
             prop
             for prop in viewscreens
             if prop.get("room") == "bridge.deck"
             and prop.get("kind") == "viewscreen"
-            and prop.get("display") == "enemyShipTactical"
+            and prop.get("display") == "systemPlanet"
         ]
         if not bridge_viewscreen:
-            problems.append(f"{label}: bridge.deck has no data-defined enemyShipTactical viewscreen")
+            problems.append(f"{label}: bridge.deck has no data-defined systemPlanet viewscreen")
 
         for spawn_id, spawn in (interior.get("spawns") or {}).items():
             room_ref = spawn.get("room") or spawn.get("location")

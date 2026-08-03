@@ -164,8 +164,8 @@ class ViewportGameEditorTests(unittest.TestCase):
         props_by_id = {prop["id"]: prop for prop in interior["props"]}
         self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["room"], "bridge.deck")
         self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["kind"], "viewscreen")
-        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["display"], "enemyShipTactical")
-        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["target"], "enemyShip")
+        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["display"], "systemPlanet")
+        self.assertEqual(props_by_id["prop.display.bridge-viewscreen"]["target"], "currentSystemPlanet")
         self.assertEqual(props_by_id["prop.marker.bay-ops-terminal"]["kind"], "map-marker")
         self.assertEqual(props_by_id["prop.marker.bay-ops-terminal"]["target"], "terminal.bay-ops")
         self.assertEqual(props_by_id["prop.marker.engineering-power"]["room"], "engineering.access")
@@ -185,6 +185,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(interior["flags"]["bridgeTacticalShotsFired"], 0)
         self.assertEqual(interior["flags"]["enemyShipHullPercent"], 100)
         self.assertFalse(interior["flags"]["enemyShipDisabled"])
+        self.assertFalse(interior["flags"]["currentSystemPlanetSurveyed"])
+        self.assertEqual(interior["flags"]["lastSurveyedPlanetId"], "")
+        self.assertEqual(interior["flags"]["lastSurveyedSystemId"], "")
+        self.assertEqual(interior["flags"]["planetScansCompleted"], 0)
         self.assertEqual(interior["doors"]["door.medbay"]["state"], "open")
         self.assertEqual(interior["doors"]["door.science"]["state"], "open")
         pilot_stations = scene["metadata"]["shuttle3d"]["pilotStations"]

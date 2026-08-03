@@ -211,7 +211,31 @@ def _render_domain(app: Mapping[str, Any], export_name: str, fingerprint: str) -
     state = app.get("state", {})
     canonical = {key: entry.get("initial") for key, entry in state.items() if entry.get("authority") == "canonical"}
     local = {key: entry.get("initial") for key, entry in state.items() if entry.get("authority") == "renderer-local"}
+    local_definitions = [
+        {"id": key, "initial": entry.get("initial"), "schema": _schema_summary(entry.get("schema", {}))}
+        for key, entry in state.items() if entry.get("authority") == "renderer-local"
+    ]
     provisional = {key: entry.get("initial") for key, entry in state.items() if entry.get("authority") == "provisional"}
+    provisional_definitions = [
+        {"id": key, "initial": entry.get("initial"), "schema": _schema_summary(entry.get("schema", {}))}
+        for key, entry in state.items() if entry.get("authority") == "provisional"
+    ]
+    capabilities = {}
+    for alias, entry in sorted((app.get("capabilities") or {}).items()):
+        capabilities[alias] = {
+            "id": entry.get("id"),
+            "risk": entry.get("risk"),
+            "description": entry.get("description", ""),
+            "operations": {
+                name: {
+                    "stream": operation.get("stream") is True,
+                    "cancellable": operation.get("cancellable") is True,
+                    "request": _schema_summary(operation.get("request", {})),
+                    "response": _schema_summary(operation.get("response", {})),
+                }
+                for name, operation in sorted((entry.get("operations") or {}).items())
+            },
+        }
     derived = []
     for key, entry in state.items():
         if entry.get("authority") == "derived":
@@ -219,6 +243,7 @@ def _render_domain(app: Mapping[str, Any], export_name: str, fingerprint: str) -
                 "id": key,
                 "reads": entry.get("reads", []),
                 "schema": _schema_summary(entry.get("schema", {})),
+                "compute": entry.get("compute"),
                 "computeFingerprint": _function_hash(entry.get("compute")),
             })
     invariants = []
@@ -236,7 +261,10 @@ def _render_domain(app: Mapping[str, Any], export_name: str, fingerprint: str) -
         "definitionFingerprint": fingerprint,
         "initialState": canonical,
         "rendererLocalState": local,
+        "rendererLocalStateDefinitions": local_definitions,
         "provisionalState": provisional,
+        "provisionalStateDefinitions": provisional_definitions,
+        "capabilities": capabilities,
         "derivedState": derived,
         "invariantReads": sorted({path for item in invariants for path in item["reads"]}),
         "invariants": invariants,
@@ -316,6 +344,7 @@ def _render_surface(app: Mapping[str, Any], export_name: str, fingerprint: str) 
         for key in ("statePath", "property", "transform", "inputType", "localPath", "intentId", "templateId", "keyPath"):
             if entry.get(key) not in {None, ""}: node[key] = entry[key]
         if entry.get("payload"): node["payload"] = {k: _payload_source(v) for k, v in sorted(entry["payload"].items())}
+        if entry.get("properties"): node["properties"] = entry["properties"]
         if entry.get("source"): node["source"] = _surface_source(entry["source"])
         for key in ("when", "content", "accessibility"):
             if entry.get(key): node[key] = entry[key]

@@ -122,7 +122,7 @@ def checksum_address(value: str) -> str:
     )
 
 
-def private_key_to_address(private_key: str) -> str:
+def _private_key_public_bytes(private_key: str) -> bytes:
     if not is_private_key(private_key):
         raise ValueError("private key must be a valid 32-byte secp256k1 scalar")
     try:
@@ -137,7 +137,20 @@ def private_key_to_address(private_key: str) -> str:
         encoding=serialization.Encoding.X962,
         format=serialization.PublicFormat.UncompressedPoint,
     )
+    if len(public_bytes) != 65 or public_bytes[0] != 0x04:
+        raise ValueError("unexpected secp256k1 public-key encoding")
+    return public_bytes
+
+
+def private_key_to_address(private_key: str) -> str:
+    public_bytes = _private_key_public_bytes(private_key)
     return checksum_address(keccak256(public_bytes[1:])[-20:].hex())
+
+
+def private_key_to_node_id(private_key: str) -> str:
+    """Return Besu's 128-hex uncompressed secp256k1 node id."""
+
+    return _private_key_public_bytes(private_key)[1:].hex()
 
 
 def generate_private_key() -> str:
@@ -168,5 +181,6 @@ __all__ = [
     "is_private_key",
     "keccak256",
     "private_key_to_address",
+    "private_key_to_node_id",
     "validate_identity",
 ]

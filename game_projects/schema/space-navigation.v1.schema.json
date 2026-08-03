@@ -145,7 +145,8 @@
         "region",
         "mapPosition",
         "localSpaceId",
-        "arrivalProfile"
+        "arrivalProfile",
+        "primaryPlanet"
       ],
       "properties": {
         "id": {
@@ -166,6 +167,9 @@
         },
         "arrivalProfile": {
           "$ref": "#/$defs/id"
+        },
+        "primaryPlanet": {
+          "$ref": "#/$defs/planet"
         }
       }
     },
@@ -261,7 +265,9 @@
         "requireStartReachability",
         "requireArrivalProfiles",
         "requireStateReferences",
-        "requireUniqueMapPositions"
+        "requireUniqueMapPositions",
+        "requirePrimaryPlanetPerSystem",
+        "requireUniquePlanetIds"
       ],
       "properties": {
         "requireUniqueSystemIds": {
@@ -290,6 +296,114 @@
         },
         "requireUniqueMapPositions": {
           "const": true
+        },
+        "requirePrimaryPlanetPerSystem": {
+          "const": true
+        },
+        "requireUniquePlanetIds": {
+          "const": true
+        }
+      }
+    },
+    "rings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "color",
+        "innerRadius",
+        "outerRadius",
+        "tiltDegrees"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "color": {
+          "$ref": "#/$defs/color"
+        },
+        "innerRadius": {
+          "type": "number",
+          "minimum": 1.0,
+          "maximum": 3.0
+        },
+        "outerRadius": {
+          "type": "number",
+          "minimum": 1.0,
+          "maximum": 4.0
+        },
+        "tiltDegrees": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        }
+      }
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    },
+    "planet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "classification",
+        "radiusScale",
+        "surfaceColor",
+        "secondaryColor",
+        "atmosphereColor",
+        "cloudColor",
+        "moonCount",
+        "rings",
+        "rotationPeriodHours",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "radiusScale": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 2.0
+        },
+        "surfaceColor": {
+          "$ref": "#/$defs/color"
+        },
+        "secondaryColor": {
+          "$ref": "#/$defs/color"
+        },
+        "atmosphereColor": {
+          "$ref": "#/$defs/color"
+        },
+        "cloudColor": {
+          "$ref": "#/$defs/color"
+        },
+        "moonCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        },
+        "rings": {
+          "$ref": "#/$defs/rings"
+        },
+        "rotationPeriodHours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }

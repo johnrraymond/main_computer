@@ -46,6 +46,7 @@ def test_definition_library_validates_and_inspects_the_forward_app() -> None:
     assert payload["inspection"]["operationKindCounts"]["async"] == 1
     assert "keyed-collection-reconciliation" in payload["inspection"]["requiredRuntimeFeatures"]
     assert "multi-instance-proof" in payload["inspection"]["requiredRuntimeFeatures"]
+    assert "dynamic-property-projection" in payload["inspection"]["requiredRuntimeFeatures"]
 
 
 def test_definition_library_rejects_unknown_surface_intents() -> None:

@@ -1,6 +1,6 @@
 # Contract Operations Workbench
 
-This package is the forward specification and TDD acid application for the next MCEL application-development boundary. Its application definition and explicit contracts are authoritative even where the current runtime cannot execute them. Runtime-dependent acceptance remains planned until MCEL closes the package's named bridges.
+This package is the forward specification and TDD acid application for the next MCEL application-development boundary. Its application definition and explicit contracts are authoritative even where the current runtime cannot execute them. The shared runtime now implements per-instance renderer-local, derived, and provisional state; static and item payload extraction; safe properties and conditionals; keyed collections; injected streamed capability operations; provisional progress projection; and one final SCM commit. Runtime-dependent acceptance remains planned until MCEL closes dynamic observation, intent-complete proof, and multi-instance proof. Cancellation and latest-per-item-key concurrency are implemented in the shared runtime.
 
 ```mcel-app
 id: contract-workbench
@@ -223,6 +223,59 @@ requires:
   - every declared operation has positive, refusal, browser, and recovery coverage where required
 ```
 
+
+```mcel-evidence
+id: contract-workbench.evidence.local-derived-runtime
+app: contract-workbench
+status: implemented
+evidence: Renderer-local and derived state runtime wave
+proves: Each application instance owns schema-bounded local state, derived values are computed in validated dependency order, local updates are atomic, canonical commits recompute derived values, and separate instances remain isolated.
+source: main_computer/web/applications/scripts/mcel-application-runtime.js
+freshness: Covered by generated domain definitions and application-runtime functional tests.
+```
+
+
+```mcel-evidence
+id: contract-workbench.evidence.input-payload-runtime
+app: contract-workbench
+status: implemented
+evidence: Static input binding and payload extraction runtime wave
+proves: Declared text, number, search, and select inputs synchronize with renderer-local state; static controls construct bounded typed payloads and refuse malformed sources before canonical mutation.
+source: main_computer/web/applications/scripts/mcel-application-runtime.js
+freshness: Covered by application-runtime functional tests and the generated Workbench surface contract.
+```
+
+```mcel-evidence
+id: contract-workbench.evidence.property-conditional-runtime
+app: contract-workbench
+status: implemented
+evidence: Safe property and conditional projection runtime wave
+proves: Declared textContent and disabled properties project canonical, local, or derived view state; declared conditional hosts instantiate, update, remove, and clean up bounded templates from state or structured receipt messages.
+source: main_computer/web/applications/scripts/mcel-application-runtime.js
+freshness: Covered by application-runtime functional tests and the generated Workbench surface contract.
+```
+
+
+```mcel-evidence
+id: contract-workbench.evidence.collection-item-runtime
+app: contract-workbench
+status: implemented
+evidence: Keyed collection and dynamic item-control runtime wave
+proves: Stable keyed rows are created, updated, reordered, and removed from declared templates; item controls construct bounded item-key and item-field payloads without cross-item mutation.
+source: main_computer/web/applications/scripts/mcel-application-runtime.js
+freshness: Covered by collection reconciliation and item-control functional tests.
+```
+
+```mcel-evidence
+id: contract-workbench.evidence.provisional-capability-runtime
+app: contract-workbench
+status: implemented
+evidence: Provisional state and streamed capability-operation runtime wave
+proves: Declared capability providers stream events into per-instance provisional state, row progress renders before commit, canonical revision remains unchanged during streaming, one reconciled SCM commit occurs at completion, and provisional state is cleared afterward.
+source: main_computer/web/applications/scripts/mcel-application-runtime.js
+freshness: Covered by capability runtime, collection projection, generated domain, and package tests.
+```
+
 ```mcel-evidence
 id: contract-workbench.evidence.forward-specification
 app: contract-workbench
@@ -250,8 +303,8 @@ app: contract-workbench
 status: open
 aspect: implementation
 severity: high
-problem: The current MCEL runtime supports fixed controls, state values, and operation receipts but not the dynamic and asynchronous features declared by this package.
-desired_behavior: Close each named missing bridge until the unchanged package reaches semantic-runtime-proven.
+problem: The MCEL runtime now supports the complete synchronous Workbench and a single streamed capability operation with provisional progress and one final SCM commit, but not cancellation, declared concurrency policy, dynamic browser observation, intent-complete proof, or multi-instance proof.
+desired_behavior: Close each remaining named bridge until the unchanged package reaches semantic-runtime-proven.
 ```
 
 ```mcel-adapter
