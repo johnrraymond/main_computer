@@ -4,46 +4,39 @@ const status = root?.querySelector("[data-mcel-runtime-status]");
 export const requiredMcelApplicationRuntime = Object.freeze({
   packageSchema: "mcel.application-package.v1",
   appId: "contract-workbench",
-  conformanceMode: "forward-specification",
+  conformanceMode: "semantic-runtime-proven",
   manifestUrl: new URL("../mcel.runtime.json", import.meta.url).href,
   mountMethod: "MCEL.mountApplicationPackage",
-  requiredFeatures: Object.freeze([
-    "provisional-state",
-    "capability-operation-runtime",
-    "provisional-state-runtime",
-    "operation-cancellation",
-    "operation-concurrency-policy",
-    "dynamic-browser-observation",
-    "intent-complete-proof",
-    "multi-instance-proof"
-  ])
+  requiredFeatures: Object.freeze([])
 });
 
-function reportBlocked(error) {
-  const code = String(error?.code || "MCEL_FORWARD_SPECIFICATION_BLOCKED");
+function reportFailure(error) {
+  const code = String(error?.code || "MCEL_APPLICATION_RUNTIME_FAILED");
   if (root) {
-    root.dataset.mcelRuntimeStatus = "forward-specification-blocked";
+    root.dataset.mcelRuntimeStatus = "runtime-failed";
     root.dataset.mcelRuntimeBlocker = code;
   }
   if (status) {
-    status.dataset.mcelRuntimeStatus = "forward-specification-blocked";
-    status.textContent = `Forward specification blocked by current MCEL runtime: ${code}.`;
+    status.dataset.mcelRuntimeStatus = "runtime-failed";
+    status.textContent = `Contract Workbench runtime failed: ${code}.`;
   }
   globalThis.__MCEL_CONTRACT_WORKBENCH_BLOCKER__ = Object.freeze({code, message: String(error?.message || "")});
 }
 
 if (!globalThis.MCEL || typeof globalThis.MCEL.mountApplicationPackage !== "function") {
-  reportBlocked(Object.assign(new Error("MCEL.mountApplicationPackage is unavailable."), {
+  reportFailure(Object.assign(new Error("MCEL.mountApplicationPackage is unavailable."), {
     code: "MCEL_APPLICATION_RUNTIME_UNAVAILABLE"
   }));
 } else {
   try {
+    const injected = globalThis.__MCEL_APPLICATION_PACKAGE_MOUNT_OPTIONS__?.[requiredMcelApplicationRuntime.appId] || {};
     await globalThis.MCEL.mountApplicationPackage({
+      ...injected,
       appId: requiredMcelApplicationRuntime.appId,
       manifestUrl: requiredMcelApplicationRuntime.manifestUrl,
       root
     });
   } catch (error) {
-    reportBlocked(error);
+    reportFailure(error);
   }
 }

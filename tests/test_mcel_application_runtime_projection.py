@@ -43,13 +43,14 @@ def test_runtime_projection_contains_only_browser_execution_files() -> None:
         "contracts/adapter.js",
         "contracts/surface.js",
         "contracts/layout.js",
+        "contracts/acceptance.js",
         "contracts/observation.js",
         "src/index.html",
         "src/app.js",
         "src/app.css",
     }
     assert "requirements.md" not in projection.files
-    assert "contracts/acceptance.js" not in projection.files
+    assert projection.manifest["modules"]["acceptance"]["export"] == "ContractCounterAcceptance"
     assert projection.manifest["modules"]["observation"]["export"] == "ContractCounterObservation"
     assert not any(path.startswith("tests/") for path in projection.files)
     assert projection.manifest["source"]["packageFingerprint"] == projection.source_package_fingerprint

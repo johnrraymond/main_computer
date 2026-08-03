@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
 from main_computer.viewport import APPLICATIONS_INDEX_HTML
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_GAME_PROJECTS = [
+    ROOT / "game_projects" / "webgl-demo" / "project.json",
+    ROOT / "game_projects" / "starter-game" / "project.json",
+    ROOT / "game_projects" / "new-game" / "project.json",
+]
 
 
 class ViewportSceneSurfaceTests(unittest.TestCase):
@@ -220,6 +230,69 @@ class ViewportSceneSurfaceTests(unittest.TestCase):
         self.assertIn('id="webgl-demo"', APPLICATIONS_INDEX_HTML)
         self.assertIn('aria-label="Scene-aware game surface"', APPLICATIONS_INDEX_HTML)
         self.assertIn('data-scene-id="default-empty-scene"', APPLICATIONS_INDEX_HTML)
+
+    def test_mother_ship_authored_walls_feed_player_collision(self) -> None:
+        self.assertIn("function shuttle3dMotherShipWallColliders(rooms, wallCollision)", APPLICATIONS_INDEX_HTML)
+        self.assertIn('wall.collision === false', APPLICATIONS_INDEX_HTML)
+        self.assertIn('kind: "wall"', APPLICATIONS_INDEX_HTML)
+        self.assertIn("const wallColliders = shuttle3dMotherShipWallColliders(rooms, wallCollision);", APPLICATIONS_INDEX_HTML)
+        self.assertIn("colliders: [...authoredColliders, ...wallColliders]", APPLICATIONS_INDEX_HTML)
+        self.assertIn("const blockedByShipGeometry = colliders.some", APPLICATIONS_INDEX_HTML)
+        self.assertIn("Wall arrays are already split around doors/openings", APPLICATIONS_INDEX_HTML)
+
+        for project_path in DEFAULT_GAME_PROJECTS:
+            with self.subTest(project=project_path.parent.name):
+                project = json.loads(project_path.read_text(encoding="utf-8"))
+                interior = project["scenes"][0]["metadata"]["shuttle3d"]["motherShipInterior"]
+                policy = interior["movement"]["wallCollision"]
+                self.assertIs(policy["enabled"], True)
+                self.assertEqual(policy["thickness"], 0.12)
+                wall_count = sum(
+                    len(room.get("geometry", {}).get("walls", []))
+                    for room in interior["rooms"]
+                )
+                self.assertEqual(wall_count, 37)
+
+    def test_mother_ship_wall_collision_preserves_authored_openings(self) -> None:
+        project = json.loads(DEFAULT_GAME_PROJECTS[0].read_text(encoding="utf-8"))
+        interior = project["scenes"][0]["metadata"]["shuttle3d"]["motherShipInterior"]
+        thickness = float(interior["movement"]["wallCollision"]["thickness"])
+        half = thickness / 2
+        radius = 0.28
+        colliders = []
+        for room in interior["rooms"]:
+            for wall in room.get("geometry", {}).get("walls", []):
+                axis = str(wall.get("axis", "")).lower()
+                if axis == "x":
+                    colliders.append((
+                        float(wall["x"]) - half,
+                        float(wall["x"]) + half,
+                        min(float(wall["minZ"]), float(wall["maxZ"])),
+                        max(float(wall["minZ"]), float(wall["maxZ"])),
+                    ))
+                elif axis == "z":
+                    colliders.append((
+                        min(float(wall["minX"]), float(wall["maxX"])),
+                        max(float(wall["minX"]), float(wall["maxX"])),
+                        float(wall["z"]) - half,
+                        float(wall["z"]) + half,
+                    ))
+
+        def blocked(x: float, z: float) -> bool:
+            return any(
+                x > min_x - radius
+                and x < max_x + radius
+                and z > min_z - radius
+                and z < max_z + radius
+                for min_x, max_x, min_z, max_z in colliders
+            )
+
+        self.assertTrue(blocked(0.0, -4.35))
+        self.assertFalse(blocked(3.3, -4.35))
+        self.assertTrue(blocked(2.0, -13.35))
+        self.assertFalse(blocked(0.0, -13.35))
+        self.assertTrue(blocked(2.0, -31.25))
+        self.assertFalse(blocked(0.0, -31.25))
 
     def test_game_surface_uses_shared_scene_viewer_not_engine_runtime(self) -> None:
         self.assertIn("function initWebgl(", APPLICATIONS_INDEX_HTML)

@@ -3,8 +3,8 @@
 The human-owned ``application.js`` definition is evaluated with Node.js, reduced
 into a canonical data model, and materialized as the explicit MCEL contracts
 consumed by the existing package, browser projection, runtime, and proof tools.
-This module does not implement any of the dynamic runtime features declared by
-the forward-specification application.
+This module preserves the application definition's declared proof maturity while
+materializing the explicit contracts consumed by package, runtime, and proof tools.
 """
 
 from __future__ import annotations
@@ -93,6 +93,29 @@ def _without_function_sources(value: Any) -> Any:
         return {str(key): _without_function_sources(value[key]) for key in sorted(value, key=str)}
     if isinstance(value, list):
         return [_without_function_sources(item) for item in value]
+    return value
+
+
+def _proof_contract(app: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = app.get("proof")
+    return value if isinstance(value, Mapping) else {}
+
+
+def _runtime_status(app: Mapping[str, Any]) -> str:
+    value = str(_proof_contract(app).get("runtimeStatus") or "forward-specification").strip()
+    if value not in {"forward-specification", "semantic-runtime-proven"}:
+        raise ApplicationDefinitionNormalizationError(
+            f"Unsupported application proof runtimeStatus: {value!r}."
+        )
+    return value
+
+
+def _acceptance_status(app: Mapping[str, Any]) -> str:
+    value = str(_proof_contract(app).get("acceptanceStatus") or _runtime_status(app)).strip()
+    if value not in {"forward-specification", "verified", "semantic-runtime-proven"}:
+        raise ApplicationDefinitionNormalizationError(
+            f"Unsupported application proof acceptanceStatus: {value!r}."
+        )
     return value
 
 
@@ -257,7 +280,7 @@ def _render_domain(app: Mapping[str, Any], export_name: str, fingerprint: str) -
     payload = {
         "schema": "mcel.application-domain.v1",
         "appId": app["id"],
-        "currentRuntimeStatus": "forward-specification",
+        "currentRuntimeStatus": _runtime_status(app),
         "definitionFingerprint": fingerprint,
         "initialState": canonical,
         "rendererLocalState": local,
@@ -323,7 +346,7 @@ def _render_adapter(app: Mapping[str, Any], export_name: str, fingerprint: str) 
     preamble = _header(app["id"], fingerprint)
     source = preamble + f"const operationMetadata = deepFreeze({_js_value(metadata)});\nconst operationImplementations = deepFreeze({_js_value(implementations)});\n\n"
     source += '''function operation(intentId) {\n  return {metadata: operationMetadata[intentId] || null, implementation: operationImplementations[intentId] || null};\n}\n\n'''
-    source += f'''export const {export_name} = deepFreeze({{\n  schema: "mcel.semantic-adapter.v1",\n  appId: {_js_string(app['id'])},\n  adapterId: {_js_string(app['id'] + '.adapter.v1')},\n  currentRuntimeStatus: "forward-specification",\n  targetRuntimeStatus: "fullApplicationSemanticReady",\n  definitionFingerprint: {_js_string(fingerprint)},\n\n  preflight({{intentId, input, state}}) {{\n    const declared = operation(intentId);\n    if (!declared.metadata) return {{ok: false, code: "INTENT_UNKNOWN"}};\n    if (declared.metadata.operationKind === "prohibited") return {{ok: false, code: "INTENT_PROHIBITED", message: declared.metadata.reason}};\n    if (Object.prototype.hasOwnProperty.call(state || {{}}, "revision") && input?.expectedRevision !== state.revision) {{\n      return {{ok: false, code: "REVISION_STALE"}};\n    }}\n    const payload = input?.payload || {{}};\n    return typeof declared.implementation?.preflight === "function"\n      ? declared.implementation.preflight({{intentId, input, payload, state}})\n      : {{ok: true}};\n  }},\n\n  transition({{intentId, input, state}}) {{\n    const declared = operation(intentId);\n    if (!declared.metadata) throw Object.assign(new Error(`Unknown intent ${{intentId}}.`), {{code: "INTENT_UNKNOWN"}});\n    if (declared.metadata.operationKind === "async") throw Object.assign(new Error("Capability operation runtime is not implemented."), {{code: "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"}});\n    if (declared.metadata.operationKind === "cancel") throw Object.assign(new Error("Operation cancellation runtime is not implemented."), {{code: "MCEL_OPERATION_CANCELLATION_UNSUPPORTED"}});\n    if (typeof declared.implementation?.transition !== "function") throw Object.assign(new Error(`Intent ${{intentId}} has no transition.`), {{code: "INTENT_TRANSITION_UNAVAILABLE"}});\n    return declared.implementation.transition({{intentId, input, payload: input?.payload || {{}}, state}});\n  }},\n\n  validateEffects({{intentId, before, after, input}}) {{\n    const declared = operation(intentId);\n    if (typeof declared.implementation?.ensures !== "function") return true;\n    return declared.implementation.ensures({{intentId, before, after, input, payload: input?.payload || {{}}}});\n  }},\n\n  runCapabilityOperation(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.run !== "function") throw Object.assign(new Error("Capability operation is unavailable."), {{code: "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"}});\n    return declared.implementation.run(context);\n  }},\n\n  receiveProvisional(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.receive !== "function") throw Object.assign(new Error("Provisional reconciliation is unavailable."), {{code: "MCEL_PROVISIONAL_COMMIT_RUNTIME_UNSUPPORTED"}});\n    return declared.implementation.receive(context);\n  }},\n\n  commitCapabilityOperation(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.commit !== "function") throw Object.assign(new Error("Capability commit is unavailable."), {{code: "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"}});\n    return declared.implementation.commit(context);\n  }},\n\n  cancelOperation(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.cancel !== "function") throw Object.assign(new Error("Operation cancellation is unavailable."), {{code: "MCEL_OPERATION_CANCELLATION_UNSUPPORTED"}});\n    return declared.implementation.cancel(context);\n  }}\n}});\n'''
+    source += f'''export const {export_name} = deepFreeze({{\n  schema: "mcel.semantic-adapter.v1",\n  appId: {_js_string(app['id'])},\n  adapterId: {_js_string(app['id'] + '.adapter.v1')},\n  currentRuntimeStatus: {_js_string(_runtime_status(app))},\n  targetRuntimeStatus: "fullApplicationSemanticReady",\n  definitionFingerprint: {_js_string(fingerprint)},\n\n  preflight({{intentId, input, state}}) {{\n    const declared = operation(intentId);\n    if (!declared.metadata) return {{ok: false, code: "INTENT_UNKNOWN"}};\n    if (declared.metadata.operationKind === "prohibited") return {{ok: false, code: "INTENT_PROHIBITED", message: declared.metadata.reason}};\n    if (Object.prototype.hasOwnProperty.call(state || {{}}, "revision") && input?.expectedRevision !== state.revision) {{\n      return {{ok: false, code: "REVISION_STALE"}};\n    }}\n    const payload = input?.payload || {{}};\n    return typeof declared.implementation?.preflight === "function"\n      ? declared.implementation.preflight({{intentId, input, payload, state}})\n      : {{ok: true}};\n  }},\n\n  transition({{intentId, input, state}}) {{\n    const declared = operation(intentId);\n    if (!declared.metadata) throw Object.assign(new Error(`Unknown intent ${{intentId}}.`), {{code: "INTENT_UNKNOWN"}});\n    if (declared.metadata.operationKind === "async") throw Object.assign(new Error("Capability operation runtime is not implemented."), {{code: "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"}});\n    if (declared.metadata.operationKind === "cancel") throw Object.assign(new Error("Operation cancellation runtime is not implemented."), {{code: "MCEL_OPERATION_CANCELLATION_UNSUPPORTED"}});\n    if (typeof declared.implementation?.transition !== "function") throw Object.assign(new Error(`Intent ${{intentId}} has no transition.`), {{code: "INTENT_TRANSITION_UNAVAILABLE"}});\n    return declared.implementation.transition({{intentId, input, payload: input?.payload || {{}}, state}});\n  }},\n\n  validateEffects({{intentId, before, after, input}}) {{\n    const declared = operation(intentId);\n    if (typeof declared.implementation?.ensures !== "function") return true;\n    return declared.implementation.ensures({{intentId, before, after, input, payload: input?.payload || {{}}}});\n  }},\n\n  runCapabilityOperation(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.run !== "function") throw Object.assign(new Error("Capability operation is unavailable."), {{code: "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"}});\n    return declared.implementation.run(context);\n  }},\n\n  receiveProvisional(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.receive !== "function") throw Object.assign(new Error("Provisional reconciliation is unavailable."), {{code: "MCEL_PROVISIONAL_COMMIT_RUNTIME_UNSUPPORTED"}});\n    return declared.implementation.receive(context);\n  }},\n\n  commitCapabilityOperation(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.commit !== "function") throw Object.assign(new Error("Capability commit is unavailable."), {{code: "MCEL_CAPABILITY_OPERATION_UNSUPPORTED"}});\n    return declared.implementation.commit(context);\n  }},\n\n  cancelOperation(context) {{\n    const declared = operation(context?.intentId);\n    if (typeof declared.implementation?.cancel !== "function") throw Object.assign(new Error("Operation cancellation is unavailable."), {{code: "MCEL_OPERATION_CANCELLATION_UNSUPPORTED"}});\n    return declared.implementation.cancel(context);\n  }}\n}});\n'''
     return source.encode("utf-8")
 
 
@@ -357,7 +380,7 @@ def _render_surface(app: Mapping[str, Any], export_name: str, fingerprint: str) 
         nodes.append(node)
     payload = {
         "schema": "mcel.semantic-surface-ir.v1", "appId": app["id"], "surfaceId": surface["id"],
-        "currentRuntimeStatus": "forward-specification", "definitionFingerprint": fingerprint,
+        "currentRuntimeStatus": _runtime_status(app), "definitionFingerprint": fingerprint,
         "regions": surface.get("regions", []), "nodes": nodes,
     }
     source = _header(app["id"], fingerprint) + f"export const {export_name} = deepFreeze(" + _js_value(payload) + ");\n"
@@ -368,7 +391,7 @@ def _render_simple(app: Mapping[str, Any], export_name: str, fingerprint: str, k
     if kind == "layout":
         payload = dict(app.get("layout", {})); payload.setdefault("schema", "mcel.layout-grammar.v1"); payload["definitionFingerprint"] = fingerprint
     elif kind == "acceptance":
-        payload = {"schema": "mcel.acceptance-suite.v1", "appId": app["id"], "currentStatus": "forward-specification", "definitionFingerprint": fingerprint,
+        payload = {"schema": "mcel.acceptance-suite.v1", "appId": app["id"], "currentStatus": _acceptance_status(app), "definitionFingerprint": fingerprint,
                    "scenarios": [{"id": e.get("id"), "kind": e.get("acceptanceKind"), "operationId": e.get("operationId", ""), "given": e.get("given", {}), "when": e.get("when", {}), "expect": e.get("expect", {})} for e in app.get("acceptance", [])]}
     elif kind == "observation":
         observations=[]
@@ -379,7 +402,9 @@ def _render_simple(app: Mapping[str, Any], export_name: str, fingerprint: str, k
                 value=e.get(src)
                 if value not in (None,"",False,0,[],{}): item[dst]=value
             observations.append(item)
-        payload={"schema":"mcel.observation-contract.v1","appId":app["id"],"currentStatus":"forward-specification","definitionFingerprint":fingerprint,"observations":observations}
+        proof = app.get("proof") if isinstance(app.get("proof"), dict) else {}
+        observation_status = str(proof.get("browserObservation") or "forward-specification")
+        payload={"schema":"mcel.observation-contract.v1","appId":app["id"],"currentStatus":observation_status,"definitionFingerprint":fingerprint,"observations":observations}
     else:
         raise AssertionError(kind)
     source = _header(app["id"], fingerprint) + f"export const {export_name} = deepFreeze(" + _js_value(payload) + ");\n"
@@ -427,6 +452,9 @@ def build_normalization_plan(app_id: str, repo_root: Path | None = None) -> Norm
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     authoring = dict(manifest.get("authoring") or {})
     authoring["normalizedDefinition"] = NORMALIZED_PATH
+    runtime_status = _runtime_status(exported)
+    if runtime_status == "semantic-runtime-proven":
+        authoring["status"] = "semantic-runtime-proven"
     manifest["authoring"] = authoring
     manifest["normalization"] = {
         "schema": NORMALIZER_SCHEMA,
@@ -435,8 +463,15 @@ def build_normalization_plan(app_id: str, repo_root: Path | None = None) -> Norm
         "sourceSha256": source_sha,
         "generatedContracts": list(GENERATED_CONTRACT_KEYS),
     }
-    bridges = list((manifest.get("conformance") or {}).get("missingBridges") or [])
-    manifest["conformance"]["missingBridges"] = [item for item in bridges if item != "application-definition-normalization"]
+    conformance = dict(manifest.get("conformance") or {})
+    bridges = list(conformance.get("missingBridges") or [])
+    if runtime_status == "semantic-runtime-proven":
+        conformance["currentMode"] = "semantic-runtime-proven"
+        conformance["targetMode"] = "semantic-runtime-proven"
+        conformance["missingBridges"] = []
+    else:
+        conformance["missingBridges"] = [item for item in bridges if item != "application-definition-normalization"]
+    manifest["conformance"] = conformance
     files["mcel.app.json"] = _canonical_json(manifest)
     return NormalizationPlan(app_id, package_root, definition_path, definition_reference, NORMALIZED_PATH, fingerprint, source_sha, files)
 

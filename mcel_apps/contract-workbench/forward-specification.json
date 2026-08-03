@@ -1,25 +1,6 @@
 {
   "appId": "contract-workbench",
-  "features": [
-    {
-      "code": "MCEL_DYNAMIC_BROWSER_OBSERVATION_UNSUPPORTED",
-      "expectedCurrentResult": "blocked",
-      "id": "dynamic-browser-observation",
-      "status": "specified"
-    },
-    {
-      "code": "MCEL_INTENT_COMPLETE_PROOF_UNSUPPORTED",
-      "expectedCurrentResult": "blocked",
-      "id": "intent-complete-proof",
-      "status": "specified"
-    },
-    {
-      "code": "MCEL_MULTI_INSTANCE_PROOF_UNSUPPORTED",
-      "expectedCurrentResult": "blocked",
-      "id": "multi-instance-proof",
-      "status": "specified"
-    }
-  ],
+  "features": [],
   "implementedFeatures": [
     {
       "evidence": "mcel.application-runtime.v1 declared provider injection, async iteration, and one final SCM commit",
@@ -42,6 +23,11 @@
       "status": "implemented"
     },
     {
+      "evidence": "mcel.application-browser-scenario-observation.v1 Chromium scenario coverage bound to generated acceptance and observation contracts",
+      "id": "dynamic-browser-observation",
+      "status": "implemented"
+    },
+    {
       "evidence": "mcel.application-runtime.v1 static input nodes synchronized with per-instance renderer-local state",
       "id": "dynamic-input-binding",
       "status": "implemented"
@@ -57,8 +43,18 @@
       "status": "implemented"
     },
     {
+      "evidence": "mcel-app-prove-v1 normalized-intent convergence across enforceable package acceptance and passing Chromium scenario evidence",
+      "id": "intent-complete-proof",
+      "status": "implemented"
+    },
+    {
       "evidence": "mcel.application-runtime.v1 stable-key template reconciliation with create, update, remove, and canonical ordering",
       "id": "keyed-collection-reconciliation",
+      "status": "implemented"
+    },
+    {
+      "evidence": "Chromium two-mount isolation proof for canonical, local, provisional, operation-ledger, receipt, and DOM-root ownership",
+      "id": "multi-instance-proof",
       "status": "implemented"
     },
     {
@@ -87,6 +83,6 @@
       "status": "implemented"
     }
   ],
-  "policy": "The application is the desired interface. MCEL must advance until this unchanged definition can be proven.",
+  "policy": "Historical implementation ledger for the now semantic-runtime-proven acid application.",
   "schema": "mcel.forward-specification-feature-matrix.v1"
 }

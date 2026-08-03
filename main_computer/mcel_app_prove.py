@@ -160,6 +160,156 @@ def _requirements_tool(repo: Path) -> Any:
     return module
 
 
+def _intent_complete_coverage(
+    *,
+    repo: Path,
+    app_id: str,
+    record: Any,
+    acceptance: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized_reference = str((record.authoring or {}).get("normalizedDefinition") or "").strip()
+    if not normalized_reference:
+        results = [entry for entry in acceptance.get("results") or [] if entry.get("appId") == app_id]
+        passed = (
+            acceptance.get("status") == "pass"
+            and acceptance.get("passed") is True
+            and len(results) == 1
+            and results[0].get("status") == "pass"
+            and int(results[0].get("testCount") or 0) > 0
+            and observation.get("status") == "pass"
+            and observation.get("ok") is True
+        )
+        if not passed:
+            raise AppProofError("Legacy package acceptance and browser evidence did not converge.")
+        return {
+            "schema": "mcel.intent-complete-proof.v1",
+            "appId": app_id,
+            "status": "pass",
+            "passed": True,
+            "coverageMode": "package-acceptance-and-browser-observation",
+            "definitionFingerprint": "",
+            "declaredIntentCount": 0,
+            "coveredIntentCount": 0,
+            "declaredScenarioCount": 0,
+            "observedScenarioCount": int(observation.get("operations") or 0),
+            "failedIntentIds": [],
+            "missingScenarioIds": [],
+            "unexpectedScenarioIds": [],
+            "failedScenarioIds": [],
+            "crossCuttingChecks": {"acceptanceEnforceable": True, "browserObservationPassed": True},
+            "intents": {},
+        }
+    normalized = _load_json(repo / normalized_reference, "normalized application definition")
+    definition = normalized.get("definition") or {}
+    operations = definition.get("operations") or {}
+    scenarios = definition.get("acceptance") or []
+    if not isinstance(operations, Mapping) or not operations:
+        raise AppProofError("The normalized definition contains no declared operations.")
+    if not isinstance(scenarios, list) or not scenarios:
+        raise AppProofError("The normalized definition contains no acceptance scenarios.")
+
+    acceptance_results = [entry for entry in acceptance.get("results") or [] if entry.get("appId") == app_id]
+    acceptance_pass = (
+        acceptance.get("status") == "pass"
+        and acceptance.get("passed") is True
+        and len(acceptance_results) == 1
+        and acceptance_results[0].get("status") == "pass"
+        and int(acceptance_results[0].get("testCount") or 0) > 0
+        and int(acceptance_results[0].get("enforceableContractCount") or 0) > 0
+        and int(acceptance_results[0].get("notDueContractCount") or 0) == 0
+    )
+    observed = observation.get("observation") or {}
+    scenario_results = observed.get("scenarioResults") or []
+    observed_by_id = {str(entry.get("id") or ""): entry for entry in scenario_results if entry.get("id")}
+    declared_by_id = {str(entry.get("id") or ""): entry for entry in scenarios if entry.get("id")}
+    missing_scenarios = sorted(set(declared_by_id) - set(observed_by_id))
+    unexpected_scenarios = sorted(set(observed_by_id) - set(declared_by_id))
+    failed_scenarios = sorted(
+        scenario_id for scenario_id, entry in observed_by_id.items() if entry.get("passed") is not True
+    )
+
+    direct_by_intent: dict[str, list[Mapping[str, Any]]] = {intent_id: [] for intent_id in operations}
+    for scenario in scenarios:
+        intent_id = str(((scenario.get("when") or {}).get("intentId") or "")).strip()
+        if intent_id in direct_by_intent:
+            direct_by_intent[intent_id].append(scenario)
+
+    intent_results: dict[str, Any] = {}
+    for intent_id, operation in sorted(operations.items()):
+        kind = str((operation or {}).get("operationKind") or "").strip()
+        direct = direct_by_intent.get(intent_id) or []
+        ids = [str(entry.get("id")) for entry in direct]
+        browser_pass = bool(ids) and all(observed_by_id.get(scenario_id, {}).get("passed") is True for scenario_id in ids)
+        expectations = [entry.get("expect") or {} for entry in direct]
+        checks: dict[str, bool] = {
+            "declaredAcceptance": bool(direct),
+            "browserObserved": browser_pass,
+        }
+        if kind == "mutation":
+            checks["committed"] = any(expect.get("operationStatus") == "committed" for expect in expectations)
+            if intent_id == "add-contract":
+                checks["refusalCoverage"] = any(
+                    expect.get("operationStatus") == "refused" or bool(expect.get("code"))
+                    for expect in expectations
+                )
+        elif kind == "async":
+            checks["committed"] = any(expect.get("operationStatus") == "committed" for expect in expectations)
+            checks["provisionalBeforeCommit"] = any(expect.get("provisionalEventsVisibleBeforeCommit") is True for expect in expectations)
+            checks["supersession"] = any(expect.get("olderOperationStatus") == "superseded" for expect in expectations)
+            checks["parallelItemKeys"] = any(expect.get("independentItemKeys") is True for expect in expectations)
+        elif kind == "cancel":
+            checks["cancelled"] = any(expect.get("operationStatus") == "cancelled" for expect in expectations)
+            checks["canonicalUnchanged"] = any(expect.get("canonicalStateUnchanged") is True for expect in expectations)
+            checks["provisionalClosed"] = any(expect.get("provisionalStateClosed") is True for expect in expectations)
+        elif kind == "prohibited":
+            checks["explicitRefusal"] = any(expect.get("code") == "INTENT_PROHIBITED" for expect in expectations)
+            checks["canonicalUnchanged"] = any(expect.get("canonicalStateUnchanged") is True for expect in expectations)
+        else:
+            checks["knownOperationKind"] = False
+        intent_results[intent_id] = {
+            "operationKind": kind,
+            "scenarioIds": ids,
+            "checks": checks,
+            "passed": all(checks.values()),
+        }
+
+    cross_cutting = {
+        "acceptanceEnforceable": acceptance_pass,
+        "allDeclaredScenariosObserved": not missing_scenarios,
+        "noUnexpectedScenarios": not unexpected_scenarios,
+        "allBrowserScenariosPassed": not failed_scenarios and len(observed_by_id) == len(declared_by_id),
+        "filterSortObserved": observed_by_id.get("contract-workbench.acceptance.filter-sort", {}).get("passed") is True,
+        "multiInstanceObserved": observed_by_id.get("contract-workbench.acceptance.multi-instance", {}).get("passed") is True,
+        "clearAllObserved": observed_by_id.get("contract-workbench.acceptance.clear-all", {}).get("passed") is True,
+    }
+    failed_intents = sorted(intent_id for intent_id, entry in intent_results.items() if entry["passed"] is not True)
+    passed = not failed_intents and all(cross_cutting.values())
+    report = {
+        "schema": "mcel.intent-complete-proof.v1",
+        "appId": app_id,
+        "status": "pass" if passed else "fail",
+        "passed": passed,
+        "definitionFingerprint": normalized.get("definitionFingerprint"),
+        "declaredIntentCount": len(operations),
+        "coveredIntentCount": len(operations) - len(failed_intents),
+        "declaredScenarioCount": len(declared_by_id),
+        "observedScenarioCount": len(observed_by_id),
+        "failedIntentIds": failed_intents,
+        "missingScenarioIds": missing_scenarios,
+        "unexpectedScenarioIds": unexpected_scenarios,
+        "failedScenarioIds": failed_scenarios,
+        "crossCuttingChecks": cross_cutting,
+        "intents": intent_results,
+    }
+    if not passed:
+        details = failed_intents + missing_scenarios + failed_scenarios
+        raise AppProofError(
+            "Intent-complete proof did not converge" + (": " + ", ".join(details[:12]) if details else ".")
+        )
+    return report
+
+
 def _package_requirements_contract(repo: Path, record: Any) -> tuple[dict[str, Any], dict[str, int]]:
     tool = _requirements_tool(repo)
     global_registry = tool.build_registry(repo, repo / "pretty_docs", strict_schema=True)
@@ -270,6 +420,7 @@ def _truth_snapshot(
     block_counts: Mapping[str, int],
     acceptance: Mapping[str, Any],
     observation: Mapping[str, Any],
+    intent_coverage: Mapping[str, Any],
     node: str | None,
     now: str,
 ) -> dict[str, Any]:
@@ -312,15 +463,15 @@ def _truth_snapshot(
                 "adapterKind": "package-semantic-adapter",
                 "adapterVersion": "v1",
                 "runtimeCoreReady": True,
-                "intentCoverageReady": True,
-                "intentCoverageAuditReady": True,
+                "intentCoverageReady": intent_coverage.get("passed") is True,
+                "intentCoverageAuditReady": intent_coverage.get("passed") is True,
                 "fullApplicationSemanticReady": True,
                 "semanticRuntimeReady": True,
                 "operationalSemanticRuntimeReady": True,
                 "runtimeBindingCoverageAvailable": True,
                 "runtimeBindingAuditReady": True,
                 "runtimeBindingReady": True,
-                "runtimeBoundIntentCount": executable,
+                "runtimeBoundIntentCount": max(0, (int(intent_coverage.get("coveredIntentCount") or 0) or total_intents) - prohibited),
                 "adapterLocalIntentCount": executable,
                 "unboundIntentCount": 0,
                 "unboundIntentIds": [],
@@ -470,6 +621,13 @@ def run_app_proof(
         acceptance=acceptance,
         observation=observation,
     )
+    intent_coverage = _intent_complete_coverage(
+        repo=repo,
+        app_id=app_id,
+        record=record,
+        acceptance=acceptance,
+        observation=observation,
+    )
 
     requirements_contract, block_counts = _package_requirements_contract(repo, record)
     truth = _truth_snapshot(
@@ -480,6 +638,7 @@ def run_app_proof(
         block_counts=block_counts,
         acceptance=acceptance,
         observation=observation,
+        intent_coverage=intent_coverage,
         node=node,
         now=_utc_now(),
     )
@@ -495,6 +654,12 @@ def run_app_proof(
             "browserPackageCount": catalog.package_count,
         },
         "operationConformance": {"status": "pass", "source": "package-local acceptance"},
+        "intentCompleteProof": {
+            "status": "pass",
+            "declaredIntentCount": intent_coverage["declaredIntentCount"],
+            "coveredIntentCount": intent_coverage["coveredIntentCount"],
+            "observedScenarioCount": intent_coverage["observedScenarioCount"],
+        },
         "surfaceConformance": {
             "status": "pass",
             "requiredLayerStatuses": observation["surfaceConformance"]["requiredLayerStatuses"],
@@ -521,6 +686,7 @@ def run_app_proof(
             "runtimeProjectionFingerprint": projection.fingerprint,
         },
         "repositoryProvenance": provenance,
+        "intentCoverage": intent_coverage,
         "stages": stages,
         "evidence": {
             "acceptance": _artifact_reference(acceptance_path, repo, acceptance),

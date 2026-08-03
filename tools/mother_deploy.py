@@ -1251,7 +1251,7 @@ def _parser() -> argparse.ArgumentParser:
     release_validator_rpc_canary_funding.add_argument("--expires-in-seconds", type=int, default=300)
     release_validator_rpc_canary_funding.add_argument(
         "--recovery-evidence",
-        help="bind one exact prior post-create UUID failure for orphan cleanup",
+        help="bind one exact prior safe funding failure for bounded idempotent retry",
     )
     release_validator_rpc_canary_funding.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     release_validator_rpc_canary_funding.add_argument("--canary-transaction-max-age-seconds", type=int, default=86400)

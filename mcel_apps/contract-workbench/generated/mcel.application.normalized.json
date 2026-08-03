@@ -49,7 +49,18 @@
           "keyedItemAbsent": true,
           "operationStatus": "committed"
         },
-        "given": {},
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            }
+          ]
+        },
         "id": "contract-workbench.acceptance.remove",
         "kind": "acceptance",
         "operationId": "remove-contract",
@@ -64,7 +75,18 @@
           "operationStatus": "committed",
           "visibleQuantity": "18"
         },
-        "given": {},
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            }
+          ]
+        },
         "id": "contract-workbench.acceptance.update",
         "kind": "acceptance",
         "operationId": "update-quantity",
@@ -79,10 +101,73 @@
       {
         "acceptanceKind": "workflow",
         "expect": {
+          "canonicalItemCount": 0,
+          "collectionEmpty": true,
+          "emptyStateVisible": true,
+          "operationStatus": "committed",
+          "revisionDelta": 1
+        },
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            },
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "transport",
+                "name": "Transport",
+                "quantity": 5
+              }
+            }
+          ]
+        },
+        "id": "contract-workbench.acceptance.clear-all",
+        "kind": "acceptance",
+        "operationId": "clear-all",
+        "when": {
+          "intentId": "clear-all"
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
           "canonicalStateUnchanged": true,
           "collectionMatchesDerivedState": true
         },
-        "given": {},
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            },
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "transport",
+                "name": "Transport",
+                "quantity": 5
+              }
+            },
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "services",
+                "name": "Services",
+                "quantity": 8
+              }
+            }
+          ]
+        },
         "id": "contract-workbench.acceptance.filter-sort",
         "kind": "acceptance",
         "operationId": "",
@@ -100,7 +185,51 @@
           "operationStatus": "committed",
           "provisionalEventsVisibleBeforeCommit": true
         },
-        "given": {},
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            }
+          ],
+          "quotePlans": {
+            "contract-1": [
+              [
+                {
+                  "delayMs": 0,
+                  "event": {
+                    "expected": 2,
+                    "type": "quote.started"
+                  }
+                },
+                {
+                  "delayMs": 30,
+                  "event": {
+                    "report": {
+                      "amount": 100,
+                      "source": "alpha"
+                    },
+                    "type": "quote.received"
+                  }
+                },
+                {
+                  "delayMs": 30,
+                  "event": {
+                    "report": {
+                      "amount": 140,
+                      "source": "beta"
+                    },
+                    "type": "quote.received"
+                  }
+                }
+              ]
+            ]
+          }
+        },
         "id": "contract-workbench.acceptance.quote",
         "kind": "acceptance",
         "operationId": "request-quote",
@@ -116,7 +245,45 @@
           "operationStatus": "cancelled",
           "provisionalStateClosed": true
         },
-        "given": {},
+        "given": {
+          "activeOperation": {
+            "intentId": "request-quote",
+            "itemKey": "contract-1"
+          },
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            }
+          ],
+          "quotePlans": {
+            "contract-1": [
+              [
+                {
+                  "delayMs": 0,
+                  "event": {
+                    "expected": 2,
+                    "type": "quote.started"
+                  }
+                },
+                {
+                  "delayMs": 250,
+                  "event": {
+                    "report": {
+                      "amount": 100,
+                      "source": "slow"
+                    },
+                    "type": "quote.received"
+                  }
+                }
+              ]
+            ]
+          }
+        },
         "id": "contract-workbench.acceptance.cancel",
         "kind": "acceptance",
         "operationId": "cancel-quote",
@@ -128,32 +295,217 @@
       {
         "acceptanceKind": "workflow",
         "expect": {
-          "canonicalStateUnchanged": true,
-          "code": "REVISION_STALE"
+          "latestOperationStatus": "committed",
+          "olderOperationStatus": "superseded",
+          "oneCanonicalCommit": true
         },
-        "given": {},
-        "id": "contract-workbench.acceptance.stale",
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            }
+          ],
+          "quotePlans": {
+            "contract-1": [
+              [
+                {
+                  "delayMs": 0,
+                  "event": {
+                    "expected": 1,
+                    "type": "quote.started"
+                  }
+                },
+                {
+                  "delayMs": 250,
+                  "event": {
+                    "report": {
+                      "amount": 90,
+                      "source": "old"
+                    },
+                    "type": "quote.received"
+                  }
+                }
+              ],
+              [
+                {
+                  "delayMs": 0,
+                  "event": {
+                    "expected": 1,
+                    "type": "quote.started"
+                  }
+                },
+                {
+                  "delayMs": 30,
+                  "event": {
+                    "report": {
+                      "amount": 150,
+                      "source": "new"
+                    },
+                    "type": "quote.received"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        "id": "contract-workbench.acceptance.quote-supersession",
         "kind": "acceptance",
-        "operationId": "add-contract",
+        "operationId": "request-quote",
         "when": {
-          "actualRevision": 1,
-          "expectedRevision": 0,
-          "intentId": "add-contract"
+          "intentId": "request-quote",
+          "itemKey": "contract-1",
+          "overlap": 2
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalCommitCount": 2,
+          "independentItemKeys": true,
+          "operationStatus": "committed"
+        },
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            },
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "transport",
+                "name": "Transport",
+                "quantity": 5
+              }
+            }
+          ],
+          "quotePlans": {
+            "contract-1": [
+              [
+                {
+                  "delayMs": 0,
+                  "event": {
+                    "expected": 1,
+                    "type": "quote.started"
+                  }
+                },
+                {
+                  "delayMs": 40,
+                  "event": {
+                    "report": {
+                      "amount": 110,
+                      "source": "steel"
+                    },
+                    "type": "quote.received"
+                  }
+                }
+              ]
+            ],
+            "contract-2": [
+              [
+                {
+                  "delayMs": 0,
+                  "event": {
+                    "expected": 1,
+                    "type": "quote.started"
+                  }
+                },
+                {
+                  "delayMs": 20,
+                  "event": {
+                    "report": {
+                      "amount": 80,
+                      "source": "transport"
+                    },
+                    "type": "quote.received"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        "id": "contract-workbench.acceptance.quote-parallel",
+        "kind": "acceptance",
+        "operationId": "request-quote",
+        "when": {
+          "intentId": "request-quote",
+          "itemKeys": [
+            "contract-1",
+            "contract-2"
+          ]
         }
       },
       {
         "acceptanceKind": "workflow",
         "expect": {
           "canonicalStateUnchanged": true,
-          "code": "OPERATION_DUPLICATE"
+          "code": "SCM_STALE_REVISION"
         },
-        "given": {},
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            }
+          ]
+        },
+        "id": "contract-workbench.acceptance.stale",
+        "kind": "acceptance",
+        "operationId": "add-contract",
+        "when": {
+          "actualRevision": 1,
+          "expectedRevision": 0,
+          "intentId": "add-contract",
+          "payload": {
+            "category": "transport",
+            "name": "Transport",
+            "quantity": 5
+          }
+        }
+      },
+      {
+        "acceptanceKind": "workflow",
+        "expect": {
+          "canonicalStateUnchanged": true,
+          "code": "SCM_DUPLICATE_OPERATION"
+        },
+        "given": {
+          "operations": [
+            {
+              "intentId": "add-contract",
+              "operationId": "contract-workbench.duplicate",
+              "payload": {
+                "category": "materials",
+                "name": "Steel",
+                "quantity": 12
+              }
+            }
+          ]
+        },
         "id": "contract-workbench.acceptance.duplicate",
         "kind": "acceptance",
         "operationId": "add-contract",
         "when": {
           "intentId": "add-contract",
-          "reuseOperationId": true
+          "payload": {
+            "category": "transport",
+            "name": "Transport",
+            "quantity": 5
+          },
+          "reuseOperationId": "contract-workbench.duplicate"
         }
       },
       {
@@ -167,7 +519,10 @@
         "kind": "acceptance",
         "operationId": "direct-set",
         "when": {
-          "intentId": "direct-set"
+          "intentId": "direct-set",
+          "payload": {
+            "contracts": []
+          }
         }
       },
       {
@@ -175,7 +530,10 @@
         "expect": {
           "isolatedCanonicalState": true,
           "isolatedLocalState": true,
-          "isolatedReceipts": true
+          "isolatedOperationLedgers": true,
+          "isolatedProvisionalState": true,
+          "isolatedReceipts": true,
+          "isolatedRoots": true
         },
         "given": {},
         "id": "contract-workbench.acceptance.multi-instance",
@@ -923,6 +1281,11 @@
         ]
       }
     },
+    "proof": {
+      "acceptanceStatus": "verified",
+      "browserObservation": "scenario-linked",
+      "runtimeStatus": "semantic-runtime-proven"
+    },
     "requiredRuntimeFeatures": [
       "capability-operation-runtime",
       "conditional-projection",
@@ -1563,9 +1926,9 @@
     },
     "title": "Contract Operations Workbench"
   },
-  "definitionFingerprint": "sha256:d81ea56e758a11da3b80e97eb26080ccdfec8e5ca719cee6bde191cb637fe865",
+  "definitionFingerprint": "sha256:6cb3c6d27a351fdd12e9d9e714e70ba75ed87468bc56815a54bf2078784c408d",
   "normalizer": "mcel-application-definition-normalizer-v1",
   "schema": "mcel.application-definition.normalized.v1",
   "source": "mcel_apps/contract-workbench/application.js",
-  "sourceSha256": "09e77804646bbdea34e486183dc986fe01074db8893d72dac850d81a6c1e2743"
+  "sourceSha256": "1d3cebff74ea9a8516eb3e54a8e7ffcc815a11bcc0c891ec36737b1a69e040e5"
 }

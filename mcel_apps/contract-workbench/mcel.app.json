@@ -5,16 +5,12 @@
     "featureMatrix": "forward-specification.json",
     "normalizedDefinition": "generated/mcel.application.normalized.json",
     "schema": "mcel.application-definition.v1",
-    "status": "forward-specification"
+    "status": "semantic-runtime-proven"
   },
   "blueprint": "blueprint.json",
   "conformance": {
-    "currentMode": "forward-specification",
-    "missingBridges": [
-      "dynamic-browser-observation",
-      "intent-complete-proof",
-      "multi-instance-proof"
-    ],
+    "currentMode": "semantic-runtime-proven",
+    "missingBridges": [],
     "targetMode": "semantic-runtime-proven"
   },
   "contracts": {
@@ -27,7 +23,7 @@
     "surface": "contracts/surface.js"
   },
   "normalization": {
-    "definitionFingerprint": "sha256:d81ea56e758a11da3b80e97eb26080ccdfec8e5ca719cee6bde191cb637fe865",
+    "definitionFingerprint": "sha256:6cb3c6d27a351fdd12e9d9e714e70ba75ed87468bc56815a54bf2078784c408d",
     "generatedContracts": [
       "domain",
       "intents",
@@ -39,7 +35,7 @@
     ],
     "normalizer": "mcel-application-definition-normalizer-v1",
     "schema": "mcel.application-definition-normalization.v1",
-    "sourceSha256": "09e77804646bbdea34e486183dc986fe01074db8893d72dac850d81a6c1e2743"
+    "sourceSha256": "1d3cebff74ea9a8516eb3e54a8e7ffcc815a11bcc0c891ec36737b1a69e040e5"
   },
   "requirements": "requirements.md",
   "runtime": {

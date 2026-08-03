@@ -1,29 +1,18 @@
 from __future__ import annotations
 
-import subprocess
-import sys
+import json
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[3]
+PACKAGE = Path(__file__).resolve().parents[1]
 
 
-def test_forward_specification_cannot_be_false_promoted() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "main_computer/mcel_app_prove.py",
-            "--app",
-            "contract-workbench",
-            "--check",
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=45,
-    )
-    assert completed.returncode == 1
-    output = completed.stdout + completed.stderr
-    assert "forward specification" in output
-    assert "unresolved bridges" in output
+def test_package_is_eligible_for_semantic_runtime_proof() -> None:
+    manifest = json.loads((PACKAGE / "mcel.app.json").read_text(encoding="utf-8"))
+    requirements = (PACKAGE / "requirements.md").read_text(encoding="utf-8")
+    matrix = json.loads((PACKAGE / "forward-specification.json").read_text(encoding="utf-8"))
+    assert manifest["conformance"]["currentMode"] == "semantic-runtime-proven"
+    assert manifest["conformance"]["missingBridges"] == []
+    assert "current_runtime_status: semantic-runtime-proven" in requirements
+    assert "status: verified" in requirements
+    assert matrix["features"] == []

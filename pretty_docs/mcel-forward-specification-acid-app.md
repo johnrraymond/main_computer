@@ -1,146 +1,75 @@
-# MCEL Forward-Specification Acid Application
+# MCEL Dynamic Application Acid Test
 
-## Purpose
+## Status
 
-`mcel_apps/contract-workbench/` is the forward specification for the next MCEL application-development boundary. Contract Counter remains the frozen semantic-runtime-proven canary for the existing fixed-surface runtime. Contract Operations Workbench defines the application code, contracts, HTML, acceptance obligations, observation obligations, and proof target that MCEL must learn to execute next.
+`mcel_apps/contract-workbench/` is now the first fully dynamic, asynchronous, independently browser-proven MCEL application. It began as the forward specification that forced the shared platform to implement each missing bridge without weakening the application definition.
 
-The application is intentionally written before the shared runtime supports all of its features. This is test-driven architecture:
+The completed progression is:
 
 ```text
-ideal application definition
-→ explicit forward contracts
-→ structural and semantic validation
-→ named runtime blockers
-→ MCEL implementation waves
-→ unchanged application reaches semantic-runtime-proven
+human-owned application.js
+→ deterministic normalized definition
+→ explicit domain, intent, adapter, surface, layout, acceptance, and observation contracts
+→ shared renderer-local, derived, provisional, and canonical state runtime
+→ typed static and item payloads
+→ properties, conditionals, and keyed collections
+→ capability streams, cancellation, and latest-per-item-key concurrency
+→ 14 contract-driven Chromium scenarios
+→ two-instance isolation proof
+→ enforceable package acceptance
+→ intent-complete proof convergence
+→ semantic-runtime-proven
 ```
 
-## Constitutional rule
+## Authority
 
-When the forward app and the current runtime disagree, first assume the runtime is incomplete. The app may change only when the desired interface is internally incoherent or violates a deeper MCEL authority boundary.
-
-The forward app must never be promoted merely because its files validate structurally. `forward-specification` is a valid package mode, but it is not proof eligibility.
-
-## Human authoring authority
-
-The primary human-owned source is:
+The primary human-owned source remains:
 
 ```text
 mcel_apps/contract-workbench/application.js
 ```
 
-It uses the declaration-only library:
+`tools/mcel_application_definition.py` deterministically projects that source into the generated contract set. Manual edits to generated contracts are drift and must fail `--check`.
 
-```text
-main_computer/web/applications/scripts/mcel-app-definition.js
-```
+## Proven application surface
 
-That library validates and freezes the desired application definition. `tools/mcel_application_definition.py` now normalizes that source into deterministic explicit domain, intent, adapter, surface, layout, acceptance, and observation contracts plus `generated/mcel.application.normalized.json`. The generated files remain inspectable and fingerprinted, while executable operation and invariant behavior is generated from the one human-owned source. The shared runtime now evaluates local, derived, and provisional state; binds static inputs; extracts typed static and item-control payloads; projects safe properties and conditional templates; reconciles stable keyed rows; injects declared capability providers; consumes streamed events; projects provisional row progress; and performs one final SCM commit. It still does not implement cancellation, declared concurrency policy, dynamic browser observation, multi-instance proof, or intent-complete proof for the Workbench.
+The Workbench proves:
 
-The definition declares:
+- canonical, renderer-local, derived, and provisional state;
+- typed form and item-control payload extraction;
+- validation refusals and structured receipts;
+- safe dynamic properties and conditional templates;
+- stable keyed collection creation, update, sorting, filtering, clearing, and removal;
+- streamed capability progress followed by one canonical commit;
+- explicit cancellation and late-event suppression;
+- same-key supersession and different-key parallel operations;
+- prohibited, stale, and duplicate-operation refusals;
+- independent Chromium observation of 14 scenarios;
+- isolation across two simultaneous application instances;
+- complete coverage of every declared operation.
 
-- canonical, provisional, renderer-local, and derived state;
-- typed payload-bearing operations;
-- prohibited operations;
-- a streamed capability-backed quote operation;
-- cancellation and per-item concurrency policy;
-- dynamic inputs and properties;
-- conditional projection;
-- keyed collection reconciliation;
-- item-level controls;
-- package-local acceptance obligations;
-- dynamic browser observations;
-- multi-instance isolation.
+## Constitutional rule retained
 
-## Physical interface
+The app was not promoted because its files were structurally valid. Promotion required enforceable package-local acceptance, passing independent browser evidence, exact package/catalog/projection/repository alignment, and an intent-complete convergence report.
 
-The app remains HTML-first. `src/index.html` contains ordinary controls, static regions, dynamic hosts, and reusable templates:
+Future changes must preserve this authority chain. A unit test, DOM snapshot, or successful operation alone is not semantic-runtime proof.
 
-```text
-form inputs
-conditional validation host
-summary property nodes
-filter and sort inputs
-conditional empty-state host
-keyed collection host
-contract row template
-operation receipt
-```
-
-Canonical state determines which collection items exist. Renderer-local state controls drafts, filtering, and sorting. Provisional state carries quote progress. Derived state calculates the visible collection, total quantity, and submit readiness.
-
-## Current test boundary
-
-The package separates tests into two classes.
-
-### Passing definition tests
-
-These prove that:
-
-- the package is structurally valid;
-- the application definition is executable as a declaration;
-- identities and references are coherent;
-- operation read/write sets are explicit;
-- synchronous transition semantics are already defined;
-- HTML hosts and templates agree with the dynamic surface contract;
-- the feature matrix exactly matches the manifest's missing bridges;
-- app proof refuses false promotion.
-
-### Strict expected failures
-
-Runtime-dependent obligations are encoded as strict expected failures with stable codes. The remaining blockers include:
-
-- dynamic browser observation;
-- intent-complete proof;
-- multi-instance proof.
-
-An unexpected pass is treated as a test failure until the corresponding bridge is deliberately closed and the obligation is promoted to an enforceable test.
-
-## Development order
-
-The recommended implementation sequence is:
-
-Completed:
-
-1. Renderer-local and derived state evaluation.
-2. Dynamic input binding and typed static-control payload extraction.
-3. Safe `textContent` and `disabled` property projection.
-4. Conditional template projection from state and structured receipt messages.
-5. Stable keyed collection reconciliation and item controls.
-6. Provisional state and capability-backed async operations with one final SCM commit.
-7. Cancellation, late-event suppression, and `latest-per-item-key` concurrency authority.
-
-Next:
-
-8. Add collection, conditional, provisional, and multi-instance browser observation.
-9. Add intent-complete proof coverage and promote the app only after every obligation passes.
-
-## Non-goals
-
-This package does not authorize:
-
-- replacing SCM as canonical mutation authority;
-- arbitrary DOM mutation by app code;
-- a virtual DOM requirement;
-- implicit reads or writes inferred from transition source code;
-- hidden capability access;
-- treating local or provisional state as canonical;
-- weakening acceptance, observation, provenance, or truth gates.
-
-## Completion condition
-
-The program is complete when this unchanged application can run:
+## Verification
 
 ```powershell
-python main_computer/mcel_app_prove.py `
+python tools/mcel_application_definition.py `
   --app contract-workbench `
   --check
+
+python tools/mcel_application_runtime_projection.py --check
+python tools/mcel_application_package_browser_catalog.py --check
+python main_computer/mcel_acceptance_runner.py --app contract-workbench --check
+python main_computer/mcel_application_observation_runner.py --app contract-workbench --check
+python main_computer/mcel_app_prove.py --app contract-workbench --check
 ```
 
-and receive:
+The final command must report:
 
 ```text
 truth_status: semantic-runtime-proven
 ```
-
-At that point, MCEL will have proven both a fixed-surface canonical app and a materially dynamic, payload-bearing, asynchronous application through the same package, runtime, observation, provenance, and truth authorities.

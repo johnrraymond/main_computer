@@ -57,7 +57,7 @@ MCEL now provides a deterministic canonical scaffold generator, a golden package
 
 The canonical target for greenfield MCEL authoring is specified in `pretty_docs/mcel-application-scaffolding.md`. That program defines a deterministic application generator, a versioned package contract, a golden generated fixture, and the Contract Counter reference application.
 
-Contract Counter is now the frozen semantic-runtime-proven canary for the existing fixed-surface path. The next authoring boundary is specified by `pretty_docs/mcel-forward-specification-acid-app.md` and `mcel_apps/contract-workbench/application.js`: a human-facing application definition whose dynamic and asynchronous obligations intentionally precede shared runtime support.
+Contract Counter remains the frozen fixed-surface canary. Contract Operations Workbench is now the proven dynamic and asynchronous reference: a human-facing `application.js` definition that is normalized, executed, independently observed in Chromium, checked for multi-instance isolation, and promoted only after intent-complete proof convergence.
 
 The scaffolding specification is the complete implementation contract. `tools/mcel_create_app.py`, structural package validation, the golden fixture, repository package discovery, browser-safe package catalog and projection, SCM-controlled application runtime, package-local acceptance, Chromium observation, and `main_computer/mcel_app_prove.py` are live. The installed product-level `mcel app create` command remains proposed; use the repository commands below for current application development and proof.
 

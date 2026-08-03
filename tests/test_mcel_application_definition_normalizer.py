@@ -106,7 +106,7 @@ def test_generated_domain_invariants_are_self_contained_and_executable() -> None
     assert json.loads(completed.stdout) == {"valid": True, "invalid": False}
 
 
-def test_manifest_closes_only_the_normalization_bridge() -> None:
+def test_manifest_records_full_definition_and_proof_convergence() -> None:
     manifest = json.loads((ROOT / "mcel_apps/contract-workbench/mcel.app.json").read_text(encoding="utf-8"))
     assert manifest["authoring"]["normalizedDefinition"] == NORMALIZED_PATH
     assert manifest["normalization"]["normalizer"] == NORMALIZER_VERSION
@@ -121,7 +121,12 @@ def test_manifest_closes_only_the_normalization_bridge() -> None:
     assert "provisional-state" not in manifest["conformance"]["missingBridges"]
     assert "provisional-state-runtime" not in manifest["conformance"]["missingBridges"]
     assert "capability-operation-runtime" not in manifest["conformance"]["missingBridges"]
-    assert len(manifest["conformance"]["missingBridges"]) == 3
+    assert manifest["conformance"] == {
+        "currentMode": "semantic-runtime-proven",
+        "missingBridges": [],
+        "targetMode": "semantic-runtime-proven",
+    }
+    assert manifest["authoring"]["status"] == "semantic-runtime-proven"
 
 
 def test_generated_domain_materializes_runtime_state_and_capability_definitions() -> None:

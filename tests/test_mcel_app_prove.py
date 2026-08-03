@@ -115,3 +115,62 @@ def test_app_proof_rejects_missing_required_surface_layer() -> None:
             acceptance=acceptance,
             observation=observation,
         )
+
+
+def _workbench_coverage_inputs():
+    catalog = build_application_package_catalog(ROOT)
+    record = next(item for item in catalog.packages if item.app_id == "contract-workbench")
+    normalized = prove._load_json(ROOT / record.authoring["normalizedDefinition"], "normalized definition")
+    scenario_ids = [entry["id"] for entry in normalized["definition"]["acceptance"]]
+    acceptance = {
+        "status": "pass",
+        "passed": True,
+        "results": [{
+            "appId": "contract-workbench",
+            "status": "pass",
+            "testCount": 9,
+            "enforceableContractCount": 1,
+            "notDueContractCount": 0,
+        }],
+    }
+    observation = {
+        "status": "pass",
+        "ok": True,
+        "observation": {
+            "scenarioResults": [{"id": scenario_id, "passed": True} for scenario_id in scenario_ids],
+        },
+    }
+    return record, acceptance, observation
+
+
+def test_intent_complete_coverage_converges_for_workbench() -> None:
+    record, acceptance, observation = _workbench_coverage_inputs()
+    coverage = prove._intent_complete_coverage(
+        repo=ROOT,
+        app_id="contract-workbench",
+        record=record,
+        acceptance=acceptance,
+        observation=observation,
+    )
+    assert coverage["status"] == "pass"
+    assert coverage["declaredIntentCount"] == 7
+    assert coverage["coveredIntentCount"] == 7
+    assert coverage["declaredScenarioCount"] == 14
+    assert coverage["observedScenarioCount"] == 14
+    assert coverage["crossCuttingChecks"]["clearAllObserved"] is True
+
+
+def test_intent_complete_coverage_rejects_missing_clear_all_browser_proof() -> None:
+    record, acceptance, observation = _workbench_coverage_inputs()
+    observation["observation"]["scenarioResults"] = [
+        entry for entry in observation["observation"]["scenarioResults"]
+        if entry["id"] != "contract-workbench.acceptance.clear-all"
+    ]
+    with pytest.raises(prove.AppProofError, match="Intent-complete proof did not converge"):
+        prove._intent_complete_coverage(
+            repo=ROOT,
+            app_id="contract-workbench",
+            record=record,
+            acceptance=acceptance,
+            observation=observation,
+        )

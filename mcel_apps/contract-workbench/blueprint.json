@@ -5,7 +5,7 @@
   "route": "/applications/contract-workbench",
   "rootSelector": "#contract-workbench-app",
   "dominantObject": "Contract collection and quote workflow",
-  "purpose": "Serve as the forward specification and TDD acid application for dynamic, payload-bearing, asynchronous MCEL applications.",
+  "purpose": "Serve as the first fully dynamic, asynchronous, independently browser-proven MCEL application and regression acid test.",
   "aspects": [
     "overview",
     "form",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -11,6 +12,7 @@ from tools import mother_deploy
 from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_validator_rpc_canary_funding import (
     MotherDeploymentValidatorRpcCanaryFundingError,
+    _deployment_uuid,
     build_validator_rpc_canary_funding_release,
     build_validator_rpc_canary_funding_transaction,
     execute_validator_rpc_canary_funding_release,
@@ -56,21 +58,29 @@ def test_funding_compiler_binds_exact_cap_and_genesis_captain(tmp_path: Path, mo
     assert funding["funding_source"]["role"] == "captain"
     assert funding["funding_source"]["genesis_allocated"] is True
     assert funding["funding_source"]["private_key_material_in_transaction"] is False
-    assert funding["destination"]["pre_funding_balance_must_equal_wei"] == 0
+    assert funding["destination"]["allowed_pre_execution_balances_wei"] == [
+        0,
+        742_000_000_000_000,
+    ]
     policy = funding["funding_policy"]
     assert policy["transfer_value_wei"] == 742_000_000_000_000
     assert policy["transfer_value_cap_wei"] == 742_000_000_000_000
     assert policy["funding_transaction_max_fee_wei"] == 42_000_000_000_000
     assert policy["source_maximum_total_debit_wei"] == 784_000_000_000_000
-    assert policy["cross_validator_receipt_and_balance_verification_required"] is True
+    assert policy["cross_validator_receipt_verification_required_when_new_transfer"] is True
     assert funding["coolify_transport"] == {
         "resource_api": "services",
         "create_endpoint": "/api/v1/services",
         "deprecated_application_create_endpoint_authorized": False,
         "compose_encoding": "base64",
         "environment_uuid_resolution": "read-only-exact-name-before-create",
+        "deployment_result_endpoint_template": "/api/v1/deployments/{deployment_uuid}",
+        "service_log_endpoints_authorized": False,
     }
-    assert funding["schema_version"] == 3
+    assert policy["destination_zero_or_exact_balance_precondition_required"] is True
+    assert policy["idempotent_exact_balance_reconciliation_supported"] is True
+    assert policy["cross_validator_balance_verification_required"] is True
+    assert funding["schema_version"] == 4
     assert funding["authority"]["funding_authorized"] is False
     assert funding["authority"]["live_execution_authorized"] is False
     assert funding["summary"]["validator_mutation_count"] == 0
@@ -97,6 +107,20 @@ def test_funding_transaction_persists_and_rebuild_verifies(tmp_path: Path, monke
     assert verified["source_maximum_total_debit_wei"] == 784_000_000_000_000
     assert verified["validator_mutation_count"] == 0
     assert verified["next_phase"] == "validator-rpc-canary-funding-release-not-yet-authorized"
+
+
+def test_deployment_uuid_accepts_one_nested_uuid_when_resource_binding_differs() -> None:
+    payload = {
+        "data": {
+            "deployments": [
+                {
+                    "resource_uuid": "compose-child-service-uuid",
+                    "deployment_uuid": "deployment-a-uuid",
+                }
+            ]
+        }
+    }
+    assert _deployment_uuid(payload, "fund-a-uuid") == "deployment-a-uuid"
 
 
 def test_funding_verifier_rejects_tampered_cap(tmp_path: Path, monkeypatch) -> None:
@@ -170,9 +194,16 @@ def _release_fixture(tmp_path: Path, monkeypatch):
 class _FundingOpener:
     tx_hash = "0x" + "ab" * 32
 
-    def __init__(self, destination: str, *, bad_c_balance: bool = False) -> None:
+    def __init__(
+        self,
+        destination: str,
+        *,
+        bad_c_balance: bool = False,
+        already_funded: bool = False,
+    ) -> None:
         self.destination = destination
         self.bad_c_balance = bad_c_balance
+        self.already_funded = already_funded
         self.requests: list[tuple[str, str, str]] = []
         self.a_deleted = False
         self.c_deleted = False
@@ -196,6 +227,7 @@ class _FundingOpener:
                 assert body["name"] == "mainnet-canary1-fund-a"
                 compose = base64.b64decode(body["docker_compose_raw"], validate=True).decode("utf-8")
                 assert "mainnet-canary1-fund-a:" in compose
+                assert "already-funded" in compose
                 assert body["instant_deploy"] is False
                 assert body["environment_name"] == "mainnet"
                 assert body["environment_uuid"] == "mainnet-env-a"
@@ -210,18 +242,29 @@ class _FundingOpener:
             if method == "GET" and path == "/api/v1/deploy":
                 assert parsed.query == "uuid=fund-a-uuid&force=false"
                 return _AdmissionResponse(
-                    {"deployments": [{"resource_uuid": "fund-a-uuid", "deployment_uuid": "dep-a"}]}
+                    {"deployments": [{"resource_uuid": "fund-a-uuid", "deployment_uuid": "deployment-a-uuid"}]}
                 )
-            if method == "GET" and path == "/api/v1/services/fund-a-uuid/logs":
+            if method == "GET" and path == "/api/v1/deployments/deployment-a-uuid":
+                if self.already_funded:
+                    result = {
+                        "mode": "already-funded",
+                        "transaction_hash": None,
+                        "destination": self.destination,
+                        "balance_wei": "742000000000000",
+                    }
+                else:
+                    result = {"transactionHash": self.tx_hash}
                 return _AdmissionResponse({
+                    "deployment_uuid": "deployment-a-uuid",
+                    "status": "finished",
                     "logs": (
                         "MOTHER_VALIDATOR_RPC_CANARY_FUNDING_A_RESULT="
-                        + json.dumps({"transactionHash": self.tx_hash})
-                    )
+                        + json.dumps(result)
+                    ),
                 })
             if method == "DELETE" and path == "/api/v1/services/fund-a-uuid":
                 self.a_deleted = True
-                return _AdmissionResponse({"message": "Application deleted."})
+                return _AdmissionResponse({"message": "Service deleted."})
 
         if host == "coolify-c.invalid":
             if method == "GET" and path == "/api/v1/projects/project-c/environments":
@@ -231,36 +274,45 @@ class _FundingOpener:
                 assert body["name"] == "mainnet-canary1-fund-c"
                 compose = base64.b64decode(body["docker_compose_raw"], validate=True).decode("utf-8")
                 assert "mainnet-canary1-fund-c:" in compose
+                assert "MC_MOTHER_CANARY_FUNDING_MODE" in compose
                 assert body["environment_uuid"] == "mainnet-env-c"
                 return _AdmissionResponse({"uuid": "fund-c-uuid"}, status=201)
             if method == "PATCH" and path == "/api/v1/services/fund-c-uuid/envs/bulk":
                 body = json.loads(request.data.decode("utf-8"))
-                assert body["data"][0]["key"] == "MC_MOTHER_CANARY_FUNDING_TX_HASH"
-                assert body["data"][0]["value"] == self.tx_hash
+                values = {item["key"]: item["value"] for item in body["data"]}
+                expected_mode = "already-funded" if self.already_funded else "funded"
+                assert values["MC_MOTHER_CANARY_FUNDING_MODE"] == expected_mode
+                assert values["MC_MOTHER_CANARY_FUNDING_TX_HASH"] == (
+                    "" if self.already_funded else self.tx_hash
+                )
                 return _AdmissionResponse([{"uuid": "env-c-uuid"}], status=201)
             if method == "GET" and path == "/api/v1/deploy":
                 assert parsed.query == "uuid=fund-c-uuid&force=false"
                 return _AdmissionResponse(
-                    {"deployments": [{"resource_uuid": "fund-c-uuid", "deployment_uuid": "dep-c"}]}
+                    {"deployments": [{"resource_uuid": "fund-c-uuid", "deployment_uuid": "deployment-c-uuid"}]}
                 )
-            if method == "GET" and path == "/api/v1/services/fund-c-uuid/logs":
+            if method == "GET" and path == "/api/v1/deployments/deployment-c-uuid":
                 balance = "1" if self.bad_c_balance else "742000000000000"
+                mode = "already-funded" if self.already_funded else "funded"
                 return _AdmissionResponse({
+                    "deployment_uuid": "deployment-c-uuid",
+                    "status": "finished",
                     "logs": (
                         "MOTHER_VALIDATOR_RPC_CANARY_FUNDING_C_RESULT="
                         + json.dumps({
-                            "transaction_hash": self.tx_hash,
+                            "mode": mode,
+                            "transaction_hash": None if self.already_funded else self.tx_hash,
                             "destination": self.destination,
                             "balance_wei": balance,
+                            "receipt_verified": not self.already_funded,
                         })
-                    )
+                    ),
                 })
             if method == "DELETE" and path == "/api/v1/services/fund-c-uuid":
                 self.c_deleted = True
-                return _AdmissionResponse({"message": "Application deleted."})
+                return _AdmissionResponse({"message": "Service deleted."})
 
         raise AssertionError(f"unexpected request {method} {request.full_url}")
-
 
 def test_funding_release_is_one_use_exact_cap_and_inspect_is_offline(
     tmp_path: Path,
@@ -339,8 +391,9 @@ def test_funding_executor_transfers_exact_amount_verifies_on_c_and_deletes_apps(
     assert not any("/api/v1/applications/dockercompose" in path for _, _, path in opener.requests)
     assert ("coolify-a.invalid", "GET", "/api/v1/projects/project-a/environments") in opener.requests
     assert ("coolify-c.invalid", "GET", "/api/v1/projects/project-c/environments") in opener.requests
-    assert any(path.startswith("/api/v1/services/fund-a-uuid/logs") for _, _, path in opener.requests)
-    assert any(path.startswith("/api/v1/services/fund-c-uuid/logs") for _, _, path in opener.requests)
+    assert ("coolify-a.invalid", "GET", "/api/v1/deployments/deployment-a-uuid") in opener.requests
+    assert ("coolify-c.invalid", "GET", "/api/v1/deployments/deployment-c-uuid") in opener.requests
+    assert not any("/logs" in path for _, _, path in opener.requests)
 
     verified = verify_validator_rpc_canary_funding_evidence(
         paths,
@@ -482,3 +535,331 @@ def test_no_write_create_rejection_can_bind_one_fresh_release(
     assert recovery["recovery"]["mode"] == "safe-pre-create-rejection-no-write"
     assert recovery["recovery"]["live_write_acknowledged"] is False
     assert recovery["recovery"]["cleanup_authorized"] is False
+
+def test_post_deploy_log_timeout_recovery_is_idempotent_and_reconciles_exact_balance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        funding_path,
+        funding_digest,
+        release,
+        release_path,
+        release_digest,
+    ) = _release_fixture(tmp_path, monkeypatch)
+    app_uuid = "t105jo45pvgt54lcycq2jjt6"
+    failure_document = {
+        "kind": "main_computer.mother.deployment_validator_rpc_canary_funding_evidence.v1",
+        "schema_version": 1,
+        "started_at": "2026-08-03T01:51:56Z",
+        "completed_at": "2026-08-03T01:56:56Z",
+        "status": "manual-review-required",
+        "network": "mainnet",
+        "mother_binding": release["mother_binding"],
+        "release": {
+            "locator": str(release_path.relative_to(paths.root)).replace("\\\\", "/"),
+            "sha256": release_digest,
+        },
+        "execution_claim": {
+            "locator": (
+                "actions/deployment-validator-rpc-canary-funding-execution-claims/"
+                f"{release_digest}.json"
+            )
+        },
+        "chain": release["chain"],
+        "funding_source_address": release["funding_source"]["address"],
+        "canary_address": release["destination"]["address"],
+        "transfer_value_wei": release["funding_policy"]["transfer_value_wei"],
+        "funding_transaction_hash": None,
+        "cross_validator_verification": None,
+        "mutation_receipts": [
+            {
+                "mutation_id": "mainnet-canary1-fund-a.create-application",
+                "controller_id": "coolify-a",
+                "method": "POST",
+                "endpoint": "/api/v1/services",
+                "http_status": 201,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+            },
+            {
+                "mutation_id": "mainnet-canary1-fund-a.bind-captain-secret",
+                "controller_id": "coolify-a",
+                "method": "POST",
+                "endpoint": f"/api/v1/services/{app_uuid}/envs",
+                "http_status": 201,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+            },
+            {
+                "mutation_id": "mainnet-canary1-fund-a.deploy",
+                "controller_id": "coolify-a",
+                "method": "GET",
+                "endpoint": f"/api/v1/deploy?uuid={app_uuid}&force=false",
+                "http_status": 200,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+            },
+            {
+                "mutation_id": "emergency-delete-a-funder",
+                "controller_id": "coolify-a",
+                "method": "DELETE",
+                "endpoint": f"/api/v1/services/{app_uuid}",
+                "http_status": 200,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+            },
+        ],
+        "log_observations": [
+            {
+                "phase": "A-mainnet-environment-resolution",
+                "controller_id": "coolify-a",
+                "method": "GET",
+                "endpoint": "/api/v1/projects/project-a/environments",
+                "http_status": 200,
+                "verified": True,
+            },
+            *[
+                {
+                    "phase": "A-capped-funding-result",
+                    "controller_id": "coolify-a",
+                    "method": "GET",
+                    "endpoint": endpoint,
+                    "http_status": 404,
+                    "marker_present": False,
+                }
+                for endpoint in (
+                    f"/api/v1/services/{app_uuid}/logs?sub_service_name=mainnet-canary1-fund-a&lines=500&show_timestamps=true",
+                    f"/api/v1/services/{app_uuid}/logs?lines=500",
+                    f"/api/v1/services/{app_uuid}/docker/logs?lines=500",
+                    f"/api/v1/services/{app_uuid}/applications/logs?lines=500",
+                )
+            ],
+        ],
+        "failure": {
+            "code": "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_TIMEOUT",
+            "message": "A-capped-funding-result did not produce its committed result marker",
+        },
+        "summary": {
+            "clean": False,
+            "complete": False,
+            "funding_performed": False,
+            "funding_receipt_verified_on_C": False,
+            "canary_balance_verified_on_C": False,
+            "exact_transfer_value_verified": False,
+            "temporary_A_application_deleted": False,
+            "temporary_C_application_deleted": False,
+            "application_mutation_count": 4,
+            "validator_mutation_count": 0,
+            "validator_restart_count": 0,
+            "public_endpoint_count": 0,
+            "validator_vote_performed": False,
+            "canary_execution_performed": False,
+            "next_phase": "manual-review-required",
+        },
+    }
+    digest = hashlib.sha256(canonical_json(failure_document)).hexdigest()
+    failure_document["validator_rpc_canary_funding_evidence_sha256"] = digest
+    evidence_dir = (
+        paths.root / "evidence" / "deployment-validator-rpc-canary-funding"
+    )
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    failure_path = evidence_dir / f"20260803T015656Z-{digest[:16]}.json"
+    failure_path.write_bytes(canonical_json(failure_document))
+
+    recovery_release = build_validator_rpc_canary_funding_release(
+        paths,
+        private_state,
+        funding_path,
+        acknowledged_transaction_sha256=funding_digest,
+        recovery_evidence_path=failure_path,
+        operation=_operation("validator-rpc-canary-funding-idempotent-release"),
+    )
+    assert recovery_release["recovery"]["mode"] == (
+        "idempotent-post-deploy-balance-reconcile-or-fund"
+    )
+    assert recovery_release["recovery"]["prior_cleanup_acknowledged"] is True
+    recovery_path, recovery_digest = write_validator_rpc_canary_funding_release(
+        paths,
+        recovery_release,
+        operation=_operation("validator-rpc-canary-funding-idempotent-release-write"),
+    )
+    opener = _FundingOpener(
+        recovery_release["destination"]["address"],
+        already_funded=True,
+    )
+    result = execute_validator_rpc_canary_funding_release(
+        paths,
+        private_state,
+        recovery_path,
+        acknowledged_release_sha256=recovery_digest,
+        opener=opener,
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        operation=_operation("validator-rpc-canary-funding-idempotent-live"),
+    )
+    assert result["status"] == "pass"
+    assert result["funding_mode"] == "already-funded"
+    assert result["funding_transaction_hash"] is None
+    assert result["summary"]["funding_performed"] is False
+    assert result["summary"]["funding_reconciled_from_prior_execution"] is True
+    assert result["summary"]["funding_receipt_verified_on_C"] is False
+    assert result["summary"]["canary_balance_verified_on_C"] is True
+    verified = verify_validator_rpc_canary_funding_evidence(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+        operation=_operation("validator-rpc-canary-funding-idempotent-evidence"),
+    )
+    assert verified["clean"] is True
+    assert verified["funding_mode"] == "already-funded"
+    assert verified["funding_reconciled_from_prior_execution"] is True
+
+
+
+def test_deployment_uuid_failure_recovery_accepts_acknowledged_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        funding_path,
+        funding_digest,
+        release,
+        release_path,
+        release_digest,
+    ) = _release_fixture(tmp_path, monkeypatch)
+    app_uuid = "h2mgukma99iakoxq1xm6v39t"
+    failure_document = {
+        "kind": "main_computer.mother.deployment_validator_rpc_canary_funding_evidence.v1",
+        "schema_version": 1,
+        "started_at": "2026-08-03T02:20:30Z",
+        "completed_at": "2026-08-03T02:20:31Z",
+        "status": "manual-review-required",
+        "network": "mainnet",
+        "mother_binding": release["mother_binding"],
+        "release": {
+            "locator": str(release_path.relative_to(paths.root)).replace("\\", "/"),
+            "sha256": release_digest,
+        },
+        "execution_claim": {
+            "locator": (
+                "actions/deployment-validator-rpc-canary-funding-execution-claims/"
+                f"{release_digest}.json"
+            )
+        },
+        "chain": release["chain"],
+        "funding_source_address": release["funding_source"]["address"],
+        "canary_address": release["destination"]["address"],
+        "transfer_value_wei": release["funding_policy"]["transfer_value_wei"],
+        "funding_transaction_hash": None,
+        "cross_validator_verification": None,
+        "mutation_receipts": [
+            {
+                "mutation_id": "mainnet-canary1-fund-a.create-application",
+                "controller_id": "coolify-a",
+                "method": "POST",
+                "endpoint": "/api/v1/services",
+                "http_status": 201,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+            },
+            {
+                "mutation_id": "mainnet-canary1-fund-a.bind-captain-secret",
+                "controller_id": "coolify-a",
+                "method": "POST",
+                "endpoint": f"/api/v1/services/{app_uuid}/envs",
+                "http_status": 201,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+            },
+            {
+                "mutation_id": "mainnet-canary1-fund-a.deploy",
+                "controller_id": "coolify-a",
+                "method": "GET",
+                "endpoint": f"/api/v1/deploy?uuid={app_uuid}&force=false",
+                "http_status": 200,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+                "deployment_uuid": "",
+            },
+            {
+                "mutation_id": "emergency-delete-a-funder",
+                "controller_id": "coolify-a",
+                "method": "DELETE",
+                "endpoint": f"/api/v1/services/{app_uuid}",
+                "http_status": 200,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "application_uuid": app_uuid,
+            },
+        ],
+        "log_observations": [
+            {
+                "phase": "A-mainnet-environment-resolution",
+                "controller_id": "coolify-a",
+                "method": "GET",
+                "endpoint": "/api/v1/projects/project-a/environments",
+                "http_status": 200,
+                "verified": True,
+            }
+        ],
+        "failure": {
+            "code": "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_DEPLOYMENT_INVALID",
+            "message": (
+                "Coolify deployment request did not return exactly one usable "
+                "deployment UUID"
+            ),
+        },
+        "summary": {
+            "clean": False,
+            "complete": False,
+            "funding_performed": False,
+            "funding_complete": False,
+            "funding_receipt_verified_on_C": False,
+            "canary_balance_verified_on_C": False,
+            "exact_transfer_value_verified": False,
+            "temporary_A_application_deleted": True,
+            "temporary_C_application_deleted": False,
+            "application_mutation_count": 4,
+            "validator_mutation_count": 0,
+            "validator_restart_count": 0,
+            "public_endpoint_count": 0,
+            "validator_vote_performed": False,
+            "canary_execution_performed": False,
+            "next_phase": "manual-review-required",
+        },
+    }
+    digest = hashlib.sha256(canonical_json(failure_document)).hexdigest()
+    failure_document["validator_rpc_canary_funding_evidence_sha256"] = digest
+    evidence_dir = paths.root / "evidence" / "deployment-validator-rpc-canary-funding"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    failure_path = evidence_dir / f"20260803T022030Z-{digest[:16]}.json"
+    failure_path.write_bytes(canonical_json(failure_document))
+
+    recovery_release = build_validator_rpc_canary_funding_release(
+        paths,
+        private_state,
+        funding_path,
+        acknowledged_transaction_sha256=funding_digest,
+        recovery_evidence_path=failure_path,
+        operation=_operation("validator-rpc-canary-funding-deployment-uuid-recovery"),
+    )
+    assert recovery_release["recovery"]["mode"] == (
+        "idempotent-post-deploy-balance-reconcile-or-fund"
+    )
+    assert recovery_release["recovery"]["failed_phase"] == "A-deployment-uuid-resolution"
+    assert recovery_release["recovery"]["prior_cleanup_acknowledged"] is True
+    assert recovery_release["recovery"]["prior_funding_state"] == "unknown"

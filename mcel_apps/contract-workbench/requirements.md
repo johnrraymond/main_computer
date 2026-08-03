@@ -1,12 +1,12 @@
 # Contract Operations Workbench
 
-This package is the forward specification and TDD acid application for the next MCEL application-development boundary. Its application definition and explicit contracts are authoritative even where the current runtime cannot execute them. The shared runtime now implements per-instance renderer-local, derived, and provisional state; static and item payload extraction; safe properties and conditionals; keyed collections; injected streamed capability operations; provisional progress projection; and one final SCM commit. Runtime-dependent acceptance remains planned until MCEL closes dynamic observation, intent-complete proof, and multi-instance proof. Cancellation and latest-per-item-key concurrency are implemented in the shared runtime.
+This package is the first fully dynamic, asynchronous, independently browser-proven MCEL application. Its human-owned source authority is `application.js`; deterministic generated contracts, shared runtime behavior, package-local acceptance, Chromium observation, multi-instance isolation, and intent-complete proof now converge into repository-bound semantic-runtime proof.
 
 ```mcel-app
 id: contract-workbench
 title: Contract Operations Workbench
 status: specified
-current_runtime_status: forward-specification
+current_runtime_status: semantic-runtime-proven
 target_runtime_status: fullApplicationSemanticReady
 dominant_object: Contract collection and quote workflow
 primary_user_goal: Create, validate, filter, update, quote, cancel, and remove contracts through one coherent MCEL application.
@@ -26,9 +26,10 @@ current_sources:
   - src/app.js
   - src/app.css
 verification:
-  - forward application definition validation
-  - explicit contract coherence
-  - deliberate runtime blocker inventory
+  - deterministic application-definition normalization
+  - enforceable package-local complete-application acceptance
+  - 14-scenario Chromium observation and multi-instance isolation
+  - intent-complete proof convergence
 ```
 
 ```mcel-use-case
@@ -158,7 +159,7 @@ id: contract-workbench.intent.request-quote
 app: contract-workbench
 status: specified
 intent: request-quote
-risk: external-read-stream
+risk: read-only
 requires:
   - declared quote capability
   - declared item key
@@ -173,7 +174,7 @@ id: contract-workbench.intent.cancel-quote
 app: contract-workbench
 status: specified
 intent: cancel-quote
-risk: external-operation-control
+risk: local-state
 requires:
   - matching in-flight quote operation
 produces:
@@ -209,11 +210,12 @@ produces:
 ```mcel-acceptance
 id: contract-workbench.acceptance.complete-application
 app: contract-workbench
-status: planned
+status: verified
 requires:
   - typed form payload commits one stable keyed item
   - invalid form payload is refused and conditionally displayed
   - keyed update and remove affect only the selected item
+  - clear-all commits exactly once, empties canonical and visible collections, and restores the empty state
   - filter and sort change local and derived views without canonical mutation
   - streamed quote progress remains provisional until one commit
   - quote cancellation closes provisional work without canonical mutation
@@ -277,34 +279,34 @@ freshness: Covered by capability runtime, collection projection, generated domai
 ```
 
 ```mcel-evidence
-id: contract-workbench.evidence.forward-specification
+id: contract-workbench.evidence.platform-convergence
 app: contract-workbench
-status: specified
-evidence: Forward specification feature matrix
-proves: The package names every required runtime bridge and expected current blocker without claiming runtime support.
+status: verified
+evidence: Historical feature matrix and intent-complete proof convergence
+proves: Every formerly missing MCEL runtime bridge is implemented, every declared intent is mapped to passing enforceable acceptance and Chromium scenarios, and no platform bridge remains open.
 source: forward-specification.json
-freshness: Bound to the package fingerprint and application-definition inventory.
+freshness: Bound to the normalized definition, package fingerprint, acceptance evidence, browser observation, and app proof report.
 ```
 
 ```mcel-boundary
 id: contract-workbench.boundary.definition-runtime
 app: contract-workbench
-status: specified
-boundary: Desired application definition versus current MCEL runtime
-left_side: application.js and explicit forward contracts
-right_side: Shared dynamic projection, capability, observation, and proof infrastructure
-rule: The application remains stable while MCEL advances to satisfy it; unsupported runtime features must block explicitly rather than be silently omitted.
-prohibited_confusion: A structurally valid forward specification is not semantic-runtime proof.
+status: verified
+boundary: Human-owned application definition versus generated runtime and proof projections
+left_side: application.js as source authority
+right_side: Deterministic contracts, shared runtime, package acceptance, Chromium observation, and app proof
+rule: Generated artifacts must remain exact projections of the stable application definition and all proof authorities must bind to one repository state.
+prohibited_confusion: Structural validity or unit execution alone is not semantic-runtime proof.
 ```
 
 ```mcel-finding
 id: contract-workbench.finding.forward-gaps
 app: contract-workbench
-status: open
+status: verified
 aspect: implementation
 severity: high
-problem: The MCEL runtime now supports the complete synchronous Workbench and a single streamed capability operation with provisional progress and one final SCM commit, but not cancellation, declared concurrency policy, dynamic browser observation, intent-complete proof, or multi-instance proof.
-desired_behavior: Close each remaining named bridge until the unchanged package reaches semantic-runtime-proven.
+problem: Historical MCEL runtime and proof bridges prevented full execution and independent verification of the Workbench.
+desired_behavior: Preserve zero missing bridges and keep the complete application proof exact under future runtime changes.
 ```
 
 ```mcel-adapter
@@ -312,7 +314,7 @@ id: contract-workbench.adapter.contract
 app: contract-workbench
 status: specified
 adapter: contract-workbench semantic adapter
-current_runtime_status: forward-specification
+current_runtime_status: semantic-runtime-proven
 target_runtime_status: fullApplicationSemanticReady
 required_intents:
   - add-contract

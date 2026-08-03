@@ -54,7 +54,7 @@ def test_application_definition_exercises_the_required_operation_shapes() -> Non
     }
     assert payload["capabilityCount"] == 1
     assert payload["invariantCount"] == 4
-    assert payload["acceptanceCount"] == 11
+    assert payload["acceptanceCount"] == 14
     assert payload["observationCount"] == 7
 
 

@@ -2693,6 +2693,10 @@
               minZ: -39.65,
               maxZ: 5.12
             },
+            wallCollision: {
+              enabled: true,
+              thickness: 0.12
+            },
             colliders: [
               {
                 id: "docked-shuttle-hull",
@@ -4381,6 +4385,54 @@
         }), fallback);
       }
 
+      function shuttle3dMotherShipWallColliders(rooms, wallCollision) {
+        const config = shuttle3dObjectValue(wallCollision);
+        if (config.enabled === false) return [];
+        const thickness = Math.max(0.02, Math.min(0.5, shuttle3dNumberValue(config.thickness, 0.12)));
+        const halfThickness = thickness / 2;
+        const colliders = [];
+        (Array.isArray(rooms) ? rooms : []).forEach((room) => {
+          const roomId = String(room?.id || room?.location || "room");
+          const walls = Array.isArray(room?.geometry?.walls) ? room.geometry.walls : [];
+          walls.forEach((wall, index) => {
+            if (!wall || typeof wall !== "object" || wall.collision === false) return;
+            const axis = String(wall.axis || "").toLowerCase();
+            if (axis === "x") {
+              const x = Number(wall.x);
+              const minZ = Math.min(Number(wall.minZ), Number(wall.maxZ));
+              const maxZ = Math.max(Number(wall.minZ), Number(wall.maxZ));
+              if (![x, minZ, maxZ].every(Number.isFinite) || maxZ <= minZ) return;
+              colliders.push({
+                id: String(wall.id || `wall.${roomId}.${index + 1}`),
+                kind: "wall",
+                room: roomId,
+                minX: x - halfThickness,
+                maxX: x + halfThickness,
+                minZ,
+                maxZ
+              });
+              return;
+            }
+            if (axis === "z") {
+              const z = Number(wall.z);
+              const minX = Math.min(Number(wall.minX), Number(wall.maxX));
+              const maxX = Math.max(Number(wall.minX), Number(wall.maxX));
+              if (![z, minX, maxX].every(Number.isFinite) || maxX <= minX) return;
+              colliders.push({
+                id: String(wall.id || `wall.${roomId}.${index + 1}`),
+                kind: "wall",
+                room: roomId,
+                minX,
+                maxX,
+                minZ: z - halfThickness,
+                maxZ: z + halfThickness
+              });
+            }
+          });
+        });
+        return colliders;
+      }
+
       function shuttle3dNormalizeMotherShipProps(value, fallbackProps, rooms) {
         const fallbackById = new Map((Array.isArray(fallbackProps) ? fallbackProps : [])
           .map((prop) => [String(prop?.id || ""), prop]));
@@ -4428,7 +4480,7 @@
         const supplied = shuttle3dObjectValue(value);
         const fallback = shuttle3dObjectValue(fallbackMovement);
         const bounds = shuttle3dBoundsValue(supplied.bounds, shuttle3dMovementBoundsFromRooms(rooms, fallback.bounds));
-        const colliders = (
+        const authoredColliders = (
           Array.isArray(supplied.colliders)
             ? supplied.colliders
             : Array.isArray(fallback.colliders)
@@ -4441,11 +4493,24 @@
             if (!shuttle3dBoundsAreUsable(normalized)) return null;
             return {
               id: String(raw.id || `ship-collider-${index}`),
+              kind: String(raw.kind || "fixture"),
               ...normalized
             };
           })
           .filter(Boolean);
-        return {bounds, colliders};
+        const wallCollision = {
+          ...shuttle3dObjectValue(fallback.wallCollision),
+          ...shuttle3dObjectValue(supplied.wallCollision)
+        };
+        const wallColliders = shuttle3dMotherShipWallColliders(rooms, wallCollision);
+        return {
+          bounds,
+          wallCollision: {
+            enabled: wallCollision.enabled !== false,
+            thickness: Math.max(0.02, Math.min(0.5, shuttle3dNumberValue(wallCollision.thickness, 0.12)))
+          },
+          colliders: [...authoredColliders, ...wallColliders]
+        };
       }
 
       function shuttle3dNormalizeMotherShipSpawns(value, fallbackSpawns, locations) {
@@ -8186,6 +8251,7 @@
         }
 
         resetCombat(nowMs = performance.now()) {
+          if (!this.gameOver) return false;
           if (this.pilot.active) this.setPilotMode(false, null, nowMs);
           this.playerHealth = this.combat.player.startingHealth;
           this.aliens = [];
@@ -8199,6 +8265,7 @@
           this.clearMovementKeys();
           this.resetFlightState();
           this.emitCombatState(true);
+          return true;
         }
 
         bindGeometryBuffer(buffer) {
@@ -8275,13 +8342,16 @@
           const {bounds, radius, colliders} = movement;
           if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
           if (shipSceneActive && (!this.isInsideMotherShipWalkable(x, z) || !this.shipDoorAllowsPosition(x, z))) return false;
-          const blockedByFixture = colliders.some((collider) => (
+          // Authored fixtures and rooms[].geometry.walls share the same collision path.
+          // Wall arrays are already split around doors/openings, so the player's radius
+          // blocks solid wall spans without sealing intended passages.
+          const blockedByShipGeometry = colliders.some((collider) => (
             x > collider.minX - radius
             && x < collider.maxX + radius
             && z > collider.minZ - radius
             && z < collider.maxZ + radius
           ));
-          if (blockedByFixture) return false;
+          if (blockedByShipGeometry) return false;
           if (shipSceneActive) return true;
           return !this.aliens.some((alien) => (
             alien.state === "active"
@@ -8833,7 +8903,7 @@
           }
           if (event.code === "KeyR") {
             event.preventDefault();
-            if (!event.repeat) shuttle?.resetCombat?.();
+            if (!event.repeat && shuttle?.gameOver) shuttle?.resetCombat?.();
             return;
           }
           if (movementCodes.has(event.code)) {

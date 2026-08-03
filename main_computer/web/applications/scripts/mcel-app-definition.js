@@ -517,7 +517,8 @@ var McelAppDefinition = (() => {
       invariants: normalizedInvariants,
       acceptance: normalizedAcceptance,
       observations: normalizedObservations,
-      multiInstance: deepFreeze(cloneValue(specification.multiInstance || {required: false}))
+      multiInstance: deepFreeze(cloneValue(specification.multiInstance || {required: false})),
+      proof: deepFreeze(cloneValue(specification.proof || {}))
     };
     validateApplicationReferences(application);
     application.requiredRuntimeFeatures = collectRequiredRuntimeFeatures(application);

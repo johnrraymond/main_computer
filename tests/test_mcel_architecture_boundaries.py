@@ -44,6 +44,7 @@ MCEL_LAYER_INVENTORY = {
         "main_computer/web/applications/scripts/mcel-browser-observer.js",
         "main_computer/web/applications/scripts/mcel-browser-runner.js",
         "main_computer/web/applications/scripts/mcel-browser-observation-producer.js",
+        "main_computer/web/applications/scripts/mcel-application-browser-scenario-runner.js",
         "main_computer/web/applications/scripts/mcel-application-operation-observer.js",
     ],
     "semantic-surface": [

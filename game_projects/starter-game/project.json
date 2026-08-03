@@ -2322,6 +2322,10 @@
                 "minZ": -39.65,
                 "maxZ": 5.12
               },
+              "wallCollision": {
+                "enabled": true,
+                "thickness": 0.12
+              },
               "colliders": [
                 {
                   "id": "docked-shuttle-hull",

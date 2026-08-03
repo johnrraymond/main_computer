@@ -37,6 +37,12 @@ const ContractWorkbenchApplication = mcel.defineApplication({
   id: "contract-workbench",
   title: "Contract Operations Workbench",
 
+  proof: {
+    runtimeStatus: "semantic-runtime-proven",
+    acceptanceStatus: "verified",
+    browserObservation: "scenario-linked"
+  },
+
   state: {
     contracts: mcel.state.canonical([], {
       schema: mcel.schema.array(ContractSchema),
@@ -443,46 +449,140 @@ const ContractWorkbenchApplication = mcel.defineApplication({
     }),
     mcel.acceptance("contract-workbench.acceptance.remove", {
       operationId: "remove-contract",
+      given: {operations: [
+        {intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}}
+      ]},
       when: {intentId: "remove-contract", itemKey: "contract-1"},
       expect: {operationStatus: "committed", keyedItemAbsent: true}
     }),
     mcel.acceptance("contract-workbench.acceptance.update", {
       operationId: "update-quantity",
+      given: {operations: [
+        {intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}}
+      ]},
       when: {intentId: "update-quantity", itemKey: "contract-1", itemField: {quantity: 18}},
       expect: {operationStatus: "committed", visibleQuantity: "18"}
     }),
+    mcel.acceptance("contract-workbench.acceptance.clear-all", {
+      operationId: "clear-all",
+      given: {operations: [
+        {intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}},
+        {intentId: "add-contract", payload: {name: "Transport", quantity: 5, category: "transport"}}
+      ]},
+      when: {intentId: "clear-all"},
+      expect: {
+        operationStatus: "committed",
+        canonicalItemCount: 0,
+        collectionEmpty: true,
+        emptyStateVisible: true,
+        revisionDelta: 1
+      }
+    }),
     mcel.acceptance("contract-workbench.acceptance.filter-sort", {
+      given: {operations: [
+        {intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}},
+        {intentId: "add-contract", payload: {name: "Transport", quantity: 5, category: "transport"}},
+        {intentId: "add-contract", payload: {name: "Services", quantity: 8, category: "services"}}
+      ]},
       when: {localState: {filterText: "steel", sortMode: "quantity"}},
       expect: {canonicalStateUnchanged: true, collectionMatchesDerivedState: true}
     }),
     mcel.acceptance("contract-workbench.acceptance.quote", {
       operationId: "request-quote",
+      given: {
+        operations: [{intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}}],
+        quotePlans: {"contract-1": [[
+          {delayMs: 0, event: {type: "quote.started", expected: 2}},
+          {delayMs: 30, event: {type: "quote.received", report: {amount: 100, source: "alpha"}}},
+          {delayMs: 30, event: {type: "quote.received", report: {amount: 140, source: "beta"}}}
+        ]]}
+      },
       when: {intentId: "request-quote", itemKey: "contract-1"},
       expect: {provisionalEventsVisibleBeforeCommit: true, oneCanonicalCommit: true, operationStatus: "committed"}
     }),
     mcel.acceptance("contract-workbench.acceptance.cancel", {
       operationId: "cancel-quote",
+      given: {
+        operations: [{intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}}],
+        activeOperation: {intentId: "request-quote", itemKey: "contract-1"},
+        quotePlans: {"contract-1": [[
+          {delayMs: 0, event: {type: "quote.started", expected: 2}},
+          {delayMs: 250, event: {type: "quote.received", report: {amount: 100, source: "slow"}}}
+        ]]}
+      },
       when: {intentId: "cancel-quote", itemKey: "contract-1"},
       expect: {operationStatus: "cancelled", canonicalStateUnchanged: true, provisionalStateClosed: true}
     }),
+    mcel.acceptance("contract-workbench.acceptance.quote-supersession", {
+      operationId: "request-quote",
+      given: {
+        operations: [{intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}}],
+        quotePlans: {"contract-1": [
+          [
+            {delayMs: 0, event: {type: "quote.started", expected: 1}},
+            {delayMs: 250, event: {type: "quote.received", report: {amount: 90, source: "old"}}}
+          ],
+          [
+            {delayMs: 0, event: {type: "quote.started", expected: 1}},
+            {delayMs: 30, event: {type: "quote.received", report: {amount: 150, source: "new"}}}
+          ]
+        ]}
+      },
+      when: {intentId: "request-quote", itemKey: "contract-1", overlap: 2},
+      expect: {olderOperationStatus: "superseded", latestOperationStatus: "committed", oneCanonicalCommit: true}
+    }),
+    mcel.acceptance("contract-workbench.acceptance.quote-parallel", {
+      operationId: "request-quote",
+      given: {
+        operations: [
+          {intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}},
+          {intentId: "add-contract", payload: {name: "Transport", quantity: 5, category: "transport"}}
+        ],
+        quotePlans: {
+          "contract-1": [[
+            {delayMs: 0, event: {type: "quote.started", expected: 1}},
+            {delayMs: 40, event: {type: "quote.received", report: {amount: 110, source: "steel"}}}
+          ]],
+          "contract-2": [[
+            {delayMs: 0, event: {type: "quote.started", expected: 1}},
+            {delayMs: 20, event: {type: "quote.received", report: {amount: 80, source: "transport"}}}
+          ]]
+        }
+      },
+      when: {intentId: "request-quote", itemKeys: ["contract-1", "contract-2"]},
+      expect: {operationStatus: "committed", independentItemKeys: true, canonicalCommitCount: 2}
+    }),
     mcel.acceptance("contract-workbench.acceptance.stale", {
       operationId: "add-contract",
-      when: {intentId: "add-contract", expectedRevision: 0, actualRevision: 1},
-      expect: {code: "REVISION_STALE", canonicalStateUnchanged: true}
+      given: {operations: [
+        {intentId: "add-contract", payload: {name: "Steel", quantity: 12, category: "materials"}}
+      ]},
+      when: {intentId: "add-contract", expectedRevision: 0, actualRevision: 1, payload: {name: "Transport", quantity: 5, category: "transport"}},
+      expect: {code: "SCM_STALE_REVISION", canonicalStateUnchanged: true}
     }),
     mcel.acceptance("contract-workbench.acceptance.duplicate", {
       operationId: "add-contract",
-      when: {intentId: "add-contract", reuseOperationId: true},
-      expect: {code: "OPERATION_DUPLICATE", canonicalStateUnchanged: true}
+      given: {operations: [
+        {intentId: "add-contract", operationId: "contract-workbench.duplicate", payload: {name: "Steel", quantity: 12, category: "materials"}}
+      ]},
+      when: {intentId: "add-contract", reuseOperationId: "contract-workbench.duplicate", payload: {name: "Transport", quantity: 5, category: "transport"}},
+      expect: {code: "SCM_DUPLICATE_OPERATION", canonicalStateUnchanged: true}
     }),
     mcel.acceptance("contract-workbench.acceptance.prohibited", {
       operationId: "direct-set",
-      when: {intentId: "direct-set"},
+      when: {intentId: "direct-set", payload: {contracts: []}},
       expect: {code: "INTENT_PROHIBITED", canonicalStateUnchanged: true}
     }),
     mcel.acceptance("contract-workbench.acceptance.multi-instance", {
       when: {mountInstances: 2, mutateInstance: 1},
-      expect: {isolatedCanonicalState: true, isolatedLocalState: true, isolatedReceipts: true}
+      expect: {
+        isolatedCanonicalState: true,
+        isolatedLocalState: true,
+        isolatedProvisionalState: true,
+        isolatedOperationLedgers: true,
+        isolatedReceipts: true,
+        isolatedRoots: true
+      }
     })
   ],
 

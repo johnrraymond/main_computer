@@ -7,9 +7,12 @@
       "acceptanceContractId": "contract-workbench.acceptance.complete-application",
       "runner": "pytest",
       "selectors": [
-        "tests/test_acceptance.py::test_forward_acceptance_contract_is_complete"
+        "tests/test_acceptance.py",
+        "tests/test_operations.py",
+        "tests/test_surface.py",
+        "tests/test_browser.py"
       ],
-      "notes": "The contract remains planned until every forward runtime bridge is closed."
+      "notes": "Enforceable package acceptance for the complete dynamic and asynchronous application; final browser convergence is independently checked by mcel-app-prove-v1."
     }
   ]
 }

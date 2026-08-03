@@ -61,7 +61,7 @@ class _StaticServer:
     @property
     def base_url(self) -> str:
         host, port = self.server.server_address[:2]
-        return f"http://localhost:{port}"
+        return f"http://127.0.0.1:{port}"
 
     def __enter__(self) -> "_StaticServer":
         self.thread.start()
@@ -83,7 +83,7 @@ def _package_record(catalog: Any, app_id: str) -> Any:
     return record
 
 
-def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed: bool) -> dict[str, Any]:
+def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed: bool, scenario_linked: bool = False) -> dict[str, Any]:
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
@@ -132,7 +132,7 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
         try:
             context = browser.new_context(viewport={"width": 1280, "height": 800})
             page = context.new_page()
-            url = f"{server.base_url}/mcel-package-host.html?app={app_id}"
+            url = f"{server.base_url}/mcel-package-host.html?app={app_id}" + ("&observation=1" if scenario_linked else "")
             try:
                 page.goto(url, wait_until="networkidle")
                 page.wait_for_function(
@@ -143,7 +143,11 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
             except PlaywrightError as exc:
                 raise ObservationRunnerError(f"Could not open the MCEL package host: {exc}") from exc
             host_state = page.evaluate(
-                "() => ({ready: window.McelApplicationPackageHost.ready, error: window.McelApplicationPackageHost.error || null})"
+                """() => ({
+                  ready: window.McelApplicationPackageHost.ready,
+                  error: window.McelApplicationPackageHost.error || null,
+                  observationStatus: window.McelApplicationPackageHost.observation?.currentStatus || ""
+                })"""
             )
             if host_state.get("ready") is not True:
                 raise ObservationRunnerError(f"MCEL package host failed: {host_state.get('error')}")
@@ -155,6 +159,35 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
                 "version": browser.version,
                 "headless": not headed,
             }
+            if host_state.get("observationStatus") == "scenario-linked":
+                result = page.evaluate(
+                    """async ({repositoryFingerprint, capturedAt, browser}) => {
+                      const host = window.McelApplicationPackageHost;
+                      return await host.runBrowserScenarios({
+                        repositoryFingerprint,
+                        capturedAt,
+                        browser,
+                        viewport: {
+                          width: window.innerWidth,
+                          height: window.innerHeight,
+                          deviceScaleFactor: window.devicePixelRatio
+                        }
+                      });
+                    }""",
+                    {
+                        "repositoryFingerprint": repository_fingerprint,
+                        "capturedAt": captured_at,
+                        "browser": browser_meta,
+                    },
+                )
+                return {
+                    "url": url,
+                    "browser": browser_meta,
+                    "operationResult": result["operationResult"],
+                    "observation": result["observation"],
+                    "surfaceConformance": result["surfaceConformance"],
+                }
+
             result = page.evaluate(
                 """async ({operationId, repositoryFingerprint, capturedAt, browser}) => {
                   const host = window.McelApplicationPackageHost;
@@ -256,6 +289,17 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
             browser.close()
 
 
+def _scenario_linked_observation(repo: Path, record: Any) -> bool:
+    reference = str((record.contracts or {}).get("observation") or "")
+    if not reference:
+        return False
+    try:
+        source = (repo / reference).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return '"currentStatus": "scenario-linked"' in source or 'currentStatus: "scenario-linked"' in source
+
+
 def _render_markdown(report: Mapping[str, Any]) -> str:
     observation = report.get("observation") or {}
     package = report.get("package") or {}
@@ -266,6 +310,7 @@ def _render_markdown(report: Mapping[str, Any]) -> str:
         f"- Application: `{report.get('appId')}`",
         f"- Browser: `{(report.get('browser') or {}).get('engine', '')}`",
         f"- Operation: `{observation.get('operationId', '')}`",
+        f"- Scenarios: `{observation.get('passedScenarioCount', report.get('passedOperations', 1))}/{observation.get('scenarioCount', report.get('operations', 1))}`",
         f"- Package fingerprint: `{package.get('fingerprint', '')}`",
         f"- Runtime projection fingerprint: `{observation.get('runtimeProjectionFingerprint', '')}`",
         f"- Repository fingerprint: `{(report.get('repositoryProvenance') or {}).get('fingerprint', '')}`",
@@ -307,6 +352,7 @@ def run_observation(*, repo: Path, app_id: str, headed: bool = False) -> dict[st
         app_id=app_id,
         repository_fingerprint=provenance["fingerprint"],
         headed=headed,
+        scenario_linked=_scenario_linked_observation(repo, record),
     )
     observation = browser_result["observation"]
     expected_projection = projections[0]
@@ -322,6 +368,9 @@ def run_observation(*, repo: Path, app_id: str, headed: bool = False) -> dict[st
     if surface_conformance.get("status") != "pass" or surface_conformance.get("valid") is not True:
         raise ObservationRunnerError("Browser application surface conformance did not pass.")
 
+    operation_count = int(observation.get("scenarioCount") or 1)
+    passed_operation_count = int(observation.get("passedScenarioCount") or operation_count)
+    failed_operation_count = int(observation.get("failedScenarioCount") or 0)
     return {
         "schema": REPORT_SCHEMA,
         "runner": RUNNER_VERSION,
@@ -330,9 +379,9 @@ def run_observation(*, repo: Path, app_id: str, headed: bool = False) -> dict[st
         "evidenceScope": "app-scoped",
         "generatedAt": _utc_now(),
         "appId": app_id,
-        "operations": 1,
-        "passedOperations": 1,
-        "failedOperations": 0,
+        "operations": operation_count,
+        "passedOperations": passed_operation_count,
+        "failedOperations": failed_operation_count,
         "browser": browser_result["browser"],
         "url": browser_result["url"],
         "package": {
@@ -391,9 +440,9 @@ def main(argv: list[str] | None = None) -> int:
         print("status: pass")
         print("evidence_scope: app-scoped")
         print(f"app: {app_id}")
-        print("operations: 1")
-        print("passed_operations: 1")
-        print("failed_operations: 0")
+        print(f"operations: {report['operations']}")
+        print(f"passed_operations: {report['passedOperations']}")
+        print(f"failed_operations: {report['failedOperations']}")
         print("browser: playwright-chromium")
         print(f"json: {json_path.relative_to(repo).as_posix() if json_path.is_relative_to(repo) else json_path}")
         print(f"markdown: {markdown_path.relative_to(repo).as_posix() if markdown_path.is_relative_to(repo) else markdown_path}")
