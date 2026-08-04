@@ -18,6 +18,14 @@ from tools.mother.common.deployment_identity_install import (
     build_deployment_identity_install_transaction,
     write_deployment_identity_install_transaction,
 )
+from tools.mother.common.deployment_identity_rollback import (
+    execute_identity_journal_rollback,
+    execute_identity_mutation_rollback,
+    identity_rollback_journal_path,
+    inspect_identity_mutation_rollback,
+    verify_identity_mutation_rollback,
+    write_identity_mutation_rollback_verification,
+)
 from tools.mother.common.deployment_identity_release import (
     MotherDeploymentIdentityReleaseError,
     build_deployment_identity_release,
@@ -52,10 +60,13 @@ class _IdentityOpener:
         existing_key: str | None = None,
         mask_after_post: bool = False,
         hide_post_value: bool = False,
+        stale_delete_observations: int = 0,
     ) -> None:
         self.fail_key = fail_key
         self.mask_after_post = mask_after_post
         self.hide_post_value = hide_post_value
+        self.stale_delete_observations = stale_delete_observations
+        self.pending_deletes: dict[tuple[str, str], int] = {}
         self.requests: list[dict] = []
         self.envs = {
             "coolify-a.invalid": [],
@@ -77,12 +88,34 @@ class _IdentityOpener:
         token = TOKEN_A if host == "coolify-a.invalid" else TOKEN_C
         assert request.headers.get("Authorization") == f"Bearer {token}"
         expected_service = "svc-mainneta-super1" if host == "coolify-a.invalid" else "svc-mainnetc-super1"
-        assert path == f"/api/v1/services/{expected_service}/envs"
+        base_path = f"/api/v1/services/{expected_service}/envs"
+        assert path == base_path or path.startswith(base_path + "/")
         if method == "GET":
+            for (pending_host, env_uuid), remaining in list(self.pending_deletes.items()):
+                if pending_host != host:
+                    continue
+                if remaining <= 0:
+                    self.envs[host] = [
+                        item for item in self.envs[host] if item.get("uuid") != env_uuid
+                    ]
+                    del self.pending_deletes[(pending_host, env_uuid)]
+                else:
+                    self.pending_deletes[(pending_host, env_uuid)] = remaining - 1
             items = list(self.envs[host])
             if self.mask_after_post and items:
                 items = [{**item, "value": "********"} for item in items]
             return _Response({"envs": items})
+        if method == "DELETE":
+            env_uuid = path.rsplit("/", 1)[-1]
+            if any(item.get("uuid") == env_uuid for item in self.envs[host]):
+                self.pending_deletes[(host, env_uuid)] = self.stale_delete_observations
+                if self.stale_delete_observations == 0:
+                    self.envs[host] = [
+                        item for item in self.envs[host] if item.get("uuid") != env_uuid
+                    ]
+                    self.pending_deletes.pop((host, env_uuid), None)
+                return _Response({"message": "deleted"}, status=200)
+            return _Response({"message": "not found"}, status=404)
         assert method == "POST"
         assert body is not None
         if body["key"] == self.fail_key:
@@ -154,7 +187,7 @@ def test_identity_release_is_secret_free_exact_and_verifiable(tmp_path: Path, mo
         now=now + timedelta(seconds=5),
     )
     assert release["resolved_blocker_codes"] == ["MOTHER_DEPLOY_IDENTITY_RELEASE_REQUIRED"]
-    assert release["summary"]["remaining_blocker_codes"] == ["MOTHER_DEPLOY_IDENTITY_EXECUTOR_NOT_IMPLEMENTED"]
+    assert release["summary"]["remaining_blocker_codes"] == []
     assert release["summary"]["persisted_secret_value_count"] == 0
     rendered = json.dumps(release)
     assert TOKEN_A not in rendered
@@ -374,3 +407,140 @@ def test_identity_release_and_dry_run_cli(tmp_path: Path, capsys) -> None:
     inspected = json.loads(capsys.readouterr().out)
     assert inspected["execute_requested"] is False
     assert inspected["live_execution_authorized"] is True
+
+
+def test_identity_execution_can_be_rolled_back_verified_and_retried_idempotently(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, private_state, _, _, release_path, release_digest = _identity_release(tmp_path, now=now)
+    live = _IdentityOpener(stale_delete_observations=2)
+
+    execution = execute_released_identity(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        opener=live,
+        operation=_operation("identity-live-for-rollback"),
+    )
+    assert execution["status"] == "pass"
+    assert execution["summary"]["rollback_available"] is True
+    assert execution["summary"]["genesis_blocked_pending_identity_rollback_cycle"] is True
+
+    inspected = inspect_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(execution["result_artifact"]["path"]),
+        acknowledged_execution_sha256=execution["result_artifact"]["sha256"],
+        opener=live,
+        operation=_operation("identity-rollback-inspect"),
+    )
+    assert inspected["rollback_boundary_open"] is True
+    assert inspected["rollback_operation_count"] == 4
+
+    rolled_back = execute_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(execution["result_artifact"]["path"]),
+        acknowledged_execution_sha256=execution["result_artifact"]["sha256"],
+        opener=live,
+        operation=_operation("identity-rollback-live"),
+    )
+    assert rolled_back["status"] == "pass"
+    assert rolled_back["summary"]["complete"] is True
+    assert rolled_back["summary"]["absent_count"] == 4
+    assert all(not items for items in live.envs.values())
+
+    verified = verify_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(rolled_back["result_artifact"]["path"]),
+        opener=live,
+    )
+    assert verified["clean"] is True
+    assert verified["summary"]["absent_count"] == 4
+    evidence_path, evidence_digest = write_identity_mutation_rollback_verification(
+        paths,
+        verified,
+        operation=_operation("identity-rollback-evidence"),
+    )
+    assert evidence_path.is_file()
+    assert len(evidence_digest) == 64
+
+    retry = execute_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(execution["result_artifact"]["path"]),
+        acknowledged_execution_sha256=execution["result_artifact"]["sha256"],
+        opener=live,
+        operation=_operation("identity-rollback-retry"),
+    )
+    assert retry["status"] == "pass"
+    assert retry["summary"]["complete"] is True
+
+
+def test_identity_partial_failure_is_automatically_compensated(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, private_state, _, _, release_path, release_digest = _identity_release(tmp_path, now=now)
+    live = _IdentityOpener(fail_key="MC_MOTHER_HUB_ADMIN_PRIVATE_KEY")
+
+    result = execute_released_identity(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        opener=live,
+        operation=_operation("identity-auto-rollback"),
+    )
+    assert result["status"] == "failed"
+    assert result["summary"]["automatic_rollback_complete"] is True
+    assert result["automatic_rollback"]["status"] == "pass"
+    assert all(not items for items in live.envs.values())
+
+
+def test_identity_crash_after_post_is_recoverable_from_durable_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, private_state, _, _, release_path, release_digest = _identity_release(tmp_path, now=now)
+    live = _IdentityOpener()
+    from tools.mother.common import deployment_identity_executor as executor_module
+
+    real_http_json = executor_module._http_json
+    crashed = {"done": False}
+
+    def crash_after_first_post(*args, **kwargs):  # noqa: ANN002, ANN003
+        result = real_http_json(*args, **kwargs)
+        if len(args) >= 2 and args[1] == "POST" and not crashed["done"]:
+            crashed["done"] = True
+            raise KeyboardInterrupt("simulated process termination after accepted POST")
+        return result
+
+    monkeypatch.setattr(executor_module, "_http_json", crash_after_first_post)
+    with pytest.raises(KeyboardInterrupt):
+        execute_released_identity(
+            paths,
+            private_state,
+            release_path,
+            acknowledged_release_sha256=release_digest,
+            opener=live,
+            operation=_operation("identity-crash-after-post"),
+        )
+
+    journal_path = identity_rollback_journal_path(paths, release_digest)
+    assert journal_path.is_file()
+    journal_digest = __import__("hashlib").sha256(journal_path.read_bytes()).hexdigest()
+    assert sum(len(items) for items in live.envs.values()) == 1
+
+    recovered = execute_identity_journal_rollback(
+        paths,
+        private_state,
+        journal_path,
+        acknowledged_journal_sha256=journal_digest,
+        opener=live,
+        operation=_operation("identity-crash-recovery"),
+    )
+    assert recovered["status"] == "pass"
+    assert recovered["summary"]["complete"] is True
+    assert all(not items for items in live.envs.values())

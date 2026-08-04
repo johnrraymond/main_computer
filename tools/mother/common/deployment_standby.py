@@ -264,16 +264,82 @@ def _uuid(item: Mapping[str, Any]) -> Any:
     return item.get("uuid", item.get("id"))
 
 
-def _expected_receipts(
-    result: Mapping[str, Any],
+def _transaction_mutations(
+    transaction: Mapping[str, Any],
     plan: Mapping[str, Any],
     nodes: tuple[str, ...],
+) -> tuple[list[Mapping[str, Any]], dict[str, Mapping[str, Any]]]:
+    mutations = transaction.get("mutations")
+    if type(mutations) is not list or not mutations:
+        raise MotherDeploymentStandbyError(
+            "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+            "bound transaction has no standby mutations",
+        )
+
+    plan_by_node = {item["node"]: item for item in plan["sequence"]}
+    expected_order: list[str] = []
+    by_id: dict[str, Mapping[str, Any]] = {}
+    for mutation in mutations:
+        if not isinstance(mutation, Mapping):
+            raise MotherDeploymentStandbyError(
+                "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+                "bound transaction contains an invalid mutation",
+            )
+        mutation_id = _identifier(mutation.get("mutation_id"), "transaction mutation id")
+        node = _identifier(mutation.get("node"), f"transaction mutation {mutation_id} node")
+        if node not in plan_by_node or node not in nodes:
+            raise MotherDeploymentStandbyError(
+                "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+                f"transaction mutation {mutation_id!r} is outside the selected Mother plan",
+            )
+        allowed_ids = {
+            f"{node}.create-environment",
+            f"{node}.create-standby-service",
+        }
+        if (
+            mutation_id not in allowed_ids
+            or mutation_id in by_id
+            or mutation.get("phase") != "prepare-standby-service"
+            or mutation.get("method") != "POST"
+            or mutation.get("controller_id")
+            != plan_by_node[node]["controller"]["controller_id"]
+        ):
+            raise MotherDeploymentStandbyError(
+                "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+                f"transaction mutation {mutation_id!r} does not match the standby plan",
+            )
+        expected_order.append(mutation_id)
+        by_id[mutation_id] = mutation
+
+    allowed_order: list[str] = []
+    for node in nodes:
+        environment_id = f"{node}.create-environment"
+        service_id = f"{node}.create-standby-service"
+        if environment_id in by_id:
+            allowed_order.append(environment_id)
+        allowed_order.append(service_id)
+        if service_id not in by_id:
+            raise MotherDeploymentStandbyError(
+                "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+                f"bound transaction does not create the standby service for {node!r}",
+            )
+    if expected_order != allowed_order:
+        raise MotherDeploymentStandbyError(
+            "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+            "bound transaction mutation order does not match the selected Mother plan",
+        )
+    return mutations, by_id
+
+
+def _expected_receipts(
+    result: Mapping[str, Any],
+    transaction_mutations: list[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     receipts = result.get("mutation_receipts")
-    if type(receipts) is not list or len(receipts) != len(nodes) * 2:
+    if type(receipts) is not list or len(receipts) != len(transaction_mutations):
         raise MotherDeploymentStandbyError(
             "MOTHER_DEPLOY_STANDBY_EXECUTION_INCOMPLETE",
-            "execution receipt does not contain the exact environment/service mutation pair",
+            "execution receipt count does not match the bound transaction",
         )
     by_id: dict[str, dict[str, Any]] = {}
     for receipt in receipts:
@@ -297,20 +363,77 @@ def _expected_receipts(
         bound_uuid = _identifier(response.get("bound_uuid"), f"mutation {mutation_id} UUID")
         by_id[mutation_id] = {**dict(receipt), "bound_uuid": bound_uuid}
 
-    expected_ids: list[str] = []
-    for item in plan["sequence"]:
-        node = item["node"]
-        expected_ids.extend([f"{node}.create-environment", f"{node}.create-standby-service"])
+    expected_ids = [item["mutation_id"] for item in transaction_mutations]
     if [item.get("mutation_id") for item in receipts] != expected_ids:
         raise MotherDeploymentStandbyError(
             "MOTHER_DEPLOY_STANDBY_EXECUTION_MISMATCH",
-            "execution mutation order does not match the current Mother deployment plan",
+            "execution mutation order does not match the bound transaction",
         )
     return by_id
 
 
-def _verify_chain(paths: PrivateStatePaths, result: Mapping[str, Any]) -> None:
+def _resource_bindings(
+    plan: Mapping[str, Any],
+    transaction_by_id: Mapping[str, Mapping[str, Any]],
+    receipt_by_id: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    bindings: dict[str, dict[str, str]] = {}
+    for item in plan["sequence"]:
+        node = item["node"]
+        environment_id = f"{node}.create-environment"
+        service_id = f"{node}.create-standby-service"
+        service_receipt = receipt_by_id.get(service_id)
+        service_mutation = transaction_by_id.get(service_id)
+        if not isinstance(service_receipt, Mapping) or not isinstance(service_mutation, Mapping):
+            raise MotherDeploymentStandbyError(
+                "MOTHER_DEPLOY_STANDBY_EXECUTION_INCOMPLETE",
+                f"execution does not bind the standby service for {node!r}",
+            )
+
+        if environment_id in transaction_by_id:
+            environment_receipt = receipt_by_id.get(environment_id)
+            if not isinstance(environment_receipt, Mapping):
+                raise MotherDeploymentStandbyError(
+                    "MOTHER_DEPLOY_STANDBY_EXECUTION_INCOMPLETE",
+                    f"execution does not bind the created environment for {node!r}",
+                )
+            environment_uuid = _identifier(
+                environment_receipt.get("bound_uuid"),
+                f"{node} created environment UUID",
+            )
+        else:
+            body = service_mutation.get("canonical_request_body")
+            if not isinstance(body, Mapping):
+                raise MotherDeploymentStandbyError(
+                    "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+                    f"standby service mutation for {node!r} has no canonical request body",
+                )
+            environment_uuid = _identifier(
+                body.get("environment_uuid"),
+                f"{node} existing environment UUID",
+            )
+            if service_mutation.get("depends_on") not in ([], None):
+                raise MotherDeploymentStandbyError(
+                    "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
+                    f"standby service mutation for {node!r} has an unresolved environment dependency",
+                )
+
+        bindings[node] = {
+            "environment_uuid": environment_uuid,
+            "service_uuid": _identifier(
+                service_receipt.get("bound_uuid"),
+                f"{node} standby service UUID",
+            ),
+        }
+    return bindings
+
+
+def _verify_chain(
+    paths: PrivateStatePaths,
+    result: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
     expected_digests: dict[str, str] = {}
+    documents: dict[str, Mapping[str, Any]] = {}
     for key, parts, kind, digest_field in (
         (
             "release",
@@ -344,6 +467,7 @@ def _verify_chain(paths: PrivateStatePaths, result: Mapping[str, Any]) -> None:
                 f"execution {key} binding does not match its immutable artifact",
             )
         expected_digests[key] = semantic_digest
+        documents[key] = document
 
     claim = result.get("execution_claim")
     if not isinstance(claim, Mapping):
@@ -365,6 +489,7 @@ def _verify_chain(paths: PrivateStatePaths, result: Mapping[str, Any]) -> None:
             "MOTHER_DEPLOY_STANDBY_CHAIN_MISMATCH",
             "execution claim does not bind the exact release, transaction, and node sequence",
         )
+    return documents
 
 
 def run_deployment_standby_verification(
@@ -427,14 +552,21 @@ def run_deployment_standby_verification(
             "execution result contains a sensitive field",
         )
 
-    _verify_chain(paths, result)
+    chain_documents = _verify_chain(paths, result)
     plan = build_starter_deployment_plan(private_state, network=network, selected_nodes=nodes)
     if tuple(item["node"] for item in plan["sequence"]) != nodes:
         raise MotherDeploymentStandbyError(
             "MOTHER_DEPLOY_STANDBY_SELECTION_MISMATCH",
             "current Mother plan no longer matches the execution sequence",
         )
-    receipt_by_id = _expected_receipts(result, plan, nodes)
+    transaction = chain_documents["transaction"]
+    transaction_mutations, transaction_by_id = _transaction_mutations(
+        transaction,
+        plan,
+        nodes,
+    )
+    receipt_by_id = _expected_receipts(result, transaction_mutations)
+    resource_bindings = _resource_bindings(plan, transaction_by_id, receipt_by_id)
 
     results: list[dict[str, Any]] = []
     all_blockers: list[dict[str, Any]] = []
@@ -444,8 +576,8 @@ def run_deployment_standby_verification(
         project_uuid = item["controller"]["project_uuid"]
         environment_name = item["desired"]["environment_name"]
         service_name = item["desired"]["service_name"]
-        environment_uuid = receipt_by_id[f"{node}.create-environment"]["bound_uuid"]
-        service_uuid = receipt_by_id[f"{node}.create-standby-service"]["bound_uuid"]
+        environment_uuid = resource_bindings[node]["environment_uuid"]
+        service_uuid = resource_bindings[node]["service_uuid"]
         controller = resolve_coolify_controller(
             private_state,
             network,

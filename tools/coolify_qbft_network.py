@@ -107,6 +107,14 @@ LOCAL_COOLIFY_DEFAULT_URL = "http://127.0.0.1:8000"
 LOCAL_COOLIFY_TOKEN_RELATIVE_PATH = Path("runtime") / "coolify-local-docker" / "api-token.txt"
 PRIVATE_STATE_RELATIVE_PATH = Path("runtime") / "state" / "main_computer.private.yaml"
 HUB_SERVICE_TOOL_PATH = Path(__file__).resolve().with_name("coolify_hub_service.py")
+
+# Mother owns the production mainnet deployment graph.  This legacy QBFT tool
+# remains available for isolated test/testnet networks only.  Keeping the
+# boundary here prevents a second controller from silently constructing a
+# different topology for the same network identity.
+MOTHER_MANAGED_NETWORK_NAMES = frozenset({"mainnet"})
+MOTHER_MANAGED_ENVIRONMENTS = frozenset({"mainnet"})
+MOTHER_MANAGED_CHAIN_IDS = frozenset({42424240})
 LOCAL_COOLIFY_DEFAULT_ENVIRONMENT = "production"
 LOCAL_COOLIFY_RPC_CONTAINER_URL = f"http://mc-qbft-rpc:{RPC_CONTAINER_PORT}"
 LOCAL_QBFT_SUBNET_CANDIDATES = (
@@ -276,36 +284,6 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
             {"id": "validator-3", "role": "validator", "host": "validator-b", "container_ip": "172.28.241.13", "rpc_host_port": 30003, "p2p_host_port": 30313},
             {"id": "validator-4", "role": "validator", "host": "validator-b", "container_ip": "172.28.241.14", "rpc_host_port": 30004, "p2p_host_port": 30314},
             {"id": "rpc-1", "role": "rpc", "host": "rpc-a", "container_ip": "172.28.241.20", "rpc_host_port": 30010, "p2p_host_port": 30320},
-        ],
-    },
-    "mainnet": {
-        "description": "Single-host QBFT mainnet plan managed by Coolify; requires explicit acknowledgement.",
-        "environment": "mainnet",
-        "chain_id": 42424240,
-        "compose_project": "main-computer-qbft-mainnet",
-        "docker_network": "mc-qbft-mainnet-network",
-        "docker_subnet": "172.28.242.0/24",
-        "besu_image": DEFAULT_BESU_IMAGE,
-        "runtime_root": "/srv/main-computer/qbft-mainnet/runtime",
-        "public_rpc": False,
-        "requires_mainnet_ack": True,
-        "topology_policy": {
-            "minimum_validators": 1,
-            "minimum_rpc_nodes": 1,
-            "validator_warning_below": 4,
-            "validator_warning": "Mainnet is in single-validator bring-up mode; this proves the Hub/RPC/worker path but is not fault-tolerant.",
-        },
-        "hosts": {
-            "mainnet-a": {
-                "ssh": "root@MAINNET_MACHINE_IP",
-                "address": "MAINNET_MACHINE_IP",
-                "coolify_url": "https://coolify-mainnet.example.com",
-                "runtime_root": "/srv/main-computer/qbft-mainnet/runtime",
-            }
-        },
-        "services": [
-            {"id": "validator-1", "role": "validator", "host": "mainnet-a", "container_ip": "172.28.242.11", "rpc_host_port": 31001, "p2p_host_port": 31311},
-            {"id": "rpc-1", "role": "rpc", "host": "mainnet-a", "container_ip": "172.28.242.20", "rpc_host_port": 31010, "p2p_host_port": 31320},
         ],
     },
 }
@@ -880,6 +858,36 @@ def validate_runtime_root(value: object, *, host_id: str) -> str:
     return text.rstrip("/")
 
 
+def enforce_legacy_qbft_authority(name: str, seed: Mapping[str, Any]) -> None:
+    """Refuse network identities reserved to the Mother deployment authority."""
+
+    normalized_name = str(name or "").strip().lower()
+    normalized_environment = str(seed.get("environment") or "").strip().lower()
+    raw_chain_id = seed.get("chain_id")
+    try:
+        normalized_chain_id = int(str(raw_chain_id), 0) if raw_chain_id is not None else None
+    except (TypeError, ValueError):
+        normalized_chain_id = None
+
+    conflicts: list[str] = []
+    if normalized_name in MOTHER_MANAGED_NETWORK_NAMES:
+        conflicts.append(f"network={normalized_name!r}")
+    if normalized_environment in MOTHER_MANAGED_ENVIRONMENTS:
+        conflicts.append(f"environment={normalized_environment!r}")
+    if normalized_chain_id in MOTHER_MANAGED_CHAIN_IDS:
+        conflicts.append(f"chain_id={normalized_chain_id}")
+
+    if conflicts:
+        details = ", ".join(conflicts)
+        raise PlanError(
+            "Legacy QBFT authority refuses the Mother-managed mainnet identity "
+            f"({details}). tools/coolify_qbft_network.py may not plan, render, "
+            "discover, synchronize, apply, mutate, reset, or deploy contracts "
+            "for Mother mainnet. Use tools/mother_deploy.py. --allow-mainnet "
+            "does not override this ownership boundary."
+        )
+
+
 def build_plan(
     seed_name_or_path: str,
     *,
@@ -893,7 +901,11 @@ def build_plan(
     private_state_path: str | Path | None = None,
     instances: str | tuple[str, ...] | list[str] | None = None,
 ) -> NetworkPlan:
+    raw_seed_name = str(seed_name_or_path or "").strip().lower()
+    if raw_seed_name in MOTHER_MANAGED_NETWORK_NAMES and not Path(seed_name_or_path).is_file():
+        enforce_legacy_qbft_authority(raw_seed_name, {})
     name, seed = load_seed_with_private_state(seed_name_or_path, private_state_path=private_state_path)
+    enforce_legacy_qbft_authority(name, seed)
     selected_instances = split_selected_ids(instances, kind="instance") if instances not in (None, "") else ()
 
     if seed.get("requires_mainnet_ack") and not allow_mainnet:
@@ -9927,6 +9939,51 @@ def coolify_service_uuid_from_body(body: Any) -> str:
     return ""
 
 
+def coolify_service_status_from_body(body: Any) -> str:
+    """Return the normalized top-level Coolify service status, if present."""
+
+    if not isinstance(body, Mapping):
+        return ""
+    status = str(body.get("status") or "").strip().lower()
+    if status:
+        return status
+    for key in ("service", "data"):
+        nested = body.get(key)
+        if isinstance(nested, Mapping):
+            status = coolify_service_status_from_body(nested)
+            if status:
+                return status
+    return ""
+
+
+def coolify_service_lifecycle_operation(*, newly_created: bool, status: str) -> tuple[str, str]:
+    """Choose exactly one service-scoped lifecycle action or fail closed.
+
+    A newly created service is known to require ``start`` because creation uses
+    ``instant_deploy: False``. Existing services are read through
+    ``GET /api/v1/services/{uuid}`` immediately before the lifecycle request.
+    Only a positively running service is restarted; only a positively stopped
+    service is started. Transitional or unknown states are not guessed.
+    """
+
+    if newly_created:
+        return "start", "new-service"
+
+    normalized = str(status or "").strip().lower()
+    if normalized == "running" or normalized.startswith("running:"):
+        return "restart", "existing-running-service"
+    if (
+        normalized in {"exited", "stopped"}
+        or normalized.startswith("exited:")
+        or normalized.startswith("stopped:")
+    ):
+        return "start", "existing-stopped-service"
+    raise PlanError(
+        "Refusing to choose a Coolify lifecycle operation for service status "
+        f"{status!r}. Expected a running or stopped service state."
+    )
+
+
 def project_service_name(plan: NetworkPlan, host_id: str) -> str:
     return safe_id(f"{plan.compose_project}-{host_id}", kind="service")
 
@@ -10517,6 +10574,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
     tried: list[dict[str, Any]] = []
     create_context: dict[str, Any] = {}
     existing_service_context: dict[str, Any] = {}
+    service_created = False
     if not service_uuid:
         existing_service_uuid, existing_service_context = coolify_find_service_by_name(
             client=client,
@@ -10631,6 +10689,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
         )
         if response.ok:
             service_uuid = coolify_service_uuid_from_body(response.body)
+            service_created = bool(service_uuid)
         elif response.status not in {400, 404, 405, 422}:
             return {"ok": False, "stage": "create-service", "context": create_context, "tried": tried}
 
@@ -10698,27 +10757,106 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
         return {"ok": False, "stage": "update-service", "service_uuid": service_uuid, "context": result_context, "tried": tried}
 
     deploy_result: dict[str, Any] | None = None
+    lifecycle_operation = ""
+    lifecycle_reason = ""
+    service_status = ""
     if deploy:
-        operator_log(args, "coolify-sync deploy-service start", service_uuid=service_uuid)
-        deploy_paths = [
-            f"/api/v1/deploy?uuid={urllib.parse.quote(service_uuid)}&force=true",
-            f"/api/v1/services/{service_uuid}/start",
-            f"/api/v1/services/{service_uuid}/restart",
-            f"/api/v1/services/{service_uuid}/deploy",
-        ]
-        for path in deploy_paths:
-            method = "GET" if path.startswith("/api/v1/deploy?") else "POST"
-            operator_log(args, "coolify-sync deploy-service request", method=method, path=path)
-            response = client.request(method, path)
-            operator_log(args, "coolify-sync deploy-service result", ok=response.ok, status=response.status, path=path)
-            tried.append({"operation": "deploy", "path": path, "response": response_to_dict(response)})
-            if response.ok:
-                deploy_result = response_to_dict(response)
-                break
-        if deploy_result is None:
-            return {"ok": False, "stage": "deploy-service", "service_uuid": service_uuid, "context": result_context, "tried": tried}
+        if service_created:
+            lifecycle_operation, lifecycle_reason = coolify_service_lifecycle_operation(
+                newly_created=True,
+                status="",
+            )
+        else:
+            detail_path = f"/api/v1/services/{service_uuid}"
+            operator_log(args, "coolify-sync service-state request", method="GET", path=detail_path)
+            detail_response = client.request("GET", detail_path)
+            operator_log(
+                args,
+                "coolify-sync service-state result",
+                ok=detail_response.ok,
+                status=detail_response.status,
+                path=detail_path,
+            )
+            tried.append(
+                {
+                    "operation": "read-service-state",
+                    "path": detail_path,
+                    "response": response_to_dict(detail_response),
+                }
+            )
+            if not detail_response.ok:
+                return {
+                    "ok": False,
+                    "stage": "service-state",
+                    "service_uuid": service_uuid,
+                    "context": result_context,
+                    "tried": tried,
+                }
+            service_status = coolify_service_status_from_body(detail_response.body)
+            try:
+                lifecycle_operation, lifecycle_reason = coolify_service_lifecycle_operation(
+                    newly_created=False,
+                    status=service_status,
+                )
+            except PlanError as exc:
+                return {
+                    "ok": False,
+                    "stage": "service-state",
+                    "service_uuid": service_uuid,
+                    "service_status": service_status,
+                    "message": str(exc),
+                    "context": result_context,
+                    "tried": tried,
+                }
 
-    operator_log(args, "coolify-sync done", service_uuid=service_uuid, deploy_requested=bool(deploy_result))
+        lifecycle_path = f"/api/v1/services/{service_uuid}/{lifecycle_operation}"
+        operator_log(
+            args,
+            "coolify-sync deploy-service request",
+            method="POST",
+            path=lifecycle_path,
+            lifecycle_operation=lifecycle_operation,
+            lifecycle_reason=lifecycle_reason,
+            service_status=service_status or "new",
+        )
+        response = client.request("POST", lifecycle_path)
+        operator_log(
+            args,
+            "coolify-sync deploy-service result",
+            ok=response.ok,
+            status=response.status,
+            path=lifecycle_path,
+            lifecycle_operation=lifecycle_operation,
+        )
+        tried.append(
+            {
+                "operation": lifecycle_operation,
+                "path": lifecycle_path,
+                "lifecycle_reason": lifecycle_reason,
+                "service_status": service_status,
+                "response": response_to_dict(response),
+            }
+        )
+        if not response.ok:
+            return {
+                "ok": False,
+                "stage": "deploy-service",
+                "service_uuid": service_uuid,
+                "lifecycle_operation": lifecycle_operation,
+                "lifecycle_reason": lifecycle_reason,
+                "service_status": service_status,
+                "context": result_context,
+                "tried": tried,
+            }
+        deploy_result = response_to_dict(response)
+
+    operator_log(
+        args,
+        "coolify-sync done",
+        service_uuid=service_uuid,
+        deploy_requested=bool(deploy_result),
+        lifecycle_operation=lifecycle_operation,
+    )
     return {
         "ok": True,
         "service_uuid": service_uuid,
@@ -10726,6 +10864,9 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
         "deployed": bool(deploy_result),
         "deploy_requested": bool(deploy_result),
         "deploy_result": deploy_result,
+        "lifecycle_operation": lifecycle_operation,
+        "lifecycle_reason": lifecycle_reason,
+        "service_status": service_status,
         "context": result_context,
         "tried": tried,
         **({"local_coolify": local_context} if local_context else {}),
@@ -10872,7 +11013,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out", default="", help="Output directory for the write action.")
     parser.add_argument("--besu-image", default="", help="Override the Besu image tag in the seed.")
     parser.add_argument("--public-rpc", action="store_true", help="Bind the non-validator RPC host port to 0.0.0.0 for operator access.")
-    parser.add_argument("--allow-mainnet", action="store_true", help="Allow planning from a seed marked requires_mainnet_ack, such as mainnet.")
+    parser.add_argument(
+        "--allow-mainnet",
+        action="store_true",
+        help=(
+            "Legacy acknowledgement for non-Mother seeds marked requires_mainnet_ack. "
+            "It cannot authorize the Mother-managed mainnet identity."
+        ),
+    )
 
     parser.add_argument("--single-host", default="", help=argparse.SUPPRESS)
     parser.add_argument("--target-address", default="", help="Override the public host/IP used in the plan.")
@@ -11041,6 +11189,14 @@ def render_operator_runbook() -> str:
         Main Computer Coolify QBFT network runbook
         =========================================
 
+        Authority boundary
+        ------------------
+
+        This legacy tool is limited to isolated test and testnet networks.
+        Mother owns production mainnet. Any seed, private-state network, or JSON
+        alias using network/environment ``mainnet`` or chain id ``42424240`` is
+        refused before planning. ``--allow-mainnet`` cannot override that boundary.
+
         This tool renders and deploys Besu/QBFT nodes into Coolify Docker Compose
         services through the Coolify HTTP API. Remote Coolify deploys do not use
         SSH; URL, token, project, server, destination, and environment context
@@ -11114,7 +11270,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.action == "list":
-        print_json({"seeds": sorted(NETWORK_SEEDS)})
+        print_json(
+            {
+                "seeds": sorted(NETWORK_SEEDS),
+                "mother_managed_networks": sorted(MOTHER_MANAGED_NETWORK_NAMES),
+            }
+        )
         return 0
 
     try:

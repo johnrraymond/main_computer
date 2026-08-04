@@ -1,10 +1,13 @@
-"""One-shot live executor for an explicitly released Mother transaction.
+"""Live executor for the first explicitly released Mother deployment step.
 
 The executor consumes one expiring operator release, rechecks the live Coolify
 preconditions, and sends only the exact POST mutations already bound into the
-canonical transaction.  It stops on the first failure and records an immutable,
-secret-free execution receipt.  It does not install identities, genesis,
-validators, routing, or FoundationDB topology.
+canonical transaction.  Before any POST it creates a durable rollback journal;
+each mutation is marked in-flight before HTTP and bound to its created UUID
+after success.  Known partial effects are compensated automatically, while the
+journal remains available for explicit or crash-recovery rollback.  This step
+does not install identities, genesis, validators, routing, or FoundationDB
+topology.
 """
 
 from __future__ import annotations
@@ -31,6 +34,15 @@ from .coolify_state import (
 )
 from .deployment_preflight import run_starter_deployment_preflight
 from .deployment_release import verify_deployment_mutation_release
+from .deployment_rollback import (
+    build_deployment_rollback_frame,
+    build_deployment_rollback_journal,
+    deployment_rollback_journal_path,
+    execute_deployment_rollback_frame,
+    update_deployment_rollback_journal_candidate,
+    update_deployment_rollback_journal_status,
+    write_deployment_rollback_journal,
+)
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -506,6 +518,7 @@ def inspect_released_mutation(
             "released transaction mutation set is missing or changed",
         )
     claim_path = _root(paths, _CLAIM_DIRECTORY) / f"{verified['release_sha256']}.json"
+    rollback_journal_path = deployment_rollback_journal_path(paths, verified["release_sha256"])
     return {
         "clean": True,
         "executor_implemented": True,
@@ -519,6 +532,8 @@ def inspect_released_mutation(
         "mutation_count": verified["mutation_count"],
         "staged_scope": verified["staged_scope"],
         "release_already_claimed": claim_path.exists(),
+        "rollback_journal_path": str(rollback_journal_path),
+        "rollback_journal_exists": rollback_journal_path.exists(),
         "resolved_blocker_codes": ["MOTHER_DEPLOY_EXECUTOR_NOT_IMPLEMENTED"],
         "remaining_blocker_codes": [],
         "transaction_apply_authorized": True,
@@ -575,6 +590,21 @@ def execute_released_mutation(
     )
 
     started_at = _utc_now()
+    rollback_journal = build_deployment_rollback_journal(
+        transaction,
+        release_sha256=inspected["release_sha256"],
+        transaction_sha256=inspected["transaction_sha256"],
+        mother_binding=inspected["mother_binding"],
+        network=inspected["network"],
+        nodes=nodes,
+        created_at=started_at,
+    )
+    rollback_journal_path, rollback_journal_sha256 = write_deployment_rollback_journal(
+        paths,
+        rollback_journal,
+        operation=operation,
+    )
+    rollback_journal_status = "open-before-first-mutation"
     receipts: list[dict[str, Any]] = []
     bindings: dict[str, str] = {}
     failure: dict[str, Any] | None = None
@@ -630,6 +660,15 @@ def execute_released_mutation(
                     f"mutation {mutation_id!r} did not materialize to an object",
                 )
             concrete_digest = hashlib.sha256(canonical_json(dict(body))).hexdigest()
+            rollback_journal_path, rollback_journal_sha256 = (
+                update_deployment_rollback_journal_candidate(
+                    paths,
+                    rollback_journal_path,
+                    mutation_id=mutation_id,
+                    state="in-flight",
+                    operation=operation,
+                )
+            )
             response = _http_post(
                 controller,
                 endpoint,
@@ -699,6 +738,16 @@ def execute_released_mutation(
                     f"mutation {mutation_id!r} succeeded but no unique created UUID was proven",
                 )
             bindings[f"{mutation_id}.{result_name}"] = bound_uuid
+            rollback_journal_path, rollback_journal_sha256 = (
+                update_deployment_rollback_journal_candidate(
+                    paths,
+                    rollback_journal_path,
+                    mutation_id=mutation_id,
+                    state="succeeded",
+                    created_uuid=bound_uuid,
+                    operation=operation,
+                )
+            )
             receipts.append(
                 {
                     "ordinal": mutation.get("ordinal"),
@@ -719,6 +768,28 @@ def execute_released_mutation(
             "code": "MOTHER_DEPLOY_EXECUTOR_UNEXPECTED_FAILURE",
             "message": _safe_message(exc),
         }
+
+    rollback_frame = build_deployment_rollback_frame(transaction, receipts)
+    automatic_rollback: dict[str, Any] | None = None
+    if failure is not None and rollback_frame["summary"]["operation_count"] > 0:
+        automatic_rollback = execute_deployment_rollback_frame(
+            private_state,
+            network=inspected["network"],
+            frame=rollback_frame,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+
+    rollback_journal_status = (
+        "applied-awaiting-next-phase" if failure is None else "rollback-required"
+    )
+    rollback_journal_path, rollback_journal_sha256 = update_deployment_rollback_journal_status(
+        paths,
+        rollback_journal_path,
+        status=rollback_journal_status,
+        operation=operation,
+    )
 
     completed_at = _utc_now()
     result = {
@@ -748,10 +819,10 @@ def execute_released_mutation(
             "live_execution_authorized": True,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "POST"],
+            "allowed_http_methods": ["GET", "POST", "DELETE"],
             "redirects_followed": False,
             "stop_on_first_failure": True,
-            "automatic_rollback_performed": False,
+            "automatic_rollback_performed": automatic_rollback is not None,
             "identity_or_genesis_installed": False,
             "validator_activation_performed": False,
             "routing_or_topology_published": False,
@@ -759,6 +830,19 @@ def execute_released_mutation(
         },
         "precondition": precondition,
         "mutation_receipts": receipts,
+        "rollback_journal": {
+            "locator": rollback_journal_path.resolve(strict=False).relative_to(
+                paths.root.resolve(strict=False)
+            ).as_posix(),
+            "sha256": rollback_journal_sha256,
+            "status": rollback_journal_status,
+        },
+        "rollback": {
+            "available": rollback_frame["summary"]["operation_count"] > 0,
+            "boundary": "before-any-later-successful-deployment-phase",
+            "frame": rollback_frame,
+            "automatic_attempt": automatic_rollback,
+        },
         "failure": failure,
         "summary": {
             "planned_mutation_count": inspected["mutation_count"],
@@ -767,6 +851,15 @@ def execute_released_mutation(
             "failed_mutation_count": sum(item["status"] != "succeeded" for item in receipts),
             "network_access_performed": True,
             "live_mutation_performed": bool(receipts),
+            "automatic_rollback_complete": (
+                automatic_rollback is not None
+                and automatic_rollback["summary"]["complete"] is True
+            ),
+            "net_live_mutation_remaining": (
+                bool(receipts) if failure is None else None
+            ),
+            "rollback_reconciliation_required": failure is not None,
+            "rollback_available": rollback_frame["summary"]["operation_count"] > 0,
             "complete": failure is None and len(receipts) == inspected["mutation_count"],
             "remaining_deferred_phases": [
                 "install-reserved-identity",

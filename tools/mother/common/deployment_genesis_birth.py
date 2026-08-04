@@ -28,6 +28,10 @@ import yaml
 from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
+from .deployment_genesis_rollback import (
+    MotherDeploymentGenesisRollbackError,
+    verify_genesis_rollback_cycle_evidence,
+)
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -460,7 +464,9 @@ def _chain(paths: PrivateStatePaths, private_state: PrivateStateReadResult, exec
         summary.get("deployment_requested") is True,
         summary.get("soft_replica_untouched") is True,
         summary.get("initial_chain_proven") is False,
-        summary.get("next_phase") == "prove-initial-chain-birth",
+        summary.get("rollback_available") is True,
+        summary.get("genesis_birth_blocked_pending_genesis_rollback_cycle") is True,
+        summary.get("next_phase") == "prove-genesis-rollback-cycle-before-birth",
     ]):
         raise MotherDeploymentGenesisBirthError(
             "MOTHER_DEPLOY_GENESIS_BIRTH_EXECUTION_INVALID", "genesis execution does not authorize birth proof"
@@ -537,6 +543,7 @@ def build_genesis_birth_release(
     execution_path: Path,
     *,
     acknowledged_genesis_execution_sha256: str,
+    genesis_rollback_verification_path: Path,
     selected_nodes: Iterable[str] = (),
     expires_in_seconds: int = 300,
     created_at: str | None = None,
@@ -549,6 +556,20 @@ def build_genesis_birth_release(
             "MOTHER_DEPLOY_GENESIS_BIRTH_ACKNOWLEDGEMENT_MISMATCH",
             "operator acknowledgement does not match the exact genesis execution SHA-256",
         )
+    try:
+        rollback_cycle = verify_genesis_rollback_cycle_evidence(
+            paths,
+            private_state,
+            Path(genesis_rollback_verification_path),
+            network=chain["network"],
+            node=chain["node"],
+            service_uuid=chain["service_uuid"],
+            genesis_sha256_value=chain["genesis_sha256"],
+            before_execution_started_at=chain["execution"].get("started_at"),
+            current_execution_sha256=chain["execution_sha256"],
+        )
+    except MotherDeploymentGenesisRollbackError as exc:
+        raise MotherDeploymentGenesisBirthError(exc.code, str(exc)) from exc
     requested = tuple(_identifier(item, "selected node") for item in selected_nodes)
     if requested and requested != (chain["node"],):
         raise MotherDeploymentGenesisBirthError(
@@ -604,6 +625,25 @@ def build_genesis_birth_release(
         "genesis_execution": {
             "locator": _relative(paths, chain["execution_path"], "genesis execution"),
             "sha256": chain["execution_sha256"],
+        },
+        "genesis_rollback_cycle": {
+            "locator": _relative(
+                paths,
+                Path(rollback_cycle["verification_path"]),
+                "genesis rollback verification",
+            ),
+            "sha256": rollback_cycle["verification_sha256"],
+            "genesis_rollback_verification_sha256": rollback_cycle[
+                "genesis_rollback_verification_sha256"
+            ],
+            "genesis_sha256": chain["genesis_sha256"],
+            "rolled_back_execution_sha256": rollback_cycle[
+                "rolled_back_execution_sha256"
+            ],
+            "reapplied_execution_sha256": chain["execution_sha256"],
+            "verified_absent_at": rollback_cycle["observed_at"],
+            "reapplied_after_verified_rollback": True,
+            "persistent_volume_cleanup_performed": False,
         },
         "operator_release": {
             "intent": "install-internal-only-genesis-proof-guardian-and-prove-birth",
@@ -664,6 +704,9 @@ def build_genesis_birth_release(
             "private_keys_materialized": False,
             "private_keys_persisted": False,
             "secrets_in_output": False,
+            "genesis_rollback_cycle_proven": True,
+            "genesis_reapplication_proven_after_rollback": True,
+            "persistent_volume_cleanup_performed": False,
         },
         "release_sha256": None,
     }
@@ -752,6 +795,41 @@ def verify_genesis_birth_release(
     chain = _chain(paths, private_state, execution_path)
     if chain["execution_sha256"] != execution_ref.get("sha256") or chain["node"] != node:
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "genesis execution binding changed")
+    cycle_ref = release.get("genesis_rollback_cycle")
+    if not isinstance(cycle_ref, Mapping):
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+            "genesis rollback-cycle binding is missing",
+        )
+    cycle_path = _resolve(
+        paths,
+        cycle_ref.get("locator"),
+        "genesis rollback verification",
+    )
+    try:
+        rollback_cycle = verify_genesis_rollback_cycle_evidence(
+            paths,
+            private_state,
+            cycle_path,
+            network=chain["network"],
+            node=chain["node"],
+            service_uuid=chain["service_uuid"],
+            genesis_sha256_value=chain["genesis_sha256"],
+            before_execution_started_at=chain["execution"].get("started_at"),
+            current_execution_sha256=chain["execution_sha256"],
+        )
+    except MotherDeploymentGenesisRollbackError as exc:
+        raise MotherDeploymentGenesisBirthError(exc.code, str(exc)) from exc
+    if (
+        rollback_cycle["verification_sha256"] != cycle_ref.get("sha256")
+        or rollback_cycle["rolled_back_execution_sha256"]
+        != cycle_ref.get("rolled_back_execution_sha256")
+        or chain["execution_sha256"] != cycle_ref.get("reapplied_execution_sha256")
+    ):
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+            "genesis rollback-cycle binding changed",
+        )
     return {
         "clean": True,
         "release_path": str(Path(release_path).resolve(strict=False)),
@@ -767,6 +845,15 @@ def verify_genesis_birth_release(
         "service_uuid": plan["service_uuid"],
         "genesis_execution_sha256": chain["execution_sha256"],
         "genesis_sha256": plan["genesis_sha256"],
+        "genesis_rollback_cycle_proven": True,
+        "genesis_reapplication_proven_after_rollback": True,
+        "genesis_rollback_verification_sha256": rollback_cycle[
+            "genesis_rollback_verification_sha256"
+        ],
+        "rolled_back_genesis_execution_sha256": rollback_cycle[
+            "rolled_back_execution_sha256"
+        ],
+        "persistent_volume_cleanup_performed": False,
         "proof_compose_sha256": compose["sha256"],
         "manual_ssh_required": False,
         "public_endpoint_created": False,

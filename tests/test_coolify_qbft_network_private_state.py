@@ -643,7 +643,7 @@ def test_coolify_sync_uses_singleton_coolify_server_when_private_host_name_is_no
     assert not _contains_exact_key(result, "body")
 
 
-def test_fake_private_state_fixture_drives_testnet_and_mainnet_qbft_plans() -> None:
+def test_fake_private_state_fixture_drives_testnet_and_refuses_mother_mainnet() -> None:
     module = _load_module()
 
     testnet = module.build_plan("testnet", private_state_path=FAKE_PRIVATE_STATE_FIXTURE)
@@ -658,34 +658,22 @@ def test_fake_private_state_fixture_drives_testnet_and_mainnet_qbft_plans() -> N
     assert "single-Besu" not in "\n".join(testnet.warnings)
     assert "Topology has 3 validators" in "\n".join(testnet.warnings)
 
-    try:
-        module.build_plan("mainnet", private_state_path=FAKE_PRIVATE_STATE_FIXTURE)
-    except module.PlanError as exc:
-        assert "--allow-mainnet" in str(exc)
-    else:
-        raise AssertionError("mainnet fixture must still require --allow-mainnet")
-
-    mainnet = module.build_plan(
-        "mainnet",
-        private_state_path=FAKE_PRIVATE_STATE_FIXTURE,
-        allow_mainnet=True,
-    )
-    mainnet_services = {service.id: service for service in mainnet.services}
-    assert mainnet.environment == "mainnet"
-    assert mainnet.chain_id == 42424240
-    assert {host.id for host in mainnet.hosts} == {"a", "b"}
-    assert set(mainnet_services) == {"validator-rpc-1", "validator-1", "validator-2", "rpc-1"}
-    assert mainnet_services["validator-rpc-1"].rpc_host_port == 31110
-    assert mainnet_services["validator-rpc-1"].p2p_host_port == 31410
-    assert mainnet_services["rpc-1"].rpc_host_port == 31120
-    assert mainnet_services["rpc-1"].host == "b"
-    assert module.rpc_target_service(mainnet).id == "rpc-1"
-    assert "single-validator" not in "\n".join(mainnet.warnings)
-    assert "Topology has 3 validators" in "\n".join(mainnet.warnings)
+    for allow_mainnet in (False, True):
+        try:
+            module.build_plan(
+                "mainnet",
+                private_state_path=FAKE_PRIVATE_STATE_FIXTURE,
+                allow_mainnet=allow_mainnet,
+            )
+        except module.PlanError as exc:
+            message = str(exc)
+            assert "Mother-managed mainnet identity" in message
+            assert "--allow-mainnet does not override" in message
+        else:
+            raise AssertionError("private-state mainnet must remain Mother-owned")
 
 
-
-def test_mainnet_private_state_wallets_prefund_qbft_genesis(tmp_path: Path) -> None:
+def test_private_state_wallets_prefund_qbft_genesis(tmp_path: Path) -> None:
     module = _load_module()
     state_path = tmp_path / "main_computer.private.yaml"
     state_path.write_text(
@@ -702,11 +690,11 @@ coolify:
       destination_uuid: destination-a
 
 networks:
-  mainnet:
+  testnet:
     display_name: Main Computer Mainnet
-    kind: mainnet
-    chain_id: 42424240
-    rpc: https://mainnet-rpc.greatlibrary.io
+    kind: testnet
+    chain_id: 42424241
+    rpc: https://testnet-rpc.greatlibrary.io
     wallets:
       deployer:
         address: "0x2000000000000000000000000000000000000001"
@@ -741,9 +729,8 @@ networks:
     )
 
     plan = module.build_plan(
-        "mainnet",
+        "testnet",
         private_state_path=state_path,
-        allow_mainnet=True,
         instances="validator-rpc-1",
     )
     alloc = module.qbft_config(plan)["genesis"]["alloc"]
@@ -770,13 +757,12 @@ networks:
         "0x2000000000000000000000000000000000000007",
     )
 
-def test_filtered_mainnet_validator_rpc_instance_satisfies_rpc_topology_policy() -> None:
+def test_filtered_testnet_validator_rpc_instance_satisfies_rpc_topology_policy() -> None:
     module = _load_module()
 
     plan = module.build_plan(
-        "mainnet",
+        "testnet",
         private_state_path=FAKE_PRIVATE_STATE_FIXTURE,
-        allow_mainnet=True,
         instances="validator-rpc-1",
     )
 
@@ -784,7 +770,7 @@ def test_filtered_mainnet_validator_rpc_instance_satisfies_rpc_topology_policy()
     service = plan.services[0]
     assert service.role == "validator"
     assert service.roles == ("rpc", "validator")
-    assert service.rpc_host_port == 31110
+    assert service.rpc_host_port == 30110
     assert module.rpc_target_service(plan).id == "validator-rpc-1"
 
 

@@ -276,9 +276,12 @@ def _env_mutation(
             "accepted_identifier_paths": ["uuid", "id", "environment_variable.uuid", "data.uuid"],
         },
         "rollback_or_cleanup": {
-            "mode": "manual-review-required",
-            "automatic_http_cleanup_authorized": False,
+            "mode": "exact-created-variable-delete",
+            "automatic_http_cleanup_authorized": True,
             "candidate_endpoint": f"/api/v1/services/{service_uuid}/envs/${{response.uuid}}",
+            "prestate": "environment key absent",
+            "inverse_method": "DELETE",
+            "postcondition": "exact UUID and key absent",
         },
     }
 
@@ -468,10 +471,6 @@ def build_deployment_identity_install_transaction(
                 "code": "MOTHER_DEPLOY_IDENTITY_RELEASE_REQUIRED",
                 "message": "an explicit expiring operator release is required for this exact identity transaction",
             },
-            {
-                "code": "MOTHER_DEPLOY_IDENTITY_EXECUTOR_NOT_IMPLEMENTED",
-                "message": "the secret-materializing identity executor is not implemented in this patch",
-            },
         ],
         "summary": {
             "transaction_valid": True,
@@ -480,9 +479,8 @@ def build_deployment_identity_install_transaction(
             "mutation_count": len(mutations),
             "secret_reference_count": len(mutations),
             "persisted_secret_value_count": 0,
-            "next_phase_after_apply": "install-mother-owned-first-genesis-or-admit-replica",
+            "next_phase_after_apply": "prove-identity-rollback-cycle-before-genesis",
             "blocker_codes": [
-                "MOTHER_DEPLOY_IDENTITY_EXECUTOR_NOT_IMPLEMENTED",
                 "MOTHER_DEPLOY_IDENTITY_RELEASE_REQUIRED",
             ],
         },

@@ -1239,6 +1239,11 @@ def test_rpc_retire_with_remaining_host_nodes_includes_orphan_cleanup_sidecar(tm
     assert "com.docker.compose.service=$$compose_service" in compose
     assert "docker rm -f" in compose
     assert "30013" in compose
+    assert "main-computer-qbft-testnet-b-runtime:" in compose
+    assert "docker volume rm" not in compose
+    assert "down -v" not in compose
+    assert "validator-2:" in compose
+
 
 def test_retire_target_plan_preserves_only_active_source_services(tmp_path: Path) -> None:
     module = _load_module()

@@ -23,6 +23,7 @@ import yaml
 from . import atomic_files
 from .canonical import canonical_json
 from .deployment_plan import build_starter_deployment_plan
+from .deployment_identity_rollback import verify_identity_rollback_cycle_evidence
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -344,7 +345,8 @@ def _identity_execution(
             summary.get("failed_mutation_count") == 0,
             summary.get("commitment_verified_count") == 4,
             summary.get("persisted_secret_value_count") == 0,
-            summary.get("next_phase") == "install-mother-owned-first-genesis-or-admit-replica",
+            summary.get("next_phase") == "prove-identity-rollback-cycle-before-genesis",
+            summary.get("genesis_blocked_pending_identity_rollback_cycle") is True,
         ]
     ):
         raise MotherDeploymentGenesisError(
@@ -520,6 +522,7 @@ def build_deployment_genesis_transaction(
     private_state: PrivateStateReadResult,
     identity_execution_path: Path,
     *,
+    identity_rollback_verification_path: Path,
     network: str = "mainnet",
     selected_nodes: Iterable[str] = (),
     created_at: str | None = None,
@@ -534,6 +537,20 @@ def build_deployment_genesis_transaction(
         selected_nodes=requested_nodes,
     )
     nodes = requested_nodes or actual_nodes
+    profile_sha256 = _sha256(
+        execution.get("identity_profile_sha256"),
+        "identity execution profile SHA-256",
+    )
+    rollback_cycle = verify_identity_rollback_cycle_evidence(
+        paths,
+        private_state,
+        identity_rollback_verification_path,
+        identity_profile_sha256_value=profile_sha256,
+        network=network,
+        nodes=nodes,
+        before_execution_started_at=execution.get("started_at"),
+        current_execution_sha256=execution_byte_sha256,
+    )
     plan = build_starter_deployment_plan(
         private_state,
         network=network,
@@ -641,7 +658,23 @@ def build_deployment_genesis_transaction(
             "locator": _relative_locator(paths, identity_execution_path, label="identity execution"),
             "sha256": hashlib.sha256(canonical_json(execution)).hexdigest(),
             "byte_sha256": execution_byte_sha256,
+            "started_at": execution.get("started_at"),
             "completed_at": execution.get("completed_at"),
+            "identity_profile_sha256": profile_sha256,
+        },
+        "identity_rollback_cycle": {
+            "locator": _relative_locator(
+                paths,
+                identity_rollback_verification_path,
+                label="identity rollback verification",
+            ),
+            "sha256": rollback_cycle["verification_sha256"],
+            "identity_rollback_verification_sha256": rollback_cycle[
+                "identity_rollback_verification_sha256"
+            ],
+            "identity_profile_sha256": profile_sha256,
+            "verified_absent_at": rollback_cycle["observed_at"],
+            "reapplied_after_verified_rollback": True,
         },
         "authority": {
             "transaction_apply_authorized": False,
@@ -660,6 +693,8 @@ def build_deployment_genesis_transaction(
             "private_keys_materialized": False,
             "private_keys_persisted": False,
             "secrets_in_output": False,
+            "identity_rollback_cycle_proven": True,
+            "identity_reapplication_proven_after_rollback": True,
         },
         "staged_scope": "compile-first-genesis-and-replica-admission",
         "genesis": {
@@ -693,6 +728,8 @@ def build_deployment_genesis_transaction(
             "initial_validator_count": 1,
             "replica_admission_count": len(admissions),
             "identity_commitment_count": sum(len(item["identity_commitments"]) for item in service_targets),
+            "identity_rollback_cycle_proven": True,
+            "identity_reapplication_proven_after_rollback": True,
             "persisted_secret_value_count": 0,
             "next_phase_after_apply": "activate-initial-validator-and-prove-network-birth",
             "blocker_codes": [
@@ -803,6 +840,17 @@ def verify_deployment_genesis_transaction(
             "identity execution binding is missing",
         )
     execution_path = _resolve_locator(paths, execution_binding.get("locator"), label="identity execution")
+    rollback_binding = transaction.get("identity_rollback_cycle")
+    if not isinstance(rollback_binding, Mapping):
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_IDENTITY_ROLLBACK_REQUIRED",
+            "identity rollback-cycle binding is missing",
+        )
+    rollback_verification_path = _resolve_locator(
+        paths,
+        rollback_binding.get("locator"),
+        label="identity rollback verification",
+    )
     requested_nodes = tuple(_identifier(item, "selected node") for item in selected_nodes)
     actual_nodes = tuple(_identifier(item.get("node"), "service target node") for item in transaction.get("service_targets", []))
     if requested_nodes and requested_nodes != actual_nodes:
@@ -814,6 +862,7 @@ def verify_deployment_genesis_transaction(
         paths,
         private_state,
         execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
         network=transaction.get("network", "mainnet"),
         selected_nodes=actual_nodes,
         created_at=transaction.get("created_at"),

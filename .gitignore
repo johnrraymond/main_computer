@@ -142,6 +142,7 @@ runtime/main-computer-install.json
 runtime/start_stop/main-computer-launcher.json
 
 # Local Main Computer runtime/state
+runtime/state/mcel/compiler-candidates/
 .main-computer/
 .main_computer/
 .main_computer_browser_profile/

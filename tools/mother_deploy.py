@@ -33,6 +33,15 @@ from tools.mother.common.deployment_identity_release import (
     verify_deployment_identity_release,
     write_deployment_identity_release,
 )
+from tools.mother.common.deployment_identity_rollback import (
+    MotherDeploymentIdentityRollbackError,
+    execute_identity_journal_rollback,
+    execute_identity_mutation_rollback,
+    inspect_identity_mutation_rollback,
+    inspect_identity_rollback_journal,
+    verify_identity_mutation_rollback,
+    write_identity_mutation_rollback_verification,
+)
 from tools.mother.common.deployment_genesis_birth import (
     MotherDeploymentGenesisBirthError,
     build_genesis_birth_release,
@@ -52,6 +61,15 @@ from tools.mother.common.deployment_genesis_executor import (
     MotherDeploymentGenesisExecutorError,
     execute_released_genesis,
     inspect_released_genesis,
+)
+from tools.mother.common.deployment_genesis_rollback import (
+    MotherDeploymentGenesisRollbackError,
+    execute_genesis_journal_rollback,
+    execute_genesis_mutation_rollback,
+    inspect_genesis_mutation_rollback,
+    inspect_genesis_rollback_journal,
+    verify_genesis_mutation_rollback,
+    write_genesis_mutation_rollback_verification,
 )
 from tools.mother.common.deployment_genesis_release import (
     MotherDeploymentGenesisReleaseError,
@@ -85,6 +103,14 @@ from tools.mother.common.deployment_release import (
     build_deployment_mutation_release,
     verify_deployment_mutation_release,
     write_deployment_mutation_release,
+)
+from tools.mother.common.deployment_rollback import (
+    MotherDeploymentRollbackError,
+    execute_deployment_journal_rollback,
+    execute_deployment_mutation_rollback,
+    inspect_deployment_mutation_rollback,
+    inspect_deployment_rollback_journal,
+    verify_deployment_mutation_rollback,
 )
 from tools.mother.common.deployment_soft_replica import (
     MotherDeploymentSoftReplicaError,
@@ -167,6 +193,12 @@ from tools.mother.common.deployment_validator_rpc_canary import (
     verify_validator_rpc_canary_identity,
     verify_validator_rpc_canary_transaction,
     write_validator_rpc_canary_transaction,
+)
+from tools.mother.common.deployment_coolify_service_lifecycle_probe import (
+    MotherDeploymentCoolifyServiceLifecycleProbeError,
+    execute_coolify_service_lifecycle_probe,
+    inspect_coolify_service_lifecycle_probe,
+    verify_coolify_service_lifecycle_probe_evidence,
 )
 from tools.mother.common.deployment_validator_rpc_canary_funding import (
     MotherDeploymentValidatorRpcCanaryFundingError,
@@ -431,6 +463,52 @@ def _parser() -> argparse.ArgumentParser:
         help="perform the released GET/POST sequence; without this flag the command is dry-run only",
     )
 
+    rollback_mutation = subparsers.add_parser(
+        "rollback-mutation",
+        help="rollback the first standby-service mutation before any later deployment phase",
+        allow_abbrev=False,
+    )
+    _common(rollback_mutation)
+    rollback_mutation.add_argument("--execution", required=True)
+    rollback_mutation.add_argument("--acknowledge-execution-sha256", required=True)
+    rollback_mutation.add_argument("--timeout", type=float, default=30.0)
+    rollback_mutation.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    rollback_mutation.add_argument(
+        "--execute",
+        action="store_true",
+        help="perform exact GET/DELETE/GET rollback; without this flag the command is dry-run only",
+    )
+
+    recover_mutation_rollback = subparsers.add_parser(
+        "recover-mutation-rollback",
+        help="recover and rollback an interrupted first-step execution from its durable journal",
+        allow_abbrev=False,
+    )
+    _common(recover_mutation_rollback)
+    recover_mutation_rollback.add_argument("--journal", required=True)
+    recover_mutation_rollback.add_argument("--acknowledge-journal-sha256", required=True)
+    recover_mutation_rollback.add_argument("--timeout", type=float, default=30.0)
+    recover_mutation_rollback.add_argument(
+        "--max-response-bytes",
+        type=int,
+        default=4 * 1024 * 1024,
+    )
+    recover_mutation_rollback.add_argument(
+        "--execute",
+        action="store_true",
+        help="perform exact recovery GET/DELETE/GET; without this flag the command is dry-run only",
+    )
+
+    verify_mutation_rollback = subparsers.add_parser(
+        "verify-mutation-rollback",
+        help="re-observe the exact created UUIDs and prove the first deployment step is absent",
+        allow_abbrev=False,
+    )
+    _common(verify_mutation_rollback)
+    verify_mutation_rollback.add_argument("--rollback-result", required=True)
+    verify_mutation_rollback.add_argument("--timeout", type=float, default=30.0)
+    verify_mutation_rollback.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+
     verify_standby = subparsers.add_parser(
         "verify-standby",
         help="GET-verify the exact environment and service UUIDs from a successful execution result",
@@ -528,6 +606,54 @@ def _parser() -> argparse.ArgumentParser:
         help="perform the released GET/POST sequence; without this flag the command is dry-run only",
     )
 
+    rollback_identity = subparsers.add_parser(
+        "rollback-identity",
+        help="inspect or execute rollback of one non-finalized identity installation",
+        allow_abbrev=False,
+    )
+    _common(rollback_identity)
+    rollback_identity.add_argument("--execution", required=True)
+    rollback_identity.add_argument("--acknowledge-execution-sha256", required=True)
+    rollback_identity.add_argument("--timeout", type=float, default=30.0)
+    rollback_identity.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    rollback_identity.add_argument(
+        "--execute",
+        action="store_true",
+        help="delete the exact created environment-variable UUIDs; otherwise inspect only",
+    )
+
+    recover_identity_rollback = subparsers.add_parser(
+        "recover-identity-rollback",
+        help="inspect or execute crash recovery from a durable identity rollback journal",
+        allow_abbrev=False,
+    )
+    _common(recover_identity_rollback)
+    recover_identity_rollback.add_argument("--journal", required=True)
+    recover_identity_rollback.add_argument("--acknowledge-journal-sha256", required=True)
+    recover_identity_rollback.add_argument("--timeout", type=float, default=30.0)
+    recover_identity_rollback.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    recover_identity_rollback.add_argument(
+        "--execute",
+        action="store_true",
+        help="recover exact created variables and execute their inverse DELETE operations",
+    )
+
+    verify_identity_rollback = subparsers.add_parser(
+        "verify-identity-rollback",
+        help="independently prove that an identity rollback restored all targeted keys to absence",
+        allow_abbrev=False,
+    )
+    _common(verify_identity_rollback)
+    verify_identity_rollback.add_argument("--rollback-result", required=True)
+    verify_identity_rollback.add_argument("--timeout", type=float, default=30.0)
+    verify_identity_rollback.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    verify_identity_rollback.add_argument("--observed-at")
+    verify_identity_rollback.add_argument(
+        "--write-evidence",
+        action="store_true",
+        help="persist rollback-cycle evidence required by the later genesis stage",
+    )
+
     stage_genesis = subparsers.add_parser(
         "stage-genesis",
         help="compile one Mother-owned first genesis and the later soft-admission specification",
@@ -535,6 +661,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     _common(stage_genesis)
     stage_genesis.add_argument("--identity-execution", required=True)
+    stage_genesis.add_argument(
+        "--identity-rollback-verification",
+        required=True,
+        help="proof that the same identity profile was applied, rolled back, verified absent, and then reapplied",
+    )
     stage_genesis.add_argument("--created-at")
     stage_genesis.add_argument(
         "--write-transaction",
@@ -591,6 +722,51 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="perform the bounded A-side GET/PATCH/deploy sequence; otherwise inspect only",
     )
+
+    rollback_genesis = subparsers.add_parser(
+        "rollback-genesis",
+        help="restore the exact stopped standby Compose for one successful first-genesis execution",
+        allow_abbrev=False,
+    )
+    _common(rollback_genesis)
+    rollback_genesis.add_argument("--execution", required=True)
+    rollback_genesis.add_argument("--acknowledge-execution-sha256", required=True)
+    rollback_genesis.add_argument("--timeout", type=float, default=30.0)
+    rollback_genesis.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    rollback_genesis.add_argument("--max-wait-seconds", type=float, default=20.0)
+    rollback_genesis.add_argument("--poll-interval-seconds", type=float, default=0.5)
+    rollback_genesis.add_argument(
+        "--execute",
+        action="store_true",
+        help="stop the exact service and restore its verified standby Compose; otherwise inspect only",
+    )
+
+    recover_genesis_rollback = subparsers.add_parser(
+        "recover-genesis-rollback",
+        help="recover an interrupted first-genesis mutation from its durable rollback journal",
+        allow_abbrev=False,
+    )
+    _common(recover_genesis_rollback)
+    recover_genesis_rollback.add_argument("--journal", required=True)
+    recover_genesis_rollback.add_argument("--acknowledge-journal-sha256", required=True)
+    recover_genesis_rollback.add_argument("--timeout", type=float, default=30.0)
+    recover_genesis_rollback.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    recover_genesis_rollback.add_argument("--max-wait-seconds", type=float, default=20.0)
+    recover_genesis_rollback.add_argument("--poll-interval-seconds", type=float, default=0.5)
+    recover_genesis_rollback.add_argument("--execute", action="store_true")
+
+    verify_genesis_rollback = subparsers.add_parser(
+        "verify-genesis-rollback",
+        help="independently verify stopped standby Compose and preserved identity keys",
+        allow_abbrev=False,
+    )
+    _common(verify_genesis_rollback)
+    verify_genesis_rollback.add_argument("--rollback-result", required=True)
+    verify_genesis_rollback.add_argument("--timeout", type=float, default=30.0)
+    verify_genesis_rollback.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    verify_genesis_rollback.add_argument("--observed-at")
+    verify_genesis_rollback.add_argument("--write-evidence", action="store_true")
+
     release_birth = subparsers.add_parser(
         "release-genesis-birth",
         help="release an internal-only proof guardian for the exact successful first-genesis execution",
@@ -599,6 +775,11 @@ def _parser() -> argparse.ArgumentParser:
     _common(release_birth)
     release_birth.add_argument("--execution", required=True)
     release_birth.add_argument("--acknowledge-genesis-execution-sha256", required=True)
+    release_birth.add_argument(
+        "--genesis-rollback-verification",
+        required=True,
+        help="proof that the same genesis was applied, rolled back, verified, and then reapplied",
+    )
     release_birth.add_argument("--expires-in-seconds", type=int, default=300)
     release_birth.add_argument("--created-at")
     release_birth.add_argument("--write-release", action="store_true")
@@ -1302,6 +1483,38 @@ def _parser() -> argparse.ArgumentParser:
     verify_validator_rpc_canary_funding_evidence_parser.add_argument("--canary-transaction-max-age-seconds", type=int, default=86400)
     verify_validator_rpc_canary_funding_evidence_parser.add_argument("--soak-max-age-seconds", type=int, default=86400)
 
+    coolify_service_lifecycle_probe = subparsers.add_parser(
+        "probe-coolify-service-lifecycle",
+        help="inspect or execute one temporary no-secret no-chain Coolify service lifecycle probe",
+        allow_abbrev=False,
+    )
+    _common(coolify_service_lifecycle_probe)
+    coolify_service_lifecycle_probe.add_argument(
+        "--controller-id",
+        required=True,
+        choices=("coolify-a", "coolify-c"),
+    )
+    coolify_service_lifecycle_probe.add_argument("--environment-name", default="mainnet")
+    coolify_service_lifecycle_probe.add_argument("--observe-seconds", type=float, default=60.0)
+    coolify_service_lifecycle_probe.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    coolify_service_lifecycle_probe.add_argument("--timeout", type=float, default=30.0)
+    coolify_service_lifecycle_probe.add_argument("--max-response-bytes", type=int, default=1048576)
+    coolify_service_lifecycle_probe.add_argument("--execute", action="store_true")
+    coolify_service_lifecycle_probe.add_argument(
+        "--acknowledge-live-service-probe",
+        default="",
+        help="required only with --execute",
+    )
+
+    verify_coolify_service_lifecycle_probe = subparsers.add_parser(
+        "verify-coolify-service-lifecycle-probe-evidence",
+        help="verify persisted no-secret no-chain Coolify service lifecycle probe evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_coolify_service_lifecycle_probe)
+    verify_coolify_service_lifecycle_probe.add_argument("--evidence", required=True)
+    verify_coolify_service_lifecycle_probe.add_argument("--max-age-seconds", type=int, default=86400)
+
     return parser
 
 
@@ -1500,6 +1713,74 @@ def _cmd_apply_mutation(args: argparse.Namespace, private_state) -> int:
     return 0 if result.get("status") == "pass" else 1
 
 
+def _cmd_rollback_mutation(args: argparse.Namespace, private_state) -> int:
+    common = {
+        "acknowledged_execution_sha256": args.acknowledge_execution_sha256,
+    }
+    if not args.execute:
+        result = inspect_deployment_mutation_rollback(
+            _paths(args),
+            private_state,
+            Path(args.execution),
+            **common,
+        )
+        result = {**result, "execute_requested": False, "live_mutation_performed": False}
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    result = execute_deployment_mutation_rollback(
+        _paths(args),
+        private_state,
+        Path(args.execution),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("rollback-mutation", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_recover_mutation_rollback(args: argparse.Namespace, private_state) -> int:
+    common = {
+        "acknowledged_journal_sha256": args.acknowledge_journal_sha256,
+    }
+    if not args.execute:
+        result = inspect_deployment_rollback_journal(
+            _paths(args),
+            private_state,
+            Path(args.journal),
+            **common,
+        )
+        result = {**result, "execute_requested": False, "live_mutation_performed": False}
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    result = execute_deployment_journal_rollback(
+        _paths(args),
+        private_state,
+        Path(args.journal),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("recover-mutation-rollback", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_mutation_rollback(args: argparse.Namespace, private_state) -> int:
+    result = verify_deployment_mutation_rollback(
+        _paths(args),
+        private_state,
+        Path(args.rollback_result),
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("clean") is True else 1
+
+
 def _cmd_verify_standby(args: argparse.Namespace, private_state) -> int:
     result = run_deployment_standby_verification(
         _paths(args),
@@ -1635,11 +1916,97 @@ def _cmd_apply_identity(args: argparse.Namespace, private_state) -> int:
     return 0 if result.get("status") == "pass" else 1
 
 
+def _cmd_rollback_identity(args: argparse.Namespace, private_state) -> int:
+    common = {
+        "acknowledged_execution_sha256": args.acknowledge_execution_sha256,
+        "timeout": args.timeout,
+        "max_response_bytes": args.max_response_bytes,
+        "operation": _operation("rollback-identity", args.network, args.operation_id),
+    }
+    if not args.execute:
+        result = inspect_identity_mutation_rollback(
+            _paths(args),
+            private_state,
+            Path(args.execution),
+            **common,
+        )
+        result = {
+            **result,
+            "execute_requested": False,
+            "live_mutation_performed": False,
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_identity_mutation_rollback(
+        _paths(args),
+        private_state,
+        Path(args.execution),
+        **common,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_recover_identity_rollback(args: argparse.Namespace, private_state) -> int:
+    common = {
+        "acknowledged_journal_sha256": args.acknowledge_journal_sha256,
+    }
+    if not args.execute:
+        result = inspect_identity_rollback_journal(
+            _paths(args),
+            private_state,
+            Path(args.journal),
+            **common,
+        )
+        result = {
+            **result,
+            "execute_requested": False,
+            "live_mutation_performed": False,
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_identity_journal_rollback(
+        _paths(args),
+        private_state,
+        Path(args.journal),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("recover-identity-rollback", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_identity_rollback(args: argparse.Namespace, private_state) -> int:
+    result = verify_identity_mutation_rollback(
+        _paths(args),
+        private_state,
+        Path(args.rollback_result),
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        observed_at=args.observed_at,
+    )
+    if args.write_evidence:
+        path, digest = write_identity_mutation_rollback_verification(
+            _paths(args),
+            result,
+            operation=_operation("verify-identity-rollback", args.network, args.operation_id),
+        )
+        result = {
+            **result,
+            "evidence_artifact": {"path": str(path), "sha256": digest},
+        }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("clean") is True else 1
+
+
 def _cmd_stage_genesis(args: argparse.Namespace, private_state) -> int:
     transaction = build_deployment_genesis_transaction(
         _paths(args),
         private_state,
         Path(args.identity_execution),
+        identity_rollback_verification_path=Path(args.identity_rollback_verification),
         network=args.network,
         selected_nodes=_selected_nodes(args.node),
         created_at=args.created_at,
@@ -1728,12 +2095,93 @@ def _cmd_apply_genesis(args: argparse.Namespace, private_state) -> int:
     return 0 if result.get("status") == "pass" else 1
 
 
+def _cmd_rollback_genesis(args: argparse.Namespace, private_state) -> int:
+    common = {
+        "acknowledged_execution_sha256": args.acknowledge_execution_sha256,
+    }
+    if not args.execute:
+        result = inspect_genesis_mutation_rollback(
+            _paths(args), private_state, Path(args.execution), **common
+        )
+        result = {
+            **result,
+            "execute_requested": False,
+            "live_mutation_performed": False,
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_genesis_mutation_rollback(
+        _paths(args),
+        private_state,
+        Path(args.execution),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("rollback-genesis", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_recover_genesis_rollback(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        result = inspect_genesis_rollback_journal(
+            _paths(args),
+            private_state,
+            Path(args.journal),
+            acknowledged_journal_sha256=args.acknowledge_journal_sha256,
+        )
+        result = {
+            **result,
+            "execute_requested": False,
+            "live_mutation_performed": False,
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_genesis_journal_rollback(
+        _paths(args),
+        private_state,
+        Path(args.journal),
+        acknowledged_journal_sha256=args.acknowledge_journal_sha256,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("recover-genesis-rollback", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_genesis_rollback(args: argparse.Namespace, private_state) -> int:
+    result = verify_genesis_mutation_rollback(
+        _paths(args),
+        private_state,
+        Path(args.rollback_result),
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        observed_at=args.observed_at,
+    )
+    if args.write_evidence:
+        path, digest = write_genesis_mutation_rollback_verification(
+            _paths(args),
+            result,
+            operation=_operation("verify-genesis-rollback", args.network, args.operation_id),
+        )
+        result = {**result, "evidence_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_release_genesis_birth(args: argparse.Namespace, private_state) -> int:
     release = build_genesis_birth_release(
         _paths(args),
         private_state,
         Path(args.execution),
         acknowledged_genesis_execution_sha256=args.acknowledge_genesis_execution_sha256,
+        genesis_rollback_verification_path=Path(args.genesis_rollback_verification),
         selected_nodes=_selected_nodes(args.node),
         expires_in_seconds=args.expires_in_seconds,
         created_at=args.created_at,
@@ -3046,6 +3494,58 @@ def _cmd_verify_validator_rpc_canary_funding_evidence(
     return 0
 
 
+def _cmd_probe_coolify_service_lifecycle(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "probe-coolify-service-lifecycle",
+        args.network,
+        args.operation_id,
+    )
+    if args.execute:
+        result = execute_coolify_service_lifecycle_probe(
+            _paths(args),
+            private_state,
+            network=args.network,
+            controller_id=args.controller_id,
+            environment_name=args.environment_name,
+            acknowledged_probe=args.acknowledge_live_service_probe,
+            observe_seconds=args.observe_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+            timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+            operation=operation,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("status") == "pass" else 1
+    result = inspect_coolify_service_lifecycle_probe(
+        private_state,
+        network=args.network,
+        controller_id=args.controller_id,
+        environment_name=args.environment_name,
+        observe_seconds=args.observe_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=operation,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_coolify_service_lifecycle_probe_evidence(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_coolify_service_lifecycle_probe_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -3070,6 +3570,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_release(args, private_state)
         if args.command == "apply-mutation":
             return _cmd_apply_mutation(args, private_state)
+        if args.command == "rollback-mutation":
+            return _cmd_rollback_mutation(args, private_state)
+        if args.command == "recover-mutation-rollback":
+            return _cmd_recover_mutation_rollback(args, private_state)
+        if args.command == "verify-mutation-rollback":
+            return _cmd_verify_mutation_rollback(args, private_state)
         if args.command == "verify-standby":
             return _cmd_verify_standby(args, private_state)
         if args.command == "verify-standby-evidence":
@@ -3084,6 +3590,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_identity_release(args, private_state)
         if args.command == "apply-identity":
             return _cmd_apply_identity(args, private_state)
+        if args.command == "rollback-identity":
+            return _cmd_rollback_identity(args, private_state)
+        if args.command == "recover-identity-rollback":
+            return _cmd_recover_identity_rollback(args, private_state)
+        if args.command == "verify-identity-rollback":
+            return _cmd_verify_identity_rollback(args, private_state)
         if args.command == "stage-genesis":
             return _cmd_stage_genesis(args, private_state)
         if args.command == "verify-genesis-transaction":
@@ -3094,6 +3606,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_genesis_release(args, private_state)
         if args.command == "apply-genesis":
             return _cmd_apply_genesis(args, private_state)
+        if args.command == "rollback-genesis":
+            return _cmd_rollback_genesis(args, private_state)
+        if args.command == "recover-genesis-rollback":
+            return _cmd_recover_genesis_rollback(args, private_state)
+        if args.command == "verify-genesis-rollback":
+            return _cmd_verify_genesis_rollback(args, private_state)
         if args.command == "release-genesis-birth":
             return _cmd_release_genesis_birth(args, private_state)
         if args.command == "verify-genesis-birth-release":
@@ -3206,21 +3724,29 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_apply_validator_rpc_canary_funding(args, private_state)
         if args.command == "verify-validator-rpc-canary-funding-evidence":
             return _cmd_verify_validator_rpc_canary_funding_evidence(args, private_state)
+        if args.command == "probe-coolify-service-lifecycle":
+            return _cmd_probe_coolify_service_lifecycle(args, private_state)
+        if args.command == "verify-coolify-service-lifecycle-probe-evidence":
+            return _cmd_verify_coolify_service_lifecycle_probe_evidence(args, private_state)
         raise RuntimeError(f"unsupported command: {args.command}")
     except (
         CoolifyObservationError,
         MotherDeploymentExecutorError,
+        MotherDeploymentCoolifyServiceLifecycleProbeError,
         MotherDeploymentExecutionError,
         MotherDeploymentGenesisBirthError,
         MotherDeploymentGenesisError,
         MotherDeploymentGenesisExecutorError,
         MotherDeploymentGenesisReleaseError,
+        MotherDeploymentGenesisRollbackError,
         MotherDeploymentIdentityExecutorError,
         MotherDeploymentIdentityInstallError,
         MotherDeploymentIdentityReleaseError,
+        MotherDeploymentIdentityRollbackError,
         MotherDeploymentPlanError,
         MotherDeploymentPreflightError,
         MotherDeploymentReleaseError,
+        MotherDeploymentRollbackError,
         MotherDeploymentSoftReplicaError,
         MotherDeploymentSoftReplicaReleaseError,
         MotherDeploymentSoftReplicaExecutorError,

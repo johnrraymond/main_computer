@@ -5849,6 +5849,12 @@
               currentPlanetId: "",
               currentPlanetLabel: "",
               currentPlanetClassification: "",
+              currentPlanets: [],
+              currentStars: [],
+              currentPlanetCount: 0,
+              currentStarCount: 0,
+              currentHabitablePlanetCount: 0,
+              captainScrawl: "",
               plottedRouteId: null,
               destinationSystemId: null,
               destinationSystemLabel: "",
@@ -5998,7 +6004,10 @@
             this.setShipTerminalState?.("terminal.bridge-viewscreen", "standby");
             this.setShipTerminalState?.("terminal.bridge-tactical", "ready");
             this.setShipObjective?.("objective.planet-view", true);
-            this.setShipInteractionStatus?.(`Warp arrival committed at ${snapshot.currentSystemLabel}. ${snapshot.currentPlanetLabel || "Destination planet"} is now on the bridge viewscreen. World time ${snapshot.elapsedWorldTime}.`);
+            const worldSummary = Number(snapshot.currentPlanetCount || 0) > 1
+              ? `${snapshot.currentPlanetCount} charted worlds are available in-system`
+              : `${snapshot.currentPlanetLabel || "Destination planet"} is now on the bridge viewscreen`;
+            this.setShipInteractionStatus?.(`Warp arrival committed at ${snapshot.currentSystemLabel}. ${worldSummary}. World time ${snapshot.elapsedWorldTime}.`);
             this.emitShipState?.(true);
           }
           const clock = Number.isFinite(nowMs) ? nowMs : 0;
@@ -9103,6 +9112,9 @@
         const navigationTime = document.createElement("div");
         navigationTime.className = "scene-shuttle3d-navigation-time";
         navigationTime.textContent = "WORLD TIME 0";
+        const navigationScrawl = document.createElement("div");
+        navigationScrawl.className = "scene-shuttle3d-navigation-scrawl";
+        navigationScrawl.hidden = true;
         const navigationLabel = document.createElement("label");
         navigationLabel.className = "scene-shuttle3d-navigation-label";
         navigationLabel.textContent = "Adjacent destination";
@@ -9130,6 +9142,7 @@
           navigationHeader,
           navigationCurrent,
           navigationTime,
+          navigationScrawl,
           navigationLabel,
           navigationActions,
           navigationProgress,
@@ -9183,7 +9196,12 @@
               destinations.forEach((destination) => {
                 const option = document.createElement("option");
                 option.value = destination.systemId;
-                option.textContent = `${destination.label} • ${destination.planetLabel || "unknown planet"} • ${destination.worldTimeCost} time`;
+                const worldCount = Math.max(1, Number(destination.planetCount || 1));
+                const starCount = Math.max(1, Number(destination.starCount || 1));
+                const astronomy = worldCount > 1 || starCount > 1
+                  ? ` • ${starCount} stars • ${worldCount} worlds`
+                  : ` • ${destination.planetLabel || "unknown planet"}`;
+                option.textContent = `${destination.label}${astronomy} • ${destination.worldTimeCost} time`;
                 option.dataset.routeId = destination.routeId;
                 navigationSelect.append(option);
               });
@@ -9191,8 +9209,14 @@
               navigationDestinationSignature = signature;
             }
             navigationPanel.hidden = !navigation.consoleOpen;
-            navigationCurrent.textContent = `CURRENT SYSTEM: ${String(navigation.currentSystemLabel || "UNKNOWN").toUpperCase()} • PLANET: ${String(navigation.currentPlanetLabel || "UNKNOWN").toUpperCase()}`;
+            const currentWorldCount = Math.max(1, Number(navigation.currentPlanetCount || 1));
+            const currentStarCount = Math.max(1, Number(navigation.currentStarCount || 1));
+            navigationCurrent.textContent = `CURRENT SYSTEM: ${String(navigation.currentSystemLabel || "UNKNOWN").toUpperCase()} • STARS: ${currentStarCount} • WORLDS: ${currentWorldCount}`;
             navigationTime.textContent = `WORLD TIME ${Number(navigation.elapsedWorldTime || 0)} • PHASE ${String(navigation.travelPhase || "unknown").replace(/-/g, " ").toUpperCase()}`;
+            const scrawl = String(navigation.captainScrawl || "").trim();
+            const showScrawl = Boolean(scrawl) && (navigation.travelPhase === "course-plotted" || navigation.travelling);
+            navigationScrawl.hidden = !showScrawl;
+            navigationScrawl.textContent = showScrawl ? `CAPTAIN'S SCRAWL • ${scrawl}` : "";
             navigationSelect.disabled = !navigation.enabled || navigation.travelling || !destinations.length;
             navigationPlot.disabled = navigationSelect.disabled;
             navigationEngage.disabled = !navigation.enabled || navigation.travelPhase !== "course-plotted" || navigation.travelling;

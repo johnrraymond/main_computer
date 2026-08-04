@@ -24,6 +24,14 @@ from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
 from .deployment_genesis_release import verify_deployment_genesis_release
+from .deployment_genesis_rollback import (
+    build_genesis_rollback_journal,
+    execute_genesis_journal_rollback,
+    genesis_rollback_journal_path,
+    require_compose,
+    update_genesis_rollback_journal,
+    write_genesis_rollback_journal,
+)
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -274,6 +282,11 @@ def inspect_released_genesis(
         "live_mutation_performed": False,
         "soft_replica_untouched": True,
         "initial_chain_proven": False,
+        "rollback_implemented": True,
+        "genesis_birth_blocked_pending_genesis_rollback_cycle": True,
+        "rollback_journal_expected_path": str(
+            genesis_rollback_journal_path(paths, verified["genesis_release_sha256"])
+        ),
     }
 
 
@@ -444,6 +457,9 @@ def execute_released_genesis(
     receipts: list[dict[str, Any]] = []
     failure: dict[str, Any] | None = None
     preconditions: list[dict[str, Any]] = []
+    journal_path: Path | None = None
+    journal_digest: str | None = None
+    automatic_rollback: dict[str, Any] | None = None
     try:
         services = _http_json(
             controller, "GET", "/api/v1/services", body=None,
@@ -486,6 +502,71 @@ def execute_released_genesis(
         _verify_identity_keys(envs["payload"])
         preconditions[-1]["verified"] = True
 
+        service_endpoint = f"/api/v1/services/{service_uuid}"
+        detail = _http_json(
+            controller, "GET", service_endpoint, body=None,
+            timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+        )
+        preconditions.append({
+            "name": "exact-standby-compose",
+            "method": "GET",
+            "endpoint": service_endpoint,
+            "status": detail["status"],
+            "response_sha256": detail["response_sha256"],
+            "verified": False,
+        })
+        if not detail["ok"]:
+            raise MotherDeploymentGenesisExecutorError(
+                "MOTHER_DEPLOY_GENESIS_EXECUTOR_PRECONDITION_FAILED",
+                f"Coolify service detail GET failed with HTTP {detail['status']}",
+            )
+        standby_compose = "\n".join(
+            [
+                f"name: {node}",
+                "",
+                "services:",
+                f"  {node}:",
+                "    image: alpine:3.20",
+                '    restart: "no"',
+                "    command:",
+                "      - sh",
+                "      - -lc",
+                "      - exec tail -f /dev/null",
+                "    labels:",
+                "      main_computer.mother.stage: standby",
+                f"      main_computer.mother.node: {node}",
+                "",
+            ]
+        )
+        try:
+            require_compose(detail["payload"], standby_compose, label="standby Compose")
+        except Exception as exc:
+            code = getattr(exc, "code", "MOTHER_DEPLOY_GENESIS_EXECUTOR_PRECONDITION_FAILED")
+            raise MotherDeploymentGenesisExecutorError(code, _safe_message(exc)) from exc
+        preconditions[-1]["verified"] = True
+        preconditions[-1]["standby_compose_sha256"] = hashlib.sha256(
+            standby_compose.encode("utf-8")
+        ).hexdigest()
+
+        rollback_journal = build_genesis_rollback_journal(
+            paths,
+            private_state,
+            release_path=release_path,
+            release_sha256=inspected["genesis_release_sha256"],
+            genesis_transaction_sha256=inspected["genesis_transaction_sha256"],
+            genesis_sha256=inspected["genesis_sha256"],
+            genesis_compose_sha256=inspected["compose_sha256"],
+            network=inspected["network"],
+            node=node,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+        )
+        journal_path, journal_digest = write_genesis_rollback_journal(
+            paths,
+            rollback_journal,
+            operation=operation,
+        )
+
         for raw_mutation in mutations:
             if not isinstance(raw_mutation, Mapping):
                 raise MotherDeploymentGenesisExecutorError(
@@ -522,6 +603,18 @@ def execute_released_genesis(
                     raise MotherDeploymentGenesisExecutorError(
                         "MOTHER_DEPLOY_GENESIS_EXECUTOR_INVALID", "released Compose digest no longer matches"
                     )
+            if journal_path is None:
+                raise MotherDeploymentGenesisExecutorError(
+                    "MOTHER_DEPLOY_GENESIS_EXECUTOR_ROLLBACK_JOURNAL_MISSING",
+                    "rollback journal was not written before the first mutation",
+                )
+            journal_path, journal_digest, _ = update_genesis_rollback_journal(
+                paths,
+                journal_path,
+                mutation_id=mutation_id,
+                state="in-flight",
+                operation=operation,
+            )
             response = _http_json(
                 controller, method, endpoint, body=body_map,
                 timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
@@ -548,20 +641,63 @@ def execute_released_genesis(
                 "status": "succeeded" if ok else "failed",
             }
             receipts.append(receipt)
+            if ok:
+                journal_path, journal_digest, _ = update_genesis_rollback_journal(
+                    paths,
+                    journal_path,
+                    mutation_id=mutation_id,
+                    state="succeeded",
+                    operation=operation,
+                )
             if not ok:
                 raise MotherDeploymentGenesisExecutorError(
                     "MOTHER_DEPLOY_GENESIS_EXECUTOR_MUTATION_FAILED",
                     f"Coolify rejected {mutation_id!r} with HTTP {response['status']}",
                 )
-    except (MotherDeploymentGenesisExecutorError, Exception) as exc:
+    except Exception as exc:
         if isinstance(exc, MotherDeploymentGenesisExecutorError):
             failure = {"code": exc.code, "message": _safe_message(exc)}
         else:
             failure = {"code": "MOTHER_DEPLOY_GENESIS_EXECUTOR_UNEXPECTED_FAILURE", "message": _safe_message(exc)}
+        if journal_path is not None and journal_digest is not None:
+            try:
+                automatic_rollback = execute_genesis_journal_rollback(
+                    paths,
+                    private_state,
+                    journal_path,
+                    acknowledged_journal_sha256=journal_digest,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                    operation=operation,
+                    authorization_source="automatic-compensation-after-genesis-failure",
+                )
+                binding = automatic_rollback.get("journal")
+                if isinstance(binding, Mapping):
+                    journal_digest = binding.get("sha256", journal_digest)
+            except Exception as rollback_exc:
+                automatic_rollback = {
+                    "status": "failed",
+                    "failure": {
+                        "code": getattr(
+                            rollback_exc,
+                            "code",
+                            "MOTHER_DEPLOY_GENESIS_ROLLBACK_UNEXPECTED_FAILURE",
+                        ),
+                        "message": _safe_message(rollback_exc),
+                    },
+                }
 
     completed_at = _utc_now()
     succeeded = sum(item.get("status") == "succeeded" for item in receipts)
     complete = failure is None and succeeded == len(mutations)
+    if complete and journal_path is not None:
+        journal_path, journal_digest, _ = update_genesis_rollback_journal(
+            paths,
+            journal_path,
+            status="rollback-available",
+            operation=operation,
+        )
     result: dict[str, Any] = {
         "kind": _RESULT_KIND,
         "schema_version": 1,
@@ -597,12 +733,29 @@ def execute_released_genesis(
             "private_keys_materialized": False,
             "private_keys_persisted": False,
             "secrets_in_output": False,
-            "automatic_rollback_performed": False,
+            "automatic_rollback_performed": automatic_rollback is not None,
+            "rollback_journal_written_before_first_patch": journal_path is not None,
+            "exact_standby_compose_prestate_verified": any(
+                item.get("name") == "exact-standby-compose" and item.get("verified") is True
+                for item in preconditions
+            ),
+            "persistent_volume_cleanup_performed": False,
             "stop_on_first_failure": True,
             "initial_chain_proof_performed": False,
         },
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
+        "rollback_journal": (
+            {
+                "locator": journal_path.resolve(strict=False).relative_to(
+                    paths.root.resolve(strict=False)
+                ).as_posix(),
+                "sha256": journal_digest,
+            }
+            if journal_path is not None and journal_digest is not None
+            else None
+        ),
+        "automatic_rollback": automatic_rollback,
         "failure": failure,
         "summary": {
             "planned_mutation_count": len(mutations),
@@ -616,7 +769,25 @@ def execute_released_genesis(
             "soft_replica_untouched": True,
             "initial_chain_proven": False,
             "complete": complete,
-            "next_phase": "prove-initial-chain-birth" if complete else "manual-review-required",
+            "rollback_available": complete and journal_path is not None,
+            "automatic_rollback_complete": (
+                automatic_rollback is not None
+                and isinstance(automatic_rollback.get("summary"), Mapping)
+                and automatic_rollback["summary"].get("complete") is True
+            ),
+            "persistent_volume_cleanup_performed": False,
+            "genesis_birth_blocked_pending_genesis_rollback_cycle": True,
+            "next_phase": (
+                "prove-genesis-rollback-cycle-before-birth"
+                if complete
+                else (
+                    "failure-compensated"
+                    if automatic_rollback is not None
+                    and isinstance(automatic_rollback.get("summary"), Mapping)
+                    and automatic_rollback["summary"].get("complete") is True
+                    else "manual-review-required"
+                )
+            ),
         },
     }
     result_path, result_digest = _write_result(paths, result, operation=operation)

@@ -25,6 +25,15 @@ from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, get_coolify_json, resolve_coolify_controller
 from .deployment_identity_release import verify_deployment_identity_release
+from .deployment_identity_rollback import (
+    build_identity_rollback_journal,
+    execute_identity_journal_rollback,
+    identity_profile_sha256,
+    identity_rollback_journal_path,
+    update_identity_rollback_journal_candidate,
+    update_identity_rollback_journal_status,
+    write_identity_rollback_journal,
+)
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -336,6 +345,11 @@ def inspect_released_identity(
         "persisted_secret_value_count": 0,
         "staged_scope": verified["staged_scope"],
         "release_already_claimed": claim_path.exists(),
+        "rollback_implemented": True,
+        "rollback_journal_expected_path": str(
+            identity_rollback_journal_path(paths, verified["identity_release_sha256"])
+        ),
+        "genesis_blocked_pending_identity_rollback_cycle": True,
         "transaction_apply_authorized": True,
         "live_execution_authorized": True,
         "resolved_blocker_codes": ["MOTHER_DEPLOY_IDENTITY_EXECUTOR_NOT_IMPLEMENTED"],
@@ -543,6 +557,36 @@ def execute_released_identity(
             "identity transaction mutation list is missing",
         )
 
+    release_locator = Path(inspected["release_path"]).resolve(strict=False).relative_to(
+        paths.root.resolve(strict=False)
+    ).as_posix()
+    transaction_locator = transaction_path.resolve(strict=False).relative_to(
+        paths.root.resolve(strict=False)
+    ).as_posix()
+    profile_sha256 = identity_profile_sha256(
+        transaction,
+        mother_binding=inspected["mother_binding"],
+        network=inspected["network"],
+        nodes=nodes,
+    )
+    rollback_journal = build_identity_rollback_journal(
+        transaction,
+        mother_binding=inspected["mother_binding"],
+        network=inspected["network"],
+        nodes=nodes,
+        release_locator=release_locator,
+        release_sha256=inspected["identity_release_sha256"],
+        transaction_locator=transaction_locator,
+        transaction_sha256=inspected["identity_transaction_sha256"],
+        operation_id=operation.operation_id,
+    )
+    journal_path, journal_digest = write_identity_rollback_journal(
+        paths,
+        rollback_journal,
+        operation=operation,
+    )
+    automatic_rollback: dict[str, Any] | None = None
+
     try:
         for expected_ordinal, raw_mutation in enumerate(mutations, start=1):
             if not isinstance(raw_mutation, Mapping):
@@ -658,6 +702,14 @@ def execute_released_identity(
                     f"Coolify environment key {key!r} already exists; overwrite is refused",
                 )
 
+            journal_path, journal_digest, _ = update_identity_rollback_journal_candidate(
+                paths,
+                journal_path,
+                mutation_id=mutation_id,
+                state="in-flight",
+                operation=operation,
+            )
+
             posted = _http_json(
                 controller,
                 "POST",
@@ -702,10 +754,30 @@ def execute_released_identity(
             }
             receipts.append(receipt)
             if not posted["ok"]:
+                journal_path, journal_digest, _ = update_identity_rollback_journal_candidate(
+                    paths,
+                    journal_path,
+                    mutation_id=mutation_id,
+                    state="post-rejected",
+                    operation=operation,
+                )
                 raise MotherDeploymentIdentityExecutorError(
                     "MOTHER_DEPLOY_IDENTITY_EXECUTOR_MUTATION_FAILED",
                     f"Coolify rejected {mutation_id!r} with HTTP {posted['status']}",
                 )
+            response_env_uuid = (
+                _env_uuid(posted["payload"])
+                if isinstance(posted["payload"], Mapping)
+                else None
+            )
+            journal_path, journal_digest, _ = update_identity_rollback_journal_candidate(
+                paths,
+                journal_path,
+                mutation_id=mutation_id,
+                state="created",
+                environment_variable_uuid=response_env_uuid,
+                operation=operation,
+            )
             receipt["status"] = "succeeded-unverified"
 
             after = _http_json(
@@ -744,7 +816,20 @@ def execute_released_identity(
             env_uuid = _env_uuid(installed)
             if env_uuid is None and isinstance(posted["payload"], Mapping):
                 env_uuid = _env_uuid(posted["payload"])
+            if env_uuid is None:
+                raise MotherDeploymentIdentityExecutorError(
+                    "MOTHER_DEPLOY_IDENTITY_EXECUTOR_POSTCONDITION_FAILED",
+                    f"Coolify did not return an environment-variable UUID for {key!r}",
+                )
             receipt["environment_variable_uuid"] = env_uuid
+            journal_path, journal_digest, _ = update_identity_rollback_journal_candidate(
+                paths,
+                journal_path,
+                mutation_id=mutation_id,
+                state="verified-created",
+                environment_variable_uuid=env_uuid,
+                operation=operation,
+            )
             receipt["postcondition"]["commitment_verified"] = True
             receipt["postcondition"]["proof_mode"] = proof_mode
             receipt["status"] = "succeeded"
@@ -753,6 +838,50 @@ def execute_released_identity(
             failure = {"code": exc.code, "message": _safe_message(exc)}
         else:
             failure = {"code": "MOTHER_DEPLOY_IDENTITY_EXECUTOR_UNEXPECTED_FAILURE", "message": _safe_message(exc)}
+
+    if failure is not None:
+        try:
+            automatic_rollback = execute_identity_journal_rollback(
+                paths,
+                private_state,
+                journal_path,
+                acknowledged_journal_sha256=journal_digest,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                operation=operation,
+            )
+            journal_path = Path(automatic_rollback["result_artifact"]["path"])
+            journal_binding = automatic_rollback.get("journal")
+            if isinstance(journal_binding, Mapping):
+                journal_path = paths.root / str(journal_binding.get("locator"))
+                journal_digest = str(journal_binding.get("sha256"))
+        except Exception as rollback_exc:
+            if journal_path.exists():
+                journal_digest = hashlib.sha256(journal_path.read_bytes()).hexdigest()
+            automatic_rollback = {
+                "status": "failed",
+                "failure": {
+                    "code": (
+                        rollback_exc.code
+                        if hasattr(rollback_exc, "code")
+                        else "MOTHER_DEPLOY_IDENTITY_ROLLBACK_UNEXPECTED_FAILURE"
+                    ),
+                    "message": _safe_message(rollback_exc),
+                },
+                "summary": {
+                    "complete": False,
+                    "network_access_performed": True,
+                    "live_mutation_performed": False,
+                },
+            }
+    else:
+        journal_path, journal_digest, _ = update_identity_rollback_journal_status(
+            paths,
+            journal_path,
+            status="forward-complete",
+            operation=operation,
+        )
 
     completed_at = _utc_now()
     succeeded = sum(item.get("status") == "succeeded" for item in receipts)
@@ -767,6 +896,13 @@ def execute_released_identity(
         "network": inspected["network"],
         "nodes": list(nodes),
         "staged_scope": inspected["staged_scope"],
+        "identity_profile_sha256": profile_sha256,
+        "rollback_journal": {
+            "locator": journal_path.resolve(strict=False).relative_to(
+                paths.root.resolve(strict=False)
+            ).as_posix(),
+            "sha256": journal_digest,
+        },
         "release": {
             "locator": Path(inspected["release_path"]).resolve(strict=False).relative_to(paths.root.resolve(strict=False)).as_posix(),
             "sha256": inspected["identity_release_sha256"],
@@ -790,10 +926,13 @@ def execute_released_identity(
             "private_keys_persisted": False,
             "secrets_in_output": False,
             "service_deploy_or_start_performed": False,
-            "automatic_rollback_performed": False,
+            "automatic_rollback_performed": automatic_rollback is not None,
+            "rollback_journal_written_before_first_post": True,
+            "exact_environment_variable_uuid_required_for_delete": True,
             "stop_on_first_failure": True,
         },
         "mutation_receipts": receipts,
+        "automatic_rollback": automatic_rollback,
         "failure": failure,
         "summary": {
             "planned_mutation_count": len(mutations),
@@ -810,7 +949,24 @@ def execute_released_identity(
             "network_access_performed": True,
             "live_mutation_performed": any(item.get("live_write_acknowledged") is True for item in receipts),
             "complete": complete,
-            "next_phase": "install-mother-owned-first-genesis-or-admit-replica" if complete else "manual-review-required",
+            "rollback_available": complete,
+            "automatic_rollback_complete": (
+                automatic_rollback is not None
+                and isinstance(automatic_rollback.get("summary"), Mapping)
+                and automatic_rollback["summary"].get("complete") is True
+            ),
+            "genesis_blocked_pending_identity_rollback_cycle": True,
+            "next_phase": (
+                "prove-identity-rollback-cycle-before-genesis"
+                if complete
+                else (
+                    "retry-after-automatic-rollback"
+                    if automatic_rollback is not None
+                    and isinstance(automatic_rollback.get("summary"), Mapping)
+                    and automatic_rollback["summary"].get("complete") is True
+                    else "manual-review-required"
+                )
+            ),
         },
     }
     result_path, result_digest = _write_result(paths, result, operation=operation)

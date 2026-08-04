@@ -79,6 +79,53 @@ def test_live_standby_verification_binds_exact_created_uuids_and_uses_get_only(t
     assert "private_key" not in rendered
 
 
+def test_live_standby_verification_accepts_preexisting_environments(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    existing = {
+        "coolify-a.invalid": [{"uuid": "existing-env-a", "name": "mainnet"}],
+        "coolify-c.invalid": [{"uuid": "existing-env-c", "name": "mainnet"}],
+    }
+    builder = _CoolifyOpener()
+    builder.environments = {host: [dict(item) for item in items] for host, items in existing.items()}
+    release_path, release_digest = _release_artifact(paths, private_state, builder)
+
+    live = _CoolifyOpener()
+    live.environments = {host: [dict(item) for item in items] for host, items in existing.items()}
+    result = execute_released_mutation(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        opener=live,
+        operation=_operation("standby-existing-environments"),
+    )
+    execution_path = Path(result["result_artifact"]["path"])
+
+    assert [receipt["mutation_id"] for receipt in result["mutation_receipts"]] == [
+        "mainneta-super1.create-standby-service",
+        "mainnetc-super1.create-standby-service",
+    ]
+    before = len(live.requests)
+    verification = run_deployment_standby_verification(
+        paths,
+        private_state,
+        execution_path,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        opener=live,
+        observed_at="2026-08-03T23:27:00Z",
+    )
+
+    assert {item["method"] for item in live.requests[before:]} == {"GET"}
+    assert verification["summary"]["clean"] is True
+    assert verification["summary"]["verified_environment_count"] == 2
+    assert verification["summary"]["verified_service_count"] == 2
+    assert verification["results"][0]["environment"]["uuid"] == "existing-env-a"
+    assert verification["results"][1]["environment"]["uuid"] == "existing-env-c"
+    assert verification["results"][0]["service"]["uuid"] == "svc-mainneta-super1"
+    assert verification["results"][1]["service"]["uuid"] == "svc-mainnetc-super1"
+
+
 def test_missing_created_service_is_reported_without_mutation(tmp_path: Path) -> None:
     paths, private_state, live, execution_path = _successful_execution(tmp_path)
     live.services["coolify-c.invalid"] = []

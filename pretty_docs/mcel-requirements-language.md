@@ -38,6 +38,8 @@ Without this layer, docs can drift into persuasive prose. With this layer, a req
 can be traced from a stable ID to an app region, source owner, semantic intent, test,
 receipt, and acceptance result.
 
+During the AI-authoring-language migration, these requirement blocks are the documentation-level source for legacy compiler front ends. `pretty_docs/mcel-application-ir-and-compiler-migration.md` defines how requirements registry records, current adapters and extractors, scaffolded explicit applications, normalized `application.js` definitions, and the future DSL must converge on one comparable MCEL Application IR without treating documentation evidence as runtime proof. `pretty_docs/mcel-application-ir-schema-and-normalization.md` defines the target semantic records and source-binding rules. `pretty_docs/mcel-existing-application-definition-migration-inventory.md` records which requirements apps and app-specific adapters must be updated, imported, or retained during each IR/DSL pass.
+
 ## Current coverage baseline
 
 The grammar is based on the requirement documents currently in `pretty_docs`:

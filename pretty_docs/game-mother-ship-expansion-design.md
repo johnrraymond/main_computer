@@ -189,3 +189,20 @@ The first implementation based on this design is acceptable when:
 - HUD/status text names the current area;
 - movement bounds and colliders match the visible room geometry closely enough that the player does not walk through key walls;
 - tests assert the presence of the mother-ship areas, the handoff state, and the first objective chain.
+## Campaign expansion after command access
+
+Reaching the bridge is no longer the terminal design target. Once the player can use the physical navigation console, the mother ship becomes the persistent campaign platform for the thirty-two-system graph and its dense multi-world destinations. The extended loop is:
+
+```text
+resolve or survive the current shipboard problem
+→ reach the bridge
+→ inspect adjacent systems and route conditions
+→ choose a destination for strategic reasons
+→ remain mobile inside the ship during warp
+→ arrive in a system with its own physical structure, internal worlds, and active crisis
+→ make a decision that changes persistent regional state
+→ return to the mother ship with consequences, allies, evidence, or damage
+```
+
+The system-level content is specified by `pretty_docs/game-forty-system-scenario-bible.md` and its five regional dossier documents. Those documents should guide destination geometry, traffic, faction dialogue, mission state, and route consequences. They are design authority only until implemented and tested.
+

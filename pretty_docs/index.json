@@ -7,6 +7,84 @@
       "order": 10
     },
     {
+      "path": "mcel-ai-authoring-language-executive-overview.md",
+      "title": "MCEL AI Authoring Language Executive Overview",
+      "kind": "markdown",
+      "order": 21
+    },
+    {
+      "path": "mcel-ai-authoring-semantic-boundary.md",
+      "title": "MCEL AI Authoring Semantic Boundary",
+      "kind": "markdown",
+      "order": 22
+    },
+    {
+      "path": "mcel-application-ir-and-compiler-migration.md",
+      "title": "MCEL Application IR and Compiler Migration",
+      "kind": "markdown",
+      "order": 23
+    },
+    {
+      "path": "mcel-application-ir-schema-and-normalization.md",
+      "title": "MCEL Application IR Schema and Normalization",
+      "kind": "markdown",
+      "order": 24
+    },
+    {
+      "path": "mcel-existing-application-definition-migration-inventory.md",
+      "title": "MCEL Existing Application Definition Migration Inventory",
+      "kind": "markdown",
+      "order": 25
+    },
+    {
+      "path": "mcel-constrained-expression-model.md",
+      "title": "MCEL Constrained Expression Model",
+      "kind": "markdown",
+      "order": 26
+    },
+    {
+      "path": "mcel-consequential-effects-and-proof-accounting.md",
+      "title": "MCEL Consequential Effects and Proof Accounting",
+      "kind": "markdown",
+      "order": 27
+    },
+    {
+      "path": "mcel-official-vanilla-javascript-dsl.md",
+      "title": "MCEL Official Vanilla-JavaScript DSL",
+      "kind": "markdown",
+      "order": 28
+    },
+    {
+      "path": "mcel-compiler-diagnostics-and-repair-protocol.md",
+      "title": "MCEL Compiler Diagnostics and Repair Protocol",
+      "kind": "markdown",
+      "order": 29
+    },
+    {
+      "path": "mcel-scaffolder-generated-projection-and-compatibility.md",
+      "title": "MCEL Scaffolder, Generated Projection, and Compatibility",
+      "kind": "markdown",
+      "order": 30
+    },
+    {
+      "path": "mcel-ai-application-authoring-cycle.md",
+      "title": "MCEL AI Application Authoring Cycle",
+      "kind": "markdown",
+      "order": 31
+    },
+    {
+      "path": "mcel-ai-authoring-pattern-catalog.md",
+      "title": "MCEL AI Authoring Pattern Catalog",
+      "kind": "markdown",
+      "order": 32
+    },
+    {
+      "path": "mcel-semantic-change-and-evidence-impact.md",
+      "title": "MCEL Semantic Change and Evidence Impact",
+      "kind": "markdown",
+      "order": 33
+    },
+    {
       "path": "mcel-status-and-roadmap.md",
       "title": "MCEL Status and Roadmap",
       "kind": "markdown",
@@ -209,6 +287,144 @@
       "title": "MCEL Forward-Specification Acid Application",
       "kind": "markdown",
       "order": 67
+    },
+    {
+      "path": "mcel-ai-authoring-and-migration-benchmark.md",
+      "title": "MCEL AI Authoring and Migration Benchmark",
+      "kind": "markdown",
+      "order": 68
+    },
+    {
+      "path": "game-mother-ship-design-index.md",
+      "title": "Game Design Index",
+      "kind": "markdown",
+      "order": 70
+    },
+    {
+      "path": "game-warp-navigation-definition.md",
+      "title": "Game Warp Navigation Definition",
+      "kind": "markdown",
+      "order": 71
+    },
+    {
+      "path": "game-warp-navigation-runtime.md",
+      "title": "Game Warp Navigation Runtime",
+      "kind": "markdown",
+      "order": 72
+    },
+    {
+      "path": "game-star-system-density-and-choice-contract.md",
+      "title": "Star-System Density and Just-in-Time Choice Contract",
+      "kind": "markdown",
+      "order": 73
+    },
+    {
+      "path": "game-sophisticated-ai-architecture-plan.md",
+      "title": "Sophisticated Game AI Architecture and Implementation Plan",
+      "kind": "markdown",
+      "order": 74
+    },
+    {
+      "path": "game-ai-patch-01-strategic-data-contract.md",
+      "title": "Game AI Patch 01 — Strategic Data Contract",
+      "kind": "markdown",
+      "order": 75
+    },
+    {
+      "path": "game-ai-patch-02-deterministic-cognition-kernel.md",
+      "title": "Game AI Patch 02 — Deterministic Cognition Kernel",
+      "kind": "markdown",
+      "order": 76
+    },
+    {
+      "path": "game-ai-patch-03-action-authority-and-consequences.md",
+      "title": "Game AI Patch 03 — Action Authority and Consequences",
+      "kind": "markdown",
+      "order": 77
+    },
+    {
+      "path": "game-ai-patch-03-1-strategic-turn-coordination-and-revision-lock.md",
+      "title": "Game AI Patch 03.1 — Strategic Turn Coordination and Revision Lock",
+      "kind": "markdown",
+      "order": 78
+    },
+    {
+      "path": "game-ai-patch-04-vela-gate-three-agent-prototype.md",
+      "title": "Game AI Patch 04 — Vela Gate Three-Agent Prototype",
+      "kind": "markdown",
+      "order": 79
+    },
+    {
+      "path": "game-ai-patch-05-knowledge-propagation-and-captain-modeling.md",
+      "title": "Game AI Patch 05 — Knowledge Propagation and Captain Modeling",
+      "kind": "markdown",
+      "order": 80
+    },
+    {
+      "path": "game-ai-patch-06-solace-reach-coordination-and-promises.md",
+      "title": "Game AI Patch 06 — Solace Reach Coordination and Promises",
+      "kind": "markdown",
+      "order": 81
+    },
+    {
+      "path": "game-ai-patch-07-bounded-campaign-director.md",
+      "title": "Game AI Patch 07 — Bounded Campaign Director",
+      "kind": "markdown",
+      "order": 82
+    },
+    {
+      "path": "game-ai-patch-08-communicative-intent-and-safe-wording.md",
+      "title": "Game AI Patch 08 — Communicative Intent and Safe Wording",
+      "kind": "markdown",
+      "order": 83
+    },
+    {
+      "path": "game-ai-patch-09-deterministic-budgeted-offscreen-simulation.md",
+      "title": "Game AI Patch 09 — Deterministic Budgeted Off-Screen Simulation",
+      "kind": "markdown",
+      "order": 84
+    },
+    {
+      "path": "game-forty-system-scenario-bible.md",
+      "title": "Thirty-Two-System Scenario Bible",
+      "kind": "markdown",
+      "order": 85
+    },
+    {
+      "path": "game-forty-system-route-scenarios.md",
+      "title": "Thirty-Two-System Route Scenario Seeds",
+      "kind": "markdown",
+      "order": 86
+    },
+    {
+      "path": "game-scenarios-origin-region.md",
+      "title": "Origin Cluster Scenario Dossiers",
+      "kind": "markdown",
+      "order": 87
+    },
+    {
+      "path": "game-scenarios-meridian-region.md",
+      "title": "Meridian Cluster Scenario Dossiers",
+      "kind": "markdown",
+      "order": 88
+    },
+    {
+      "path": "game-scenarios-helix-region.md",
+      "title": "Helix Cluster Scenario Dossiers",
+      "kind": "markdown",
+      "order": 89
+    },
+    {
+      "path": "game-scenarios-crown-region.md",
+      "title": "Crown Cluster Scenario Dossiers",
+      "kind": "markdown",
+      "order": 90
+    },
+    {
+      "path": "game-scenarios-verge-region.md",
+      "title": "Verge Cluster Scenario Dossiers",
+      "kind": "markdown",
+      "order": 91
     }
   ]
 }

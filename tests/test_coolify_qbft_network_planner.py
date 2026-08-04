@@ -22,6 +22,22 @@ def _load_module():
     return module
 
 
+def _synthetic_mainnet_plan(module):
+    """Exercise contract-deployment safeguards without reopening QBFT authority."""
+
+    plan = module.build_plan(
+        "testnet",
+        public_rpc=True,
+        single_host="root@203.0.113.10",
+    )
+    return module.replace(
+        plan,
+        name="mainnet-contract-safety-test",
+        environment="mainnet",
+        chain_id=42424240,
+    )
+
+
 def test_default_testnet_plan_uses_one_besu_validator_as_rpc_for_low_resource_host() -> None:
     module = _load_module()
 
@@ -139,23 +155,63 @@ def test_duplicate_port_seed_is_rejected(tmp_path: Path) -> None:
         raise AssertionError("duplicate host port should have been rejected")
 
 
-def test_mainnet_seed_requires_acknowledgement() -> None:
+def test_mother_mainnet_is_retired_from_legacy_qbft_authority() -> None:
     module = _load_module()
 
-    try:
-        module.build_plan("mainnet")
-    except module.PlanError as exc:
-        assert "--allow-mainnet" in str(exc)
-    else:
-        raise AssertionError("mainnet seed should require acknowledgement")
+    for allow_mainnet in (False, True):
+        try:
+            module.build_plan("mainnet", allow_mainnet=allow_mainnet)
+        except module.PlanError as exc:
+            message = str(exc)
+            assert "Mother-managed mainnet identity" in message
+            assert "tools/mother_deploy.py" in message
+            assert "--allow-mainnet does not override" in message
+        else:
+            raise AssertionError("legacy QBFT planning must never own Mother mainnet")
 
-    plan = module.build_plan("mainnet", allow_mainnet=True)
-    assert plan.environment == "mainnet"
-    services = list(plan.services)
-    assert len([service for service in services if service.role == "validator"]) == 1
-    assert len([service for service in services if service.role == "rpc"]) == 1
-    assert plan.topology_policy.minimum_validators == 1
-    assert "single-validator bring-up mode" in "\n".join(plan.warnings)
+
+def test_mother_mainnet_chain_id_cannot_be_reintroduced_under_alias(tmp_path: Path) -> None:
+    module = _load_module()
+    seed = json.loads(json.dumps(module.NETWORK_SEEDS["testnet"]))
+    seed["name"] = "alias-network"
+    seed["environment"] = "staging"
+    seed["chain_id"] = 42424240
+    seed_path = tmp_path / "alias-network.json"
+    seed_path.write_text(json.dumps(seed), encoding="utf-8")
+
+    try:
+        module.build_plan(str(seed_path))
+    except module.PlanError as exc:
+        assert "chain_id=42424240" in str(exc)
+    else:
+        raise AssertionError("Mother chain id must remain reserved to Mother")
+
+
+def test_mother_mainnet_environment_cannot_be_reintroduced_under_alias(tmp_path: Path) -> None:
+    module = _load_module()
+    seed = json.loads(json.dumps(module.NETWORK_SEEDS["testnet"]))
+    seed["name"] = "alias-network"
+    seed["environment"] = "mainnet"
+    seed["chain_id"] = 999999
+    seed_path = tmp_path / "alias-network.json"
+    seed_path.write_text(json.dumps(seed), encoding="utf-8")
+
+    try:
+        module.build_plan(str(seed_path))
+    except module.PlanError as exc:
+        assert "environment='mainnet'" in str(exc)
+    else:
+        raise AssertionError("Mother mainnet environment must remain reserved to Mother")
+
+
+def test_list_reports_mother_mainnet_outside_legacy_seed_catalog(capsys) -> None:
+    module = _load_module()
+
+    assert module.main(["list"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert "mainnet" not in payload["seeds"]
+    assert payload["mother_managed_networks"] == ["mainnet"]
 
 
 def test_topology_policy_controls_validator_minimum() -> None:
@@ -181,8 +237,7 @@ def test_topology_policy_controls_validator_minimum() -> None:
 
 def test_topology_policy_controls_rpc_minimum() -> None:
     module = _load_module()
-    seed = json.loads(json.dumps(module.NETWORK_SEEDS["mainnet"]))
-    seed["requires_mainnet_ack"] = False
+    seed = json.loads(json.dumps(module.NETWORK_SEEDS["testnet"]))
     seed["services"] = [service for service in seed["services"] if service["role"] != "rpc"]
     seed["topology_policy"]["minimum_rpc_nodes"] = 1
     module.NETWORK_SEEDS["policy-min-rpc-test"] = seed
@@ -289,11 +344,10 @@ def test_testnet_deploy_contracts_can_opt_out_of_generated_offices() -> None:
 def test_mainnet_does_not_generate_offices_by_default_but_can_opt_in() -> None:
     module = _load_module()
 
-    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
+    plan = _synthetic_mainnet_plan(module)
     default_args = module.parse_args([
         "deploy-contracts",
-        "mainnet",
-        "--allow-mainnet",
+        "testnet",
         "--single-host",
         "root@203.0.113.10",
         "--public-rpc",
@@ -301,8 +355,7 @@ def test_mainnet_does_not_generate_offices_by_default_but_can_opt_in() -> None:
     ])
     opt_in_args = module.parse_args([
         "deploy-contracts",
-        "mainnet",
-        "--allow-mainnet",
+        "testnet",
         "--single-host",
         "root@203.0.113.10",
         "--public-rpc",
@@ -322,14 +375,15 @@ def test_mainnet_does_not_generate_offices_by_default_but_can_opt_in() -> None:
 def test_mainnet_execute_deploy_contracts_requires_explicit_authority_inputs() -> None:
     module = _load_module()
 
-    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
+    plan = _synthetic_mainnet_plan(module)
     args = module.parse_args([
         "deploy-contracts",
-        "mainnet",
-        "--allow-mainnet",
+        "testnet",
         "--single-host",
         "root@203.0.113.10",
         "--public-rpc",
+        "--rpc-url",
+        "http://127.0.0.1:8545",
     ])
 
     try:
@@ -362,14 +416,15 @@ def test_mainnet_execute_deploy_contracts_passes_private_key_env_and_offices(mon
             "0x4444444444444444444444444444444444444444",
         ]
     )
-    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
+    plan = _synthetic_mainnet_plan(module)
     args = module.parse_args([
         "deploy-contracts",
-        "mainnet",
-        "--allow-mainnet",
+        "testnet",
         "--single-host",
         "root@203.0.113.10",
         "--public-rpc",
+        "--rpc-url",
+        "http://127.0.0.1:8545",
         "--deployment-private-key-env",
         "MAIN_COMPUTER_MAINNET_DEPLOYER_PRIVATE_KEY",
         "--deployment-offices",
@@ -390,14 +445,15 @@ def test_mainnet_deploy_contracts_rejects_default_anvil_offices() -> None:
     module = _load_module()
 
     offices = ",".join(module.DEFAULT_FUNDED_ACCOUNTS)
-    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
+    plan = _synthetic_mainnet_plan(module)
     args = module.parse_args([
         "deploy-contracts",
-        "mainnet",
-        "--allow-mainnet",
+        "testnet",
         "--single-host",
         "root@203.0.113.10",
         "--public-rpc",
+        "--rpc-url",
+        "http://127.0.0.1:8545",
         "--deployment-private-key-env",
         "MAIN_COMPUTER_MAINNET_DEPLOYER_PRIVATE_KEY",
         "--deployment-offices",
@@ -784,6 +840,218 @@ def test_coolify_sync_create_path_uses_api_only_and_does_not_require_ssh(monkeyp
     )
 
 
+def _service_scoped_sync_args(module):
+    return module.parse_args(
+        [
+            "coolify-sync",
+            "testnet",
+            "--single-host",
+            "root@157.245.92.74",
+            "--coolify-url",
+            "http://coolify.example.test:8000",
+            "--coolify-token",
+            "secret-token",
+            "--coolify-project-uuid",
+            "project-1",
+            "--coolify-server-uuid",
+            "server-1",
+            "--coolify-environment-uuid",
+            "environment-1",
+        ]
+    )
+
+
+def test_coolify_sync_new_service_uses_start_and_never_generic_deploy(monkeypatch) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
+
+    class FakeClient:
+        base_url = "http://coolify.example.test:8000"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def request(self, method: str, path: str, payload=None):  # noqa: ANN001
+            self.calls.append((method, path, payload))
+            if path == "/api/v1/version":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, "4.1.2")
+            if method == "GET" and path == "/api/v1/services":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, [])
+            if method == "GET" and path == "/api/v1/projects/project-1/environments":
+                return module.CoolifyResponse(
+                    True,
+                    200,
+                    method,
+                    self.base_url,
+                    path,
+                    [{"uuid": "environment-1", "name": "testnet"}],
+                )
+            if method == "POST" and path == "/api/v1/services":
+                return module.CoolifyResponse(True, 201, method, self.base_url, path, {"uuid": "service-1"})
+            if method == "PATCH" and path == "/api/v1/services/service-1":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"uuid": "service-1"})
+            if method == "POST" and path == "/api/v1/services/service-1/start":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"message": "started"})
+            raise AssertionError((method, path, payload))
+
+    fake = FakeClient()
+    monkeypatch.setattr(module, "coolify_client_from_args", lambda args, plan: (fake, "secret-token", "direct"))
+
+    result = module.coolify_sync(plan, _service_scoped_sync_args(module), deploy=True)
+
+    assert result["ok"] is True
+    assert result["lifecycle_operation"] == "start"
+    assert result["lifecycle_reason"] == "new-service"
+    assert [path for method, path, _ in fake.calls if method == "POST" and path.endswith(("/start", "/restart"))] == [
+        "/api/v1/services/service-1/start"
+    ]
+    assert not any(path.startswith("/api/v1/deploy") for _, path, _ in fake.calls)
+
+
+def test_coolify_sync_stopped_existing_service_uses_start(monkeypatch) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
+    service_name = "main-computer-qbft-testnet-a"
+
+    class FakeClient:
+        base_url = "http://coolify.example.test:8000"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def request(self, method: str, path: str, payload=None):  # noqa: ANN001
+            self.calls.append((method, path, payload))
+            if path == "/api/v1/version":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, "4.1.2")
+            if method == "GET" and path == "/api/v1/services":
+                return module.CoolifyResponse(
+                    True,
+                    200,
+                    method,
+                    self.base_url,
+                    path,
+                    [{"uuid": "service-existing", "name": service_name, "status": "exited"}],
+                )
+            if method == "PATCH" and path == "/api/v1/services/service-existing":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"uuid": "service-existing"})
+            if method == "GET" and path == "/api/v1/services/service-existing":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"uuid": "service-existing", "status": "exited"})
+            if method == "POST" and path == "/api/v1/services/service-existing/start":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"message": "started"})
+            raise AssertionError((method, path, payload))
+
+    fake = FakeClient()
+    monkeypatch.setattr(module, "coolify_client_from_args", lambda args, plan: (fake, "secret-token", "direct"))
+
+    result = module.coolify_sync(plan, _service_scoped_sync_args(module), deploy=True)
+
+    assert result["ok"] is True
+    assert result["lifecycle_operation"] == "start"
+    assert result["lifecycle_reason"] == "existing-stopped-service"
+    assert result["service_status"] == "exited"
+    assert not any(path.startswith("/api/v1/deploy") for _, path, _ in fake.calls)
+
+
+def test_coolify_sync_running_existing_service_uses_restart(monkeypatch) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
+    service_name = "main-computer-qbft-testnet-a"
+
+    class FakeClient:
+        base_url = "http://coolify.example.test:8000"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def request(self, method: str, path: str, payload=None):  # noqa: ANN001
+            self.calls.append((method, path, payload))
+            if path == "/api/v1/version":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, "4.1.2")
+            if method == "GET" and path == "/api/v1/services":
+                return module.CoolifyResponse(
+                    True,
+                    200,
+                    method,
+                    self.base_url,
+                    path,
+                    [{"uuid": "service-existing", "name": service_name, "status": "running:healthy"}],
+                )
+            if method == "PATCH" and path == "/api/v1/services/service-existing":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"uuid": "service-existing"})
+            if method == "GET" and path == "/api/v1/services/service-existing":
+                return module.CoolifyResponse(
+                    True,
+                    200,
+                    method,
+                    self.base_url,
+                    path,
+                    {"uuid": "service-existing", "status": "running:healthy:excluded"},
+                )
+            if method == "POST" and path == "/api/v1/services/service-existing/restart":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"message": "restarted"})
+            raise AssertionError((method, path, payload))
+
+    fake = FakeClient()
+    monkeypatch.setattr(module, "coolify_client_from_args", lambda args, plan: (fake, "secret-token", "direct"))
+
+    result = module.coolify_sync(plan, _service_scoped_sync_args(module), deploy=True)
+
+    assert result["ok"] is True
+    assert result["lifecycle_operation"] == "restart"
+    assert result["lifecycle_reason"] == "existing-running-service"
+    assert result["service_status"] == "running:healthy:excluded"
+    assert [path for method, path, _ in fake.calls if method == "POST" and path.endswith(("/start", "/restart"))] == [
+        "/api/v1/services/service-existing/restart"
+    ]
+    assert not any(path.startswith("/api/v1/deploy") for _, path, _ in fake.calls)
+
+
+def test_coolify_sync_lifecycle_failure_is_not_retried_with_other_routes(monkeypatch) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
+    service_name = "main-computer-qbft-testnet-a"
+
+    class FakeClient:
+        base_url = "http://coolify.example.test:8000"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def request(self, method: str, path: str, payload=None):  # noqa: ANN001
+            self.calls.append((method, path, payload))
+            if path == "/api/v1/version":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, "4.1.2")
+            if method == "GET" and path == "/api/v1/services":
+                return module.CoolifyResponse(
+                    True,
+                    200,
+                    method,
+                    self.base_url,
+                    path,
+                    [{"uuid": "service-existing", "name": service_name, "status": "running:healthy"}],
+                )
+            if method == "PATCH" and path == "/api/v1/services/service-existing":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"uuid": "service-existing"})
+            if method == "GET" and path == "/api/v1/services/service-existing":
+                return module.CoolifyResponse(True, 200, method, self.base_url, path, {"status": "running:healthy"})
+            if method == "POST" and path == "/api/v1/services/service-existing/restart":
+                return module.CoolifyResponse(False, 500, method, self.base_url, path, {"message": "restart failed"})
+            raise AssertionError((method, path, payload))
+
+    fake = FakeClient()
+    monkeypatch.setattr(module, "coolify_client_from_args", lambda args, plan: (fake, "secret-token", "direct"))
+
+    result = module.coolify_sync(plan, _service_scoped_sync_args(module), deploy=True)
+
+    lifecycle_calls = [
+        (method, path)
+        for method, path, _ in fake.calls
+        if path.endswith(("/start", "/restart")) or path.startswith("/api/v1/deploy")
+    ]
+    assert result["ok"] is False
+    assert result["stage"] == "deploy-service"
+    assert result["lifecycle_operation"] == "restart"
+    assert lifecycle_calls == [("POST", "/api/v1/services/service-existing/restart")]
 
 
 def test_wait_for_rpc_requires_peer_and_block_advancement(monkeypatch) -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import socket
@@ -16,31 +16,120 @@ from tools.mother.common.deployment_genesis import (
     write_deployment_genesis_transaction,
 )
 from tools.mother.common.deployment_identity_executor import execute_released_identity
+from tools.mother.common.deployment_identity_install import (
+    build_deployment_identity_install_transaction,
+    write_deployment_identity_install_transaction,
+)
+from tools.mother.common.deployment_identity_release import (
+    build_deployment_identity_release,
+    write_deployment_identity_release,
+)
+from tools.mother.common.deployment_identity_rollback import (
+    MotherDeploymentIdentityRollbackError,
+    execute_identity_mutation_rollback,
+    verify_identity_mutation_rollback,
+    write_identity_mutation_rollback_verification,
+)
 from tests.test_mother_deployment_executor import _operation
 from tests.test_mother_deployment_identity_executor import _IdentityOpener, _identity_release
 
 
 def _identity_execution(tmp_path: Path):
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    paths, private_state, _, _, release_path, release_digest = _identity_release(tmp_path, now=now)
+    first_now = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=10)
+    (
+        paths,
+        private_state,
+        first_transaction_path,
+        _,
+        first_release_path,
+        first_release_digest,
+    ) = _identity_release(tmp_path, now=first_now)
+    live = _IdentityOpener()
+    first = execute_released_identity(
+        paths,
+        private_state,
+        first_release_path,
+        acknowledged_release_sha256=first_release_digest,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        opener=live,
+        operation=_operation("genesis-identity-first-apply"),
+    )
+    assert first["status"] == "pass"
+
+    rolled_back = execute_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(first["result_artifact"]["path"]),
+        acknowledged_execution_sha256=first["result_artifact"]["sha256"],
+        opener=live,
+        operation=_operation("genesis-identity-rollback"),
+    )
+    assert rolled_back["status"] == "pass"
+    verification = verify_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(rolled_back["result_artifact"]["path"]),
+        opener=live,
+    )
+    verification_path, _ = write_identity_mutation_rollback_verification(
+        paths,
+        verification,
+        operation=_operation("genesis-identity-rollback-proof"),
+    )
+
+    first_transaction = json.loads(first_transaction_path.read_text(encoding="utf-8"))
+    standby_path = paths.root / first_transaction["standby_evidence"]["locator"]
+    second_now = datetime.now(timezone.utc).replace(microsecond=0)
+    second_transaction = build_deployment_identity_install_transaction(
+        paths,
+        private_state,
+        standby_path,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        created_at=second_now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        now=second_now,
+    )
+    second_transaction_path, second_transaction_digest = write_deployment_identity_install_transaction(
+        paths,
+        second_transaction,
+        operation=_operation("genesis-identity-second-transaction"),
+    )
+    second_release = build_deployment_identity_release(
+        paths,
+        private_state,
+        second_transaction_path,
+        acknowledged_identity_transaction_sha256=second_transaction_digest,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        created_at=second_now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        now=second_now,
+    )
+    second_release_path, second_release_digest = write_deployment_identity_release(
+        paths,
+        second_release,
+        operation=_operation("genesis-identity-second-release"),
+    )
     result = execute_released_identity(
         paths,
         private_state,
-        release_path,
-        acknowledged_release_sha256=release_digest,
+        second_release_path,
+        acknowledged_release_sha256=second_release_digest,
         selected_nodes=("mainneta-super1", "mainnetc-super1"),
-        opener=_IdentityOpener(),
-        operation=_operation("genesis-identity-execution"),
+        opener=live,
+        operation=_operation("genesis-identity-reapply"),
     )
     assert result["status"] == "pass"
-    return paths, private_state, Path(result["result_artifact"]["path"])
+    return (
+        paths,
+        private_state,
+        Path(result["result_artifact"]["path"]),
+        verification_path,
+    )
 
 
 def test_genesis_compiler_builds_one_initial_validator_and_one_soft_admission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths, private_state, execution_path = _identity_execution(tmp_path)
+    paths, private_state, execution_path, rollback_verification_path = _identity_execution(tmp_path)
 
     def forbidden(*args: object, **kwargs: object) -> object:
         raise AssertionError("genesis staging must not perform network access")
@@ -50,6 +139,7 @@ def test_genesis_compiler_builds_one_initial_validator_and_one_soft_admission(
         paths,
         private_state,
         execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
         selected_nodes=("mainneta-super1", "mainnetc-super1"),
         created_at="2026-07-31T20:34:00Z",
     )
@@ -99,11 +189,12 @@ def test_genesis_compiler_builds_one_initial_validator_and_one_soft_admission(
 
 
 def test_genesis_transaction_persists_canonically_and_verifies(tmp_path: Path) -> None:
-    paths, private_state, execution_path = _identity_execution(tmp_path)
+    paths, private_state, execution_path, rollback_verification_path = _identity_execution(tmp_path)
     transaction = build_deployment_genesis_transaction(
         paths,
         private_state,
         execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
         selected_nodes=("mainneta-super1", "mainnetc-super1"),
         created_at="2026-07-31T20:34:00Z",
     )
@@ -129,11 +220,12 @@ def test_genesis_transaction_persists_canonically_and_verifies(tmp_path: Path) -
 
 
 def test_genesis_transaction_tamper_is_rejected(tmp_path: Path) -> None:
-    paths, private_state, execution_path = _identity_execution(tmp_path)
+    paths, private_state, execution_path, rollback_verification_path = _identity_execution(tmp_path)
     transaction = build_deployment_genesis_transaction(
         paths,
         private_state,
         execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
         created_at="2026-07-31T20:34:00Z",
     )
     transaction_path, _ = write_deployment_genesis_transaction(
@@ -151,19 +243,19 @@ def test_genesis_transaction_tamper_is_rejected(tmp_path: Path) -> None:
 
 
 def test_genesis_compiler_rejects_incomplete_identity_execution(tmp_path: Path) -> None:
-    paths, private_state, execution_path = _identity_execution(tmp_path)
+    paths, private_state, execution_path, rollback_verification_path = _identity_execution(tmp_path)
     execution = json.loads(execution_path.read_text(encoding="utf-8"))
     execution["summary"]["commitment_verified_count"] = 3
     from tools.mother.common.canonical import canonical_json
 
     execution_path.write_bytes(canonical_json(execution))
     with pytest.raises(MotherDeploymentGenesisError) as caught:
-        build_deployment_genesis_transaction(paths, private_state, execution_path)
+        build_deployment_genesis_transaction(paths, private_state, execution_path, identity_rollback_verification_path=rollback_verification_path)
     assert caught.value.code == "MOTHER_DEPLOY_GENESIS_IDENTITY_EXECUTION_INVALID"
 
 
 def test_cli_stages_and_verifies_genesis_transaction(tmp_path: Path, capsys) -> None:
-    paths, _, execution_path = _identity_execution(tmp_path)
+    paths, _, execution_path, rollback_verification_path = _identity_execution(tmp_path)
     runtime_root = paths.root.parent
     code = mother_deploy.main(
         [
@@ -172,6 +264,8 @@ def test_cli_stages_and_verifies_genesis_transaction(tmp_path: Path, capsys) -> 
             str(runtime_root),
             "--identity-execution",
             str(execution_path),
+            "--identity-rollback-verification",
+            str(rollback_verification_path),
             "--node",
             "mainneta-super1",
             "--node",
@@ -202,3 +296,52 @@ def test_cli_stages_and_verifies_genesis_transaction(tmp_path: Path, capsys) -> 
     verified = json.loads(capsys.readouterr().out)
     assert verified["clean"] is True
     assert verified["staged_scope"] == "compile-first-genesis-and-replica-admission"
+
+
+def test_genesis_remains_blocked_until_identity_is_reapplied_after_verified_rollback(
+    tmp_path: Path,
+) -> None:
+    first_now = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=10)
+    paths, private_state, _, _, release_path, release_digest = _identity_release(
+        tmp_path,
+        now=first_now,
+    )
+    live = _IdentityOpener()
+    first = execute_released_identity(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        opener=live,
+        operation=_operation("genesis-gate-first-identity"),
+    )
+    rolled_back = execute_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(first["result_artifact"]["path"]),
+        acknowledged_execution_sha256=first["result_artifact"]["sha256"],
+        opener=live,
+        operation=_operation("genesis-gate-rollback"),
+    )
+    verification = verify_identity_mutation_rollback(
+        paths,
+        private_state,
+        Path(rolled_back["result_artifact"]["path"]),
+        opener=live,
+    )
+    verification_path, _ = write_identity_mutation_rollback_verification(
+        paths,
+        verification,
+        operation=_operation("genesis-gate-proof"),
+    )
+
+    with pytest.raises(MotherDeploymentIdentityRollbackError) as caught:
+        build_deployment_genesis_transaction(
+            paths,
+            private_state,
+            Path(first["result_artifact"]["path"]),
+            identity_rollback_verification_path=verification_path,
+            selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        )
+    assert caught.value.code == "MOTHER_DEPLOY_IDENTITY_ROLLBACK_CYCLE_REQUIRED"

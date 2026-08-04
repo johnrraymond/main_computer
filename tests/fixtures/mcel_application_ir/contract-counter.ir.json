@@ -1,0 +1,1108 @@
+{
+  "application": {
+    "appId": "contract-counter",
+    "authoringStatus": "legacy-compiled",
+    "id": "app:contract-counter",
+    "kind": "application",
+    "semanticVersion": "1",
+    "source": {
+      "end": {
+        "column": 2,
+        "line": 40
+      },
+      "file": "mcel_apps/contract-counter/requirements.md",
+      "frontend": "legacy.explicit-package.contract-counter",
+      "kind": "legacy-source-binding",
+      "start": {
+        "column": 1,
+        "line": 1
+      }
+    },
+    "targetTruthStatus": "semantic-runtime-proven",
+    "title": "Contract Counter"
+  },
+  "capabilities": [],
+  "derivations": [],
+  "effects": [
+    {
+      "allowedFinalDispositions": [
+        "completed",
+        "refused-before-attempt",
+        "failed"
+      ],
+      "authority": {
+        "ref": "state:count"
+      },
+      "cardinality": {
+        "maximum": 1,
+        "minimum": 1
+      },
+      "cleanupObligations": [],
+      "effectKind": "canonical-write",
+      "id": "effect:increment.count-write",
+      "kind": "effect",
+      "owner": {
+        "ref": "intent:increment"
+      },
+      "requiredEvidence": [
+        "operation-receipt",
+        "canonical-reconciliation",
+        "visible-outcome"
+      ],
+      "risk": "local-state",
+      "role": "count-plus-one",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 30
+        },
+        "file": "mcel_apps/contract-counter/contracts/intents.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "target": {
+        "kind": "state.read",
+        "state": {
+          "ref": "state:count"
+        }
+      }
+    },
+    {
+      "allowedFinalDispositions": [
+        "completed",
+        "refused-before-attempt",
+        "failed"
+      ],
+      "authority": {
+        "ref": "state:revision"
+      },
+      "cardinality": {
+        "maximum": 1,
+        "minimum": 1
+      },
+      "cleanupObligations": [],
+      "effectKind": "canonical-write",
+      "id": "effect:increment.revision-write",
+      "kind": "effect",
+      "owner": {
+        "ref": "intent:increment"
+      },
+      "requiredEvidence": [
+        "operation-receipt",
+        "canonical-reconciliation",
+        "visible-outcome"
+      ],
+      "risk": "local-state",
+      "role": "revision-plus-one",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 30
+        },
+        "file": "mcel_apps/contract-counter/contracts/intents.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "target": {
+        "kind": "state.read",
+        "state": {
+          "ref": "state:revision"
+        }
+      }
+    },
+    {
+      "allowedFinalDispositions": [
+        "completed",
+        "refused-before-attempt",
+        "failed"
+      ],
+      "authority": {
+        "ref": "state:count"
+      },
+      "cardinality": {
+        "maximum": 1,
+        "minimum": 1
+      },
+      "cleanupObligations": [],
+      "effectKind": "canonical-write",
+      "id": "effect:reset.count-write",
+      "kind": "effect",
+      "owner": {
+        "ref": "intent:reset"
+      },
+      "requiredEvidence": [
+        "operation-receipt",
+        "canonical-reconciliation",
+        "visible-outcome"
+      ],
+      "risk": "local-state",
+      "role": "count-zero",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 30
+        },
+        "file": "mcel_apps/contract-counter/contracts/intents.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "target": {
+        "kind": "state.read",
+        "state": {
+          "ref": "state:count"
+        }
+      }
+    },
+    {
+      "allowedFinalDispositions": [
+        "completed",
+        "refused-before-attempt",
+        "failed"
+      ],
+      "authority": {
+        "ref": "state:revision"
+      },
+      "cardinality": {
+        "maximum": 1,
+        "minimum": 1
+      },
+      "cleanupObligations": [],
+      "effectKind": "canonical-write",
+      "id": "effect:reset.revision-write",
+      "kind": "effect",
+      "owner": {
+        "ref": "intent:reset"
+      },
+      "requiredEvidence": [
+        "operation-receipt",
+        "canonical-reconciliation",
+        "visible-outcome"
+      ],
+      "risk": "local-state",
+      "role": "revision-plus-one",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 30
+        },
+        "file": "mcel_apps/contract-counter/contracts/intents.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "target": {
+        "kind": "state.read",
+        "state": {
+          "ref": "state:revision"
+        }
+      }
+    }
+  ],
+  "fingerprints": {},
+  "intents": [
+    {
+      "effectRefs": [
+        {
+          "ref": "effect:increment.count-write"
+        },
+        {
+          "ref": "effect:increment.revision-write"
+        }
+      ],
+      "id": "intent:increment",
+      "input": [],
+      "invariants": [
+        {
+          "ref": "invariant:count-nonnegative"
+        },
+        {
+          "ref": "invariant:revision-nonnegative"
+        }
+      ],
+      "kind": "intent",
+      "operationKind": "mutation",
+      "outcomes": [
+        "committed",
+        "refused"
+      ],
+      "reads": [
+        {
+          "ref": "state:count"
+        },
+        {
+          "ref": "state:revision"
+        }
+      ],
+      "refusals": [],
+      "risk": "local-state",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 9
+        },
+        "file": "mcel_apps/contract-counter/contracts/intents.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "increment",
+      "transition": {
+        "kind": "transition.sequence",
+        "steps": [
+          {
+            "amount": 1,
+            "kind": "number.increment",
+            "target": {
+              "ref": "state:count"
+            }
+          },
+          {
+            "amount": 1,
+            "kind": "number.increment",
+            "target": {
+              "ref": "state:revision"
+            }
+          }
+        ]
+      },
+      "writes": [
+        {
+          "ref": "state:count"
+        },
+        {
+          "ref": "state:revision"
+        }
+      ]
+    },
+    {
+      "effectRefs": [
+        {
+          "ref": "effect:reset.count-write"
+        },
+        {
+          "ref": "effect:reset.revision-write"
+        }
+      ],
+      "id": "intent:reset",
+      "input": [],
+      "invariants": [
+        {
+          "ref": "invariant:count-nonnegative"
+        },
+        {
+          "ref": "invariant:revision-nonnegative"
+        }
+      ],
+      "kind": "intent",
+      "operationKind": "mutation",
+      "outcomes": [
+        "committed",
+        "refused"
+      ],
+      "reads": [
+        {
+          "ref": "state:count"
+        },
+        {
+          "ref": "state:revision"
+        }
+      ],
+      "refusals": [],
+      "risk": "local-state",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 18
+        },
+        "file": "mcel_apps/contract-counter/contracts/intents.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 10
+        }
+      },
+      "sourceName": "reset",
+      "transition": {
+        "kind": "transition.sequence",
+        "steps": [
+          {
+            "kind": "transition.assign",
+            "target": {
+              "ref": "state:count"
+            },
+            "value": {
+              "kind": "constant",
+              "value": 0
+            }
+          },
+          {
+            "amount": 1,
+            "kind": "number.increment",
+            "target": {
+              "ref": "state:revision"
+            }
+          }
+        ]
+      },
+      "writes": [
+        {
+          "ref": "state:count"
+        },
+        {
+          "ref": "state:revision"
+        }
+      ]
+    },
+    {
+      "effectRefs": [],
+      "id": "intent:direct-set",
+      "input": [],
+      "invariants": [],
+      "kind": "intent",
+      "operationKind": "prohibited",
+      "outcomes": [
+        "refused"
+      ],
+      "reads": [],
+      "reasonCode": "MCEL_CANONICAL_ASSIGNMENT_BYPASSES_OPERATION_AUTHORITY",
+      "refusals": [],
+      "risk": "prohibited",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 27
+        },
+        "file": "mcel_apps/contract-counter/contracts/intents.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 19
+        }
+      },
+      "sourceName": "directSet",
+      "writes": []
+    }
+  ],
+  "layouts": [
+    {
+      "id": "layout:contract-counter.primary",
+      "kind": "layout",
+      "orderedChildren": [
+        {
+          "ref": "surface-node:counter.value"
+        },
+        {
+          "ref": "surface-node:counter.increment"
+        },
+        {
+          "ref": "surface-node:counter.reset"
+        },
+        {
+          "ref": "surface-node:counter.receipt"
+        }
+      ],
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 20
+        },
+        "file": "mcel_apps/contract-counter/contracts/layout.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "surface": {
+        "ref": "surface:contract-counter.primary"
+      }
+    }
+  ],
+  "migration": {
+    "knownGaps": [
+      "intent-complete-proof-remains-legacy-evidence"
+    ],
+    "sourceFamily": "scaffolded-explicit-package",
+    "state": "legacy-compiled"
+  },
+  "models": [],
+  "normalization": {},
+  "proof": {
+    "invariants": [
+      {
+        "check": {
+          "kind": "compare.greater-than-or-equal",
+          "left": {
+            "kind": "state.read",
+            "state": {
+              "ref": "state:count"
+            }
+          },
+          "right": {
+            "kind": "constant",
+            "value": 0
+          }
+        },
+        "id": "invariant:count-nonnegative",
+        "kind": "invariant",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 8
+          },
+          "file": "mcel_apps/contract-counter/contracts/domain.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 4
+          }
+        }
+      },
+      {
+        "check": {
+          "kind": "compare.greater-than-or-equal",
+          "left": {
+            "kind": "state.read",
+            "state": {
+              "ref": "state:revision"
+            }
+          },
+          "right": {
+            "kind": "constant",
+            "value": 0
+          }
+        },
+        "id": "invariant:revision-nonnegative",
+        "kind": "invariant",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 13
+          },
+          "file": "mcel_apps/contract-counter/contracts/domain.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 9
+          }
+        }
+      }
+    ],
+    "requiredAuthorities": [
+      "canonical-state",
+      "visible-surface",
+      "operation-receipt"
+    ],
+    "targetTruthStatus": "semantic-runtime-proven"
+  },
+  "provenance": {
+    "compiler": {
+      "id": "fixture.counter-ir-importer",
+      "version": "wave1-test-fixture"
+    },
+    "frontend": {
+      "id": "legacy.explicit-package.contract-counter",
+      "sourceFiles": [
+        {
+          "path": "mcel_apps/contract-counter/requirements.md",
+          "sha256": "ea9736a55c49cc1b1ddbf1af2cf3d92f4f8a593bae53692861fcbad28786d8f1"
+        },
+        {
+          "path": "mcel_apps/contract-counter/contracts/domain.js",
+          "sha256": "6199a889bc38c0051d02f3b8a26d6bd429b7ba6c32f5b8730e70cbc914e2c538"
+        },
+        {
+          "path": "mcel_apps/contract-counter/contracts/intents.js",
+          "sha256": "29fa2669b6b568ffdfc4c067daf8bf790bf5ad478732fb2dfe331d364ac2f684"
+        },
+        {
+          "path": "mcel_apps/contract-counter/contracts/surface.js",
+          "sha256": "c991d0a8841d62743fb943905c1dc08db6b26fbb719ad8b7cf1aac931c778a5a"
+        },
+        {
+          "path": "mcel_apps/contract-counter/contracts/layout.js",
+          "sha256": "242c1240295d53dcab8e6fea0acf438dd4e126489b309fb1ab5efa62b10690d1"
+        },
+        {
+          "path": "mcel_apps/contract-counter/contracts/acceptance.js",
+          "sha256": "4ac20f633199bc02190fcbaa55a306e569e31262dc0fce318e3f0ad70e225db0"
+        },
+        {
+          "path": "mcel_apps/contract-counter/contracts/observation.js",
+          "sha256": "30444f18ede07552922a477c74486078badc596b2b8bc0ca0b67d27fb0253a7f"
+        }
+      ],
+      "version": "mcel-explicit-package-v1"
+    },
+    "nodeBindings": [
+      {
+        "id": "binding:state:count",
+        "semanticId": "state:count",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 20
+          },
+          "file": "mcel_apps/contract-counter/contracts/domain.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:state:revision",
+        "semanticId": "state:revision",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 20
+          },
+          "file": "mcel_apps/contract-counter/contracts/domain.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:invariant:count-nonnegative",
+        "semanticId": "invariant:count-nonnegative",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 8
+          },
+          "file": "mcel_apps/contract-counter/contracts/domain.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 4
+          }
+        }
+      },
+      {
+        "id": "binding:invariant:revision-nonnegative",
+        "semanticId": "invariant:revision-nonnegative",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 13
+          },
+          "file": "mcel_apps/contract-counter/contracts/domain.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 9
+          }
+        }
+      },
+      {
+        "id": "binding:intent:increment",
+        "semanticId": "intent:increment",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 9
+          },
+          "file": "mcel_apps/contract-counter/contracts/intents.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:intent:reset",
+        "semanticId": "intent:reset",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 18
+          },
+          "file": "mcel_apps/contract-counter/contracts/intents.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 10
+          }
+        }
+      },
+      {
+        "id": "binding:intent:direct-set",
+        "semanticId": "intent:direct-set",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 27
+          },
+          "file": "mcel_apps/contract-counter/contracts/intents.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 19
+          }
+        }
+      },
+      {
+        "id": "binding:effect:increment.count-write",
+        "semanticId": "effect:increment.count-write",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 30
+          },
+          "file": "mcel_apps/contract-counter/contracts/intents.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:effect:increment.revision-write",
+        "semanticId": "effect:increment.revision-write",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 30
+          },
+          "file": "mcel_apps/contract-counter/contracts/intents.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:effect:reset.count-write",
+        "semanticId": "effect:reset.count-write",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 30
+          },
+          "file": "mcel_apps/contract-counter/contracts/intents.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:effect:reset.revision-write",
+        "semanticId": "effect:reset.revision-write",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 30
+          },
+          "file": "mcel_apps/contract-counter/contracts/intents.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:surface:contract-counter.primary",
+        "semanticId": "surface:contract-counter.primary",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 18
+          },
+          "file": "mcel_apps/contract-counter/contracts/surface.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:layout:contract-counter.primary",
+        "semanticId": "layout:contract-counter.primary",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 20
+          },
+          "file": "mcel_apps/contract-counter/contracts/layout.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:scenario:contract-counter.increment",
+        "semanticId": "scenario:contract-counter.increment",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 8
+          },
+          "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:scenario:contract-counter.reset",
+        "semanticId": "scenario:contract-counter.reset",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 8
+          },
+          "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:scenario:contract-counter.stale",
+        "semanticId": "scenario:contract-counter.stale",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 8
+          },
+          "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:scenario:contract-counter.direct-set",
+        "semanticId": "scenario:contract-counter.direct-set",
+        "source": {
+          "end": {
+            "column": 2,
+            "line": 8
+          },
+          "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+          "frontend": "legacy.explicit-package.contract-counter",
+          "kind": "legacy-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "scenario:contract-counter.increment",
+      "intent": {
+        "ref": "intent:increment"
+      },
+      "kind": "scenario",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "steps": [
+        {
+          "actual": {
+            "kind": "state.read",
+            "state": {
+              "ref": "state:count"
+            }
+          },
+          "authority": "canonical-state",
+          "expected": {
+            "kind": "constant",
+            "value": 1
+          },
+          "kind": "claim.equal"
+        },
+        {
+          "actual": {
+            "kind": "state.read",
+            "state": {
+              "ref": "state:revision"
+            }
+          },
+          "authority": "canonical-state",
+          "expected": {
+            "kind": "constant",
+            "value": 1
+          },
+          "kind": "claim.equal"
+        },
+        {
+          "authority": "visible-surface",
+          "kind": "claim.exists",
+          "target": {
+            "ref": "surface-node:counter.value"
+          }
+        }
+      ]
+    },
+    {
+      "id": "scenario:contract-counter.reset",
+      "intent": {
+        "ref": "intent:reset"
+      },
+      "kind": "scenario",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "steps": [
+        {
+          "actual": {
+            "kind": "state.read",
+            "state": {
+              "ref": "state:count"
+            }
+          },
+          "authority": "canonical-state",
+          "expected": {
+            "kind": "constant",
+            "value": 0
+          },
+          "kind": "claim.equal"
+        }
+      ]
+    },
+    {
+      "id": "scenario:contract-counter.stale",
+      "intent": {
+        "ref": "intent:increment"
+      },
+      "kind": "scenario",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "steps": [
+        {
+          "authority": "operation-receipt",
+          "code": "REVISION_STALE",
+          "expected": "refused",
+          "kind": "claim.receipt-disposition"
+        }
+      ]
+    },
+    {
+      "id": "scenario:contract-counter.direct-set",
+      "intent": {
+        "ref": "intent:direct-set"
+      },
+      "kind": "scenario",
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 8
+        },
+        "file": "mcel_apps/contract-counter/contracts/acceptance.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "steps": [
+        {
+          "authority": "operation-receipt",
+          "code": "INTENT_PROHIBITED",
+          "expected": "refused",
+          "kind": "claim.receipt-disposition"
+        }
+      ]
+    }
+  ],
+  "schema": "mcel.application-ir.v1",
+  "states": [
+    {
+      "authority": "canonical",
+      "id": "state:count",
+      "initial": 0,
+      "kind": "state",
+      "schema": {
+        "kind": "integer",
+        "minimum": 0
+      },
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 20
+        },
+        "file": "mcel_apps/contract-counter/contracts/domain.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "count"
+    },
+    {
+      "authority": "canonical",
+      "id": "state:revision",
+      "initial": 0,
+      "kind": "state",
+      "schema": {
+        "kind": "integer",
+        "minimum": 0
+      },
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 20
+        },
+        "file": "mcel_apps/contract-counter/contracts/domain.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "revision"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "surface:contract-counter.primary",
+      "kind": "surface",
+      "nodes": [
+        {
+          "id": "surface-node:counter.value",
+          "kind": "surface-node",
+          "nodeKind": "state-value",
+          "value": {
+            "kind": "state.read",
+            "state": {
+              "ref": "state:count"
+            }
+          }
+        },
+        {
+          "id": "surface-node:counter.increment",
+          "intent": {
+            "ref": "intent:increment"
+          },
+          "kind": "surface-node",
+          "nodeKind": "control"
+        },
+        {
+          "id": "surface-node:counter.reset",
+          "intent": {
+            "ref": "intent:reset"
+          },
+          "kind": "surface-node",
+          "nodeKind": "control"
+        },
+        {
+          "id": "surface-node:counter.receipt",
+          "kind": "surface-node",
+          "nodeKind": "operation-evidence"
+        }
+      ],
+      "source": {
+        "end": {
+          "column": 2,
+          "line": 18
+        },
+        "file": "mcel_apps/contract-counter/contracts/surface.js",
+        "frontend": "legacy.explicit-package.contract-counter",
+        "kind": "legacy-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "ContractCounterSurface"
+    }
+  ]
+}

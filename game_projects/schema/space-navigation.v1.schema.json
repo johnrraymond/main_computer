@@ -10,6 +10,7 @@
     "definitionVersion",
     "stateVersion",
     "startSystem",
+    "captainScrawl",
     "policy",
     "arrivalProfiles",
     "systems",
@@ -25,13 +26,17 @@
       "const": "game.spaceNavigation.v1"
     },
     "definitionVersion": {
-      "const": "game.spaceNavigation.definition.v1"
+      "const": "game.spaceNavigation.definition.v2"
     },
     "stateVersion": {
-      "const": "game.spaceNavigation.state.v1"
+      "const": "game.spaceNavigation.state.v2"
     },
     "startSystem": {
       "$ref": "#/$defs/id"
+    },
+    "captainScrawl": {
+      "type": "string",
+      "minLength": 1
     },
     "policy": {
       "$ref": "#/$defs/policy"
@@ -168,9 +173,54 @@
         "arrivalProfile": {
           "$ref": "#/$defs/id"
         },
+        "stars": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/star"
+          }
+        },
         "primaryPlanet": {
           "$ref": "#/$defs/planet"
+        },
+        "additionalPlanets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/planet"
+          }
+        },
+        "arrivalDestinationId": {
+          "$ref": "#/$defs/id"
+        },
+        "localDestinations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/localDestination"
+          }
+        },
+        "localRoutes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/localRoute"
+          }
         }
+      },
+      "dependentRequired": {
+        "arrivalDestinationId": [
+          "localDestinations",
+          "localRoutes"
+        ],
+        "localDestinations": [
+          "arrivalDestinationId",
+          "localRoutes"
+        ],
+        "localRoutes": [
+          "arrivalDestinationId",
+          "localDestinations"
+        ]
       }
     },
     "route": {
@@ -215,7 +265,9 @@
         "plottedRouteId",
         "travelPhase",
         "elapsedWorldTime",
-        "discoveredSystems"
+        "discoveredSystems",
+        "currentLocalDestinationId",
+        "discoveredLocalDestinations"
       ],
       "properties": {
         "currentSystemId": {
@@ -250,6 +302,12 @@
           "items": {
             "$ref": "#/$defs/id"
           }
+        },
+        "currentLocalDestinationId": {
+          "$ref": "#/$defs/id"
+        },
+        "discoveredLocalDestinations": {
+          "$ref": "#/$defs/discoveredLocalDestinations"
         }
       }
     },
@@ -267,7 +325,14 @@
         "requireStateReferences",
         "requireUniqueMapPositions",
         "requirePrimaryPlanetPerSystem",
-        "requireUniquePlanetIds"
+        "requireUniquePlanetIds",
+        "requireUniqueLocalDestinationIds",
+        "requireUniqueLocalRouteIds",
+        "requireLocalDestinationReferences",
+        "requireLocalRouteReferences",
+        "requireLocalArrivalDestination",
+        "requireLocalReachability",
+        "requireLocalStateReferences"
       ],
       "properties": {
         "requireUniqueSystemIds": {
@@ -301,6 +366,27 @@
           "const": true
         },
         "requireUniquePlanetIds": {
+          "const": true
+        },
+        "requireUniqueLocalDestinationIds": {
+          "const": true
+        },
+        "requireUniqueLocalRouteIds": {
+          "const": true
+        },
+        "requireLocalDestinationReferences": {
+          "const": true
+        },
+        "requireLocalRouteReferences": {
+          "const": true
+        },
+        "requireLocalArrivalDestination": {
+          "const": true
+        },
+        "requireLocalReachability": {
+          "const": true
+        },
+        "requireLocalStateReferences": {
           "const": true
         }
       }
@@ -342,6 +428,50 @@
     "color": {
       "type": "string",
       "pattern": "^#[0-9A-Fa-f]{6}$"
+    },
+    "star": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "spectralClass",
+        "color",
+        "radiusScale",
+        "role",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spectralClass": {
+          "type": "string",
+          "minLength": 1
+        },
+        "color": {
+          "$ref": "#/$defs/color"
+        },
+        "radiusScale": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10.0
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "companion"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "planet": {
       "type": "object",
@@ -404,6 +534,126 @@
         "description": {
           "type": "string",
           "minLength": 1
+        },
+        "habitable": {
+          "type": "boolean"
+        },
+        "inhabited": {
+          "type": "boolean"
+        },
+        "formerSystemId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "localDestination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parentBodyId",
+        "position",
+        "discoveredByDefault",
+        "availableByDefault",
+        "visualProgram",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "planet-orbit",
+            "moon-orbit",
+            "station",
+            "fleet",
+            "wreck",
+            "beacon",
+            "settlement",
+            "hazard",
+            "deep-space"
+          ]
+        },
+        "parentBodyId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "position": {
+          "$ref": "#/$defs/position"
+        },
+        "discoveredByDefault": {
+          "type": "boolean"
+        },
+        "availableByDefault": {
+          "type": "boolean"
+        },
+        "visualProgram": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "localRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "bidirectional",
+        "presentationDurationMs",
+        "worldTimeCost"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "bidirectional": {
+          "type": "boolean"
+        },
+        "presentationDurationMs": {
+          "type": "integer",
+          "minimum": 250
+        },
+        "worldTimeCost": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "discoveredLocalDestinations": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/$defs/id"
         }
       }
     }

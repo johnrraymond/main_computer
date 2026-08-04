@@ -8,6 +8,8 @@ change the existing surface IR, infer application behavior, operate controls,
 or grant mutation authority. They establish how later reconstruction work must
 separate facts from proposals and proof.
 
+Consequential-effect lifecycle, evidence, disposition, cleanup, uncertainty, and recovery rules are specified separately in `pretty_docs/mcel-consequential-effects-and-proof-accounting.md`. Candidate observation invalidation, repair-stage re-entry, and evidence-renewal guidance are governed by `pretty_docs/mcel-compiler-diagnostics-and-repair-protocol.md`. Browser observation may prove visible consequences and transition facts already exposed by governed runtime evidence. It does not prove hidden effect nonoccurrence, external mutation truth, capability cancellation propagation, or cleanup outside the observed surface, and it remains read-only.
+
 ## Epistemic states
 
 Every semantic claim entering the observation and reconstruction pipeline

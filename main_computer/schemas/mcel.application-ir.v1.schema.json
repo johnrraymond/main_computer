@@ -1,0 +1,406 @@
+{
+  "$defs": {
+    "application": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/node"
+        },
+        {
+          "properties": {
+            "appId": {
+              "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+              "type": "string"
+            },
+            "id": {
+              "$ref": "#/$defs/semanticId"
+            },
+            "kind": {
+              "const": "application"
+            },
+            "semanticVersion": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "appId",
+            "semanticVersion"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "effect": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/node"
+        },
+        {
+          "properties": {
+            "allowedFinalDispositions": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "authority": {
+              "$ref": "#/$defs/reference"
+            },
+            "cardinality": {
+              "type": "object"
+            },
+            "cleanupObligations": {
+              "type": "array"
+            },
+            "effectKind": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "effect"
+            },
+            "owner": {
+              "$ref": "#/$defs/reference"
+            },
+            "requiredEvidence": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "risk": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "target": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "effectKind",
+            "owner",
+            "risk",
+            "target",
+            "authority",
+            "cardinality",
+            "allowedFinalDispositions",
+            "requiredEvidence",
+            "cleanupObligations"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "intent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/node"
+        },
+        {
+          "properties": {
+            "effectRefs": {
+              "type": "array"
+            },
+            "input": {
+              "type": "array"
+            },
+            "invariants": {
+              "type": "array"
+            },
+            "kind": {
+              "const": "intent"
+            },
+            "operationKind": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "outcomes": {
+              "type": "array"
+            },
+            "reads": {
+              "type": "array"
+            },
+            "refusals": {
+              "type": "array"
+            },
+            "writes": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "operationKind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "node": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "kind": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "sourceName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "provenance": {
+      "additionalProperties": true,
+      "properties": {
+        "compiler": {
+          "type": "object"
+        },
+        "frontend": {
+          "additionalProperties": true,
+          "properties": {
+            "id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sourceFiles": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "pattern": "^(sha256:)?[0-9a-f]{64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "version": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "sourceFiles"
+          ],
+          "type": "object"
+        },
+        "nodeBindings": {
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "reference": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/semanticId"
+        }
+      },
+      "required": [
+        "ref"
+      ],
+      "type": "object"
+    },
+    "semanticId": {
+      "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/-]*$",
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": true,
+      "properties": {
+        "end": {
+          "type": "object"
+        },
+        "endColumn": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "endLine": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frontend": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "start": {
+          "type": "object"
+        },
+        "startColumn": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "startLine": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "state": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/node"
+        },
+        {
+          "properties": {
+            "authority": {
+              "enum": [
+                "canonical",
+                "renderer-local",
+                "provisional",
+                "derived"
+              ]
+            },
+            "kind": {
+              "const": "state"
+            },
+            "schema": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "authority",
+            "schema"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "https://maincomputer.local/schemas/mcel.application-ir.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "application": {
+      "$ref": "#/$defs/application"
+    },
+    "capabilities": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "type": "array"
+    },
+    "derivations": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "type": "array"
+    },
+    "effects": {
+      "items": {
+        "$ref": "#/$defs/effect"
+      },
+      "type": "array"
+    },
+    "fingerprints": {
+      "type": "object"
+    },
+    "intents": {
+      "items": {
+        "$ref": "#/$defs/intent"
+      },
+      "type": "array"
+    },
+    "layouts": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "type": "array"
+    },
+    "migration": {
+      "type": "object"
+    },
+    "models": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "type": "array"
+    },
+    "normalization": {
+      "type": "object"
+    },
+    "proof": {
+      "type": "object"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "scenarios": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "mcel.application-ir.v1"
+    },
+    "states": {
+      "items": {
+        "$ref": "#/$defs/state"
+      },
+      "type": "array"
+    },
+    "surfaces": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "application",
+    "models",
+    "states",
+    "derivations",
+    "intents",
+    "capabilities",
+    "effects",
+    "surfaces",
+    "layouts",
+    "scenarios",
+    "proof",
+    "migration",
+    "provenance"
+  ],
+  "title": "MCEL Application IR v1",
+  "type": "object"
+}

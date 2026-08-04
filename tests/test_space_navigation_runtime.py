@@ -16,6 +16,8 @@ GAME_EDITOR_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" /
 WEBGL_DESKTOP_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "webgl-desktop.js"
 APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
 STYLE_PATH = ROOT / "main_computer" / "web" / "applications" / "styles" / "game-editor.css"
+CAPTAIN_SCRAWL = "Congratulations, Captain, on picking the better of the two systems."
+
 PROJECT_PATHS = (
     ROOT / "game_projects" / "webgl-demo" / "project.json",
     ROOT / "game_projects" / "starter-game" / "project.json",
@@ -38,10 +40,35 @@ class SpaceNavigationRuntimeTests(unittest.TestCase):
             if (initial.currentSystemId !== 'system.solace-reach') throw new Error('wrong start system');
             if (initial.currentPlanetId !== 'planet.haven') throw new Error('wrong start planet');
             if (initial.currentPlanetLabel !== 'Haven') throw new Error('wrong start planet label');
+            if (initial.captainScrawl !== {json.dumps(CAPTAIN_SCRAWL)}) throw new Error('captain scrawl missing');
+            if (initial.validation.systemCount !== 32) throw new Error('system count is wrong');
+            if (initial.validation.routeCount !== 42) throw new Error('route count is wrong');
+            if (initial.validation.planetCount !== 40) throw new Error('planet count is wrong');
+            if (initial.validation.multiStarSystemCount !== 2) throw new Error('multi-star system count is wrong');
+            if (initial.validation.multiPlanetSystemCount !== 2) throw new Error('multi-planet system count is wrong');
+            if (initial.currentPlanetCount !== 5) throw new Error('Solace Reach world count is wrong');
+            if (initial.currentStarCount !== 2) throw new Error('Solace Reach star count is wrong');
+            if (initial.currentHabitablePlanetCount < 2) throw new Error('Solace Reach habitability count is wrong');
+            if (initial.validation.localNavigationSystemCount !== 2) throw new Error('local navigation system count is wrong');
+            if (initial.validation.localDestinationCount !== 10) throw new Error('local destination count is wrong');
+            if (initial.validation.localRouteCount !== 10) throw new Error('local route count is wrong');
+            if (initial.currentLocalDestinationId !== 'destination.solace-reach.haven-orbit') throw new Error('wrong starting local destination');
+            if (initial.currentLocalDestinationLabel !== 'Haven High Orbit') throw new Error('wrong starting local label');
+            if (initial.currentLocalDestinationCount !== 5) throw new Error('Solace Reach local destination count is wrong');
+            if (initial.currentLocalRouteCount !== 5) throw new Error('Solace Reach local route count is wrong');
+            if (!initial.currentLocalDestinations.every((destination) => destination.discovered && destination.available)) throw new Error('starting local destinations are not discoverable and available');
+            if (initial.currentPlanets.some((planet) => String(planet.formerSystemId || '').startsWith('system.') === false && planet.id !== 'planet.haven')) throw new Error('absorbed world provenance missing');
             if (initial.destinations.length !== 2) throw new Error('wrong initial destination count');
             if (!initial.destinations.some((entry) => entry.systemId === 'system.vela-gate')) throw new Error('Vela Gate unavailable');
             runtime.plotCourse('system.vela-gate');
-            if (runtime.snapshot().travelPhase !== 'course-plotted') throw new Error('course not plotted');
+            const plotted = runtime.snapshot();
+            if (plotted.travelPhase !== 'course-plotted') throw new Error('course not plotted');
+            if (plotted.captainScrawl !== {json.dumps(CAPTAIN_SCRAWL)}) throw new Error('course affirmation missing');
+            if (plotted.destinationPlanetCount !== 5) throw new Error('Vela Gate world count is wrong');
+            if (plotted.destinationStarCount !== 2) throw new Error('Vela Gate star count is wrong');
+            if (plotted.destinationLocalDestinationId !== 'destination.vela-gate.velaris-orbit') throw new Error('Vela Gate arrival destination is wrong');
+            if (plotted.destinationLocalDestinationCount !== 5) throw new Error('Vela Gate local destination count is wrong');
+            if (plotted.destinationLocalRouteCount !== 5) throw new Error('Vela Gate local route count is wrong');
             runtime.engage(1000);
             if (runtime.snapshot().travelPhase !== 'warp-charging') throw new Error('warp not charging');
             const route = runtime.route('route.solace-reach-vela-gate');
@@ -53,6 +80,12 @@ class SpaceNavigationRuntimeTests(unittest.TestCase):
             if (arrived.currentSystemId !== 'system.vela-gate') throw new Error('wrong arrival system');
             if (arrived.currentPlanetId !== 'planet.velaris') throw new Error('wrong arrival planet');
             if (arrived.currentPlanetLabel !== 'Velaris') throw new Error('wrong arrival planet label');
+            if (arrived.currentLocalDestinationId !== 'destination.vela-gate.velaris-orbit') throw new Error('wrong committed local arrival destination');
+            if (arrived.currentLocalDestinationLabel !== 'Velaris Gate Central') throw new Error('wrong committed local arrival label');
+            if (arrived.currentLocalDestinationCount !== 5) throw new Error('Vela Gate local destination count missing after arrival');
+            if (arrived.currentLocalRouteCount !== 5) throw new Error('Vela Gate local route count missing after arrival');
+            if (arrived.currentPlanetCount !== 5) throw new Error('Vela Gate world count missing after arrival');
+            if (arrived.currentStarCount !== 2) throw new Error('Vela Gate star count missing after arrival');
             if (arrived.elapsedWorldTime !== route.worldTimeCost) throw new Error('world time not committed exactly once');
             if (arrived.travelPhase !== 'in-system') throw new Error('arrival phase not closed');
             if (arrived.plottedRouteId !== null) throw new Error('plotted route not cleared');
@@ -71,6 +104,68 @@ class SpaceNavigationRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertIn('"ok":true', result.stdout)
+
+    def test_runtime_restores_current_system_and_local_destination_together(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for the browser-runtime smoke")
+        script = textwrap.dedent(
+            f"""
+            const fs = require('fs');
+            const api = require({json.dumps(str(RUNTIME_PATH))});
+            const project = JSON.parse(fs.readFileSync({json.dumps(str(PROJECT_PATHS[0]))}, 'utf8'));
+            const runtime = api.create(project.metadata.spaceNavigation, {{
+              projectId: project.id,
+              state: {{
+                currentSystemId: 'system.vela-gate',
+                currentLocalDestinationId: 'destination.vela-gate.chiron-observatory',
+                discoveredLocalDestinations: {{
+                  'system.vela-gate': ['destination.vela-gate.chiron-observatory']
+                }}
+              }}
+            }});
+            const snapshot = runtime.snapshot();
+            if (snapshot.schema !== 'game.spaceNavigation.state.v2') throw new Error('wrong state version');
+            if (snapshot.currentSystemId !== 'system.vela-gate') throw new Error('system restore failed');
+            if (snapshot.currentLocalDestinationId !== 'destination.vela-gate.chiron-observatory') throw new Error('local destination restore failed');
+            if (snapshot.currentLocalDestinationLabel !== 'Chiron Storm Observatory') throw new Error('local destination label restore failed');
+            if (snapshot.currentPlanetId !== 'planet.chiron') throw new Error('current planet did not follow restored local destination');
+            if (!snapshot.discoveredLocalDestinations['system.vela-gate'].includes('destination.vela-gate.chiron-observatory')) throw new Error('discovery state restore failed');
+            if (runtime.localDestinations().length !== 5) throw new Error('local destination projection failed');
+            if (runtime.localRoutes().length !== 5) throw new Error('local route projection failed');
+            if (runtime.arrivalLocalDestination().id !== 'destination.vela-gate.velaris-orbit') throw new Error('arrival destination lookup failed');
+            console.log('local-state-restore-ok');
+            """
+        )
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, check=False, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("local-state-restore-ok", result.stdout)
+
+    def test_runtime_rejects_broken_local_navigation_references(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for the browser-runtime smoke")
+        script = textwrap.dedent(
+            f"""
+            const fs = require('fs');
+            const api = require({json.dumps(str(RUNTIME_PATH))});
+            const project = JSON.parse(fs.readFileSync({json.dumps(str(PROJECT_PATHS[0]))}, 'utf8'));
+            const broken = JSON.parse(JSON.stringify(project.metadata.spaceNavigation));
+            const solace = broken.systems.find((system) => system.id === 'system.solace-reach');
+            solace.localDestinations[1].parentBodyId = 'planet.missing';
+            solace.localRoutes[0].to = 'destination.solace-reach.missing';
+            solace.arrivalDestinationId = 'destination.solace-reach.missing-arrival';
+            broken.stateDefaults.currentLocalDestinationId = 'destination.solace-reach.missing-state';
+            const report = api.validateDefinition(broken);
+            if (report.ok) throw new Error('broken local navigation definition was accepted');
+            const joined = report.errors.join('\\n');
+            for (const expected of ['missing parent body', 'missing to destination', 'arrivalDestinationId references missing', 'currentLocalDestinationId references missing']) {{
+              if (!joined.includes(expected)) throw new Error(`missing validation error: ${{expected}}\\n${{joined}}`);
+            }}
+            console.log('broken-local-references-rejected');
+            """
+        )
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, check=False, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("broken-local-references-rejected", result.stdout)
 
     def test_viewscreen_restores_opening_raider_then_switches_to_warp_and_planet(self) -> None:
         if not shutil.which("node"):
@@ -308,6 +403,12 @@ class SpaceNavigationRuntimeTests(unittest.TestCase):
         self.assertNotIn('event.code === "KeyN"', viewer)
         self.assertNotIn("scene-shuttle3d-navigation-toggle", viewer)
         self.assertIn("scene-shuttle3d-navigation-panel", viewer)
+        self.assertIn("scene-shuttle3d-navigation-scrawl", viewer)
+        self.assertIn("navigation.currentPlanetCount", viewer)
+        self.assertIn("navigation.currentStarCount", viewer)
+        self.assertIn("navigation.captainScrawl", viewer)
+        self.assertNotIn("document.createElement(\"optgroup\")", viewer)
+        self.assertNotIn("parentSystemId", viewer)
         self.assertIn("scene-shuttle3d-warp-overlay", viewer)
         self.assertIn("openBridgeNavigationConsole", viewer)
         self.assertIn("bridgeNavigationConsoleZone()", viewer)
@@ -332,6 +433,7 @@ class SpaceNavigationRuntimeTests(unittest.TestCase):
         self.assertIn('display === "systemplanet"', viewscreens)
         self.assertIn("navigation.currentPlanet", viewscreens)
         self.assertIn(".scene-shuttle3d-navigation-panel", styles)
+        self.assertIn(".scene-shuttle3d-navigation-scrawl", styles)
         self.assertNotIn(".scene-shuttle3d-navigation-toggle", styles)
         self.assertNotIn("scene-shuttle3d-warp-tunnel", styles)
 

@@ -16,10 +16,31 @@ This is the entry point for the design documents that guide expansion of the cur
 | `pretty_docs/game-mother-ship-bridge-route-plan.md` | Focused route plan for filling out the rest of the ship so the player can reach the bridge |
 | `pretty_docs/game-runtime-rearchitecture-plan.md` | Architecture plan for moving games from hardcoded renderer behavior to a data-driven runtime |
 | `pretty_docs/game-definition-schema-v1.md` | Human-readable guide to the first game definition schema |
-| `pretty_docs/game-warp-navigation-definition.md` | Project-level contract and forty-system reference graph for adjacent-route warp travel |
+| `pretty_docs/game-warp-navigation-definition.md` | Project-level contract and thirty-two-system reference graph for adjacent-route warp travel |
+| `pretty_docs/game-warp-navigation-runtime.md` | Executable adjacent-route warp state machine, bridge-console access, movement, and viewscreen presentation |
+| `pretty_docs/game-star-system-density-and-choice-contract.md` | Flat warp UI, richer multi-star and multi-habitable systems, concentrated action, and just-in-time major-choice requirements |
+| `pretty_docs/game-sophisticated-ai-architecture-plan.md` | Hybrid world, belief, memory, planning, director, decision-receipt, and bounded generative-performance architecture |
+| `pretty_docs/game-ai-patch-01-strategic-data-contract.md` | Implemented AI-1 schema, deterministic fixture, cross-reference validator, tests, and explicit non-runtime boundary |
+| `pretty_docs/game-ai-patch-02-deterministic-cognition-kernel.md` | Implemented AI-2 observation ingestion, belief revision, memory retrieval, deterministic scoring, receipts, and save restoration |
+| `pretty_docs/game-ai-patch-03-action-authority-and-consequences.md` | Implemented AI-3 typed proposals, authority and consequence verification, atomic effects, resources, outcomes, and v2 migration |
+| `pretty_docs/game-ai-patch-03-1-strategic-turn-coordination-and-revision-lock.md` | Implemented AI-3.1 canonical revision locks, authored policy profiles, conservative legacy migration, and complete headless turn coordination |
+| `pretty_docs/game-ai-patch-04-vela-gate-three-agent-prototype.md` | Implemented AI-4 three-agent Vela Gate prototype with distinct knowledge, proactive action, cross-destination belief updates, strategy revision, and a coherent false-belief decision |
+| `pretty_docs/game-ai-patch-05-knowledge-propagation-and-captain-modeling.md` | Implemented AI-5 authored report routes, report ancestry, bounded rumor distortion, public propagation, captain models, and social-state migration |
+| `pretty_docs/game-ai-patch-06-solace-reach-coordination-and-promises.md` | Implemented AI-6 Solace Reach finite-resource competition, typed promises, kept-or-broken trust updates, and later cooperation changes |
+| `pretty_docs/game-ai-patch-07-bounded-campaign-director.md` | Implemented AI-7 authored major-route opportunities, bounded activation windows, director receipts, reversible selection, and expiry without forced actor actions |
+| `pretty_docs/game-ai-patch-08-communicative-intent-and-safe-wording.md` | Implemented AI-8 authored speech acts, knowledge and audience validation, structured-promise wording, constrained adapter selection, and deterministic fallback |
+| `pretty_docs/game-ai-patch-09-deterministic-budgeted-offscreen-simulation.md` | Implemented AI-9 active-system exclusion, deterministic schedule budgets, authored report latency, protected deadlines, persistence, and explainable return summaries |
+| `pretty_docs/game-forty-system-scenario-bible.md` | Campaign spine, scenario-design contract, shared factions, route-story rules, and future state model for thirty-two warp systems and eight absorbed local-world threads |
+| `pretty_docs/game-forty-system-route-scenarios.md` | Working identities, conditions, traffic, encounters, and consequence flow for all forty-two authored routes |
+| `pretty_docs/game-scenarios-origin-region.md` | Eight Origin warp-system dossiers plus eight absorbed local-world threads |
+| `pretty_docs/game-scenarios-meridian-region.md` | Eight Meridian Cluster dossiers: contracts, debt, trade, logistics, and institutional coercion |
+| `pretty_docs/game-scenarios-helix-region.md` | Seven Helix Cluster dossiers: science, adaptation, containment, medicine, and unintended consequences |
+| `pretty_docs/game-scenarios-crown-region.md` | Three Crown Cluster dossiers: military authority, succession, war memory, and legitimacy |
+| `pretty_docs/game-scenarios-verge-region.md` | Six Verge Cluster dossiers: autonomy, frontier survival, ancient infrastructure, and Axiom |
 | `pretty_docs/game-patch-aware-content-architecture.md` | Patch-aware content tiers, metadata, acceptance checks, and validation loop |
 | `game_projects/schema/game-definition.v1.schema.json` | Machine-readable JSON Schema for future game definition data |
 | `game_projects/schema/space-navigation.v1.schema.json` | Machine-readable JSON Schema for project-level warp-navigation data |
+| `game_projects/schema/strategic-ai.v1.schema.json` | Machine-readable JSON Schema for strategic actors, facts, evidence, beliefs, memories, actions, checkpoints, and receipts |
 | `pretty_docs/game-runtime-patch-B-mother-ship-state-defaults.md` | Patch B implementation note for centralizing mother-ship runtime state defaults without behavior changes |
 | `pretty_docs/game-runtime-patch-C-rooms-and-movement.md` | Patch C implementation note for extracting mother-ship rooms, movement bounds, exits, and spawns into level data |
 | `pretty_docs/game-runtime-patch-D-interactables.md` | Patch D implementation note for extracting mother-ship terminals, prompts, ranges, and E-key action ids into interactable data |
@@ -50,12 +71,15 @@ Use these documents before adding more ship geometry or gameplay systems. The cu
 
 ```text
 read design index
-→ read runtime rearchitecture plan
-→ read game definition schema
-→ keep the bridge route playable
-→ extract current rooms, bounds, exits, terminals, and objectives into data
-→ add validators before adding more ship content
-→ resume content expansion through data-first patches
+→ read runtime rearchitecture plan and game definition schema
+→ keep the bridge route and warp runtime playable
+→ read the star-system density and choice contract before changing destination topology or major route choices
+→ read the sophisticated AI architecture plan before adding autonomous social, faction, director, or generated-dialogue behavior
+→ read the thirty-two-system scenario bible before inventing destination content
+→ choose one dossier as a vertical scenario slice
+→ implement local-space structure, scenario state, and persistent consequence together
+→ add validators before generalizing the scenario framework
+→ expand region by region through data-first patches
 ```
 
 ## Current implementation boundary
@@ -71,7 +95,9 @@ Shuttle defense
 → first interior-state doors, terminals, objectives, and branch stubs
 ```
 
-The forty-system warp graph is now authored under `project.metadata.spaceNavigation`, but no runtime reads or executes it yet. Warp validation, navigation state, bridge controls, and presentation remain subsequent patches.
+The thirty-two-system warp graph is authored under `project.metadata.spaceNavigation` and the browser runtime executes adjacent-system travel through the physical bridge navigation console. Solace Reach and Vela Gate each expose two stars and five worlds through the navigation runtime while remaining flat peer destinations. Local travel, interacting multi-world scenarios, and adaptive unchosen-destination evolution remain future work.
+
+AI-1 through AI-9 are implemented: all three projects share one validated v8 strategic definition; the coordinator preserves cognition, action, report, commitment, director, and communication boundaries; Vela Gate and Solace Reach now have deterministic off-screen schedules with active-system exclusion, strict cost budgets, authored report latency, protected-event deadline and authority checks, persisted run receipts, and explainable return summaries. The prototypes remain headless and do not yet provide free-form model prose, player-facing route or return integration, scene performance, real-time tactical simulation, or learned policies.
 
 The remaining bridge work is not just state logic. Every newly reachable region must have matching visible modeling, walkable bounds, location-gated prompts, and objective text.
 

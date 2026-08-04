@@ -1,0 +1,3396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "game.strategicAI.v1",
+  "title": "Strategic AI definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "definitionVersion",
+    "stateVersion",
+    "sources",
+    "observationChannels",
+    "resources",
+    "effectTypes",
+    "actionTypes",
+    "policyProfiles",
+    "reportRoutes",
+    "captainModelProfiles",
+    "commitmentTypes",
+    "cooperationProfiles",
+    "campaignOpportunities",
+    "offscreenSimulationBudget",
+    "offscreenSchedules",
+    "communicationClaims",
+    "communicativeIntents",
+    "speechTemplates",
+    "actors",
+    "facts",
+    "evidence",
+    "goals",
+    "checkpoints",
+    "stateDefaults"
+  ],
+  "properties": {
+    "schema": {
+      "const": "game.strategicAI.v1"
+    },
+    "definitionVersion": {
+      "const": "game.strategicAI.definition.v8"
+    },
+    "stateVersion": {
+      "const": "game.strategicAI.state.v8"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "observationChannels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/observationChannel"
+      }
+    },
+    "effectTypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/effectType"
+      }
+    },
+    "actionTypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/actionType"
+      }
+    },
+    "actors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/actor"
+      }
+    },
+    "facts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/fact"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "goals": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/goal"
+      }
+    },
+    "checkpoints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/checkpoint"
+      }
+    },
+    "stateDefaults": {
+      "$ref": "#/$defs/stateDefaults"
+    },
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/resource"
+      }
+    },
+    "policyProfiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/policyProfile"
+      }
+    },
+    "reportRoutes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/reportRoute"
+      }
+    },
+    "captainModelProfiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/captainModelProfile"
+      }
+    },
+    "commitmentTypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/commitmentType"
+      }
+    },
+    "cooperationProfiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/cooperationProfile"
+      }
+    },
+    "campaignOpportunities": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/campaignOpportunity"
+      }
+    },
+    "communicationClaims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/communicationClaim"
+      }
+    },
+    "communicativeIntents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/communicativeIntent"
+      }
+    },
+    "speechTemplates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/speechTemplate"
+      }
+    },
+    "offscreenSimulationBudget": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "offscreenSchedules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/offscreenSchedule"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z0-9-]+)+$",
+      "minLength": 3
+    },
+    "probability": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "visibility": {
+      "enum": [
+        "public",
+        "faction",
+        "restricted",
+        "private"
+      ]
+    },
+    "scalar": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "proposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predicate",
+        "arguments",
+        "value"
+      ],
+      "properties": {
+        "predicate": {
+          "$ref": "#/$defs/id"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "value": {
+          "$ref": "#/$defs/scalar"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "actor",
+            "sensor",
+            "system",
+            "document",
+            "report"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "observationChannel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "defaultReliability"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "direct",
+            "sensor",
+            "communication",
+            "document",
+            "rumor",
+            "inference"
+          ]
+        },
+        "defaultReliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "effectType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "protected",
+        "category",
+        "operation",
+        "requiredAuthorityIds",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protected": {
+          "type": "boolean"
+        },
+        "category": {
+          "enum": [
+            "general",
+            "death",
+            "destroy-location",
+            "close-route-permanent",
+            "create-evidence",
+            "destroy-evidence",
+            "complete-scenario",
+            "transfer-faction"
+          ]
+        },
+        "operation": {
+          "enum": [
+            "append-event",
+            "set-fact"
+          ]
+        },
+        "requiredAuthorityIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "targetFactId": {
+          "$ref": "#/$defs/id"
+        },
+        "value": {
+          "$ref": "#/$defs/scalar"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "actionType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "requiredAuthorityIds",
+        "effectTypeIds",
+        "allowedLocationIds",
+        "preconditions",
+        "resourceCosts",
+        "resultObservationTemplates",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requiredAuthorityIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "effectTypeIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "allowedLocationIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/precondition"
+          }
+        },
+        "resourceCosts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/resourceCost"
+          }
+        },
+        "resultObservationTemplates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resultObservationTemplate"
+          }
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "factionId",
+        "systemId",
+        "localDestinationId",
+        "goalIds",
+        "valueWeights",
+        "policyProfileId",
+        "authorityIds",
+        "observationChannelIds",
+        "candidateActionTypeIds",
+        "initialBeliefs",
+        "initialMemories"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "person",
+            "ship",
+            "faction",
+            "institution",
+            "community"
+          ]
+        },
+        "factionId": {
+          "$ref": "#/$defs/id"
+        },
+        "systemId": {
+          "$ref": "#/$defs/id"
+        },
+        "localDestinationId": {
+          "$ref": "#/$defs/id"
+        },
+        "goalIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "valueWeights": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/probability"
+          }
+        },
+        "authorityIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "observationChannelIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "candidateActionTypeIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "initialBeliefs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "initialMemories": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "policyProfileId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "proposition",
+        "status",
+        "sourceIds",
+        "visibility"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "status": {
+          "enum": [
+            "confirmed",
+            "disputed",
+            "unknown"
+          ]
+        },
+        "sourceIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "sourceId",
+        "proposition",
+        "status",
+        "reliability",
+        "supportsFactIds",
+        "visibility"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "status": {
+          "enum": [
+            "unverified",
+            "corroborated",
+            "disputed"
+          ]
+        },
+        "reliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "supportsFactIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        }
+      }
+    },
+    "goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "ownerActorId",
+        "priority",
+        "status",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownerActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "priority": {
+          "$ref": "#/$defs/probability"
+        },
+        "status": {
+          "enum": [
+            "inactive",
+            "active",
+            "satisfied",
+            "failed"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "worldTime",
+        "factIds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "worldTime": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "factIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "observerId",
+        "proposition",
+        "channelId",
+        "sourceId",
+        "reliability",
+        "observedAt",
+        "visibility"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "observerId": {
+          "$ref": "#/$defs/id"
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "channelId": {
+          "$ref": "#/$defs/id"
+        },
+        "sourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "reliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "observedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        },
+        "reportId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "originObservationId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "belief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "holderId",
+        "proposition",
+        "confidence",
+        "basisIds",
+        "updatedAt",
+        "visibility"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "holderId": {
+          "$ref": "#/$defs/id"
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "confidence": {
+          "$ref": "#/$defs/probability"
+        },
+        "basisIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ownerActorId",
+        "kind",
+        "summary",
+        "sourceIds",
+        "recordedAt",
+        "salience",
+        "visibility"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "ownerActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "episodic",
+            "semantic",
+            "commitment",
+            "social",
+            "rumor",
+            "reflection"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "recordedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "salience": {
+          "$ref": "#/$defs/probability"
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        }
+      }
+    },
+    "candidateAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionTypeId",
+        "score"
+      ],
+      "properties": {
+        "actionTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "score": {
+          "type": "number"
+        },
+        "scoreComponents": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionTypeId",
+        "reason"
+      ],
+      "properties": {
+        "actionTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decisionId",
+        "actorId",
+        "checkpointId",
+        "policyProfileId",
+        "canonicalRevision",
+        "activeGoalIds",
+        "beliefIds",
+        "candidateActions",
+        "rejections",
+        "selectedActionTypeId",
+        "expectedEffectTypeIds",
+        "confidence",
+        "randomSeed"
+      ],
+      "properties": {
+        "decisionId": {
+          "$ref": "#/$defs/id"
+        },
+        "actorId": {
+          "$ref": "#/$defs/id"
+        },
+        "checkpointId": {
+          "$ref": "#/$defs/id"
+        },
+        "activeGoalIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "beliefIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "candidateActions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/candidateAction"
+          }
+        },
+        "rejections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rejection"
+          }
+        },
+        "selectedActionTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "expectedEffectTypeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "confidence": {
+          "$ref": "#/$defs/probability"
+        },
+        "randomSeed": {
+          "type": "integer"
+        },
+        "policyProfileId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "canonicalRevision": {
+          "$ref": "#/$defs/canonicalRevisionBinding"
+        }
+      }
+    },
+    "actorState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actorId",
+        "activeGoalIds",
+        "beliefIds",
+        "memoryIds",
+        "pendingProposalIds"
+      ],
+      "properties": {
+        "actorId": {
+          "$ref": "#/$defs/id"
+        },
+        "activeGoalIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "beliefIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "memoryIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "pendingProposalIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "stateDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stateVersion",
+        "currentCheckpointId",
+        "actorStates",
+        "observations",
+        "beliefs",
+        "memories",
+        "receipts",
+        "canonicalState",
+        "proposals",
+        "outcomes",
+        "reports",
+        "captainModels",
+        "commitments",
+        "cooperationModels",
+        "campaignOpportunityStates",
+        "directorReceipts",
+        "offscreenSimulationTime",
+        "offscreenStepStates",
+        "offscreenSimulationReceipts"
+      ],
+      "properties": {
+        "stateVersion": {
+          "const": "game.strategicAI.state.v8"
+        },
+        "currentCheckpointId": {
+          "$ref": "#/$defs/id"
+        },
+        "actorStates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/actorState"
+          }
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        },
+        "beliefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/belief"
+          }
+        },
+        "memories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/memory"
+          }
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/receipt"
+          }
+        },
+        "canonicalState": {
+          "$ref": "#/$defs/canonicalState"
+        },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/proposal"
+          }
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/proposalOutcome"
+          }
+        },
+        "reports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/report"
+          }
+        },
+        "captainModels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/captainModel"
+          }
+        },
+        "commitments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/commitment"
+          }
+        },
+        "cooperationModels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/cooperationModel"
+          }
+        },
+        "campaignOpportunityStates": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/campaignOpportunityState"
+          }
+        },
+        "directorReceipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/directorReceipt"
+          }
+        },
+        "offscreenSimulationTime": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offscreenStepStates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/offscreenStepState"
+          }
+        },
+        "offscreenSimulationReceipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/offscreenSimulationReceipt"
+          }
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "capacity",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "exclusive-window",
+            "consumable",
+            "capacity"
+          ]
+        },
+        "capacity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "precondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "factId",
+        "expectedValue"
+      ],
+      "properties": {
+        "kind": {
+          "const": "fact-equals"
+        },
+        "factId": {
+          "$ref": "#/$defs/id"
+        },
+        "expectedValue": {
+          "$ref": "#/$defs/scalar"
+        }
+      }
+    },
+    "resourceCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resourceId",
+        "amount"
+      ],
+      "properties": {
+        "resourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "amount": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "resultObservationTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idSuffix",
+        "observerId",
+        "proposition",
+        "channelId",
+        "sourceId",
+        "reliability",
+        "visibility"
+      ],
+      "properties": {
+        "idSuffix": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "minLength": 1
+        },
+        "observerId": {
+          "$ref": "#/$defs/id"
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "channelId": {
+          "$ref": "#/$defs/id"
+        },
+        "sourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "reliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        }
+      }
+    },
+    "requestedEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effectTypeId",
+        "payload"
+      ],
+      "properties": {
+        "effectTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "payload": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/scalar"
+          }
+        }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposalId",
+        "decisionId",
+        "actorId",
+        "checkpointId",
+        "canonicalRevision",
+        "actionTypeId",
+        "locationId",
+        "parameters",
+        "requestedEffects",
+        "createdAt"
+      ],
+      "properties": {
+        "proposalId": {
+          "$ref": "#/$defs/id"
+        },
+        "decisionId": {
+          "$ref": "#/$defs/id"
+        },
+        "actorId": {
+          "$ref": "#/$defs/id"
+        },
+        "checkpointId": {
+          "$ref": "#/$defs/id"
+        },
+        "actionTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "parameters": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/scalar"
+          }
+        },
+        "requestedEffects": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/requestedEffect"
+          }
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonicalRevision": {
+          "$ref": "#/$defs/canonicalRevisionBinding"
+        }
+      }
+    },
+    "consumedResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resourceId",
+        "amount"
+      ],
+      "properties": {
+        "resourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "amount": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "proposalOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcomeId",
+        "proposalId",
+        "decisionId",
+        "actorId",
+        "actionTypeId",
+        "status",
+        "rejectionCode",
+        "rejectionReason",
+        "committedEffectTypeIds",
+        "consumedResources",
+        "resultingObservationIds",
+        "canonicalRevisionBefore",
+        "canonicalRevisionAfter"
+      ],
+      "properties": {
+        "outcomeId": {
+          "$ref": "#/$defs/id"
+        },
+        "proposalId": {
+          "$ref": "#/$defs/id"
+        },
+        "decisionId": {
+          "$ref": "#/$defs/id"
+        },
+        "actorId": {
+          "$ref": "#/$defs/id"
+        },
+        "actionTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "rejected"
+          ]
+        },
+        "rejectionCode": {
+          "type": "string"
+        },
+        "rejectionReason": {
+          "type": "string"
+        },
+        "committedEffectTypeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "consumedResources": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/consumedResource"
+          }
+        },
+        "resultingObservationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "canonicalRevisionBefore": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonicalRevisionAfter": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "accepted"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "rejectionCode": {
+                "maxLength": 0
+              },
+              "rejectionReason": {
+                "maxLength": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "rejectionCode": {
+                "minLength": 1
+              },
+              "rejectionReason": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "factState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "factId",
+        "value"
+      ],
+      "properties": {
+        "factId": {
+          "$ref": "#/$defs/id"
+        },
+        "value": {
+          "$ref": "#/$defs/scalar"
+        }
+      }
+    },
+    "resourceBalance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resourceId",
+        "quantity"
+      ],
+      "properties": {
+        "resourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "quantity": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "canonicalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventId",
+        "effectTypeId",
+        "actorId",
+        "proposalId",
+        "checkpointId",
+        "committedAt",
+        "payload"
+      ],
+      "properties": {
+        "eventId": {
+          "$ref": "#/$defs/id"
+        },
+        "effectTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "actorId": {
+          "$ref": "#/$defs/id"
+        },
+        "proposalId": {
+          "$ref": "#/$defs/id"
+        },
+        "checkpointId": {
+          "$ref": "#/$defs/id"
+        },
+        "committedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/scalar"
+          }
+        }
+      }
+    },
+    "canonicalState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "factStates",
+        "resourceBalances",
+        "events"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "factStates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/factState"
+          }
+        },
+        "resourceBalances": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/resourceBalance"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/canonicalEvent"
+          }
+        }
+      }
+    },
+    "scoreMetricWeights": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "goalPriority": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "evidenceSupport": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "uncertainty": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "memoryRelevance": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "observationReliability": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "captainCooperation": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "captainEvidenceDiscipline": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "captainAuthorityResistance": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "commitmentTrust": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        }
+      }
+    },
+    "actionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseScore",
+        "weights"
+      ],
+      "properties": {
+        "baseScore": {
+          "type": "number",
+          "minimum": -10,
+          "maximum": 10
+        },
+        "weights": {
+          "$ref": "#/$defs/scoreMetricWeights"
+        }
+      }
+    },
+    "policyProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "actionPolicies",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actionPolicies": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/actionPolicy"
+          }
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "canonicalRevisionBinding": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signedUnit": {
+      "type": "number",
+      "minimum": -1,
+      "maximum": 1
+    },
+    "reportRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "mode",
+        "senderActorIds",
+        "recipientActorIds",
+        "channelId",
+        "baseReliability",
+        "latency",
+        "allowedVisibilities",
+        "maxDistortion",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "direct",
+            "public",
+            "rumor"
+          ]
+        },
+        "senderActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "recipientActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "channelId": {
+          "$ref": "#/$defs/id"
+        },
+        "baseReliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "latency": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "allowedVisibilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/visibility"
+          }
+        },
+        "maxDistortion": {
+          "$ref": "#/$defs/probability"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "captainSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predicate",
+        "value",
+        "tendencyDeltas"
+      ],
+      "properties": {
+        "predicate": {
+          "$ref": "#/$defs/id"
+        },
+        "value": {
+          "$ref": "#/$defs/scalar"
+        },
+        "tendencyDeltas": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/signedUnit"
+          }
+        }
+      }
+    },
+    "captainModelProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "actorId",
+        "subjectActorId",
+        "initialTendencies",
+        "signals",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actorId": {
+          "$ref": "#/$defs/id"
+        },
+        "subjectActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "initialTendencies": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/probability"
+          }
+        },
+        "signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/captainSignal"
+          }
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reportId",
+        "routeId",
+        "senderActorId",
+        "recipientActorId",
+        "sourceObservationId",
+        "originObservationId",
+        "parentReportIds",
+        "proposition",
+        "reliability",
+        "distortion",
+        "sentAt",
+        "receivedAt",
+        "visibility",
+        "recipientObservationId"
+      ],
+      "properties": {
+        "reportId": {
+          "$ref": "#/$defs/id"
+        },
+        "routeId": {
+          "$ref": "#/$defs/id"
+        },
+        "senderActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "recipientActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "sourceObservationId": {
+          "$ref": "#/$defs/id"
+        },
+        "originObservationId": {
+          "$ref": "#/$defs/id"
+        },
+        "parentReportIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "reliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "distortion": {
+          "$ref": "#/$defs/probability"
+        },
+        "sentAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "receivedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        },
+        "recipientObservationId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "captainModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "modelId",
+        "profileId",
+        "holderActorId",
+        "subjectActorId",
+        "tendencies",
+        "observationIds",
+        "reportIds",
+        "updatedAt"
+      ],
+      "properties": {
+        "modelId": {
+          "$ref": "#/$defs/id"
+        },
+        "profileId": {
+          "$ref": "#/$defs/id"
+        },
+        "holderActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "subjectActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "tendencies": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/probability"
+          }
+        },
+        "observationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "reportIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "commitmentObservationTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idSuffix",
+        "observerId",
+        "proposition",
+        "channelId",
+        "sourceId",
+        "reliability",
+        "visibility"
+      ],
+      "properties": {
+        "idSuffix": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "minLength": 1
+        },
+        "observerId": {
+          "$ref": "#/$defs/id"
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "channelId": {
+          "$ref": "#/$defs/id"
+        },
+        "sourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "reliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        }
+      }
+    },
+    "commitmentType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "promisorActorIds",
+        "promiseeActorIds",
+        "requiredAuthorityIds",
+        "resourceId",
+        "resourceAmount",
+        "promisedActionTypeId",
+        "keptObservationTemplates",
+        "brokenObservationTemplates",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promisorActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "promiseeActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "requiredAuthorityIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "resourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "resourceAmount": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "promisedActionTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "keptObservationTemplates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/commitmentObservationTemplate"
+          }
+        },
+        "brokenObservationTemplates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/commitmentObservationTemplate"
+          }
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "cooperationProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "holderActorId",
+        "subjectActorId",
+        "initialTrust",
+        "keptDelta",
+        "brokenDelta",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "holderActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "subjectActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "initialTrust": {
+          "$ref": "#/$defs/probability"
+        },
+        "keptDelta": {
+          "$ref": "#/$defs/probability"
+        },
+        "brokenDelta": {
+          "$ref": "#/$defs/probability"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "commitment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commitmentId",
+        "commitmentTypeId",
+        "promisorActorId",
+        "promiseeActorId",
+        "status",
+        "createdAt",
+        "canonicalRevisionCreated",
+        "resolutionOutcomeId",
+        "resolvedAt",
+        "canonicalRevisionResolved",
+        "resolutionReason",
+        "observationIds"
+      ],
+      "properties": {
+        "commitmentId": {
+          "$ref": "#/$defs/id"
+        },
+        "commitmentTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "promisorActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "promiseeActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "kept",
+            "broken"
+          ]
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonicalRevisionCreated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resolutionOutcomeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolvedAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "canonicalRevisionResolved": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolutionReason": {
+          "type": "string"
+        },
+        "observationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "pending"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "resolutionOutcomeId": {
+                "type": "null"
+              },
+              "resolvedAt": {
+                "type": "null"
+              },
+              "canonicalRevisionResolved": {
+                "type": "null"
+              },
+              "resolutionReason": {
+                "maxLength": 0
+              },
+              "observationIds": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "resolutionOutcomeId": {
+                "$ref": "#/$defs/id"
+              },
+              "resolvedAt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "canonicalRevisionResolved": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "resolutionReason": {
+                "minLength": 1
+              },
+              "observationIds": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cooperationModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "modelId",
+        "profileId",
+        "holderActorId",
+        "subjectActorId",
+        "trust",
+        "commitmentIds",
+        "updatedAt"
+      ],
+      "properties": {
+        "modelId": {
+          "$ref": "#/$defs/id"
+        },
+        "profileId": {
+          "$ref": "#/$defs/id"
+        },
+        "holderActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "subjectActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "trust": {
+          "$ref": "#/$defs/probability"
+        },
+        "commitmentIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "campaignOpportunity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "routeSystemId",
+        "checkpointIds",
+        "windowDuration",
+        "observerIds",
+        "channelId",
+        "sourceId",
+        "reliability",
+        "visibility",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "routeSystemId": {
+          "$ref": "#/$defs/id"
+        },
+        "checkpointIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "windowDuration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observerIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "channelId": {
+          "$ref": "#/$defs/id"
+        },
+        "sourceId": {
+          "$ref": "#/$defs/id"
+        },
+        "reliability": {
+          "$ref": "#/$defs/probability"
+        },
+        "visibility": {
+          "$ref": "#/$defs/visibility"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "campaignOpportunityState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "opportunityId",
+        "status",
+        "activatedAt",
+        "expiresAt",
+        "activationReceiptId",
+        "activationCount"
+      ],
+      "properties": {
+        "opportunityId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "available",
+            "active",
+            "closed"
+          ]
+        },
+        "activatedAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activationReceiptId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activationCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "active"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "activatedAt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expiresAt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "activationReceiptId": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "activatedAt": {
+                "type": "null"
+              },
+              "expiresAt": {
+                "type": "null"
+              },
+              "activationReceiptId": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "directorReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directorReceiptId",
+        "operation",
+        "opportunityId",
+        "routeSystemId",
+        "checkpointId",
+        "selectedAt",
+        "canonicalRevision",
+        "previousStatus",
+        "nextStatus",
+        "observationIds",
+        "expiresAt",
+        "reason"
+      ],
+      "properties": {
+        "directorReceiptId": {
+          "$ref": "#/$defs/id"
+        },
+        "operation": {
+          "enum": [
+            "activate",
+            "deactivate",
+            "expire"
+          ]
+        },
+        "opportunityId": {
+          "$ref": "#/$defs/id"
+        },
+        "routeSystemId": {
+          "$ref": "#/$defs/id"
+        },
+        "checkpointId": {
+          "$ref": "#/$defs/id"
+        },
+        "selectedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonicalRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "previousStatus": {
+          "enum": [
+            "available",
+            "active",
+            "closed"
+          ]
+        },
+        "nextStatus": {
+          "enum": [
+            "available",
+            "active",
+            "closed"
+          ]
+        },
+        "observationIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "communicationClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "speakerActorIds",
+        "authorizedAudienceActorIds",
+        "proposition",
+        "spokenText",
+        "minimumConfidence",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "speakerActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "authorizedAudienceActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "proposition": {
+          "$ref": "#/$defs/proposition"
+        },
+        "spokenText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "minimumConfidence": {
+          "$ref": "#/$defs/probability"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "communicativeIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "speechAct",
+        "speakerActorIds",
+        "audienceActorIds",
+        "claimIds",
+        "commitmentTypeIds",
+        "templateIds",
+        "fallbackTemplateId",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "speechAct": {
+          "enum": [
+            "inform",
+            "request",
+            "promise",
+            "refuse",
+            "acknowledge"
+          ]
+        },
+        "speakerActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "audienceActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "claimIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "commitmentTypeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "templateIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "fallbackTemplateId": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "speechSegment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "text"
+          ],
+          "properties": {
+            "kind": {
+              "const": "literal"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "speaker-name",
+                "audience-names",
+                "commitment-label",
+                "commitment-status"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "claimId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "claim"
+            },
+            "claimId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      ]
+    },
+    "speechTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "intentId",
+        "segments",
+        "claimIds",
+        "requiresCommitment",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intentId": {
+          "$ref": "#/$defs/id"
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/speechSegment"
+          }
+        },
+        "claimIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "requiresCommitment": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "offscreenActorTurnStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "dueAt",
+        "cost",
+        "deadlineAt",
+        "actorId",
+        "allowedActionTypeIds",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "dueAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deadlineAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "actor-turn"
+        },
+        "actorId": {
+          "$ref": "#/$defs/id"
+        },
+        "allowedActionTypeIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "offscreenReportStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "dueAt",
+        "cost",
+        "deadlineAt",
+        "routeId",
+        "senderActorId",
+        "recipientActorId",
+        "sourceObservationId",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "dueAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deadlineAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "report"
+        },
+        "routeId": {
+          "$ref": "#/$defs/id"
+        },
+        "senderActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "recipientActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "sourceObservationId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "offscreenCommitmentStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "dueAt",
+        "cost",
+        "deadlineAt",
+        "commitmentTypeId",
+        "promisorActorId",
+        "promiseeActorId",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "dueAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deadlineAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "commitment"
+        },
+        "commitmentTypeId": {
+          "$ref": "#/$defs/id"
+        },
+        "promisorActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "promiseeActorId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "offscreenDirectorStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "dueAt",
+        "cost",
+        "deadlineAt",
+        "operation",
+        "routeSystemId",
+        "opportunityId",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "dueAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deadlineAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "director"
+        },
+        "operation": {
+          "enum": [
+            "activate-route",
+            "deactivate-opportunity",
+            "expire-opportunities"
+          ]
+        },
+        "routeSystemId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "opportunityId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "activate-route"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "routeSystemId": {
+                "$ref": "#/$defs/id"
+              },
+              "opportunityId": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "deactivate-opportunity"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "routeSystemId": {
+                "type": "null"
+              },
+              "opportunityId": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "expire-opportunities"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "routeSystemId": {
+                "type": "null"
+              },
+              "opportunityId": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "offscreenCommunicationStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "dueAt",
+        "cost",
+        "deadlineAt",
+        "intentId",
+        "speakerActorId",
+        "audienceActorIds",
+        "commitmentStepId",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "dueAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deadlineAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "communication"
+        },
+        "intentId": {
+          "$ref": "#/$defs/id"
+        },
+        "speakerActorId": {
+          "$ref": "#/$defs/id"
+        },
+        "audienceActorIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "commitmentStepId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "offscreenStep": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/offscreenActorTurnStep"
+        },
+        {
+          "$ref": "#/$defs/offscreenReportStep"
+        },
+        {
+          "$ref": "#/$defs/offscreenCommitmentStep"
+        },
+        {
+          "$ref": "#/$defs/offscreenDirectorStep"
+        },
+        {
+          "$ref": "#/$defs/offscreenCommunicationStep"
+        }
+      ]
+    },
+    "offscreenSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "systemId",
+        "steps",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "systemId": {
+          "$ref": "#/$defs/id"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/offscreenStep"
+          }
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "offscreenStepState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheduleId",
+        "stepId",
+        "status",
+        "attempts",
+        "readyAt",
+        "completedAt",
+        "resultIds",
+        "reason"
+      ],
+      "properties": {
+        "scheduleId": {
+          "$ref": "#/$defs/id"
+        },
+        "stepId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "completed",
+            "rejected"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "readyAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "pending"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "completedAt": {
+                "type": "null"
+              },
+              "resultIds": {
+                "maxItems": 0
+              },
+              "reason": {
+                "maxLength": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "completedAt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reason": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "offscreenSimulationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "simulationReceiptId",
+        "fromTime",
+        "toTime",
+        "activeSystemId",
+        "budget",
+        "consumedBudget",
+        "processedStepIds",
+        "deferredStepIds",
+        "skippedScheduleIds",
+        "canonicalRevisionBefore",
+        "canonicalRevisionAfter"
+      ],
+      "properties": {
+        "simulationReceiptId": {
+          "$ref": "#/$defs/id"
+        },
+        "fromTime": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toTime": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeSystemId": {
+          "$ref": "#/$defs/id"
+        },
+        "budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "consumedBudget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "processedStepIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "deferredStepIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "skippedScheduleIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "canonicalRevisionBefore": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonicalRevisionAfter": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

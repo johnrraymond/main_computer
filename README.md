@@ -359,11 +359,28 @@ pretty_docs/mcel-user-space-contract.md
 ### Build and edit an application
 
 ```text
+pretty_docs/mcel-ai-authoring-language-executive-overview.md
+pretty_docs/mcel-ai-authoring-semantic-boundary.md
+pretty_docs/mcel-application-ir-and-compiler-migration.md
+pretty_docs/mcel-application-ir-schema-and-normalization.md
+pretty_docs/mcel-existing-application-definition-migration-inventory.md
+pretty_docs/mcel-constrained-expression-model.md
+pretty_docs/mcel-consequential-effects-and-proof-accounting.md
+pretty_docs/mcel-official-vanilla-javascript-dsl.md
+pretty_docs/mcel-compiler-diagnostics-and-repair-protocol.md
+pretty_docs/mcel-scaffolder-generated-projection-and-compatibility.md
+pretty_docs/mcel-ai-application-authoring-cycle.md
+pretty_docs/mcel-ai-authoring-pattern-catalog.md
+pretty_docs/mcel-semantic-change-and-evidence-impact.md
+pretty_docs/mcel-ai-authoring-and-migration-benchmark.md
+pretty_docs/mcel-ai-authoring-documentation-completeness-review.md
 pretty_docs/mcel-application-authoring.md
 pretty_docs/mcel-code-studio-example.md
 pretty_docs/mcel-project-edit-transaction.md
 pretty_docs/mcel-requirements-language.md
 ```
+
+The AI authoring overview explains the current authoring problem through concrete code examples: repeated field declarations, item-key plumbing, distributed mutations, lifecycle wiring, proof duplication, diagnostic quality, and feature-edit cost. The semantic-authoring-boundary specification then states, for each application concept, what the AI must declare, what MCEL may generate, what must be rejected, and what proof must explain. `pretty_docs/mcel-application-ir-and-compiler-migration.md` defines the stable center of the migration: requirements-driven apps, scaffolded/explicit packages, the current high-level `application.js`, and the future official DSL must converge on one comparable MCEL Application IR while independent acceptance, browser, receipt, and proof evidence remain outside the compiler. `pretty_docs/mcel-application-ir-schema-and-normalization.md` specifies the first concrete `mcel.application-ir.v1` shape, normalization rules, semantic/source-binding fingerprints, and Counter/Workbench worked slices. `pretty_docs/mcel-existing-application-definition-migration-inventory.md` records the current requirements-registry, surface-led, scaffolded, normalized, blueprint, and legacy definition families so Git Tools, Code Editor, Document Editor, and the other current apps are not lost during reorganization. `pretty_docs/mcel-constrained-expression-model.md` defines the typed, inspectable expression graph that replaces opaque callbacks while preserving pure calculation, canonical transitions, provisional reconciliation, domain operators, and the capability/effect boundary. `pretty_docs/mcel-consequential-effects-and-proof-accounting.md` then defines effect ownership, runtime effect instances, terminal dispositions, minimum evidence, cleanup and retained residue, uncertainty and recovery, and the closed accounting rule required before proof may claim that every consequential effect is explained. `pretty_docs/mcel-official-vanilla-javascript-dsl.md` fixes the one official `mcel.dsl.v1` source form: strict CommonJS vanilla JavaScript, `@mcel/app`, explicit semantic IDs, constrained builder callbacks, semantic handles, app-local modules, capability lifecycles, surface/layout declarations, and ordered proof scenarios that compile into the IR. `pretty_docs/mcel-compiler-diagnostics-and-repair-protocol.md` specifies the stable diagnostic envelope, semantic paths, repair classes, dependency ordering, candidate-versus-last-proven truth, evidence invalidation, narrow reruns, and reviewable repair transactions that let an AI return to the correct authoring stage without guessing. `pretty_docs/mcel-scaffolder-generated-projection-and-compatibility.md` now fixes the file paths and ownership classes, candidate-versus-promoted package boundary, versioned explicit and DSL scaffold modes, legacy importer rules, generated projections, feature-level compatibility reports, atomic promotion, rollback, drift detection, and preservation paths for Counter, Workbench, Git Tools, Code Editor, Document Editor, and the remaining application families. `pretty_docs/mcel-ai-application-authoring-cycle.md` turns those contracts into the stage-gated path an AI follows from requirements and legacy inventory through modeling, effects, surface, scenarios, candidate compilation, diagnostics, compatibility, evidence, proof, promotion, and later modification. `pretty_docs/mcel-ai-authoring-pattern-catalog.md` supplies task-oriented examples for canonical mutations, forms, keyed collections, derived queries, refusals, async progress, cancellation, per-item concurrency, Git mutation, stale-safe file save, document export, multi-instance isolation, cross-intent workflows, and feature changes. `pretty_docs/mcel-semantic-change-and-evidence-impact.md` defines dependency-aware modification: semantic change sets, impact closure, authoring-stage re-entry, evidence renewal and audited reuse, conservative fallback, and worked Git Tools, Code Editor, Document Editor, Counter, and Workbench change cases. `pretty_docs/mcel-ai-authoring-and-migration-benchmark.md` defines the controlled creation, migration, modification, repair, evidence, proof, reliability, and economy trials that must pass before MCEL may claim the DSL is better for AI authoring. `pretty_docs/mcel-ai-authoring-documentation-completeness-review.md` audits the entire chain, closes the remaining v1-level ambiguities, distinguishes documentation completeness from implementation or benchmark success, and limits the first permissible implementation wave to the stable IR kernel after explicit authorization. Together these documents are the entry point for the documentation-first MCEL AI Authoring Language program. The bounded implementation now includes the read-only IR kernel in `main_computer/mcel_application_ir.py`, the Wave 2A constrained-expression kernel in `main_computer/mcel_constrained_expression.py`, and the Counter-only Wave 2B DSL front end in `main_computer/mcel_dsl_compiler.py` plus `main_computer/mcel_dsl_runtime.js`. Validate the Counter IR with `python tools/mcel_application_ir.py --input tests/fixtures/mcel_application_ir/contract-counter.ir.json`, inspect its typed expression graph with `python tools/mcel_constrained_expression.py --input tests/fixtures/mcel_application_ir/contract-counter.ir.json`, and compile the official Counter DSL candidate with `python tools/mcel_dsl_compile.py --input tests/fixtures/mcel_dsl/contract-counter.application.js --compare-ir tests/fixtures/mcel_application_ir/contract-counter.ir.json`. Wave 2B constructs and compares candidate IR only. It does not execute application behavior, perform capabilities, generate contracts, change the live Counter package, promote a candidate, reuse evidence, or retire the legacy path.
 
 The authoring guide distinguishes live global APIs from the application-local layout facades used by Code Editor and Git Tools. It supports repository-aware development today, but it is not yet a standalone SDK or generated starter-app workflow. The project-edit transaction provides the shared hash-guarded, multi-file replacement boundary for staged validation, overlay packaging, dry-run, and explicit reviewed apply. It does not yet provide semantic edit planning or Code Editor and MCEL Lab bindings. The user-space contract is the planning surface for deciding what application authors may rely on; internal law-module names are implementation detail.
 
@@ -476,3 +493,13 @@ The account-system plan explains how the working ingest path grows into
 signup-driven Great Library mailboxes, user passwords, aliases, webmail, and
 outbound sending.
 
+
+## Counter DSL promotion rehearsal
+
+After the Counter DSL candidate has passed isolated projection and evidence, rehearse the authority transition without modifying the live package:
+
+```powershell
+python tools/mcel_counter_promotion_rehearsal.py --check
+```
+
+Wave 6 stages an exact promotion plan, generated-file ownership manifest, rollback material, and a disposable promoted repository workspace beneath candidate runtime state. It reruns compatibility, package/runtime projection, acceptance, Chromium observation, effect accounting, and application proof, then restores the original Counter package byte-for-byte. A passing rehearsal may report promotion eligibility, but it never executes promotion.

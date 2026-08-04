@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,15 @@ from tools.mother.common.deployment_genesis_birth import (
     write_genesis_birth_release,
 )
 from tools.mother.common.deployment_genesis_executor import execute_released_genesis
+from tools.mother.common.deployment_genesis_release import (
+    build_deployment_genesis_release,
+    write_deployment_genesis_release,
+)
+from tools.mother.common.deployment_genesis_rollback import (
+    execute_genesis_mutation_rollback,
+    verify_genesis_mutation_rollback,
+    write_genesis_mutation_rollback_verification,
+)
 from tests.test_mother_deployment_executor import TOKEN_A, _operation
 from tests.test_mother_deployment_genesis_executor import _GenesisOpener, _genesis_release
 
@@ -39,13 +48,99 @@ def _successful_execution(tmp_path: Path):
     return paths, private_state, Path(result["result_artifact"]["path"]), result, release
 
 
+def _successful_reapplication(tmp_path: Path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    (
+        paths,
+        private_state,
+        transaction_path,
+        transaction_digest,
+        _,
+        first_release_path,
+        first_release_digest,
+        _,
+    ) = _genesis_release(tmp_path, now=now)
+    live = _GenesisOpener()
+    first = execute_released_genesis(
+        paths,
+        private_state,
+        first_release_path,
+        acknowledged_release_sha256=first_release_digest,
+        selected_nodes=("mainneta-super1",),
+        opener=live,
+        operation=_operation("birth-cycle-first-genesis"),
+    )
+    rolled_back = execute_genesis_mutation_rollback(
+        paths,
+        private_state,
+        Path(first["result_artifact"]["path"]),
+        acknowledged_execution_sha256=first["result_artifact"]["sha256"],
+        opener=live,
+        max_wait_seconds=1.0,
+        poll_interval_seconds=0.0,
+        operation=_operation("birth-cycle-genesis-rollback"),
+    )
+    verification = verify_genesis_mutation_rollback(
+        paths,
+        private_state,
+        Path(rolled_back["result_artifact"]["path"]),
+        opener=live,
+    )
+    evidence_path, _ = write_genesis_mutation_rollback_verification(
+        paths,
+        verification,
+        operation=_operation("birth-cycle-genesis-rollback-evidence"),
+    )
+
+    second_now = now + timedelta(seconds=1)
+    second_release = build_deployment_genesis_release(
+        paths,
+        private_state,
+        transaction_path,
+        acknowledged_genesis_transaction_sha256=transaction_digest,
+        selected_nodes=("mainneta-super1",),
+        created_at=second_now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        now=second_now,
+    )
+    second_release_path, second_release_digest = write_deployment_genesis_release(
+        paths,
+        second_release,
+        operation=_operation("birth-cycle-second-genesis-release"),
+    )
+    second = execute_released_genesis(
+        paths,
+        private_state,
+        second_release_path,
+        acknowledged_release_sha256=second_release_digest,
+        selected_nodes=("mainneta-super1",),
+        opener=live,
+        operation=_operation("birth-cycle-second-genesis"),
+    )
+    return (
+        paths,
+        private_state,
+        Path(second["result_artifact"]["path"]),
+        second,
+        second_release,
+        evidence_path,
+    )
+
+
 def _birth_release(tmp_path: Path):
-    paths, private_state, execution_path, execution, genesis_release = _successful_execution(tmp_path)
+    (
+        paths,
+        private_state,
+        execution_path,
+        execution,
+        genesis_release,
+        rollback_evidence_path,
+    ) = _successful_reapplication(tmp_path)
     release = build_genesis_birth_release(
         paths,
         private_state,
         execution_path,
         acknowledged_genesis_execution_sha256=execution["result_artifact"]["sha256"],
+        genesis_rollback_verification_path=rollback_evidence_path,
         selected_nodes=("mainneta-super1",),
     )
     path, digest = write_genesis_birth_release(
@@ -140,16 +235,73 @@ def test_birth_release_is_internal_only_and_removes_host_rpc_mapping(tmp_path: P
 
 
 def test_birth_release_rejects_wrong_execution_digest(tmp_path: Path) -> None:
-    paths, private_state, execution_path, _, _ = _successful_execution(tmp_path)
+    paths, private_state, execution_path, _, _, rollback_evidence_path = _successful_reapplication(tmp_path)
     with pytest.raises(MotherDeploymentGenesisBirthError) as caught:
         build_genesis_birth_release(
             paths,
             private_state,
             execution_path,
             acknowledged_genesis_execution_sha256="0" * 64,
+            genesis_rollback_verification_path=rollback_evidence_path,
             selected_nodes=("mainneta-super1",),
         )
     assert caught.value.code == "MOTHER_DEPLOY_GENESIS_BIRTH_ACKNOWLEDGEMENT_MISMATCH"
+
+
+def test_birth_release_rejects_rolled_back_execution_without_reapplication(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        _,
+        release_path,
+        release_digest,
+        _,
+    ) = _genesis_release(tmp_path, now=now)
+    live = _GenesisOpener()
+    first = execute_released_genesis(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        selected_nodes=("mainneta-super1",),
+        opener=live,
+        operation=_operation("birth-reject-rolled-back-genesis"),
+    )
+    rolled_back = execute_genesis_mutation_rollback(
+        paths,
+        private_state,
+        Path(first["result_artifact"]["path"]),
+        acknowledged_execution_sha256=first["result_artifact"]["sha256"],
+        opener=live,
+        max_wait_seconds=1.0,
+        poll_interval_seconds=0.0,
+        operation=_operation("birth-reject-rolled-back-genesis-rollback"),
+    )
+    verification = verify_genesis_mutation_rollback(
+        paths,
+        private_state,
+        Path(rolled_back["result_artifact"]["path"]),
+        opener=live,
+    )
+    evidence_path, _ = write_genesis_mutation_rollback_verification(
+        paths,
+        verification,
+        operation=_operation("birth-reject-rolled-back-genesis-evidence"),
+    )
+
+    with pytest.raises(MotherDeploymentGenesisBirthError) as caught:
+        build_genesis_birth_release(
+            paths,
+            private_state,
+            Path(first["result_artifact"]["path"]),
+            acknowledged_genesis_execution_sha256=first["result_artifact"]["sha256"],
+            genesis_rollback_verification_path=evidence_path,
+            selected_nodes=("mainneta-super1",),
+        )
+    assert caught.value.code == "MOTHER_DEPLOY_GENESIS_ROLLBACK_REAPPLICATION_REQUIRED"
 
 
 def test_birth_inspection_is_network_free(tmp_path: Path) -> None:
@@ -284,12 +436,13 @@ def test_birth_executor_fails_closed_when_guardian_never_becomes_healthy(tmp_pat
 
 
 def test_birth_cli_release_verify_and_dry_apply(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    paths, _, execution_path, execution, _ = _successful_execution(tmp_path)
+    paths, _, execution_path, execution, _, rollback_evidence_path = _successful_reapplication(tmp_path)
     runtime_root = paths.root.parent
     code = mother_deploy.main([
         "release-genesis-birth",
         "--execution", str(execution_path),
         "--acknowledge-genesis-execution-sha256", execution["result_artifact"]["sha256"],
+        "--genesis-rollback-verification", str(rollback_evidence_path),
         "--node", "mainneta-super1",
         "--runtime-state-root", str(runtime_root),
         "--write-release",

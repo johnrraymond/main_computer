@@ -277,7 +277,7 @@ def build_deployment_identity_release(
             "coolify_api_credential_required": True,
             "independent_authentication_system_created": False,
             "transaction_apply_authorized": True,
-            "live_execution_authorized": False,
+            "live_execution_authorized": True,
         },
         "policy": {
             "secret_values_materialized": False,
@@ -286,16 +286,11 @@ def build_deployment_identity_release(
             "live_mutation_performed": False,
             "service_deploy_or_start_performed": False,
             "release_consumption_receipt_required": True,
-            "consumption_enforcement_implemented": False,
+            "consumption_enforcement_implemented": True,
             "secrets_in_output": False,
         },
         "resolved_blocker_codes": ["MOTHER_DEPLOY_IDENTITY_RELEASE_REQUIRED"],
-        "remaining_blockers": [
-            {
-                "code": "MOTHER_DEPLOY_IDENTITY_EXECUTOR_NOT_IMPLEMENTED",
-                "message": "the one-use in-memory identity executor must consume this release",
-            }
-        ],
+        "remaining_blockers": [],
         "summary": {
             "release_valid": True,
             "target_count": len(verified["nodes"]),
@@ -303,8 +298,8 @@ def build_deployment_identity_release(
             "secret_reference_count": verified["secret_reference_count"],
             "persisted_secret_value_count": 0,
             "transaction_apply_authorized": True,
-            "live_execution_authorized": False,
-            "remaining_blocker_codes": ["MOTHER_DEPLOY_IDENTITY_EXECUTOR_NOT_IMPLEMENTED"],
+            "live_execution_authorized": True,
+            "remaining_blocker_codes": [],
         },
     }
     if _contains_sensitive_key(release):
@@ -507,8 +502,8 @@ def verify_deployment_identity_release(
         "staged_scope": verified["staged_scope"],
         "identity_transaction_sha256": verified["identity_transaction_sha256"],
         "transaction_apply_authorized": True,
-        "live_execution_authorized": False,
-        "remaining_blocker_codes": ["MOTHER_DEPLOY_IDENTITY_EXECUTOR_NOT_IMPLEMENTED"],
+        "live_execution_authorized": True,
+        "remaining_blocker_codes": [],
         "network_access_performed": False,
         "live_mutation_performed": False,
     }

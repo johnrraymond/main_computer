@@ -3262,8 +3262,8 @@
     "spaceNavigation": {
       "enabled": true,
       "schema": "game.spaceNavigation.v1",
-      "definitionVersion": "game.spaceNavigation.definition.v1",
-      "stateVersion": "game.spaceNavigation.state.v1",
+      "definitionVersion": "game.spaceNavigation.definition.v2",
+      "stateVersion": "game.spaceNavigation.state.v2",
       "startSystem": "system.solace-reach",
       "policy": {
         "jumpMode": "adjacent-only",
@@ -3308,8 +3308,239 @@
               "tiltDegrees": 8
             },
             "rotationPeriodHours": 26,
-            "description": "A green-blue refuge world with broad inland seas."
-          }
+            "description": "A green-blue refuge world with broad inland seas.",
+            "habitable": true,
+            "inhabited": true
+          },
+          "stars": [
+            {
+              "id": "star.solace-reach-a",
+              "label": "Solace A",
+              "spectralClass": "G2 V",
+              "color": "#fff4d6",
+              "radiusScale": 1.0,
+              "role": "primary",
+              "description": "The warm primary star around which Haven and the inner relief infrastructure orbit."
+            },
+            {
+              "id": "star.solace-reach-b",
+              "label": "Solace B",
+              "spectralClass": "K1 V",
+              "color": "#ffd6a3",
+              "radiusScale": 0.78,
+              "role": "companion",
+              "description": "A smaller orange companion star anchoring the outer inhabited worlds and patrol lanes."
+            }
+          ],
+          "additionalPlanets": [
+            {
+              "id": "planet.osprey",
+              "label": "Osprey",
+              "classification": "temperate",
+              "radiusScale": 1.03,
+              "surfaceColor": "#4d7c0f",
+              "secondaryColor": "#0ea5e9",
+              "atmosphereColor": "#7dd3fc",
+              "cloudColor": "#ecfeff",
+              "moonCount": 2,
+              "rings": {
+                "enabled": false,
+                "color": "#22d3ee",
+                "innerRadius": 1.4,
+                "outerRadius": 1.75,
+                "tiltDegrees": 22
+              },
+              "rotationPeriodHours": 27,
+              "description": "A breezy temperate planet of islands and shallow seas.",
+              "habitable": true,
+              "inhabited": true,
+              "formerSystemId": "system.osprey"
+            },
+            {
+              "id": "planet.bellara",
+              "label": "Bellara",
+              "classification": "oceanic",
+              "radiusScale": 1.12,
+              "surfaceColor": "#0c4a6e",
+              "secondaryColor": "#2563eb",
+              "atmosphereColor": "#38bdf8",
+              "cloudColor": "#e0f2fe",
+              "moonCount": 4,
+              "rings": {
+                "enabled": true,
+                "color": "#93c5fd",
+                "innerRadius": 1.36,
+                "outerRadius": 1.88,
+                "tiltDegrees": 20
+              },
+              "rotationPeriodHours": 35,
+              "description": "A large ringed ocean planet with deep cobalt seas.",
+              "habitable": true,
+              "inhabited": true,
+              "formerSystemId": "system.bellatrix"
+            },
+            {
+              "id": "planet.lyria",
+              "label": "Lyria",
+              "classification": "ice",
+              "radiusScale": 0.97,
+              "surfaceColor": "#dbeafe",
+              "secondaryColor": "#93c5fd",
+              "atmosphereColor": "#67e8f9",
+              "cloudColor": "#ffffff",
+              "moonCount": 3,
+              "rings": {
+                "enabled": true,
+                "color": "#e0f2fe",
+                "innerRadius": 1.34,
+                "outerRadius": 1.8,
+                "tiltDegrees": 28
+              },
+              "rotationPeriodHours": 57,
+              "description": "A ringed ice world reflecting blue-white starlight.",
+              "habitable": false,
+              "inhabited": true,
+              "formerSystemId": "system.lyra"
+            },
+            {
+              "id": "planet.talon",
+              "label": "Talon",
+              "classification": "rocky",
+              "radiusScale": 0.89,
+              "surfaceColor": "#78350f",
+              "secondaryColor": "#a16207",
+              "atmosphereColor": "#fbbf24",
+              "cloudColor": "#fef3c7",
+              "moonCount": 0,
+              "rings": {
+                "enabled": false,
+                "color": "#f59e0b",
+                "innerRadius": 1.4,
+                "outerRadius": 1.75,
+                "tiltDegrees": 35
+              },
+              "rotationPeriodHours": 47,
+              "description": "A sharp-ridged rocky world rich in iron and sulfur.",
+              "habitable": false,
+              "inhabited": true,
+              "formerSystemId": "system.talon"
+            }
+          ],
+          "arrivalDestinationId": "destination.solace-reach.haven-orbit",
+          "localDestinations": [
+            {
+              "id": "destination.solace-reach.haven-orbit",
+              "label": "Haven High Orbit",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.haven",
+              "position": [
+                0,
+                0
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "The mother ship's default arrival orbit above Haven and the central relief traffic lanes."
+            },
+            {
+              "id": "destination.solace-reach.osprey-anchorage",
+              "label": "Osprey Relief Anchorage",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.osprey",
+              "position": [
+                2,
+                1
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "A crowded relief anchorage serving Osprey's island settlements and civilian flotillas."
+            },
+            {
+              "id": "destination.solace-reach.bellara-corridor",
+              "label": "Bellara Ring Corridor",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.bellara",
+              "position": [
+                -2,
+                1
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "A navigable corridor through Bellara's rings used by water haulers and damaged transports."
+            },
+            {
+              "id": "destination.solace-reach.lyria-transfer",
+              "label": "Lyria Transfer Orbit",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.lyria",
+              "position": [
+                3,
+                -2
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "A cold transfer orbit where refugee ships exchange passengers, fuel, and medical supplies."
+            },
+            {
+              "id": "destination.solace-reach.talon-approach",
+              "label": "Talon Foundry Approach",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.talon",
+              "position": [
+                -3,
+                -2
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "The guarded approach to Talon's foundries and the repair capacity needed across the system."
+            }
+          ],
+          "localRoutes": [
+            {
+              "id": "local-route.solace-reach.haven-osprey",
+              "from": "destination.solace-reach.haven-orbit",
+              "to": "destination.solace-reach.osprey-anchorage",
+              "bidirectional": true,
+              "presentationDurationMs": 1800,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.solace-reach.haven-bellara",
+              "from": "destination.solace-reach.haven-orbit",
+              "to": "destination.solace-reach.bellara-corridor",
+              "bidirectional": true,
+              "presentationDurationMs": 1900,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.solace-reach.osprey-lyria",
+              "from": "destination.solace-reach.osprey-anchorage",
+              "to": "destination.solace-reach.lyria-transfer",
+              "bidirectional": true,
+              "presentationDurationMs": 2200,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.solace-reach.bellara-talon",
+              "from": "destination.solace-reach.bellara-corridor",
+              "to": "destination.solace-reach.talon-approach",
+              "bidirectional": true,
+              "presentationDurationMs": 2300,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.solace-reach.lyria-talon",
+              "from": "destination.solace-reach.lyria-transfer",
+              "to": "destination.solace-reach.talon-approach",
+              "bidirectional": true,
+              "presentationDurationMs": 2500,
+              "worldTimeCost": 1
+            }
+          ]
         },
         {
           "id": "system.vela-gate",
@@ -3339,8 +3570,239 @@
               "tiltDegrees": 21
             },
             "rotationPeriodHours": 31,
-            "description": "A deep ocean planet crossed by luminous storm belts."
-          }
+            "description": "A deep ocean planet crossed by luminous storm belts.",
+            "habitable": true,
+            "inhabited": true
+          },
+          "stars": [
+            {
+              "id": "star.vela-gate-a",
+              "label": "Vela A",
+              "spectralClass": "F8 V",
+              "color": "#f8fbff",
+              "radiusScale": 1.15,
+              "role": "primary",
+              "description": "The bright primary star illuminating Velaris and the gate's inner navigation corridor."
+            },
+            {
+              "id": "star.vela-gate-b",
+              "label": "Vela B",
+              "spectralClass": "M2 V",
+              "color": "#ff8a65",
+              "radiusScale": 0.52,
+              "role": "companion",
+              "description": "A red companion star surrounded by secondary settlements, defense platforms, and storm-monitor relays."
+            }
+          ],
+          "additionalPlanets": [
+            {
+              "id": "planet.antares",
+              "label": "Antares",
+              "classification": "volcanic",
+              "radiusScale": 1.05,
+              "surfaceColor": "#991b1b",
+              "secondaryColor": "#dc2626",
+              "atmosphereColor": "#fb923c",
+              "cloudColor": "#ffedd5",
+              "moonCount": 2,
+              "rings": {
+                "enabled": false,
+                "color": "#ef4444",
+                "innerRadius": 1.4,
+                "outerRadius": 1.75,
+                "tiltDegrees": 8
+              },
+              "rotationPeriodHours": 17,
+              "description": "A massive volcanic world under a red giant sun.",
+              "habitable": false,
+              "inhabited": true,
+              "formerSystemId": "system.antares"
+            },
+            {
+              "id": "planet.seraph",
+              "label": "Seraph",
+              "classification": "cloud",
+              "radiusScale": 1.16,
+              "surfaceColor": "#f8fafc",
+              "secondaryColor": "#fde68a",
+              "atmosphereColor": "#f9a8d4",
+              "cloudColor": "#ffffff",
+              "moonCount": 4,
+              "rings": {
+                "enabled": true,
+                "color": "#fce7f3",
+                "innerRadius": 1.3,
+                "outerRadius": 1.82,
+                "tiltDegrees": 33
+              },
+              "rotationPeriodHours": 14,
+              "description": "A luminous cloud world with a faint rose ring.",
+              "habitable": false,
+              "inhabited": true,
+              "formerSystemId": "system.seraph"
+            },
+            {
+              "id": "planet.bastion",
+              "label": "Bastion",
+              "classification": "mountain",
+              "radiusScale": 1.0,
+              "surfaceColor": "#334155",
+              "secondaryColor": "#78716c",
+              "atmosphereColor": "#cbd5e1",
+              "cloudColor": "#f8fafc",
+              "moonCount": 2,
+              "rings": {
+                "enabled": false,
+                "color": "#94a3b8",
+                "innerRadius": 1.4,
+                "outerRadius": 1.75,
+                "tiltDegrees": 30
+              },
+              "rotationPeriodHours": 46,
+              "description": "A high-gravity mountain world with fortress-like plateaus.",
+              "habitable": true,
+              "inhabited": true,
+              "formerSystemId": "system.bastion"
+            },
+            {
+              "id": "planet.chiron",
+              "label": "Chiron",
+              "classification": "rocky",
+              "radiusScale": 0.9,
+              "surfaceColor": "#52525b",
+              "secondaryColor": "#71717a",
+              "atmosphereColor": "#c4b5fd",
+              "cloudColor": "#f5f3ff",
+              "moonCount": 2,
+              "rings": {
+                "enabled": false,
+                "color": "#a78bfa",
+                "innerRadius": 1.4,
+                "outerRadius": 1.75,
+                "tiltDegrees": 32
+              },
+              "rotationPeriodHours": 49,
+              "description": "A fractured rocky planet with violet auroral storms.",
+              "habitable": true,
+              "inhabited": true,
+              "formerSystemId": "system.chiron"
+            }
+          ],
+          "arrivalDestinationId": "destination.vela-gate.velaris-orbit",
+          "localDestinations": [
+            {
+              "id": "destination.vela-gate.velaris-orbit",
+              "label": "Velaris Gate Central",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.velaris",
+              "position": [
+                0,
+                0
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "The official arrival orbit above Velaris where Gate Central controls inspection and traffic clearance."
+            },
+            {
+              "id": "destination.vela-gate.antares-corridor",
+              "label": "Antares Thermal Corridor",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.antares",
+              "position": [
+                2,
+                -2
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "A heat-distorted freight corridor serving Antares and its heavily shielded industrial habitats."
+            },
+            {
+              "id": "destination.vela-gate.seraph-relay",
+              "label": "Seraph Cloud Relay",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.seraph",
+              "position": [
+                -2,
+                1
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "A navigation and weather relay suspended above Seraph's luminous cloud decks."
+            },
+            {
+              "id": "destination.vela-gate.bastion-citadel",
+              "label": "Bastion Customs Citadel",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.bastion",
+              "position": [
+                3,
+                1
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "A fortified customs approach controlling military and civilian access to Bastion."
+            },
+            {
+              "id": "destination.vela-gate.chiron-observatory",
+              "label": "Chiron Storm Observatory",
+              "kind": "planet-orbit",
+              "parentBodyId": "planet.chiron",
+              "position": [
+                -3,
+                -2
+              ],
+              "discoveredByDefault": true,
+              "availableByDefault": true,
+              "visualProgram": "systemPlanet",
+              "description": "An auroral observatory that monitors storm fronts and unexplained beacon failures near Chiron."
+            }
+          ],
+          "localRoutes": [
+            {
+              "id": "local-route.vela-gate.velaris-bastion",
+              "from": "destination.vela-gate.velaris-orbit",
+              "to": "destination.vela-gate.bastion-citadel",
+              "bidirectional": true,
+              "presentationDurationMs": 1900,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.vela-gate.velaris-seraph",
+              "from": "destination.vela-gate.velaris-orbit",
+              "to": "destination.vela-gate.seraph-relay",
+              "bidirectional": true,
+              "presentationDurationMs": 1800,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.vela-gate.bastion-antares",
+              "from": "destination.vela-gate.bastion-citadel",
+              "to": "destination.vela-gate.antares-corridor",
+              "bidirectional": true,
+              "presentationDurationMs": 2300,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.vela-gate.seraph-chiron",
+              "from": "destination.vela-gate.seraph-relay",
+              "to": "destination.vela-gate.chiron-observatory",
+              "bidirectional": true,
+              "presentationDurationMs": 2200,
+              "worldTimeCost": 1
+            },
+            {
+              "id": "local-route.vela-gate.antares-chiron",
+              "from": "destination.vela-gate.antares-corridor",
+              "to": "destination.vela-gate.chiron-observatory",
+              "bidirectional": true,
+              "presentationDurationMs": 2600,
+              "worldTimeCost": 1
+            }
+          ]
         },
         {
           "id": "system.carina-watch",
@@ -3901,37 +4363,6 @@
           }
         },
         {
-          "id": "system.talon",
-          "label": "Talon",
-          "region": "region.helix",
-          "mapPosition": [
-            20,
-            11
-          ],
-          "localSpaceId": "space.talon",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.talon",
-            "label": "Talon",
-            "classification": "rocky",
-            "radiusScale": 0.89,
-            "surfaceColor": "#78350f",
-            "secondaryColor": "#a16207",
-            "atmosphereColor": "#fbbf24",
-            "cloudColor": "#fef3c7",
-            "moonCount": 0,
-            "rings": {
-              "enabled": false,
-              "color": "#f59e0b",
-              "innerRadius": 1.4,
-              "outerRadius": 1.75,
-              "tiltDegrees": 35
-            },
-            "rotationPeriodHours": 47,
-            "description": "A sharp-ridged rocky world rich in iron and sulfur."
-          }
-        },
-        {
           "id": "system.eos",
           "label": "Eos",
           "region": "region.helix",
@@ -4087,68 +4518,6 @@
           }
         },
         {
-          "id": "system.chiron",
-          "label": "Chiron",
-          "region": "region.crown",
-          "mapPosition": [
-            23,
-            -8
-          ],
-          "localSpaceId": "space.chiron",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.chiron",
-            "label": "Chiron",
-            "classification": "rocky",
-            "radiusScale": 0.9,
-            "surfaceColor": "#52525b",
-            "secondaryColor": "#71717a",
-            "atmosphereColor": "#c4b5fd",
-            "cloudColor": "#f5f3ff",
-            "moonCount": 2,
-            "rings": {
-              "enabled": false,
-              "color": "#a78bfa",
-              "innerRadius": 1.4,
-              "outerRadius": 1.75,
-              "tiltDegrees": 32
-            },
-            "rotationPeriodHours": 49,
-            "description": "A fractured rocky planet with violet auroral storms."
-          }
-        },
-        {
-          "id": "system.bellatrix",
-          "label": "Bellatrix",
-          "region": "region.crown",
-          "mapPosition": [
-            22,
-            -6
-          ],
-          "localSpaceId": "space.bellatrix",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.bellara",
-            "label": "Bellara",
-            "classification": "oceanic",
-            "radiusScale": 1.12,
-            "surfaceColor": "#0c4a6e",
-            "secondaryColor": "#2563eb",
-            "atmosphereColor": "#38bdf8",
-            "cloudColor": "#e0f2fe",
-            "moonCount": 4,
-            "rings": {
-              "enabled": true,
-              "color": "#93c5fd",
-              "innerRadius": 1.36,
-              "outerRadius": 1.88,
-              "tiltDegrees": 20
-            },
-            "rotationPeriodHours": 35,
-            "description": "A large ringed ocean planet with deep cobalt seas."
-          }
-        },
-        {
           "id": "system.kepler",
           "label": "Kepler",
           "region": "region.crown",
@@ -4177,99 +4546,6 @@
             },
             "rotationPeriodHours": 24,
             "description": "A balanced terrestrial world with broad grasslands."
-          }
-        },
-        {
-          "id": "system.lyra",
-          "label": "Lyra",
-          "region": "region.crown",
-          "mapPosition": [
-            18,
-            -6
-          ],
-          "localSpaceId": "space.lyra",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.lyria",
-            "label": "Lyria",
-            "classification": "ice",
-            "radiusScale": 0.97,
-            "surfaceColor": "#dbeafe",
-            "secondaryColor": "#93c5fd",
-            "atmosphereColor": "#67e8f9",
-            "cloudColor": "#ffffff",
-            "moonCount": 3,
-            "rings": {
-              "enabled": true,
-              "color": "#e0f2fe",
-              "innerRadius": 1.34,
-              "outerRadius": 1.8,
-              "tiltDegrees": 28
-            },
-            "rotationPeriodHours": 57,
-            "description": "A ringed ice world reflecting blue-white starlight."
-          }
-        },
-        {
-          "id": "system.antares",
-          "label": "Antares",
-          "region": "region.crown",
-          "mapPosition": [
-            17,
-            -8
-          ],
-          "localSpaceId": "space.antares",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.antares",
-            "label": "Antares",
-            "classification": "volcanic",
-            "radiusScale": 1.05,
-            "surfaceColor": "#991b1b",
-            "secondaryColor": "#dc2626",
-            "atmosphereColor": "#fb923c",
-            "cloudColor": "#ffedd5",
-            "moonCount": 2,
-            "rings": {
-              "enabled": false,
-              "color": "#ef4444",
-              "innerRadius": 1.4,
-              "outerRadius": 1.75,
-              "tiltDegrees": 8
-            },
-            "rotationPeriodHours": 17,
-            "description": "A massive volcanic world under a red giant sun."
-          }
-        },
-        {
-          "id": "system.seraph",
-          "label": "Seraph",
-          "region": "region.crown",
-          "mapPosition": [
-            18,
-            -10
-          ],
-          "localSpaceId": "space.seraph",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.seraph",
-            "label": "Seraph",
-            "classification": "cloud",
-            "radiusScale": 1.16,
-            "surfaceColor": "#f8fafc",
-            "secondaryColor": "#fde68a",
-            "atmosphereColor": "#f9a8d4",
-            "cloudColor": "#ffffff",
-            "moonCount": 4,
-            "rings": {
-              "enabled": true,
-              "color": "#fce7f3",
-              "innerRadius": 1.3,
-              "outerRadius": 1.82,
-              "tiltDegrees": 33
-            },
-            "rotationPeriodHours": 14,
-            "description": "A luminous cloud world with a faint rose ring."
           }
         },
         {
@@ -4397,37 +4673,6 @@
           }
         },
         {
-          "id": "system.osprey",
-          "label": "Osprey",
-          "region": "region.verge",
-          "mapPosition": [
-            30,
-            3
-          ],
-          "localSpaceId": "space.osprey",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.osprey",
-            "label": "Osprey",
-            "classification": "temperate",
-            "radiusScale": 1.03,
-            "surfaceColor": "#4d7c0f",
-            "secondaryColor": "#0ea5e9",
-            "atmosphereColor": "#7dd3fc",
-            "cloudColor": "#ecfeff",
-            "moonCount": 2,
-            "rings": {
-              "enabled": false,
-              "color": "#22d3ee",
-              "innerRadius": 1.4,
-              "outerRadius": 1.75,
-              "tiltDegrees": 22
-            },
-            "rotationPeriodHours": 27,
-            "description": "A breezy temperate planet of islands and shallow seas."
-          }
-        },
-        {
           "id": "system.tempest",
           "label": "Tempest",
           "region": "region.verge",
@@ -4456,37 +4701,6 @@
             },
             "rotationPeriodHours": 8,
             "description": "A huge storm giant encircled by an electric blue ring."
-          }
-        },
-        {
-          "id": "system.bastion",
-          "label": "Bastion",
-          "region": "region.verge",
-          "mapPosition": [
-            27,
-            0
-          ],
-          "localSpaceId": "space.bastion",
-          "arrivalProfile": "arrival.bridge-retain-player",
-          "primaryPlanet": {
-            "id": "planet.bastion",
-            "label": "Bastion",
-            "classification": "mountain",
-            "radiusScale": 1.0,
-            "surfaceColor": "#334155",
-            "secondaryColor": "#78716c",
-            "atmosphereColor": "#cbd5e1",
-            "cloudColor": "#f8fafc",
-            "moonCount": 2,
-            "rings": {
-              "enabled": false,
-              "color": "#94a3b8",
-              "innerRadius": 1.4,
-              "outerRadius": 1.75,
-              "tiltDegrees": 30
-            },
-            "rotationPeriodHours": 46,
-            "description": "A high-gravity mountain world with fortress-like plateaus."
           }
         },
         {
@@ -4675,22 +4889,6 @@
           "worldTimeCost": 4
         },
         {
-          "id": "route.remora-talon",
-          "from": "system.remora",
-          "to": "system.talon",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.talon-eos",
-          "from": "system.talon",
-          "to": "system.eos",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
           "id": "route.eos-morrow",
           "from": "system.eos",
           "to": "system.morrow",
@@ -4723,62 +4921,6 @@
           "worldTimeCost": 4
         },
         {
-          "id": "route.regulus-chiron",
-          "from": "system.regulus",
-          "to": "system.chiron",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.chiron-bellatrix",
-          "from": "system.chiron",
-          "to": "system.bellatrix",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.bellatrix-kepler",
-          "from": "system.bellatrix",
-          "to": "system.kepler",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.kepler-lyra",
-          "from": "system.kepler",
-          "to": "system.lyra",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.lyra-antares",
-          "from": "system.lyra",
-          "to": "system.antares",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.antares-seraph",
-          "from": "system.antares",
-          "to": "system.seraph",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.seraph-crown-prime",
-          "from": "system.seraph",
-          "to": "system.crown-prime",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
           "id": "route.verge-prime-rook",
           "from": "system.verge-prime",
           "to": "system.rook",
@@ -4798,38 +4940,6 @@
           "id": "route.fenris-nyx",
           "from": "system.fenris",
           "to": "system.nyx",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.nyx-osprey",
-          "from": "system.nyx",
-          "to": "system.osprey",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.osprey-tempest",
-          "from": "system.osprey",
-          "to": "system.tempest",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.tempest-bastion",
-          "from": "system.tempest",
-          "to": "system.bastion",
-          "bidirectional": true,
-          "presentationDurationMs": 4500,
-          "worldTimeCost": 4
-        },
-        {
-          "id": "route.bastion-axiom",
-          "from": "system.bastion",
-          "to": "system.axiom",
           "bidirectional": true,
           "presentationDurationMs": 4500,
           "worldTimeCost": 4
@@ -4883,14 +4993,6 @@
           "worldTimeCost": 8
         },
         {
-          "id": "route.vesper-seraph",
-          "from": "system.vesper",
-          "to": "system.seraph",
-          "bidirectional": true,
-          "presentationDurationMs": 6500,
-          "worldTimeCost": 8
-        },
-        {
           "id": "route.aster-verge-prime",
           "from": "system.aster",
           "to": "system.verge-prime",
@@ -4915,12 +5017,60 @@
           "worldTimeCost": 8
         },
         {
-          "id": "route.antares-bastion",
-          "from": "system.antares",
-          "to": "system.bastion",
+          "id": "route.remora-eos",
+          "from": "system.remora",
+          "to": "system.eos",
           "bidirectional": true,
           "presentationDurationMs": 6500,
           "worldTimeCost": 8
+        },
+        {
+          "id": "route.regulus-kepler",
+          "from": "system.regulus",
+          "to": "system.kepler",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 12
+        },
+        {
+          "id": "route.kepler-crown-prime",
+          "from": "system.kepler",
+          "to": "system.crown-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 16
+        },
+        {
+          "id": "route.nyx-tempest",
+          "from": "system.nyx",
+          "to": "system.tempest",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.tempest-axiom",
+          "from": "system.tempest",
+          "to": "system.axiom",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 8
+        },
+        {
+          "id": "route.vesper-crown-prime",
+          "from": "system.vesper",
+          "to": "system.crown-prime",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 12
+        },
+        {
+          "id": "route.kepler-tempest",
+          "from": "system.kepler",
+          "to": "system.tempest",
+          "bidirectional": true,
+          "presentationDurationMs": 6500,
+          "worldTimeCost": 16
         }
       ],
       "stateDefaults": {
@@ -4949,27 +5099,36 @@
           "system.aster",
           "system.calyx",
           "system.remora",
-          "system.talon",
           "system.eos",
           "system.morrow",
           "system.halcyon",
           "system.crown-prime",
           "system.regulus",
-          "system.chiron",
-          "system.bellatrix",
           "system.kepler",
-          "system.lyra",
-          "system.antares",
-          "system.seraph",
           "system.verge-prime",
           "system.rook",
           "system.fenris",
           "system.nyx",
-          "system.osprey",
           "system.tempest",
-          "system.bastion",
           "system.axiom"
-        ]
+        ],
+        "currentLocalDestinationId": "destination.solace-reach.haven-orbit",
+        "discoveredLocalDestinations": {
+          "system.solace-reach": [
+            "destination.solace-reach.haven-orbit",
+            "destination.solace-reach.osprey-anchorage",
+            "destination.solace-reach.bellara-corridor",
+            "destination.solace-reach.lyria-transfer",
+            "destination.solace-reach.talon-approach"
+          ],
+          "system.vela-gate": [
+            "destination.vela-gate.velaris-orbit",
+            "destination.vela-gate.antares-corridor",
+            "destination.vela-gate.seraph-relay",
+            "destination.vela-gate.bastion-citadel",
+            "destination.vela-gate.chiron-observatory"
+          ]
+        }
       },
       "validation": {
         "requireUniqueSystemIds": true,
@@ -4982,8 +5141,3914 @@
         "requireStateReferences": true,
         "requireUniqueMapPositions": true,
         "requirePrimaryPlanetPerSystem": true,
-        "requireUniquePlanetIds": true
-      }
+        "requireUniquePlanetIds": true,
+        "requireUniqueLocalDestinationIds": true,
+        "requireUniqueLocalRouteIds": true,
+        "requireLocalDestinationReferences": true,
+        "requireLocalRouteReferences": true,
+        "requireLocalArrivalDestination": true,
+        "requireLocalReachability": true,
+        "requireLocalStateReferences": true
+      },
+      "captainScrawl": "Congratulations, Captain, on picking the better of the two systems."
+    },
+    "strategicAI": {
+      "schema": "game.strategicAI.v1",
+      "definitionVersion": "game.strategicAI.definition.v8",
+      "stateVersion": "game.strategicAI.state.v8",
+      "sources": [
+        {
+          "id": "source.fixture.relay-sensor",
+          "label": "Relay telemetry sensor",
+          "kind": "sensor",
+          "description": "A direct system sensor that reports the test relay's operational state."
+        },
+        {
+          "id": "source.fixture.system-checkpoint",
+          "label": "Initial world checkpoint",
+          "kind": "system",
+          "description": "The canonical state source for the deterministic strategic-AI fixture."
+        },
+        {
+          "id": "source.fixture.stale-report",
+          "label": "Stale maintenance report",
+          "kind": "report",
+          "description": "An outdated report retained to prove that a sourced belief may conflict with canonical truth."
+        },
+        {
+          "id": "source.fixture.action-kernel",
+          "label": "Strategic action kernel",
+          "kind": "system",
+          "description": "The deterministic authority and consequence runtime that records accepted fixture actions."
+        },
+        {
+          "id": "source.vela.gate-internal-records",
+          "label": "Gate Authority internal traffic records",
+          "kind": "document",
+          "description": "Restricted traffic and patrol records retained by Gate Central."
+        },
+        {
+          "id": "source.vela.rescue-guild-network",
+          "label": "Vela rescue-guild network",
+          "kind": "report",
+          "description": "Witness reports and disappearance patterns assembled by the rescue guild."
+        },
+        {
+          "id": "source.vela.survivor-direct",
+          "label": "Survivor direct account",
+          "kind": "actor",
+          "description": "First-hand testimony and the surviving beacon log from the missing vessel."
+        },
+        {
+          "id": "source.vela.compromised-rumor",
+          "label": "Compromised organizer rumor",
+          "kind": "report",
+          "description": "A plausible but false report alleging that the rescue organizer serves customs."
+        },
+        {
+          "id": "source.vela.captain-telemetry",
+          "label": "Mother-ship evidence telemetry",
+          "kind": "sensor",
+          "description": "Authenticated telemetry showing how the captain handled recovered evidence."
+        },
+        {
+          "id": "source.vela.public-ledger",
+          "label": "Vela Gate public ledger",
+          "kind": "document",
+          "description": "Public navigation notices, offers, and evidence disclosures."
+        },
+        {
+          "id": "source.vela.action-kernel",
+          "label": "Vela strategic action kernel",
+          "kind": "system",
+          "description": "The verified action runtime that records Vela Gate strategic consequences."
+        },
+        {
+          "id": "source.solace.relief-ledger",
+          "label": "Solace relief allocation ledger",
+          "kind": "system",
+          "description": "Canonical rescue-asset and relief-demand records for Solace Reach."
+        },
+        {
+          "id": "source.solace.haven-coordinator",
+          "label": "Haven relief coordinator",
+          "kind": "actor",
+          "description": "Direct reports and commitments issued by the central Haven relief coordinator."
+        },
+        {
+          "id": "source.solace.osprey-flotilla",
+          "label": "Osprey civilian flotilla",
+          "kind": "actor",
+          "description": "Civilian manifest and evacuation reports from Osprey Relief Anchorage."
+        },
+        {
+          "id": "source.solace.lyria-clinic",
+          "label": "Lyria transfer clinic",
+          "kind": "actor",
+          "description": "Medical-evacuation reports from Lyria Transfer Orbit."
+        },
+        {
+          "id": "source.solace.action-kernel",
+          "label": "Solace action kernel",
+          "kind": "system",
+          "description": "Verified canonical consequences from Solace Reach strategic actions."
+        },
+        {
+          "id": "source.solace.commitment-kernel",
+          "label": "Solace commitment kernel",
+          "kind": "system",
+          "description": "Typed kept-or-broken commitment outcomes and trust updates."
+        },
+        {
+          "id": "source.campaign.director",
+          "label": "Bounded campaign director",
+          "kind": "system",
+          "description": "Emits authored opportunity-window observations without creating evidence or issuing actor actions."
+        }
+      ],
+      "observationChannels": [
+        {
+          "id": "channel.fixture.relay-telemetry",
+          "label": "Relay telemetry",
+          "kind": "sensor",
+          "defaultReliability": 0.96,
+          "description": "Direct telemetry available to the fixture watch officer."
+        },
+        {
+          "id": "channel.fixture.action-result",
+          "label": "Strategic action result",
+          "kind": "direct",
+          "defaultReliability": 1.0,
+          "description": "A direct private observation emitted after the action kernel commits a fixture action."
+        },
+        {
+          "id": "channel.vela.gate-internal",
+          "label": "Gate Authority internal channel",
+          "kind": "document",
+          "defaultReliability": 0.9,
+          "description": "Restricted records and official sensor summaries."
+        },
+        {
+          "id": "channel.vela.guild-report",
+          "label": "Rescue-guild report channel",
+          "kind": "communication",
+          "defaultReliability": 0.65,
+          "description": "A mixed-quality network of witness and rescue reports."
+        },
+        {
+          "id": "channel.vela.survivor-direct",
+          "label": "Survivor direct observation",
+          "kind": "direct",
+          "defaultReliability": 0.98,
+          "description": "Direct observations made aboard the missing vessel."
+        },
+        {
+          "id": "channel.vela.public-network",
+          "label": "Vela public network",
+          "kind": "communication",
+          "defaultReliability": 0.82,
+          "description": "Public notices and authenticated evidence disclosures."
+        },
+        {
+          "id": "channel.vela.captain-observation",
+          "label": "Captain evidence observation",
+          "kind": "sensor",
+          "defaultReliability": 0.99,
+          "description": "Authenticated observation of the captain retaining recovered evidence."
+        },
+        {
+          "id": "channel.vela.action-result",
+          "label": "Vela strategic action result",
+          "kind": "direct",
+          "defaultReliability": 1.0,
+          "description": "A typed observation emitted by a committed Vela Gate action."
+        },
+        {
+          "id": "channel.solace.relief-dispatch",
+          "label": "Solace relief dispatch",
+          "kind": "communication",
+          "defaultReliability": 0.9,
+          "description": "Operational rescue-allocation reports shared among Solace relief coordinators."
+        },
+        {
+          "id": "channel.solace.action-result",
+          "label": "Solace verified action result",
+          "kind": "direct",
+          "defaultReliability": 1.0,
+          "description": "Direct observations emitted after verified Solace actions commit."
+        },
+        {
+          "id": "channel.solace.commitment-result",
+          "label": "Solace commitment result",
+          "kind": "direct",
+          "defaultReliability": 1.0,
+          "description": "Direct kept-or-broken promise observations from the commitment kernel."
+        },
+        {
+          "id": "channel.campaign.intervention",
+          "label": "Campaign intervention window",
+          "kind": "direct",
+          "defaultReliability": 1.0,
+          "description": "Direct notification that an authored, temporary campaign opportunity is active or inactive."
+        }
+      ],
+      "effectTypes": [
+        {
+          "id": "effect.fixture.report-recorded",
+          "label": "Status report recorded",
+          "protected": false,
+          "description": "Records a structured relay-status report without changing the relay.",
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": []
+        },
+        {
+          "id": "effect.fixture.inspection-requested",
+          "label": "Relay inspection requested",
+          "protected": false,
+          "description": "Records a request for an authorized relay inspection.",
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": []
+        },
+        {
+          "id": "effect.fixture.protected-relay-disabled",
+          "label": "Relay permanently disabled",
+          "protected": true,
+          "category": "close-route-permanent",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [
+            "authority.fixture.protected-relay-control"
+          ],
+          "targetFactId": "fact.fixture.relay-operational",
+          "value": false,
+          "description": "A protected fixture effect that would permanently disable the navigation relay."
+        },
+        {
+          "id": "effect.vela.patrol-relocated-to-chiron",
+          "label": "Patrol relocated to Chiron",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.vela.patrol-at-chiron",
+          "value": true,
+          "description": "Moves the opening patrol posture to the Chiron observatory corridor."
+        },
+        {
+          "id": "effect.vela.patrol-relocation-recorded",
+          "label": "Patrol relocation recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the official's proactive patrol movement."
+        },
+        {
+          "id": "effect.vela.corridor-repair-offered",
+          "label": "Quiet corridor repair offered",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.vela.corridor-repair-offered",
+          "value": true,
+          "description": "Records that the captain has been offered immediate corridor repair."
+        },
+        {
+          "id": "effect.vela.corridor-repair-offer-recorded",
+          "label": "Corridor repair offer recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the private repair concession as a strategic event."
+        },
+        {
+          "id": "effect.vela.traffic-records-sealed",
+          "label": "Traffic records sealed",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.vela.traffic-records-sealed",
+          "value": true,
+          "description": "Restricts access to selected internal traffic records without destroying them."
+        },
+        {
+          "id": "effect.vela.record-seal-recorded",
+          "label": "Record seal recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the official decision to seal traffic records."
+        },
+        {
+          "id": "effect.vela.evidence-made-public",
+          "label": "Beacon evidence made public",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.vela.evidence-public",
+          "value": true,
+          "description": "Publishes the existing beacon evidence through an authenticated public channel."
+        },
+        {
+          "id": "effect.vela.evidence-leak-recorded",
+          "label": "Evidence leak recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the organizer's decision to force public attention."
+        },
+        {
+          "id": "effect.vela.witness-access-restricted",
+          "label": "Witness access restricted",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records a temporary rescue-guild restriction on sensitive witness access."
+        },
+        {
+          "id": "effect.vela.rescue-request-recorded",
+          "label": "Mother-ship rescue request recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records a formal request for the mother ship to recover missing civilians."
+        },
+        {
+          "id": "effect.vela.rescue-contact-refused",
+          "label": "Rescue-guild contact refused",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the survivor refusing guild contact because of a private interpretation."
+        },
+        {
+          "id": "effect.vela.evidence-transferred-to-guild",
+          "label": "Evidence transferred to rescue guild",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.vela.evidence-holder",
+          "value": "actor.vela.rescue-organizer",
+          "description": "Transfers custody of the existing beacon log to the rescue organizer."
+        },
+        {
+          "id": "effect.vela.evidence-transfer-recorded",
+          "label": "Evidence transfer recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the survivor's transfer of the beacon log."
+        },
+        {
+          "id": "effect.vela.mother-ship-signaled",
+          "label": "Mother ship signaled",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the survivor sending a narrow rescue and evidence signal."
+        },
+        {
+          "id": "effect.vela.traffic-gap-inspection-recorded",
+          "label": "Traffic-gap inspection recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records a focused inspection of the unexplained gaps in Gate Authority traffic records."
+        },
+        {
+          "id": "effect.solace.shuttle-allocated-osprey",
+          "label": "Rescue shuttle allocated to Osprey",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.solace.shuttle-destination",
+          "value": "destination.solace-reach.osprey-anchorage",
+          "description": "Moves the shared rescue shuttle allocation from Haven to Osprey."
+        },
+        {
+          "id": "effect.solace.osprey-allocation-recorded",
+          "label": "Osprey allocation recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the verified Osprey shuttle allocation."
+        },
+        {
+          "id": "effect.solace.shuttle-claimed-lyria",
+          "label": "Rescue shuttle claimed by Lyria",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.solace.shuttle-destination",
+          "value": "destination.solace-reach.lyria-transfer",
+          "description": "Moves the shared rescue shuttle allocation from Haven to Lyria."
+        },
+        {
+          "id": "effect.solace.lyria-claim-recorded",
+          "label": "Lyria emergency claim recorded",
+          "protected": false,
+          "category": "general",
+          "operation": "append-event",
+          "requiredAuthorityIds": [],
+          "description": "Records the verified Lyria emergency shuttle claim."
+        },
+        {
+          "id": "effect.solace.manifests-shared",
+          "label": "Osprey manifests shared",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.solace.osprey-manifests-shared",
+          "value": true,
+          "description": "Makes the Osprey civilian manifests available to the Haven coordinator."
+        },
+        {
+          "id": "effect.solace.manifests-withheld",
+          "label": "Osprey manifests withheld",
+          "protected": false,
+          "category": "general",
+          "operation": "set-fact",
+          "requiredAuthorityIds": [],
+          "targetFactId": "fact.solace.osprey-manifests-shared",
+          "value": false,
+          "description": "Keeps the Osprey civilian manifests out of the Haven relief ledger."
+        }
+      ],
+      "actionTypes": [
+        {
+          "id": "action.fixture.send-status-report",
+          "label": "Send status report",
+          "requiredAuthorityIds": [
+            "authority.fixture.report-status"
+          ],
+          "effectTypeIds": [
+            "effect.fixture.report-recorded"
+          ],
+          "description": "Send a structured report based on observations available to the actor.",
+          "allowedLocationIds": [
+            "destination.solace-reach.haven-orbit"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "status-report-recorded",
+              "observerId": "actor.fixture.watch-officer",
+              "proposition": {
+                "predicate": "predicate.fixture.status-report-recorded",
+                "arguments": [
+                  "relay.fixture.haven-navigation"
+                ],
+                "value": true
+              },
+              "channelId": "channel.fixture.action-result",
+              "sourceId": "source.fixture.action-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            }
+          ]
+        },
+        {
+          "id": "action.fixture.request-relay-inspection",
+          "label": "Request relay inspection",
+          "requiredAuthorityIds": [
+            "authority.fixture.request-inspection"
+          ],
+          "effectTypeIds": [
+            "effect.fixture.inspection-requested"
+          ],
+          "description": "Request inspection when the actor believes the relay state is uncertain or contradictory.",
+          "allowedLocationIds": [
+            "destination.solace-reach.haven-orbit"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.fixture.inspection-access-available",
+              "expectedValue": true
+            }
+          ],
+          "resourceCosts": [
+            {
+              "resourceId": "resource.fixture.inspection-window",
+              "amount": 1
+            }
+          ],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "inspection-requested",
+              "observerId": "actor.fixture.watch-officer",
+              "proposition": {
+                "predicate": "predicate.fixture.inspection-requested",
+                "arguments": [
+                  "relay.fixture.haven-navigation"
+                ],
+                "value": true
+              },
+              "channelId": "channel.fixture.action-result",
+              "sourceId": "source.fixture.action-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            }
+          ]
+        },
+        {
+          "id": "action.fixture.disable-relay",
+          "label": "Disable relay permanently",
+          "requiredAuthorityIds": [],
+          "effectTypeIds": [
+            "effect.fixture.protected-relay-disabled"
+          ],
+          "allowedLocationIds": [
+            "destination.solace-reach.haven-orbit"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.fixture.relay-operational",
+              "expectedValue": true
+            }
+          ],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "relay-disabled",
+              "observerId": "actor.fixture.watch-officer",
+              "proposition": {
+                "predicate": "predicate.fixture.relay-operational",
+                "arguments": [
+                  "relay.fixture.haven-navigation"
+                ],
+                "value": false
+              },
+              "channelId": "channel.fixture.action-result",
+              "sourceId": "source.fixture.action-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            }
+          ],
+          "description": "Protected fixture action used only to prove that normal strategic actors cannot commit irreversible effects."
+        },
+        {
+          "id": "action.vela.move-patrol-to-chiron",
+          "label": "Move patrol to Chiron",
+          "requiredAuthorityIds": [
+            "authority.vela.deploy-patrol"
+          ],
+          "effectTypeIds": [
+            "effect.vela.patrol-relocated-to-chiron",
+            "effect.vela.patrol-relocation-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.velaris-orbit"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.vela.patrol-at-chiron",
+              "expectedValue": false
+            }
+          ],
+          "resourceCosts": [
+            {
+              "resourceId": "resource.vela.patrol-deployment",
+              "amount": 1
+            }
+          ],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "patrol-moved-official",
+              "observerId": "actor.vela.gate-official",
+              "proposition": {
+                "predicate": "predicate.vela.patrol-at-chiron",
+                "arguments": [
+                  "destination.vela-gate.chiron-observatory"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "patrol-moved-organizer",
+              "observerId": "actor.vela.rescue-organizer",
+              "proposition": {
+                "predicate": "predicate.vela.patrol-at-chiron",
+                "arguments": [
+                  "destination.vela-gate.chiron-observatory"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "patrol-moved-survivor",
+              "observerId": "actor.vela.survivor",
+              "proposition": {
+                "predicate": "predicate.vela.patrol-at-chiron",
+                "arguments": [
+                  "destination.vela-gate.chiron-observatory"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            }
+          ],
+          "description": "Redirect the opening Gate Authority patrol toward the suspected evidence corridor."
+        },
+        {
+          "id": "action.vela.offer-quiet-corridor-repair",
+          "label": "Offer quiet corridor repair",
+          "requiredAuthorityIds": [
+            "authority.vela.offer-corridor-repair"
+          ],
+          "effectTypeIds": [
+            "effect.vela.corridor-repair-offered",
+            "effect.vela.corridor-repair-offer-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.velaris-orbit"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.vela.corridor-repair-offered",
+              "expectedValue": false
+            }
+          ],
+          "resourceCosts": [
+            {
+              "resourceId": "resource.vela.corridor-repair-credit",
+              "amount": 1
+            }
+          ],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "repair-offer-official",
+              "observerId": "actor.vela.gate-official",
+              "proposition": {
+                "predicate": "predicate.vela.corridor-repair-offered",
+                "arguments": [
+                  "actor.captain"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "repair-offer-organizer",
+              "observerId": "actor.vela.rescue-organizer",
+              "proposition": {
+                "predicate": "predicate.vela.corridor-repair-offered",
+                "arguments": [
+                  "actor.captain"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.9,
+              "visibility": "private"
+            }
+          ],
+          "description": "Offer immediate repair in exchange for a quieter evidence timetable."
+        },
+        {
+          "id": "action.vela.seal-traffic-records",
+          "label": "Seal selected traffic records",
+          "requiredAuthorityIds": [
+            "authority.vela.seal-records"
+          ],
+          "effectTypeIds": [
+            "effect.vela.traffic-records-sealed",
+            "effect.vela.record-seal-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.velaris-orbit"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.vela.traffic-records-sealed",
+              "expectedValue": false
+            }
+          ],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "records-sealed-official",
+              "observerId": "actor.vela.gate-official",
+              "proposition": {
+                "predicate": "predicate.vela.traffic-records-sealed",
+                "arguments": [
+                  "source.vela.gate-internal-records"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            }
+          ],
+          "description": "Restrict access to selected records while the official evaluates political risk."
+        },
+        {
+          "id": "action.vela.leak-beacon-evidence",
+          "label": "Leak authenticated beacon evidence",
+          "requiredAuthorityIds": [
+            "authority.vela.leak-evidence"
+          ],
+          "effectTypeIds": [
+            "effect.vela.evidence-made-public",
+            "effect.vela.evidence-leak-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.seraph-relay"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.vela.evidence-public",
+              "expectedValue": false
+            }
+          ],
+          "resourceCosts": [
+            {
+              "resourceId": "resource.vela.public-disclosure-window",
+              "amount": 1
+            }
+          ],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "evidence-public-official",
+              "observerId": "actor.vela.gate-official",
+              "proposition": {
+                "predicate": "predicate.vela.evidence-public",
+                "arguments": [
+                  "evidence.vela.survivor-beacon-log"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "restricted"
+            },
+            {
+              "idSuffix": "evidence-public-organizer",
+              "observerId": "actor.vela.rescue-organizer",
+              "proposition": {
+                "predicate": "predicate.vela.evidence-public",
+                "arguments": [
+                  "evidence.vela.survivor-beacon-log"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "evidence-public-survivor",
+              "observerId": "actor.vela.survivor",
+              "proposition": {
+                "predicate": "predicate.vela.evidence-public",
+                "arguments": [
+                  "evidence.vela.survivor-beacon-log"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            }
+          ],
+          "description": "Use the guild's trusted publication window to force public attention."
+        },
+        {
+          "id": "action.vela.restrict-witness-access",
+          "label": "Restrict sensitive witness access",
+          "requiredAuthorityIds": [
+            "authority.vela.restrict-witness-access"
+          ],
+          "effectTypeIds": [
+            "effect.vela.witness-access-restricted"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.seraph-relay"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "witness-access-organizer",
+              "observerId": "actor.vela.rescue-organizer",
+              "proposition": {
+                "predicate": "predicate.vela.witness-access-restricted",
+                "arguments": [
+                  "actor.vela.survivor"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "witness-access-survivor",
+              "observerId": "actor.vela.survivor",
+              "proposition": {
+                "predicate": "predicate.vela.witness-access-restricted",
+                "arguments": [
+                  "actor.vela.survivor"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.85,
+              "visibility": "private"
+            }
+          ],
+          "description": "Protect the survivor while the organizer remains uncertain about official pressure."
+        },
+        {
+          "id": "action.vela.request-mother-ship-rescue",
+          "label": "Request mother-ship rescue",
+          "requiredAuthorityIds": [
+            "authority.vela.request-mother-ship-rescue"
+          ],
+          "effectTypeIds": [
+            "effect.vela.rescue-request-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.seraph-relay"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "rescue-request-organizer",
+              "observerId": "actor.vela.rescue-organizer",
+              "proposition": {
+                "predicate": "predicate.vela.mother-ship-rescue-requested",
+                "arguments": [
+                  "destination.vela-gate.chiron-observatory"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "rescue-request-survivor",
+              "observerId": "actor.vela.survivor",
+              "proposition": {
+                "predicate": "predicate.vela.mother-ship-rescue-requested",
+                "arguments": [
+                  "destination.vela-gate.chiron-observatory"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.9,
+              "visibility": "private"
+            }
+          ],
+          "description": "Ask the mother ship to recover civilians near the Chiron observatory."
+        },
+        {
+          "id": "action.vela.refuse-rescue-guild-contact",
+          "label": "Refuse rescue-guild contact",
+          "requiredAuthorityIds": [
+            "authority.vela.refuse-rescue-contact"
+          ],
+          "effectTypeIds": [
+            "effect.vela.rescue-contact-refused"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.chiron-observatory"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "contact-refused-survivor",
+              "observerId": "actor.vela.survivor",
+              "proposition": {
+                "predicate": "predicate.vela.rescue-contact-refused",
+                "arguments": [
+                  "actor.vela.rescue-organizer"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "contact-refused-organizer",
+              "observerId": "actor.vela.rescue-organizer",
+              "proposition": {
+                "predicate": "predicate.vela.rescue-contact-refused",
+                "arguments": [
+                  "actor.vela.rescue-organizer"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.88,
+              "visibility": "private"
+            }
+          ],
+          "description": "Refuse guild contact because the survivor believes the organizer is compromised."
+        },
+        {
+          "id": "action.vela.deliver-evidence-to-guild",
+          "label": "Deliver evidence to rescue guild",
+          "requiredAuthorityIds": [
+            "authority.vela.transfer-evidence"
+          ],
+          "effectTypeIds": [
+            "effect.vela.evidence-transferred-to-guild",
+            "effect.vela.evidence-transfer-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.chiron-observatory"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.vela.evidence-holder",
+              "expectedValue": "actor.vela.survivor"
+            }
+          ],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "evidence-delivered-survivor",
+              "observerId": "actor.vela.survivor",
+              "proposition": {
+                "predicate": "predicate.vela.evidence-holder",
+                "arguments": [
+                  "evidence.vela.survivor-beacon-log"
+                ],
+                "value": "actor.vela.rescue-organizer"
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "evidence-delivered-organizer",
+              "observerId": "actor.vela.rescue-organizer",
+              "proposition": {
+                "predicate": "predicate.vela.evidence-holder",
+                "arguments": [
+                  "evidence.vela.survivor-beacon-log"
+                ],
+                "value": "actor.vela.rescue-organizer"
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            }
+          ],
+          "description": "Transfer the beacon log to the rescue organizer."
+        },
+        {
+          "id": "action.vela.signal-mother-ship",
+          "label": "Signal the mother ship",
+          "requiredAuthorityIds": [
+            "authority.vela.signal-mother-ship"
+          ],
+          "effectTypeIds": [
+            "effect.vela.mother-ship-signaled"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.chiron-observatory"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "mother-ship-signaled-survivor",
+              "observerId": "actor.vela.survivor",
+              "proposition": {
+                "predicate": "predicate.vela.mother-ship-signaled",
+                "arguments": [
+                  "destination.vela-gate.chiron-observatory"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.97,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "mother-ship-signaled-official",
+              "observerId": "actor.vela.gate-official",
+              "proposition": {
+                "predicate": "predicate.vela.mother-ship-signaled",
+                "arguments": [
+                  "destination.vela-gate.chiron-observatory"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.85,
+              "visibility": "private"
+            }
+          ],
+          "description": "Send a narrow rescue and evidence signal to the mother ship."
+        },
+        {
+          "id": "action.vela.inspect-traffic-gaps",
+          "label": "Inspect internal traffic gaps",
+          "requiredAuthorityIds": [
+            "authority.vela.inspect-traffic-records"
+          ],
+          "effectTypeIds": [
+            "effect.vela.traffic-gap-inspection-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.vela-gate.velaris-orbit"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "traffic-gaps-inspected-official",
+              "observerId": "actor.vela.gate-official",
+              "proposition": {
+                "predicate": "predicate.vela.beacon-corruption-deliberate",
+                "arguments": [
+                  "system.vela-gate"
+                ],
+                "value": true
+              },
+              "channelId": "channel.vela.action-result",
+              "sourceId": "source.vela.action-kernel",
+              "reliability": 0.9,
+              "visibility": "private"
+            }
+          ],
+          "description": "Inspect the internal traffic gaps before deciding whether to disclose or suppress them."
+        },
+        {
+          "id": "action.solace.allocate-shuttle-osprey",
+          "label": "Allocate rescue shuttle to Osprey",
+          "requiredAuthorityIds": [
+            "authority.solace.allocate-rescue-shuttle"
+          ],
+          "effectTypeIds": [
+            "effect.solace.shuttle-allocated-osprey",
+            "effect.solace.osprey-allocation-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.solace-reach.haven-orbit"
+          ],
+          "preconditions": [],
+          "resourceCosts": [
+            {
+              "resourceId": "resource.solace.rescue-shuttle",
+              "amount": 1
+            }
+          ],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "shuttle-osprey-haven",
+              "observerId": "actor.solace.haven-coordinator",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-destination",
+                "arguments": [
+                  "resource.solace.rescue-shuttle"
+                ],
+                "value": "destination.solace-reach.osprey-anchorage"
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "faction"
+            },
+            {
+              "idSuffix": "shuttle-osprey-osprey",
+              "observerId": "actor.solace.osprey-captain",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-destination",
+                "arguments": [
+                  "resource.solace.rescue-shuttle"
+                ],
+                "value": "destination.solace-reach.osprey-anchorage"
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "faction"
+            },
+            {
+              "idSuffix": "shuttle-osprey-lyria",
+              "observerId": "actor.solace.lyria-medic",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-destination",
+                "arguments": [
+                  "resource.solace.rescue-shuttle"
+                ],
+                "value": "destination.solace-reach.osprey-anchorage"
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 0.96,
+              "visibility": "faction"
+            }
+          ],
+          "description": "Commit the shared rescue shuttle to Osprey's civilian flotilla."
+        },
+        {
+          "id": "action.solace.claim-shuttle-lyria",
+          "label": "Claim rescue shuttle for Lyria",
+          "requiredAuthorityIds": [
+            "authority.solace.emergency-shuttle-claim"
+          ],
+          "effectTypeIds": [
+            "effect.solace.shuttle-claimed-lyria",
+            "effect.solace.lyria-claim-recorded"
+          ],
+          "allowedLocationIds": [
+            "destination.solace-reach.lyria-transfer"
+          ],
+          "preconditions": [
+            {
+              "kind": "fact-equals",
+              "factId": "fact.solace.lyria-evacuation-critical",
+              "expectedValue": true
+            }
+          ],
+          "resourceCosts": [
+            {
+              "resourceId": "resource.solace.rescue-shuttle",
+              "amount": 1
+            }
+          ],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "shuttle-lyria-haven",
+              "observerId": "actor.solace.haven-coordinator",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-destination",
+                "arguments": [
+                  "resource.solace.rescue-shuttle"
+                ],
+                "value": "destination.solace-reach.lyria-transfer"
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "faction"
+            },
+            {
+              "idSuffix": "shuttle-lyria-osprey",
+              "observerId": "actor.solace.osprey-captain",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-destination",
+                "arguments": [
+                  "resource.solace.rescue-shuttle"
+                ],
+                "value": "destination.solace-reach.lyria-transfer"
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 0.96,
+              "visibility": "faction"
+            },
+            {
+              "idSuffix": "shuttle-lyria-lyria",
+              "observerId": "actor.solace.lyria-medic",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-destination",
+                "arguments": [
+                  "resource.solace.rescue-shuttle"
+                ],
+                "value": "destination.solace-reach.lyria-transfer"
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "faction"
+            }
+          ],
+          "description": "Use Lyria's emergency authority to claim the shared shuttle for critical evacuation."
+        },
+        {
+          "id": "action.solace.share-osprey-manifests",
+          "label": "Share Osprey civilian manifests",
+          "requiredAuthorityIds": [
+            "authority.solace.release-civilian-manifests"
+          ],
+          "effectTypeIds": [
+            "effect.solace.manifests-shared"
+          ],
+          "allowedLocationIds": [
+            "destination.solace-reach.osprey-anchorage"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "manifests-shared-osprey",
+              "observerId": "actor.solace.osprey-captain",
+              "proposition": {
+                "predicate": "predicate.solace.osprey-manifests-shared",
+                "arguments": [
+                  "destination.solace-reach.osprey-anchorage"
+                ],
+                "value": true
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "faction"
+            },
+            {
+              "idSuffix": "manifests-shared-haven",
+              "observerId": "actor.solace.haven-coordinator",
+              "proposition": {
+                "predicate": "predicate.solace.osprey-manifests-shared",
+                "arguments": [
+                  "destination.solace-reach.osprey-anchorage"
+                ],
+                "value": true
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "faction"
+            }
+          ],
+          "description": "Cooperate with Haven by releasing the civilian evacuation manifest."
+        },
+        {
+          "id": "action.solace.withhold-osprey-manifests",
+          "label": "Withhold Osprey civilian manifests",
+          "requiredAuthorityIds": [
+            "authority.solace.hold-civilian-manifests"
+          ],
+          "effectTypeIds": [
+            "effect.solace.manifests-withheld"
+          ],
+          "allowedLocationIds": [
+            "destination.solace-reach.osprey-anchorage"
+          ],
+          "preconditions": [],
+          "resourceCosts": [],
+          "resultObservationTemplates": [
+            {
+              "idSuffix": "manifests-withheld-osprey",
+              "observerId": "actor.solace.osprey-captain",
+              "proposition": {
+                "predicate": "predicate.solace.osprey-manifests-shared",
+                "arguments": [
+                  "destination.solace-reach.osprey-anchorage"
+                ],
+                "value": false
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "manifests-withheld-haven",
+              "observerId": "actor.solace.haven-coordinator",
+              "proposition": {
+                "predicate": "predicate.solace.osprey-manifests-shared",
+                "arguments": [
+                  "destination.solace-reach.osprey-anchorage"
+                ],
+                "value": false
+              },
+              "channelId": "channel.solace.action-result",
+              "sourceId": "source.solace.action-kernel",
+              "reliability": 1.0,
+              "visibility": "faction"
+            }
+          ],
+          "description": "Withhold the civilian manifest after a loss of trust in Haven coordination."
+        }
+      ],
+      "actors": [
+        {
+          "id": "actor.fixture.watch-officer",
+          "name": "Fixture Watch Officer",
+          "kind": "person",
+          "factionId": "faction.fixture.relay-watch",
+          "systemId": "system.solace-reach",
+          "localDestinationId": "destination.solace-reach.haven-orbit",
+          "goalIds": [
+            "goal.fixture.preserve-relay-continuity"
+          ],
+          "valueWeights": {
+            "value.fixture.continuity": 0.9,
+            "value.fixture.evidence-discipline": 0.8
+          },
+          "authorityIds": [
+            "authority.fixture.report-status",
+            "authority.fixture.request-inspection"
+          ],
+          "observationChannelIds": [
+            "channel.fixture.relay-telemetry",
+            "channel.fixture.action-result"
+          ],
+          "candidateActionTypeIds": [
+            "action.fixture.send-status-report",
+            "action.fixture.request-relay-inspection"
+          ],
+          "initialBeliefs": [
+            "belief.fixture.relay-operational",
+            "belief.fixture.relay-offline-stale"
+          ],
+          "initialMemories": [
+            "memory.fixture.relay-telemetry"
+          ],
+          "policyProfileId": "policy.fixture.watch-officer"
+        },
+        {
+          "id": "actor.vela.gate-official",
+          "name": "Gate Authority Official",
+          "kind": "person",
+          "factionId": "faction.vela.gate-authority",
+          "systemId": "system.vela-gate",
+          "localDestinationId": "destination.vela-gate.velaris-orbit",
+          "goalIds": [
+            "goal.vela.official.restore-navigation",
+            "goal.vela.official.preserve-authority"
+          ],
+          "valueWeights": {
+            "value.vela.legal-order": 0.91,
+            "value.vela.system-stability": 0.93,
+            "value.vela.institutional-survival": 0.76
+          },
+          "policyProfileId": "policy.vela.gate-official",
+          "authorityIds": [
+            "authority.vela.deploy-patrol",
+            "authority.vela.offer-corridor-repair",
+            "authority.vela.seal-records",
+            "authority.vela.inspect-traffic-records"
+          ],
+          "observationChannelIds": [
+            "channel.vela.gate-internal",
+            "channel.vela.public-network",
+            "channel.vela.captain-observation",
+            "channel.vela.action-result",
+            "channel.campaign.intervention"
+          ],
+          "candidateActionTypeIds": [
+            "action.vela.move-patrol-to-chiron",
+            "action.vela.offer-quiet-corridor-repair",
+            "action.vela.seal-traffic-records",
+            "action.vela.inspect-traffic-gaps"
+          ],
+          "initialBeliefs": [
+            "belief.vela.official.customs-explanation-complete",
+            "belief.vela.official.beacon-corruption-deliberate"
+          ],
+          "initialMemories": [
+            "memory.vela.official.traffic-gaps"
+          ]
+        },
+        {
+          "id": "actor.vela.rescue-organizer",
+          "name": "Rescue-Guild Organizer",
+          "kind": "person",
+          "factionId": "faction.vela.rescue-guild",
+          "systemId": "system.vela-gate",
+          "localDestinationId": "destination.vela-gate.seraph-relay",
+          "goalIds": [
+            "goal.vela.organizer.recover-civilians",
+            "goal.vela.organizer.protect-witnesses",
+            "goal.vela.organizer.expose-corruption"
+          ],
+          "valueWeights": {
+            "value.vela.civilian-life": 0.96,
+            "value.vela.public-truth": 0.84,
+            "value.vela.witness-safety": 0.92
+          },
+          "policyProfileId": "policy.vela.rescue-organizer",
+          "authorityIds": [
+            "authority.vela.leak-evidence",
+            "authority.vela.restrict-witness-access",
+            "authority.vela.request-mother-ship-rescue"
+          ],
+          "observationChannelIds": [
+            "channel.vela.guild-report",
+            "channel.vela.public-network",
+            "channel.vela.captain-observation",
+            "channel.vela.action-result",
+            "channel.campaign.intervention"
+          ],
+          "candidateActionTypeIds": [
+            "action.vela.leak-beacon-evidence",
+            "action.vela.restrict-witness-access",
+            "action.vela.request-mother-ship-rescue"
+          ],
+          "initialBeliefs": [
+            "belief.vela.organizer.beacon-corruption-deliberate",
+            "belief.vela.organizer.customs-explanation-incomplete",
+            "belief.vela.organizer.survivor-evidence-reliable"
+          ],
+          "initialMemories": [
+            "memory.vela.organizer.disappearance-pattern"
+          ]
+        },
+        {
+          "id": "actor.vela.survivor",
+          "name": "Beacon-Log Survivor",
+          "kind": "person",
+          "factionId": "faction.vela.missing-vessel",
+          "systemId": "system.vela-gate",
+          "localDestinationId": "destination.vela-gate.chiron-observatory",
+          "goalIds": [
+            "goal.vela.survivor.survive",
+            "goal.vela.survivor.protect-evidence",
+            "goal.vela.survivor.avoid-custody"
+          ],
+          "valueWeights": {
+            "value.vela.survival": 0.99,
+            "value.vela.evidence-integrity": 0.95,
+            "value.vela.personal-trust": 0.88
+          },
+          "policyProfileId": "policy.vela.survivor",
+          "authorityIds": [
+            "authority.vela.refuse-rescue-contact",
+            "authority.vela.transfer-evidence",
+            "authority.vela.signal-mother-ship"
+          ],
+          "observationChannelIds": [
+            "channel.vela.survivor-direct",
+            "channel.vela.guild-report",
+            "channel.vela.public-network",
+            "channel.vela.action-result",
+            "channel.campaign.intervention"
+          ],
+          "candidateActionTypeIds": [
+            "action.vela.refuse-rescue-guild-contact",
+            "action.vela.deliver-evidence-to-guild",
+            "action.vela.signal-mother-ship"
+          ],
+          "initialBeliefs": [
+            "belief.vela.survivor.beacon-corruption-deliberate",
+            "belief.vela.survivor.organizer-compromised",
+            "belief.vela.survivor.evidence-holder-self"
+          ],
+          "initialMemories": [
+            "memory.vela.survivor.beacon-sabotage"
+          ]
+        },
+        {
+          "id": "actor.solace.haven-coordinator",
+          "name": "Haven Relief Coordinator",
+          "kind": "person",
+          "factionId": "faction.solace.relief-coalition",
+          "systemId": "system.solace-reach",
+          "localDestinationId": "destination.solace-reach.haven-orbit",
+          "goalIds": [
+            "goal.solace.haven.coordinate-evacuation",
+            "goal.solace.haven.preserve-trust"
+          ],
+          "valueWeights": {
+            "value.solace.civilian-survival": 0.96,
+            "value.solace.fair-allocation": 0.88,
+            "value.solace.promise-reliability": 0.91
+          },
+          "policyProfileId": "policy.solace.haven-coordinator",
+          "authorityIds": [
+            "authority.solace.allocate-rescue-shuttle",
+            "authority.solace.promise-shuttle"
+          ],
+          "observationChannelIds": [
+            "channel.solace.relief-dispatch",
+            "channel.solace.action-result",
+            "channel.solace.commitment-result",
+            "channel.campaign.intervention"
+          ],
+          "candidateActionTypeIds": [
+            "action.solace.allocate-shuttle-osprey"
+          ],
+          "initialBeliefs": [
+            "belief.solace.haven.osprey-critical",
+            "belief.solace.haven.lyria-critical"
+          ],
+          "initialMemories": [
+            "memory.solace.haven.shared-shuttle"
+          ]
+        },
+        {
+          "id": "actor.solace.osprey-captain",
+          "name": "Osprey Flotilla Captain",
+          "kind": "person",
+          "factionId": "faction.solace.osprey-flotilla",
+          "systemId": "system.solace-reach",
+          "localDestinationId": "destination.solace-reach.osprey-anchorage",
+          "goalIds": [
+            "goal.solace.osprey.evacuate-civilians",
+            "goal.solace.osprey.protect-manifests"
+          ],
+          "valueWeights": {
+            "value.solace.civilian-survival": 0.97,
+            "value.solace.operational-trust": 0.9,
+            "value.solace.manifest-privacy": 0.78
+          },
+          "policyProfileId": "policy.solace.osprey-captain",
+          "authorityIds": [
+            "authority.solace.release-civilian-manifests",
+            "authority.solace.hold-civilian-manifests"
+          ],
+          "observationChannelIds": [
+            "channel.solace.relief-dispatch",
+            "channel.solace.action-result",
+            "channel.solace.commitment-result",
+            "channel.campaign.intervention"
+          ],
+          "candidateActionTypeIds": [
+            "action.solace.share-osprey-manifests",
+            "action.solace.withhold-osprey-manifests"
+          ],
+          "initialBeliefs": [
+            "belief.solace.osprey.evacuation-critical"
+          ],
+          "initialMemories": [
+            "memory.solace.osprey.previous-delay"
+          ]
+        },
+        {
+          "id": "actor.solace.lyria-medic",
+          "name": "Lyria Medical Coordinator",
+          "kind": "person",
+          "factionId": "faction.solace.lyria-clinic",
+          "systemId": "system.solace-reach",
+          "localDestinationId": "destination.solace-reach.lyria-transfer",
+          "goalIds": [
+            "goal.solace.lyria.evacuate-critical-patients"
+          ],
+          "valueWeights": {
+            "value.solace.patient-survival": 0.99,
+            "value.solace.emergency-priority": 0.95
+          },
+          "policyProfileId": "policy.solace.lyria-medic",
+          "authorityIds": [
+            "authority.solace.emergency-shuttle-claim"
+          ],
+          "observationChannelIds": [
+            "channel.solace.relief-dispatch",
+            "channel.solace.action-result",
+            "channel.solace.commitment-result",
+            "channel.campaign.intervention"
+          ],
+          "candidateActionTypeIds": [
+            "action.solace.claim-shuttle-lyria"
+          ],
+          "initialBeliefs": [
+            "belief.solace.lyria.evacuation-critical"
+          ],
+          "initialMemories": [
+            "memory.solace.lyria.patient-window"
+          ]
+        }
+      ],
+      "facts": [
+        {
+          "id": "fact.fixture.relay-operational",
+          "proposition": {
+            "predicate": "predicate.fixture.relay-operational",
+            "arguments": [
+              "relay.fixture.haven-navigation"
+            ],
+            "value": true
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.fixture.relay-sensor",
+            "source.fixture.system-checkpoint"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.fixture.inspection-access-available",
+          "proposition": {
+            "predicate": "predicate.fixture.inspection-access-available",
+            "arguments": [
+              "relay.fixture.haven-navigation"
+            ],
+            "value": true
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.fixture.system-checkpoint"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.vela.beacon-corruption-deliberate",
+          "proposition": {
+            "predicate": "predicate.vela.beacon-corruption-deliberate",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": true
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.survivor-direct",
+            "source.vela.gate-internal-records"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.vela.customs-explanation-complete",
+          "proposition": {
+            "predicate": "predicate.vela.customs-explanation-complete",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": false
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.public-ledger",
+            "source.vela.gate-internal-records"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.vela.rescue-organizer-compromised",
+          "proposition": {
+            "predicate": "predicate.vela.rescue-organizer-compromised",
+            "arguments": [
+              "actor.vela.rescue-organizer"
+            ],
+            "value": false
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.rescue-guild-network"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.vela.evidence-public",
+          "proposition": {
+            "predicate": "predicate.vela.evidence-public",
+            "arguments": [
+              "evidence.vela.survivor-beacon-log"
+            ],
+            "value": false
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.public-ledger"
+          ],
+          "visibility": "public"
+        },
+        {
+          "id": "fact.vela.patrol-at-chiron",
+          "proposition": {
+            "predicate": "predicate.vela.patrol-at-chiron",
+            "arguments": [
+              "destination.vela-gate.chiron-observatory"
+            ],
+            "value": false
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.gate-internal-records"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.vela.evidence-holder",
+          "proposition": {
+            "predicate": "predicate.vela.evidence-holder",
+            "arguments": [
+              "evidence.vela.survivor-beacon-log"
+            ],
+            "value": "actor.vela.survivor"
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.survivor-direct"
+          ],
+          "visibility": "private"
+        },
+        {
+          "id": "fact.vela.captain-retained-evidence",
+          "proposition": {
+            "predicate": "predicate.vela.captain-retained-evidence",
+            "arguments": [
+              "actor.captain",
+              "evidence.vela.atlas-copy"
+            ],
+            "value": true
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.captain-telemetry"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.vela.corridor-repair-offered",
+          "proposition": {
+            "predicate": "predicate.vela.corridor-repair-offered",
+            "arguments": [
+              "actor.captain"
+            ],
+            "value": false
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.public-ledger"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.vela.traffic-records-sealed",
+          "proposition": {
+            "predicate": "predicate.vela.traffic-records-sealed",
+            "arguments": [
+              "source.vela.gate-internal-records"
+            ],
+            "value": false
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.vela.gate-internal-records"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "fact.solace.shuttle-destination",
+          "proposition": {
+            "predicate": "predicate.solace.shuttle-destination",
+            "arguments": [
+              "resource.solace.rescue-shuttle"
+            ],
+            "value": "destination.solace-reach.haven-orbit"
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.solace.relief-ledger"
+          ],
+          "visibility": "faction"
+        },
+        {
+          "id": "fact.solace.osprey-evacuation-critical",
+          "proposition": {
+            "predicate": "predicate.solace.osprey-evacuation-critical",
+            "arguments": [
+              "destination.solace-reach.osprey-anchorage"
+            ],
+            "value": true
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.solace.osprey-flotilla"
+          ],
+          "visibility": "faction"
+        },
+        {
+          "id": "fact.solace.lyria-evacuation-critical",
+          "proposition": {
+            "predicate": "predicate.solace.lyria-evacuation-critical",
+            "arguments": [
+              "destination.solace-reach.lyria-transfer"
+            ],
+            "value": true
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.solace.lyria-clinic"
+          ],
+          "visibility": "faction"
+        },
+        {
+          "id": "fact.solace.osprey-manifests-shared",
+          "proposition": {
+            "predicate": "predicate.solace.osprey-manifests-shared",
+            "arguments": [
+              "destination.solace-reach.osprey-anchorage"
+            ],
+            "value": false
+          },
+          "status": "confirmed",
+          "sourceIds": [
+            "source.solace.osprey-flotilla"
+          ],
+          "visibility": "restricted"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "evidence.fixture.stale-relay-report",
+          "label": "Stale relay outage report",
+          "sourceId": "source.fixture.stale-report",
+          "proposition": {
+            "predicate": "predicate.fixture.relay-operational",
+            "arguments": [
+              "relay.fixture.haven-navigation"
+            ],
+            "value": false
+          },
+          "status": "disputed",
+          "reliability": 0.35,
+          "supportsFactIds": [],
+          "visibility": "private"
+        },
+        {
+          "id": "evidence.vela.internal-traffic-gaps",
+          "label": "Internal traffic-record gaps",
+          "sourceId": "source.vela.gate-internal-records",
+          "proposition": {
+            "predicate": "predicate.vela.beacon-corruption-deliberate",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": true
+          },
+          "status": "corroborated",
+          "reliability": 0.78,
+          "supportsFactIds": [
+            "fact.vela.beacon-corruption-deliberate"
+          ],
+          "visibility": "restricted"
+        },
+        {
+          "id": "evidence.vela.customs-briefing",
+          "label": "Public customs explanation",
+          "sourceId": "source.vela.public-ledger",
+          "proposition": {
+            "predicate": "predicate.vela.customs-explanation-complete",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": true
+          },
+          "status": "disputed",
+          "reliability": 0.82,
+          "supportsFactIds": [],
+          "visibility": "public"
+        },
+        {
+          "id": "evidence.vela.partial-witness-report",
+          "label": "Partial witness report",
+          "sourceId": "source.vela.rescue-guild-network",
+          "proposition": {
+            "predicate": "predicate.vela.beacon-corruption-deliberate",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": true
+          },
+          "status": "unverified",
+          "reliability": 0.46,
+          "supportsFactIds": [
+            "fact.vela.beacon-corruption-deliberate"
+          ],
+          "visibility": "private"
+        },
+        {
+          "id": "evidence.vela.compromised-organizer-rumor",
+          "label": "Rumor that the organizer is compromised",
+          "sourceId": "source.vela.compromised-rumor",
+          "proposition": {
+            "predicate": "predicate.vela.rescue-organizer-compromised",
+            "arguments": [
+              "actor.vela.rescue-organizer"
+            ],
+            "value": true
+          },
+          "status": "disputed",
+          "reliability": 0.88,
+          "supportsFactIds": [],
+          "visibility": "private"
+        },
+        {
+          "id": "evidence.vela.survivor-beacon-log",
+          "label": "Surviving beacon log",
+          "sourceId": "source.vela.survivor-direct",
+          "proposition": {
+            "predicate": "predicate.vela.beacon-corruption-deliberate",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": true
+          },
+          "status": "corroborated",
+          "reliability": 0.97,
+          "supportsFactIds": [
+            "fact.vela.beacon-corruption-deliberate"
+          ],
+          "visibility": "private"
+        }
+      ],
+      "goals": [
+        {
+          "id": "goal.fixture.preserve-relay-continuity",
+          "label": "Preserve relay continuity",
+          "ownerActorId": "actor.fixture.watch-officer",
+          "priority": 0.85,
+          "status": "active",
+          "description": "Keep the navigation relay available while distinguishing observation from stale reports."
+        },
+        {
+          "id": "goal.vela.official.restore-navigation",
+          "label": "Restore safe navigation",
+          "ownerActorId": "actor.vela.gate-official",
+          "priority": 0.92,
+          "status": "active",
+          "description": "Restore reliable navigation while maintaining legal order."
+        },
+        {
+          "id": "goal.vela.official.preserve-authority",
+          "label": "Preserve Gate Authority legitimacy",
+          "ownerActorId": "actor.vela.gate-official",
+          "priority": 0.78,
+          "status": "active",
+          "description": "Prevent panic and institutional collapse while concealed operations are investigated."
+        },
+        {
+          "id": "goal.vela.organizer.recover-civilians",
+          "label": "Recover missing civilians",
+          "ownerActorId": "actor.vela.rescue-organizer",
+          "priority": 0.96,
+          "status": "active",
+          "description": "Recover civilians lost around the corrupted beacon corridor."
+        },
+        {
+          "id": "goal.vela.organizer.protect-witnesses",
+          "label": "Protect witnesses",
+          "ownerActorId": "actor.vela.rescue-organizer",
+          "priority": 0.9,
+          "status": "active",
+          "description": "Keep witnesses and evidence out of compromised custody."
+        },
+        {
+          "id": "goal.vela.organizer.expose-corruption",
+          "label": "Expose deliberate beacon corruption",
+          "ownerActorId": "actor.vela.rescue-organizer",
+          "priority": 0.84,
+          "status": "active",
+          "description": "Publish authenticated evidence when disclosure can protect the missing."
+        },
+        {
+          "id": "goal.vela.survivor.survive",
+          "label": "Survive",
+          "ownerActorId": "actor.vela.survivor",
+          "priority": 0.98,
+          "status": "active",
+          "description": "Avoid capture and remain alive near the Chiron observatory."
+        },
+        {
+          "id": "goal.vela.survivor.protect-evidence",
+          "label": "Protect the beacon log",
+          "ownerActorId": "actor.vela.survivor",
+          "priority": 0.93,
+          "status": "active",
+          "description": "Keep the surviving beacon log from an untrusted custodian."
+        },
+        {
+          "id": "goal.vela.survivor.avoid-custody",
+          "label": "Avoid compromised custody",
+          "ownerActorId": "actor.vela.survivor",
+          "priority": 0.86,
+          "status": "active",
+          "description": "Refuse custody by anyone believed to serve the concealment operation."
+        },
+        {
+          "id": "goal.solace.haven.coordinate-evacuation",
+          "label": "Coordinate Solace evacuations",
+          "ownerActorId": "actor.solace.haven-coordinator",
+          "priority": 0.96,
+          "status": "active",
+          "description": "Allocate finite rescue assets across simultaneous Solace emergencies."
+        },
+        {
+          "id": "goal.solace.haven.preserve-trust",
+          "label": "Preserve relief-coalition trust",
+          "ownerActorId": "actor.solace.haven-coordinator",
+          "priority": 0.88,
+          "status": "active",
+          "description": "Keep explicit commitments or expose the cost of breaking them."
+        },
+        {
+          "id": "goal.solace.osprey.evacuate-civilians",
+          "label": "Evacuate the Osprey flotilla",
+          "ownerActorId": "actor.solace.osprey-captain",
+          "priority": 0.97,
+          "status": "active",
+          "description": "Move civilians out of the crowded Osprey relief anchorage."
+        },
+        {
+          "id": "goal.solace.osprey.protect-manifests",
+          "label": "Protect Osprey civilian manifests",
+          "ownerActorId": "actor.solace.osprey-captain",
+          "priority": 0.81,
+          "status": "active",
+          "description": "Share sensitive manifests only with a coordinator who keeps operational promises."
+        },
+        {
+          "id": "goal.solace.lyria.evacuate-critical-patients",
+          "label": "Evacuate Lyria critical patients",
+          "ownerActorId": "actor.solace.lyria-medic",
+          "priority": 0.99,
+          "status": "active",
+          "description": "Secure immediate transport for patients whose transfer window is closing."
+        }
+      ],
+      "checkpoints": [
+        {
+          "id": "checkpoint.strategic-ai.initial",
+          "label": "Initial strategic-AI world",
+          "worldTime": 0,
+          "factIds": [
+            "fact.fixture.relay-operational",
+            "fact.fixture.inspection-access-available",
+            "fact.vela.beacon-corruption-deliberate",
+            "fact.vela.customs-explanation-complete",
+            "fact.vela.rescue-organizer-compromised",
+            "fact.vela.evidence-public",
+            "fact.vela.patrol-at-chiron",
+            "fact.vela.evidence-holder",
+            "fact.vela.captain-retained-evidence",
+            "fact.vela.corridor-repair-offered",
+            "fact.vela.traffic-records-sealed",
+            "fact.solace.shuttle-destination",
+            "fact.solace.osprey-evacuation-critical",
+            "fact.solace.lyria-evacuation-critical",
+            "fact.solace.osprey-manifests-shared"
+          ]
+        }
+      ],
+      "stateDefaults": {
+        "stateVersion": "game.strategicAI.state.v8",
+        "currentCheckpointId": "checkpoint.strategic-ai.initial",
+        "actorStates": [
+          {
+            "actorId": "actor.fixture.watch-officer",
+            "activeGoalIds": [
+              "goal.fixture.preserve-relay-continuity"
+            ],
+            "beliefIds": [
+              "belief.fixture.relay-operational",
+              "belief.fixture.relay-offline-stale"
+            ],
+            "memoryIds": [
+              "memory.fixture.relay-telemetry"
+            ],
+            "pendingProposalIds": []
+          },
+          {
+            "actorId": "actor.vela.gate-official",
+            "activeGoalIds": [
+              "goal.vela.official.restore-navigation",
+              "goal.vela.official.preserve-authority"
+            ],
+            "beliefIds": [
+              "belief.vela.official.customs-explanation-complete",
+              "belief.vela.official.beacon-corruption-deliberate"
+            ],
+            "memoryIds": [
+              "memory.vela.official.traffic-gaps"
+            ],
+            "pendingProposalIds": []
+          },
+          {
+            "actorId": "actor.vela.rescue-organizer",
+            "activeGoalIds": [
+              "goal.vela.organizer.recover-civilians",
+              "goal.vela.organizer.protect-witnesses",
+              "goal.vela.organizer.expose-corruption"
+            ],
+            "beliefIds": [
+              "belief.vela.organizer.beacon-corruption-deliberate",
+              "belief.vela.organizer.customs-explanation-incomplete",
+              "belief.vela.organizer.survivor-evidence-reliable"
+            ],
+            "memoryIds": [
+              "memory.vela.organizer.disappearance-pattern"
+            ],
+            "pendingProposalIds": []
+          },
+          {
+            "actorId": "actor.vela.survivor",
+            "activeGoalIds": [
+              "goal.vela.survivor.survive",
+              "goal.vela.survivor.protect-evidence",
+              "goal.vela.survivor.avoid-custody"
+            ],
+            "beliefIds": [
+              "belief.vela.survivor.beacon-corruption-deliberate",
+              "belief.vela.survivor.organizer-compromised",
+              "belief.vela.survivor.evidence-holder-self"
+            ],
+            "memoryIds": [
+              "memory.vela.survivor.beacon-sabotage"
+            ],
+            "pendingProposalIds": []
+          },
+          {
+            "actorId": "actor.solace.haven-coordinator",
+            "activeGoalIds": [
+              "goal.solace.haven.coordinate-evacuation",
+              "goal.solace.haven.preserve-trust"
+            ],
+            "beliefIds": [
+              "belief.solace.haven.osprey-critical",
+              "belief.solace.haven.lyria-critical"
+            ],
+            "memoryIds": [
+              "memory.solace.haven.shared-shuttle"
+            ],
+            "pendingProposalIds": []
+          },
+          {
+            "actorId": "actor.solace.osprey-captain",
+            "activeGoalIds": [
+              "goal.solace.osprey.evacuate-civilians",
+              "goal.solace.osprey.protect-manifests"
+            ],
+            "beliefIds": [
+              "belief.solace.osprey.evacuation-critical"
+            ],
+            "memoryIds": [
+              "memory.solace.osprey.previous-delay"
+            ],
+            "pendingProposalIds": []
+          },
+          {
+            "actorId": "actor.solace.lyria-medic",
+            "activeGoalIds": [
+              "goal.solace.lyria.evacuate-critical-patients"
+            ],
+            "beliefIds": [
+              "belief.solace.lyria.evacuation-critical"
+            ],
+            "memoryIds": [
+              "memory.solace.lyria.patient-window"
+            ],
+            "pendingProposalIds": []
+          }
+        ],
+        "observations": [
+          {
+            "id": "observation.fixture.relay-telemetry",
+            "observerId": "actor.fixture.watch-officer",
+            "proposition": {
+              "predicate": "predicate.fixture.relay-operational",
+              "arguments": [
+                "relay.fixture.haven-navigation"
+              ],
+              "value": true
+            },
+            "channelId": "channel.fixture.relay-telemetry",
+            "sourceId": "source.fixture.relay-sensor",
+            "reliability": 0.96,
+            "observedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "observation.vela.official.traffic-gaps",
+            "observerId": "actor.vela.gate-official",
+            "proposition": {
+              "predicate": "predicate.vela.beacon-corruption-deliberate",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": true
+            },
+            "channelId": "channel.vela.gate-internal",
+            "sourceId": "source.vela.gate-internal-records",
+            "reliability": 0.78,
+            "observedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "observation.vela.organizer.partial-witness",
+            "observerId": "actor.vela.rescue-organizer",
+            "proposition": {
+              "predicate": "predicate.vela.beacon-corruption-deliberate",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": true
+            },
+            "channelId": "channel.vela.guild-report",
+            "sourceId": "source.vela.rescue-guild-network",
+            "reliability": 0.46,
+            "observedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "observation.vela.survivor.beacon-sabotage",
+            "observerId": "actor.vela.survivor",
+            "proposition": {
+              "predicate": "predicate.vela.beacon-corruption-deliberate",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": true
+            },
+            "channelId": "channel.vela.survivor-direct",
+            "sourceId": "source.vela.survivor-direct",
+            "reliability": 0.98,
+            "observedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "observation.vela.survivor.compromised-rumor",
+            "observerId": "actor.vela.survivor",
+            "proposition": {
+              "predicate": "predicate.vela.rescue-organizer-compromised",
+              "arguments": [
+                "actor.vela.rescue-organizer"
+              ],
+              "value": true
+            },
+            "channelId": "channel.vela.guild-report",
+            "sourceId": "source.vela.compromised-rumor",
+            "reliability": 0.88,
+            "observedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "observation.solace.haven.osprey-critical",
+            "observerId": "actor.solace.haven-coordinator",
+            "proposition": {
+              "predicate": "predicate.solace.osprey-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.osprey-anchorage"
+              ],
+              "value": true
+            },
+            "channelId": "channel.solace.relief-dispatch",
+            "sourceId": "source.solace.osprey-flotilla",
+            "reliability": 0.94,
+            "observedAt": 0,
+            "visibility": "faction"
+          },
+          {
+            "id": "observation.solace.haven.lyria-critical",
+            "observerId": "actor.solace.haven-coordinator",
+            "proposition": {
+              "predicate": "predicate.solace.lyria-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.lyria-transfer"
+              ],
+              "value": true
+            },
+            "channelId": "channel.solace.relief-dispatch",
+            "sourceId": "source.solace.lyria-clinic",
+            "reliability": 0.97,
+            "observedAt": 0,
+            "visibility": "faction"
+          },
+          {
+            "id": "observation.solace.osprey.evacuation-critical",
+            "observerId": "actor.solace.osprey-captain",
+            "proposition": {
+              "predicate": "predicate.solace.osprey-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.osprey-anchorage"
+              ],
+              "value": true
+            },
+            "channelId": "channel.solace.relief-dispatch",
+            "sourceId": "source.solace.osprey-flotilla",
+            "reliability": 0.98,
+            "observedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "observation.solace.lyria.evacuation-critical",
+            "observerId": "actor.solace.lyria-medic",
+            "proposition": {
+              "predicate": "predicate.solace.lyria-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.lyria-transfer"
+              ],
+              "value": true
+            },
+            "channelId": "channel.solace.relief-dispatch",
+            "sourceId": "source.solace.lyria-clinic",
+            "reliability": 0.99,
+            "observedAt": 0,
+            "visibility": "private"
+          }
+        ],
+        "beliefs": [
+          {
+            "id": "belief.fixture.relay-operational",
+            "holderId": "actor.fixture.watch-officer",
+            "proposition": {
+              "predicate": "predicate.fixture.relay-operational",
+              "arguments": [
+                "relay.fixture.haven-navigation"
+              ],
+              "value": true
+            },
+            "confidence": 0.96,
+            "basisIds": [
+              "observation.fixture.relay-telemetry"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.fixture.relay-offline-stale",
+            "holderId": "actor.fixture.watch-officer",
+            "proposition": {
+              "predicate": "predicate.fixture.relay-operational",
+              "arguments": [
+                "relay.fixture.haven-navigation"
+              ],
+              "value": false
+            },
+            "confidence": 0.35,
+            "basisIds": [
+              "evidence.fixture.stale-relay-report"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.official.customs-explanation-complete",
+            "holderId": "actor.vela.gate-official",
+            "proposition": {
+              "predicate": "predicate.vela.customs-explanation-complete",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": true
+            },
+            "confidence": 0.82,
+            "basisIds": [
+              "evidence.vela.customs-briefing"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.official.beacon-corruption-deliberate",
+            "holderId": "actor.vela.gate-official",
+            "proposition": {
+              "predicate": "predicate.vela.beacon-corruption-deliberate",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": true
+            },
+            "confidence": 0.68,
+            "basisIds": [
+              "observation.vela.official.traffic-gaps"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.organizer.beacon-corruption-deliberate",
+            "holderId": "actor.vela.rescue-organizer",
+            "proposition": {
+              "predicate": "predicate.vela.beacon-corruption-deliberate",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": true
+            },
+            "confidence": 0.62,
+            "basisIds": [
+              "observation.vela.organizer.partial-witness"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.organizer.customs-explanation-incomplete",
+            "holderId": "actor.vela.rescue-organizer",
+            "proposition": {
+              "predicate": "predicate.vela.customs-explanation-complete",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": false
+            },
+            "confidence": 0.64,
+            "basisIds": [
+              "evidence.vela.partial-witness-report"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.organizer.survivor-evidence-reliable",
+            "holderId": "actor.vela.rescue-organizer",
+            "proposition": {
+              "predicate": "predicate.vela.survivor-evidence-reliable",
+              "arguments": [
+                "actor.vela.survivor"
+              ],
+              "value": true
+            },
+            "confidence": 0.58,
+            "basisIds": [
+              "evidence.vela.partial-witness-report"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.survivor.beacon-corruption-deliberate",
+            "holderId": "actor.vela.survivor",
+            "proposition": {
+              "predicate": "predicate.vela.beacon-corruption-deliberate",
+              "arguments": [
+                "system.vela-gate"
+              ],
+              "value": true
+            },
+            "confidence": 0.95,
+            "basisIds": [
+              "observation.vela.survivor.beacon-sabotage"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.survivor.organizer-compromised",
+            "holderId": "actor.vela.survivor",
+            "proposition": {
+              "predicate": "predicate.vela.rescue-organizer-compromised",
+              "arguments": [
+                "actor.vela.rescue-organizer"
+              ],
+              "value": true
+            },
+            "confidence": 0.88,
+            "basisIds": [
+              "observation.vela.survivor.compromised-rumor"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.vela.survivor.evidence-holder-self",
+            "holderId": "actor.vela.survivor",
+            "proposition": {
+              "predicate": "predicate.vela.evidence-holder",
+              "arguments": [
+                "evidence.vela.survivor-beacon-log"
+              ],
+              "value": "actor.vela.survivor"
+            },
+            "confidence": 0.98,
+            "basisIds": [
+              "fact.vela.evidence-holder"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.solace.haven.osprey-critical",
+            "holderId": "actor.solace.haven-coordinator",
+            "proposition": {
+              "predicate": "predicate.solace.osprey-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.osprey-anchorage"
+              ],
+              "value": true
+            },
+            "confidence": 0.94,
+            "basisIds": [
+              "observation.solace.haven.osprey-critical"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.solace.haven.lyria-critical",
+            "holderId": "actor.solace.haven-coordinator",
+            "proposition": {
+              "predicate": "predicate.solace.lyria-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.lyria-transfer"
+              ],
+              "value": true
+            },
+            "confidence": 0.97,
+            "basisIds": [
+              "observation.solace.haven.lyria-critical"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.solace.osprey.evacuation-critical",
+            "holderId": "actor.solace.osprey-captain",
+            "proposition": {
+              "predicate": "predicate.solace.osprey-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.osprey-anchorage"
+              ],
+              "value": true
+            },
+            "confidence": 0.98,
+            "basisIds": [
+              "observation.solace.osprey.evacuation-critical"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          },
+          {
+            "id": "belief.solace.lyria.evacuation-critical",
+            "holderId": "actor.solace.lyria-medic",
+            "proposition": {
+              "predicate": "predicate.solace.lyria-evacuation-critical",
+              "arguments": [
+                "destination.solace-reach.lyria-transfer"
+              ],
+              "value": true
+            },
+            "confidence": 0.99,
+            "basisIds": [
+              "observation.solace.lyria.evacuation-critical"
+            ],
+            "updatedAt": 0,
+            "visibility": "private"
+          }
+        ],
+        "memories": [
+          {
+            "id": "memory.fixture.relay-telemetry",
+            "ownerActorId": "actor.fixture.watch-officer",
+            "kind": "episodic",
+            "summary": "Direct telemetry reported the Haven navigation relay as operational.",
+            "sourceIds": [
+              "observation.fixture.relay-telemetry"
+            ],
+            "recordedAt": 0,
+            "salience": 0.72,
+            "visibility": "private"
+          },
+          {
+            "id": "memory.vela.official.traffic-gaps",
+            "ownerActorId": "actor.vela.gate-official",
+            "kind": "semantic",
+            "summary": "Internal traffic records contain gaps inconsistent with the public customs explanation.",
+            "sourceIds": [
+              "evidence.vela.internal-traffic-gaps"
+            ],
+            "recordedAt": 0,
+            "salience": 0.82,
+            "visibility": "private"
+          },
+          {
+            "id": "memory.vela.organizer.disappearance-pattern",
+            "ownerActorId": "actor.vela.rescue-organizer",
+            "kind": "semantic",
+            "summary": "Disappearances cluster around beacon failures that official explanations do not resolve.",
+            "sourceIds": [
+              "evidence.vela.partial-witness-report"
+            ],
+            "recordedAt": 0,
+            "salience": 0.88,
+            "visibility": "private"
+          },
+          {
+            "id": "memory.vela.survivor.beacon-sabotage",
+            "ownerActorId": "actor.vela.survivor",
+            "kind": "episodic",
+            "summary": "The survivor directly witnessed the beacon sequence being altered before the vessel was lost.",
+            "sourceIds": [
+              "observation.vela.survivor.beacon-sabotage"
+            ],
+            "recordedAt": 0,
+            "salience": 0.97,
+            "visibility": "private"
+          },
+          {
+            "id": "memory.solace.haven.shared-shuttle",
+            "ownerActorId": "actor.solace.haven-coordinator",
+            "kind": "commitment",
+            "summary": "Only one rescue shuttle can answer the opening Osprey and Lyria emergencies.",
+            "sourceIds": [
+              "fact.solace.osprey-evacuation-critical",
+              "fact.solace.lyria-evacuation-critical"
+            ],
+            "recordedAt": 0,
+            "salience": 0.96,
+            "visibility": "private"
+          },
+          {
+            "id": "memory.solace.osprey.previous-delay",
+            "ownerActorId": "actor.solace.osprey-captain",
+            "kind": "social",
+            "summary": "Previous central relief promises arrived too late to protect every Osprey civilian.",
+            "sourceIds": [
+              "observation.solace.osprey.evacuation-critical"
+            ],
+            "recordedAt": 0,
+            "salience": 0.84,
+            "visibility": "private"
+          },
+          {
+            "id": "memory.solace.lyria.patient-window",
+            "ownerActorId": "actor.solace.lyria-medic",
+            "kind": "episodic",
+            "summary": "Several Lyria patients will not survive another transfer delay.",
+            "sourceIds": [
+              "observation.solace.lyria.evacuation-critical"
+            ],
+            "recordedAt": 0,
+            "salience": 0.98,
+            "visibility": "private"
+          }
+        ],
+        "receipts": [],
+        "canonicalState": {
+          "revision": 0,
+          "factStates": [
+            {
+              "factId": "fact.fixture.relay-operational",
+              "value": true
+            },
+            {
+              "factId": "fact.fixture.inspection-access-available",
+              "value": true
+            },
+            {
+              "factId": "fact.vela.beacon-corruption-deliberate",
+              "value": true
+            },
+            {
+              "factId": "fact.vela.customs-explanation-complete",
+              "value": false
+            },
+            {
+              "factId": "fact.vela.rescue-organizer-compromised",
+              "value": false
+            },
+            {
+              "factId": "fact.vela.evidence-public",
+              "value": false
+            },
+            {
+              "factId": "fact.vela.patrol-at-chiron",
+              "value": false
+            },
+            {
+              "factId": "fact.vela.evidence-holder",
+              "value": "actor.vela.survivor"
+            },
+            {
+              "factId": "fact.vela.captain-retained-evidence",
+              "value": true
+            },
+            {
+              "factId": "fact.vela.corridor-repair-offered",
+              "value": false
+            },
+            {
+              "factId": "fact.vela.traffic-records-sealed",
+              "value": false
+            },
+            {
+              "factId": "fact.solace.shuttle-destination",
+              "value": "destination.solace-reach.haven-orbit"
+            },
+            {
+              "factId": "fact.solace.osprey-evacuation-critical",
+              "value": true
+            },
+            {
+              "factId": "fact.solace.lyria-evacuation-critical",
+              "value": true
+            },
+            {
+              "factId": "fact.solace.osprey-manifests-shared",
+              "value": false
+            }
+          ],
+          "resourceBalances": [
+            {
+              "resourceId": "resource.fixture.inspection-window",
+              "quantity": 1
+            },
+            {
+              "resourceId": "resource.vela.patrol-deployment",
+              "quantity": 1
+            },
+            {
+              "resourceId": "resource.vela.public-disclosure-window",
+              "quantity": 1
+            },
+            {
+              "resourceId": "resource.vela.corridor-repair-credit",
+              "quantity": 1
+            },
+            {
+              "resourceId": "resource.solace.rescue-shuttle",
+              "quantity": 1
+            },
+            {
+              "resourceId": "resource.solace.medical-pallet",
+              "quantity": 2
+            }
+          ],
+          "events": []
+        },
+        "proposals": [],
+        "outcomes": [],
+        "reports": [],
+        "captainModels": [
+          {
+            "modelId": "captain-model.vela.gate-official",
+            "profileId": "captain-model-profile.vela.gate-official",
+            "holderActorId": "actor.vela.gate-official",
+            "subjectActorId": "actor.captain",
+            "tendencies": {
+              "tendency.captain.cooperation": 0.0,
+              "tendency.captain.evidence-discipline": 0.0,
+              "tendency.captain.authority-resistance": 0.0
+            },
+            "observationIds": [],
+            "reportIds": [],
+            "updatedAt": 0
+          },
+          {
+            "modelId": "captain-model.vela.rescue-organizer",
+            "profileId": "captain-model-profile.vela.rescue-organizer",
+            "holderActorId": "actor.vela.rescue-organizer",
+            "subjectActorId": "actor.captain",
+            "tendencies": {
+              "tendency.captain.cooperation": 0.0,
+              "tendency.captain.evidence-discipline": 0.0,
+              "tendency.captain.authority-resistance": 0.0
+            },
+            "observationIds": [],
+            "reportIds": [],
+            "updatedAt": 0
+          },
+          {
+            "modelId": "captain-model.vela.survivor",
+            "profileId": "captain-model-profile.vela.survivor",
+            "holderActorId": "actor.vela.survivor",
+            "subjectActorId": "actor.captain",
+            "tendencies": {
+              "tendency.captain.cooperation": 0.0,
+              "tendency.captain.evidence-discipline": 0.0,
+              "tendency.captain.authority-resistance": 0.0
+            },
+            "observationIds": [],
+            "reportIds": [],
+            "updatedAt": 0
+          }
+        ],
+        "commitments": [],
+        "cooperationModels": [
+          {
+            "modelId": "cooperation-model.runtime.actor.solace.osprey-captain",
+            "profileId": "cooperation.solace.osprey-trusts-haven",
+            "holderActorId": "actor.solace.osprey-captain",
+            "subjectActorId": "actor.solace.haven-coordinator",
+            "trust": 0.55,
+            "commitmentIds": [],
+            "updatedAt": 0
+          }
+        ],
+        "campaignOpportunityStates": [
+          {
+            "opportunityId": "opportunity.campaign.vela-gate-intervention",
+            "status": "available",
+            "activatedAt": null,
+            "expiresAt": null,
+            "activationReceiptId": null,
+            "activationCount": 0
+          },
+          {
+            "opportunityId": "opportunity.campaign.solace-reach-intervention",
+            "status": "available",
+            "activatedAt": null,
+            "expiresAt": null,
+            "activationReceiptId": null,
+            "activationCount": 0
+          }
+        ],
+        "directorReceipts": [],
+        "offscreenSimulationTime": 0,
+        "offscreenStepStates": [
+          {
+            "scheduleId": "offscreen-schedule.vela-gate-opening",
+            "stepId": "offscreen-step.vela.activate-window",
+            "status": "pending",
+            "attempts": 0,
+            "readyAt": 0,
+            "completedAt": null,
+            "resultIds": [],
+            "reason": ""
+          },
+          {
+            "scheduleId": "offscreen-schedule.vela-gate-opening",
+            "stepId": "offscreen-step.vela.inspect-traffic-gaps",
+            "status": "pending",
+            "attempts": 0,
+            "readyAt": 1,
+            "completedAt": null,
+            "resultIds": [],
+            "reason": ""
+          },
+          {
+            "scheduleId": "offscreen-schedule.vela-gate-opening",
+            "stepId": "offscreen-step.vela.rumor-reaches-official",
+            "status": "pending",
+            "attempts": 0,
+            "readyAt": 3,
+            "completedAt": null,
+            "resultIds": [],
+            "reason": ""
+          },
+          {
+            "scheduleId": "offscreen-schedule.vela-gate-opening",
+            "stepId": "offscreen-step.vela.official-briefing",
+            "status": "pending",
+            "attempts": 0,
+            "readyAt": 4,
+            "completedAt": null,
+            "resultIds": [],
+            "reason": ""
+          },
+          {
+            "scheduleId": "offscreen-schedule.solace-reach-relief",
+            "stepId": "offscreen-step.solace.create-shuttle-promise",
+            "status": "pending",
+            "attempts": 0,
+            "readyAt": 1,
+            "completedAt": null,
+            "resultIds": [],
+            "reason": ""
+          },
+          {
+            "scheduleId": "offscreen-schedule.solace-reach-relief",
+            "stepId": "offscreen-step.solace.word-shuttle-promise",
+            "status": "pending",
+            "attempts": 0,
+            "readyAt": 2,
+            "completedAt": null,
+            "resultIds": [],
+            "reason": ""
+          },
+          {
+            "scheduleId": "offscreen-schedule.solace-reach-relief",
+            "stepId": "offscreen-step.solace.allocate-shuttle",
+            "status": "pending",
+            "attempts": 0,
+            "readyAt": 3,
+            "completedAt": null,
+            "resultIds": [],
+            "reason": ""
+          }
+        ],
+        "offscreenSimulationReceipts": []
+      },
+      "resources": [
+        {
+          "id": "resource.fixture.inspection-window",
+          "label": "Relay inspection window",
+          "kind": "exclusive-window",
+          "capacity": 1,
+          "description": "One authorized maintenance window available for the fixture relay inspection."
+        },
+        {
+          "id": "resource.vela.patrol-deployment",
+          "label": "Gate patrol deployment",
+          "kind": "exclusive-window",
+          "capacity": 1,
+          "description": "One patrol can be redirected before the opening situation changes."
+        },
+        {
+          "id": "resource.vela.public-disclosure-window",
+          "label": "Public disclosure window",
+          "kind": "exclusive-window",
+          "capacity": 1,
+          "description": "One trusted publication channel can authenticate a major evidence release."
+        },
+        {
+          "id": "resource.vela.corridor-repair-credit",
+          "label": "Emergency corridor repair credit",
+          "kind": "consumable",
+          "capacity": 1,
+          "description": "One immediate repair concession available to the Gate Authority official."
+        },
+        {
+          "id": "resource.solace.rescue-shuttle",
+          "label": "Shared rescue shuttle",
+          "kind": "exclusive-window",
+          "capacity": 1,
+          "description": "One emergency shuttle shared by competing Osprey and Lyria evacuation plans."
+        },
+        {
+          "id": "resource.solace.medical-pallet",
+          "label": "Emergency medical pallets",
+          "kind": "consumable",
+          "capacity": 2,
+          "description": "Two medical pallets available for later Solace coordination work."
+        }
+      ],
+      "policyProfiles": [
+        {
+          "id": "policy.fixture.watch-officer",
+          "label": "Fixture watch officer policy",
+          "actionPolicies": {
+            "action.fixture.send-status-report": {
+              "baseScore": 0.0,
+              "weights": {
+                "goalPriority": 0.5,
+                "evidenceSupport": 1.0,
+                "uncertainty": -0.6,
+                "memoryRelevance": 0.1,
+                "observationReliability": 0.0
+              }
+            },
+            "action.fixture.request-relay-inspection": {
+              "baseScore": 0.0,
+              "weights": {
+                "goalPriority": 0.5,
+                "evidenceSupport": 0.1,
+                "uncertainty": 1.0,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.0
+              }
+            }
+          },
+          "description": "Deterministic fixture weights that favor reporting under strong evidence and inspection under contradiction."
+        },
+        {
+          "id": "policy.vela.gate-official",
+          "label": "Gate Authority official policy",
+          "actionPolicies": {
+            "action.vela.move-patrol-to-chiron": {
+              "baseScore": 1.0,
+              "weights": {
+                "goalPriority": 0.2,
+                "evidenceSupport": 0.15,
+                "uncertainty": 0.1,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.1
+              }
+            },
+            "action.vela.offer-quiet-corridor-repair": {
+              "baseScore": 0.52,
+              "weights": {
+                "goalPriority": 0.15,
+                "evidenceSupport": 0.2,
+                "uncertainty": -0.05,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.1,
+                "captainCooperation": 0.5
+              }
+            },
+            "action.vela.seal-traffic-records": {
+              "baseScore": 0.35,
+              "weights": {
+                "goalPriority": 0.1,
+                "evidenceSupport": 0.05,
+                "uncertainty": 0.4,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.0,
+                "captainAuthorityResistance": 1.1
+              }
+            },
+            "action.vela.inspect-traffic-gaps": {
+              "baseScore": 0.44,
+              "weights": {
+                "goalPriority": 0.1,
+                "evidenceSupport": 0.1,
+                "uncertainty": 0.2,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.0
+              }
+            }
+          },
+          "description": "Favors a proactive patrol move while preserving repair and record-control alternatives."
+        },
+        {
+          "id": "policy.vela.rescue-organizer",
+          "label": "Rescue-guild organizer policy",
+          "actionPolicies": {
+            "action.vela.leak-beacon-evidence": {
+              "baseScore": -0.25,
+              "weights": {
+                "goalPriority": 0.05,
+                "evidenceSupport": 0.1,
+                "uncertainty": 0.0,
+                "memoryRelevance": 0.0,
+                "observationReliability": 1.5,
+                "captainEvidenceDiscipline": 1.15
+              }
+            },
+            "action.vela.restrict-witness-access": {
+              "baseScore": 0.55,
+              "weights": {
+                "goalPriority": 0.05,
+                "evidenceSupport": 0.0,
+                "uncertainty": 0.1,
+                "memoryRelevance": 0.0,
+                "observationReliability": 0.0,
+                "captainEvidenceDiscipline": -0.25
+              }
+            },
+            "action.vela.request-mother-ship-rescue": {
+              "baseScore": 0.4,
+              "weights": {
+                "goalPriority": 0.1,
+                "evidenceSupport": 0.0,
+                "uncertainty": 0.05,
+                "memoryRelevance": 0.0,
+                "observationReliability": 0.0,
+                "captainCooperation": 0.25
+              }
+            }
+          },
+          "description": "Protects witnesses under weak reports but shifts to public disclosure after reliable corroboration."
+        },
+        {
+          "id": "policy.vela.survivor",
+          "label": "Beacon-log survivor policy",
+          "actionPolicies": {
+            "action.vela.refuse-rescue-guild-contact": {
+              "baseScore": 0.0,
+              "weights": {
+                "goalPriority": 0.1,
+                "evidenceSupport": 1.3,
+                "uncertainty": 0.0,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.0
+              }
+            },
+            "action.vela.deliver-evidence-to-guild": {
+              "baseScore": 0.75,
+              "weights": {
+                "goalPriority": 0.05,
+                "evidenceSupport": 0.0,
+                "uncertainty": 0.2,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.0,
+                "captainEvidenceDiscipline": 0.35
+              }
+            },
+            "action.vela.signal-mother-ship": {
+              "baseScore": 0.55,
+              "weights": {
+                "goalPriority": 0.1,
+                "evidenceSupport": 0.0,
+                "uncertainty": 0.0,
+                "memoryRelevance": 0.0,
+                "observationReliability": 0.1,
+                "captainCooperation": 0.3
+              }
+            }
+          },
+          "description": "Makes the survivor act coherently from trusted first-hand evidence and one high-confidence false report."
+        },
+        {
+          "id": "policy.solace.haven-coordinator",
+          "label": "Haven relief coordinator policy",
+          "actionPolicies": {
+            "action.solace.allocate-shuttle-osprey": {
+              "baseScore": 1.0,
+              "weights": {
+                "goalPriority": 0.2,
+                "evidenceSupport": 0.1,
+                "uncertainty": -0.05,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.1,
+                "commitmentTrust": 0.0
+              }
+            }
+          },
+          "description": "Fulfills the authored Osprey shuttle promise when the shared resource remains available."
+        },
+        {
+          "id": "policy.solace.lyria-medic",
+          "label": "Lyria medical coordinator policy",
+          "actionPolicies": {
+            "action.solace.claim-shuttle-lyria": {
+              "baseScore": 1.0,
+              "weights": {
+                "goalPriority": 0.3,
+                "evidenceSupport": 0.2,
+                "uncertainty": 0.0,
+                "memoryRelevance": 0.05,
+                "observationReliability": 0.1,
+                "commitmentTrust": 0.0
+              }
+            }
+          },
+          "description": "Claims the shared shuttle when Lyria's evacuation remains critical."
+        },
+        {
+          "id": "policy.solace.osprey-captain",
+          "label": "Osprey flotilla captain policy",
+          "actionPolicies": {
+            "action.solace.share-osprey-manifests": {
+              "baseScore": -0.2,
+              "weights": {
+                "goalPriority": 0.0,
+                "evidenceSupport": 0.0,
+                "uncertainty": 0.0,
+                "memoryRelevance": 0.0,
+                "observationReliability": 0.0,
+                "commitmentTrust": 1.2
+              }
+            },
+            "action.solace.withhold-osprey-manifests": {
+              "baseScore": 0.7,
+              "weights": {
+                "goalPriority": 0.0,
+                "evidenceSupport": 0.0,
+                "uncertainty": 0.0,
+                "memoryRelevance": 0.0,
+                "observationReliability": 0.0,
+                "commitmentTrust": -0.8
+              }
+            }
+          },
+          "description": "Shares manifests after kept promises and withholds them after a broken rescue commitment."
+        }
+      ],
+      "reportRoutes": [
+        {
+          "id": "route.vela.public-network",
+          "label": "Vela public network",
+          "mode": "public",
+          "senderActorIds": [
+            "actor.vela.gate-official",
+            "actor.vela.rescue-organizer",
+            "actor.vela.survivor"
+          ],
+          "recipientActorIds": [
+            "actor.vela.gate-official",
+            "actor.vela.rescue-organizer",
+            "actor.vela.survivor"
+          ],
+          "channelId": "channel.vela.public-network",
+          "baseReliability": 0.92,
+          "latency": 1,
+          "allowedVisibilities": [
+            "public"
+          ],
+          "maxDistortion": 0.0,
+          "description": "Carries witnessed public acts to every Vela strategic actor with explicit source ancestry."
+        },
+        {
+          "id": "route.vela.guild-direct",
+          "label": "Rescue-guild direct report",
+          "mode": "direct",
+          "senderActorIds": [
+            "actor.vela.rescue-organizer"
+          ],
+          "recipientActorIds": [
+            "actor.vela.survivor"
+          ],
+          "channelId": "channel.vela.guild-report",
+          "baseReliability": 0.86,
+          "latency": 1,
+          "allowedVisibilities": [
+            "private",
+            "restricted",
+            "public"
+          ],
+          "maxDistortion": 0.0,
+          "description": "Allows the organizer to send sourced private or restricted reports without making them public."
+        },
+        {
+          "id": "route.vela.rumor-chain",
+          "label": "Vela rumor chain",
+          "mode": "rumor",
+          "senderActorIds": [
+            "actor.vela.survivor"
+          ],
+          "recipientActorIds": [
+            "actor.vela.gate-official",
+            "actor.vela.rescue-organizer"
+          ],
+          "channelId": "channel.vela.public-network",
+          "baseReliability": 0.58,
+          "latency": 2,
+          "allowedVisibilities": [
+            "private",
+            "restricted",
+            "public"
+          ],
+          "maxDistortion": 0.45,
+          "description": "Models a bounded, explicitly lossy rumor path while preserving the original observation and parent reports."
+        }
+      ],
+      "captainModelProfiles": [
+        {
+          "id": "captain-model-profile.vela.gate-official",
+          "label": "Official interpretation of the captain",
+          "actorId": "actor.vela.gate-official",
+          "subjectActorId": "actor.captain",
+          "initialTendencies": {
+            "tendency.captain.cooperation": 0.0,
+            "tendency.captain.evidence-discipline": 0.0,
+            "tendency.captain.authority-resistance": 0.0
+          },
+          "signals": [
+            {
+              "predicate": "predicate.vela.captain-retained-evidence",
+              "value": true,
+              "tendencyDeltas": {
+                "tendency.captain.cooperation": -0.1,
+                "tendency.captain.evidence-discipline": 0.15,
+                "tendency.captain.authority-resistance": 0.75
+              }
+            }
+          ],
+          "description": "Interprets independent evidence retention primarily as resistance to Gate Authority control."
+        },
+        {
+          "id": "captain-model-profile.vela.rescue-organizer",
+          "label": "Organizer interpretation of the captain",
+          "actorId": "actor.vela.rescue-organizer",
+          "subjectActorId": "actor.captain",
+          "initialTendencies": {
+            "tendency.captain.cooperation": 0.0,
+            "tendency.captain.evidence-discipline": 0.0,
+            "tendency.captain.authority-resistance": 0.0
+          },
+          "signals": [
+            {
+              "predicate": "predicate.vela.captain-retained-evidence",
+              "value": true,
+              "tendencyDeltas": {
+                "tendency.captain.cooperation": 0.55,
+                "tendency.captain.evidence-discipline": 0.8,
+                "tendency.captain.authority-resistance": 0.2
+              }
+            }
+          ],
+          "description": "Interprets retained evidence as disciplined independence and a basis for cooperation."
+        },
+        {
+          "id": "captain-model-profile.vela.survivor",
+          "label": "Survivor interpretation of the captain",
+          "actorId": "actor.vela.survivor",
+          "subjectActorId": "actor.captain",
+          "initialTendencies": {
+            "tendency.captain.cooperation": 0.0,
+            "tendency.captain.evidence-discipline": 0.0,
+            "tendency.captain.authority-resistance": 0.0
+          },
+          "signals": [
+            {
+              "predicate": "predicate.vela.captain-retained-evidence",
+              "value": true,
+              "tendencyDeltas": {
+                "tendency.captain.cooperation": 0.3,
+                "tendency.captain.evidence-discipline": 0.65,
+                "tendency.captain.authority-resistance": 0.35
+              }
+            }
+          ],
+          "description": "Interprets retained evidence as cautious competence without assuming complete trust."
+        }
+      ],
+      "commitmentTypes": [
+        {
+          "id": "commitment.solace.shuttle-to-osprey",
+          "label": "Promise the rescue shuttle to Osprey",
+          "promisorActorIds": [
+            "actor.solace.haven-coordinator"
+          ],
+          "promiseeActorIds": [
+            "actor.solace.osprey-captain"
+          ],
+          "requiredAuthorityIds": [
+            "authority.solace.promise-shuttle"
+          ],
+          "resourceId": "resource.solace.rescue-shuttle",
+          "resourceAmount": 1,
+          "promisedActionTypeId": "action.solace.allocate-shuttle-osprey",
+          "keptObservationTemplates": [
+            {
+              "idSuffix": "kept-osprey",
+              "observerId": "actor.solace.osprey-captain",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-promise-kept",
+                "arguments": [
+                  "actor.solace.haven-coordinator"
+                ],
+                "value": true
+              },
+              "channelId": "channel.solace.commitment-result",
+              "sourceId": "source.solace.commitment-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "kept-haven",
+              "observerId": "actor.solace.haven-coordinator",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-promise-kept",
+                "arguments": [
+                  "actor.solace.osprey-captain"
+                ],
+                "value": true
+              },
+              "channelId": "channel.solace.commitment-result",
+              "sourceId": "source.solace.commitment-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            }
+          ],
+          "brokenObservationTemplates": [
+            {
+              "idSuffix": "broken-osprey",
+              "observerId": "actor.solace.osprey-captain",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-promise-kept",
+                "arguments": [
+                  "actor.solace.haven-coordinator"
+                ],
+                "value": false
+              },
+              "channelId": "channel.solace.commitment-result",
+              "sourceId": "source.solace.commitment-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            },
+            {
+              "idSuffix": "broken-haven",
+              "observerId": "actor.solace.haven-coordinator",
+              "proposition": {
+                "predicate": "predicate.solace.shuttle-promise-kept",
+                "arguments": [
+                  "actor.solace.osprey-captain"
+                ],
+                "value": false
+              },
+              "channelId": "channel.solace.commitment-result",
+              "sourceId": "source.solace.commitment-kernel",
+              "reliability": 1.0,
+              "visibility": "private"
+            }
+          ],
+          "description": "A non-reserving typed promise that is kept by an Osprey allocation and broken if the pledged shuttle is consumed elsewhere."
+        }
+      ],
+      "cooperationProfiles": [
+        {
+          "id": "cooperation.solace.osprey-trusts-haven",
+          "label": "Osprey trust in Haven relief coordination",
+          "holderActorId": "actor.solace.osprey-captain",
+          "subjectActorId": "actor.solace.haven-coordinator",
+          "initialTrust": 0.55,
+          "keptDelta": 0.8,
+          "brokenDelta": 0.8,
+          "description": "Tracks how kept or broken shuttle promises change Osprey's willingness to cooperate."
+        }
+      ],
+      "campaignOpportunities": [
+        {
+          "id": "opportunity.campaign.vela-gate-intervention",
+          "label": "Vela Gate first-contact intervention",
+          "routeSystemId": "system.vela-gate",
+          "checkpointIds": [
+            "checkpoint.strategic-ai.initial"
+          ],
+          "windowDuration": 3,
+          "observerIds": [
+            "actor.vela.gate-official",
+            "actor.vela.rescue-organizer",
+            "actor.vela.survivor"
+          ],
+          "channelId": "channel.campaign.intervention",
+          "sourceId": "source.campaign.director",
+          "reliability": 1.0,
+          "visibility": "faction",
+          "description": "Temporarily activates an authored Vela Gate intervention window while leaving Solace Reach available."
+        },
+        {
+          "id": "opportunity.campaign.solace-reach-intervention",
+          "label": "Solace Reach relief intervention",
+          "routeSystemId": "system.solace-reach",
+          "checkpointIds": [
+            "checkpoint.strategic-ai.initial"
+          ],
+          "windowDuration": 3,
+          "observerIds": [
+            "actor.solace.haven-coordinator",
+            "actor.solace.osprey-captain",
+            "actor.solace.lyria-medic"
+          ],
+          "channelId": "channel.campaign.intervention",
+          "sourceId": "source.campaign.director",
+          "reliability": 1.0,
+          "visibility": "faction",
+          "description": "Temporarily activates an authored Solace Reach intervention window while leaving Vela Gate available."
+        }
+      ],
+      "communicationClaims": [
+        {
+          "id": "communication-claim.vela.beacon-sabotage",
+          "label": "Survivor beacon sabotage testimony",
+          "speakerActorIds": [
+            "actor.vela.survivor"
+          ],
+          "authorizedAudienceActorIds": [
+            "actor.vela.rescue-organizer"
+          ],
+          "proposition": {
+            "predicate": "predicate.vela.beacon-corruption-deliberate",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": true
+          },
+          "spokenText": "the beacon sequence was deliberately altered",
+          "minimumConfidence": 0.8,
+          "description": "A private survivor claim that may be disclosed only to the rescue organizer."
+        },
+        {
+          "id": "communication-claim.vela.organizer-compromised",
+          "label": "Survivor suspicion about organizer",
+          "speakerActorIds": [
+            "actor.vela.survivor"
+          ],
+          "authorizedAudienceActorIds": [
+            "actor.vela.survivor"
+          ],
+          "proposition": {
+            "predicate": "predicate.vela.rescue-organizer-compromised",
+            "arguments": [
+              "actor.vela.rescue-organizer"
+            ],
+            "value": true
+          },
+          "spokenText": "the rescue organizer is compromised",
+          "minimumConfidence": 0.8,
+          "description": "A private suspicion deliberately not authorized for disclosure to another actor."
+        },
+        {
+          "id": "communication-claim.vela.customs-briefing",
+          "label": "Official customs briefing claim",
+          "speakerActorIds": [
+            "actor.vela.gate-official"
+          ],
+          "authorizedAudienceActorIds": [
+            "actor.vela.rescue-organizer",
+            "actor.vela.survivor"
+          ],
+          "proposition": {
+            "predicate": "predicate.vela.customs-explanation-complete",
+            "arguments": [
+              "system.vela-gate"
+            ],
+            "value": true
+          },
+          "spokenText": "the customs explanation accounts for the incident",
+          "minimumConfidence": 0.8,
+          "description": "The Gate Authority official's authorized briefing claim."
+        },
+        {
+          "id": "communication-claim.solace.osprey-critical",
+          "label": "Osprey evacuation urgency",
+          "speakerActorIds": [
+            "actor.solace.haven-coordinator"
+          ],
+          "authorizedAudienceActorIds": [
+            "actor.solace.osprey-captain"
+          ],
+          "proposition": {
+            "predicate": "predicate.solace.osprey-evacuation-critical",
+            "arguments": [
+              "destination.solace-reach.osprey-anchorage"
+            ],
+            "value": true
+          },
+          "spokenText": "the Osprey evacuation is critical",
+          "minimumConfidence": 0.9,
+          "description": "The Haven coordinator's sourced assessment of Osprey evacuation urgency."
+        }
+      ],
+      "communicativeIntents": [
+        {
+          "id": "communicative-intent.vela.survivor-report-sabotage",
+          "label": "Report beacon sabotage to rescue organizer",
+          "speechAct": "inform",
+          "speakerActorIds": [
+            "actor.vela.survivor"
+          ],
+          "audienceActorIds": [
+            "actor.vela.rescue-organizer"
+          ],
+          "claimIds": [
+            "communication-claim.vela.beacon-sabotage",
+            "communication-claim.vela.organizer-compromised"
+          ],
+          "commitmentTypeIds": [],
+          "templateIds": [
+            "speech-template.vela.survivor-sabotage-plain",
+            "speech-template.vela.survivor-sabotage-urgent",
+            "speech-template.vela.survivor-secret-unsafe"
+          ],
+          "fallbackTemplateId": "speech-template.vela.survivor-sabotage-plain",
+          "description": "Separates the survivor's inform intent from safe or unsafe surface templates."
+        },
+        {
+          "id": "communicative-intent.vela.official-customs-briefing",
+          "label": "Brief Vela actors on customs explanation",
+          "speechAct": "inform",
+          "speakerActorIds": [
+            "actor.vela.gate-official"
+          ],
+          "audienceActorIds": [
+            "actor.vela.rescue-organizer",
+            "actor.vela.survivor"
+          ],
+          "claimIds": [
+            "communication-claim.vela.customs-briefing"
+          ],
+          "commitmentTypeIds": [],
+          "templateIds": [
+            "speech-template.vela.official-briefing-plain",
+            "speech-template.vela.official-briefing-formal"
+          ],
+          "fallbackTemplateId": "speech-template.vela.official-briefing-plain",
+          "description": "An authored official briefing with deterministic fallback wording."
+        },
+        {
+          "id": "communicative-intent.solace.haven-confirm-shuttle-promise",
+          "label": "Confirm structured shuttle promise",
+          "speechAct": "promise",
+          "speakerActorIds": [
+            "actor.solace.haven-coordinator"
+          ],
+          "audienceActorIds": [
+            "actor.solace.osprey-captain"
+          ],
+          "claimIds": [
+            "communication-claim.solace.osprey-critical"
+          ],
+          "commitmentTypeIds": [
+            "commitment.solace.shuttle-to-osprey"
+          ],
+          "templateIds": [
+            "speech-template.solace.shuttle-promise-plain",
+            "speech-template.solace.shuttle-promise-formal"
+          ],
+          "fallbackTemplateId": "speech-template.solace.shuttle-promise-plain",
+          "description": "Promises are worded only when an existing structured commitment matches the parties and type."
+        }
+      ],
+      "speechTemplates": [
+        {
+          "id": "speech-template.vela.survivor-sabotage-plain",
+          "label": "Plain sabotage report",
+          "intentId": "communicative-intent.vela.survivor-report-sabotage",
+          "segments": [
+            {
+              "kind": "literal",
+              "text": "I witnessed "
+            },
+            {
+              "kind": "claim",
+              "claimId": "communication-claim.vela.beacon-sabotage"
+            },
+            {
+              "kind": "literal",
+              "text": "."
+            }
+          ],
+          "claimIds": [
+            "communication-claim.vela.beacon-sabotage"
+          ],
+          "requiresCommitment": false,
+          "description": "Deterministic fallback for the survivor's safe report."
+        },
+        {
+          "id": "speech-template.vela.survivor-sabotage-urgent",
+          "label": "Urgent sabotage report",
+          "intentId": "communicative-intent.vela.survivor-report-sabotage",
+          "segments": [
+            {
+              "kind": "literal",
+              "text": "Listen carefully: "
+            },
+            {
+              "kind": "claim",
+              "claimId": "communication-claim.vela.beacon-sabotage"
+            },
+            {
+              "kind": "literal",
+              "text": "."
+            }
+          ],
+          "claimIds": [
+            "communication-claim.vela.beacon-sabotage"
+          ],
+          "requiresCommitment": false,
+          "description": "Alternate safe wording available to a constrained adapter."
+        },
+        {
+          "id": "speech-template.vela.survivor-secret-unsafe",
+          "label": "Unauthorized organizer suspicion",
+          "intentId": "communicative-intent.vela.survivor-report-sabotage",
+          "segments": [
+            {
+              "kind": "literal",
+              "text": "I believe "
+            },
+            {
+              "kind": "claim",
+              "claimId": "communication-claim.vela.organizer-compromised"
+            },
+            {
+              "kind": "literal",
+              "text": "."
+            }
+          ],
+          "claimIds": [
+            "communication-claim.vela.organizer-compromised"
+          ],
+          "requiresCommitment": false,
+          "description": "An intentionally unauthorized template used to prove audience-safe validation and fallback."
+        },
+        {
+          "id": "speech-template.vela.official-briefing-plain",
+          "label": "Plain official briefing",
+          "intentId": "communicative-intent.vela.official-customs-briefing",
+          "segments": [
+            {
+              "kind": "literal",
+              "text": "Our current assessment is that "
+            },
+            {
+              "kind": "claim",
+              "claimId": "communication-claim.vela.customs-briefing"
+            },
+            {
+              "kind": "literal",
+              "text": "."
+            }
+          ],
+          "claimIds": [
+            "communication-claim.vela.customs-briefing"
+          ],
+          "requiresCommitment": false,
+          "description": "Deterministic official fallback wording."
+        },
+        {
+          "id": "speech-template.vela.official-briefing-formal",
+          "label": "Formal official briefing",
+          "intentId": "communicative-intent.vela.official-customs-briefing",
+          "segments": [
+            {
+              "kind": "literal",
+              "text": "For the record, "
+            },
+            {
+              "kind": "claim",
+              "claimId": "communication-claim.vela.customs-briefing"
+            },
+            {
+              "kind": "literal",
+              "text": "."
+            }
+          ],
+          "claimIds": [
+            "communication-claim.vela.customs-briefing"
+          ],
+          "requiresCommitment": false,
+          "description": "Alternate official wording."
+        },
+        {
+          "id": "speech-template.solace.shuttle-promise-plain",
+          "label": "Plain shuttle promise",
+          "intentId": "communicative-intent.solace.haven-confirm-shuttle-promise",
+          "segments": [
+            {
+              "kind": "literal",
+              "text": "Because "
+            },
+            {
+              "kind": "claim",
+              "claimId": "communication-claim.solace.osprey-critical"
+            },
+            {
+              "kind": "literal",
+              "text": ", my commitment "
+            },
+            {
+              "kind": "commitment-label"
+            },
+            {
+              "kind": "literal",
+              "text": " is "
+            },
+            {
+              "kind": "commitment-status"
+            },
+            {
+              "kind": "literal",
+              "text": "."
+            }
+          ],
+          "claimIds": [
+            "communication-claim.solace.osprey-critical"
+          ],
+          "requiresCommitment": true,
+          "description": "Deterministic wording for a real structured shuttle commitment."
+        },
+        {
+          "id": "speech-template.solace.shuttle-promise-formal",
+          "label": "Formal shuttle promise",
+          "intentId": "communicative-intent.solace.haven-confirm-shuttle-promise",
+          "segments": [
+            {
+              "kind": "audience-names"
+            },
+            {
+              "kind": "literal",
+              "text": ", I confirm "
+            },
+            {
+              "kind": "commitment-label"
+            },
+            {
+              "kind": "literal",
+              "text": " remains "
+            },
+            {
+              "kind": "commitment-status"
+            },
+            {
+              "kind": "literal",
+              "text": "."
+            }
+          ],
+          "claimIds": [],
+          "requiresCommitment": true,
+          "description": "Alternate commitment wording that remains bound to structured state."
+        }
+      ],
+      "offscreenSimulationBudget": 4,
+      "offscreenSchedules": [
+        {
+          "id": "offscreen-schedule.vela-gate-opening",
+          "label": "Vela Gate off-screen opening",
+          "systemId": "system.vela-gate",
+          "steps": [
+            {
+              "id": "offscreen-step.vela.activate-window",
+              "kind": "director",
+              "dueAt": 0,
+              "cost": 1,
+              "deadlineAt": null,
+              "operation": "activate-route",
+              "routeSystemId": "system.vela-gate",
+              "opportunityId": null,
+              "description": "Open the authored Vela intervention window while the system is off-screen."
+            },
+            {
+              "id": "offscreen-step.vela.inspect-traffic-gaps",
+              "kind": "actor-turn",
+              "dueAt": 1,
+              "cost": 2,
+              "deadlineAt": null,
+              "actorId": "actor.vela.gate-official",
+              "allowedActionTypeIds": [
+                "action.vela.inspect-traffic-gaps"
+              ],
+              "description": "Allow the gate official one verified inspection turn."
+            },
+            {
+              "id": "offscreen-step.vela.rumor-reaches-official",
+              "kind": "report",
+              "dueAt": 1,
+              "cost": 1,
+              "deadlineAt": null,
+              "routeId": "route.vela.rumor-chain",
+              "senderActorId": "actor.vela.survivor",
+              "recipientActorId": "actor.vela.gate-official",
+              "sourceObservationId": "observation.vela.survivor.compromised-rumor",
+              "description": "Transmit the survivor's sourced rumor at the route's authored latency."
+            },
+            {
+              "id": "offscreen-step.vela.official-briefing",
+              "kind": "communication",
+              "dueAt": 4,
+              "cost": 1,
+              "deadlineAt": null,
+              "intentId": "communicative-intent.vela.official-customs-briefing",
+              "speakerActorId": "actor.vela.gate-official",
+              "audienceActorIds": [
+                "actor.vela.rescue-organizer",
+                "actor.vela.survivor"
+              ],
+              "commitmentStepId": null,
+              "description": "Render a knowledge-safe official briefing after the strategic updates."
+            }
+          ],
+          "description": "A bounded Vela schedule that exercises director, action, report, and communication boundaries."
+        },
+        {
+          "id": "offscreen-schedule.solace-reach-relief",
+          "label": "Solace Reach off-screen relief",
+          "systemId": "system.solace-reach",
+          "steps": [
+            {
+              "id": "offscreen-step.solace.create-shuttle-promise",
+              "kind": "commitment",
+              "dueAt": 1,
+              "cost": 1,
+              "deadlineAt": null,
+              "commitmentTypeId": "commitment.solace.shuttle-to-osprey",
+              "promisorActorId": "actor.solace.haven-coordinator",
+              "promiseeActorId": "actor.solace.osprey-captain",
+              "description": "Create the typed rescue-shuttle promise through the commitment runtime."
+            },
+            {
+              "id": "offscreen-step.solace.word-shuttle-promise",
+              "kind": "communication",
+              "dueAt": 2,
+              "cost": 1,
+              "deadlineAt": null,
+              "intentId": "communicative-intent.solace.haven-confirm-shuttle-promise",
+              "speakerActorId": "actor.solace.haven-coordinator",
+              "audienceActorIds": [
+                "actor.solace.osprey-captain"
+              ],
+              "commitmentStepId": "offscreen-step.solace.create-shuttle-promise",
+              "description": "Render safe promise wording bound to the previously created commitment."
+            },
+            {
+              "id": "offscreen-step.solace.allocate-shuttle",
+              "kind": "actor-turn",
+              "dueAt": 3,
+              "cost": 2,
+              "deadlineAt": null,
+              "actorId": "actor.solace.haven-coordinator",
+              "allowedActionTypeIds": [
+                "action.solace.allocate-shuttle-osprey"
+              ],
+              "description": "Run the verified shuttle allocation after the authored promise."
+            }
+          ],
+          "description": "A bounded Solace schedule that exercises commitment, communication, and resource-verified action boundaries."
+        }
+      ]
     },
     "renderer": "raw-webgl-vertex-mesh",
     "actualHullBounds": true,

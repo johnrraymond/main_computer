@@ -242,10 +242,15 @@ def _environment_mutation(
             "accepted_uuid_paths": ["uuid", "environment.uuid", "data.uuid"],
         },
         "rollback_or_cleanup": {
-            "mode": "hold-empty-environment-for-review",
-            "condition": "only when this transaction created the environment and a later mutation fails",
-            "reason": "the repository does not yet prove one supported Coolify 4.1.2 environment-delete route",
-            "automatic_http_cleanup_authorized": False,
+            "mode": "exact-api-delete",
+            "condition": "only when this transaction created the environment",
+            "method": "DELETE",
+            "endpoint": (
+                f"/api/v1/projects/{project_uuid}/environments/"
+                f"${{result.{mutation_id}.environment_uuid}}"
+            ),
+            "automatic_http_cleanup_authorized": True,
+            "postcondition": "created environment UUID absent",
         },
     }
 
@@ -314,25 +319,12 @@ def _service_mutation(
             "deployment_started": False,
         },
         "rollback_or_cleanup": {
-            "mode": "ordered-api-attempts",
+            "mode": "exact-api-delete",
             "condition": "only when the service UUID was created by this transaction",
-            "requests": [
-                {
-                    "method": "DELETE",
-                    "endpoint": f"/api/v1/services/${{result.{service_result}}}",
-                },
-                {
-                    "method": "DELETE",
-                    "endpoint": (
-                        f"/api/v1/services/${{result.{service_result}}}"
-                        "?deleteConfigurations=true"
-                    ),
-                },
-                {
-                    "method": "POST",
-                    "endpoint": f"/api/v1/services/${{result.{service_result}}}/delete",
-                },
-            ],
+            "method": "DELETE",
+            "endpoint": f"/api/v1/services/${{result.{service_result}}}",
+            "automatic_http_cleanup_authorized": True,
+            "postcondition": "created service UUID absent",
         },
     }
 

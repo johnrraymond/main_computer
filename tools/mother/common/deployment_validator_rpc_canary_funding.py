@@ -46,12 +46,12 @@ from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
 
-_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_transaction.v4"
-_SCHEMA_VERSION = 4
+_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_transaction.v6"
+_SCHEMA_VERSION = 6
 _DIRECTORY = ("actions", "deployment-validator-rpc-canary-funding-transactions")
-_RELEASE_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_release.v1"
+_RELEASE_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_release.v2"
 _CLAIM_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_execution_claim.v1"
-_EVIDENCE_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_evidence.v1"
+_EVIDENCE_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_evidence.v2"
 _RELEASE_DIRECTORY = ("actions", "deployment-validator-rpc-canary-funding-releases")
 _CLAIM_DIRECTORY = ("actions", "deployment-validator-rpc-canary-funding-execution-claims")
 _EVIDENCE_DIRECTORY = ("evidence", "deployment-validator-rpc-canary-funding")
@@ -134,26 +134,74 @@ def _captain(private_state: PrivateStateReadResult) -> dict[str, Any]:
     }
 
 
+
 def _compose(name: str, command: str) -> str:
-    return (
+    """Compile one no-port service whose healthy state proves command completion."""
+    linger_seconds = 900
+    healthcheck = 'test "$(cat /proc/1/comm)" = "sleep"'
+    text = (
         f"name: {name}\n\n"
         "services:\n"
         f"  {name}:\n"
         f"    image: {_IMAGE}\n"
-        "    restart: \"no\"\n"
+        '    restart: "no"\n'
         "    read_only: true\n"
-        "    command:\n"
-        "      - sh\n"
+        "    entrypoint:\n"
+        "      - /bin/sh\n"
         "      - -ec\n"
+        "    command:\n"
         "      - |\n"
         + "\n".join(f"        {line}" for line in command.splitlines())
         + "\n"
+        "    healthcheck:\n"
+        "      test:\n"
+        "        - CMD-SHELL\n"
+        f"        - {healthcheck}\n"
+        "      interval: 2s\n"
+        "      timeout: 5s\n"
+        "      retries: 20\n"
+        "      start_period: 2s\n"
         "    labels:\n"
         "      main_computer.mother.stage: validator-rpc-canary-funding\n"
         f"      main_computer.mother.canary: {name}\n"
     )
+    parsed = yaml.safe_load(text)
+    services = parsed.get("services") if isinstance(parsed, Mapping) else None
+    service = services.get(name) if isinstance(services, Mapping) else None
+    if not (
+        isinstance(service, Mapping)
+        and list(services) == [name]
+        and service.get("entrypoint") == ["/bin/sh", "-ec"]
+        and type(service.get("command")) is list
+        and len(service["command"]) == 1
+        and "exec sleep " in str(service["command"][0])
+        and isinstance(service.get("healthcheck"), Mapping)
+        and service["healthcheck"].get("test") == ["CMD-SHELL", healthcheck]
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
+            "compiled Compose does not provide the exact status-health result channel",
+        )
+    forbidden = ("ports:", "volumes:", "secrets:", "traefik.", "0.0.0.0:")
+    if any(item in text for item in forbidden):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
+            "compiled Compose attempts a forbidden capability",
+        )
+    return text
 
 
+
+
+
+
+def _balance_classifier_script(host: str, destination: str, expected_balance: int) -> str:
+    return f"""set -eu
+RPC=http://{host}:8545
+BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
+test "$BAL" -eq {expected_balance}
+exec sleep 900
+"""
 
 
 def _funder_script(source: str, destination: str, amount: int) -> str:
@@ -163,45 +211,84 @@ RPC=http://{_A}:8545
 FROM=$(cast wallet address --private-key "${{{_CAPTAIN_SECRET_ENV}}}" | tr '[:upper:]' '[:lower:]')
 test "$FROM" = "{source}"
 DEST_BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
-if [ "$DEST_BAL" -eq {amount} ]; then
-  printf 'MOTHER_VALIDATOR_RPC_CANARY_FUNDING_A_RESULT={{"mode":"already-funded","transaction_hash":null,"destination":"{destination}","balance_wei":"%s"}}\n' "$DEST_BAL"
-  exit 0
-fi
 test "$DEST_BAL" -eq 0
 BASE=$(cast rpc --rpc-url "$RPC" eth_getBlockByNumber latest false | python -c 'import json,sys; v=json.load(sys.stdin).get("baseFeePerGas"); assert isinstance(v,str) and v.startswith("0x"); print(int(v,16))')
 test "$BASE" -le {_MAX_FEE_PER_GAS_WEI}
 SOURCE_BAL=$(cast balance --rpc-url "$RPC" --ether=false {source})
 test "$SOURCE_BAL" -ge {amount + _FUNDING_TX_MAX_FEE_WEI}
 TX=$(cast send --json --rpc-url "$RPC" --private-key "${{{_CAPTAIN_SECRET_ENV}}}" --gas-limit {_FUNDING_GAS_LIMIT} --gas-price {_MAX_FEE_PER_GAS_WEI} --priority-gas-price {_MAX_PRIORITY_FEE_PER_GAS_WEI} --value {amount} {destination})
-printf 'MOTHER_VALIDATOR_RPC_CANARY_FUNDING_A_RESULT=%s\n' "$TX"
+printf '%s' "$TX" | python -c 'import json,sys; v=json.load(sys.stdin); s=v.get("status"); n=int(s,0) if isinstance(s,str) else int(s); assert n==1'
+POST_BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
+test "$POST_BAL" -eq {amount}
+exec sleep 900
 """
 
+
+
+def _funded_verifier_script(source: str, destination: str, amount: int) -> str:
+    return f"""set -eu
+python - <<'PY'
+import json
+import urllib.request
+
+RPC = "http://{_C}:8545"
+SOURCE = "{source}"
+DESTINATION = "{destination}"
+AMOUNT = {amount}
+WINDOW = 256
+
+
+def rpc(method, params):
+    body = json.dumps({{"jsonrpc": "2.0", "id": 1, "method": method, "params": params}}).encode("utf-8")
+    request = urllib.request.Request(RPC, data=body, headers={{"Content-Type": "application/json"}})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = json.load(response)
+    assert "error" not in payload
+    return payload["result"]
+
+
+latest = int(rpc("eth_blockNumber", []), 16)
+matches = []
+for number in range(max(0, latest - WINDOW), latest + 1):
+    block = rpc("eth_getBlockByNumber", [hex(number), True])
+    if not isinstance(block, dict):
+        continue
+    for transaction in block.get("transactions", []):
+        if not isinstance(transaction, dict):
+            continue
+        sender = str(transaction.get("from", "")).lower()
+        recipient = str(transaction.get("to", "")).lower()
+        value = transaction.get("value")
+        if (
+            sender == SOURCE
+            and recipient == DESTINATION
+            and isinstance(value, str)
+            and int(value, 16) == AMOUNT
+        ):
+            matches.append(transaction)
+
+assert len(matches) == 1
+transaction = matches[0]
+transaction_hash = str(transaction["hash"]).lower()
+receipt = rpc("eth_getTransactionReceipt", [transaction_hash])
+assert isinstance(receipt, dict)
+assert str(receipt.get("transactionHash", "")).lower() == transaction_hash
+assert int(receipt.get("status", "0x0"), 16) == 1
+assert int(rpc("eth_getBalance", [DESTINATION, "latest"]), 16) == AMOUNT
+PY
+exec sleep 900
+"""
+
+
 def _verifier_script(destination: str, amount: int) -> str:
+    """Exact-balance reconciliation proof used when no transfer was required."""
     return f"""set -eu
 RPC=http://{_C}:8545
-MODE="${{MC_MOTHER_CANARY_FUNDING_MODE:-}}"
-TX_HASH="${{MC_MOTHER_CANARY_FUNDING_TX_HASH:-}}"
-case "$MODE" in
-  funded)
-    test -n "$TX_HASH"
-    RECEIPT=$(cast receipt --json --rpc-url "$RPC" "$TX_HASH")
-    printf '%s' "$RECEIPT" | python -c 'import json,sys; v=json.load(sys.stdin); assert int(v["status"],16)==1'
-    RECEIPT_VERIFIED=true
-    TX_JSON="\"$TX_HASH\""
-    ;;
-  already-funded)
-    test -z "$TX_HASH"
-    RECEIPT_VERIFIED=false
-    TX_JSON=null
-    ;;
-  *)
-    exit 1
-    ;;
-esac
 BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
 test "$BAL" -eq {amount}
-printf 'MOTHER_VALIDATOR_RPC_CANARY_FUNDING_C_RESULT={{"mode":"%s","transaction_hash":%s,"destination":"{destination}","balance_wei":"%s","receipt_verified":%s}}\n' "$MODE" "$TX_JSON" "$BAL" "$RECEIPT_VERIFIED"
+exec sleep 900
 """
+
 
 def _compose_record(text: str) -> dict[str, Any]:
     parsed = yaml.safe_load(text)
@@ -289,6 +376,7 @@ def _read_canary_transaction(
     return document, candidate.resolve(strict=False), file_sha
 
 
+
 def build_validator_rpc_canary_funding_transaction(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -328,30 +416,168 @@ def build_validator_rpc_canary_funding_transaction(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SOURCE_INVALID",
             "captain funding source overlaps a validator or canary identity",
         )
-    a_controller = _controller(private_state, _A_CONTROLLER)
-    c_controller = _controller(private_state, _C_CONTROLLER)
-    name = str(identity.get("canary_name"))
-    a_name = f"{name}-fund-a"
-    c_name = f"{name}-fund-c"
-    a_compose = _compose(a_name, _funder_script(captain["address"], destination, amount))
-    c_compose = _compose(c_name, _verifier_script(destination, amount))
-    a_body = _application_body(a_controller, a_name, a_compose)
-    c_body = _application_body(c_controller, c_name, c_compose)
+
+    controllers = {
+        _A_CONTROLLER: _controller(private_state, _A_CONTROLLER),
+        _C_CONTROLLER: _controller(private_state, _C_CONTROLLER),
+    }
+    canary_name = str(identity.get("canary_name"))
+
+    def spec(
+        key: str,
+        *,
+        controller_id: str,
+        name: str,
+        command: str,
+        proof: str,
+        secret_binding: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        compose = _compose(name, command)
+        controller = controllers[controller_id]
+        body = _application_body(controller, name, compose)
+        return key, {
+            "controller_id": controller_id,
+            "application_name": name,
+            "compose": _compose_record(compose),
+            "create_request_body": body,
+            "create_request_body_sha256": hashlib.sha256(canonical_json(body)).hexdigest(),
+            "environment_resolution_endpoint": (
+                f"/api/v1/projects/{controller['project_uuid']}/environments"
+            ),
+            "environment_name": "mainnet",
+            "result_channel": "coolify-service-detail-health",
+            "success_statuses": ["running:healthy", "running:healthy:excluded"],
+            "proof": proof,
+            "captain_secret_binding_required": secret_binding,
+        }
+
+    applications = dict([
+        spec(
+            "a_exact_balance_classifier",
+            controller_id=_A_CONTROLLER,
+            name=f"{canary_name}-classify-exact-a",
+            command=_balance_classifier_script(_A, destination, amount),
+            proof="A private RPC reports the exact target balance before any funding service is started",
+        ),
+        spec(
+            "a_zero_balance_classifier",
+            controller_id=_A_CONTROLLER,
+            name=f"{canary_name}-classify-zero-a",
+            command=_balance_classifier_script(_A, destination, 0),
+            proof="A private RPC reports a zero destination balance immediately before funding",
+        ),
+        spec(
+            "a_funder",
+            controller_id=_A_CONTROLLER,
+            name=f"{canary_name}-fund-a",
+            command=_funder_script(captain["address"], destination, amount),
+            proof=(
+                "the exact capped transfer receipt succeeded on A and the destination "
+                "balance became exact before PID 1 transitioned to sleep"
+            ),
+            secret_binding=True,
+        ),
+        spec(
+            "c_funded_verifier",
+            controller_id=_C_CONTROLLER,
+            name=f"{canary_name}-verify-funded-c",
+            command=_funded_verifier_script(captain["address"], destination, amount),
+            proof=(
+                "C independently finds exactly one recent matching captain transfer, "
+                "verifies its successful receipt, and verifies the exact destination balance"
+            ),
+        ),
+        spec(
+            "c_reconciled_verifier",
+            controller_id=_C_CONTROLLER,
+            name=f"{canary_name}-verify-reconciled-c",
+            command=_verifier_script(destination, amount),
+            proof="C independently verifies the exact pre-existing destination balance",
+        ),
+    ])
+
+    future_mutations: list[dict[str, Any]] = []
+    ordinal = 0
+    for key in (
+        "a_exact_balance_classifier",
+        "a_zero_balance_classifier",
+        "a_funder",
+        "c_funded_verifier",
+        "c_reconciled_verifier",
+    ):
+        app = applications[key]
+        name = app["application_name"]
+        ordinal += 1
+        future_mutations.append({
+            "ordinal": ordinal,
+            "conditional_service": key,
+            "mutation_id": f"{name}.create-service",
+            "controller_id": app["controller_id"],
+            "method": "POST",
+            "endpoint": "/api/v1/services",
+            "canonical_request_body": app["create_request_body"],
+            "body_materialization": "add-exact-read-only-environment-uuid",
+            "success_statuses": [200, 201, 202],
+            "bind_result": "service_uuid",
+        })
+        if key == "a_funder":
+            ordinal += 1
+            future_mutations.append({
+                "ordinal": ordinal,
+                "conditional_service": key,
+                "mutation_id": f"{name}.bind-captain-secret",
+                "controller_id": app["controller_id"],
+                "method": "POST",
+                "endpoint_template": "/api/v1/services/${result.service_uuid}/envs",
+                "secret_source_field": captain["private_state_field"],
+                "environment_key": _CAPTAIN_SECRET_ENV,
+                "value_in_transaction": False,
+                "success_statuses": [200, 201, 202],
+            })
+        ordinal += 1
+        future_mutations.append({
+            "ordinal": ordinal,
+            "conditional_service": key,
+            "mutation_id": f"{name}.start",
+            "controller_id": app["controller_id"],
+            "method": "POST",
+            "endpoint_template": "/api/v1/services/${result.service_uuid}/start",
+            "success_statuses": [200, 201, 202],
+        })
+        ordinal += 1
+        future_mutations.append({
+            "ordinal": ordinal,
+            "conditional_service": key,
+            "mutation_id": f"{name}.delete",
+            "controller_id": app["controller_id"],
+            "method": "DELETE",
+            "endpoint_template": "/api/v1/services/${result.service_uuid}",
+            "success_statuses": [200, 204, 404],
+            "cleanup_required": True,
+        })
+
     transaction: dict[str, Any] = {
         "kind": _KIND,
         "schema_version": _SCHEMA_VERSION,
         "created_at": _timestamp(created_at),
         "network": "mainnet",
         "mother_binding": _binding(private_state),
-        "staged_scope": "offline-exact-capped-validator-rpc-canary-funding",
+        "staged_scope": "offline-exact-capped-validator-rpc-canary-funding-status-health-v1",
         "coolify_transport": {
             "resource_api": "services",
             "create_endpoint": "/api/v1/services",
-            "deprecated_application_create_endpoint_authorized": False,
             "compose_encoding": "base64",
             "environment_uuid_resolution": "read-only-exact-name-before-create",
-            "deployment_result_endpoint_template": "/api/v1/deployments/{deployment_uuid}",
+            "service_start_endpoint_template": "/api/v1/services/{service_uuid}/start",
+            "service_start_method": "POST",
+            "service_detail_endpoint_template": "/api/v1/services/{service_uuid}",
+            "healthy_running_statuses": ["running:healthy", "running:healthy:excluded"],
+            "result_channel": "service-detail-health",
+            "deployment_uuid_required": False,
+            "deployment_inventory_endpoint_authorized": False,
+            "deployment_result_endpoint_authorized": False,
             "service_log_endpoints_authorized": False,
+            "generic_deploy_endpoint_authorized": False,
         },
         "canary_transaction": {
             "locator": _relative(paths, canary_path, "validator-RPC canary transaction"),
@@ -392,138 +618,26 @@ def build_validator_rpc_canary_funding_transaction(
             "idempotent_exact_balance_reconciliation_supported": True,
             "cross_validator_receipt_verification_required_when_new_transfer": True,
             "cross_validator_balance_verification_required": True,
+            "transaction_hash_result_transport_required": False,
+            "failed_started_funder_without_health_proof_is_chain_state_unknown": True,
         },
-        "applications": {
-            "a_funder": {
-                "controller_id": _A_CONTROLLER,
-                "application_name": a_name,
-                "compose": _compose_record(a_compose),
-                "create_request_body": a_body,
-                "create_request_body_sha256": hashlib.sha256(canonical_json(a_body)).hexdigest(),
-                "environment_resolution_endpoint": (
-                    f"/api/v1/projects/{a_controller['project_uuid']}/environments"
-                ),
-                "environment_name": "mainnet",
-                "result_marker": "MOTHER_VALIDATOR_RPC_CANARY_FUNDING_A_RESULT=",
-                "result_transport": "coolify-deployment-record-logs",
-                "rpc_url": f"http://{_A}:8545",
-            },
-            "c_verifier": {
-                "controller_id": _C_CONTROLLER,
-                "application_name": c_name,
-                "compose": _compose_record(c_compose),
-                "create_request_body": c_body,
-                "create_request_body_sha256": hashlib.sha256(canonical_json(c_body)).hexdigest(),
-                "environment_resolution_endpoint": (
-                    f"/api/v1/projects/{c_controller['project_uuid']}/environments"
-                ),
-                "environment_name": "mainnet",
-                "result_marker": "MOTHER_VALIDATOR_RPC_CANARY_FUNDING_C_RESULT=",
-                "result_transport": "coolify-deployment-record-logs",
-                "rpc_url": f"http://{_C}:8545",
-            },
-        },
+        "applications": applications,
         "future_execution_plan": {
-            "read_only_preconditions": [
-                {
-                    "phase": "A-mainnet-environment-resolution",
-                    "controller_id": _A_CONTROLLER,
-                    "method": "GET",
-                    "endpoint": f"/api/v1/projects/{a_controller['project_uuid']}/environments",
-                    "expected_name": "mainnet",
-                    "bind_result": "environment_uuid",
-                },
-                {
-                    "phase": "C-mainnet-environment-resolution",
-                    "controller_id": _C_CONTROLLER,
-                    "method": "GET",
-                    "endpoint": f"/api/v1/projects/{c_controller['project_uuid']}/environments",
-                    "expected_name": "mainnet",
-                    "bind_result": "environment_uuid",
-                },
+            "classification": [
+                "prove exact balance on A through one healthy classifier",
+                "otherwise prove zero balance on A through one healthy classifier",
+                "fail closed if neither classifier becomes healthy",
             ],
-            "mutations": [
-                {
-                    "ordinal": 1,
-                    "mutation_id": f"{a_name}.create-application",
-                    "controller_id": _A_CONTROLLER,
-                    "method": "POST",
-                    "endpoint": "/api/v1/services",
-                    "canonical_request_body": a_body,
-                    "body_materialization": "add-exact-read-only-environment-uuid",
-                    "success_statuses": [200, 201, 202],
-                    "bind_result": "application_uuid",
-                },
-                {
-                    "ordinal": 2,
-                    "mutation_id": f"{a_name}.bind-captain-secret",
-                    "controller_id": _A_CONTROLLER,
-                    "method": "POST",
-                    "endpoint_template": f"/api/v1/services/${{result.{a_name}.create-application.application_uuid}}/envs",
-                    "secret_source_field": captain["private_state_field"],
-                    "environment_key": _CAPTAIN_SECRET_ENV,
-                    "value_in_transaction": False,
-                    "success_statuses": [200, 201, 202],
-                },
-                {
-                    "ordinal": 3,
-                    "mutation_id": f"{a_name}.deploy",
-                    "controller_id": _A_CONTROLLER,
-                    "method": "GET",
-                    "endpoint_template": f"/api/v1/deploy?uuid=${{result.{a_name}.create-application.application_uuid}}&force=false",
-                    "success_statuses": [200, 201, 202],
-                    "bind_result": "deployment_uuid",
-                    "result_endpoint_template": "/api/v1/deployments/${result.deployment_uuid}",
-                },
-                {
-                    "ordinal": 4,
-                    "mutation_id": f"{a_name}.delete",
-                    "controller_id": _A_CONTROLLER,
-                    "method": "DELETE",
-                    "endpoint_template": f"/api/v1/services/${{result.{a_name}.create-application.application_uuid}}",
-                    "success_statuses": [200, 204],
-                    "cleanup_required": True,
-                },
-                {
-                    "ordinal": 5,
-                    "mutation_id": f"{c_name}.create-application",
-                    "controller_id": _C_CONTROLLER,
-                    "method": "POST",
-                    "endpoint": "/api/v1/services",
-                    "canonical_request_body": c_body,
-                    "success_statuses": [200, 201, 202],
-                    "bind_result": "application_uuid",
-                },
-                {
-                    "ordinal": 6,
-                    "mutation_id": f"{c_name}.bind-public-funding-result",
-                    "controller_id": _C_CONTROLLER,
-                    "method": "PATCH",
-                    "endpoint_template": f"/api/v1/services/${{result.{c_name}.create-application.application_uuid}}/envs/bulk",
-                    "value_source": "validated A funding mode and optional transaction hash",
-                    "secret_material": False,
-                    "success_statuses": [200, 201, 202],
-                },
-                {
-                    "ordinal": 7,
-                    "mutation_id": f"{c_name}.deploy",
-                    "controller_id": _C_CONTROLLER,
-                    "method": "GET",
-                    "endpoint_template": f"/api/v1/deploy?uuid=${{result.{c_name}.create-application.application_uuid}}&force=false",
-                    "success_statuses": [200, 201, 202],
-                    "bind_result": "deployment_uuid",
-                    "result_endpoint_template": "/api/v1/deployments/${result.deployment_uuid}",
-                },
-                {
-                    "ordinal": 8,
-                    "mutation_id": f"{c_name}.delete",
-                    "controller_id": _C_CONTROLLER,
-                    "method": "DELETE",
-                    "endpoint_template": f"/api/v1/services/${{result.{c_name}.create-application.application_uuid}}",
-                    "success_statuses": [200, 204],
-                    "cleanup_required": True,
-                },
+            "funded_path": [
+                "start the exact capped A funder only after zero classification",
+                "accept A completion only from the committed healthy service state",
+                "accept C completion only after independent transfer discovery, receipt verification, and exact balance verification",
             ],
+            "reconciled_path": [
+                "do not bind the captain key or start the funder",
+                "accept completion only after C independently verifies the exact balance",
+            ],
+            "mutations": future_mutations,
             "validator_mutations": [],
             "validator_restarts": [],
         },
@@ -535,6 +649,7 @@ def build_validator_rpc_canary_funding_transaction(
                 "source_field": captain["private_state_field"],
                 "expected_address": captain["address"],
                 "value_in_transaction": False,
+                "bound_only_after_zero_balance_health_proof": True,
             }
         ],
         "authority": {
@@ -556,11 +671,16 @@ def build_validator_rpc_canary_funding_transaction(
             "funding_transaction_compiled": True,
             "funding_source_genesis_allocated": True,
             "idempotent_balance_reconcile_or_fund_compiled": True,
-            "deployment_record_log_retrieval_compiled": True,
+            "service_start_transport_compiled": True,
+            "service_health_result_channel_compiled": True,
+            "runtime_log_result_channel_authorized": False,
+            "deployment_uuid_required": False,
+            "generic_deploy_endpoint_authorized": False,
             "transfer_value_wei": amount,
             "funding_value_cap_wei": amount,
             "source_maximum_total_debit_wei": amount + _FUNDING_TX_MAX_FEE_WEI,
-            "application_mutation_count": 8,
+            "maximum_service_mutation_count": 13,
+            "minimum_service_mutation_count": 6,
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
             "public_endpoint_count": 0,
@@ -575,6 +695,7 @@ def build_validator_rpc_canary_funding_transaction(
         "validator_rpc_canary_funding_transaction_sha256",
     )
     return transaction
+
 
 
 def write_validator_rpc_canary_funding_transaction(
@@ -608,6 +729,7 @@ def write_validator_rpc_canary_funding_transaction(
     atomic_files.durable_create(destination, payload, operation=operation)
     _secure_private_path(destination, is_directory=False, operation=operation)
     return destination, digest
+
 
 
 def verify_validator_rpc_canary_funding_transaction(
@@ -670,6 +792,28 @@ def verify_validator_rpc_canary_funding_transaction(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
             "funding transaction does not rebuild exactly from canonical authority",
         )
+    transport = _mapping(document.get("coolify_transport"), "funding.coolify_transport")
+    applications = _mapping(document.get("applications"), "funding.applications")
+    if not (
+        set(applications)
+        == {
+            "a_exact_balance_classifier",
+            "a_zero_balance_classifier",
+            "a_funder",
+            "c_funded_verifier",
+            "c_reconciled_verifier",
+        }
+        and transport.get("result_channel") == "service-detail-health"
+        and transport.get("deployment_uuid_required") is False
+        and transport.get("deployment_inventory_endpoint_authorized") is False
+        and transport.get("deployment_result_endpoint_authorized") is False
+        and transport.get("service_log_endpoints_authorized") is False
+        and transport.get("generic_deploy_endpoint_authorized") is False
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
+            "funding transaction does not bind the exact status-health transport",
+        )
     return {
         "clean": True,
         "network": "mainnet",
@@ -689,8 +833,14 @@ def verify_validator_rpc_canary_funding_transaction(
         "source_balance_preflight_required_when_transfer_required": True,
         "cross_validator_receipt_verification_required_when_new_transfer": True,
         "cross_validator_balance_verification_required": True,
-        "deployment_record_log_retrieval_required": True,
-        "application_mutation_count": 8,
+        "service_start_transport_required": True,
+        "service_health_result_channel_required": True,
+        "runtime_log_result_channel_authorized": False,
+        "deployment_uuid_required": False,
+        "deployment_inventory_resolution_required": False,
+        "generic_deploy_endpoint_authorized": False,
+        "minimum_service_mutation_count": 6,
+        "maximum_service_mutation_count": 13,
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
         "public_endpoint_count": 0,
@@ -699,6 +849,7 @@ def verify_validator_rpc_canary_funding_transaction(
         "validator_vote_performed": False,
         "next_phase": "validator-rpc-canary-funding-release-not-yet-authorized",
     }
+
 
 
 def _release_duration(value: int) -> int:
@@ -711,11 +862,13 @@ def _release_duration(value: int) -> int:
 
 
 
+
 def _safe_retry_evidence(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
     evidence_path: Path,
 ) -> dict[str, Any]:
+    """Bind one prior v2 failure only when cleanup and idempotent reclassification are safe."""
     resolved = Path(evidence_path).resolve(strict=False)
     document, _, file_sha = _canonical_under(
         paths,
@@ -724,237 +877,51 @@ def _safe_retry_evidence(
         "validator-RPC canary funding recovery evidence",
     )
     digest = _digest_without(document, "validator_rpc_canary_funding_evidence_sha256")
-    receipts = document.get("mutation_receipts")
-    observations = document.get("log_observations")
     summary = document.get("summary")
     failure = document.get("failure")
     if not (
         document.get("kind") == _EVIDENCE_KIND
-        and document.get("schema_version") == 1
+        and document.get("schema_version") == 2
         and document.get("status") == "manual-review-required"
         and document.get("validator_rpc_canary_funding_evidence_sha256") == digest
         and document.get("mother_binding") == _binding(private_state)
         and not _contains_sensitive(document)
-        and type(receipts) is list
         and isinstance(summary, Mapping)
         and isinstance(failure, Mapping)
+        and summary.get("temporary_services_deleted") is True
+        and summary.get("canary_execution_performed") is False
+        and summary.get("validator_mutation_count") == 0
+        and summary.get("validator_restart_count") == 0
+        and summary.get("public_endpoint_count") == 0
+        and document.get("chain_state") in {
+            "unchanged-before-funder-start",
+            "potentially-unknown-after-funder-start",
+            "exact-on-A-not-yet-verified-on-C",
+        }
     ):
         raise _error(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECOVERY_INVALID",
-            "recovery evidence is not a canonical failed funding execution",
-        )
-
-    if len(receipts) == 1:
-        receipt = receipts[0]
-        message = str(failure.get("message", ""))
-        if not (
-            isinstance(receipt, Mapping)
-            and failure.get("code") == "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_MUTATION_FAILED"
-            and re.fullmatch(
-                r"mainnet-canary1-fund-a\.create-application failed with HTTP [0-9]{3}",
-                message,
-            )
-            and receipt.get("mutation_id") == "mainnet-canary1-fund-a.create-application"
-            and receipt.get("controller_id") == _A_CONTROLLER
-            and receipt.get("method") == "POST"
-            and receipt.get("endpoint") == "/api/v1/services"
-            and receipt.get("status") == "failed"
-            and receipt.get("live_write_acknowledged") is False
-            and receipt.get("application_uuid") in {None, ""}
-            and document.get("funding_transaction_hash") in {None, ""}
-            and document.get("cross_validator_verification") is None
-            and summary.get("funding_performed") is False
-            and summary.get("application_mutation_count") == 1
-            and summary.get("temporary_A_application_deleted") is False
-            and summary.get("temporary_C_application_deleted") is False
-            and summary.get("validator_mutation_count") == 0
-            and summary.get("validator_restart_count") == 0
-            and summary.get("validator_vote_performed") is False
-        ):
-            raise _error(
-                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECOVERY_INVALID",
-                "recovery evidence is not the exact safe pre-create no-write failure",
-            )
-        return {
-            "mode": "safe-pre-create-rejection-no-write",
-            "locator": _relative(paths, resolved, "validator-RPC canary funding recovery evidence"),
-            "file_sha256": file_sha,
-            "sha256": digest,
-            "failed_mutation_id": receipt["mutation_id"],
-            "http_status": receipt.get("http_status"),
-            "live_write_acknowledged": False,
-            "cleanup_authorized": False,
-            "funding_source_address": document.get("funding_source_address"),
-            "canary_address": document.get("canary_address"),
-            "transfer_value_wei": document.get("transfer_value_wei"),
-            "chain": document.get("chain"),
-        }
-
-    if len(receipts) != 4 or type(observations) is not list:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECOVERY_INVALID",
-            "recovery evidence is not a supported bounded retry state",
-        )
-    create, bind, deploy, cleanup = receipts
-    app_uuid = str(create.get("application_uuid", ""))
-    expected_result_endpoints = {
-        f"/api/v1/services/{app_uuid}/logs?sub_service_name=mainnet-canary1-fund-a&lines=500&show_timestamps=true",
-        f"/api/v1/services/{app_uuid}/logs?lines=500",
-        f"/api/v1/services/{app_uuid}/docker/logs?lines=500",
-        f"/api/v1/services/{app_uuid}/applications/logs?lines=500",
-    }
-    result_observations = [
-        item for item in observations
-        if isinstance(item, Mapping) and item.get("phase") == "A-capped-funding-result"
-    ]
-    environment_observations = [
-        item for item in observations
-        if isinstance(item, Mapping) and item.get("phase") == "A-mainnet-environment-resolution"
-    ]
-    exact_deployment_uuid_failure = (
-        failure.get("code") == "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_DEPLOYMENT_INVALID"
-        and failure.get("message") == (
-            "Coolify deployment request did not return exactly one usable deployment UUID"
-        )
-        and isinstance(create, Mapping)
-        and create.get("mutation_id") == "mainnet-canary1-fund-a.create-application"
-        and create.get("controller_id") == _A_CONTROLLER
-        and create.get("method") == "POST"
-        and create.get("endpoint") == "/api/v1/services"
-        and create.get("status") == "succeeded"
-        and create.get("live_write_acknowledged") is True
-        and re.fullmatch(r"[A-Za-z0-9_-]{8,96}", app_uuid) is not None
-        and isinstance(bind, Mapping)
-        and bind.get("mutation_id") == "mainnet-canary1-fund-a.bind-captain-secret"
-        and bind.get("controller_id") == _A_CONTROLLER
-        and bind.get("method") == "POST"
-        and bind.get("endpoint") == f"/api/v1/services/{app_uuid}/envs"
-        and bind.get("status") == "succeeded"
-        and bind.get("live_write_acknowledged") is True
-        and bind.get("application_uuid") == app_uuid
-        and isinstance(deploy, Mapping)
-        and deploy.get("mutation_id") == "mainnet-canary1-fund-a.deploy"
-        and deploy.get("controller_id") == _A_CONTROLLER
-        and deploy.get("method") == "GET"
-        and deploy.get("endpoint") == f"/api/v1/deploy?uuid={app_uuid}&force=false"
-        and deploy.get("status") == "succeeded"
-        and deploy.get("live_write_acknowledged") is True
-        and deploy.get("application_uuid") == app_uuid
-        and deploy.get("deployment_uuid") in {None, ""}
-        and isinstance(cleanup, Mapping)
-        and cleanup.get("mutation_id") == "emergency-delete-a-funder"
-        and cleanup.get("controller_id") == _A_CONTROLLER
-        and cleanup.get("method") == "DELETE"
-        and cleanup.get("endpoint") == f"/api/v1/services/{app_uuid}"
-        and cleanup.get("status") == "succeeded"
-        and cleanup.get("live_write_acknowledged") is True
-        and cleanup.get("application_uuid") == app_uuid
-        and cleanup.get("http_status") in {200, 204, 404}
-        and len(environment_observations) == 1
-        and environment_observations[0].get("http_status") == 200
-        and len(result_observations) == 0
-        and document.get("funding_transaction_hash") in {None, ""}
-        and document.get("cross_validator_verification") is None
-        and summary.get("funding_performed") is False
-        and summary.get("funding_complete") is False
-        and summary.get("application_mutation_count") == 4
-        and summary.get("temporary_A_application_deleted") is True
-        and summary.get("temporary_C_application_deleted") is False
-        and summary.get("validator_mutation_count") == 0
-        and summary.get("validator_restart_count") == 0
-        and summary.get("validator_vote_performed") is False
-    )
-    if exact_deployment_uuid_failure:
-        return {
-            "mode": "idempotent-post-deploy-balance-reconcile-or-fund",
-            "locator": _relative(
-                paths,
-                resolved,
-                "validator-RPC canary funding recovery evidence",
-            ),
-            "file_sha256": file_sha,
-            "sha256": digest,
-            "failed_phase": "A-deployment-uuid-resolution",
-            "prior_application_uuid": app_uuid,
-            "prior_cleanup_acknowledged": True,
-            "prior_funding_state": "unknown",
-            "cleanup_authorized": False,
-            "funding_source_address": document.get("funding_source_address"),
-            "canary_address": document.get("canary_address"),
-            "transfer_value_wei": document.get("transfer_value_wei"),
-            "chain": document.get("chain"),
-        }
-    exact_timeout = (
-        failure.get("code") == "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_TIMEOUT"
-        and failure.get("message") == "A-capped-funding-result did not produce its committed result marker"
-        and isinstance(create, Mapping)
-        and create.get("mutation_id") == "mainnet-canary1-fund-a.create-application"
-        and create.get("controller_id") == _A_CONTROLLER
-        and create.get("method") == "POST"
-        and create.get("endpoint") == "/api/v1/services"
-        and create.get("status") == "succeeded"
-        and create.get("live_write_acknowledged") is True
-        and re.fullmatch(r"[A-Za-z0-9_-]{8,96}", app_uuid) is not None
-        and isinstance(bind, Mapping)
-        and bind.get("mutation_id") == "mainnet-canary1-fund-a.bind-captain-secret"
-        and bind.get("controller_id") == _A_CONTROLLER
-        and bind.get("method") == "POST"
-        and bind.get("endpoint") == f"/api/v1/services/{app_uuid}/envs"
-        and bind.get("status") == "succeeded"
-        and bind.get("live_write_acknowledged") is True
-        and bind.get("application_uuid") == app_uuid
-        and isinstance(deploy, Mapping)
-        and deploy.get("mutation_id") == "mainnet-canary1-fund-a.deploy"
-        and deploy.get("controller_id") == _A_CONTROLLER
-        and deploy.get("method") == "GET"
-        and deploy.get("endpoint") == f"/api/v1/deploy?uuid={app_uuid}&force=false"
-        and deploy.get("status") == "succeeded"
-        and deploy.get("live_write_acknowledged") is True
-        and deploy.get("application_uuid") == app_uuid
-        and isinstance(cleanup, Mapping)
-        and cleanup.get("mutation_id") == "emergency-delete-a-funder"
-        and cleanup.get("controller_id") == _A_CONTROLLER
-        and cleanup.get("method") == "DELETE"
-        and cleanup.get("endpoint") == f"/api/v1/services/{app_uuid}"
-        and cleanup.get("status") == "succeeded"
-        and cleanup.get("live_write_acknowledged") is True
-        and cleanup.get("application_uuid") == app_uuid
-        and cleanup.get("http_status") in {200, 204, 404}
-        and len(environment_observations) == 1
-        and environment_observations[0].get("http_status") == 200
-        and len(result_observations) >= 4
-        and all(item.get("http_status") == 404 for item in result_observations)
-        and all(item.get("marker_present") is False for item in result_observations)
-        and {str(item.get("endpoint")) for item in result_observations} == expected_result_endpoints
-        and document.get("funding_transaction_hash") in {None, ""}
-        and document.get("cross_validator_verification") is None
-        and summary.get("funding_performed") is False
-        and summary.get("application_mutation_count") == 4
-        and summary.get("temporary_C_application_deleted") is False
-        and summary.get("validator_mutation_count") == 0
-        and summary.get("validator_restart_count") == 0
-        and summary.get("validator_vote_performed") is False
-    )
-    if not exact_timeout:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECOVERY_INVALID",
-            "recovery evidence is not the exact post-deploy log-route timeout with acknowledged cleanup",
+            "recovery evidence is not a canonical cleaned-up status-health failure",
         )
     return {
-        "mode": "idempotent-post-deploy-balance-reconcile-or-fund",
-        "locator": _relative(paths, resolved, "validator-RPC canary funding recovery evidence"),
+        "mode": "idempotent-status-health-reclassification",
+        "locator": _relative(
+            paths,
+            resolved,
+            "validator-RPC canary funding recovery evidence",
+        ),
         "file_sha256": file_sha,
         "sha256": digest,
-        "failed_phase": "A-capped-funding-result",
-        "prior_application_uuid": app_uuid,
+        "prior_chain_state": document.get("chain_state"),
+        "prior_failure_code": failure.get("code"),
         "prior_cleanup_acknowledged": True,
-        "prior_funding_state": "unknown",
-        "cleanup_authorized": False,
         "funding_source_address": document.get("funding_source_address"),
         "canary_address": document.get("canary_address"),
         "transfer_value_wei": document.get("transfer_value_wei"),
         "chain": document.get("chain"),
     }
+
+
 
 def build_validator_rpc_canary_funding_release(
     paths: PrivateStatePaths,
@@ -1013,7 +980,7 @@ def build_validator_rpc_canary_funding_release(
     ttl = _release_duration(expires_in_seconds)
     release: dict[str, Any] = {
         "kind": _RELEASE_KIND,
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": created.isoformat(timespec="seconds").replace("+00:00", "Z"),
         "expires_at": (created + timedelta(seconds=ttl)).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "network": "mainnet",
@@ -1050,7 +1017,10 @@ def build_validator_rpc_canary_funding_release(
             "source_balance_preflight_required_when_transfer_required": True,
             "cross_validator_receipt_verification_required_when_new_transfer": True,
             "cross_validator_balance_verification_required": True,
-            "deployment_record_log_retrieval_required": True,
+            "service_health_result_channel_required": True,
+            "runtime_log_result_channel_authorized": False,
+            "deployment_uuid_required": False,
+            "failed_started_funder_without_health_proof_is_chain_state_unknown": True,
             "temporary_applications_must_be_deleted": True,
             "canary_execution_authorized": False,
             "validator_mutation_count": 0,
@@ -1059,9 +1029,12 @@ def build_validator_rpc_canary_funding_release(
         },
     }
     release["validator_rpc_canary_funding_release_sha256"] = _digest_without(
-        release, "validator_rpc_canary_funding_release_sha256"
+        release,
+        "validator_rpc_canary_funding_release_sha256",
     )
     return release
+
+
 
 
 def write_validator_rpc_canary_funding_release(
@@ -1074,7 +1047,7 @@ def write_validator_rpc_canary_funding_release(
     digest = _digest_without(document, "validator_rpc_canary_funding_release_sha256")
     if not (
         document.get("kind") == _RELEASE_KIND
-        and document.get("schema_version") == 1
+        and document.get("schema_version") == 2
         and document.get("validator_rpc_canary_funding_release_sha256") == digest
         and not _contains_sensitive(document)
     ):
@@ -1096,6 +1069,8 @@ def write_validator_rpc_canary_funding_release(
     atomic_files.durable_create(destination, payload, operation=operation)
     _secure_private_path(destination, is_directory=False, operation=operation)
     return destination, digest
+
+
 
 
 def verify_validator_rpc_canary_funding_release(
@@ -1121,7 +1096,7 @@ def verify_validator_rpc_canary_funding_release(
     digest = _digest_without(document, "validator_rpc_canary_funding_release_sha256")
     if not (
         document.get("kind") == _RELEASE_KIND
-        and document.get("schema_version") == 1
+        and document.get("schema_version") == 2
         and document.get("validator_rpc_canary_funding_release_sha256") == digest
         and document.get("mother_binding") == _binding(private_state)
         and not _contains_sensitive(document)
@@ -1174,7 +1149,9 @@ def verify_validator_rpc_canary_funding_release(
             "validator-RPC canary funding recovery evidence",
         )
         recovery_valid = dict(recovery) == _safe_retry_evidence(
-            paths, private_state, recovery_path
+            paths,
+            private_state,
+            recovery_path,
         )
     if not (
         transaction_ref.get("sha256") == verified["transaction_sha256"]
@@ -1199,7 +1176,9 @@ def verify_validator_rpc_canary_funding_release(
         and policy.get("destination_zero_or_exact_balance_precondition_required") is True
         and policy.get("idempotent_exact_balance_reconciliation_supported") is True
         and policy.get("cross_validator_balance_verification_required") is True
-        and policy.get("deployment_record_log_retrieval_required") is True
+        and policy.get("service_health_result_channel_required") is True
+        and policy.get("runtime_log_result_channel_authorized") is False
+        and policy.get("deployment_uuid_required") is False
         and policy.get("temporary_applications_must_be_deleted") is True
     ):
         raise _error(
@@ -1218,7 +1197,8 @@ def verify_validator_rpc_canary_funding_release(
         "canary_address": document["destination"]["address"],
         "transfer_value_wei": document["funding_policy"]["transfer_value_wei"],
         "funding_value_cap_wei": document["funding_policy"]["transfer_value_cap_wei"],
-        "application_mutation_count": 8,
+        "minimum_service_mutation_count": 6,
+        "maximum_service_mutation_count": 13,
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
         "public_endpoint_count": 0,
@@ -1226,10 +1206,12 @@ def verify_validator_rpc_canary_funding_release(
         "canary_execution_authorized": False,
         "live_execution_authorized": True,
         "validator_vote_authorized": False,
+        "result_channel": "service-detail-health",
         "recovery_mode": (
             document["recovery"]["mode"] if isinstance(document.get("recovery"), Mapping) else None
         ),
     }
+
 
 
 def inspect_validator_rpc_canary_funding_release(
@@ -1371,129 +1353,6 @@ def _application_uuid(payload: Any) -> str:
     return next(iter(found))
 
 
-def _deployment_uuid(payload: Any, resource_uuid: str) -> str:
-    found: set[str] = set()
-    resource_matches: set[str] = set()
-
-    def walk(item: Any) -> None:
-        if isinstance(item, Mapping):
-            value = item.get("deployment_uuid")
-            if type(value) is str:
-                clean = value.strip()
-                if re.fullmatch(r"[A-Za-z0-9_-]{8,96}", clean):
-                    found.add(clean)
-                    if item.get("resource_uuid") == resource_uuid:
-                        resource_matches.add(clean)
-            for nested in item.values():
-                if isinstance(nested, (Mapping, list)):
-                    walk(nested)
-        elif type(item) is list:
-            for nested in item:
-                walk(nested)
-
-    walk(payload)
-    if len(resource_matches) == 1:
-        return next(iter(resource_matches))
-    if len(found) == 1:
-        return next(iter(found))
-    raise _error(
-        "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_DEPLOYMENT_INVALID",
-        "Coolify deployment request did not return exactly one usable deployment UUID",
-    )
-
-
-def _funding_result(
-    value: Mapping[str, Any],
-    *,
-    destination: str,
-    amount: int,
-) -> tuple[str, str | None]:
-    mode = str(value.get("mode", "")).strip()
-    if mode == "already-funded":
-        if not (
-            value.get("transaction_hash") in {None, ""}
-            and str(value.get("destination", "")).lower() == destination
-            and str(value.get("balance_wei", "")) == str(amount)
-        ):
-            raise _error(
-                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_INVALID",
-                "already-funded result does not prove the exact canary balance",
-            )
-        return mode, None
-    tx_hash = _transaction_hash(value)
-    return "funded", tx_hash
-
-
-
-def _logs_text(payload: Any) -> str:
-    if isinstance(payload, Mapping):
-        logs = payload.get("logs")
-        if type(logs) is str:
-            return logs
-        for key in ("data", "application", "resource"):
-            nested = payload.get(key)
-            if isinstance(nested, Mapping):
-                found = _logs_text(nested)
-                if found:
-                    return found
-    if type(payload) is str:
-        return payload
-    return ""
-
-
-def _marker_json(logs: str, marker: str) -> Mapping[str, Any] | None:
-    candidates: list[Mapping[str, Any]] = []
-    decoder = json.JSONDecoder()
-    start = 0
-    while True:
-        index = logs.find(marker, start)
-        if index < 0:
-            break
-        raw = logs[index + len(marker):].lstrip()
-        try:
-            value, consumed = decoder.raw_decode(raw)
-        except json.JSONDecodeError:
-            start = index + len(marker)
-            continue
-        if isinstance(value, Mapping):
-            candidates.append(value)
-        start = index + len(marker) + max(1, consumed)
-    if not candidates:
-        return None
-    canonical = {canonical_json(dict(item)) for item in candidates}
-    if len(canonical) != 1:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_LOG_INVALID",
-            "application logs contain contradictory result markers",
-        )
-    return candidates[-1]
-
-
-def _transaction_hash(value: Mapping[str, Any]) -> str:
-    found: set[str] = set()
-
-    def walk(item: Any) -> None:
-        if isinstance(item, Mapping):
-            for key, nested in item.items():
-                if str(key) in {"transactionHash", "transaction_hash"} and type(nested) is str:
-                    clean = nested.strip().lower()
-                    if re.fullmatch(r"0x[0-9a-f]{64}", clean):
-                        found.add(clean)
-                elif isinstance(nested, (Mapping, list)):
-                    walk(nested)
-        elif type(item) is list:
-            for nested in item:
-                walk(nested)
-
-    walk(value)
-    if len(found) != 1:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_INVALID",
-            "funding result did not contain exactly one transaction hash",
-        )
-    return next(iter(found))
-
-
 def _receipt(
     *,
     mutation_id: str,
@@ -1566,12 +1425,51 @@ def _request_mutation(
 
 
 
-def _wait_for_marker(
+
+def _healthy_service_status(value: Any) -> bool:
+    status = str(value or "").strip().lower()
+    return status in {"running:healthy", "running:healthy:excluded"}
+
+
+def _service_detail_status(payload: Any, service_uuid: str, expected_name: str) -> str:
+    candidates: list[Mapping[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            if (
+                value.get("uuid") == service_uuid
+                or value.get("name") == expected_name
+            ):
+                candidates.append(value)
+            for nested in value.values():
+                if isinstance(nested, (Mapping, list)):
+                    walk(nested)
+        elif type(value) is list:
+            for nested in value:
+                walk(nested)
+
+    walk(payload)
+    exact_uuid = [
+        item for item in candidates
+        if item.get("uuid") == service_uuid and type(item.get("status")) is str
+    ]
+    selected = exact_uuid if exact_uuid else [
+        item for item in candidates
+        if item.get("name") == expected_name and type(item.get("status")) is str
+    ]
+    statuses = {str(item.get("status", "")).strip().lower() for item in selected}
+    statuses.discard("")
+    if len(statuses) != 1:
+        return ""
+    return next(iter(statuses))
+
+
+def _wait_for_service_health(
     *,
     controller: Any,
     controller_id: str,
-    deployment_uuid: str,
-    marker: str,
+    service_uuid: str,
+    service_name: str,
     timeout: float,
     max_response_bytes: int,
     max_wait_seconds: float,
@@ -1579,15 +1477,17 @@ def _wait_for_marker(
     opener: Any,
     observations: list[dict[str, Any]],
     phase: str,
-) -> Mapping[str, Any]:
+) -> dict[str, Any]:
     if max_wait_seconds < 0 or poll_interval_seconds < 0:
         raise _error(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
             "wait and poll intervals must be non-negative",
         )
-    quoted_uuid = urllib.parse.quote(deployment_uuid, safe="")
-    endpoint = f"/api/v1/deployments/{quoted_uuid}"
+    endpoint = f"/api/v1/services/{service_uuid}"
     started = time.monotonic()
+    last_status = ""
+    observation_count = 0
+    consecutive_terminal = 0
     while True:
         response = _http(
             controller,
@@ -1598,38 +1498,69 @@ def _wait_for_marker(
             max_response_bytes=max_response_bytes,
             opener=opener,
         )
-        logs = _logs_text(response["payload"]) if response["ok"] else ""
-        parsed = _marker_json(logs, marker) if logs else None
-        deployment_status = None
-        if isinstance(response.get("payload"), Mapping):
-            raw_status = response["payload"].get("status")
-            deployment_status = str(raw_status) if raw_status is not None else None
-        observations.append({
+        status = (
+            _service_detail_status(response.get("payload"), service_uuid, service_name)
+            if response.get("ok")
+            else ""
+        )
+        observation_count += 1
+        last_status = status or last_status
+        record = {
             "phase": phase,
             "controller_id": controller_id,
             "method": "GET",
             "endpoint": endpoint,
-            "http_status": response["status"],
-            "response_sha256": response["response_sha256"],
-            "marker_present": parsed is not None,
-            "deployment_uuid": deployment_uuid,
-            "deployment_status": deployment_status,
+            "http_status": response.get("status"),
+            "response_sha256": response.get("response_sha256"),
+            "byte_length": response.get("byte_length"),
+            "service_uuid": service_uuid,
+            "service_name": service_name,
+            "service_status": status or None,
+            "healthy": _healthy_service_status(status),
+            "result_channel": "service-detail-health",
             "observed_at": _timestamp(),
-        })
-        if parsed is not None:
-            return parsed
-        if deployment_status in {"failed", "cancelled"}:
-            raise _error(
-                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_DEPLOYMENT_FAILED",
-                f"{phase} deployment reached terminal status {deployment_status}",
-            )
+        }
+        observations.append(record)
+        if record["healthy"]:
+            return {
+                "healthy": True,
+                "service_status": status,
+                "service_uuid": service_uuid,
+                "service_name": service_name,
+                "phase": phase,
+                "observation_count": observation_count,
+            }
+
+        base_status = status.split(":", 1)[0] if status else ""
+        if base_status in {"exited", "stopped", "dead", "error", "failed"}:
+            consecutive_terminal += 1
+        else:
+            consecutive_terminal = 0
+
         elapsed = time.monotonic() - started
+        terminal_grace = min(10.0, max_wait_seconds)
+        if consecutive_terminal >= 2 and elapsed >= terminal_grace:
+            return {
+                "healthy": False,
+                "service_status": status,
+                "service_uuid": service_uuid,
+                "service_name": service_name,
+                "phase": phase,
+                "observation_count": observation_count,
+                "reason": "terminal-nonhealthy",
+            }
         if elapsed >= max_wait_seconds:
-            raise _error(
-                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_TIMEOUT",
-                f"{phase} did not produce its committed result marker",
-            )
+            return {
+                "healthy": False,
+                "service_status": last_status or None,
+                "service_uuid": service_uuid,
+                "service_name": service_name,
+                "phase": phase,
+                "observation_count": observation_count,
+                "reason": "health-timeout",
+            }
         time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
+
 
 def _write_funding_evidence(
     paths: PrivateStatePaths,
@@ -1659,6 +1590,7 @@ def _write_funding_evidence(
     atomic_files.durable_create(destination, payload, operation=operation)
     _secure_private_path(destination, is_directory=False, operation=operation)
     return destination, digest
+
 
 
 
@@ -1710,7 +1642,11 @@ def execute_validator_rpc_canary_funding_release(
         "schema_version": 1,
         "claimed_at": _timestamp(),
         "release": {
-            "locator": _relative(paths, resolved_release, "validator-RPC canary funding release"),
+            "locator": _relative(
+                paths,
+                resolved_release,
+                "validator-RPC canary funding release",
+            ),
             "sha256": release_sha,
         },
         "requested_use_limit": 1,
@@ -1731,369 +1667,317 @@ def execute_validator_rpc_canary_funding_release(
     }
     captain = _captain(private_state)
     applications = _mapping(release.get("applications"), "release.applications")
-    a_app = _mapping(applications.get("a_funder"), "release.applications.a_funder")
-    c_app = _mapping(applications.get("c_verifier"), "release.applications.c_verifier")
-    recovery = release.get("recovery")
-    recovery_mode = recovery.get("mode") if isinstance(recovery, Mapping) else None
+    transport = _mapping(release.get("coolify_transport"), "release.coolify_transport")
+    if not (
+        transport.get("result_channel") == "service-detail-health"
+        and transport.get("service_detail_endpoint_template")
+        == "/api/v1/services/{service_uuid}"
+        and transport.get("service_start_endpoint_template")
+        == "/api/v1/services/{service_uuid}/start"
+        and transport.get("service_start_method") == "POST"
+        and transport.get("deployment_uuid_required") is False
+        and transport.get("deployment_inventory_endpoint_authorized") is False
+        and transport.get("deployment_result_endpoint_authorized") is False
+        and transport.get("service_log_endpoints_authorized") is False
+        and transport.get("generic_deploy_endpoint_authorized") is False
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RELEASE_INVALID",
+            "funding release does not authorize the exact service-health transport",
+        )
+
     receipts: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     failure: dict[str, str] | None = None
-    a_uuid: str | None = None
-    c_uuid: str | None = None
-    a_deployment_uuid: str | None = None
-    c_deployment_uuid: str | None = None
-    a_deleted = False
-    c_deleted = False
+    environment_uuids: dict[str, str] = {}
+    created_services: dict[str, str] = {}
+    deleted_services: dict[str, bool] = {}
+    service_controller_ids: dict[str, str] = {}
+    proofs: dict[str, Mapping[str, Any]] = {}
     funding_mode: str | None = None
-    tx_hash: str | None = None
-    c_result: Mapping[str, Any] | None = None
+    funding_start_acknowledged = False
+    a_funder_health_proven = False
+    cross_validator_proof: dict[str, Any] | None = None
+    chain_state = "unchanged-before-funder-start"
     started_at = _timestamp()
     expected_amount = int(release["funding_policy"]["transfer_value_wei"])
     destination = str(release["destination"]["address"]).lower()
 
-    try:
-        a_name = str(a_app["application_name"])
-        a_environment_uuid = _resolve_environment_uuid(
-            controller=controllers[_A_CONTROLLER],
-            controller_id=_A_CONTROLLER,
-            endpoint=str(a_app["environment_resolution_endpoint"]),
-            expected_name=str(a_app["environment_name"]),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            observations=observations,
-            phase="A-mainnet-environment-resolution",
-        )
-        a_create_body = dict(_mapping(a_app.get("create_request_body"), "a_funder.create_request_body"))
-        a_create_body["environment_uuid"] = a_environment_uuid
-        a_create = _request_mutation(
-            controller=controllers[_A_CONTROLLER],
-            mutation_id=f"{a_name}.create-application",
-            controller_id=_A_CONTROLLER,
-            method="POST",
-            endpoint="/api/v1/services",
-            body=a_create_body,
-            success_statuses=(200, 201, 202),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-        )
-        a_uuid = _application_uuid(a_create["payload"])
-        receipts[-1]["application_uuid"] = a_uuid
-
-        secret_body = {
-            "key": _CAPTAIN_SECRET_ENV,
-            "value": captain["private_key"],
-            "is_preview": False,
-            "is_literal": True,
-            "is_multiline": False,
-            "is_shown_once": True,
-        }
-        _request_mutation(
-            controller=controllers[_A_CONTROLLER],
-            mutation_id=f"{a_name}.bind-captain-secret",
-            controller_id=_A_CONTROLLER,
-            method="POST",
-            endpoint=f"/api/v1/services/{a_uuid}/envs",
-            body=secret_body,
-            success_statuses=(200, 201, 202),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-            application_uuid=a_uuid,
-        )
-        a_deploy = _request_mutation(
-            controller=controllers[_A_CONTROLLER],
-            mutation_id=f"{a_name}.deploy",
-            controller_id=_A_CONTROLLER,
-            method="GET",
-            endpoint=f"/api/v1/deploy?uuid={a_uuid}&force=false",
-            body=None,
-            success_statuses=(200, 201, 202),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-            application_uuid=a_uuid,
-        )
-        a_deployment_uuid = _deployment_uuid(a_deploy["payload"], a_uuid)
-        receipts[-1]["deployment_uuid"] = a_deployment_uuid
-        a_result = _wait_for_marker(
-            controller=controllers[_A_CONTROLLER],
-            controller_id=_A_CONTROLLER,
-            deployment_uuid=a_deployment_uuid,
-            marker=str(a_app["result_marker"]),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            max_wait_seconds=max_wait_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-            opener=opener,
-            observations=observations,
-            phase="A-capped-funding-result",
-        )
-        funding_mode, tx_hash = _funding_result(
-            a_result,
-            destination=destination,
-            amount=expected_amount,
-        )
-        if (
-            funding_mode == "already-funded"
-            and recovery_mode != "idempotent-post-deploy-balance-reconcile-or-fund"
-        ):
-            raise _error(
-                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_INVALID",
-                "an exact pre-existing canary balance requires bound post-deploy recovery evidence",
+    def run_service(spec_key: str, *, bind_captain_secret: bool = False) -> Mapping[str, Any]:
+        nonlocal funding_start_acknowledged, a_funder_health_proven
+        spec = _mapping(applications.get(spec_key), f"release.applications.{spec_key}")
+        controller_id = str(spec["controller_id"])
+        controller = controllers[controller_id]
+        service_name = str(spec["application_name"])
+        service_uuid: str | None = None
+        proof: Mapping[str, Any] | None = None
+        service_controller_ids[service_name] = controller_id
+        try:
+            if controller_id not in environment_uuids:
+                environment_uuids[controller_id] = _resolve_environment_uuid(
+                    controller=controller,
+                    controller_id=controller_id,
+                    endpoint=str(spec["environment_resolution_endpoint"]),
+                    expected_name=str(spec["environment_name"]),
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                    observations=observations,
+                    phase=f"{spec_key}-mainnet-environment-resolution",
+                )
+            create_body = dict(
+                _mapping(
+                    spec.get("create_request_body"),
+                    f"{spec_key}.create_request_body",
+                )
             )
+            create_body["environment_uuid"] = environment_uuids[controller_id]
+            create_response = _request_mutation(
+                controller=controller,
+                mutation_id=f"{service_name}.create-service",
+                controller_id=controller_id,
+                method="POST",
+                endpoint="/api/v1/services",
+                body=create_body,
+                success_statuses=(200, 201, 202),
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                receipts=receipts,
+            )
+            service_uuid = _application_uuid(create_response["payload"])
+            created_services[service_name] = service_uuid
+            receipts[-1].update({
+                "application_uuid": service_uuid,
+                "service_name": service_name,
+                "request_body_sha256": hashlib.sha256(
+                    canonical_json(create_body)
+                ).hexdigest(),
+            })
 
-        _request_mutation(
-            controller=controllers[_A_CONTROLLER],
-            mutation_id=f"{a_name}.delete",
-            controller_id=_A_CONTROLLER,
-            method="DELETE",
-            endpoint=f"/api/v1/services/{a_uuid}",
-            body=None,
-            success_statuses=(200, 204),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-            application_uuid=a_uuid,
-        )
-        a_deleted = True
-
-        c_name = str(c_app["application_name"])
-        c_environment_uuid = _resolve_environment_uuid(
-            controller=controllers[_C_CONTROLLER],
-            controller_id=_C_CONTROLLER,
-            endpoint=str(c_app["environment_resolution_endpoint"]),
-            expected_name=str(c_app["environment_name"]),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            observations=observations,
-            phase="C-mainnet-environment-resolution",
-        )
-        c_create_body = dict(_mapping(c_app.get("create_request_body"), "c_verifier.create_request_body"))
-        c_create_body["environment_uuid"] = c_environment_uuid
-        c_create = _request_mutation(
-            controller=controllers[_C_CONTROLLER],
-            mutation_id=f"{c_name}.create-application",
-            controller_id=_C_CONTROLLER,
-            method="POST",
-            endpoint="/api/v1/services",
-            body=c_create_body,
-            success_statuses=(200, 201, 202),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-        )
-        c_uuid = _application_uuid(c_create["payload"])
-        receipts[-1]["application_uuid"] = c_uuid
-        public_env_body = {
-            "data": [
-                {
-                    "key": "MC_MOTHER_CANARY_FUNDING_MODE",
-                    "value": funding_mode,
+            if bind_captain_secret:
+                secret_body = {
+                    "key": _CAPTAIN_SECRET_ENV,
+                    "value": captain["private_key"],
                     "is_preview": False,
                     "is_literal": True,
                     "is_multiline": False,
-                    "is_shown_once": False,
-                },
-                {
-                    "key": "MC_MOTHER_CANARY_FUNDING_TX_HASH",
-                    "value": tx_hash or "",
-                    "is_preview": False,
-                    "is_literal": True,
-                    "is_multiline": False,
-                    "is_shown_once": False,
-                },
-            ]
-        }
-        _request_mutation(
-            controller=controllers[_C_CONTROLLER],
-            mutation_id=f"{c_name}.bind-public-funding-result",
-            controller_id=_C_CONTROLLER,
-            method="PATCH",
-            endpoint=f"/api/v1/services/{c_uuid}/envs/bulk",
-            body=public_env_body,
-            success_statuses=(200, 201, 202),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-            application_uuid=c_uuid,
-        )
-        c_deploy = _request_mutation(
-            controller=controllers[_C_CONTROLLER],
-            mutation_id=f"{c_name}.deploy",
-            controller_id=_C_CONTROLLER,
-            method="GET",
-            endpoint=f"/api/v1/deploy?uuid={c_uuid}&force=false",
-            body=None,
-            success_statuses=(200, 201, 202),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-            application_uuid=c_uuid,
-        )
-        c_deployment_uuid = _deployment_uuid(c_deploy["payload"], c_uuid)
-        receipts[-1]["deployment_uuid"] = c_deployment_uuid
-        c_result = _wait_for_marker(
-            controller=controllers[_C_CONTROLLER],
-            controller_id=_C_CONTROLLER,
-            deployment_uuid=c_deployment_uuid,
-            marker=str(c_app["result_marker"]),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            max_wait_seconds=max_wait_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-            opener=opener,
-            observations=observations,
-            phase="C-funding-receipt-and-balance-verification",
-        )
-        c_tx = c_result.get("transaction_hash")
-        c_receipt_verified = c_result.get("receipt_verified")
-        common_c_valid = (
-            str(c_result.get("mode", "")) == funding_mode
-            and str(c_result.get("destination", "")).lower() == destination
-            and str(c_result.get("balance_wei", "")) == str(expected_amount)
-        )
-        funded_valid = (
-            funding_mode == "funded"
-            and type(tx_hash) is str
-            and str(c_tx).lower() == tx_hash
-            and c_receipt_verified is True
-        )
-        reconciled_valid = (
-            funding_mode == "already-funded"
-            and tx_hash is None
-            and c_tx in {None, ""}
-            and c_receipt_verified is False
-        )
-        if not (common_c_valid and (funded_valid or reconciled_valid)):
-            raise _error(
-                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_INVALID",
-                "C verifier result does not match the exact released funding state",
+                    "is_shown_once": True,
+                }
+                _request_mutation(
+                    controller=controller,
+                    mutation_id=f"{service_name}.bind-captain-secret",
+                    controller_id=controller_id,
+                    method="POST",
+                    endpoint=f"/api/v1/services/{service_uuid}/envs",
+                    body=secret_body,
+                    success_statuses=(200, 201, 202),
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                    receipts=receipts,
+                    application_uuid=service_uuid,
+                )
+                receipts[-1]["service_name"] = service_name
+
+            _request_mutation(
+                controller=controller,
+                mutation_id=f"{service_name}.start",
+                controller_id=controller_id,
+                method="POST",
+                endpoint=f"/api/v1/services/{service_uuid}/start",
+                body=None,
+                success_statuses=(200, 201, 202),
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                receipts=receipts,
+                application_uuid=service_uuid,
             )
-        _request_mutation(
-            controller=controllers[_C_CONTROLLER],
-            mutation_id=f"{c_name}.delete",
-            controller_id=_C_CONTROLLER,
-            method="DELETE",
-            endpoint=f"/api/v1/services/{c_uuid}",
-            body=None,
-            success_statuses=(200, 204),
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            receipts=receipts,
-            application_uuid=c_uuid,
-        )
-        c_deleted = True
-    except Exception as exc:
-        failure = {
-            "code": str(getattr(exc, "code", "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EXECUTION_FAILED")),
-            "message": str(exc).replace("\r", " ").replace("\n", " ").strip()[:300],
-        }
-    finally:
-        cleanup_targets = [
-            (_C_CONTROLLER, c_uuid, c_deleted, "emergency-delete-c-verifier"),
-            (_A_CONTROLLER, a_uuid, a_deleted, "emergency-delete-a-funder"),
-        ]
-        for controller_id, app_uuid, already_deleted, mutation_id in cleanup_targets:
-            if app_uuid is None or already_deleted:
-                continue
-            try:
+            receipts[-1]["service_name"] = service_name
+            if spec_key == "a_funder":
+                funding_start_acknowledged = True
+
+            proof = _wait_for_service_health(
+                controller=controller,
+                controller_id=controller_id,
+                service_uuid=service_uuid,
+                service_name=service_name,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                opener=opener,
+                observations=observations,
+                phase=f"{spec_key}-status-health-result",
+            )
+            proofs[spec_key] = proof
+            if spec_key == "a_funder" and proof.get("healthy") is True:
+                a_funder_health_proven = True
+            return proof
+        finally:
+            if service_uuid is not None:
                 response = _http(
-                    controllers[controller_id],
+                    controller,
                     "DELETE",
-                    f"/api/v1/services/{app_uuid}",
+                    f"/api/v1/services/{service_uuid}",
                     body=None,
                     timeout=timeout,
                     max_response_bytes=max_response_bytes,
                     opener=opener,
                 )
-                cleanup_succeeded = response["status"] in {200, 204, 404}
-                receipts.append(_receipt(
-                    mutation_id=mutation_id,
+                deleted = int(response.get("status", 0)) in {200, 204, 404}
+                receipt = _receipt(
+                    mutation_id=f"{service_name}.delete",
                     controller_id=controller_id,
                     method="DELETE",
-                    endpoint=f"/api/v1/services/{app_uuid}",
+                    endpoint=f"/api/v1/services/{service_uuid}",
                     response=response,
-                    succeeded=cleanup_succeeded,
-                    application_uuid=app_uuid,
-                ))
-                if cleanup_succeeded:
-                    if controller_id == _A_CONTROLLER:
-                        a_deleted = True
-                    else:
-                        c_deleted = True
-                elif failure is None:
-                    failure = {
-                        "code": "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CLEANUP_FAILED",
-                        "message": f"temporary application cleanup failed on {controller_id}",
-                    }
-            except Exception as cleanup_exc:
-                receipts.append({
-                    "mutation_id": mutation_id,
-                    "controller_id": controller_id,
-                    "method": "DELETE",
-                    "endpoint": f"/api/v1/services/{app_uuid}",
-                    "status": "failed",
-                    "live_write_acknowledged": False,
-                })
-                if failure is None:
-                    failure = {
-                        "code": str(getattr(cleanup_exc, "code", "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CLEANUP_FAILED")),
-                        "message": str(cleanup_exc).replace("\r", " ").replace("\n", " ").strip()[:300],
-                    }
+                    succeeded=deleted,
+                    application_uuid=service_uuid,
+                )
+                receipt["service_name"] = service_name
+                receipt["cleanup_absent"] = response.get("status") == 404
+                receipts.append(receipt)
+                deleted_services[service_name] = deleted
+                if not deleted:
+                    raise _error(
+                        "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CLEANUP_FAILED",
+                        f"temporary service cleanup failed for {service_name}",
+                    )
 
+    try:
+        exact_proof = run_service("a_exact_balance_classifier")
+        if exact_proof.get("healthy") is True:
+            funding_mode = "already-funded"
+            chain_state = "exact-on-A-not-yet-verified-on-C"
+        else:
+            zero_proof = run_service("a_zero_balance_classifier")
+            if zero_proof.get("healthy") is not True:
+                raise _error(
+                    "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BALANCE_PRECONDITION_FAILED",
+                    "A did not positively prove either the zero or exact destination balance",
+                )
+            funding_mode = "funded"
+            funder_proof = run_service(
+                "a_funder",
+                bind_captain_secret=True,
+            )
+            if funder_proof.get("healthy") is not True:
+                raise _error(
+                    "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_UNAVAILABLE",
+                    "A funder did not reach its committed healthy completion state",
+                )
+            chain_state = "exact-on-A-not-yet-verified-on-C"
+
+        c_key = (
+            "c_funded_verifier"
+            if funding_mode == "funded"
+            else "c_reconciled_verifier"
+        )
+        c_proof = run_service(c_key)
+        if c_proof.get("healthy") is not True:
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_INVALID",
+                "C verifier did not reach its committed healthy verification state",
+            )
+        cross_validator_proof = {
+            "mode": funding_mode,
+            "controller_id": _C_CONTROLLER,
+            "service_name": c_proof["service_name"],
+            "service_uuid": c_proof["service_uuid"],
+            "service_status": c_proof["service_status"],
+            "result_channel": "service-detail-health",
+            "balance_verified": True,
+            "receipt_verified": funding_mode == "funded",
+            "transaction_hash_recorded": False,
+            "proof": (
+                "bounded-recent-transfer-discovery-and-receipt"
+                if funding_mode == "funded"
+                else "exact-balance-reconciliation"
+            ),
+        }
+        chain_state = "exact-cross-validator-verified"
+    except Exception as exc:
+        failure = {
+            "code": str(
+                getattr(
+                    exc,
+                    "code",
+                    "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EXECUTION_FAILED",
+                )
+            ),
+            "message": str(exc).replace("\r", " ").replace("\n", " ").strip()[:300],
+        }
+        if funding_start_acknowledged and not a_funder_health_proven:
+            chain_state = "potentially-unknown-after-funder-start"
+        elif a_funder_health_proven and cross_validator_proof is None:
+            chain_state = "exact-on-A-not-yet-verified-on-C"
+
+    all_deleted = all(
+        deleted_services.get(name) is True for name in created_services
+    )
+    a_names = [
+        name for name, controller_id in service_controller_ids.items()
+        if controller_id == _A_CONTROLLER and name in created_services
+    ]
+    c_names = [
+        name for name, controller_id in service_controller_ids.items()
+        if controller_id == _C_CONTROLLER and name in created_services
+    ]
+    a_deleted = bool(a_names) and all(deleted_services.get(name) is True for name in a_names)
+    c_deleted = bool(c_names) and all(deleted_services.get(name) is True for name in c_names)
     success = bool(
         failure is None
         and funding_mode in {"funded", "already-funded"}
-        and c_result is not None
-        and a_deleted
-        and c_deleted
-        and len(receipts) == 8
+        and cross_validator_proof is not None
+        and chain_state == "exact-cross-validator-verified"
+        and all_deleted
         and all(item.get("status") == "succeeded" for item in receipts)
     )
     completed_at = _timestamp()
-    funding_performed = funding_mode == "funded" and tx_hash is not None
-    funding_reconciled = funding_mode == "already-funded"
+    funding_performed = success and funding_mode == "funded"
+    funding_reconciled = success and funding_mode == "already-funded"
     receipt_verified = bool(
         success
         and funding_mode == "funded"
-        and isinstance(c_result, Mapping)
-        and c_result.get("receipt_verified") is True
+        and cross_validator_proof
+        and cross_validator_proof.get("receipt_verified") is True
     )
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
-        "schema_version": 1,
+        "schema_version": 2,
         "started_at": started_at,
         "completed_at": completed_at,
         "status": "pass" if success else "manual-review-required",
         "network": "mainnet",
         "mother_binding": _binding(private_state),
         "release": {
-            "locator": _relative(paths, resolved_release, "validator-RPC canary funding release"),
+            "locator": _relative(
+                paths,
+                resolved_release,
+                "validator-RPC canary funding release",
+            ),
             "sha256": release_sha,
         },
         "execution_claim": {
-            "locator": _relative(paths, claim_path, "validator-RPC canary funding execution claim"),
+            "locator": _relative(
+                paths,
+                claim_path,
+                "validator-RPC canary funding execution claim",
+            ),
         },
         "chain": dict(release["chain"]),
         "funding_source_address": release["funding_source"]["address"],
         "canary_address": destination,
         "transfer_value_wei": expected_amount,
         "funding_mode": funding_mode,
-        "funding_transaction_hash": tx_hash,
-        "cross_validator_verification": dict(c_result) if c_result is not None else None,
+        "funding_transaction_hash": None,
+        "transaction_hash_recorded": False,
+        "chain_state": chain_state,
+        "cross_validator_verification": cross_validator_proof,
         "mutation_receipts": receipts,
-        "log_observations": observations,
+        "service_observations": observations,
         "failure": failure,
         "summary": {
             "clean": success,
@@ -2102,10 +1986,16 @@ def execute_validator_rpc_canary_funding_release(
             "funding_performed": funding_performed,
             "funding_reconciled_from_prior_execution": funding_reconciled,
             "funding_receipt_verified_on_C": receipt_verified,
-            "canary_balance_verified_on_C": success and c_result is not None,
+            "canary_balance_verified_on_C": success,
             "exact_transfer_value_verified": success,
+            "transaction_hash_recorded": False,
+            "service_health_result_channel_used": True,
+            "runtime_log_result_channel_used": False,
+            "deployment_uuid_required": False,
             "temporary_A_application_deleted": a_deleted,
             "temporary_C_application_deleted": c_deleted,
+            "temporary_services_deleted": all_deleted,
+            "temporary_service_count": len(created_services),
             "application_mutation_count": len(receipts),
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
@@ -2114,11 +2004,16 @@ def execute_validator_rpc_canary_funding_release(
             "canary_execution_performed": False,
             "next_phase": (
                 "validator-rpc-canary-execution-release-not-yet-authorized"
-                if success else "manual-review-required"
+                if success
+                else "manual-review-required"
             ),
         },
     }
-    evidence_path, evidence_sha = _write_funding_evidence(paths, evidence, operation=operation)
+    evidence_path, evidence_sha = _write_funding_evidence(
+        paths,
+        evidence,
+        operation=operation,
+    )
     return {
         "status": evidence["status"],
         "network": "mainnet",
@@ -2126,10 +2021,14 @@ def execute_validator_rpc_canary_funding_release(
         "canary_address": destination,
         "transfer_value_wei": expected_amount,
         "funding_mode": funding_mode,
-        "funding_transaction_hash": tx_hash,
+        "funding_transaction_hash": None,
+        "transaction_hash_recorded": False,
+        "chain_state": chain_state,
         "summary": evidence["summary"],
         "evidence": {"path": str(evidence_path), "sha256": evidence_sha},
     }
+
+
 
 
 def verify_validator_rpc_canary_funding_evidence(
@@ -2154,7 +2053,7 @@ def verify_validator_rpc_canary_funding_evidence(
     digest = _digest_without(document, "validator_rpc_canary_funding_evidence_sha256")
     if not (
         document.get("kind") == _EVIDENCE_KIND
-        and document.get("schema_version") == 1
+        and document.get("schema_version") == 2
         and document.get("status") == "pass"
         and document.get("validator_rpc_canary_funding_evidence_sha256") == digest
         and document.get("mother_binding") == _binding(private_state)
@@ -2184,11 +2083,15 @@ def verify_validator_rpc_canary_funding_evidence(
         _RELEASE_DIRECTORY,
         "validator-RPC canary funding release",
     )
-    release_sha = _digest_without(release, "validator_rpc_canary_funding_release_sha256")
+    release_sha = _digest_without(
+        release,
+        "validator_rpc_canary_funding_release_sha256",
+    )
     if not (
         release_ref.get("sha256") == release_sha
         and release.get("validator_rpc_canary_funding_release_sha256") == release_sha
         and release.get("mother_binding") == _binding(private_state)
+        and release.get("schema_version") == 2
     ):
         raise _error(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
@@ -2240,51 +2143,123 @@ def verify_validator_rpc_canary_funding_evidence(
         )
 
     receipts = document.get("mutation_receipts")
-    observations = document.get("log_observations")
-    release_applications = _mapping(release.get("applications"), "release.applications")
-    a_name = str(_mapping(release_applications.get("a_funder"), "release.applications.a_funder").get("application_name"))
-    c_name = str(_mapping(release_applications.get("c_verifier"), "release.applications.c_verifier").get("application_name"))
-    expected_names = [
-        f"{a_name}.create-application",
-        f"{a_name}.bind-captain-secret",
-        f"{a_name}.deploy",
-        f"{a_name}.delete",
-        f"{c_name}.create-application",
-        f"{c_name}.bind-public-funding-result",
-        f"{c_name}.deploy",
-        f"{c_name}.delete",
-    ]
-    c_result = document.get("cross_validator_verification")
-    summary = _mapping(document.get("summary"), "evidence.summary")
+    observations = document.get("service_observations")
+    applications = _mapping(release.get("applications"), "release.applications")
     funding_mode = document.get("funding_mode")
-    common = (
+    if funding_mode == "funded":
+        spec_keys = [
+            "a_exact_balance_classifier",
+            "a_zero_balance_classifier",
+            "a_funder",
+            "c_funded_verifier",
+        ]
+        required_healthy = {
+            "a_zero_balance_classifier",
+            "a_funder",
+            "c_funded_verifier",
+        }
+        required_nonhealthy = {"a_exact_balance_classifier"}
+    elif funding_mode == "already-funded":
+        spec_keys = [
+            "a_exact_balance_classifier",
+            "c_reconciled_verifier",
+        ]
+        required_healthy = {
+            "a_exact_balance_classifier",
+            "c_reconciled_verifier",
+        }
+        required_nonhealthy = set()
+    else:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
+            "funding evidence mode is invalid",
+        )
+
+    expected_ids: list[str] = []
+    expected_methods: list[str] = []
+    for key in spec_keys:
+        spec = _mapping(applications.get(key), f"release.applications.{key}")
+        name = str(spec["application_name"])
+        expected_ids.append(f"{name}.create-service")
+        expected_methods.append("POST")
+        if key == "a_funder":
+            expected_ids.append(f"{name}.bind-captain-secret")
+            expected_methods.append("POST")
+        expected_ids.extend([f"{name}.start", f"{name}.delete"])
+        expected_methods.extend(["POST", "DELETE"])
+
+    if not (
         type(receipts) is list
-        and [item.get("mutation_id") for item in receipts] == expected_names
-        and [item.get("method") for item in receipts]
-        == ["POST", "POST", "GET", "DELETE", "POST", "PATCH", "GET", "DELETE"]
+        and [item.get("mutation_id") for item in receipts] == expected_ids
+        and [item.get("method") for item in receipts] == expected_methods
         and all(item.get("status") == "succeeded" for item in receipts)
         and all(item.get("live_write_acknowledged") is True for item in receipts)
-        and re.fullmatch(r"[A-Za-z0-9_-]{8,96}", str(receipts[2].get("deployment_uuid", ""))) is not None
-        and re.fullmatch(r"[A-Za-z0-9_-]{8,96}", str(receipts[6].get("deployment_uuid", ""))) is not None
         and type(observations) is list
-        and any(
-            item.get("phase") == "A-capped-funding-result"
-            and item.get("endpoint") == f"/api/v1/deployments/{receipts[2]['deployment_uuid']}"
-            and item.get("http_status") == 200
-            and item.get("marker_present") is True
-            for item in observations if isinstance(item, Mapping)
+        and all(
+            "/logs" not in str(item.get("endpoint", ""))
+            and "/deployments" not in str(item.get("endpoint", ""))
+            for item in observations
+            if isinstance(item, Mapping)
         )
-        and any(
-            item.get("phase") == "C-funding-receipt-and-balance-verification"
-            and item.get("endpoint") == f"/api/v1/deployments/{receipts[6]['deployment_uuid']}"
-            and item.get("http_status") == 200
-            and item.get("marker_present") is True
-            for item in observations if isinstance(item, Mapping)
+        and all(
+            "/logs" not in str(item.get("endpoint", ""))
+            and "/deployments" not in str(item.get("endpoint", ""))
+            for item in receipts
+            if isinstance(item, Mapping)
         )
-        and isinstance(c_result, Mapping)
-        and str(c_result.get("mode", "")) == funding_mode
-        and str(c_result.get("destination", "")).lower() == document["canary_address"]
-        and str(c_result.get("balance_wei", "")) == str(document["transfer_value_wei"])
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
+            "funding evidence mutation or transport receipts are contradictory",
+        )
+
+    def phase_observations(key: str) -> list[Mapping[str, Any]]:
+        phase = f"{key}-status-health-result"
+        return [
+            item
+            for item in observations
+            if isinstance(item, Mapping) and item.get("phase") == phase
+        ]
+
+    for key in required_healthy:
+        found = phase_observations(key)
+        if not (
+            found
+            and any(
+                item.get("healthy") is True
+                and _healthy_service_status(item.get("service_status"))
+                and item.get("result_channel") == "service-detail-health"
+                for item in found
+            )
+        ):
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
+                f"{key} lacks its committed healthy service proof",
+            )
+    for key in required_nonhealthy:
+        found = phase_observations(key)
+        if not (
+            found
+            and all(item.get("healthy") is False for item in found)
+        ):
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
+                f"{key} unexpectedly contains a healthy proof",
+            )
+
+    c_result = document.get("cross_validator_verification")
+    summary = _mapping(document.get("summary"), "evidence.summary")
+    common = (
+        isinstance(c_result, Mapping)
+        and c_result.get("mode") == funding_mode
+        and c_result.get("controller_id") == _C_CONTROLLER
+        and c_result.get("result_channel") == "service-detail-health"
+        and _healthy_service_status(c_result.get("service_status"))
+        and c_result.get("balance_verified") is True
+        and c_result.get("transaction_hash_recorded") is False
+        and document.get("funding_transaction_hash") in {None, ""}
+        and document.get("transaction_hash_recorded") is False
+        and document.get("chain_state") == "exact-cross-validator-verified"
         and document["transfer_value_wei"] == release["funding_policy"]["transfer_value_wei"]
         and document["canary_address"] == release["destination"]["address"]
         and summary.get("clean") is True
@@ -2292,44 +2267,41 @@ def verify_validator_rpc_canary_funding_evidence(
         and summary.get("funding_complete") is True
         and summary.get("canary_balance_verified_on_C") is True
         and summary.get("exact_transfer_value_verified") is True
+        and summary.get("transaction_hash_recorded") is False
+        and summary.get("service_health_result_channel_used") is True
+        and summary.get("runtime_log_result_channel_used") is False
+        and summary.get("deployment_uuid_required") is False
         and summary.get("temporary_A_application_deleted") is True
         and summary.get("temporary_C_application_deleted") is True
-        and summary.get("application_mutation_count") == 8
+        and summary.get("temporary_services_deleted") is True
+        and summary.get("temporary_service_count") == len(spec_keys)
+        and summary.get("application_mutation_count") == len(expected_ids)
         and summary.get("validator_mutation_count") == 0
         and summary.get("validator_restart_count") == 0
         and summary.get("public_endpoint_count") == 0
         and summary.get("validator_vote_performed") is False
         and summary.get("canary_execution_performed") is False
     )
-    tx_hash = document.get("funding_transaction_hash")
     funded = (
         funding_mode == "funded"
-        and type(tx_hash) is str
-        and re.fullmatch(r"0x[0-9a-f]{64}", tx_hash) is not None
-        and str(c_result.get("transaction_hash", "")).lower() == tx_hash
         and c_result.get("receipt_verified") is True
+        and c_result.get("proof") == "bounded-recent-transfer-discovery-and-receipt"
         and summary.get("funding_performed") is True
         and summary.get("funding_reconciled_from_prior_execution") is False
         and summary.get("funding_receipt_verified_on_C") is True
     )
-    recovery = release.get("recovery")
     reconciled = (
         funding_mode == "already-funded"
-        and tx_hash in {None, ""}
-        and c_result.get("transaction_hash") in {None, ""}
         and c_result.get("receipt_verified") is False
+        and c_result.get("proof") == "exact-balance-reconciliation"
         and summary.get("funding_performed") is False
         and summary.get("funding_reconciled_from_prior_execution") is True
         and summary.get("funding_receipt_verified_on_C") is False
-        and isinstance(recovery, Mapping)
-        and recovery.get("mode") == "idempotent-post-deploy-balance-reconcile-or-fund"
-        and recovery.get("prior_cleanup_acknowledged") is True
-        and recovery.get("prior_funding_state") == "unknown"
     )
     if not (common and (funded or reconciled)):
         raise _error(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
-            "funding evidence receipts or proof facts are contradictory",
+            "funding evidence status-health proof facts are contradictory",
         )
     return {
         "clean": True,
@@ -2341,13 +2313,15 @@ def verify_validator_rpc_canary_funding_evidence(
         "release_sha256": release_sha,
         "transaction_sha256": verified_transaction["transaction_sha256"],
         "funding_mode": funding_mode,
-        "funding_transaction_hash": tx_hash,
+        "funding_transaction_hash": None,
+        "transaction_hash_recorded": False,
         "funding_source_address": document["funding_source_address"],
         "canary_address": document["canary_address"],
         "transfer_value_wei": document["transfer_value_wei"],
         "funding_receipt_verified_on_C": funded,
         "canary_balance_verified_on_C": True,
         "funding_reconciled_from_prior_execution": reconciled,
+        "result_channel": "service-detail-health",
         "temporary_applications_deleted": True,
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
@@ -2356,4 +2330,5 @@ def verify_validator_rpc_canary_funding_evidence(
         "canary_execution_performed": False,
         "next_phase": "validator-rpc-canary-execution-release-not-yet-authorized",
     }
+
 

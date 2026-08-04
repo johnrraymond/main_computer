@@ -2,6 +2,8 @@
 
 ## Purpose
 
+Candidate acceptance-evidence invalidation, repair-stage re-entry, and narrow rerun guidance are governed by `pretty_docs/mcel-compiler-diagnostics-and-repair-protocol.md`.
+
 `main_computer/mcel_acceptance_runner.py` converts declared MCEL acceptance
 contracts into repository-bound execution evidence.
 
@@ -17,6 +19,14 @@ The runner does not define product truth. Authorities remain separated:
 
 A passing test file cannot prove an acceptance contract unless the binding
 catalog explicitly names that contract.
+
+## Consequential-effect accounting boundary
+
+Acceptance evidence proves the behavior named by an enforceable contract. It does not automatically prove that every consequential effect was declared, used the correct authority, reached a legal terminal disposition, completed cleanup, or left no unexplained residue.
+
+`pretty_docs/mcel-consequential-effects-and-proof-accounting.md` defines that additional reconciliation layer. Acceptance bindings may provide effect evidence, including prohibited-effect nonoccurrence, receipts, cleanup, cancellation, and recovery, but the final effect-accounting verdict must compare those results with IR declarations, SCM/capability evidence, browser observation when applicable, and repository provenance.
+
+A generated test binding is not independent proof merely because the compiler produced it. The bound execution and captured evidence remain separate authorities.
 
 ## Commands
 

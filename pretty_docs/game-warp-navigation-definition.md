@@ -2,26 +2,24 @@
 
 Contract: `game.warp-navigation-definition.v1`
 
-This document defines the campaign-scale navigation contract for system-to-system warp travel. It is Patch 1 of the warp line: authored data, machine-readable shape, and a forty-system reference map only.
-
-It does not add a navigation console, route plotting, warp animation, travel execution, arrival execution, or runtime migration.
+This document defines the campaign-scale navigation contract for system-to-system warp travel. The current authored fixture contains thirty-two flat star systems, forty-two routes, and richer local astronomical presentation for Solace Reach and Vela Gate.
 
 ## Authority boundary
 
-Warp navigation is project-level campaign data. The canonical authored location is:
+Warp navigation is project-level campaign data:
 
 ```text
 project.metadata.spaceNavigation
 ```
 
-It is deliberately outside `scene.metadata.shuttle3d` and outside `motherShipInterior`:
+It is deliberately separate from local rendering and ship-interior state:
 
 ```text
 project
-└── metadata.spaceNavigation       campaign-scale system graph
+└── metadata.spaceNavigation       campaign-scale graph and arrival summaries
 
 scene
-└── metadata.shuttle3d             local-space rendering and movement
+└── metadata.shuttle3d             local rendering and movement
     └── motherShipInterior         walkable ship-interior graph
 ```
 
@@ -37,6 +35,7 @@ game_projects/schema/space-navigation.v1.schema.json
 The ship is in exactly one system while not in transit.
 A direct warp jump is legal only through a declared route whose origin is the current system.
 Map coordinates never create connectivity.
+Planets and companion stars never become hidden warp nodes.
 ```
 
 Systems are graph nodes. Routes are first-class graph edges. A system does not carry a duplicated neighbor list.
@@ -47,9 +46,10 @@ Systems are graph nodes. Routes are first-class graph edges. A system does not c
 {
   "enabled": true,
   "schema": "game.spaceNavigation.v1",
-  "definitionVersion": "game.spaceNavigation.definition.v1",
-  "stateVersion": "game.spaceNavigation.state.v1",
+  "definitionVersion": "game.spaceNavigation.definition.v2",
+  "stateVersion": "game.spaceNavigation.state.v2",
   "startSystem": "system.solace-reach",
+  "captainScrawl": "Congratulations, Captain, on picking the better of the two systems.",
   "policy": {},
   "arrivalProfiles": {},
   "systems": [],
@@ -69,8 +69,6 @@ game_projects/new-game/project.json
 
 ## Policy
 
-The first definition fixes four decisions:
-
 ```json
 {
   "jumpMode": "adjacent-only",
@@ -80,15 +78,13 @@ The first definition fixes four decisions:
 }
 ```
 
-`adjacent-only` means the runtime may later calculate a multi-jump course, but each committed jump still traverses exactly one route.
+`adjacent-only` means every committed jump traverses exactly one declared route. `mapPositionAuthoritative: false` prevents the chart layout from silently defining travel.
 
-`mapPositionAuthoritative: false` prevents the rendered chart from silently defining travel. Two systems can appear close together and still lack a route.
-
-`allowDirectedRoutes` reserves one-way routes without requiring them in the initial map. All fifty initial routes are bidirectional.
+All current routes are bidirectional.
 
 ## Systems
 
-Each system declares identity and presentation data, not its neighbors:
+Every system is one flat warp destination:
 
 ```json
 {
@@ -97,24 +93,112 @@ Each system declares identity and presentation data, not its neighbors:
   "region": "region.origin",
   "mapPosition": [0, -3],
   "localSpaceId": "space.solace-reach",
-  "arrivalProfile": "arrival.bridge-retain-player"
+  "arrivalProfile": "arrival.bridge-retain-player",
+  "stars": [],
+  "primaryPlanet": {},
+  "additionalPlanets": [],
+  "arrivalDestinationId": "destination.solace-reach.haven-orbit",
+  "localDestinations": [],
+  "localRoutes": []
 }
 ```
-
-Fields:
 
 | Field | Meaning |
 | --- | --- |
 | `id` | Stable system identity used by state and routes |
 | `label` | Player-facing chart label |
-| `region` | Authoring and map-grouping identity |
-| `mapPosition` | Non-authoritative two-dimensional chart position |
-| `localSpaceId` | Stable identity for the system-local simulation state |
-| `arrivalProfile` | Named arrival behavior selected after a committed jump |
+| `region` | Authoring and chart-grouping identity |
+| `mapPosition` | Non-authoritative chart position |
+| `localSpaceId` | Stable identity for future local simulation state |
+| `arrivalProfile` | Arrival behavior after a committed jump |
+| `stars` | Optional explicit stellar inventory; omission means the legacy single-star presentation |
+| `primaryPlanet` | Default arrival and bridge-viewscreen planet |
+| `additionalPlanets` | Additional charted worlds inside the same warp destination |
+| `arrivalDestinationId` | Local destination selected when an inter-system arrival commits |
+| `localDestinations` | Authored places reachable inside this system; never warp-chart nodes |
+| `localRoutes` | Authored movement edges between local destinations |
+
+A planet may also declare:
+
+| Field | Meaning |
+| --- | --- |
+| `habitable` | The world supports ordinary habitation under the authored setting |
+| `inhabited` | A population or permanent habitat is present |
+| `formerSystemId` | Provenance for a planet retained from a removed warp destination |
+
+## Flat chart and local-system boundary
+
+The destination selector presents thirty-two peer systems. It never renders `stars`, `primaryPlanet`, `additionalPlanets`, or `formerSystemId` as separate warp choices.
+
+```text
+warp destination
+→ one star system
+→ stars, planets, moons, stations, habitats, fleets, and hazards
+```
+
+The previous subsystem proposal is rejected. There is no `subsystems` field in the schema or runtime.
+
+## Rich systems
+
+Solace Reach and Vela Gate each author:
+
+```text
+2 stars
+1 primary planet
+4 additional planets
+5 inhabited worlds total
+at least 2 explicitly habitable worlds
+```
+
+Content preservation:
+
+```text
+Solace Reach: Haven, Osprey, Bellara, Lyria, Talon
+Vela Gate: Velaris, Antares, Seraph, Bastion, Chiron
+```
+
+The eight former system ids are absent from the system list, routes, and discovery state. Their planet ids remain stable inside `additionalPlanets`.
+
+## Local navigation contract
+
+Definition version `game.spaceNavigation.definition.v2` adds an optional all-or-nothing local navigation contract to a system:
+
+```json
+{
+  "arrivalDestinationId": "destination.solace-reach.haven-orbit",
+  "localDestinations": [
+    {
+      "id": "destination.solace-reach.haven-orbit",
+      "label": "Haven High Orbit",
+      "kind": "planet-orbit",
+      "parentBodyId": "planet.haven",
+      "position": [0, 0],
+      "discoveredByDefault": true,
+      "availableByDefault": true,
+      "visualProgram": "systemPlanet",
+      "description": "The default arrival orbit above Haven."
+    }
+  ],
+  "localRoutes": [
+    {
+      "id": "local-route.solace-reach.haven-osprey",
+      "from": "destination.solace-reach.haven-orbit",
+      "to": "destination.solace-reach.osprey-anchorage",
+      "bidirectional": true,
+      "presentationDurationMs": 1800,
+      "worldTimeCost": 1
+    }
+  ]
+}
+```
+
+A system that declares any of these three fields must declare all three. Destination ids and route ids are globally unique. Destination parent bodies must resolve inside the same system, route endpoints must resolve inside the same local graph, and every authored local destination must be reachable from the arrival destination.
+
+Solace Reach and Vela Gate each now declare five planet-orbit destinations and five connected local routes. The other thirty systems remain compatible through a deterministic primary-orbit fallback until richer local definitions are authored.
+
+This patch establishes identities, references, topology, arrival selection, and save-state restoration. It does not yet expose local course plotting or transit controls.
 
 ## Arrival profile
-
-Patch 1 declares one arrival profile:
 
 ```json
 {
@@ -127,7 +211,7 @@ Patch 1 declares one arrival profile:
 }
 ```
 
-This encodes the intended first warp behavior: the mother ship changes systems while the player remains on the bridge. It does not execute that behavior yet.
+The mother ship changes systems while the player remains on the bridge.
 
 ## Routes
 
@@ -144,73 +228,65 @@ A route is the sole authority for a direct jump:
 }
 ```
 
-`presentationDurationMs` controls future presentation time. `worldTimeCost` advances the strategic clock. They are intentionally independent.
+`presentationDurationMs` controls presentation time. `worldTimeCost` advances the strategic clock. They remain independent.
 
-The initial map uses:
+## Thirty-two-system reference graph
 
-```text
-intra-region route: 4500 ms presentation, 4 world-time units
-inter-region route: 6500 ms presentation, 8 world-time units
-```
+The graph retains all thirty-two surviving systems and contracts corridors that previously passed through removed nodes.
 
-These values are authored defaults, not final balance.
+Regional system counts:
 
-## Forty-system reference graph
+| Region | Warp systems |
+| --- | ---: |
+| Origin | 8 |
+| Meridian | 8 |
+| Helix | 7 |
+| Crown | 3 |
+| Verge | 6 |
 
-The map contains five eight-system regional loops. Every system has at least two routes before inter-region links are counted, so the initial graph has no dead ends.
-
-| Region | Ordered loop |
-| --- | --- |
-| Origin Cluster | Solace Reach → Vela Gate → Carina Watch → Orison → Cinder → Lumen → Ardent → Pax → Solace Reach |
-| Meridian Cluster | Meridian Prime → Tethys → Ilyra → Daedalus → Nacre → Sable → Vesper → Kestrel → Meridian Prime |
-| Helix Cluster | Helix Prime → Aster → Calyx → Remora → Talon → Eos → Morrow → Halcyon → Helix Prime |
-| Crown Cluster | Crown Prime → Regulus → Chiron → Bellatrix → Kepler → Lyra → Antares → Seraph → Crown Prime |
-| Verge Cluster | Verge Prime → Rook → Fenris → Nyx → Osprey → Tempest → Bastion → Axiom → Verge Prime |
-
-The ten inter-region routes are:
+Contracted replacement corridors:
 
 ```text
-Vela Gate ↔ Meridian Prime
-Pax ↔ Kestrel
-Tethys ↔ Helix Prime
-Ilyra ↔ Halcyon
-Sable ↔ Crown Prime
-Vesper ↔ Seraph
-Aster ↔ Verge Prime
-Eos ↔ Rook
-Regulus ↔ Axiom
-Antares ↔ Bastion
+Remora ↔ Eos
+Regulus ↔ Kepler
+Kepler ↔ Crown Prime
+Nyx ↔ Tempest
+Tempest ↔ Axiom
+Vesper ↔ Crown Prime
+Kepler ↔ Tempest
 ```
 
 Totals:
 
 ```text
-systems: 40
-routes: 50
+systems: 32
+routes: 42
+preserved planet identities: 40
+explicit binary systems: 2
+five-world systems: 2
 minimum system degree: 2
 start system: system.solace-reach
 all systems reachable from start: yes
 ```
 
-The five loops and ten bridges create alternate paths instead of a padded linear campaign chain.
-
 ## State defaults
-
-Patch 1 declares the future state boundary:
 
 ```json
 {
   "currentSystemId": "system.solace-reach",
+  "currentLocalDestinationId": "destination.solace-reach.haven-orbit",
   "plottedRouteId": null,
   "travelPhase": "in-system",
   "elapsedWorldTime": 0,
-  "discoveredSystems": ["all forty authored system ids"]
+  "discoveredSystems": ["all thirty-two warp-system ids"],
+  "discoveredLocalDestinations": {
+    "system.solace-reach": ["five authored destination ids"],
+    "system.vela-gate": ["five authored destination ids"]
+  }
 }
 ```
 
-All forty systems begin charted because discovery gameplay is not part of this patch line yet.
-
-The legal travel phases reserved by the schema are:
+The legal phases are:
 
 ```text
 in-system
@@ -220,37 +296,59 @@ in-warp
 arriving
 ```
 
-Patch 1 originally reserved these phases. The browser runtime now executes them as documented in `pretty_docs/game-warp-navigation-runtime.md`.
+All thirty-two systems begin charted. The eight removed ids do not survive in discovery state.
+
+## Captain's Scrawl
+
+The definition carries one route-choice affirmation:
+
+> Congratulations, Captain, on picking the better of the two systems.
+
+The basic graph does not rank destinations. The browser presentation shows the scrawl after a course is plotted and during travel. Campaign scenario logic remains responsible for making the selected major destination a just-in-time intervention.
 
 ## Validation contract
 
-The authored definition requires future validators to prove:
+Validators prove:
 
 ```text
-system ids are unique
-route ids are unique
-route endpoints resolve to systems
+system, route, planet, and explicit star ids are unique
+route endpoints resolve to the thirty-two systems
 routes do not connect a system to itself
-every system has at least one route
-every system is reachable from the start system
-arrival-profile references resolve
-state references resolve
-map positions are unique
+every system has at least two reachable neighbors in the fixture
+every system is reachable from Solace Reach
+arrival-profile and state references resolve
+map positions are valid and unique
+every system has a primary planet
+additional planets are complete planet records
+local destination and route ids are unique
+local destination parent bodies and route endpoints resolve within their system
+each authored local graph is reachable from its arrival destination
+current and discovered local-destination state references resolve
+removed system ids are absent from topology and state
 ```
 
-The repository contract test proves that the current forty-system fixture satisfies these rules. The browser runtime now performs its own definition validation before accepting the graph.
+The browser runtime validates the definition before accepting it.
 
-## Patch boundary
+## Implementation boundary
 
-Patch 1 changes only:
+Implemented:
 
-```text
-machine-readable schema
-authored project definitions
-human-readable contract documentation
-repository-level definition checks
-```
+- flat thirty-two-system topology;
+- forty-two routes;
+- richer stellar and planetary records;
+- runtime arrays and counts for current and destination bodies;
+- ten authored local destinations and ten local routes across the first two systems;
+- local arrival identity, discovery state, save restoration, and warp-arrival commit;
+- deterministic primary-orbit fallback for systems without an authored local graph;
+- Captain's Scrawl transport into the browser UI.
 
-The runtime-facing validator, deterministic jump transaction, bridge navigation console, warp presentation, and executable browser-contract proof are now implemented. Discovery, multi-jump pathfinding, encounters, save-game persistence, and differentiated destination scenes remain future work.
+Not implemented:
 
-No runtime should infer a route from map distance, duplicate neighbor lists into systems, or replace the current system merely because an animation timer expired.
+- local course plotting and travel between destinations;
+- player-facing local-destination selection controls;
+- multiple-body viewscreen rendering;
+- local scenario persistence;
+- multi-jump pathfinding;
+- discovery gameplay.
+
+Navigation remains responsible for legal campaign travel. Local-space and scenario runtimes must own movement and consequences after arrival.

@@ -14,6 +14,19 @@ The target command is the MCEL equivalent of `cargo new`, `django-admin startpro
 mcel app create <app-id>
 ```
 
+### DSL-v1 migration target
+
+The current scaffold emits the explicit canonical package used by Contract Counter. The documented v1 target in `pretty_docs/mcel-official-vanilla-javascript-dsl.md` changes the authored/generated boundary without discarding the current package authority:
+
+```text
+mcel_apps/<app-id>/application.js                       official DSL source
+mcel_apps/<app-id>/generated/mcel.application.ir.json  canonical IR
+mcel_apps/<app-id>/generated/application.definition.js readable low-level projection
+mcel_apps/<app-id>/contracts/                           generated explicit contracts
+```
+
+During migration, the scaffolder must record whether each file is authored, generated, legacy-owned, dual-authored, evidence, runtime state, or presentation-authored. It must not overwrite current explicit definitions until IR equivalence and renewed proof authorize that ownership transition. `pretty_docs/mcel-scaffolder-generated-projection-and-compatibility.md` now fixes the proposed ownership artifact, versioned explicit and DSL scaffold modes, candidate workspace, manifest and generation records, legacy-source descriptor, generated projection paths, compatibility reports, atomic promotion, rollback, and template-upgrade limits. The live `mcel.canonical-application-template` version `1.0.0` remains unchanged until implementation is separately authorized.
+
 The command must do more than create HTML, JavaScript, and CSS. It must create the smallest complete application package that MCEL can eventually:
 
 - discover;
@@ -59,6 +72,8 @@ existing requirements registry
 ```
 
 The generated fixture is where the two directions must meet.
+
+The fixture and generator are also migration inputs, not a second permanent application language. `pretty_docs/mcel-application-ir-and-compiler-migration.md` defines the target relationship: the scaffolder creates a safe workspace; legacy/current and future DSL front ends compile authored semantics to one MCEL Application IR; replaceable back ends generate the explicit package; independent acceptance and browser evidence prove the result. `pretty_docs/mcel-application-ir-schema-and-normalization.md` defines the proposed IR artifact the future scaffold must reserve space for, while `pretty_docs/mcel-existing-application-definition-migration-inventory.md` prevents the scaffolded package family from replacing or orphaning requirements-driven, surface-led, normalized, blueprint, or legacy application definitions during the transition.
 
 ## Status vocabulary
 

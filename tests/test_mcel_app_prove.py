@@ -83,6 +83,10 @@ def test_app_proof_composes_independent_authorities(monkeypatch) -> None:
     assert report["truthSnapshot"]["claims"]["semanticRuntimeProven"] is True
     assert report["stages"]["repositoryBinding"]["status"] == "exact"
     assert report["stages"]["surfaceConformance"]["status"] == "pass"
+    assert report["stages"]["intentCompleteProof"]["status"] == "legacy-evidence"
+    assert report["stages"]["intentCompleteProof"]["applicable"] is False
+    assert report["intentCoverage"]["declaredIntentCount"] is None
+    assert report["intentCoverage"]["coveredIntentCount"] is None
 
 
 def test_app_proof_rejects_stale_observation_package_fingerprint() -> None:
@@ -116,6 +120,40 @@ def test_app_proof_rejects_missing_required_surface_layer() -> None:
             observation=observation,
         )
 
+
+
+def test_legacy_intent_coverage_is_non_vacuous_evidence_status() -> None:
+    _catalog, record, _projection, _provenance, acceptance, observation = _evidence()
+    observation["operations"] = 1
+    coverage = prove._intent_complete_coverage(
+        repo=ROOT,
+        app_id="contract-counter",
+        record=record,
+        acceptance=acceptance,
+        observation=observation,
+    )
+    assert coverage["status"] == "legacy-evidence"
+    assert coverage["passed"] is True
+    assert coverage["applicable"] is False
+    assert coverage["coverageMode"] == "legacy-package-acceptance-and-browser-observation"
+    assert coverage["declaredIntentCount"] is None
+    assert coverage["coveredIntentCount"] is None
+    assert coverage["declaredScenarioCount"] is None
+    assert coverage["observedScenarioCount"] == 1
+
+
+def test_legacy_intent_coverage_still_fails_closed() -> None:
+    _catalog, record, _projection, _provenance, acceptance, observation = _evidence()
+    observation["status"] = "fail"
+    observation["ok"] = False
+    with pytest.raises(prove.AppProofError, match="Legacy package acceptance and browser evidence did not converge"):
+        prove._intent_complete_coverage(
+            repo=ROOT,
+            app_id="contract-counter",
+            record=record,
+            acceptance=acceptance,
+            observation=observation,
+        )
 
 def _workbench_coverage_inputs():
     catalog = build_application_package_catalog(ROOT)
@@ -153,6 +191,8 @@ def test_intent_complete_coverage_converges_for_workbench() -> None:
         observation=observation,
     )
     assert coverage["status"] == "pass"
+    assert coverage["applicable"] is True
+    assert coverage["coverageMode"] == "normalized-definition-intent-convergence"
     assert coverage["declaredIntentCount"] == 7
     assert coverage["coveredIntentCount"] == 7
     assert coverage["declaredScenarioCount"] == 14
