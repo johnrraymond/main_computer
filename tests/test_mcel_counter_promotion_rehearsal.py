@@ -8,7 +8,10 @@ from main_computer.mcel_counter_candidate_evidence import CandidateEvidenceResul
 from main_computer.mcel_counter_promotion_rehearsal import (
     _apply_plan,
     _build_promotion_plan,
+    _promotion_authority_source_snapshot,
     _rollback_plan,
+    _snapshot_changes,
+    _source_tree_snapshot,
     _tree_snapshot,
     rehearse_counter_promotion,
 )
@@ -170,3 +173,46 @@ def test_stale_candidate_evidence_blocks_rehearsal(tmp_path: Path) -> None:
     assert result.valid is False
     assert result.status == "stale-evidence"
     assert any(item["code"] == "MCEL_COUNTER_PROMOTION_EVIDENCE_BINDING_CONFLICT" for item in result.diagnostics)
+
+
+def test_repository_guard_ignores_unrelated_source_changes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "main_computer").mkdir(parents=True)
+    (repo / "tools/mother").mkdir(parents=True)
+    (repo / "mcel_apps/contract-counter/contracts").mkdir(parents=True)
+    (repo / "tests/fixtures/mcel_dsl").mkdir(parents=True)
+    (repo / "tests/fixtures/mcel_application_ir").mkdir(parents=True)
+    (repo / "main_computer/mcel_counter_promotion_rehearsal.py").write_text("authority\n", encoding="utf-8")
+    (repo / "tools/mother/unrelated.py").write_text("before\n", encoding="utf-8")
+    (repo / "mcel_apps/contract-counter/contracts/domain.js").write_text("counter\n", encoding="utf-8")
+    (repo / "tests/fixtures/mcel_dsl/contract-counter.application.js").write_text("dsl\n", encoding="utf-8")
+    (repo / "tests/fixtures/mcel_application_ir/contract-counter.ir.json").write_text("{}\n", encoding="utf-8")
+
+    full_before = _source_tree_snapshot(repo)
+    protected_before = _promotion_authority_source_snapshot(repo)
+    (repo / "tools/mother/unrelated.py").write_text("after\n", encoding="utf-8")
+    full_after = _source_tree_snapshot(repo)
+    protected_after = _promotion_authority_source_snapshot(repo)
+
+    assert _snapshot_changes(full_before, full_after) == ["tools/mother/unrelated.py"]
+    assert _snapshot_changes(protected_before, protected_after) == []
+
+
+def test_repository_guard_detects_counter_or_shared_mcel_changes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "main_computer").mkdir(parents=True)
+    (repo / "mcel_apps/contract-counter/contracts").mkdir(parents=True)
+    authority = repo / "main_computer/mcel_counter_promotion_rehearsal.py"
+    contract = repo / "mcel_apps/contract-counter/contracts/domain.js"
+    authority.write_text("before\n", encoding="utf-8")
+    contract.write_text("before\n", encoding="utf-8")
+    before = _promotion_authority_source_snapshot(repo)
+
+    authority.write_text("after\n", encoding="utf-8")
+    contract.write_text("after\n", encoding="utf-8")
+    after = _promotion_authority_source_snapshot(repo)
+
+    assert _snapshot_changes(before, after) == [
+        "main_computer/mcel_counter_promotion_rehearsal.py",
+        "mcel_apps/contract-counter/contracts/domain.js",
+    ]

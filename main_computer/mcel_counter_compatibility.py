@@ -60,6 +60,11 @@ def compare_counter_representations(
     report_root: Path = DEFAULT_REPORT_ROOT,
 ) -> CounterCompatibilityReport:
     diagnostics: list[Mapping[str, Any]] = []
+    source_authority = _read_source_authority(package_root)
+    effective_dsl_source = dsl_source_path
+    promoted_source = package_root / "application.js"
+    if source_authority == "mcel.dsl.v1" and promoted_source.is_file() and dsl_source_path == DEFAULT_DSL_SOURCE:
+        effective_dsl_source = promoted_source
     live = import_counter_legacy_package(package_root)
     diagnostics.extend(live.diagnostics)
 
@@ -72,7 +77,7 @@ def compare_counter_representations(
     if fixture is not None:
         diagnostics.extend(item.to_dict() for item in fixture.diagnostics)
 
-    dsl = compile_dsl_application(dsl_source_path)
+    dsl = compile_dsl_application(effective_dsl_source)
     diagnostics.extend(dsl.diagnostics)
 
     live_ir = live.normalized_ir
@@ -109,15 +114,16 @@ def compare_counter_representations(
         "fixture": fixture.semantic_fingerprint if fixture else None,
         "dsl": dsl.semantic_fingerprint,
     }
+    promoted = source_authority == "mcel.dsl.v1"
     report: dict[str, Any] = {
         "schema": COMPATIBILITY_REPORT_SCHEMA,
         "version": COMPATIBILITY_VERSION,
         "appId": "contract-counter",
         "valid": exact,
         "status": status,
-        "migrationState": "dual-authored" if exact else "legacy-compiled",
+        "migrationState": ("promoted" if promoted else "dual-authored") if exact else "conflicting",
         "compatibility": status,
-        "liveAuthority": "legacy-explicit-package",
+        "liveAuthority": "mcel.dsl.v1" if promoted else "legacy-explicit-package",
         "candidateAuthority": "none",
         "promotionEligible": False,
         "semanticFingerprints": semantic_values,
@@ -134,7 +140,12 @@ def compare_counter_representations(
             "fixture": {"status": "pass" if fixture and fixture.valid else "invalid", "source": _display_path(fixture_ir_path)},
             "dsl": {"status": dsl.status, "source": dsl.source, "compiler": "mcel.dsl.compiler"},
         },
-        "authority": {"liveApplicationChanged": False, "contractsGenerated": False, "candidatePromoted": False, "evidenceReused": False},
+        "authority": {
+            "liveApplicationChanged": False,
+            "contractsGenerated": promoted,
+            "candidatePromoted": promoted,
+            "evidenceReused": False,
+        },
     }
 
     json_path: Path | None = None
@@ -149,6 +160,18 @@ def compare_counter_representations(
         markdown_path.write_text(_render_markdown(provisional), encoding="utf-8")
     return CounterCompatibilityReport(exact, status, tuple(diagnostics), report, json_path, markdown_path)
 
+
+
+def _read_source_authority(package_root: Path) -> str:
+    manifest_path = package_root / "mcel.app.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "legacy-explicit-package"
+    authoring = manifest.get("authoring")
+    if isinstance(authoring, Mapping) and authoring.get("status") == "dsl-authoritative":
+        return "mcel.dsl.v1"
+    return "legacy-explicit-package"
 
 def _canonical_counter_source_path(raw: Any) -> str:
     path = str(raw or "").replace("\\", "/")

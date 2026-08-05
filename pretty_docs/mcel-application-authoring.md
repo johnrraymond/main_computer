@@ -1499,3 +1499,28 @@ JavaScript
 ```
 
 The contract is the shared language. HTML, JavaScript, themes, chrome, user preferences, the resolver, and FLOG all converge on it.
+
+## 20. Transactional DSL authority promotion
+
+A legacy-authoritative application does not become DSL-authoritative merely because its candidate compiles or passes isolated evidence. Promotion is a separate transaction with a fresh rehearsal, exact file plan, durable backup, live proof, and drift-sensitive rollback.
+
+The generic command surface is:
+
+```text
+python tools/mcel_app_promote.py --app <app-id> --rehearse
+python tools/mcel_app_promote.py --app <app-id> --execute
+python tools/mcel_app_promote.py --app <app-id> --rollback latest
+```
+
+Promotion must fail closed unless all of the following are true:
+
+- the application profile explicitly supports promotion;
+- a fresh rehearsal proves exact semantic compatibility, complete portable projection, fresh candidate evidence, and exact rollback restoration;
+- every planned live before-hash still matches;
+- every staged after-hash matches the rehearsed payload;
+- the protected source backup is complete and durable;
+- the promoted package declares `dsl-authoritative` source authority and exact generated ownership;
+- application acceptance, browser observation, IR-native completeness, effect/capability accounting, repository binding, and the final truth gate all pass against the modified live repository;
+- the semantic fingerprint remains unchanged.
+
+A failed post-apply check must restore the protected pre-promotion snapshot automatically. A later explicit rollback must compare the current protected source tree with the transaction's recorded post-promotion snapshot and refuse to proceed if later authoritative work would be overwritten.

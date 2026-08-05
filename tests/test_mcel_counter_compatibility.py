@@ -45,16 +45,16 @@ def test_live_counter_import_is_repository_derived_and_semantically_exact() -> N
     }
 
 
-def test_three_way_compatibility_is_exact_and_not_promotion_eligible() -> None:
+def test_three_way_compatibility_is_exact_in_promoted_state() -> None:
     result = compare_counter_representations()
     data = result.to_dict()
 
     assert result.valid is True
     assert result.status == "exact"
     assert result.diagnostics == ()
-    assert data["migrationState"] == "dual-authored"
+    assert data["migrationState"] == "promoted"
     assert data["compatibility"] == "exact"
-    assert data["liveAuthority"] == "legacy-explicit-package"
+    assert data["liveAuthority"] == "mcel.dsl.v1"
     assert data["candidateAuthority"] == "none"
     assert data["promotionEligible"] is False
     assert set(data["semanticFingerprints"].values()) == {EXPECTED_SEMANTIC}
@@ -62,8 +62,8 @@ def test_three_way_compatibility_is_exact_and_not_promotion_eligible() -> None:
     assert len(data["features"]) >= 20
     assert all(item["status"] == "exact" for item in data["features"])
     assert data["authority"] == {
-        "candidatePromoted": False,
-        "contractsGenerated": False,
+        "candidatePromoted": True,
+        "contractsGenerated": True,
         "evidenceReused": False,
         "liveApplicationChanged": False,
     }
@@ -175,5 +175,28 @@ def test_import_and_compatibility_clis_run_without_python_site_packages(tmp_path
     )
     assert compatibility_completed.returncode == 0, compatibility_completed.stderr
     assert "status: exact" in compatibility_completed.stdout
-    assert "migration_state: dual-authored" in compatibility_completed.stdout
+    assert "migration_state: promoted" in compatibility_completed.stdout
     assert "promotion_eligible: false" in compatibility_completed.stdout
+
+
+def test_promoted_package_reports_dsl_as_live_authority(tmp_path: Path) -> None:
+    package_root = _copy_counter(tmp_path)
+    shutil.copy2(DSL_SOURCE, package_root / "application.js")
+    manifest_path = package_root / "mcel.app.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["authoring"] = {
+        "schema": "mcel.application-authoring.v1",
+        "status": "dsl-authoritative",
+        "source": "application.js",
+        "ownership": "mcel.generated.json",
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = compare_counter_representations(package_root=package_root)
+
+    assert result.valid is True
+    assert result.report["migrationState"] == "promoted"
+    assert result.report["liveAuthority"] == "mcel.dsl.v1"
+    assert result.report["authority"]["candidatePromoted"] is True
+    assert result.report["authority"]["contractsGenerated"] is True
+    assert result.report["representations"]["dsl"]["source"].endswith("application.js")

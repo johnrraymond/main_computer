@@ -503,3 +503,101 @@ python tools/mcel_counter_promotion_rehearsal.py --check
 ```
 
 Wave 6 stages an exact promotion plan, generated-file ownership manifest, rollback material, and a disposable promoted repository workspace beneath candidate runtime state. It reruns compatibility, package/runtime projection, acceptance, Chromium observation, effect accounting, and application proof, then restores the original Counter package byte-for-byte. A passing rehearsal may report promotion eligibility, but it never executes promotion.
+
+## Counter DSL authority promotion
+
+After Wave 6 reports `promotionEligible: true`, execute the transactional Counter authority transition with:
+
+```powershell
+python tools/mcel_counter_promotion.py --execute
+```
+
+Wave 7 reruns the rehearsal, writes a durable protected-source backup and transaction record, applies only the exact rehearsed bytes, and reruns compatibility, package/runtime projection, acceptance, Chromium observation, effect accounting, repository binding, and application proof against the live package. Any failed stage automatically restores the pre-promotion Counter and shared MCEL authority boundary.
+
+A committed transaction can be rolled back while no later protected MCEL source drift exists:
+
+```powershell
+python tools/mcel_counter_promotion.py --rollback latest
+```
+
+A successful promotion declares `mcel_apps/contract-counter/application.js` as `mcel.dsl.v1` source authority, treats the seven explicit contracts as `mcel.counter.explicit-projection.v1` derived artifacts, retires legacy explicit-package authority, preserves the Counter semantic fingerprint, and retains exact rollback material beneath `runtime/state/mcel/counter-promotions/`.
+
+## Counter IR-native proof
+
+After Counter is promoted to `mcel.dsl.v1` authority and fresh acceptance and browser observation reports exist, run the native intent-complete authority with:
+
+```powershell
+python tools/mcel_counter_ir_native_proof.py --write-report
+```
+
+Wave 8 compiles the live `mcel_apps/contract-counter/application.js`, validates `mcel.generated.json` and every generated contract hash, executes fresh Node and Chromium probes, reconciles the four declared effects and all four IR scenarios, and proves all three declared intents without using the former `legacy-evidence` classification.
+
+The regular application proof command now invokes the same authority automatically for promoted Counter:
+
+```powershell
+python main_computer/mcel_app_prove.py --app contract-counter --reuse-evidence --check
+```
+
+A passing report shows `intentCompleteProof: ir-native`, `legacyEvidenceRequired: false`, exact generated ownership, `3 / 3` intent coverage, `4 / 4` scenario evidence, closed effect accounting, and the unchanged Counter semantic fingerprint.
+
+## Generic MCEL application authoring pipeline
+
+Wave 9 promotes the reusable application pipeline to the standard command surface. Contract Counter remains the first registered application profile, but compilation, projection dispatch, promotion dispatch, IR-native proof reporting, and the `mcel_app_prove.py` integration are now application-generic authorities selected by `--app`:
+
+```powershell
+python tools/mcel_app_compile.py --app contract-counter
+python tools/mcel_app_project.py --app contract-counter
+python tools/mcel_app_promote.py --app contract-counter --check
+python tools/mcel_app_ir_native_prove.py --app contract-counter --check --write-report
+```
+
+A passing generic proof reports `generic_pipeline: pass`, `counter_specific_execution_path_required: false`, `source_authority: mcel.dsl.v1`, `intent_completeness: ir-native`, `legacy_evidence_required: false`, and the unchanged application semantic fingerprint. Application profiles supply only mechanics that portable IR cannot yet express, such as a legacy projection format and runtime scenario driver; they do not own truth status, promotion policy, evidence binding, or report authority.
+
+The former `tools/mcel_counter_ir_native_proof.py` command remains only as a compatibility wrapper around `mcel_app_ir_native_prove.py`. The regular application proof runner also imports the generic IR-native authority rather than the Counter-specific proof module.
+
+## Contract Workbench generic portability proof
+
+Wave 10 exercises the standard MCEL authoring pipeline with a second, materially larger application while keeping the live Workbench package on its current normalized-definition authority:
+
+```powershell
+python tools/mcel_app_compile.py --app contract-workbench
+python tools/mcel_app_project.py --app contract-workbench --write-candidate
+python tools/mcel_app_promote.py --app contract-workbench --check
+python tools/mcel_app_portability.py --app contract-workbench --check --write-report
+```
+
+A passing portability report requires exact live/fixture/candidate semantics, exact isolated package projection, fresh acceptance and Chromium observation, exact repository binding, `semantic-runtime-proven` candidate truth, no evidence reuse, no live-package mutation, and no promotion.
+
+Wave 11 closes the constrained-expression debt without promoting Workbench. The 26 former callback roots are now 26 versioned pure `domain.call` expressions registered by `mcel.workbench.constrained-expression-profile.v1`; active opaque callbacks and migration warnings are both zero. Semantic fingerprint v1 remains unchanged because each native operator retains the exact former callback hash as a compatibility identity, while expression fingerprints and the versioned registry prove the new constrained structure. Candidate generation now uses `mcel.workbench.portable-ir-projection.v1`, a checked-in hash-bound projection profile, rather than rebuilding from the live normalized-definition source. The generic commands therefore report `authoring_frontend: mcel.dsl.v1`, `portable_ir_projection_complete: true`, and `promotion_executed: false`.
+
+## Contract Workbench generic promotion rehearsal
+
+Wave 12 rehearses the Workbench authority transition through the generic promotion command while leaving the live package untouched:
+
+```powershell
+python tools/mcel_app_promote.py --app contract-workbench --rehearse
+```
+
+The rehearsal binds the exact native Workbench candidate and fresh isolated evidence, stages the proposed `application.js`, DSL-authoritative `mcel.app.json`, `mcel.generated.json`, and eight derived projection artifacts, then applies them only in a disposable repository copy. The promoted shape must compile to the unchanged Workbench semantic fingerprint, pass generated ownership, package/runtime/browser projection, all nine package acceptance tests, all fourteen Chromium scenarios, all seven observation contracts, IR-native intent proof, eighteen-effect accounting, streamed/cancellable capability accounting, repository binding, and final `semantic-runtime-proven` application proof. It then restores the legacy package and requires exact package, catalog, runtime-projection, and source-tree restoration.
+
+A passing result reports `promotion_rehearsal: pass`, `rollback_restoration: exact`, `live_repository_changed: false`, `promotion_executed: false`, and `promotion_eligible: true`. Wave 12 does not authorize or execute the live Workbench transition.
+
+## Contract Workbench transactional authority transition
+
+Wave 13 executes the previously rehearsed Workbench transition through the generic promotion command:
+
+```powershell
+python tools/mcel_app_promote.py --app contract-workbench --execute
+```
+
+The command acquires an exclusive application-promotion lock, reruns the full Wave 12 rehearsal, verifies every live before-hash and staged after-hash, creates a durable protected-source backup, and atomically installs the exact rehearsed DSL-authoritative package. It then reruns runtime projection, browser catalog generation, nine package-local acceptance tests, fourteen Chromium scenarios, seven observation contracts, IR-native intent completeness, eighteen-effect accounting, streamed/cancellable capability accounting, repository binding, and the final `semantic-runtime-proven` application proof.
+
+A successful transaction reports `promotion_executed: true`, `source_authority: mcel.dsl.v1`, `derived_artifact_authority: mcel.workbench.portable-ir-projection.v1`, `legacy_package_authority: retired`, and `rollback_available: true`. Any failure after application begins triggers automatic restoration of the complete protected pre-promotion source boundary.
+
+A committed transition remains explicitly reversible while no protected MCEL source has drifted:
+
+```powershell
+python tools/mcel_app_promote.py --app contract-workbench --rollback latest
+```
+
+Rollback is transaction-bound and fail-closed. It verifies the recorded post-promotion protected-source snapshot before restoring the original Workbench package, package fingerprint, catalog fingerprint, and runtime-projection fingerprint exactly.

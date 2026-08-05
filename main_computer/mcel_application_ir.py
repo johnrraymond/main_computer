@@ -18,7 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
-from main_computer.mcel_constrained_expression import WRITE_KINDS, analyze_application_expressions
+from main_computer.mcel_constrained_expression import (
+    WRITE_KINDS,
+    analyze_application_expressions,
+    application_domain_operator_registry,
+)
 
 
 APPLICATION_IR_SCHEMA = "mcel.application-ir.v1"
@@ -847,7 +851,16 @@ def _reference_diagnostics(
     nodes: Mapping[str, Mapping[str, Any]],
 ) -> list[CompilerDiagnostic]:
     diagnostics: list[CompilerDiagnostic] = []
+    operator_registry = application_domain_operator_registry(candidate)
     for path, ref, container in _iter_references(candidate):
+        if ref.startswith("context:"):
+            # Context values are compiler-defined expression inputs, not
+            # application semantic nodes.
+            continue
+        if ref.startswith("operator:") and "@" in ref:
+            operator_id, version = ref.rsplit("@", 1)
+            if operator_registry.resolve(operator_id, version) is not None:
+                continue
         target = nodes.get(ref)
         source = _nearest_source(container)
         if target is None:
@@ -1163,6 +1176,16 @@ def _semantic_payload(ir: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _strip_incidental_semantic_metadata(value: Any) -> Any:
     if isinstance(value, Mapping):
+        # A native domain operator may carry the exact legacy callback identity
+        # it replaces.  Semantic fingerprint v1 intentionally preserves that
+        # behavior identity across representation migration, while expression
+        # validation and expression fingerprints prove the new constrained
+        # structure independently.
+        if value.get("kind") == "domain.call":
+            compatibility = value.get("compatibility")
+            legacy = compatibility.get("legacyOpaqueFunction") if isinstance(compatibility, Mapping) else None
+            if isinstance(legacy, Mapping):
+                return _strip_incidental_semantic_metadata(legacy)
         return {
             str(key): _strip_incidental_semantic_metadata(child)
             for key, child in value.items()

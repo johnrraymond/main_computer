@@ -391,7 +391,7 @@ def _run_command(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     return subprocess.run(*args, **kwargs)
 
 
-def _run_counter_effect_probe(workspace: Path) -> Mapping[str, Any]:
+def _run_counter_effect_probe(workspace: Path, operation_prefix: str = "candidate") -> Mapping[str, Any]:
     node = resolve_node_executable()
     if not node:
         raise CounterCandidateEvidenceError("Node.js is required for Counter effect accounting.")
@@ -418,7 +418,7 @@ async function importContract(filePath) {{
     intents: intents.ContractCounterIntents,
     adapter: adapter.ContractCounterAdapter
   }});
-  const app = McelApplicationRuntime.createApplicationInstance(definition, {{id: "candidate-effect-probe"}});
+  const app = McelApplicationRuntime.createApplicationInstance(definition, {{id: {json.dumps(operation_prefix + "-effect-probe")}}});
   function dispatch(operationId, intentId, expectedRevision, payload = {{}}) {{
     const before = app.readState();
     const result = app.dispatch({{operationId, intentId, expectedRevision, payload}});
@@ -426,10 +426,10 @@ async function importContract(filePath) {{
     return {{operationId, intentId, expectedRevision, before, result, after}};
   }}
   const operations = [
-    dispatch("candidate-increment", "increment", 0),
-    dispatch("candidate-stale", "increment", 0),
-    dispatch("candidate-direct-set", "direct-set", 1, {{value: 99}}),
-    dispatch("candidate-reset", "reset", 1)
+    dispatch({json.dumps(operation_prefix + "-increment")}, "increment", 0),
+    dispatch({json.dumps(operation_prefix + "-stale")}, "increment", 0),
+    dispatch({json.dumps(operation_prefix + "-direct-set")}, "direct-set", 1, {{value: 99}}),
+    dispatch({json.dumps(operation_prefix + "-reset")}, "reset", 1)
   ];
   process.stdout.write(JSON.stringify({{
     schema: {json.dumps(NODE_PROBE_SCHEMA)},
@@ -467,7 +467,7 @@ async function importContract(filePath) {{
     return value
 
 
-def _run_browser_effect_probe(workspace: Path, headed: bool) -> Mapping[str, Any]:
+def _run_browser_effect_probe(workspace: Path, headed: bool, operation_prefix: str = "candidate") -> Mapping[str, Any]:
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
@@ -524,7 +524,7 @@ def _run_browser_effect_probe(workspace: Path, headed: bool) -> Mapping[str, Any
                     "(window.McelApplicationPackageHost.ready === true || window.McelApplicationPackageHost.error)",
                     timeout=30_000,
                 )
-                result = _evaluate_browser_effect_probe(page, url)
+                result = _evaluate_browser_effect_probe(page, url, operation_prefix)
             except PlaywrightError as exc:
                 raise CounterCandidateEvidenceError(
                     f"Candidate browser effect probe failed: {exc}"
@@ -539,11 +539,11 @@ def _run_browser_effect_probe(workspace: Path, headed: bool) -> Mapping[str, Any
             browser.close()
 
 
-def _evaluate_browser_effect_probe(page: Any, url: str) -> dict[str, Any]:
+def _evaluate_browser_effect_probe(page: Any, url: str, operation_prefix: str = "candidate") -> dict[str, Any]:
     """Run the browser effect probe with all host values passed explicitly."""
 
     return page.evaluate(
-        """async ({pageUrl}) => {
+        """async ({pageUrl, operationPrefix}) => {
           const host = window.McelApplicationPackageHost;
           if (host.ready !== true) throw new Error(host.error || "candidate host failed");
           const valueNode = () => host.mount.root.querySelector('[data-mcel-node-id="contract-counter.value"]');
@@ -555,7 +555,7 @@ def _evaluate_browser_effect_probe(page: Any, url: str) -> dict[str, Any]:
             const outcome = await host.dispatchAndObserve(intentId, {}, {
               operationId,
               expectedRevision,
-              repositoryFingerprint: "candidate-browser-effect-probe",
+              repositoryFingerprint: `${operationPrefix}-browser-effect-probe`,
               capturedAt: new Date(0).toISOString(),
               browser: {engine: "playwright-chromium", version: "candidate-effect-probe"},
               viewport: {width: window.innerWidth, height: window.innerHeight, deviceScaleFactor: window.devicePixelRatio}
@@ -568,13 +568,13 @@ def _evaluate_browser_effect_probe(page: Any, url: str) -> dict[str, Any]:
             operations.push({operationId, intentId, before, result: outcome, after: state(), visible: visible()});
           }
           const initial = {state: state(), visible: visible()};
-          await committed("candidate-browser-increment", "increment", 0);
-          refused("candidate-browser-stale", "increment", 0);
-          refused("candidate-browser-direct-set", "direct-set", 1, {value: 99});
-          await committed("candidate-browser-reset", "reset", 1);
+          await committed(`${operationPrefix}-browser-increment`, "increment", 0);
+          refused(`${operationPrefix}-browser-stale`, "increment", 0);
+          refused(`${operationPrefix}-browser-direct-set`, "direct-set", 1, {value: 99});
+          await committed(`${operationPrefix}-browser-reset`, "reset", 1);
           return {schema: "mcel.counter-browser-effect-probe.v1", appId: "contract-counter", url: pageUrl, initial, operations, final: {state: state(), visible: visible()}};
         }""",
-        {"pageUrl": url},
+        {"pageUrl": url, "operationPrefix": operation_prefix},
     )
 
 
@@ -585,6 +585,7 @@ def _build_effect_accounting(
     observation: Mapping[str, Any],
     node_probe: Mapping[str, Any],
     browser_probe: Mapping[str, Any],
+    operation_prefix: str = "candidate",
 ) -> dict[str, Any]:
     diagnostics: list[dict[str, Any]] = []
     declared = {
@@ -603,8 +604,8 @@ def _build_effect_accounting(
 
     node_ops = {str(item.get("operationId")): item for item in node_probe.get("operations") or []}
     browser_ops = {str(item.get("operationId")): item for item in browser_probe.get("operations") or []}
-    required_node = {"candidate-increment", "candidate-stale", "candidate-direct-set", "candidate-reset"}
-    required_browser = {"candidate-browser-increment", "candidate-browser-stale", "candidate-browser-direct-set", "candidate-browser-reset"}
+    required_node = {f"{operation_prefix}-increment", f"{operation_prefix}-stale", f"{operation_prefix}-direct-set", f"{operation_prefix}-reset"}
+    required_browser = {f"{operation_prefix}-browser-increment", f"{operation_prefix}-browser-stale", f"{operation_prefix}-browser-direct-set", f"{operation_prefix}-browser-reset"}
     if set(node_ops) != required_node:
         diagnostics.append(_diagnostic("MCEL_COUNTER_EFFECT_NODE_PROBE_INCOMPLETE", "Node effect probe did not produce all required operations.", "$nodeProbe.operations"))
     if set(browser_ops) != required_browser:
@@ -612,9 +613,9 @@ def _build_effect_accounting(
 
     instances: list[dict[str, Any]] = []
     operation_specs = [
-        ("candidate-increment", "candidate-browser-increment", "increment", "completed"),
-        ("candidate-stale", "candidate-browser-stale", "increment", "refused-before-attempt"),
-        ("candidate-reset", "candidate-browser-reset", "reset", "completed"),
+        (f"{operation_prefix}-increment", f"{operation_prefix}-browser-increment", "increment", "completed"),
+        (f"{operation_prefix}-stale", f"{operation_prefix}-browser-stale", "increment", "refused-before-attempt"),
+        (f"{operation_prefix}-reset", f"{operation_prefix}-browser-reset", "reset", "completed"),
     ]
     for node_id, browser_id, owner_suffix, disposition in operation_specs:
         node = node_ops.get(node_id) or {}
@@ -679,8 +680,8 @@ def _build_effect_accounting(
                 }
             )
 
-    direct_node = node_ops.get("candidate-direct-set") or {}
-    direct_browser = browser_ops.get("candidate-browser-direct-set") or {}
+    direct_node = node_ops.get(f"{operation_prefix}-direct-set") or {}
+    direct_browser = browser_ops.get(f"{operation_prefix}-browser-direct-set") or {}
     direct_clean = (
         (direct_node.get("result") or {}).get("ok") is False
         and (direct_node.get("result") or {}).get("code") == "INTENT_PROHIBITED"

@@ -454,14 +454,87 @@ function createDsl(metadata, source) {
     },
   };
 
+  const migration = {
+    importApplicationIr(document) {
+      assert(document && typeof document === "object" && !Array.isArray(document), "MCEL_DSL_MIGRATION_IR_REQUIRED", "Migration IR import requires one portable Application IR object.");
+      return {__mcelImportedApplicationIr: true, document: deepClone(document)};
+    },
+  };
+
+  const ir = {
+    application(document) {
+      assert(document && typeof document === "object" && !Array.isArray(document), "MCEL_DSL_NATIVE_IR_REQUIRED", "Native IR construction requires one portable Application IR object.");
+      return {__mcelNativeApplicationIr: true, document: deepClone(document)};
+    },
+  };
+
   return {
-    field, state, intent, invariant, surface, layout, prove, expr,
+    field, state, intent, invariant, surface, layout, prove, expr, ir, migration,
     __collections: {states, invariants, intents, effects, surfaces, layouts, scenarios},
   };
 }
 
+function bindImportedSource(document, metadata, source, sourceHash, sourcePath, native = false) {
+  const imported = deepClone(document);
+  assert(imported.schema === "mcel.application-ir.v1", "MCEL_DSL_MIGRATION_IR_SCHEMA_INVALID", "Imported migration document must be mcel.application-ir.v1.");
+  assert(imported.application && imported.application.appId === metadata.id, "MCEL_DSL_MIGRATION_APP_ID_CONFLICT", "Imported migration IR application identity must match defineApp metadata.");
+  const bind = (record) => {
+    if (record && typeof record === "object" && typeof record.id === "string") record.source = source;
+  };
+  bind(imported.application);
+  for (const key of ["models", "states", "derivations", "intents", "capabilities", "effects", "surfaces", "layouts", "scenarios"]) {
+    for (const record of imported[key] || []) {
+      bind(record);
+      if (key === "models") for (const child of record.fields || []) bind(child);
+      if (key === "intents") for (const child of record.input || []) bind(child);
+      if (key === "surfaces") for (const child of record.nodes || []) bind(child);
+    }
+  }
+  if (imported.proof && Array.isArray(imported.proof.invariants)) {
+    for (const invariant of imported.proof.invariants) bind(invariant);
+  }
+  const semanticIds = [];
+  const collect = (record) => { if (record && typeof record.id === "string") semanticIds.push(record.id); };
+  collect(imported.application);
+  for (const key of ["models", "states", "derivations", "intents", "capabilities", "effects", "surfaces", "layouts", "scenarios"]) {
+    for (const record of imported[key] || []) {
+      collect(record);
+      if (key === "models") for (const child of record.fields || []) collect(child);
+      if (key === "intents") for (const child of record.input || []) collect(child);
+      if (key === "surfaces") for (const child of record.nodes || []) collect(child);
+    }
+  }
+  if (imported.proof && Array.isArray(imported.proof.invariants)) {
+    for (const invariant of imported.proof.invariants) collect(invariant);
+  }
+  imported.application.authoringStatus = "dual-authored";
+  const inheritedGaps = [...(imported.migration?.knownGaps || [])].filter((value) => value !== "migration-ir-bridge-not-final-authoring-surface" && value !== "opaque-callbacks-require-constrained-expression-replacement");
+  imported.migration = {
+    ...(imported.migration || {}),
+    state: "dual-authored",
+    sourceFamily: native ? "official-vanilla-javascript-dsl" : "official-vanilla-javascript-dsl-migration-bridge",
+    knownGaps: [...new Set([...inheritedGaps, ...(native ? [] : ["migration-ir-bridge-not-final-authoring-surface"]), "candidate-not-promoted", "legacy-package-remains-live"])].sort(),
+  };
+  imported.provenance = {
+    ...(imported.provenance || {}),
+    compiler: {id: "mcel.dsl.compiler", version: RUNTIME_VERSION},
+    frontend: {id: FRONTEND_ID, version: "1", sourceFiles: [{path: sourcePath, sha256: sourceHash}]},
+    ...(native ? {nativeIrConstruction: {kind: "application-ir-construction", status: "native"}} : {migrationBridge: {kind: "application-ir-import", status: "explicit-migration-debt"}}),
+    nodeBindings: [...new Set(semanticIds)].sort().map((nodeId) => ({id: semanticId("binding", nodeId), semanticId: nodeId, source})),
+  };
+  delete imported.fingerprints;
+  delete imported.normalization;
+  return imported;
+}
+
 function finalizeApplication(metadata, built, dsl, source, sourceHash, sourcePath) {
   assert(built && typeof built === "object" && !Array.isArray(built), "MCEL_DSL_ROOT_RESULT_INVALID", "defineApp builder must return one declaration object.");
+  if (built.__mcelImportedApplicationIr === true) {
+    return bindImportedSource(built.document, metadata, source, sourceHash, sourcePath, false);
+  }
+  if (built.__mcelNativeApplicationIr === true) {
+    return bindImportedSource(built.document, metadata, source, sourceHash, sourcePath, true);
+  }
   const unwrap = (items, ClassType, label) => (items || []).map((item) => {
     assert(item instanceof ClassType, "MCEL_DSL_DECLARATION_HANDLE_REQUIRED", `${label} must contain compiler-issued semantic handles.`);
     return item.record;

@@ -219,6 +219,75 @@ def _release_fixture(tmp_path: Path):
     return paths, private_state, transaction, transaction_path, transaction_digest, release, release_path, release_digest
 
 
+def _failed_admission_evidence_fixture(
+    tmp_path: Path,
+    *,
+    tamper_body_sha: bool = False,
+):
+    (
+        paths,
+        private_state,
+        transaction,
+        transaction_path,
+        transaction_digest,
+        release,
+        release_path,
+        release_digest,
+    ) = _release_fixture(tmp_path)
+    mutation = release["execution_plan"]["mutations"][0]
+    body_sha = "0" * 64 if tamper_body_sha else mutation["body_sha256"]
+    evidence = {
+        "kind": "main_computer.mother.deployment_validator_admission_evidence.v1",
+        "schema_version": 1,
+        "status": "failed",
+        "network": "mainnet",
+        "service_uuid": release["execution_plan"]["service_uuid"],
+        "validator_admission_transaction_sha256": transaction_digest,
+        "release": {
+            "locator": release_path.relative_to(paths.root).as_posix(),
+            "sha256": release_digest,
+        },
+        "failure": {
+            "code": "MOTHER_DEPLOY_VALIDATOR_ADMISSION_NOT_HEALTHY",
+            "message": "guardian remained unhealthy after two acknowledged mutations",
+        },
+        "mutation_receipts": [
+            {
+                "mutation_id": "mainneta-super1.install-validator-admission-guardian",
+                "body_sha256": body_sha,
+                "live_write_acknowledged": True,
+                "status": "succeeded",
+            },
+            {
+                "mutation_id": "mainneta-super1.deploy-validator-admission-guardian",
+                "body_sha256": None,
+                "live_write_acknowledged": True,
+                "status": "succeeded",
+            },
+        ],
+        "summary": {
+            "live_mutation_performed": True,
+            "succeeded_mutation_count": 2,
+            "failed_mutation_count": 0,
+        },
+    }
+    evidence_root = paths.root / "evidence" / "deployment-validator-admission"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    evidence_path = evidence_root / "failed.json"
+    evidence_path.write_bytes(canonical_json(evidence))
+    return (
+        paths,
+        private_state,
+        transaction,
+        transaction_path,
+        transaction_digest,
+        release,
+        release_path,
+        release_digest,
+        evidence_path,
+    )
+
+
 class _AdmissionOpener:
     def __init__(
         self,
@@ -721,3 +790,123 @@ def test_admission_executor_accepts_exact_c_guardian_drift_only_during_order_rec
         receipt.get("precondition_mode") == "known-post-admission-replica-guardian-drift"
         for receipt in result["precondition_receipts"]
     )
+
+
+def test_admission_release_binds_exact_failed_release_evidence(tmp_path: Path) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        transaction_path,
+        transaction_digest,
+        prior_release,
+        _,
+        _,
+        failed_evidence_path,
+    ) = _failed_admission_evidence_fixture(tmp_path)
+    release = build_validator_admission_release(
+        paths,
+        private_state,
+        transaction_path,
+        acknowledged_transaction_sha256=transaction_digest,
+        selected_nodes=("mainnetc-super1",),
+        failed_evidence_path=failed_evidence_path,
+    )
+    recovery = release["exact_failed_release_recovery"]
+    assert recovery["allowed"] is True
+    assert recovery["cause_code"] == "exact-prior-failed-release-post-mutation-unhealthy"
+    assert recovery["failed_admission_compose"]["body_sha256"] == (
+        prior_release["execution_plan"]["mutations"][0]["body_sha256"]
+    )
+    assert recovery["failed_admission_compose"]["canonical_text"] == (
+        prior_release["execution_plan"]["admission_compose"]["canonical_text"]
+    )
+    release_path, _ = write_validator_admission_release(
+        paths,
+        release,
+        operation=_operation("validator-admission-exact-failed-release"),
+    )
+    verified = verify_validator_admission_release(
+        paths,
+        private_state,
+        release_path,
+        selected_nodes=("mainnetc-super1",),
+    )
+    assert verified["clean"] is True
+    assert verified["exact_failed_release_recovery_allowed"] is True
+
+
+def test_admission_release_rejects_failed_evidence_body_mismatch(tmp_path: Path) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        transaction_path,
+        transaction_digest,
+        _,
+        _,
+        _,
+        failed_evidence_path,
+    ) = _failed_admission_evidence_fixture(tmp_path, tamper_body_sha=True)
+    with pytest.raises(MotherDeploymentValidatorAdmissionReleaseError) as caught:
+        build_validator_admission_release(
+            paths,
+            private_state,
+            transaction_path,
+            acknowledged_transaction_sha256=transaction_digest,
+            selected_nodes=("mainnetc-super1",),
+            failed_evidence_path=failed_evidence_path,
+        )
+    assert caught.value.code == "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID"
+
+
+def test_admission_executor_reconciles_exact_failed_release_compose(tmp_path: Path) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        transaction_path,
+        transaction_digest,
+        prior_release,
+        _,
+        _,
+        failed_evidence_path,
+    ) = _failed_admission_evidence_fixture(tmp_path)
+    release = build_validator_admission_release(
+        paths,
+        private_state,
+        transaction_path,
+        acknowledged_transaction_sha256=transaction_digest,
+        selected_nodes=("mainnetc-super1",),
+        failed_evidence_path=failed_evidence_path,
+    )
+    release_path, release_digest = write_validator_admission_release(
+        paths,
+        release,
+        operation=_operation("validator-admission-exact-failed-release-executor"),
+    )
+    opener = _AdmissionOpener(
+        release,
+        c_healthy=False,
+        recovery_mode=True,
+        recovery_compose_override=(
+            prior_release["execution_plan"]["admission_compose"]["canonical_text"]
+        ),
+    )
+    result = execute_validator_admission_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        selected_nodes=("mainnetc-super1",),
+        opener=opener,
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        operation=_operation("validator-admission-exact-failed-release-live"),
+    )
+    assert result["status"] == "pass"
+    assert result["summary"]["initial_precondition_mode"] == "known-exact-failed-release-recovery"
+    assert result["summary"]["known_guardian_recovery_used"] is True
+    assert result["summary"]["validator_set_order_recovery_used"] is True
+    assert result["summary"]["validator_admission_reconciled"] is True
+    assert result["summary"]["replica_guardian_drift_recovery_used"] is True

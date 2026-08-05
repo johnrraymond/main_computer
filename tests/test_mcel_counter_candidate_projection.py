@@ -18,8 +18,8 @@ DSL = ROOT / "tests" / "fixtures" / "mcel_dsl" / "contract-counter.application.j
 FIXTURE = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
 LIVE = ROOT / "mcel_apps" / "contract-counter"
 EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-EXPECTED_PACKAGE = "sha256:1ab625e72e54349c8abae27ca30cf75ccca1d7895fd172a81d93f6863e6f92b6"
-EXPECTED_RUNTIME = "sha256:8641d80e0cf1caede1b8402c37c37206a941ff48bc0394d27ccabf93ed4c5037"
+EXPECTED_PACKAGE = "sha256:345ea6f70763faf284b71f5f08e398788d6247f09dceddad6843870b0807ea34"
+EXPECTED_RUNTIME = "sha256:70bd2e4cd9511c54ae6a428a3ff4e135a1c0c6a1fb3cf1023eb62f20d0c099f8"
 
 
 def _live_hashes() -> dict[str, str]:

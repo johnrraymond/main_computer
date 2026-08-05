@@ -37,7 +37,7 @@
   },
   "projection": {
     "fileCount": 11,
-    "fingerprint": "sha256:8641d80e0cf1caede1b8402c37c37206a941ff48bc0394d27ccabf93ed4c5037",
+    "fingerprint": "sha256:41be6db563b5ea69770b5b228ab3ea37d4d70518798cbdcad2a42c94c18dd80c",
     "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1"
   },
   "runtime": {
@@ -47,9 +47,9 @@
   },
   "schema": "mcel.application-runtime-projection.v1",
   "source": {
-    "catalogFingerprint": "sha256:cbbd194dfdbde7ab8a1aa1154c4bdd72110d6a92e43af14e6522657c26acc318",
+    "catalogFingerprint": "sha256:3e2c7c45e15bfcc4cb03e661b47412801b5e8ddb8737c34ab38768cd1e9a940a",
     "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
-    "packageFingerprint": "sha256:1ab625e72e54349c8abae27ca30cf75ccca1d7895fd172a81d93f6863e6f92b6",
+    "packageFingerprint": "sha256:345ea6f70763faf284b71f5f08e398788d6247f09dceddad6843870b0807ea34",
     "packageFingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
     "packageRoot": "mcel_apps/contract-counter"
   },

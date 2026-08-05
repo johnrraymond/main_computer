@@ -457,7 +457,14 @@ class DomainOperatorRegistry:
                             if isinstance(item, Mapping) and isinstance(item.get("name"), str)
                         }
                         if isinstance(value.get("parameters"), list)
-                        else tuple(_normalize_type(item) for item in value.get("inputTypes", []))
+                        else (
+                            {
+                                str(name): _normalize_type(item)
+                                for name, item in value.get("inputTypes", {}).items()
+                            }
+                            if isinstance(value.get("inputTypes"), Mapping)
+                            else tuple(_normalize_type(item) for item in value.get("inputTypes", []))
+                        )
                     ),
                     result_type=_normalize_type(value.get("resultType")),
                     allowed_contexts=frozenset(str(item) for item in value.get("allowedContexts", [])),
@@ -658,6 +665,9 @@ def build_expression_symbols(document: Mapping[str, Any]) -> dict[str, Expressio
         "schema:number": ExpressionSymbol("schema:number", "schema", {"kind": "number"}),
         "schema:string": ExpressionSymbol("schema:string", "schema", {"kind": "string"}),
     }
+    for context_name in ("after", "before", "event", "payload", "provisional", "state"):
+        semantic_id = f"context:{context_name}"
+        symbols[semantic_id] = ExpressionSymbol(semantic_id, "context", {"kind": "unknown"})
 
     def add(node: Any, default_kind: str | None = None) -> None:
         if not isinstance(node, Mapping):
@@ -715,13 +725,14 @@ def analyze_application_expressions(
     app = document.get("application") if isinstance(document.get("application"), Mapping) else {}
     app_id = str(app.get("appId") or "unknown")
     symbols = build_expression_symbols(document)
+    effective_operators = operators or application_domain_operator_registry(document)
     analyses: list[tuple[str, ExpressionAnalysis]] = []
     for path, context, expression, expected_type in _iter_expression_roots(document):
         analysis = analyze_expression(
             expression,
             context=context,
             symbols=symbols,
-            operators=operators,
+            operators=effective_operators,
             expected_type=expected_type,
             semantic_path=path,
             emit_reference_diagnostics=emit_reference_diagnostics,
@@ -734,6 +745,21 @@ def analyze_application_expressions(
         expression_count=len(analyses),
         analyses=tuple(analyses),
     )
+
+
+def application_domain_operator_registry(document: Mapping[str, Any]) -> DomainOperatorRegistry:
+    """Return the versioned pure operator registry declared for one application.
+
+    Application IR remains portable JSON.  Registered operator definitions are
+    compiler/runtime vocabulary, selected by the stable application identity.
+    Unknown applications receive an empty fail-closed registry.
+    """
+    app = document.get("application") if isinstance(document.get("application"), Mapping) else {}
+    if app.get("appId") == "contract-workbench":
+        from main_computer.mcel_workbench_expression_profile import operator_records
+
+        return DomainOperatorRegistry.from_records(operator_records())
+    return DomainOperatorRegistry()
 
 
 @dataclass

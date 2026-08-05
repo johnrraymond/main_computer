@@ -30,5 +30,11 @@
     "currentMode": "semantic-runtime-proven",
     "targetMode": "semantic-runtime-proven",
     "missingBridges": []
+  },
+  "authoring": {
+    "schema": "mcel.application-authoring.v1",
+    "status": "dsl-authoritative",
+    "source": "application.js",
+    "ownership": "mcel.generated.json"
   }
 }

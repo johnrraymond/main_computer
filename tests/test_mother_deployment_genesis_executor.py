@@ -26,6 +26,7 @@ from tools.mother.common.deployment_genesis_release import (
     write_deployment_genesis_release,
 )
 from tools.mother.common.deployment_genesis_rollback import (
+    compose_matches,
     execute_genesis_mutation_rollback,
     inspect_genesis_mutation_rollback,
     verify_genesis_mutation_rollback,
@@ -112,10 +113,46 @@ def _standby_compose() -> str:
     )
 
 
+def test_standby_compose_match_accepts_semantically_identical_yaml() -> None:
+    reformatted = """services:
+  mainneta-super1:
+    labels:
+      main_computer.mother.node: mainneta-super1
+      main_computer.mother.stage: standby
+    command: [sh, -lc, "exec tail -f /dev/null"]
+    restart: 'no'
+    image: alpine:3.20
+name: mainneta-super1
+"""
+    assert compose_matches({"docker_compose_raw": reformatted}, _standby_compose()) is True
+
+
+def test_standby_compose_match_accepts_unpadded_wrapped_base64() -> None:
+    encoded = base64.b64encode(_standby_compose().encode("utf-8")).decode("ascii").rstrip("=")
+    wrapped = "\n".join(encoded[index:index + 17] for index in range(0, len(encoded), 17))
+    assert compose_matches({"docker_compose_raw": wrapped}, _standby_compose()) is True
+
+
+def test_standby_compose_match_rejects_structural_change() -> None:
+    changed = _standby_compose().replace("alpine:3.20", "alpine:latest")
+    assert compose_matches({"docker_compose_raw": changed}, _standby_compose()) is False
+
+
 class _GenesisOpener:
-    def __init__(self, *, fail_deploy: bool = False, wrong_service: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_deploy: bool = False,
+        wrong_service: bool = False,
+        restart_until_standby: bool = False,
+        never_stops: bool = False,
+        stop_statuses: tuple[int, ...] = (),
+    ) -> None:
         self.fail_deploy = fail_deploy
         self.wrong_service = wrong_service
+        self.restart_until_standby = restart_until_standby
+        self.never_stops = never_stops
+        self.stop_statuses = list(stop_statuses)
         self.requests: list[dict[str, Any]] = []
         self.current_compose = _standby_compose()
         self.status = "exited"
@@ -161,8 +198,18 @@ class _GenesisOpener:
             self.current_compose = base64.b64decode(body["docker_compose_raw"]).decode("utf-8")
             return _Response({"uuid": "svc-mainneta-super1", "message": "updated"}, status=200)
         if method == "GET" and path == "/api/v1/services/svc-mainneta-super1/stop":
-            self.status = "exited"
-            return _Response({"message": "Service stopping request queued."}, status=200)
+            response_status = self.stop_statuses.pop(0) if self.stop_statuses else 200
+            if response_status in {200, 201, 202}:
+                if self.never_stops or (
+                    self.restart_until_standby and self.current_compose != _standby_compose()
+                ):
+                    self.status = "running:healthy"
+                else:
+                    self.status = "exited"
+            return _Response(
+                {"message": "Service stopping request queued." if response_status < 300 else "Service is already stopped."},
+                status=response_status,
+            )
         if method == "GET" and path == "/api/v1/deploy":
             assert self.requests[-1]["query"] == {"uuid": ["svc-mainneta-super1"], "force": ["true"]}
             if not self.fail_deploy:
@@ -364,7 +411,7 @@ def test_genesis_executor_is_one_shot_and_records_deploy_failure(tmp_path: Path)
 def test_genesis_explicit_rollback_restores_standby_and_preserves_identity(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc).replace(microsecond=0)
     paths, private_state, _, _, _, release_path, release_digest, _ = _genesis_release(tmp_path, now=now)
-    live = _GenesisOpener()
+    live = _GenesisOpener(restart_until_standby=True)
     execution = execute_released_genesis(
         paths,
         private_state,
@@ -407,6 +454,21 @@ def test_genesis_explicit_rollback_restores_standby_and_preserves_identity(tmp_p
     assert rolled_back["summary"]["persistent_volume_cleanup_performed"] is False
     assert live.status == "exited"
     assert live.current_compose == _standby_compose()
+    rollback_requests = live.requests[-9:]
+    rollback_methods_and_paths = [
+        (item["method"], item["path"]) for item in rollback_requests
+    ]
+    first_stop = rollback_methods_and_paths.index(
+        ("GET", "/api/v1/services/svc-mainneta-super1/stop")
+    )
+    restore = rollback_methods_and_paths.index(
+        ("PATCH", "/api/v1/services/svc-mainneta-super1")
+    )
+    second_stop = rollback_methods_and_paths.index(
+        ("GET", "/api/v1/services/svc-mainneta-super1/stop"),
+        first_stop + 1,
+    )
+    assert first_stop < restore < second_stop
 
     retried = execute_genesis_mutation_rollback(
         paths,
@@ -434,6 +496,92 @@ def test_genesis_explicit_rollback_restores_standby_and_preserves_identity(tmp_p
     assert verified["checks"]["standby_compose_restored"] is True
     assert verified["checks"]["identity_keys_preserved"] is True
     assert verified["checks"]["persistent_volume_cleanup_performed"] is False
+
+
+@pytest.mark.parametrize("stop_statuses", [(400, 200), (200, 400)])
+def test_genesis_rollback_tolerates_stop_http_400_only_with_verified_final_state(
+    tmp_path: Path,
+    stop_statuses: tuple[int, ...],
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, private_state, _, _, _, release_path, release_digest, _ = _genesis_release(
+        tmp_path, now=now
+    )
+    live = _GenesisOpener(stop_statuses=stop_statuses)
+    execution = execute_released_genesis(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        opener=live,
+        operation=_operation("genesis-rollback-stop-400-execution"),
+    )
+    assert execution["status"] == "pass"
+
+    rolled_back = execute_genesis_mutation_rollback(
+        paths,
+        private_state,
+        Path(execution["result_artifact"]["path"]),
+        acknowledged_execution_sha256=execution["result_artifact"]["sha256"],
+        opener=live,
+        max_wait_seconds=1.0,
+        poll_interval_seconds=0.0,
+        operation=_operation("genesis-rollback-stop-400"),
+    )
+    assert rolled_back["status"] == "pass"
+    assert rolled_back["summary"]["complete"] is True
+    assert rolled_back["summary"]["service_stopped"] is True
+    assert rolled_back["summary"]["standby_compose_restored"] is True
+    assert rolled_back["summary"]["identity_keys_preserved"] is True
+    assert live.status == "exited"
+    assert live.current_compose == _standby_compose()
+    stop_receipt = rolled_back["rollback_receipts"][0]
+    restore_receipt = rolled_back["rollback_receipts"][1]
+    if stop_statuses[0] == 400:
+        assert stop_receipt["response"]["status"] == 400
+        assert stop_receipt["request_accepted"] is False
+    if stop_statuses[1] == 400:
+        assert restore_receipt["post_restore_stop_response"]["status"] == 400
+        assert restore_receipt["post_restore_stop_response"]["request_accepted"] is False
+
+
+def test_genesis_rollback_reports_accepted_mutations_when_stop_never_stabilizes(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, private_state, _, _, _, release_path, release_digest, _ = _genesis_release(
+        tmp_path, now=now
+    )
+    live = _GenesisOpener(never_stops=True)
+    execution = execute_released_genesis(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        opener=live,
+        operation=_operation("genesis-rollback-unstable-execution"),
+    )
+    assert execution["status"] == "pass"
+
+    rolled_back = execute_genesis_mutation_rollback(
+        paths,
+        private_state,
+        Path(execution["result_artifact"]["path"]),
+        acknowledged_execution_sha256=execution["result_artifact"]["sha256"],
+        opener=live,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        operation=_operation("genesis-rollback-unstable"),
+    )
+    assert rolled_back["status"] == "failed"
+    assert rolled_back["failure"]["code"] == (
+        "MOTHER_DEPLOY_GENESIS_ROLLBACK_STOP_POSTCONDITION_FAILED"
+    )
+    assert rolled_back["summary"]["live_mutation_performed"] is True
+    assert rolled_back["summary"]["complete"] is False
+    assert rolled_back["rollback_receipts"][0]["status"] == "accepted"
+    assert rolled_back["rollback_receipts"][1]["status"] == "accepted"
+    assert live.current_compose == _standby_compose()
 
 
 def test_genesis_release_and_dry_run_cli(tmp_path: Path, capsys) -> None:

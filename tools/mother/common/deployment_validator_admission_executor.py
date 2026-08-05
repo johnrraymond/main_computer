@@ -462,11 +462,13 @@ def _verified_replica_service(
     if status != "running:healthy":
         accepted = recovery.get("accepted_service_statuses")
         stale = recovery.get("stale_replica_compose")
+        allowed_modes = recovery.get("requires_initial_precondition_modes")
+        if type(allowed_modes) is not list:
+            allowed_modes = [recovery.get("requires_initial_precondition_mode")]
         valid = (
             recovery.get("allowed") is True
             and recovery.get("cause_code") == "sole-validator-sync-guardian-invalidated-by-candidate-activation"
-            and recovery.get("requires_initial_precondition_mode") == "known-validator-set-order-recovery"
-            and initial_precondition_mode == "known-validator-set-order-recovery"
+            and initial_precondition_mode in allowed_modes
             and type(accepted) is list
             and status in accepted
             and recovery.get("read_only") is True
@@ -516,6 +518,7 @@ def _verified_initial_service(
     expected_compose: str,
     recovery: Mapping[str, Any],
     order_recovery: Mapping[str, Any],
+    exact_recovery: Mapping[str, Any] | None,
     timeout: float,
     max_response_bytes: int,
     opener: Any,
@@ -598,6 +601,24 @@ def _verified_initial_service(
                 False,
             ),
         ]
+        if isinstance(exact_recovery, Mapping):
+            exact_compose = exact_recovery.get("failed_admission_compose")
+            valid_exact = (
+                exact_recovery.get("allowed") is True
+                and exact_recovery.get("cause_code")
+                == "exact-prior-failed-release-post-mutation-unhealthy"
+                and type(exact_recovery.get("accepted_service_statuses")) is list
+                and status in exact_recovery.get("accepted_service_statuses", [])
+                and isinstance(exact_compose, Mapping)
+                and type(exact_compose.get("canonical_text")) is str
+                and type(exact_compose.get("body_sha256")) is str
+            )
+            if valid_exact:
+                candidates.append((
+                    "known-exact-failed-release-recovery",
+                    "exact failed validator-admission release Compose",
+                    exact_compose["canonical_text"],
+                ))
         for spec, bug_code, candidate_mode, candidate_label, must_precede_rpc in recovery_specs:
             accepted = spec.get("accepted_service_statuses")
             broken = spec.get("broken_admission_compose")
@@ -732,6 +753,7 @@ def execute_validator_admission_release(
     try:
         recovery = release.get("known_failed_guardian_recovery")
         order_recovery = release.get("known_order_sensitive_guardian_recovery")
+        exact_recovery = release.get("exact_failed_release_recovery")
         replica_recovery = release.get("known_replica_post_admission_guardian_recovery")
         if (
             not isinstance(recovery, Mapping)
@@ -750,6 +772,7 @@ def execute_validator_admission_release(
             expected_compose=initial["proof_compose"]["canonical_text"],
             recovery=recovery,
             order_recovery=order_recovery,
+            exact_recovery=exact_recovery if isinstance(exact_recovery, Mapping) else None,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
@@ -926,7 +949,10 @@ def execute_validator_admission_release(
     complete = failure is None and succeeded == 2 and bool(observations) and observations[-1].get("status") == "running:healthy"
     live_mutation = any(item.get("live_write_acknowledged") is True for item in receipts)
     known_recovery_used = initial_precondition_mode.startswith("known-")
-    order_recovery_used = initial_precondition_mode == "known-validator-set-order-recovery"
+    order_recovery_used = initial_precondition_mode in {
+        "known-validator-set-order-recovery",
+        "known-exact-failed-release-recovery",
+    }
     replica_guardian_drift_used = replica_precondition_mode == "known-post-admission-replica-guardian-drift"
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
@@ -993,6 +1019,7 @@ def execute_validator_admission_release(
             "stop_on_first_failure": True,
             "known_failed_guardian_recovery_allowed": True,
             "known_order_sensitive_guardian_recovery_allowed": True,
+            "exact_failed_release_recovery_allowed": isinstance(exact_recovery, Mapping),
             "known_replica_post_admission_guardian_recovery_allowed": True,
             "replica_precondition_mode": replica_precondition_mode,
             "replica_guardian_drift_recovery_used": replica_guardian_drift_used,

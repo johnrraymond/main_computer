@@ -385,46 +385,82 @@
       "order": 84
     },
     {
+      "path": "game-ai-patch-09-1-live-strategic-session-and-developer-harness.md",
+      "title": "Game AI Patch 09.1 — Live Strategic Session and Developer Harness",
+      "kind": "markdown",
+      "order": 85
+    },
+    {
+      "path": "game-ai-patch-09-2-player-visible-vela-gate-interaction.md",
+      "title": "Game AI Patch 09.2 — Player-Visible Vela Gate Interaction",
+      "kind": "markdown",
+      "order": 86
+    },
+    {
+      "path": "game-ai-patch-09-2-1-live-interface-polish.md",
+      "title": "Game AI Patch 09.2.1 — Live Interface Polish",
+      "kind": "markdown",
+      "order": 87
+    },
+    {
+      "path": "game-ai-patch-09-3-travel-triggered-offscreen-progression-and-return-summary.md",
+      "title": "Game AI Patch 09.3 — Travel-Triggered Off-Screen Progression and Return Summary",
+      "kind": "markdown",
+      "order": 88
+    },
+    {
+      "path": "game-ai-patch-09-4-player-visible-solace-coordination.md",
+      "title": "Game AI Patch 09.4 — Player-Visible Solace Reach Coordination",
+      "kind": "markdown",
+      "order": 89
+    },
+    {
+      "path": "game-ai-patch-09-4-1-non-obscuring-collapsible-strategic-ui.md",
+      "title": "Game AI Patch 09.4.1 — Non-Obscuring Collapsible Strategic UI",
+      "kind": "markdown",
+      "order": 90
+    },
+    {
       "path": "game-forty-system-scenario-bible.md",
       "title": "Thirty-Two-System Scenario Bible",
       "kind": "markdown",
-      "order": 85
+      "order": 91
     },
     {
       "path": "game-forty-system-route-scenarios.md",
       "title": "Thirty-Two-System Route Scenario Seeds",
       "kind": "markdown",
-      "order": 86
+      "order": 92
     },
     {
       "path": "game-scenarios-origin-region.md",
       "title": "Origin Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 87
+      "order": 93
     },
     {
       "path": "game-scenarios-meridian-region.md",
       "title": "Meridian Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 88
+      "order": 94
     },
     {
       "path": "game-scenarios-helix-region.md",
       "title": "Helix Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 89
+      "order": 95
     },
     {
       "path": "game-scenarios-crown-region.md",
       "title": "Crown Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 90
+      "order": 96
     },
     {
       "path": "game-scenarios-verge-region.md",
       "title": "Verge Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 91
+      "order": 97
     }
   ]
 }

@@ -21,6 +21,8 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+import yaml
+
 from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
@@ -210,6 +212,18 @@ def _standby_compose(node: str) -> str:
     )
 
 
+def _decode_base64_text(value: str) -> str | None:
+    compact = "".join(value.split())
+    if not compact:
+        return None
+    padded = compact + ("=" * (-len(compact) % 4))
+    try:
+        decoded = base64.b64decode(padded, validate=True)
+        return decoded.decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
 def _compose_candidates(payload: Any) -> list[str]:
     records: list[Mapping[str, Any]] = []
     if isinstance(payload, Mapping):
@@ -225,10 +239,9 @@ def _compose_candidates(payload: Any) -> list[str]:
             if type(value) is not str or not value:
                 continue
             output.append(value)
-            try:
-                output.append(base64.b64decode(value, validate=True).decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                pass
+            decoded = _decode_base64_text(value)
+            if decoded is not None:
+                output.append(decoded)
     return output
 
 
@@ -236,9 +249,24 @@ def _normalized(value: str) -> str:
     return value.replace("\r\n", "\n").rstrip()
 
 
+def _semantic_compose(value: str) -> Any | None:
+    try:
+        document = yaml.safe_load(value)
+    except yaml.YAMLError:
+        return None
+    return document if isinstance(document, Mapping) else None
+
+
 def compose_matches(payload: Any, expected: str) -> bool:
     expected_normalized = _normalized(expected)
-    return any(_normalized(candidate) == expected_normalized for candidate in _compose_candidates(payload))
+    expected_semantic = _semantic_compose(expected)
+    for candidate in _compose_candidates(payload):
+        if _normalized(candidate) == expected_normalized:
+            return True
+        candidate_semantic = _semantic_compose(candidate)
+        if expected_semantic is not None and candidate_semantic == expected_semantic:
+            return True
+    return False
 
 
 def require_compose(payload: Any, expected: str, *, label: str) -> dict[str, Any]:
@@ -619,12 +647,14 @@ def _wait_stopped(
     max_wait_seconds: float,
     poll_interval_seconds: float,
     stable_observations: int = 3,
+    reassert_stop: bool = False,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max_wait_seconds
     attempts = 0
     consecutive = 0
     waited_ms = 0
     last_status = ""
+    reasserted_stop_count = 0
     while True:
         observed = _http_json(
             controller, "GET", "/api/v1/services", body=None,
@@ -647,9 +677,22 @@ def _wait_stopped(
                     "wait_ms": waited_ms,
                     "status": last_status,
                     "stable_observations": consecutive,
+                    "reasserted_stop_count": reasserted_stop_count,
                 }
         else:
             consecutive = 0
+            if reassert_stop:
+                stop = _http_json(
+                    controller, "GET", f"/api/v1/services/{service_uuid}/stop", body=None,
+                    timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+                )
+                if stop["status"] not in {200, 201, 202, 400}:
+                    raise MotherDeploymentGenesisRollbackError(
+                        "MOTHER_DEPLOY_GENESIS_ROLLBACK_STOP_FAILED",
+                        f"Coolify rejected a repeated stop request with HTTP {stop['status']}",
+                    )
+                if stop["status"] in {200, 201, 202}:
+                    reasserted_stop_count += 1
         if time.monotonic() >= deadline:
             raise MotherDeploymentGenesisRollbackError(
                 "MOTHER_DEPLOY_GENESIS_ROLLBACK_STOP_POSTCONDITION_FAILED",
@@ -715,6 +758,10 @@ def execute_genesis_journal_rollback(
     started_at = _utc_now()
     receipts: list[dict[str, Any]] = []
     failure: dict[str, Any] | None = None
+    live_mutation_performed = False
+    service_stopped = False
+    standby_compose_restored = False
+    identity_keys_preserved = False
     try:
         detail = _http_json(
             controller, "GET", f"/api/v1/services/{service_uuid}", body=None,
@@ -740,6 +787,8 @@ def execute_genesis_journal_rollback(
         already_stopped = _stopped_status(_item_text(record, "status"))
 
         if already_standby and already_stopped:
+            service_stopped = True
+            standby_compose_restored = True
             receipts.append({
                 "ordinal": 1,
                 "operation_id": f"{node}.restore-standby-compose",
@@ -748,33 +797,79 @@ def execute_genesis_journal_rollback(
                 "standby_compose_sha256": inspected["standby_compose_sha256"],
                 "postconditions_verified": True,
             })
-        else:
+        elif already_standby:
             stop = _http_json(
                 controller, "GET", f"/api/v1/services/{service_uuid}/stop", body=None,
                 timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
             )
-            if stop["status"] not in {200, 201, 202}:
+            if stop["status"] not in {200, 201, 202, 400}:
                 raise MotherDeploymentGenesisRollbackError(
                     "MOTHER_DEPLOY_GENESIS_ROLLBACK_STOP_FAILED",
                     f"Coolify rejected the stop request with HTTP {stop['status']}",
                 )
-            stopped = _wait_stopped(
-                controller, service_uuid=service_uuid, node=node,
-                timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
-                max_wait_seconds=max_wait_seconds, poll_interval_seconds=poll_interval_seconds,
-            )
-            receipts.append({
+            stop_accepted = stop["status"] in {200, 201, 202}
+            live_mutation_performed = stop_accepted
+            stop_receipt = {
                 "ordinal": 1,
                 "operation_id": f"{node}.stop-first-genesis",
-                "status": "succeeded",
+                "status": "accepted" if stop_accepted else "not-accepted",
                 "service_uuid": service_uuid,
+                "request_accepted": stop_accepted,
                 "response": {
                     "status": stop["status"],
                     "response_sha256": stop["response_sha256"],
                     "elapsed_ms": stop["elapsed_ms"],
                 },
-                "postcondition": stopped,
+                "postcondition": {"verified": False, "pending": True},
+            }
+            receipts.append(stop_receipt)
+            stopped = _wait_stopped(
+                controller, service_uuid=service_uuid, node=node,
+                timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+                max_wait_seconds=max_wait_seconds, poll_interval_seconds=poll_interval_seconds,
+                reassert_stop=True,
+            )
+            stop_receipt["status"] = "succeeded"
+            stop_receipt["postcondition"] = stopped
+            service_stopped = True
+            standby_compose_restored = True
+            receipts.append({
+                "ordinal": 2,
+                "operation_id": f"{node}.restore-standby-compose",
+                "status": "already-restored",
+                "service_uuid": service_uuid,
+                "standby_compose_sha256": inspected["standby_compose_sha256"],
+                "postconditions_verified": True,
             })
+        else:
+            # A still-finishing deploy can restart the genesis Compose after an accepted
+            # stop. Restore the non-restarting standby Compose before requiring a stable
+            # stopped state, then reassert stop until the postcondition is stable.
+            stop = _http_json(
+                controller, "GET", f"/api/v1/services/{service_uuid}/stop", body=None,
+                timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+            )
+            if stop["status"] not in {200, 201, 202, 400}:
+                raise MotherDeploymentGenesisRollbackError(
+                    "MOTHER_DEPLOY_GENESIS_ROLLBACK_STOP_FAILED",
+                    f"Coolify rejected the stop request with HTTP {stop['status']}",
+                )
+            stop_accepted = stop["status"] in {200, 201, 202}
+            live_mutation_performed = stop_accepted
+            stop_receipt = {
+                "ordinal": 1,
+                "operation_id": f"{node}.stop-first-genesis",
+                "status": "accepted" if stop_accepted else "not-accepted",
+                "service_uuid": service_uuid,
+                "request_accepted": stop_accepted,
+                "response": {
+                    "status": stop["status"],
+                    "response_sha256": stop["response_sha256"],
+                    "elapsed_ms": stop["elapsed_ms"],
+                },
+                "postcondition": {"verified": False, "deferred_until_after_restore": True},
+            }
+            receipts.append(stop_receipt)
 
             patch = _http_json(
                 controller, "PATCH", f"/api/v1/services/{service_uuid}", body=restore_body,
@@ -785,21 +880,39 @@ def execute_genesis_journal_rollback(
                     "MOTHER_DEPLOY_GENESIS_ROLLBACK_RESTORE_FAILED",
                     f"Coolify rejected the standby Compose restore with HTTP {patch['status']}",
                 )
+            live_mutation_performed = True
+            restore_receipt = {
+                "ordinal": 2,
+                "operation_id": f"{node}.restore-standby-compose",
+                "status": "accepted",
+                "service_uuid": service_uuid,
+                "standby_compose_sha256": inspected["standby_compose_sha256"],
+                "response": {
+                    "status": patch["status"],
+                    "response_sha256": patch["response_sha256"],
+                    "elapsed_ms": patch["elapsed_ms"],
+                },
+                "compose_postcondition": {"verified": False, "pending": True},
+                "stopped_postcondition": {"verified": False, "pending": True},
+            }
+            receipts.append(restore_receipt)
 
-            # Re-stop after the configuration change to defeat a late deploy job.
             stop_after = _http_json(
                 controller, "GET", f"/api/v1/services/{service_uuid}/stop", body=None,
                 timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
             )
-            if stop_after["status"] not in {200, 201, 202}:
+            if stop_after["status"] not in {200, 201, 202, 400}:
                 raise MotherDeploymentGenesisRollbackError(
                     "MOTHER_DEPLOY_GENESIS_ROLLBACK_STOP_FAILED",
                     f"Coolify rejected the post-restore stop request with HTTP {stop_after['status']}",
                 )
+            stop_after_accepted = stop_after["status"] in {200, 201, 202}
+            live_mutation_performed = live_mutation_performed or stop_after_accepted
             stopped_after = _wait_stopped(
                 controller, service_uuid=service_uuid, node=node,
                 timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
                 max_wait_seconds=max_wait_seconds, poll_interval_seconds=poll_interval_seconds,
+                reassert_stop=True,
             )
             detail_after = _http_json(
                 controller, "GET", f"/api/v1/services/{service_uuid}", body=None,
@@ -811,25 +924,19 @@ def execute_genesis_journal_rollback(
                     f"Coolify service detail GET failed with HTTP {detail_after['status']}",
                 )
             compose_proof = require_compose(detail_after["payload"], standby, label="standby Compose")
-            receipts.append({
-                "ordinal": 2,
-                "operation_id": f"{node}.restore-standby-compose",
-                "status": "succeeded",
-                "service_uuid": service_uuid,
-                "standby_compose_sha256": inspected["standby_compose_sha256"],
-                "response": {
-                    "status": patch["status"],
-                    "response_sha256": patch["response_sha256"],
-                    "elapsed_ms": patch["elapsed_ms"],
-                },
-                "post_restore_stop_response": {
-                    "status": stop_after["status"],
-                    "response_sha256": stop_after["response_sha256"],
-                    "elapsed_ms": stop_after["elapsed_ms"],
-                },
-                "compose_postcondition": compose_proof,
-                "stopped_postcondition": stopped_after,
-            })
+            stop_receipt["status"] = "succeeded"
+            stop_receipt["postcondition"] = stopped_after
+            restore_receipt["status"] = "succeeded"
+            restore_receipt["post_restore_stop_response"] = {
+                "status": stop_after["status"],
+                "request_accepted": stop_after_accepted,
+                "response_sha256": stop_after["response_sha256"],
+                "elapsed_ms": stop_after["elapsed_ms"],
+            }
+            restore_receipt["compose_postcondition"] = compose_proof
+            restore_receipt["stopped_postcondition"] = stopped_after
+            service_stopped = True
+            standby_compose_restored = True
 
         envs = _http_json(
             controller, "GET", f"/api/v1/services/{service_uuid}/envs", body=None,
@@ -841,6 +948,7 @@ def execute_genesis_journal_rollback(
                 f"Coolify identity environment GET failed with HTTP {envs['status']}",
             )
         _verify_identity_keys(envs["payload"])
+        identity_keys_preserved = True
         receipts.append({
             "ordinal": 3,
             "operation_id": f"{node}.verify-reserved-identities-preserved",
@@ -901,17 +1009,18 @@ def execute_genesis_journal_rollback(
         "summary": {
             "complete": complete,
             "planned_operation_count": 2,
-            "completed_operation_count": 2 if complete else 0,
-            "postconditions_verified": complete,
-            "service_stopped": complete,
-            "standby_compose_restored": complete,
-            "identity_keys_preserved": complete,
-            "persistent_volume_cleanup_performed": False,
-            "live_mutation_performed": any(
-                item.get("status") == "succeeded"
-                and item.get("operation_id", "").endswith(("stop-first-genesis", "restore-standby-compose"))
+            "completed_operation_count": 2 if complete else sum(
+                1
                 for item in receipts
+                if item.get("ordinal") in {1, 2}
+                and item.get("status") in {"succeeded", "already-restored"}
             ),
+            "postconditions_verified": complete,
+            "service_stopped": service_stopped,
+            "standby_compose_restored": standby_compose_restored,
+            "identity_keys_preserved": identity_keys_preserved,
+            "persistent_volume_cleanup_performed": False,
+            "live_mutation_performed": live_mutation_performed,
             "network_access_performed": True,
         },
     }

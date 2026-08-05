@@ -30,6 +30,9 @@ class _LifecycleOpener:
         subresource_name: str | None = None,
         include_subresources: bool = True,
         runtime_log_status_after_start: int = 200,
+        service_application_log_status_after_start: int | None = None,
+        application_log_status_after_start: int | None = None,
+        parent_log_status_after_start: int | None = None,
         runtime_log_error_message: str = "Container not found.",
     ) -> None:
         self.started = False
@@ -38,6 +41,21 @@ class _LifecycleOpener:
         self.subresource_name = subresource_name
         self.include_subresources = include_subresources
         self.runtime_log_status_after_start = runtime_log_status_after_start
+        self.service_application_log_status_after_start = (
+            runtime_log_status_after_start
+            if service_application_log_status_after_start is None
+            else service_application_log_status_after_start
+        )
+        self.application_log_status_after_start = (
+            runtime_log_status_after_start
+            if application_log_status_after_start is None
+            else application_log_status_after_start
+        )
+        self.parent_log_status_after_start = (
+            runtime_log_status_after_start
+            if parent_log_status_after_start is None
+            else parent_log_status_after_start
+        )
         self.runtime_log_error_message = runtime_log_error_message
         self.deleted = False
         self.requests: list[tuple[str, str]] = []
@@ -70,9 +88,9 @@ class _LifecycleOpener:
             assert "entrypoint:" in compose
             assert "      - /bin/sh" in compose
             assert "      - -ec" in compose
-            assert "exec sleep " in compose
+            assert "exec /bin/sleep " in compose
             assert "healthcheck:" in compose
-            assert "grep -aq 'sleep' /proc/1/cmdline" in compose
+            assert "kill -0 1" in compose
             assert "ports:" not in compose
             assert "volumes:" not in compose
             assert "secrets:" not in compose
@@ -118,6 +136,48 @@ class _LifecycleOpener:
                 payload["databases"] = []
             return _AdmissionResponse(payload)
 
+        if (
+            method == "GET"
+            and path
+            == (
+                "/api/v1/services/probe-service-uuid/applications/"
+                "probe-application-uuid/logs"
+            )
+        ):
+            query = parse_qs(parsed.query)
+            assert query["lines"] == ["100"]
+            assert query["show_timestamps"] == ["false"]
+            if not self.started:
+                return _AdmissionResponse({"message": "Container not found."}, status=404)
+            if self.service_application_log_status_after_start != 200:
+                return _AdmissionResponse(
+                    {"message": self.runtime_log_error_message},
+                    status=self.service_application_log_status_after_start,
+                )
+            logs = (
+                f"MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={self.probe_name}\n"
+                if self.emit_runtime_log_marker
+                else "probe started without expected marker\n"
+            )
+            return _AdmissionResponse({"logs": logs}, status=200)
+
+        if method == "GET" and path == "/api/v1/applications/probe-application-uuid/logs":
+            query = parse_qs(parsed.query)
+            assert query["lines"] == ["100"]
+            if not self.started:
+                return _AdmissionResponse({"message": "Container not found."}, status=404)
+            if self.application_log_status_after_start != 200:
+                return _AdmissionResponse(
+                    {"message": self.runtime_log_error_message},
+                    status=self.application_log_status_after_start,
+                )
+            logs = (
+                f"MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={self.probe_name}\n"
+                if self.emit_runtime_log_marker
+                else "probe started without expected marker\n"
+            )
+            return _AdmissionResponse({"logs": logs}, status=200)
+
         if method == "GET" and path == "/api/v1/services/probe-service-uuid/logs":
             query = parse_qs(parsed.query)
             assert query["sub_service_name"] == [self.expected_sub_service_name]
@@ -125,10 +185,10 @@ class _LifecycleOpener:
             assert query["show_timestamps"] == ["false"]
             if not self.started:
                 return _AdmissionResponse({"message": "Container not found."}, status=404)
-            if self.runtime_log_status_after_start != 200:
+            if self.parent_log_status_after_start != 200:
                 return _AdmissionResponse(
                     {"message": self.runtime_log_error_message},
-                    status=self.runtime_log_status_after_start,
+                    status=self.parent_log_status_after_start,
                 )
             logs = (
                 f"MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={self.probe_name}\n"
@@ -207,7 +267,15 @@ def test_lifecycle_probe_inspection_is_no_secret_no_chain(tmp_path: Path, monkey
     assert result["compose"]["single_script_argument"] is True
     assert result["compose"]["healthcheck_required"] is True
     assert result["compose"]["runtime_log_marker_required"] is True
+    assert result["compose"]["image"] == "alpine:3.20"
     assert result["compose"]["runtime_log_endpoint_template"] == (
+        "/api/v1/services/{service_uuid}/applications/{application_uuid}/logs"
+        "?lines=100&show_timestamps=false"
+    )
+    assert result["compose"]["runtime_log_alternate_endpoint_template"] == (
+        "/api/v1/applications/{application_uuid}/logs?lines=100"
+    )
+    assert result["compose"]["runtime_log_fallback_endpoint_template"] == (
         "/api/v1/services/{service_uuid}/logs?sub_service_name={service_name}"
     )
     assert result["compose"]["ports"] == []
@@ -270,8 +338,8 @@ def test_lifecycle_probe_executes_and_persists_observation_evidence(
     assert TOKEN_A not in raw
     assert "private_key" not in raw
     evidence = json.loads(raw)
-    assert evidence["schema_version"] == 4
-    assert evidence["kind"].endswith(".v4")
+    assert evidence["schema_version"] == 6
+    assert evidence["kind"].endswith(".v6")
     assert [item["mutation_id"].rsplit(".", 1)[-1] for item in evidence["mutation_receipts"]] == [
         "create",
         "start",
@@ -306,15 +374,18 @@ def test_lifecycle_probe_executes_and_persists_observation_evidence(
     assert post_start_runtime["subresources"]["databases"] == []
     assert post_start_runtime["candidate_sub_service_names"] == [expected_name]
     assert post_start_runtime["selected_sub_service_name"] == expected_name
+    assert post_start_runtime["selected_application_uuid"] == "probe-application-uuid"
     assert post_start_runtime["selection_reason"] == "expected-name-match"
+    assert post_start_runtime["endpoint_kind"] == "service-application"
     assert post_start_runtime["query_parameters"] == {
-        "sub_service_name": expected_name,
         "lines": "100",
         "show_timestamps": "false",
     }
-    assert post_start_runtime["request_path"].endswith(
-        f"?sub_service_name={expected_name}&lines=100&show_timestamps=false"
+    assert post_start_runtime["request_path"] == (
+        "/api/v1/services/probe-service-uuid/applications/"
+        "probe-application-uuid/logs?lines=100&show_timestamps=false"
     )
+    assert post_start_runtime["attempts"][-1]["endpoint_kind"] == "service-application"
     assert post_start_runtime["response_classification"] == "ok-logs"
     assert post_start_runtime["logs_field_present"] is True
 
@@ -382,6 +453,90 @@ def test_lifecycle_probe_verifier_keeps_schema_v3_evidence_compatible(
     assert verified["service_runtime_log_response_classifications"] is None
 
 
+def test_lifecycle_probe_verifier_keeps_schema_v4_evidence_compatible(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, private_state, *_ = _fixture(tmp_path, monkeypatch)
+    result = execute_coolify_service_lifecycle_probe(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        environment_name="mainnet",
+        acknowledged_probe="NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE",
+        observe_seconds=0,
+        poll_interval_seconds=0,
+        opener=_LifecycleOpener(),
+        operation=_operation("coolify-service-lifecycle-legacy-v4"),
+    )
+    evidence_path = Path(result["evidence"]["path"])
+    legacy = json.loads(evidence_path.read_text(encoding="utf-8"))
+    legacy["kind"] = (
+        "main_computer.mother."
+        "deployment_coolify_service_lifecycle_probe_evidence.v4"
+    )
+    legacy["schema_version"] = 4
+    legacy.pop("coolify_service_lifecycle_probe_evidence_sha256")
+    legacy_digest = hashlib.sha256(canonical_json(legacy)).hexdigest()
+    legacy["coolify_service_lifecycle_probe_evidence_sha256"] = legacy_digest
+    legacy_path = evidence_path.with_name("legacy-schema-v4.json")
+    legacy_path.write_bytes(canonical_json(legacy))
+
+    verified = verify_coolify_service_lifecycle_probe_evidence(
+        paths,
+        private_state,
+        legacy_path,
+    )
+    assert verified["clean"] is True
+    assert verified["service_runtime_log_response_classifications"] == [
+        "container-not-found",
+        "ok-logs",
+    ]
+
+
+def test_lifecycle_probe_verifier_keeps_schema_v5_evidence_compatible(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, private_state, *_ = _fixture(tmp_path, monkeypatch)
+    result = execute_coolify_service_lifecycle_probe(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        environment_name="mainnet",
+        acknowledged_probe="NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE",
+        observe_seconds=0,
+        poll_interval_seconds=0,
+        opener=_LifecycleOpener(),
+        operation=_operation("coolify-service-lifecycle-legacy-v5"),
+    )
+    evidence_path = Path(result["evidence"]["path"])
+    legacy = json.loads(evidence_path.read_text(encoding="utf-8"))
+    legacy["kind"] = (
+        "main_computer.mother."
+        "deployment_coolify_service_lifecycle_probe_evidence.v5"
+    )
+    legacy["schema_version"] = 5
+    legacy.pop("coolify_service_lifecycle_probe_evidence_sha256")
+    legacy_digest = hashlib.sha256(canonical_json(legacy)).hexdigest()
+    legacy["coolify_service_lifecycle_probe_evidence_sha256"] = legacy_digest
+    legacy_path = evidence_path.with_name("legacy-schema-v5.json")
+    legacy_path.write_bytes(canonical_json(legacy))
+
+    verified = verify_coolify_service_lifecycle_probe_evidence(
+        paths,
+        private_state,
+        legacy_path,
+    )
+    assert verified["clean"] is True
+    assert verified["service_runtime_log_response_classifications"] == [
+        "container-not-found",
+        "ok-logs",
+    ]
+
+
 def test_lifecycle_probe_uses_the_single_service_detail_candidate(
     tmp_path: Path,
     monkeypatch,
@@ -421,6 +576,44 @@ def test_lifecycle_probe_uses_the_single_service_detail_candidate(
         channel["selection_reason"] == "single-candidate"
         for channel in runtime_channels
     )
+
+
+def test_lifecycle_probe_falls_back_to_application_resource_logs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, private_state, *_ = _fixture(tmp_path, monkeypatch)
+    opener = _LifecycleOpener(
+        service_application_log_status_after_start=404,
+        application_log_status_after_start=200,
+    )
+    result = execute_coolify_service_lifecycle_probe(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        environment_name="mainnet",
+        acknowledged_probe="NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE",
+        observe_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+        operation=_operation("coolify-service-lifecycle-application-fallback"),
+    )
+    assert result["status"] == "pass"
+    evidence = json.loads(Path(result["evidence"]["path"]).read_text(encoding="utf-8"))
+    post_start_runtime = next(
+        channel
+        for observation in evidence["observations"]
+        for channel in observation["channels"]
+        if channel.get("channel") == "service-runtime-logs"
+        and channel["observation_sequence"] == 1
+    )
+    assert [attempt["endpoint_kind"] for attempt in post_start_runtime["attempts"]] == [
+        "service-application",
+        "application-resource",
+    ]
+    assert post_start_runtime["endpoint_kind"] == "application-resource"
+    assert post_start_runtime["marker_observed"] is True
 
 
 def test_lifecycle_probe_classifies_healthy_container_log_404_without_raw_body(
@@ -465,8 +658,14 @@ def test_lifecycle_probe_classifies_healthy_container_log_404_without_raw_body(
     )
     assert post_start_runtime["service_detail_status"] == "running:healthy"
     assert post_start_runtime["selected_sub_service_name"] == opener.probe_name
+    assert post_start_runtime["selected_application_uuid"] == "probe-application-uuid"
     assert post_start_runtime["http_status"] == 404
     assert post_start_runtime["response_classification"] == "container-not-found"
+    assert [attempt["endpoint_kind"] for attempt in post_start_runtime["attempts"]] == [
+        "service-application",
+        "application-resource",
+        "parent-service-fallback",
+    ]
     assert post_start_runtime["response_sha256"]
     assert post_start_runtime["byte_length"] > 0
     assert post_start_runtime["logs_field_present"] is False

@@ -26,6 +26,11 @@ try:
     from .mcel_application_runtime_projection import check_runtime_projections
     from .mcel_evidence_provenance import build_repository_provenance
     from .mcel_node_runtime import resolve_node_executable
+    from .mcel_app_ir_native_proof import (
+        AppIrNativeProofError,
+        run_app_ir_native_intent_proof,
+        write_app_ir_native_report,
+    )
 except ImportError:
     _ROOT = Path(__file__).resolve().parents[1]
     if str(_ROOT) not in sys.path:
@@ -35,11 +40,21 @@ except ImportError:
     from main_computer.mcel_application_runtime_projection import check_runtime_projections
     from main_computer.mcel_evidence_provenance import build_repository_provenance
     from main_computer.mcel_node_runtime import resolve_node_executable
+    from main_computer.mcel_app_ir_native_proof import (
+        AppIrNativeProofError,
+        run_app_ir_native_intent_proof,
+        write_app_ir_native_report,
+    )
 
 
 RUNNER_VERSION = "mcel-app-prove-v1"
 REPORT_SCHEMA = "mcel.application-proof-report.v1"
 DEFAULT_OUTPUT_ROOT = Path("runtime/reports/mcel-app-proof")
+IR_NATIVE_OUTPUT_ROOT = Path("runtime/reports/mcel-ir-native-proof")
+# Backward-compatible test/import alias. The implementation now routes to the
+# generic authority and is not a Counter-specific execution path.
+run_counter_ir_native_intent_proof = run_app_ir_native_intent_proof
+
 REQUIRED_SURFACE_LAYERS = (
     "semantic-surface",
     "layout-grammar",
@@ -167,8 +182,30 @@ def _intent_complete_coverage(
     record: Any,
     acceptance: Mapping[str, Any],
     observation: Mapping[str, Any],
+    headed: bool = False,
 ) -> dict[str, Any]:
-    normalized_reference = str((record.authoring or {}).get("normalizedDefinition") or "").strip()
+    authoring = dict(record.authoring or {})
+    authoring_status = None
+    if authoring:
+        try:
+            manifest_authoring = (_load_json(repo / record.manifest, "application package manifest").get("authoring") or {})
+            authoring_status = manifest_authoring.get("status")
+        except AppProofError:
+            authoring_status = None
+    if authoring_status == "dsl-authoritative":
+        try:
+            return run_counter_ir_native_intent_proof(
+                app_id=app_id,
+                repo=repo,
+                record=record,
+                acceptance=acceptance,
+                observation=observation,
+                headed=headed,
+            )
+        except AppIrNativeProofError as exc:
+            raise AppProofError(f"IR-native intent-complete proof failed: {exc}") from exc
+
+    normalized_reference = str(authoring.get("normalizedDefinition") or "").strip()
     if not normalized_reference:
         results = [entry for entry in acceptance.get("results") or [] if entry.get("appId") == app_id]
         passed = (
@@ -633,7 +670,12 @@ def run_app_proof(
         record=record,
         acceptance=acceptance,
         observation=observation,
+        headed=headed,
     )
+    ir_native_path: Path | None = None
+    if intent_coverage.get("coverageMode") == "authoritative-dsl-ir-runtime-convergence":
+        ir_native_directory = repo / IR_NATIVE_OUTPUT_ROOT / "apps" / _slug(app_id)
+        ir_native_path, _ir_native_markdown = write_app_ir_native_report(intent_coverage, ir_native_directory)
 
     requirements_contract, block_counts = _package_requirements_contract(repo, record)
     truth = _truth_snapshot(
@@ -666,6 +708,8 @@ def run_app_proof(
             "declaredIntentCount": intent_coverage["declaredIntentCount"],
             "coveredIntentCount": intent_coverage["coveredIntentCount"],
             "observedScenarioCount": intent_coverage["observedScenarioCount"],
+            "coverageMode": intent_coverage.get("coverageMode"),
+            "legacyEvidenceRequired": intent_coverage.get("legacyEvidenceRequired", intent_coverage.get("status") == "legacy-evidence"),
         },
         "surfaceConformance": {
             "status": "pass",
@@ -698,6 +742,7 @@ def run_app_proof(
         "evidence": {
             "acceptance": _artifact_reference(acceptance_path, repo, acceptance),
             "browserObservation": _artifact_reference(observation_path, repo, observation),
+            **({"intentCompleteProof": _artifact_reference(ir_native_path, repo, intent_coverage)} if ir_native_path else {}),
         },
         "truthSnapshot": truth,
     }

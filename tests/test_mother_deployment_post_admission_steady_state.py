@@ -31,13 +31,16 @@ from tools.mother.common.deployment_post_admission_steady_state import (
     write_post_admission_steady_state_transaction,
 )
 from tools.mother.common.deployment_validator_quorum_recovery import (
+    execute_validator_quorum_recovery_release,
     reconcile_validator_quorum_recovery,
 )
 from tests.test_mother_deployment_executor import TOKEN_A, TOKEN_C, _operation
 from tests.test_mother_deployment_validator_admission import _AdmissionResponse
 from tests.test_mother_deployment_validator_quorum_recovery import (
     _QuorumReconciliationOpener,
+    _QuorumRecoveryOpener,
     _failed_recovery_for_reconciliation,
+    _fixture as _quorum_fixture,
 )
 
 
@@ -116,6 +119,184 @@ def _fixture(tmp_path: Path):
         release,
         release_path,
         release_digest,
+    )
+
+
+
+def _passing_quorum_evidence_fixture(tmp_path: Path):
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        quorum_release,
+        quorum_release_path,
+        quorum_release_digest,
+    ) = _quorum_fixture(tmp_path)
+    result = execute_validator_quorum_recovery_release(
+        paths,
+        private_state,
+        quorum_release_path,
+        acknowledged_release_sha256=quorum_release_digest,
+        selected_nodes=("mainnetc-super1",),
+        opener=_QuorumRecoveryOpener(
+            quorum_release,
+            aggregate_degraded_components_healthy=True,
+        ),
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        operation=_operation("post-admission-steady-state-passing-quorum-source"),
+    )
+    assert result["status"] == "pass"
+    assert result["summary"]["component_scoped_health_accepted"] is True
+    evidence_path = Path(result["evidence"]["path"])
+
+    private_state = replace(
+        private_state,
+        binding=replace(private_state.binding, generation=2),
+    )
+    release_document = json.loads(quorum_release_path.read_text(encoding="utf-8"))
+    release_document["mother_binding"]["generation"] = 2
+    release_document["validator_quorum_recovery_release_sha256"] = hashlib.sha256(
+        canonical_json(
+            {
+                key: value
+                for key, value in release_document.items()
+                if key != "validator_quorum_recovery_release_sha256"
+            }
+        )
+    ).hexdigest()
+    quorum_release_path.write_bytes(canonical_json(release_document))
+
+    evidence_document = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence_document["mother_binding"]["generation"] = 2
+    evidence_document["release"]["sha256"] = release_document[
+        "validator_quorum_recovery_release_sha256"
+    ]
+    evidence_path.write_bytes(canonical_json(evidence_document))
+    return paths, private_state, evidence_path, release_document
+
+
+
+def test_transaction_accepts_passing_quorum_recovery_evidence(tmp_path: Path) -> None:
+    paths, private_state, evidence_path, _ = _passing_quorum_evidence_fixture(tmp_path)
+    transaction = build_post_admission_steady_state_transaction(
+        paths,
+        private_state,
+        quorum_evidence_path=evidence_path,
+        selected_nodes=("mainnetc-super1", "mainneta-super1"),
+    )
+    assert "reconciliation" not in transaction
+    assert transaction["quorum_recovery_evidence"]["locator"].startswith(
+        "evidence/deployment-validator-quorum-recovery/"
+    )
+    assert transaction["summary"]["quorum_source_kind"] == "passing-quorum-recovery-evidence"
+    assert transaction["summary"]["blocks_advancing_verified_by_quorum_evidence"] is True
+    assert transaction["summary"]["blocks_advancing_verified_by_reconciliation"] is False
+
+    transaction_path, transaction_digest = write_post_admission_steady_state_transaction(
+        paths,
+        transaction,
+        operation=_operation("post-admission-steady-state-direct-evidence-transaction"),
+    )
+    verified_transaction = verify_post_admission_steady_state_transaction(
+        paths,
+        private_state,
+        transaction_path,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+    )
+    assert verified_transaction["post_admission_steady_state_transaction_sha256"] == transaction_digest
+
+    release = build_post_admission_steady_state_release(
+        paths,
+        private_state,
+        transaction_path,
+        acknowledged_transaction_sha256=transaction_digest,
+        selected_nodes=("mainnetc-super1", "mainneta-super1"),
+    )
+    assert "reconciliation" not in release
+    assert release["quorum_recovery_evidence"] == transaction["quorum_recovery_evidence"]
+    release_path, release_digest = write_post_admission_steady_state_release(
+        paths,
+        release,
+        operation=_operation("post-admission-steady-state-direct-evidence-release"),
+    )
+    verified_release = verify_post_admission_steady_state_release(
+        paths,
+        private_state,
+        release_path,
+        selected_nodes=("mainnetc-super1", "mainneta-super1"),
+    )
+    assert verified_release["post_admission_steady_state_release_sha256"] == release_digest
+
+
+def test_transaction_rejects_tampered_passing_quorum_recovery_evidence(
+    tmp_path: Path,
+) -> None:
+    paths, private_state, evidence_path, _ = _passing_quorum_evidence_fixture(tmp_path)
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["mutation_receipts"][0]["body_sha256"] = "0" * 64
+    evidence_path.write_bytes(canonical_json(evidence))
+
+    with pytest.raises(MotherDeploymentPostAdmissionSteadyStateError) as caught:
+        build_post_admission_steady_state_transaction(
+            paths,
+            private_state,
+            quorum_evidence_path=evidence_path,
+            selected_nodes=("mainnetc-super1", "mainneta-super1"),
+        )
+    assert (
+        caught.value.code
+        == "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID"
+    )
+
+
+def test_cli_dispatches_post_admission_steady_state_from_quorum_evidence(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    paths, _, _, _, _, _, _, _, _ = _fixture(tmp_path)
+    runtime_root = paths.root.parent
+    evidence_path = (
+        paths.root
+        / "evidence"
+        / "deployment-validator-quorum-recovery"
+        / "passing.json"
+    )
+    captured: dict[str, Any] = {}
+
+    def fake_build(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured["reconciliation_path"] = args[2]
+        captured["quorum_evidence_path"] = kwargs["quorum_evidence_path"]
+        return {
+            "kind": "test",
+            "summary": {"next_phase": "release-post-admission-steady-state"},
+        }
+
+    monkeypatch.setattr(
+        mother_deploy,
+        "build_post_admission_steady_state_transaction",
+        fake_build,
+    )
+    code = mother_deploy.main(
+        [
+            "stage-post-admission-steady-state",
+            "--runtime-state-root",
+            str(runtime_root),
+            "--quorum-evidence",
+            str(evidence_path),
+            "--node",
+            "mainnetc-super1",
+            "--node",
+            "mainneta-super1",
+        ]
+    )
+    assert code == 0
+    assert captured["reconciliation_path"] is None
+    assert captured["quorum_evidence_path"] == evidence_path
+    assert json.loads(capsys.readouterr().out)["summary"]["next_phase"] == (
+        "release-post-admission-steady-state"
     )
 
 

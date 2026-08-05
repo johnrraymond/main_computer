@@ -122,7 +122,8 @@ def project_counter_candidate(
     candidate_package_files.update(generated)
     candidate_package_fingerprint = fingerprint_package_files(candidate_package_files)
 
-    catalog = build_application_package_catalog(REPOSITORY_ROOT)
+    projection_repo = _repository_root_for_package(live_root)
+    catalog = build_application_package_catalog(projection_repo)
     live_record = next((item for item in catalog.packages if item.app_id == "contract-counter"), None)
     if live_record is None or not live_record.valid or not live_record.fingerprint:
         diagnostics.append(_diagnostic("MCEL_COUNTER_LIVE_PACKAGE_RECORD_INVALID", "The live Counter package record is unavailable or invalid.", "$package"))
@@ -135,7 +136,7 @@ def project_counter_candidate(
         package_fingerprint=candidate_package_fingerprint,
         catalog_fingerprint=candidate_catalog_fingerprint,
     )
-    live_projection = build_application_runtime_projection(REPOSITORY_ROOT, catalog, live_record)
+    live_projection = build_application_runtime_projection(projection_repo, catalog, live_record)
     manifest = _candidate_runtime_manifest(
         live_projection.manifest,
         package_fingerprint=candidate_package_fingerprint,
@@ -280,6 +281,17 @@ def _candidate_catalog_fingerprint(records: tuple[ApplicationPackageRecord, ...]
         }
         items.append((record.package_root, json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")))
     return _framed_hash(CATALOG_FINGERPRINT_ALGORITHM, items)
+
+
+def _repository_root_for_package(package_root: Path) -> Path:
+    package_root = package_root.resolve()
+    if package_root.name == "contract-counter" and package_root.parent.name == "mcel_apps":
+        return package_root.parent.parent
+    for parent in package_root.parents:
+        candidate = parent / "mcel_apps" / "contract-counter"
+        if candidate.resolve() == package_root:
+            return parent
+    return REPOSITORY_ROOT
 
 
 def _runtime_fingerprint(*, generated: Mapping[str, bytes], live_root: Path, package_fingerprint: str, catalog_fingerprint: str) -> str:

@@ -1,0 +1,56 @@
+{
+  "appId": "contract-workbench",
+  "authoring": {
+    "definition": "application.js",
+    "featureMatrix": "forward-specification.json",
+    "normalizedDefinition": "generated/mcel.application.normalized.json",
+    "schema": "mcel.application-definition.v1",
+    "status": "semantic-runtime-proven"
+  },
+  "blueprint": "blueprint.json",
+  "conformance": {
+    "currentMode": "semantic-runtime-proven",
+    "missingBridges": [],
+    "targetMode": "semantic-runtime-proven"
+  },
+  "contracts": {
+    "acceptance": "contracts/acceptance.js",
+    "adapter": "contracts/adapter.js",
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "surface": "contracts/surface.js"
+  },
+  "normalization": {
+    "definitionFingerprint": "sha256:6cb3c6d27a351fdd12e9d9e714e70ba75ed87468bc56815a54bf2078784c408d",
+    "generatedContracts": [
+      "domain",
+      "intents",
+      "adapter",
+      "surface",
+      "layout",
+      "acceptance",
+      "observation"
+    ],
+    "normalizer": "mcel-application-definition-normalizer-v1",
+    "schema": "mcel.application-definition-normalization.v1",
+    "sourceSha256": "1d3cebff74ea9a8516eb3e54a8e7ffcc815a11bcc0c891ec36737b1a69e040e5"
+  },
+  "requirements": "requirements.md",
+  "runtime": {
+    "document": "src/index.html",
+    "script": "src/app.js",
+    "style": "src/app.css"
+  },
+  "schema": "mcel.application-package.v1",
+  "template": {
+    "id": "mcel.forward-specification-acid-application",
+    "version": "0.1.0"
+  },
+  "tests": {
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json",
+    "root": "tests"
+  },
+  "title": "Contract Operations Workbench"
+}

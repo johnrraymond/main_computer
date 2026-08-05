@@ -1201,6 +1201,177 @@ Implementation status:
 - the active system is excluded, report delivery honors route latency, and every run persists an explainable receipt;
 - protected irreversible steps require both authored authority and an explicit deadline before the schedule is accepted.
 
+### AI-9.1 — Live strategic session and developer harness
+
+Objective:
+
+- own one persistent strategic session for the loaded Game Surface project;
+- make the completed headless stack directly observable and operable in the browser.
+
+Acceptance proof:
+
+- the same project render reuses one strategic session instead of resetting state;
+- active-system navigation updates persist without duplicating strategic operations;
+- developer controls invoke real actor turns, director transitions, commitments, communication, and off-screen simulation;
+- snapshot export, reset, import, and local reload preserve verified state;
+- incompatible project or definition snapshots are rejected.
+
+Artifact boundary:
+
+- browser session owner, Game Surface binding, developer panel, and live-session tests.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-09-1-live-strategic-session-and-developer-harness.md`;
+- one project-scoped session now owns the existing v8 state without changing the strategic schema or authored scenarios;
+- Game Surface project loading and navigation bind to the session while scene rerenders and app switching preserve state;
+- a browser panel exposes verified actor turns, bounded off-screen advancement, campaign transitions, typed commitments, knowledge-safe communication, and snapshot controls;
+- player-facing Vela interactions and automatic travel-triggered off-screen advancement remain separate slices.
+
+### AI-9.2 — Player-visible Vela Gate interaction
+
+Objective:
+
+- expose one normal Vela Gate interaction through the live strategic session;
+- present one verified actor choice, safe briefing, and readable decision explanation.
+
+Acceptance proof:
+
+- the interaction appears only while Vela Gate is the active system;
+- requesting a briefing activates the authored Vela opportunity and runs the real Gate Authority turn;
+- the selected action commits through the existing verifier and the briefing passes the communication safety boundary;
+- confidence, major score signals, alternatives, observations, resources, and canonical revision are player-visible;
+- reopening or rerendering does not repeat the turn or mutate the completed session.
+
+Artifact boundary:
+
+- Game Surface Vela channel card, Vela presentation controller, focused live-interaction tests, and documentation.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-09-2-player-visible-vela-gate-interaction.md`;
+- the Vela Gate Authority card is hidden outside `system.vela-gate` and uses the AI-9.1 project session rather than a second state store;
+- the baseline interaction activates the authored opportunity, verifies `action.vela.move-patrol-to-chiron`, renders the authored official briefing, and explains the decision;
+- completion is reconstructed from persisted strategic receipts and outcomes, so reopening the interaction does not create another actor turn;
+- automatic travel-triggered off-screen advancement and player-facing return summaries are completed in AI-9.3.
+
+### AI-9.2.1 — Live interface polish
+
+Objective:
+
+- make the first player-facing Vela card readable at constrained Game Surface sizes;
+- separate developer controls from the player interaction;
+- translate internal decision metrics into concise player language without changing AI behavior.
+
+Acceptance proof:
+
+- the card responds to its own width and stacks explanation sections when narrow;
+- verified consequences render as labeled rows;
+- raw score-component identifiers and decimal scores are absent from the player presentation;
+- the completed state remains legible and clearly non-actionable;
+- the same verified action, safe briefing, revision, observations, resource use, and idempotence tests still pass.
+
+Artifact boundary:
+
+- Vela interaction markup, presentation controller, Vela and debug styles, focused tests, and documentation.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-09-2-1-live-interface-polish.md`;
+- the developer toggle is positioned away from the lower-right player card;
+- the explanation uses two columns when wide, one column when narrow, and a full-width verified-outcome section;
+- player wording now uses authored labels such as `Mission priorities`, `Available evidence`, and `Viable alternative`;
+- strategic definitions, policies, state, and verified outcomes are unchanged.
+
+### AI-9.3 — Travel-triggered off-screen progression and return summary
+
+Objective:
+
+- advance the existing off-screen scheduler exactly once after a committed navigation arrival;
+- exclude the newly active system;
+- present persisted authored developments when the player returns.
+
+Acceptance proof:
+
+- arrival identity is derived from completed route, arrival timestamp, destination, and world time;
+- repeated callbacks, rerenders, reloads, and compatible snapshot restores do not repeat an arrival;
+- navigation world time advances the scheduler only after travel is committed;
+- the existing four-unit budget and deterministic step order remain intact;
+- the destination schedule is skipped;
+- a returning system receives a player-facing diff derived from stored step receipts and authored descriptions;
+- acknowledgement persists without changing strategic state.
+
+Artifact boundary:
+
+- strategic-session travel metadata, navigation integration controller, Game Surface return panel, focused tests, and documentation.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-09-3-travel-triggered-offscreen-progression-and-return-summary.md`;
+- Solace-to-Vela travel processes the three Solace relief steps while excluding Vela;
+- Vela-to-Solace travel processes three Vela steps and defers the briefing at the four-unit budget;
+- the first Solace return shows three receipt-derived developments;
+- processed arrival keys, absence baselines, return notice, and acknowledgement survive compatible snapshot restore;
+- no timers, wall-clock polling, strategic schema changes, or project-definition changes were added.
+
+### AI-9.4 — Player-visible Solace Reach coordination
+
+Objective:
+
+- expose the typed shuttle promise and one-shuttle resource conflict through normal Game Surface interaction;
+- prove that kept or broken commitments change later Osprey cooperation through the existing trust model.
+
+Acceptance proof:
+
+- the card appears only in `system.solace-reach`;
+- the opening step creates one typed commitment and renders wording bound to that commitment;
+- the player selects which already-authored actor receives the scarce-resource turn;
+- both allocations pass through the normal action, authority, precondition, revision, and resource verifier;
+- the promise resolves as kept or broken from the committed action outcome;
+- trust becomes the authored `0.91` or `0.11`;
+- the Osprey captain independently selects manifest sharing or withholding from `commitmentTrust`;
+- both branches survive rerender, replay, and compatible snapshot restore without duplicate turns.
+
+Artifact boundary:
+
+- Solace Game Surface card, Solace presentation controller, live interaction tests, and documentation.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-09-4-player-visible-solace-coordination.md`;
+- the initial card shows one available rescue shuttle and Osprey trust `0.55`;
+- the kept branch allocates the shuttle to Osprey, resolves the promise kept, raises trust to `0.91`, and produces manifest sharing;
+- the broken branch lets Lyria exercise emergency authority, resolves the promise broken, reduces trust to `0.11`, and produces manifest withholding;
+- no strategic schema, project data, policy, verifier, travel, or return-summary changes were required.
+
+### AI-9.4.1 — Non-obscuring collapsible strategic UI
+
+Objective:
+
+- prevent Vela, Solace, and return-summary cards from covering the playable scene;
+- provide persistent full, compact, and collapsed presentation states.
+
+Acceptance proof:
+
+- wide surfaces reserve a separate right-hand dock track;
+- narrow surfaces reserve a separate bottom-drawer track;
+- the playfield and dock bounding boxes do not overlap;
+- collapsing restores almost the full playfield while retaining an obvious expand tab;
+- panel modes persist independently across rerenders and reloads;
+- existing Vela, Solace, travel, and strategic behavior tests remain unchanged.
+
+Artifact boundary:
+
+- shared dock markup, layout CSS and controller, focused panel-layout tests, and documentation.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-09-4-1-non-obscuring-collapsible-strategic-ui.md`;
+- all three player-facing strategic cards are direct children of one dock;
+- `ResizeObserver` selects side or bottom layout from the real host width and preserves minimum playfield height;
+- the dock supports expanded, compact, and collapsed modes without timers or strategic-state changes;
+- desktop and narrow headless-browser geometry checks prove non-overlap.
+
 ### AI-10 — Tactical and learned behavior experiments
 
 Objective:
@@ -1375,7 +1546,7 @@ Implemented:
 - authority and availability rejection;
 - deterministic decision receipts bound to policy profile and canonical revision;
 - strategic-AI state snapshot and restoration;
-- strategic-AI definition and state contracts v7;
+- strategic-AI definition and state contracts v8;
 - separate browser-safe action authority and consequence runtime;
 - typed proposal registration tied to stored decision receipts and canonical revision;
 - stale-revision, action authority, local-destination, canonical precondition, resource, effect-allowlist, and protected-effect checks;
@@ -1424,37 +1595,45 @@ Implemented:
 - report readiness derived from authored route latency;
 - protected-step validation requiring explicit deadlines and complete action/effect authority;
 - persisted off-screen step state, simulation receipts, and explainable return summaries;
-- conservative v1 through v7 migration into v8 scheduler state.
+- conservative v1 through v7 migration into v8 scheduler state;
+- project-scoped browser strategic-session owner with deterministic definition fingerprinting;
+- local session persistence, compatible snapshot import/export, reset, and explicit mismatch rejection;
+- Game Surface project and navigation binding that preserves strategic state across rerenders and app switching;
+- developer inspection panel for real actor turns, off-screen advancement, campaign opportunities, commitments, communication, and full state inspection;
+- player-visible Vela Gate Authority channel using the live session, verified official action, safe briefing, and readable decision explanation;
+- exact-once navigation arrival integration with bounded off-screen progression and player-facing receipt-derived return summaries;
+- player-visible Solace Reach coordination with typed promise wording, one-shuttle allocation, kept-or-broken resolution, and trust-driven Osprey response.
 
 Not implemented:
 
-- scene or player-interaction integration for the Vela actors;
 - general goal-oriented planning beyond bounded candidate evaluation;
 - full theory-of-mind models;
 - free-form generated dialogue or scene performance;
 - report propagation outside authored Vela routes;
 - generated negotiation terms or unrestricted model prose;
 - multiple-resource plan search and independent promise deadlines;
-- player-facing off-screen return summaries;
 - tactical or real-time off-screen simulation;
-- player-facing campaign opportunity integration;
-- automatic campaign clock integration outside explicit director calls.
+- campaign-clock progression outside completed navigation arrivals or explicit director calls;
+- repository-backed strategic save integration;
+- additional player-facing Vela actors, deeper Solace negotiation, branching requests, and scene performance.
 
-The implemented Vela behavior is headless proof, not yet a player-visible sophisticated-AI feature.
+The strategic stack now has a live browser harness, normal Vela and Solace interactions, completed-travel off-screen progression, player-facing return summaries, and a non-obscuring collapsible strategic UI dock. Repository-backed campaign save integration and scene performance remain unimplemented.
 
 ## Smallest useful implementation slice
 
-AI-1 through AI-9 are implemented as a validated data contract, deterministic cognition kernel, atomic action-authority boundary, revision lock, authored policy layer, complete headless turn coordinator, Vela Gate social prototype, Solace Reach resource-and-promise prototype, bounded campaign director, knowledge-safe communication layer, and deterministic budgeted off-screen scheduler. The next bounded research slice is AI-10's tactical and learned-behavior experiments:
+AI-1 through AI-9.4.1 are implemented as a validated strategic stack, live project-scoped browser session, developer inspection panel, player-visible Vela and Solace interactions, exact-once travel progression, receipt-derived return summaries, and a non-obscuring collapsible strategic UI dock. The smallest useful next slice is AI-9.5's repository-backed campaign save integration and end-to-end replay proof:
 
 ```text
-stable tactical action interface
-→ optional learned policy
-→ deterministic gameplay fallback
-→ unchanged authority, damage, and resource checks
-→ measured performance and failure bounds
+complete Vela interaction
+→ travel and advance off-screen schedules
+→ resolve Solace allocation
+→ write one campaign save
+→ reload the application
+→ restore navigation, strategic state, arrival receipts, and acknowledgements
+→ reproduce the same next verified result
 ```
 
-AI-10 should remain separate from political and narrative authority. Learned behavior may propose bounded tactical actions, but canonical consequences must continue through deterministic verifiers.
+AI-9.5 should promote the existing compatible session envelope into the normal game save surface rather than introducing another strategic serialization format. AI-10 tactical or learned experiments should remain deferred until one durable cross-system campaign replay is proven.
 
 ## Research basis
 

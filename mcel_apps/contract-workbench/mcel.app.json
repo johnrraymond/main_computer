@@ -1,11 +1,11 @@
 {
   "appId": "contract-workbench",
   "authoring": {
-    "definition": "application.js",
-    "featureMatrix": "forward-specification.json",
     "normalizedDefinition": "generated/mcel.application.normalized.json",
-    "schema": "mcel.application-definition.v1",
-    "status": "semantic-runtime-proven"
+    "ownership": "mcel.generated.json",
+    "schema": "mcel.application-authoring.v1",
+    "source": "application.js",
+    "status": "dsl-authoritative"
   },
   "blueprint": "blueprint.json",
   "conformance": {
@@ -36,6 +36,10 @@
     "normalizer": "mcel-application-definition-normalizer-v1",
     "schema": "mcel.application-definition-normalization.v1",
     "sourceSha256": "1d3cebff74ea9a8516eb3e54a8e7ffcc815a11bcc0c891ec36737b1a69e040e5"
+  },
+  "projection": {
+    "generatedArtifactsAreDerived": true,
+    "profile": "mcel.workbench.portable-ir-projection.v1"
   },
   "requirements": "requirements.md",
   "runtime": {

@@ -1,1 +1,355 @@
           <div id="webgl-demo" class="project-game-surface scene-surface" aria-label="Scene-aware game surface" data-scene-viewer data-scene-id="default-empty-scene"></div>
+          <div
+            id="strategic-ai-panel-dock"
+            class="strategic-ai-panel-dock"
+            hidden
+            aria-label="Strategic information dock"
+            data-mc-component-id="strategic-ai.panel-dock"
+            data-mc-component-kind="panel"
+            data-mc-component-label="Strategic AI Player Information Dock"
+            data-mc-feature-id="strategic-ai.feature.non-obscuring-dock"
+          >
+          <section
+            id="strategic-ai-return-summary"
+            class="strategic-ai-return-summary"
+            data-strategic-ai-panel
+            data-strategic-ai-panel-id="return-summary"
+            hidden
+            aria-labelledby="strategic-ai-return-title"
+            data-mc-component-id="strategic-ai.travel.return-summary"
+            data-mc-component-kind="notice"
+            data-mc-component-label="Strategic AI Return Summary"
+            data-mc-feature-id="strategic-ai.feature.travel-offscreen-return"
+          >
+            <header class="strategic-ai-return-head">
+              <div>
+                <span class="strategic-ai-return-kicker">System return report</span>
+                <h2 id="strategic-ai-return-title">While you were away</h2>
+              </div>
+              <div class="strategic-ai-panel-actions">
+                <button
+                  class="strategic-ai-panel-compact"
+                  type="button"
+                  data-strategic-ai-panel-compact
+                  aria-label="Use compact return summary"
+                >Compact</button>
+                <button
+                  class="strategic-ai-panel-collapse"
+                  type="button"
+                  data-strategic-ai-panel-collapse
+                  aria-expanded="true"
+                  aria-label="Collapse return summary"
+                >Collapse</button>
+                <button
+                  id="strategic-ai-return-dismiss"
+                  class="strategic-ai-return-dismiss"
+                  type="button"
+                  aria-label="Dismiss return summary"
+                >Dismiss</button>
+              </div>
+            </header>
+            <output
+              id="strategic-ai-return-status"
+              class="strategic-ai-return-status"
+              role="status"
+              aria-live="polite"
+            ></output>
+            <ul id="strategic-ai-return-changes" class="strategic-ai-return-changes"></ul>
+            <small id="strategic-ai-return-meta" class="strategic-ai-return-meta"></small>
+          </section>
+
+          <section
+            id="vela-gate-strategic-contact"
+            class="vela-gate-strategic-contact"
+            data-strategic-ai-panel
+            data-strategic-ai-panel-id="vela-gate"
+            hidden
+            aria-labelledby="vela-gate-strategic-title"
+            data-mc-component-id="strategic-ai.vela.contact"
+            data-mc-component-kind="interaction"
+            data-mc-component-label="Vela Gate Authority Channel"
+            data-mc-feature-id="strategic-ai.feature.vela-live-interaction"
+          >
+            <header class="vela-gate-strategic-head">
+              <div>
+                <span class="vela-gate-strategic-kicker">Incoming system channel</span>
+                <h2 id="vela-gate-strategic-title">Vela Gate Authority</h2>
+              </div>
+              <div class="strategic-ai-panel-actions">
+                <span class="vela-gate-strategic-signal" aria-hidden="true"></span>
+                <button
+                  class="strategic-ai-panel-compact"
+                  type="button"
+                  data-strategic-ai-panel-compact
+                  aria-label="Use compact Vela Gate channel"
+                >Compact</button>
+                <button
+                  class="strategic-ai-panel-collapse"
+                  type="button"
+                  data-strategic-ai-panel-collapse
+                  aria-expanded="true"
+                  aria-label="Collapse Vela Gate channel"
+                >Collapse</button>
+              </div>
+            </header>
+
+            <output
+              id="vela-gate-strategic-status"
+              class="vela-gate-strategic-status"
+              role="status"
+              aria-live="polite"
+            >A Gate Authority channel is available.</output>
+
+            <blockquote id="vela-gate-strategic-briefing" class="vela-gate-strategic-briefing">
+              No official briefing has been received.
+            </blockquote>
+
+            <button id="vela-gate-strategic-request" class="vela-gate-strategic-request" type="button">
+              Request official briefing
+            </button>
+
+            <details id="vela-gate-strategic-explanation" class="vela-gate-strategic-explanation" hidden>
+              <summary>Why the Authority acted</summary>
+              <div class="vela-gate-strategic-decision">
+                <strong id="vela-gate-strategic-action">Awaiting verified decision</strong>
+                <span id="vela-gate-strategic-confidence"></span>
+              </div>
+              <div class="vela-gate-strategic-grid">
+                <section class="vela-gate-strategic-section vela-gate-strategic-section-signals">
+                  <h3>What influenced the decision</h3>
+                  <ul id="vela-gate-strategic-reasons" class="vela-gate-strategic-factors"></ul>
+                </section>
+                <section class="vela-gate-strategic-section vela-gate-strategic-section-alternatives">
+                  <h3>Other options considered</h3>
+                  <ul id="vela-gate-strategic-alternatives" class="vela-gate-strategic-options"></ul>
+                </section>
+                <section class="vela-gate-strategic-section vela-gate-strategic-section-consequences">
+                  <h3>Verified outcome</h3>
+                  <ul id="vela-gate-strategic-consequences" class="vela-gate-strategic-outcome-rows"></ul>
+                </section>
+              </div>
+            </details>
+          </section>
+
+          <section
+            id="solace-strategic-contact"
+            class="solace-strategic-contact"
+            data-strategic-ai-panel
+            data-strategic-ai-panel-id="solace-reach"
+            hidden
+            aria-labelledby="solace-strategic-title"
+            data-mc-component-id="strategic-ai.solace.contact"
+            data-mc-component-kind="interaction"
+            data-mc-component-label="Solace Reach Relief Coordination"
+            data-mc-feature-id="strategic-ai.feature.solace-live-coordination"
+          >
+            <header class="solace-strategic-head">
+              <div>
+                <span class="solace-strategic-kicker">Relief coordination channel</span>
+                <h2 id="solace-strategic-title">Solace Reach</h2>
+              </div>
+              <div class="strategic-ai-panel-actions">
+                <span class="solace-strategic-signal" aria-hidden="true"></span>
+                <button
+                  class="strategic-ai-panel-compact"
+                  type="button"
+                  data-strategic-ai-panel-compact
+                  aria-label="Use compact Solace Reach channel"
+                >Compact</button>
+                <button
+                  class="strategic-ai-panel-collapse"
+                  type="button"
+                  data-strategic-ai-panel-collapse
+                  aria-expanded="true"
+                  aria-label="Collapse Solace Reach channel"
+                >Collapse</button>
+              </div>
+            </header>
+
+            <output
+              id="solace-strategic-status"
+              class="solace-strategic-status"
+              role="status"
+              aria-live="polite"
+            >One rescue shuttle remains. Haven can make a binding promise before allocation.</output>
+
+            <div class="solace-strategic-resource-grid" aria-label="Solace coordination state">
+              <section>
+                <span>Rescue shuttle</span>
+                <strong id="solace-strategic-shuttle">Available in Haven orbit</strong>
+              </section>
+              <section>
+                <span>Osprey trust in Haven</span>
+                <strong id="solace-strategic-trust">55% — Cautious trust</strong>
+                <span class="solace-strategic-trust-track" aria-hidden="true">
+                  <span id="solace-strategic-trust-fill" class="solace-strategic-trust-fill" style="width:55%"></span>
+                </span>
+              </section>
+            </div>
+
+            <blockquote
+              id="solace-strategic-promise"
+              class="solace-strategic-promise"
+              hidden
+            >A structured shuttle promise exists.</blockquote>
+
+            <button
+              id="solace-strategic-begin"
+              class="solace-strategic-begin"
+              type="button"
+            >Open coordination and make the Osprey promise</button>
+
+            <fieldset id="solace-strategic-choices" class="solace-strategic-choices" hidden>
+              <legend>Allocate the single rescue shuttle</legend>
+              <button id="solace-strategic-keep" class="solace-strategic-choice solace-strategic-choice-keep" type="button">
+                <strong>Honor the Osprey promise</strong>
+                <span>Haven allocates the shuttle to the civilian flotilla.</span>
+              </button>
+              <button id="solace-strategic-divert" class="solace-strategic-choice solace-strategic-choice-divert" type="button">
+                <strong>Divert the shuttle to Lyria</strong>
+                <span>Emergency medical authority takes the shared resource.</span>
+              </button>
+            </fieldset>
+
+            <button
+              id="solace-strategic-continue"
+              class="solace-strategic-continue"
+              type="button"
+              hidden
+            >Request the Osprey captain’s response</button>
+
+            <ul
+              id="solace-strategic-outcome"
+              class="solace-strategic-outcome"
+              aria-label="Verified Solace coordination outcome"
+            ></ul>
+          </section>
+
+          </div>
+
+          <button
+            id="strategic-ai-debug-toggle"
+            class="strategic-ai-debug-toggle"
+            type="button"
+            aria-controls="strategic-ai-debug-panel"
+            aria-expanded="false"
+            data-mc-component-id="strategic-ai.debug.toggle"
+            data-mc-component-kind="action"
+            data-mc-component-label="Open Strategic AI Debug Panel"
+          >Strategic AI</button>
+          <aside
+            id="strategic-ai-debug-panel"
+            class="strategic-ai-debug-panel"
+            hidden
+            tabindex="-1"
+            aria-label="Strategic AI live inspection panel"
+            data-mc-component-id="strategic-ai.debug.panel"
+            data-mc-component-kind="panel"
+            data-mc-component-label="Strategic AI Live Inspection Panel"
+            data-mc-feature-id="strategic-ai.feature.live-harness"
+          >
+            <header class="strategic-ai-debug-head">
+              <div>
+                <strong>Strategic AI Live Harness</strong>
+                <span>Real v8 runtimes, persisted project session</span>
+              </div>
+              <button id="strategic-ai-debug-close" type="button">Close</button>
+            </header>
+
+            <output id="strategic-ai-debug-status" class="strategic-ai-debug-status" role="status" aria-live="polite">Load the Game Surface to create a strategic session.</output>
+            <div id="strategic-ai-debug-summary" class="strategic-ai-debug-summary" aria-label="Strategic AI state summary"></div>
+
+            <div class="strategic-ai-debug-controls">
+              <fieldset>
+                <legend>Actor turn</legend>
+                <label>
+                  <span>Actor</span>
+                  <select id="strategic-ai-debug-actor"></select>
+                </label>
+                <button id="strategic-ai-debug-run-actor" type="button">Run verified turn</button>
+              </fieldset>
+
+              <fieldset>
+                <legend>Off-screen simulation</legend>
+                <label>
+                  <span>Active system</span>
+                  <select id="strategic-ai-debug-active-system"></select>
+                </label>
+                <label>
+                  <span>Target strategic time</span>
+                  <input id="strategic-ai-debug-target-time" type="number" min="0" step="1" value="1">
+                </label>
+                <label>
+                  <span>Budget</span>
+                  <input id="strategic-ai-debug-budget" type="number" min="0" max="4" step="1" value="4">
+                </label>
+                <button id="strategic-ai-debug-advance" type="button">Advance off-screen</button>
+              </fieldset>
+
+              <fieldset>
+                <legend>Campaign opportunity</legend>
+                <label>
+                  <span>Opportunity</span>
+                  <select id="strategic-ai-debug-opportunity"></select>
+                </label>
+                <div class="strategic-ai-debug-button-row">
+                  <button id="strategic-ai-debug-activate" type="button">Activate</button>
+                  <button id="strategic-ai-debug-deactivate" type="button">Deactivate</button>
+                  <button id="strategic-ai-debug-expire" type="button">Expire due</button>
+                </div>
+              </fieldset>
+
+              <fieldset>
+                <legend>Structured commitment</legend>
+                <label>
+                  <span>Type</span>
+                  <select id="strategic-ai-debug-commitment-type"></select>
+                </label>
+                <label>
+                  <span>Promisor</span>
+                  <select id="strategic-ai-debug-promisor"></select>
+                </label>
+                <label>
+                  <span>Promisee</span>
+                  <select id="strategic-ai-debug-promisee"></select>
+                </label>
+                <button id="strategic-ai-debug-create-commitment" type="button">Create commitment</button>
+              </fieldset>
+
+              <fieldset>
+                <legend>Knowledge-safe communication</legend>
+                <label>
+                  <span>Intent</span>
+                  <select id="strategic-ai-debug-intent"></select>
+                </label>
+                <label>
+                  <span>Speaker</span>
+                  <select id="strategic-ai-debug-speaker"></select>
+                </label>
+                <label>
+                  <span>Audience</span>
+                  <select id="strategic-ai-debug-audience"></select>
+                </label>
+                <button id="strategic-ai-debug-communicate" type="button">Render authored wording</button>
+              </fieldset>
+
+              <fieldset class="strategic-ai-debug-snapshot-fieldset">
+                <legend>Snapshot</legend>
+                <textarea id="strategic-ai-debug-snapshot" rows="8" spellcheck="false" placeholder="Exported strategic session JSON appears here. Paste a compatible snapshot to import."></textarea>
+                <div class="strategic-ai-debug-button-row">
+                  <button id="strategic-ai-debug-export" type="button">Export</button>
+                  <button id="strategic-ai-debug-import" type="button">Import</button>
+                  <button id="strategic-ai-debug-reset" type="button">Reset defaults</button>
+                </div>
+              </fieldset>
+            </div>
+
+            <details open>
+              <summary>State and latest result</summary>
+              <pre id="strategic-ai-debug-output">{}</pre>
+            </details>
+            <details>
+              <summary>Operation log</summary>
+              <pre id="strategic-ai-debug-log">No operations yet.</pre>
+            </details>
+          </aside>

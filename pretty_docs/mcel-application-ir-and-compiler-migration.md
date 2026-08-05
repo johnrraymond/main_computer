@@ -1004,3 +1004,40 @@ The plan is applied only in a disposable repository workspace. The rehearsal rer
 A passing result means `promotionEligible: true`, not that promotion occurred. The live authority remains `legacy-explicit-package`, `promotionExecuted` remains false, and the live repository is source-fingerprint checked before and after.
 
 **TL;DR:** Wave 6 proves that the Counter authority transition and rollback are executable and reversible without performing either operation on the live repository.
+
+# Wave 7 implementation note
+
+Counter-bounded Wave 7 adds the live transaction executor in `main_computer/mcel_counter_promotion.py` and `tools/mcel_counter_promotion.py`. The executor accepts no ad hoc file set. It requires the current Wave 6 plan, exact candidate evidence binding, exact before-hashes, exact staged payload hashes, and a repository-wide promotion lock.
+
+The transaction captures the protected Counter and shared MCEL authority sources before mutation, stages all target bytes as sibling temporary files, and replaces them only after every temporary hash passes. The post-apply proof chain runs against the live repository and must preserve the canonical Counter semantic fingerprint while establishing DSL source authority and generated contract ownership.
+
+Automatic rollback restores the pre-transaction protected snapshot when execution fails. Committed transactions retain durable rollback material and a post-promotion protected snapshot. Explicit rollback requires the current protected source tree to equal that post-promotion snapshot, then restores both source files and package/catalog/runtime/semantic fingerprints exactly.
+
+**TL;DR:** Wave 7 turns the rehearsed Counter migration into a guarded, auditable, reversible live authority transition rather than a manual source-file replacement.
+
+# Wave 8 implementation note
+
+Counter-bounded Wave 8 adds `mcel_counter_ir_native_proof.py` as the first proof authority that begins at a promoted `mcel.dsl.v1` source rather than a normalized legacy definition or a legacy evidence fallback. It compiles the live package source into canonical IR, validates exact generated ownership, and binds runtime evidence to the IR-declared intents, effects, invariants, and scenarios.
+
+The proof uses fresh Node and Chromium probes to establish committed increment and reset behavior, stale-revision refusal, prohibited direct-set refusal, canonical-state preservation on refusal, and visible-surface agreement. The four declared effects close across six effect instances, while direct-set is proven to produce no canonical write. Every IR scenario claim is reconciled, giving `3 / 3` intent coverage and `4 / 4` scenario evidence.
+
+`mcel_app_prove.py` selects this path only when the package manifest declares `dsl-authoritative`. Legacy and normalized-definition applications retain their existing proof classifications. The Counter semantic fingerprint remains unchanged and the final truth gate remains `semantic-runtime-proven`.
+
+**TL;DR:** Wave 8 removes Counter’s last legacy proof dependency by making authoritative DSL, canonical IR, generated ownership, and fresh runtime evidence converge in one native intent-complete report.
+
+# Wave 9 implementation note
+
+Wave 9 separates application authority from application-specific mechanics. `main_computer/mcel_app_authoring_profiles.py` is a registry of bounded mechanics profiles. The generic compile, project, promote, and IR-native proof authorities resolve one profile by `appId`; no profile may decide truth status or bypass package, evidence, ownership, or repository bindings.
+
+For Contract Counter, the existing deterministic projector and runtime probes become mechanics behind `mcel.contract-counter.authoring-profile.v1`. The live proof path is now:
+
+```text
+mcel_app_prove.py
+  -> mcel_app_ir_native_proof.py
+  -> registered application profile mechanics
+  -> generic IR-native proof report
+```
+
+The old Counter IR-native CLI delegates to the generic CLI. Its continued existence is command compatibility, not a second execution authority. Compilation, projection inspection, promoted-authority inspection, and IR-native proof can all be invoked through `tools/mcel_app_*.py --app contract-counter`.
+
+**TL;DR:** Counter is no longer special at the command or proof-authority layer. It is the first application profile executed by the standard MCEL authoring pipeline.

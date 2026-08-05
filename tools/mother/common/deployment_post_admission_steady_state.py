@@ -33,6 +33,7 @@ from .deployment_validator_admission_executor import _http, _service_record, _se
 from .deployment_validator_quorum_recovery import (
     _component_health,
     _component_status_records,
+    verify_validator_quorum_recovery_evidence,
     verify_validator_quorum_recovery_reconciliation,
 )
 from .models import OperationIdentity, PrivateStatePaths
@@ -51,6 +52,7 @@ _CLAIM_DIRECTORY = ("actions", "deployment-post-admission-steady-state-execution
 _EVIDENCE_DIRECTORY = ("evidence", "deployment-post-admission-steady-state")
 _STEADY_RECONCILIATION_DIRECTORY = ("evidence", "deployment-post-admission-steady-state-reconciliations")
 _RECONCILIATION_DIRECTORY = ("evidence", "deployment-validator-quorum-recovery-reconciliations")
+_QUORUM_EVIDENCE_DIRECTORY = ("evidence", "deployment-validator-quorum-recovery")
 _QUORUM_RELEASE_DIRECTORY = ("actions", "deployment-validator-quorum-recovery-releases")
 
 _MIN_RELEASE_SECONDS = 30
@@ -562,28 +564,308 @@ def _load_reconciliation(
     return reconciliation, reconciliation_sha, source_release, source_path, source_file_sha
 
 
+
+def _load_quorum_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    selected_nodes: Iterable[str],
+    max_age_seconds: int,
+) -> tuple[dict[str, Any], str, dict[str, Any], Path, str]:
+    """Load passing quorum-recovery evidence as an exact steady-state source."""
+
+    _selection(selected_nodes)
+    if private_state.binding.generation != 2:
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_BINDING_MISMATCH",
+            "post-admission steady-state cleanup requires Mother generation 2",
+        )
+    verify_validator_quorum_recovery_evidence(
+        paths,
+        private_state,
+        Path(evidence_path),
+        selected_nodes=("mainnetc-super1",),
+        max_age_seconds=max_age_seconds,
+    )
+    evidence, _, evidence_sha = _canonical_under(
+        paths,
+        Path(evidence_path),
+        _QUORUM_EVIDENCE_DIRECTORY,
+        "passing quorum recovery evidence",
+    )
+    if evidence.get("mother_binding") != _binding(private_state):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_BINDING_MISMATCH",
+            "quorum recovery evidence does not match current Mother state",
+        )
+
+    summary = _mapping(evidence.get("summary"), "quorum recovery evidence.summary")
+    required_summary = (
+        "clean",
+        "quorum_recovered",
+        "validator_set_verified",
+        "blocks_advancing",
+        "latest_block_fresh",
+        "replica_static_peer_installed",
+        "initial_static_peer_installed",
+        "validators_restarted_back_to_back",
+        "replica_restarted_first",
+        "initial_restarted_second",
+        "component_scoped_health_accepted",
+        "complete",
+    )
+    if (
+        evidence.get("status") != "pass"
+        or any(summary.get(key) is not True for key in required_summary)
+        or summary.get("validator_vote_performed") is not False
+        or summary.get("attempted_mutation_count") != 4
+        or summary.get("succeeded_mutation_count") != 4
+        or summary.get("failed_mutation_count") != 0
+        or summary.get("live_mutation_performed") is not True
+        or summary.get("next_phase") != "stage-post-admission-steady-state"
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+            "quorum recovery evidence does not prove the exact completed recovery boundary",
+        )
+
+    policy = _mapping(evidence.get("policy"), "quorum recovery evidence.policy")
+    if (
+        policy.get("vote_performed") is not False
+        or policy.get("restart_all_validators") is not True
+        or policy.get("restart_order") != ["mainnetc-super1", "mainneta-super1"]
+        or policy.get("restart_mode") != "back-to-back-without-intermediate-health-wait"
+        or policy.get("static_peers_symmetric") is not True
+        or policy.get("manual_ssh_required") is not False
+        or policy.get("public_endpoint_created") is not False
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+            "quorum recovery evidence policy is outside the steady-state boundary",
+        )
+
+    source_ref = _mapping(evidence.get("release"), "quorum recovery evidence.release")
+    source_path = _resolve(
+        paths,
+        source_ref.get("locator"),
+        _QUORUM_RELEASE_DIRECTORY,
+        "quorum recovery source release",
+    )
+    source_release, _, source_file_sha = _canonical_under(
+        paths,
+        source_path,
+        _QUORUM_RELEASE_DIRECTORY,
+        "quorum recovery source release",
+    )
+    source_digest = _sha256(
+        source_release.get("validator_quorum_recovery_release_sha256"),
+        "source quorum release digest",
+    )
+    if (
+        source_release.get("kind")
+        != "main_computer.mother.deployment_validator_quorum_recovery_release.v1"
+        or source_release.get("mother_binding") != _binding(private_state)
+        or source_ref.get("sha256") != source_digest
+        or _digest_without(source_release, "validator_quorum_recovery_release_sha256")
+        != source_digest
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_SOURCE_RELEASE_INVALID",
+            "quorum recovery evidence source release binding is invalid",
+        )
+
+    plan = _mapping(source_release.get("execution_plan"), "source release execution plan")
+    preconditions = _mapping(source_release.get("preconditions"), "source release preconditions")
+    if (
+        evidence.get("network") != source_release.get("network")
+        or evidence.get("chain_id") != plan.get("chain_id")
+        or evidence.get("genesis_sha256") != plan.get("genesis_sha256")
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+            "quorum recovery evidence chain identity does not match its release",
+        )
+
+    validators = evidence.get("validator_set")
+    released_validators = plan.get("validator_set")
+    if type(validators) is not list or type(released_validators) is not list:
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_VALIDATOR_SET_INVALID",
+            "quorum recovery evidence validator set is malformed",
+        )
+    normalized = sorted({_address(item, "evidence validator") for item in validators})
+    normalized_released = sorted(
+        {_address(item, "source validator") for item in released_validators}
+    )
+    if len(normalized) != 2 or normalized != normalized_released:
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_VALIDATOR_SET_INVALID",
+            "quorum recovery evidence validator set does not match the recovered release",
+        )
+
+    released_mutations = plan.get("mutations")
+    receipts = evidence.get("mutation_receipts")
+    if type(released_mutations) is not list or type(receipts) is not list:
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+            "quorum recovery mutation bindings are missing",
+        )
+    expected_mutation_ids = [
+        "mainnetc-super1.install-quorum-recovery-readiness",
+        "mainneta-super1.install-quorum-recovery-proof",
+        "mainnetc-super1.restart-validator-for-quorum-reset",
+        "mainneta-super1.restart-validator-for-quorum-reset",
+    ]
+    released_ordered = sorted(released_mutations, key=lambda item: item.get("ordinal", 0))
+    receipt_ordered = sorted(receipts, key=lambda item: item.get("ordinal", 0))
+    if (
+        len(released_ordered) != 4
+        or len(receipt_ordered) != 4
+        or [item.get("mutation_id") for item in released_ordered] != expected_mutation_ids
+        or [item.get("mutation_id") for item in receipt_ordered] != expected_mutation_ids
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+            "quorum recovery mutation order is not exact C-then-A recovery",
+        )
+    for released, receipt in zip(released_ordered, receipt_ordered, strict=True):
+        if (
+            receipt.get("controller_id") != released.get("controller_id")
+            or receipt.get("method") != released.get("method")
+            or receipt.get("endpoint") != released.get("endpoint")
+            or receipt.get("body_sha256") != released.get("body_sha256")
+            or receipt.get("status") != "succeeded"
+            or receipt.get("live_write_acknowledged") is not True
+        ):
+            raise _error(
+                "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+                "quorum recovery evidence mutation receipt does not match its release",
+            )
+
+    precondition_receipts = evidence.get("precondition_receipts")
+    if type(precondition_receipts) is not list:
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+            "quorum recovery recovered-state receipts are missing",
+        )
+    by_name = {
+        item.get("name"): item
+        for item in precondition_receipts
+        if isinstance(item, Mapping) and type(item.get("name")) is str
+    }
+    specs = (
+        (
+            "mainneta-super1",
+            "coolify-a",
+            "initial",
+            "initial_quorum_compose",
+            "initial-recovered-status",
+            "initial-recovered-compose",
+            "mother-validator-quorum-recovery-initial-guardian",
+        ),
+        (
+            "mainnetc-super1",
+            "coolify-c",
+            "replica",
+            "replica_readiness_compose",
+            "replica-recovered-status",
+            "replica-recovered-compose",
+            "mother-validator-quorum-recovery-replica-guardian",
+        ),
+    )
+    for (
+        node,
+        controller_id,
+        service_key,
+        compose_key,
+        status_name,
+        compose_name,
+        guardian,
+    ) in specs:
+        service = _mapping(preconditions.get(service_key), f"source release {node} service")
+        recovered_compose = _mapping(plan.get(compose_key), f"source release {node} Compose")
+        status_receipt = _mapping(by_name.get(status_name), status_name)
+        compose_receipt = _mapping(by_name.get(compose_name), compose_name)
+        service_uuid = service.get("service_uuid")
+        expected_endpoint = f"/api/v1/services/{service_uuid}"
+        if (
+            service.get("node") != node
+            or service.get("controller_id") != controller_id
+            or status_receipt.get("controller_id") != controller_id
+            or status_receipt.get("verified") is not True
+            or status_receipt.get("health_mode") != "required-components"
+            or status_receipt.get("required_components") != [node, guardian]
+            or compose_receipt.get("controller_id") != controller_id
+            or compose_receipt.get("endpoint") != expected_endpoint
+            or compose_receipt.get("verified") is not True
+            or compose_receipt.get("binding_mode")
+            not in {"exact-bytes", "normalized-bytes", "canonical-compose-semantics"}
+            or compose_receipt.get("semantic_sha256")
+            != recovered_compose.get("semantic_sha256")
+        ):
+            raise _error(
+                "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_QUORUM_EVIDENCE_INVALID",
+                f"quorum recovery evidence does not prove exact healthy recovered state for {node}",
+            )
+
+    if _contains_sensitive(evidence) or _contains_sensitive(source_release):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_INVALID",
+            "cleanup source artifacts contain sensitive output",
+        )
+    return evidence, evidence_sha, source_release, source_path, source_file_sha
+
+
 def build_post_admission_steady_state_transaction(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
-    reconciliation_path: Path,
+    reconciliation_path: Path | None = None,
     *,
+    quorum_evidence_path: Path | None = None,
     network: str = "mainnet",
     selected_nodes: Iterable[str] = (),
     max_age_seconds: int = 86400,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     selected = _selection(selected_nodes)
-    reconciliation, reconciliation_sha, source_release, source_path, source_file_sha = _load_reconciliation(
-        paths,
-        private_state,
-        Path(reconciliation_path),
-        selected_nodes=selected,
-        max_age_seconds=max_age_seconds,
-    )
-    if network != reconciliation.get("network") or network != source_release.get("network"):
+    if (reconciliation_path is None) == (quorum_evidence_path is None):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_SOURCE_INVALID",
+            "exactly one quorum reconciliation or passing quorum evidence source is required",
+        )
+    if quorum_evidence_path is not None:
+        source_document, source_document_sha, source_release, source_path, source_file_sha = (
+            _load_quorum_evidence(
+                paths,
+                private_state,
+                Path(quorum_evidence_path),
+                selected_nodes=selected,
+                max_age_seconds=max_age_seconds,
+            )
+        )
+        source_binding_key = "quorum_recovery_evidence"
+        source_binding_label = "passing quorum recovery evidence"
+        source_locator_path = Path(quorum_evidence_path)
+        source_kind = "passing-quorum-recovery-evidence"
+    else:
+        source_document, source_document_sha, source_release, source_path, source_file_sha = (
+            _load_reconciliation(
+                paths,
+                private_state,
+                Path(reconciliation_path),
+                selected_nodes=selected,
+                max_age_seconds=max_age_seconds,
+            )
+        )
+        source_binding_key = "reconciliation"
+        source_binding_label = "quorum recovery reconciliation"
+        source_locator_path = Path(reconciliation_path)
+        source_kind = "quorum-recovery-reconciliation"
+    if network != source_document.get("network") or network != source_release.get("network"):
         raise _error(
             "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_NETWORK_MISMATCH",
-            "cleanup network does not match reconciliation",
+            "cleanup network does not match its quorum recovery source",
         )
     plan = _mapping(source_release["execution_plan"], "source release execution plan")
     pre = _mapping(source_release["preconditions"], "source release preconditions")
@@ -664,7 +946,7 @@ def build_post_admission_steady_state_transaction(
         source_release.get("validator_quorum_recovery_release_sha256"),
         "source quorum release digest",
     )
-    validator_set = sorted({_address(item, "validator") for item in reconciliation["validator_set"]})
+    validator_set = sorted({_address(item, "validator") for item in source_document["validator_set"]})
     transaction: dict[str, Any] = {
         "kind": _TRANSACTION_KIND,
         "schema_version": 1,
@@ -672,9 +954,9 @@ def build_post_admission_steady_state_transaction(
         "network": network,
         "mother_binding": _binding(private_state),
         "staged_scope": "replace-exact-recovered-compose-with-post-admission-steady-state",
-        "reconciliation": {
-            "locator": _relative(paths, Path(reconciliation_path), "quorum recovery reconciliation"),
-            "sha256": reconciliation_sha,
+        source_binding_key: {
+            "locator": _relative(paths, source_locator_path, source_binding_label),
+            "sha256": source_document_sha,
         },
         "source_quorum_recovery_release": {
             "locator": _relative(paths, source_path, "quorum recovery source release"),
@@ -682,8 +964,8 @@ def build_post_admission_steady_state_transaction(
             "file_sha256": source_file_sha,
         },
         "chain": {
-            "chain_id": reconciliation["chain_id"],
-            "genesis_sha256": _sha256(reconciliation["genesis_sha256"], "genesis SHA-256"),
+            "chain_id": source_document["chain_id"],
+            "genesis_sha256": _sha256(source_document["genesis_sha256"], "genesis SHA-256"),
             "validator_set": validator_set,
             "quorum_recovered": True,
             "blocks_advancing": True,
@@ -734,7 +1016,9 @@ def build_post_admission_steady_state_transaction(
             "removed_compose_service_count": 2,
             "retained_service_count": 4,
             "validator_set_verified": True,
-            "blocks_advancing_verified_by_reconciliation": True,
+            "quorum_source_kind": source_kind,
+            "blocks_advancing_verified_by_reconciliation": source_binding_key == "reconciliation",
+            "blocks_advancing_verified_by_quorum_evidence": source_binding_key == "quorum_recovery_evidence",
             "validator_vote_authorized": False,
             "live_execution_authorized": False,
             "next_phase": "release-post-admission-steady-state",
@@ -817,22 +1101,45 @@ def verify_post_admission_steady_state_transaction(
             "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_TRANSACTION_STALE",
             "steady-state transaction is outside its verification age window",
         )
-    reconciliation_ref = _mapping(document.get("reconciliation"), "transaction.reconciliation")
-    reconciliation_path = _resolve(
-        paths,
-        reconciliation_ref.get("locator"),
-        _RECONCILIATION_DIRECTORY,
-        "quorum recovery reconciliation",
-    )
-    expected = build_post_admission_steady_state_transaction(
-        paths,
-        private_state,
-        reconciliation_path,
-        network=document["network"],
-        selected_nodes=selected_nodes,
-        max_age_seconds=max_age_seconds,
-        created_at=document["created_at"],
-    )
+    reconciliation_ref = document.get("reconciliation")
+    quorum_evidence_ref = document.get("quorum_recovery_evidence")
+    if isinstance(reconciliation_ref, Mapping) == isinstance(quorum_evidence_ref, Mapping):
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_TRANSACTION_INVALID",
+            "steady-state transaction must bind exactly one quorum recovery source",
+        )
+    if isinstance(quorum_evidence_ref, Mapping):
+        quorum_evidence_path = _resolve(
+            paths,
+            quorum_evidence_ref.get("locator"),
+            _QUORUM_EVIDENCE_DIRECTORY,
+            "passing quorum recovery evidence",
+        )
+        expected = build_post_admission_steady_state_transaction(
+            paths,
+            private_state,
+            quorum_evidence_path=quorum_evidence_path,
+            network=document["network"],
+            selected_nodes=selected_nodes,
+            max_age_seconds=max_age_seconds,
+            created_at=document["created_at"],
+        )
+    else:
+        reconciliation_path = _resolve(
+            paths,
+            reconciliation_ref.get("locator"),
+            _RECONCILIATION_DIRECTORY,
+            "quorum recovery reconciliation",
+        )
+        expected = build_post_admission_steady_state_transaction(
+            paths,
+            private_state,
+            reconciliation_path,
+            network=document["network"],
+            selected_nodes=selected_nodes,
+            max_age_seconds=max_age_seconds,
+            created_at=document["created_at"],
+        )
     if expected != document:
         raise _error(
             "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_TRANSACTION_INVALID",
@@ -888,6 +1195,17 @@ def build_post_admission_steady_state_release(
         _TRANSACTION_DIRECTORY,
         "post-admission steady-state transaction",
     )
+    if isinstance(transaction.get("quorum_recovery_evidence"), Mapping):
+        source_binding = {
+            "quorum_recovery_evidence": dict(transaction["quorum_recovery_evidence"])
+        }
+    elif isinstance(transaction.get("reconciliation"), Mapping):
+        source_binding = {"reconciliation": dict(transaction["reconciliation"])}
+    else:
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_TRANSACTION_INVALID",
+            "steady-state transaction is missing its quorum recovery source",
+        )
     ttl = _duration(expires_in_seconds)
     created_text = _timestamp(created_at)
     created = _parse_utc(created_text, "release.created_at")
@@ -905,7 +1223,7 @@ def build_post_admission_steady_state_release(
             "sha256": acknowledged,
             "file_sha256": transaction_file_sha,
         },
-        "reconciliation": dict(transaction["reconciliation"]),
+        **source_binding,
         "chain": dict(transaction["chain"]),
         "targets": dict(transaction["targets"]),
         "execution_plan": dict(transaction["execution_plan"]),

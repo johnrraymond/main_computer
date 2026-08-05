@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -61,15 +62,40 @@ def _evidence():
     return catalog, record, projection, provenance, acceptance, observation
 
 
+def _ir_native_coverage() -> dict:
+    return {
+        "schema": "mcel.ir-native-intent-complete-proof.v1",
+        "appId": "contract-counter",
+        "status": "ir-native",
+        "passed": True,
+        "applicable": True,
+        "coverageMode": "authoritative-dsl-ir-runtime-convergence",
+        "legacyEvidenceRequired": False,
+        "definitionFingerprint": "sha256:semantic",
+        "declaredIntentCount": 3,
+        "coveredIntentCount": 3,
+        "declaredScenarioCount": 4,
+        "observedScenarioCount": 4,
+        "failedIntentIds": [],
+        "missingScenarioIds": [],
+        "unexpectedScenarioIds": [],
+        "failedScenarioIds": [],
+        "crossCuttingChecks": {"legacyEvidenceRequired": False},
+        "intents": {},
+    }
+
+
 def test_app_proof_composes_independent_authorities(monkeypatch) -> None:
     _catalog, _record, _projection, _provenance, acceptance, observation = _evidence()
 
     monkeypatch.setattr(prove, "_run_dependency", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        prove,
-        "_load_json",
-        lambda path, _label: acceptance if "mcel-acceptance" in path.as_posix() else observation,
-    )
+    monkeypatch.setattr(prove, "run_counter_ir_native_intent_proof", lambda **_kwargs: _ir_native_coverage())
+    def fake_load(path, _label):
+        if path.name == "mcel.app.json":
+            return {"authoring": {"status": "dsl-authoritative"}}
+        return acceptance if "mcel-acceptance" in path.as_posix() else observation
+
+    monkeypatch.setattr(prove, "_load_json", fake_load)
     monkeypatch.setattr(
         prove,
         "_artifact_reference",
@@ -83,10 +109,12 @@ def test_app_proof_composes_independent_authorities(monkeypatch) -> None:
     assert report["truthSnapshot"]["claims"]["semanticRuntimeProven"] is True
     assert report["stages"]["repositoryBinding"]["status"] == "exact"
     assert report["stages"]["surfaceConformance"]["status"] == "pass"
-    assert report["stages"]["intentCompleteProof"]["status"] == "legacy-evidence"
-    assert report["stages"]["intentCompleteProof"]["applicable"] is False
-    assert report["intentCoverage"]["declaredIntentCount"] is None
-    assert report["intentCoverage"]["coveredIntentCount"] is None
+    assert report["stages"]["intentCompleteProof"]["status"] == "ir-native"
+    assert report["stages"]["intentCompleteProof"]["applicable"] is True
+    assert report["stages"]["intentCompleteProof"]["legacyEvidenceRequired"] is False
+    assert report["intentCoverage"]["declaredIntentCount"] == 3
+    assert report["intentCoverage"]["coveredIntentCount"] == 3
+    assert "intentCompleteProof" in report["evidence"]
 
 
 def test_app_proof_rejects_stale_observation_package_fingerprint() -> None:
@@ -124,6 +152,7 @@ def test_app_proof_rejects_missing_required_surface_layer() -> None:
 
 def test_legacy_intent_coverage_is_non_vacuous_evidence_status() -> None:
     _catalog, record, _projection, _provenance, acceptance, observation = _evidence()
+    record = replace(record, authoring={})
     observation["operations"] = 1
     coverage = prove._intent_complete_coverage(
         repo=ROOT,
@@ -144,6 +173,7 @@ def test_legacy_intent_coverage_is_non_vacuous_evidence_status() -> None:
 
 def test_legacy_intent_coverage_still_fails_closed() -> None:
     _catalog, record, _projection, _provenance, acceptance, observation = _evidence()
+    record = replace(record, authoring={})
     observation["status"] = "fail"
     observation["ok"] = False
     with pytest.raises(prove.AppProofError, match="Legacy package acceptance and browser evidence did not converge"):

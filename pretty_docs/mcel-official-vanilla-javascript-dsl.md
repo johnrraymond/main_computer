@@ -1917,3 +1917,77 @@ Wave 2B proves one exact Counter source-to-IR path; it does not yet compile Work
 ## Final rule
 
 > The official MCEL DSL is one deterministic vanilla-JavaScript language for declaring stable semantic identity, authority, behavior, lifecycle policy, surface meaning, consequential effects, and proof claims. It generates mechanical plumbing, but it never hides an independent decision or replaces independent runtime evidence.
+
+## 41. Implemented Wave 10 Workbench portability boundary
+
+Wave 10 adds a second strict CommonJS `@mcel/app` candidate:
+
+```text
+tests/fixtures/mcel_dsl/contract-workbench.application.js
+```
+
+The candidate uses an explicit `migration.importApplicationIr(...)` bridge. The bridge is allowed only for repository-bound migration candidates; it is not the normal final authoring surface. It replaces source bindings deterministically, preserves semantic records, and emits explicit migration lineage. It cannot erase `legacy.opaque-function` warnings or claim complete DSL-v1 expression coverage.
+
+The corresponding repository-derived fixture is:
+
+```text
+tests/fixtures/mcel_application_ir/contract-workbench.ir.json
+```
+
+The generic compile and projection commands require exact semantic equality between the live normalized definition, the fixture, and the strict CommonJS candidate. The Workbench projection profile then regenerates the normalized definition and seven explicit contracts in an isolated candidate package and requires exact package and semantic round-trip results.
+
+A passing Wave 10 result therefore proves:
+
+```text
+second application discovered generically
+strict @mcel/app candidate compiled
+live, fixture, and candidate semantics exact
+isolated generated package exact
+fresh acceptance and Chromium evidence pass
+candidate truth status semantic-runtime-proven
+live authority remains legacy-explicit-package
+promotion executed false
+```
+
+It does not yet prove:
+
+```text
+all Workbench callbacks replaced by constrained expressions
+portable IR alone can generate every Workbench contract
+Workbench is eligible for promotion
+```
+
+### TL;DR
+
+Wave 10 proved that the generic pipeline supports a materially larger second application and made the remaining callback/projection debt explicit.
+
+## 42. Implemented Wave 11 Workbench constrained-expression boundary
+
+Wave 11 converts every active Workbench callback region into one registered native constrained expression. The strict CommonJS candidate now uses the official low-level IR construction surface:
+
+```javascript
+module.exports = mcel.defineApp(metadata, ({ir}) =>
+  ir.application(portableApplication)
+);
+```
+
+`portableApplication` contains 26 `domain.call` roots and zero active `legacy.opaque-function` roots. Each operator is versioned, pure, deterministic, context-limited, argument-complete, and result-typed. The former callback record remains beneath `compatibility.legacyOpaqueFunction` only to preserve the existing v1 semantic identity; it is not traversed as an executable expression and does not emit migration debt.
+
+The Workbench operator registry is selected by the stable application identity and fails closed for unknown or unversioned operators. The portable projection profile is separately hash-bound and contains the deterministic low-level contract mechanics needed to reproduce the live package. Candidate generation does not execute the former callbacks or invoke the live normalized-definition compiler.
+
+A passing Wave 11 result proves:
+
+```text
+26 registered native domain calls
+0 active opaque callbacks
+0 migration warnings
+semantic fingerprint unchanged
+portable IR projection complete
+isolated candidate truth semantic-runtime-proven
+live Workbench authority unchanged
+promotion not executed
+```
+
+### TL;DR
+
+Workbench now satisfies the documented “expressed without opaque callbacks” gate. Promotion remains a separate transaction and is not authorized by Wave 11.

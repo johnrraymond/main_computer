@@ -669,3 +669,59 @@ The Counter migration now includes an explicit promotion and rollback rehearsal.
 The rehearsal may classify Counter as promotion-eligible only when post-promotion compatibility, acceptance, Chromium observation, effect accounting, application proof, repository binding, and rollback restoration all pass. It does not modify the live package, execute promotion, reuse live evidence as candidate evidence, retire the legacy importer, or migrate another application.
 
 The next implementation decision remains separate: an explicitly authorized Wave 7 may execute the already rehearsed Counter authority transition with stale-plan checks and rollback availability. Wave 6 itself leaves `promotionExecuted: false`.
+
+## Wave 7 bounded implementation result
+
+The Counter migration now includes the explicitly authorized live authority transition. Wave 7 does not reinterpret a passing rehearsal as permission to copy files blindly: it reruns the rehearsal, verifies the exact candidate/evidence binding and all file hashes, creates durable promotion and rollback material, and then performs a guarded multi-file transaction against the live repository.
+
+After applying the rehearsed package shape, Wave 7 regenerates and checks the live package/runtime/browser projections, executes fresh acceptance and Chromium observation, closes the six Counter effect instances, verifies exact repository binding and semantic round-trip, and requires `semantic-runtime-proven` application proof. Failure at any point restores the protected Counter/shared-MCEL source boundary automatically.
+
+A successful transaction makes `application.js` the live `mcel.dsl.v1` authority, marks the explicit contracts as derived projection artifacts, retires legacy explicit-package authority, and records both the candidate source-binding fingerprint and the promoted live-source binding. Rollback remains available only while the protected post-promotion snapshot is unchanged; later protected-source drift blocks rollback rather than being overwritten.
+
+**TL;DR:** Counter can now cross the authority boundary transactionally, retain its exact semantic identity and proof status, and return to the pre-promotion package exactly when rollback remains safe.
+
+## Wave 8 bounded implementation result
+
+The promoted Counter now has a native DSL/IR intent-complete proof authority. Wave 8 compiles the live authoritative `application.js`, validates the generated ownership manifest and all seven derived contract hashes, executes fresh Node and Chromium operation probes, closes the declared effect ledger, and reconciles each IR scenario claim against canonical state, receipts, and visible outcomes.
+
+The final Counter proof no longer borrows the legacy explicit-package classification. It reports three declared and covered intents, four declared and evidenced scenarios, exact generated ownership, closed effect accounting, `legacyEvidenceRequired: false`, exact repository binding, and the unchanged `semantic-runtime-proven` truth status.
+
+The implementation is deliberately bounded to Contract Counter. Broader application migration still requires per-family import, projection, evidence, and native-proof adapters before any legacy authority can be retired.
+
+**TL;DR:** Counter’s promoted DSL is now not only the source authority; it is also the direct source of its numerical intent-complete proof.
+
+## Wave 9 bounded implementation result
+
+The Counter proving sequence is now exposed through generic application commands and a generic IR-native authority. The reusable boundary covers application discovery, authoritative DSL compilation, candidate projection dispatch, promotion/rollback dispatch, evidence-bound IR-native proof, and integration with the final application proof runner.
+
+Counter-specific code remains only where the current portable IR cannot yet supply mechanics: explicit legacy projection formatting and runtime scenario driving. Those mechanics are registered as an application profile and cannot independently assert truth, promotion eligibility, repository binding, or evidence validity.
+
+A passing generic Counter run reports `genericPipeline: true`, `counterSpecificExecutionPathRequired: false`, exact generated ownership, IR-native intent completeness, no legacy evidence requirement, and the unchanged semantic fingerprint.
+
+**TL;DR:** The Counter experiment has become the first registered instance of the standard MCEL authoring system rather than a separate Counter authority path.
+
+## Wave 10 and Wave 11 Workbench portability result
+
+Wave 10 established the second-application generic pipeline and candidate-scoped runtime proof while truthfully exposing 26 opaque callback regions. Wave 11 closes that complete-language gate: all 26 active regions are now versioned pure domain operators, the official candidate frontend is `mcel.dsl.v1`, migration warnings are zero, and the checked-in portable projection profile is complete.
+
+The semantic fingerprint remains unchanged because the v1 fingerprint preserves each former callback hash as a compatibility identity, while the native expression graph and operator-registry fingerprint establish the new constrained representation. At the end of Wave 11, the live Workbench package remained `legacy-explicit-package` authority and promotion execution remained disabled. The next permissible step at that boundary was a separately authorized promotion rehearsal, not an implicit authority transition.
+
+## Wave 12 Workbench promotion-rehearsal result
+
+The separately authorized Workbench rehearsal is now implemented through the generic application promotion authority. It binds the exact zero-warning native DSL candidate and portable projection to fresh isolated `semantic-runtime-proven` evidence, stages machine-readable promotion and rollback material, applies the proposed authority shape only in a disposable repository copy, and exercises the full post-promotion proof chain.
+
+The rehearsal adds a Workbench IR-native proof mechanic required by the generic final proof runner once the isolated manifest becomes `dsl-authoritative`. That proof numerically covers seven intents, fourteen browser scenarios, eighteen declared effects, one streamed and cancellable capability operation, and all seven observation contracts. It does not fall back to the legacy normalized-definition intent classification.
+
+The live Workbench package remains `legacy-explicit-package` authority. Successful rehearsal may set `promotionEligible: true`, but `promotionExecuted` remains false and no live package source is changed.
+
+**TL;DR:** Workbench can now rehearse the same reversible authority boundary already proven by Counter, through the generic pipeline, without yet crossing it live.
+
+## Wave 13 Workbench authority-transition result
+
+The generic application promotion authority now executes the live Workbench transition transactionally rather than stopping at rehearsal. It reuses only the exact Wave 12 plan after rerunning that rehearsal and verifying fresh candidate evidence. The live repository is changed only after the transaction has persisted a complete protected-source backup and verified all precondition hashes.
+
+The committed authority shape is numerically complete: seven intents, fourteen scenarios, eighteen effects, one streamed and cancellable capability, eight generated artifacts, exact repository binding, and `semantic-runtime-proven` final truth. The semantic fingerprint remains unchanged across the transition.
+
+Automatic rollback is mandatory on any post-apply failure. Later explicit rollback is available only while the protected post-promotion MCEL source snapshot remains exact, preventing an old transaction from erasing subsequent authoritative work.
+
+**TL;DR:** Workbench can now cross the same live, reversible DSL-authority boundary proven by Counter, but through the generic application promotion command and with its larger effect, scenario, and capability surface fully accounted for.

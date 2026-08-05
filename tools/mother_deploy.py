@@ -179,6 +179,12 @@ from tools.mother.common.deployment_private_rpc import (
     verify_private_rpc_transaction,
     write_private_rpc_transaction,
 )
+from tools.mother.common.deployment_private_rpc_release import (
+    MotherDeploymentPrivateRpcReleaseError,
+    build_private_rpc_release,
+    verify_private_rpc_release,
+    write_private_rpc_release,
+)
 from tools.mother.common.deployment_private_rpc_identity import (
     MotherDeploymentPrivateRpcIdentityError,
     inspect_private_rpc_identity_reservation,
@@ -957,6 +963,10 @@ def _parser() -> argparse.ArgumentParser:
     release_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     release_admission.add_argument("--expires-in-seconds", type=int, default=300)
     release_admission.add_argument("--created-at")
+    release_admission.add_argument(
+        "--failed-evidence",
+        help="bind recovery to one exact failed post-mutation validator-admission evidence artifact",
+    )
     release_admission.add_argument("--write-release", action="store_true")
 
     verify_admission_release = subparsers.add_parser(
@@ -1078,7 +1088,15 @@ def _parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     _common(stage_steady)
-    stage_steady.add_argument("--reconciliation", required=True)
+    stage_source = stage_steady.add_mutually_exclusive_group(required=True)
+    stage_source.add_argument(
+        "--reconciliation",
+        help="passing validator-quorum-recovery reconciliation artifact",
+    )
+    stage_source.add_argument(
+        "--quorum-evidence",
+        help="passing validator-quorum-recovery execution evidence",
+    )
     stage_steady.add_argument("--max-age-seconds", type=int, default=86400)
     stage_steady.add_argument("--created-at")
     stage_steady.add_argument("--write-transaction", action="store_true")
@@ -1334,6 +1352,54 @@ def _parser() -> argparse.ArgumentParser:
     verify_private_rpc.add_argument("--transaction", required=True)
     verify_private_rpc.add_argument("--max-age-seconds", type=int, default=86400)
     verify_private_rpc.add_argument("--soak-max-age-seconds", type=int, default=86400)
+
+    release_private_rpc = subparsers.add_parser(
+        "release-private-rpc",
+        help="authorize one exact private non-validator RPC transaction for a short window",
+        allow_abbrev=False,
+    )
+    _common(release_private_rpc)
+    release_private_rpc.add_argument("--transaction", required=True)
+    release_private_rpc.add_argument(
+        "--acknowledge-private-rpc-transaction-sha256",
+        required=True,
+    )
+    release_private_rpc.add_argument(
+        "--transaction-max-age-seconds",
+        type=int,
+        default=86400,
+    )
+    release_private_rpc.add_argument(
+        "--soak-max-age-seconds",
+        type=int,
+        default=86400,
+    )
+    release_private_rpc.add_argument("--expires-in-seconds", type=int, default=300)
+    release_private_rpc.add_argument("--created-at")
+    release_private_rpc.add_argument("--write-release", action="store_true")
+
+    verify_private_rpc_release_parser = subparsers.add_parser(
+        "verify-private-rpc-release",
+        help="verify one expiring private non-validator RPC release",
+        allow_abbrev=False,
+    )
+    _common(verify_private_rpc_release_parser)
+    verify_private_rpc_release_parser.add_argument("--release", required=True)
+    verify_private_rpc_release_parser.add_argument(
+        "--max-age-seconds",
+        type=int,
+        default=300,
+    )
+    verify_private_rpc_release_parser.add_argument(
+        "--transaction-max-age-seconds",
+        type=int,
+        default=86400,
+    )
+    verify_private_rpc_release_parser.add_argument(
+        "--soak-max-age-seconds",
+        type=int,
+        default=86400,
+    )
 
     reserve_validator_rpc_canary_identity_parser = subparsers.add_parser(
         "reserve-validator-rpc-canary-identity",
@@ -2432,6 +2498,7 @@ def _cmd_release_validator_admission(args: argparse.Namespace, private_state) ->
         transaction_max_age_seconds=args.transaction_max_age_seconds,
         expires_in_seconds=args.expires_in_seconds,
         created_at=args.created_at,
+        failed_evidence_path=Path(args.failed_evidence) if args.failed_evidence else None,
     )
     if args.write_release:
         path, digest = write_validator_admission_release(
@@ -2606,7 +2673,8 @@ def _cmd_stage_post_admission_steady_state(args: argparse.Namespace, private_sta
     transaction = build_post_admission_steady_state_transaction(
         _paths(args),
         private_state,
-        Path(args.reconciliation),
+        Path(args.reconciliation) if args.reconciliation else None,
+        quorum_evidence_path=Path(args.quorum_evidence) if args.quorum_evidence else None,
         network=args.network,
         selected_nodes=_selected_nodes(args.node),
         max_age_seconds=args.max_age_seconds,
@@ -3125,6 +3193,61 @@ def _cmd_verify_private_rpc_transaction(
         Path(args.transaction),
         selected_nodes=_selected_nodes(args.node),
         max_age_seconds=args.max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_private_rpc(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    release = build_private_rpc_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=(
+            args.acknowledge_private_rpc_transaction_sha256
+        ),
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_private_rpc_release(
+            _paths(args),
+            release,
+            operation=_operation(
+                "private-rpc-release",
+                args.network,
+                args.operation_id,
+            ),
+        )
+        release = {
+            **release,
+            "release_artifact": {
+                "path": str(path),
+                "sha256": digest,
+            },
+        }
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_private_rpc_release(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_private_rpc_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
         soak_max_age_seconds=args.soak_max_age_seconds,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -3704,6 +3827,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_stage_private_rpc_transaction(args, private_state)
         if args.command == "verify-private-rpc-transaction":
             return _cmd_verify_private_rpc_transaction(args, private_state)
+        if args.command == "release-private-rpc":
+            return _cmd_release_private_rpc(args, private_state)
+        if args.command == "verify-private-rpc-release":
+            return _cmd_verify_private_rpc_release(args, private_state)
         if args.command == "reserve-validator-rpc-canary-identity":
             return _cmd_reserve_validator_rpc_canary_identity(args, private_state)
         if args.command == "verify-validator-rpc-canary-identity":
@@ -3759,6 +3886,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentMainnetSoakError,
         MotherDeploymentPrivateRpcIdentityError,
         MotherDeploymentPrivateRpcError,
+        MotherDeploymentPrivateRpcReleaseError,
         MotherDeploymentValidatorRpcCanaryError,
         MotherDeploymentValidatorRpcCanaryFundingError,
         MotherDeploymentPostAdmissionSteadyStateError,

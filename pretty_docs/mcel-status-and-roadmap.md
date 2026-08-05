@@ -231,3 +231,157 @@ The live explicit Counter package remains authoritative. Candidate promotion, ev
 Counter Wave 6 is implemented in `main_computer/mcel_counter_promotion_rehearsal.py` and `tools/mcel_counter_promotion_rehearsal.py`. It creates a source-binding-specific promotion plan and rollback bundle, rehearses `application.js` as DSL authority plus `mcel.generated.json` as derived-file ownership, reruns the full Counter semantic/runtime proof chain in an isolated promoted repository copy, and requires exact rollback restoration.
 
 A passing rehearsal reports `promotionEligible: true`, `postPromotionTruthStatus: semantic-runtime-proven`, `rollbackRestoration: exact`, `liveApplicationChanged: false`, and `promotionExecuted: false`. The live explicit Counter package remains authoritative until a separate execution wave is explicitly authorized.
+
+## AI authoring implementation Wave 7
+
+Counter Wave 7 is implemented in `main_computer/mcel_counter_promotion.py` and `tools/mcel_counter_promotion.py`. It is the first mutating AI-authoring migration wave. Execution requires a fresh passing Wave 6 rehearsal and applies only the exact plan and payload bound to independently earned `semantic-runtime-proven` candidate evidence.
+
+Before changing the live package, the executor acquires an exclusive promotion lock, verifies every live before-hash and staged after-hash, creates a durable transaction directory, and backs up the complete protected Counter/shared-MCEL authority source boundary. It then installs `application.js`, `mcel.generated.json`, the DSL-authoritative `mcel.app.json`, and the seven deterministic contract projections using sibling temporary files and atomic replacement.
+
+The promoted live package must pass DSL compilation, exact three-way compatibility, package validation, runtime/browser projection, acceptance, Chromium observation, effect accounting, repository binding, semantic round-trip, and application proof. The terminal successful state is `sourceAuthority: mcel.dsl.v1`, `derivedArtifactAuthority: mcel.counter.explicit-projection.v1`, `legacyPackageAuthority: retired`, `truthStatus: semantic-runtime-proven`, and `rollbackAvailable: true` with the semantic fingerprint unchanged.
+
+Any failed post-apply stage triggers automatic protected-boundary restoration. A later explicit rollback is also available by transaction id or `latest`, but it fails closed if protected MCEL sources have changed since promotion, preventing rollback from erasing subsequent authoritative work.
+
+## AI authoring implementation Wave 8
+
+Counter Wave 8 is implemented in `main_computer/mcel_counter_ir_native_proof.py`, `tools/mcel_counter_ir_native_proof.py`, and the promoted-app branch of `main_computer/mcel_app_prove.py`. The promoted `application.js` is compiled directly into canonical MCEL Application IR. The proof authority verifies the `mcel.generated.json` ownership contract and all seven generated contract hashes, then executes fresh Node and Chromium operation probes under an `ir-native` evidence namespace.
+
+The authority reconciles the four declared canonical-write effects, proves the increment, stale-revision, reset, and prohibited direct-set scenarios from their IR claims, and requires every declared intent and invariant to converge. Counter no longer receives the non-numerical `legacy-evidence` classification. Its app proof now reports:
+
+```text
+intentCompleteProof: ir-native
+intent coverage: 3 / 3
+scenario evidence: 4 / 4
+generated ownership: exact
+effect accounting: closed
+legacy evidence required: false
+truth status: semantic-runtime-proven
+```
+
+The canonical Counter semantic fingerprint is unchanged. The source-binding fingerprint compiled from the live package path is recorded separately from the promoted candidate source-binding fingerprint retained as transaction lineage; semantic authority comes from the live DSL compilation and exact generated ownership, not from pretending those location-sensitive bindings are identical.
+
+Wave 8 remains Counter-bounded. It does not generalize the native proof adapter to other application families, retire their current proof paths, change runtime behavior, or alter Counter semantics.
+
+## AI authoring implementation Wave 9
+
+Wave 9 extracts the standard MCEL application-authoring authority surface from the Counter proving sequence. The generic modules `mcel_app_compile.py`, `mcel_app_project.py`, `mcel_app_promote.py`, and `mcel_app_ir_native_proof.py` discover applications by `appId`, resolve their authoritative package source, dispatch registered mechanics profiles, and emit application-neutral reports.
+
+Contract Counter is the first registered `AppAuthoringProfile`. Its profile contributes only the deterministic `mcel.counter.explicit-projection.v1` mechanics and its runtime scenario driver. Generic authorities retain control of package discovery, DSL compilation, candidate placement, promotion/rollback dispatch, evidence binding, ownership checks, IR-native report identity, and failure semantics. The profile therefore does not become a parallel Counter truth authority.
+
+The standard commands are:
+
+```text
+python tools/mcel_app_compile.py --app contract-counter
+python tools/mcel_app_project.py --app contract-counter
+python tools/mcel_app_promote.py --app contract-counter --check
+python tools/mcel_app_ir_native_prove.py --app contract-counter --check --write-report
+```
+
+`mcel_app_prove.py` now routes every `dsl-authoritative` package through `run_app_ir_native_intent_proof`. Counter's previous proof command is retained only as a compatibility wrapper. A passing Counter result reports `genericPipeline: true`, `counterSpecificExecutionPathRequired: false`, `intentCompleteProof: ir-native`, `legacyEvidenceRequired: false`, and the unchanged semantic fingerprint.
+
+Wave 9 does not claim that every application already has a mechanics profile. Unsupported applications fail with an explicit profile diagnostic rather than falling back to Counter behavior or legacy proof. The next expansion unit is registration of another application family through the same generic authority surface.
+
+## AI authoring implementation Wave 10
+
+Wave 10 registers `contract-workbench` as the second application profile in the generic authoring pipeline. The live package remains `legacy-explicit-package` authority and promotion is explicitly disabled. A repository-derived Application IR fixture and a strict CommonJS `@mcel/app` candidate now converge on the same semantic fingerprint through an explicit migration bridge.
+
+The Workbench candidate preserves the complete second-application shape: 12 states, 7 operations, 1 streamed/cancellable capability, 18 declared effects, 14 acceptance scenarios, 7 browser observations, dynamic keyed collections, provisional state, supersession, cancellation, and multi-instance isolation. Its isolated package shadow regenerates the existing nine normalized-definition artifacts exactly, imports back to the same Application IR, and runs fresh acceptance, Chromium observation, and application proof in a candidate repository workspace.
+
+Wave 10 did not claim that the full Workbench source had already been rewritten into constrained DSL expressions. It exposed 26 callback regions as `legacy.opaque-function` migration debt and kept projection completeness false. Wave 11 now closes that debt while leaving live authority and promotion unchanged.
+
+## AI authoring implementation Wave 11
+
+Wave 11 replaces all 26 active Workbench callback records with versioned pure `domain.call` expressions from `mcel.workbench.constrained-expression-profile.v1`. Each call declares explicit state, input, or compiler-context arguments and an exact result type. The prior callback hash is retained only as a semantic-identity compatibility binding, allowing `sha256-mcel-application-ir-semantics-v1` to remain unchanged while the constrained-expression analyzer reports pure, deterministic, registered behavior and zero opaque migration warnings.
+
+Workbench candidate generation now uses `mcel.workbench.portable-ir-projection.v1`, a checked-in profile containing the deterministic normalized/runtime contract projection and exact file hashes. The projector no longer uses the live normalized-definition compiler as its generation source. It still compares the live legacy package to the native DSL/IR candidate, stages only an isolated package, runs fresh evidence, and keeps promotion disabled.
+
+Required Wave 11 state:
+
+```text
+authoring frontend: mcel.dsl.v1
+native domain calls: 26
+opaque callback regions: 0
+migration warnings: 0
+portable IR projection complete: true
+semantic compatibility: exact
+candidate truth status: semantic-runtime-proven
+live authority: legacy-explicit-package
+promotion executed: false
+```
+
+Standard commands:
+
+```text
+python tools/mcel_app_compile.py --app contract-workbench
+python tools/mcel_app_project.py --app contract-workbench --write-candidate
+python tools/mcel_app_promote.py --app contract-workbench --check
+python tools/mcel_app_portability.py --app contract-workbench --check --write-report
+```
+
+## AI authoring implementation Wave 12
+
+Wave 12 adds the generic Contract Workbench promotion rehearsal. The generic `mcel_app_promote.py --rehearse` dispatch binds the exact native Workbench DSL candidate, portable projection, and independently earned candidate evidence. It produces a file-by-file promotion plan and rollback bundle, then applies the proposed authority transition only inside a disposable repository copy.
+
+The rehearsed package shape declares `mcel.dsl.v1` source authority, `mcel.workbench.portable-ir-projection.v1` derived-artifact authority, and exact generated ownership for the normalized definition plus seven explicit contracts. Workbench package tests are authority-aware: the current legacy package still executes the historical definition, while the rehearsed DSL-authoritative shape validates canonical IR and generated artifacts instead of treating the DSL source as the retired executable-definition API.
+
+Post-promotion rehearsal gates include exact DSL/IR compatibility, generated ownership, package and browser projection, nine package-local acceptance tests, fourteen Chromium scenarios, seven observation contracts, seven-intent IR-native completeness, eighteen-effect closure, streamed/cancellable capability closure, exact repository binding, and `semantic-runtime-proven` application proof. Rollback must restore the original package, catalog, runtime projection, and protected source snapshot exactly.
+
+Required Wave 12 state:
+
+```text
+application: contract-workbench
+promotion rehearsal: pass
+post-promotion truth status: semantic-runtime-proven
+intent completeness: ir-native
+intent coverage: 7 / 7
+scenario evidence: 14 / 14
+effect accounting: 18 / 18 closed
+capability accounting: closed
+rollback rehearsal: pass
+rollback restoration: exact
+live repository changed: false
+promotion executed: false
+promotion eligible: true
+```
+
+Wave 12 remains non-mutating. A later separately authorized wave is required to execute the Workbench authority transition.
+
+## AI authoring implementation Wave 13
+
+Wave 13 adds the actual transactional Contract Workbench authority transition behind the generic `mcel_app_promote.py --execute` dispatch. Execution is permitted only after a fresh Wave 12 rehearsal returns exact rollback restoration and `promotionEligible: true`. The command verifies the exact promotion plan, candidate evidence binding, all live before-hashes, and all staged payload hashes before changing any source file.
+
+The transaction installs the native Workbench `application.js` as `mcel.dsl.v1` authority, installs `mcel.generated.json`, changes `mcel.app.json` to `dsl-authoritative`, and replaces the eight portable projection artifacts plus the three authority-aware package tests with the exact rehearsed bytes. The seven explicit contracts and normalized application definition become derived artifacts owned by `mcel.workbench.portable-ir-projection.v1`.
+
+Post-promotion commit gates require:
+
+```text
+source authority: mcel.dsl.v1
+generated ownership: exact
+semantic fingerprint: unchanged
+package validation: pass
+acceptance: 9 / 9
+browser scenarios: 14 / 14
+observation contracts: 7 / 7
+intent completeness: ir-native
+intent coverage: 7 / 7
+effect accounting: 18 / 18 closed
+streamed capability accounting: closed
+cancellable capability accounting: closed
+repository binding: exact
+truth status: semantic-runtime-proven
+```
+
+Before application, the command creates a durable transaction directory containing the plan, staged promotion bytes, protected-source hashes, full protected-source backup, original Workbench package tree, and original package/catalog/runtime fingerprints. Any post-apply failure automatically restores that snapshot. A committed transaction can later be rolled back with `--rollback latest` or its exact transaction identifier, but rollback refuses to overwrite any later protected Counter, Workbench, or shared MCEL source change.
+
+Required Wave 13 terminal state:
+
+```text
+application: contract-workbench
+promotion executed: true
+source authority: mcel.dsl.v1
+derived artifact authority: mcel.workbench.portable-ir-projection.v1
+legacy package authority: retired
+truth status: semantic-runtime-proven
+semantic fingerprint: unchanged
+rollback available: true
+```

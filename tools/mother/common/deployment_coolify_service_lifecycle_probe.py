@@ -37,12 +37,14 @@ from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
 
-_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v4"
+_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v6"
+_PREVIOUS_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v5"
+_OLDER_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v4"
 _LEGACY_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v3"
 _EVIDENCE_DIRECTORY = ("evidence", "deployment-coolify-service-lifecycle-probes")
 _ACKNOWLEDGEMENT = "NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE"
 _ALLOWED_CONTROLLERS = frozenset({"coolify-a", "coolify-c"})
-_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
+_IMAGE = "alpine:3.20"
 _UUID_RE = re.compile(r"^[A-Za-z0-9_-]{8,96}$")
 
 
@@ -112,11 +114,11 @@ def _compose(name: str, observe_seconds: float) -> str:
         "    command:\n"
         "      - |\n"
         f"        printf 'MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={name}\\n'\n"
-        f"        exec sleep {linger_seconds}\n"
+        f"        exec /bin/sleep {linger_seconds}\n"
         "    healthcheck:\n"
         "      test:\n"
         "        - CMD-SHELL\n"
-        "        - grep -aq 'sleep' /proc/1/cmdline\n"
+        "        - kill -0 1\n"
         "      interval: 2s\n"
         "      timeout: 2s\n"
         "      retries: 10\n"
@@ -138,10 +140,10 @@ def _compose(name: str, observe_seconds: float) -> str:
         and service.get("entrypoint") == ["/bin/sh", "-ec"]
         and type(service.get("command")) is list
         and len(service["command"]) == 1
-        and "exec sleep " in str(service["command"][0])
+        and "exec /bin/sleep " in str(service["command"][0])
         and isinstance(service.get("healthcheck"), Mapping)
         and service["healthcheck"].get("test")
-        == ["CMD-SHELL", "grep -aq 'sleep' /proc/1/cmdline"]
+        == ["CMD-SHELL", "kill -0 1"]
     ):
         raise _error(
             "MOTHER_DEPLOY_COOLIFY_SERVICE_LIFECYCLE_PROBE_COMPOSE_INVALID",
@@ -300,13 +302,12 @@ def _collection_shape(value: Any) -> str:
 
 
 def _service_subresource_diagnostics(payload: Any, expected_name: str) -> dict[str, Any]:
-    """Return the sanitized service-detail facts used to select the logs sub-resource."""
+    """Return sanitized application facts used to select Coolify's runtime-log resource."""
     inventories: dict[str, list[dict[str, Any]]] = {
         "applications": [],
         "databases": [],
     }
     shapes: dict[str, str] = {}
-    names: set[str] = set()
 
     if isinstance(payload, Mapping):
         for key in inventories:
@@ -335,30 +336,48 @@ def _service_subresource_diagnostics(payload: Any, expected_name: str) -> dict[s
                         continue
                     safe[field] = clean
                 inventories[key].append(safe)
-                name = safe.get("name")
-                if type(name) is str:
-                    names.add(name)
     else:
         shapes = {key: "service-detail-not-object" for key in inventories}
 
-    candidate_names = sorted(names)
-    selected: str | None = None
+    applications = inventories["applications"]
+    named = [
+        item
+        for item in applications
+        if type(item.get("name")) is str
+    ]
+    candidate_names = sorted({str(item["name"]) for item in named})
+    selected_record: Mapping[str, Any] | None = None
     selection_reason = "no-candidates"
-    if expected_name in names:
-        selected = expected_name
+    exact = [item for item in named if item.get("name") == expected_name]
+    if len(exact) == 1:
+        selected_record = exact[0]
         selection_reason = "expected-name-match"
-    elif len(candidate_names) == 1:
-        selected = candidate_names[0]
+    elif len(named) == 1:
+        selected_record = named[0]
         selection_reason = "single-candidate"
-    elif candidate_names:
+    elif named:
         selection_reason = "ambiguous-candidates"
+
+    selected_name = (
+        selected_record.get("name")
+        if isinstance(selected_record, Mapping)
+        and type(selected_record.get("name")) is str
+        else None
+    )
+    selected_uuid = (
+        selected_record.get("uuid")
+        if isinstance(selected_record, Mapping)
+        and type(selected_record.get("uuid")) is str
+        else None
+    )
 
     return {
         "service_detail_shape": "object" if isinstance(payload, Mapping) else _collection_shape(payload),
         "subresource_collection_shapes": shapes,
         "subresources": inventories,
         "candidate_sub_service_names": candidate_names,
-        "selected_sub_service_name": selected,
+        "selected_sub_service_name": selected_name,
+        "selected_application_uuid": selected_uuid,
         "selection_reason": selection_reason,
         "service_detail_status": (
             _safe_status(payload.get("status")) if isinstance(payload, Mapping) else None
@@ -424,17 +443,12 @@ def _runtime_log_channel(
         service_name,
     )
     sub_service_name = diagnostics["selected_sub_service_name"]
-    endpoint_base = f"/api/v1/services/{service_uuid}/logs"
-    query_parameters = {
-        "sub_service_name": sub_service_name,
-        "lines": "100",
-        "show_timestamps": "false",
-    }
+    application_uuid = diagnostics["selected_application_uuid"]
+    marker = f"MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={service_name}"
     base_record: dict[str, Any] = {
         "phase": "service-lifecycle-observation",
         "controller_id": controller_id,
         "method": "GET",
-        "endpoint": endpoint_base,
         "channel": "service-runtime-logs",
         "service_uuid": service_uuid,
         "service_name": service_name,
@@ -451,16 +465,20 @@ def _runtime_log_channel(
             "candidate_sub_service_names"
         ],
         "selected_sub_service_name": sub_service_name,
+        "selected_application_uuid": application_uuid,
         "sub_service_name": sub_service_name,
         "selection_reason": diagnostics["selection_reason"],
-        "query_parameters": query_parameters,
     }
-    marker = f"MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={service_name}"
     if sub_service_name is None:
         return {
             **base_record,
+            "endpoint": None,
+            "endpoint_kind": None,
             "sub_service_name_resolved": False,
+            "application_uuid_resolved": False,
+            "query_parameters": None,
             "request_path": None,
+            "attempts": [],
             "http_status": None,
             "response_sha256": None,
             "byte_length": None,
@@ -470,32 +488,105 @@ def _runtime_log_channel(
             "marker_observed": False,
         }
 
-    request_path = (
-        f"{endpoint_base}?sub_service_name={quote(sub_service_name, safe='')}"
-        "&lines=100&show_timestamps=false"
+    candidates: list[tuple[str, str, dict[str, str]]] = []
+    if application_uuid is not None:
+        quoted_service = quote(service_uuid, safe="")
+        quoted_application = quote(application_uuid, safe="")
+        candidates.extend(
+            [
+                (
+                    "service-application",
+                    (
+                        f"/api/v1/services/{quoted_service}/applications/"
+                        f"{quoted_application}/logs?lines=100&show_timestamps=false"
+                    ),
+                    {"lines": "100", "show_timestamps": "false"},
+                ),
+                (
+                    "application-resource",
+                    f"/api/v1/applications/{quoted_application}/logs?lines=100",
+                    {"lines": "100"},
+                ),
+            ]
+        )
+    candidates.append(
+        (
+            "parent-service-fallback",
+            (
+                f"/api/v1/services/{quote(service_uuid, safe='')}/logs"
+                f"?sub_service_name={quote(sub_service_name, safe='')}"
+                "&lines=100&show_timestamps=false"
+            ),
+            {
+                "sub_service_name": sub_service_name,
+                "lines": "100",
+                "show_timestamps": "false",
+            },
+        )
     )
-    response = _http(
-        controller,
-        "GET",
-        request_path,
-        body=None,
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-    )
-    payload = response.get("payload")
-    logs = payload.get("logs") if isinstance(payload, Mapping) else None
+
+    attempts: list[dict[str, Any]] = []
+    selected_response: Mapping[str, Any] | None = None
+    selected_kind: str | None = None
+    selected_path: str | None = None
+    selected_query: dict[str, str] | None = None
+    selected_logs: str | None = None
+    for endpoint_kind, request_path, query_parameters in candidates:
+        response = _http(
+            controller,
+            "GET",
+            request_path,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        payload = response.get("payload")
+        logs = payload.get("logs") if isinstance(payload, Mapping) else None
+        classification = _runtime_log_response_classification(response)
+        attempts.append(
+            {
+                "endpoint_kind": endpoint_kind,
+                "request_path": request_path,
+                "query_parameters": query_parameters,
+                "http_status": response.get("status"),
+                "response_sha256": response.get("response_sha256"),
+                "byte_length": response.get("byte_length"),
+                "elapsed_ms": response.get("elapsed_ms"),
+                "response_classification": classification,
+                "logs_field_present": type(logs) is str,
+                "marker_observed": type(logs) is str and marker in logs,
+            }
+        )
+        selected_response = response
+        selected_kind = endpoint_kind
+        selected_path = request_path
+        selected_query = query_parameters
+        selected_logs = logs if type(logs) is str else None
+        if response.get("status") == 200:
+            break
+        if response.get("status") not in {400, 404, 405, 422}:
+            break
+
+    assert selected_response is not None
     return {
         **base_record,
+        "endpoint": selected_path.split("?", 1)[0] if selected_path else None,
+        "endpoint_kind": selected_kind,
         "sub_service_name_resolved": True,
-        "request_path": request_path,
-        "http_status": response.get("status"),
-        "response_sha256": response.get("response_sha256"),
-        "byte_length": response.get("byte_length"),
-        "elapsed_ms": response.get("elapsed_ms"),
-        "response_classification": _runtime_log_response_classification(response),
-        "logs_field_present": type(logs) is str,
-        "marker_observed": type(logs) is str and marker in logs,
+        "application_uuid_resolved": application_uuid is not None,
+        "query_parameters": selected_query,
+        "request_path": selected_path,
+        "attempts": attempts,
+        "http_status": selected_response.get("status"),
+        "response_sha256": selected_response.get("response_sha256"),
+        "byte_length": selected_response.get("byte_length"),
+        "elapsed_ms": selected_response.get("elapsed_ms"),
+        "response_classification": _runtime_log_response_classification(
+            selected_response
+        ),
+        "logs_field_present": type(selected_logs) is str,
+        "marker_observed": type(selected_logs) is str and marker in selected_logs,
     }
 
 
@@ -663,6 +754,7 @@ def inspect_coolify_service_lifecycle_probe(
             f"/api/v1/projects/{controller_meta['project_uuid']}/environments",
             "/api/v1/services",
             "/api/v1/services/{service_uuid}",
+            "/api/v1/applications/{application_uuid}/logs?lines=100",
             "/api/v1/services/{service_uuid}/logs?sub_service_name={service_name}",
             "/api/v1/deployments",
             f"/api/v1/servers/{controller_meta['server_uuid']}/resources",
@@ -675,7 +767,9 @@ def inspect_coolify_service_lifecycle_probe(
             "single_script_argument": True,
             "healthcheck_required": True,
             "runtime_log_marker_required": True,
-            "runtime_log_endpoint_template": "/api/v1/services/{service_uuid}/logs?sub_service_name={service_name}",
+            "runtime_log_endpoint_template": "/api/v1/services/{service_uuid}/applications/{application_uuid}/logs?lines=100&show_timestamps=false",
+            "runtime_log_alternate_endpoint_template": "/api/v1/applications/{application_uuid}/logs?lines=100",
+            "runtime_log_fallback_endpoint_template": "/api/v1/services/{service_uuid}/logs?sub_service_name={service_name}",
             "ports": [],
             "volumes": [],
             "secrets": [],
@@ -1007,7 +1101,7 @@ def execute_coolify_service_lifecycle_probe(
     completed_at = _timestamp()
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
-        "schema_version": 4,
+        "schema_version": 6,
         "started_at": started_at,
         "completed_at": completed_at,
         "status": "pass" if complete else "manual-review-required",
@@ -1107,7 +1201,9 @@ def verify_coolify_service_lifecycle_probe_evidence(
     if not (
         evidence_version in {
             (_LEGACY_EVIDENCE_KIND, 3),
-            (_EVIDENCE_KIND, 4),
+            (_OLDER_EVIDENCE_KIND, 4),
+            (_PREVIOUS_EVIDENCE_KIND, 5),
+            (_EVIDENCE_KIND, 6),
         }
         and document.get("coolify_service_lifecycle_probe_evidence_sha256") == digest
         and document.get("mother_binding") == _binding(private_state)

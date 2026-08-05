@@ -9237,6 +9237,13 @@
             canvas.dataset.currentSystem = String(navigation.currentSystemId || "");
             canvas.dataset.warpPhase = String(navigation.travelPhase || "unavailable");
             canvas.dataset.worldTime = String(navigation.elapsedWorldTime || 0);
+            if (typeof options.onNavigationChanged === "function") {
+              try {
+                options.onNavigationChanged({...navigation});
+              } catch (error) {
+                console.error("Game Surface navigation callback failed", error);
+              }
+            }
           };
           const updateTwiddleSystem = (pilot = renderer.pilotSnapshot()) => {
             const progress = Math.round((pilot.dockingCutsceneProgress || 0) * 100);

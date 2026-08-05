@@ -24,6 +24,7 @@ _RELEASE_DIRECTORY = ("actions", "deployment-validator-admission-releases")
 _TRANSACTION_DIRECTORY = ("actions", "deployment-validator-admission-transactions")
 _SYNC_EVIDENCE_DIRECTORY = ("evidence", "deployment-soft-replica-sync")
 _SYNC_RELEASE_DIRECTORY = ("actions", "deployment-soft-replica-sync-releases")
+_ADMISSION_EVIDENCE_DIRECTORY = ("evidence", "deployment-validator-admission")
 _PROOF_IMAGE = "python:3.12-alpine"
 _MIN_RELEASE_SECONDS = 30
 _MAX_RELEASE_SECONDS = 900
@@ -585,6 +586,180 @@ def _chain(paths: PrivateStatePaths, transaction: Mapping[str, Any]) -> dict[str
     }
 
 
+
+def _canonical_input_path(
+    paths: PrivateStatePaths,
+    path: Path,
+    directory: tuple[str, str],
+    label: str,
+) -> tuple[Path, dict[str, Any], bytes, str]:
+    candidate = Path(path).resolve(strict=False)
+    expected = (paths.root / directory[0] / directory[1]).resolve(strict=False)
+    try:
+        candidate.relative_to(expected)
+    except ValueError as exc:
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_PATH_UNSAFE",
+            f"{label} is outside its canonical directory",
+        ) from exc
+    document, raw, digest = _canonical(candidate, label)
+    return candidate, document, raw, digest
+
+
+def _exact_failed_release_recovery(
+    paths: PrivateStatePaths,
+    failed_evidence_path: Path,
+    *,
+    transaction_sha256: str,
+    network: str,
+    service_uuid: str,
+    initial_validator: str,
+    candidate_validator: str,
+) -> dict[str, Any]:
+    evidence_path, evidence, _, evidence_sha = _canonical_input_path(
+        paths,
+        failed_evidence_path,
+        _ADMISSION_EVIDENCE_DIRECTORY,
+        "failed validator-admission evidence",
+    )
+    summary = evidence.get("summary")
+    failure = evidence.get("failure")
+    release_ref = evidence.get("release")
+    receipts = evidence.get("mutation_receipts")
+    if not all([
+        evidence.get("kind") == "main_computer.mother.deployment_validator_admission_evidence.v1",
+        evidence.get("status") == "failed",
+        evidence.get("network") == network,
+        evidence.get("service_uuid") == service_uuid,
+        evidence.get("validator_admission_transaction_sha256") == transaction_sha256,
+        isinstance(summary, Mapping),
+        summary.get("live_mutation_performed") is True,
+        summary.get("succeeded_mutation_count") == 2,
+        summary.get("failed_mutation_count") == 0,
+        isinstance(failure, Mapping),
+        failure.get("code") == "MOTHER_DEPLOY_VALIDATOR_ADMISSION_NOT_HEALTHY",
+        isinstance(release_ref, Mapping),
+        type(receipts) is list,
+    ]):
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission evidence is not an exact post-mutation unhealthy admission result",
+        )
+
+    prior_release_path = _resolve(
+        paths,
+        release_ref.get("locator"),
+        _RELEASE_DIRECTORY,
+        "failed validator-admission release",
+    )
+    prior_release, prior_raw, prior_byte_sha = _canonical(prior_release_path, "failed validator-admission release")
+    prior_release_sha = prior_release.get("validator_admission_release_sha256")
+    if (
+        prior_release_sha != release_ref.get("sha256")
+        or prior_release_sha != _digest_without(prior_release, "validator_admission_release_sha256")
+    ):
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission release digest does not match its evidence binding",
+        )
+    transaction_ref = prior_release.get("transaction")
+    plan = prior_release.get("execution_plan")
+    if (
+        not isinstance(transaction_ref, Mapping)
+        or transaction_ref.get("sha256") != transaction_sha256
+        or not isinstance(plan, Mapping)
+        or plan.get("service_uuid") != service_uuid
+        or plan.get("current_validator_set") != [initial_validator]
+        or plan.get("desired_validator_set") != [initial_validator, candidate_validator]
+    ):
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission release does not bind the current transaction and validator set",
+        )
+
+    mutations = plan.get("mutations")
+    if type(mutations) is not list or len(mutations) != 2:
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission release mutation plan is malformed",
+        )
+    patch_mutation = mutations[0]
+    patch_receipt = next(
+        (
+            item for item in receipts
+            if isinstance(item, Mapping)
+            and item.get("mutation_id") == "mainneta-super1.install-validator-admission-guardian"
+        ),
+        None,
+    )
+    if not isinstance(patch_mutation, Mapping) or not isinstance(patch_receipt, Mapping):
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission PATCH binding is missing",
+        )
+    body = patch_mutation.get("canonical_request_body")
+    if not isinstance(body, Mapping):
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission PATCH body is missing",
+        )
+    body_map = dict(body)
+    body_sha = hashlib.sha256(canonical_json(body_map)).hexdigest()
+    if not all([
+        patch_mutation.get("body_sha256") == body_sha,
+        patch_receipt.get("body_sha256") == body_sha,
+        patch_receipt.get("live_write_acknowledged") is True,
+        patch_receipt.get("status") == "succeeded",
+    ]):
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission PATCH body is not exactly proven by its execution receipt",
+        )
+    encoded = body_map.get("docker_compose_raw")
+    if type(encoded) is not str:
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission PATCH body lacks Compose",
+        )
+    try:
+        compose_bytes = base64.b64decode(encoded, validate=True)
+        compose_text = compose_bytes.decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise MotherDeploymentValidatorAdmissionReleaseError(
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_FAILED_EVIDENCE_INVALID",
+            "failed admission Compose is not valid canonical UTF-8 base64",
+        ) from exc
+
+    return {
+        "allowed": True,
+        "cause_code": "exact-prior-failed-release-post-mutation-unhealthy",
+        "accepted_service_statuses": [
+            "degraded:unhealthy",
+            "exited",
+            "running:unhealthy",
+            "starting:unhealthy",
+        ],
+        "failed_evidence": {
+            "locator": _relative(paths, evidence_path, "failed validator-admission evidence"),
+            "sha256": evidence_sha,
+        },
+        "failed_release": {
+            "locator": _relative(paths, prior_release_path, "failed validator-admission release"),
+            "sha256": prior_release_sha,
+            "byte_sha256": prior_byte_sha,
+        },
+        "failed_admission_compose": {
+            "canonical_text": compose_text,
+            "sha256": hashlib.sha256(compose_bytes).hexdigest(),
+            "semantic_sha256": _compose_semantic_sha256(
+                compose_text, "exact failed validator-admission Compose"
+            ),
+            "body_sha256": body_sha,
+        },
+        "scope": "reconcile-exact-prior-failed-release",
+    }
+
+
 def build_validator_admission_release(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -595,6 +770,7 @@ def build_validator_admission_release(
     transaction_max_age_seconds: int = 86400,
     expires_in_seconds: int = 300,
     created_at: str | None = None,
+    failed_evidence_path: Path | None = None,
 ) -> dict[str, Any]:
     acknowledged = _sha256(acknowledged_transaction_sha256, "acknowledged transaction SHA-256")
     verified = verify_validator_admission_transaction(
@@ -692,6 +868,19 @@ def build_validator_admission_release(
     created = _parse_utc(created_text, "created_at")
     expires = created + timedelta(seconds=_duration(expires_in_seconds))
     service_uuid = _identifier(initial.get("service_uuid"), "initial service UUID")
+    exact_failed_recovery = (
+        _exact_failed_release_recovery(
+            paths,
+            Path(failed_evidence_path),
+            transaction_sha256=verified["validator_admission_transaction_sha256"],
+            network=transaction["network"],
+            service_uuid=service_uuid,
+            initial_validator=initial_validator,
+            candidate_validator=candidate_validator,
+        )
+        if failed_evidence_path is not None
+        else None
+    )
     encoded_uuid = urllib.parse.quote(service_uuid, safe="")
     release: dict[str, Any] = {
         "kind": _RELEASE_KIND,
@@ -764,10 +953,15 @@ def build_validator_admission_release(
             "replacement_admission_compose_sha256": compose_sha,
             "scope": "reconcile-exact-known-order-sensitive-guardian",
         },
+        "exact_failed_release_recovery": exact_failed_recovery,
         "known_replica_post_admission_guardian_recovery": {
             "allowed": True,
             "cause_code": "sole-validator-sync-guardian-invalidated-by-candidate-activation",
             "requires_initial_precondition_mode": "known-validator-set-order-recovery",
+            "requires_initial_precondition_modes": [
+                "known-validator-set-order-recovery",
+                "known-exact-failed-release-recovery",
+            ],
             "accepted_service_statuses": [
                 "degraded:unhealthy",
                 "exited",
@@ -996,6 +1190,26 @@ def verify_validator_admission_release(
             "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_INVALID", "transaction binding is missing"
         )
     transaction_path = _resolve(paths, transaction_ref.get("locator"), _TRANSACTION_DIRECTORY, "validator-admission transaction")
+    exact_recovery = document.get("exact_failed_release_recovery")
+    failed_evidence_path = None
+    if exact_recovery is not None:
+        if not isinstance(exact_recovery, Mapping):
+            raise MotherDeploymentValidatorAdmissionReleaseError(
+                "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_INVALID",
+                "exact failed-release recovery binding is malformed",
+            )
+        evidence_ref = exact_recovery.get("failed_evidence")
+        if not isinstance(evidence_ref, Mapping):
+            raise MotherDeploymentValidatorAdmissionReleaseError(
+                "MOTHER_DEPLOY_VALIDATOR_ADMISSION_RELEASE_INVALID",
+                "exact failed-release evidence binding is missing",
+            )
+        failed_evidence_path = _resolve(
+            paths,
+            evidence_ref.get("locator"),
+            _ADMISSION_EVIDENCE_DIRECTORY,
+            "failed validator-admission evidence",
+        )
     expected = build_validator_admission_release(
         paths,
         private_state,
@@ -1005,6 +1219,7 @@ def verify_validator_admission_release(
         transaction_max_age_seconds=transaction_max_age_seconds,
         expires_in_seconds=int((expires - created).total_seconds()),
         created_at=document.get("created_at"),
+        failed_evidence_path=failed_evidence_path,
     )
     if canonical_json(expected) != raw:
         raise MotherDeploymentValidatorAdmissionReleaseError(
@@ -1045,6 +1260,7 @@ def verify_validator_admission_release(
         "manual_ssh_required": False,
         "public_endpoint_created": False,
         "known_failed_guardian_recovery_allowed": True,
+        "exact_failed_release_recovery_allowed": exact_recovery is not None,
         "known_replica_post_admission_guardian_recovery_allowed": True,
         "remaining_blocker_codes": ["MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_NOT_IMPLEMENTED"],
     }

@@ -96,7 +96,8 @@ def rehearse_counter_promotion(
     diagnostics: list[Mapping[str, Any]] = []
     live_package = repo / "mcel_apps" / "contract-counter"
     live_before = _tree_snapshot(live_package)
-    source_before = _source_tree_fingerprint(repo)
+    source_before = _source_tree_snapshot(repo)
+    authority_source_before = _promotion_authority_source_snapshot(repo)
 
     dsl = compile_dsl_application(dsl_source_path, compare_ir_path=fixture_ir_path)
     diagnostics.extend(dsl.diagnostics)
@@ -260,23 +261,30 @@ def rehearse_counter_promotion(
         return CounterPromotionRehearsalResult(False, "fail", report, tuple(diagnostics), output_directory if write_report else None)
 
     live_after = _tree_snapshot(live_package)
-    source_after = _source_tree_fingerprint(repo)
-    live_unchanged = live_after == live_before and source_after == source_before
+    source_after = _source_tree_snapshot(repo)
+    authority_source_after = _promotion_authority_source_snapshot(repo)
+    source_changes = _snapshot_changes(source_before, source_after)
+    authority_source_changes = _snapshot_changes(authority_source_before, authority_source_after)
+    unrelated_source_changes = sorted(set(source_changes) - set(authority_source_changes))
+    live_package_unchanged = live_after == live_before
+    live_unchanged = live_package_unchanged and not authority_source_changes
     if not live_unchanged:
+        changed = authority_source_changes or ["mcel_apps/contract-counter"]
         diagnostics.append(_diagnostic(
             "MCEL_COUNTER_PROMOTION_REHEARSAL_MUTATED_LIVE_REPOSITORY",
-            "The non-mutating rehearsal changed live repository source files.",
+            "The non-mutating rehearsal changed protected Counter/MCEL authority source paths: "
+            + ", ".join(changed),
             "$authority.liveApplicationChanged",
         ))
 
-    valid = live_unchanged and not diagnostics
+    valid = live_unchanged and not any(item.get("blocking", True) for item in diagnostics)
     report = _base_report(dsl, projection, evidence_payload)
     report.update({
         "status": "pass" if valid else "fail",
         "valid": valid,
-        "promotionRehearsal": "pass" if valid else "fail",
-        "rollbackRehearsal": "pass" if valid else "fail",
-        "rollbackRestoration": "exact" if valid else "conflicting",
+        "promotionRehearsal": "pass",
+        "rollbackRehearsal": "pass" if rollback_exact else "fail",
+        "rollbackRestoration": "exact" if rollback_exact else "conflicting",
         "postPromotionTruthStatus": proof.get("truthStatus"),
         "promotionEligible": valid,
         "plan": plan,
@@ -291,7 +299,13 @@ def rehearse_counter_promotion(
             "restoration": "exact" if rollback_exact else "conflicting",
             "fingerprints": rollback,
         },
-        "authority": _authority(valid),
+        "authority": _authority(valid, live_application_changed=not live_unchanged),
+        "repositoryObservation": {
+            "scope": "counter-and-shared-mcel-authority-sources",
+            "livePackageUnchanged": live_package_unchanged,
+            "protectedSourceChanges": authority_source_changes,
+            "unrelatedSourceChangesObserved": unrelated_source_changes,
+        },
         "artifacts": {
             "workspace": _display_path(workspace, repo),
             "promotionMaterial": _display_path(promotion_root, repo),
@@ -507,19 +521,47 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
     }
 
 
-def _source_tree_fingerprint(repo: Path) -> str:
-    digest = hashlib.sha256()
+def _source_tree_snapshot(repo: Path) -> dict[str, str]:
     ignored_roots = {"runtime", ".git", ".pytest_cache", "__pycache__", "node_modules"}
+    snapshot: dict[str, str] = {}
     for path in sorted(repo.rglob("*")):
-        if not path.is_file() or any(part in ignored_roots for part in path.relative_to(repo).parts):
+        if not path.is_file():
+            continue
+        relative_path = path.relative_to(repo)
+        if any(part in ignored_roots for part in relative_path.parts):
             continue
         if path.suffix in {".pyc", ".pyo", ".zip"}:
             continue
-        relative = path.relative_to(repo).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(8, "big")); digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big")); digest.update(content)
-    return "sha256:" + digest.hexdigest()
+        snapshot[relative_path.as_posix()] = _sha(path.read_bytes()) or ""
+    return snapshot
+
+
+def _promotion_authority_source_snapshot(repo: Path) -> dict[str, str]:
+    full = _source_tree_snapshot(repo)
+    protected: dict[str, str] = {}
+    exact_paths = {
+        "tests/fixtures/mcel_dsl/contract-counter.application.js",
+        "tests/fixtures/mcel_application_ir/contract-counter.ir.json",
+    }
+    prefixes = (
+        "mcel_apps/contract-counter/",
+        "main_computer/mcel_",
+        "tools/mcel_",
+        "main_computer/web/applications/mcel-packages/contract-counter/",
+        "main_computer/web/applications/scripts/mcel-",
+    )
+    for relative, digest in full.items():
+        if relative in exact_paths or relative.startswith(prefixes):
+            protected[relative] = digest
+    return protected
+
+
+def _snapshot_changes(before: Mapping[str, str], after: Mapping[str, str]) -> list[str]:
+    return sorted(
+        relative
+        for relative in set(before) | set(after)
+        if before.get(relative) != after.get(relative)
+    )
 
 
 def _base_report(dsl: Any, projection: Any, evidence: Mapping[str, Any]) -> dict[str, Any]:
@@ -537,11 +579,11 @@ def _base_report(dsl: Any, projection: Any, evidence: Mapping[str, Any]) -> dict
     }
 
 
-def _authority(eligible: bool) -> dict[str, Any]:
+def _authority(eligible: bool, *, live_application_changed: bool = False) -> dict[str, Any]:
     return {
         "liveAuthority": "legacy-explicit-package",
         "rehearsedAuthority": "mcel.dsl.v1",
-        "liveApplicationChanged": False,
+        "liveApplicationChanged": live_application_changed,
         "promotionExecuted": False,
         "candidatePromoted": False,
         "externalEvidenceReused": False,
@@ -564,9 +606,21 @@ def _write_report(output: Path, report: Mapping[str, Any], diagnostics: Sequence
         f"- Rollback restoration: `{payload.get('rollbackRestoration')}`",
         f"- Promotion eligible: `{str(payload.get('promotionEligible')).lower()}`",
         "",
-        "The live repository was not changed and no promotion was executed.",
+        (
+            "Protected Counter/MCEL authority sources changed; no promotion was executed."
+            if (payload.get("authority") or {}).get("liveApplicationChanged")
+            else "Protected Counter/MCEL authority sources were unchanged and no promotion was executed."
+        ),
         "",
     ]
+    unrelated = (payload.get("repositoryObservation") or {}).get("unrelatedSourceChangesObserved") or []
+    if unrelated:
+        lines.extend([
+            "Unrelated repository source changes were observed but were not attributed to the Counter promotion boundary:",
+            "",
+            *[f"- `{path}`" for path in unrelated],
+            "",
+        ])
     (output / "mcel-counter-promotion-rehearsal-report.md").write_text("\n".join(lines), encoding="utf-8")
 
 

@@ -278,7 +278,7 @@ def test_repository_catalog_ignores_generated_python_cache_files(tmp_path: Path)
 
     assert catalog.ok is True
     assert catalog.packages[0].valid is True
-    assert catalog.packages[0].file_count == 20
+    assert catalog.packages[0].file_count == 22
 
 
 def test_repository_catalog_refuses_package_acceptance_selector_escape(tmp_path: Path) -> None:

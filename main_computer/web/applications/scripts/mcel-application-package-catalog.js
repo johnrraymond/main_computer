@@ -15,14 +15,17 @@ var McelApplicationPackages = (() => {
   }
 
   const PAYLOAD = deepFreeze({
-  "catalogFingerprint": "sha256:cbbd194dfdbde7ab8a1aa1154c4bdd72110d6a92e43af14e6522657c26acc318",
+  "catalogFingerprint": "sha256:3e2c7c45e15bfcc4cb03e661b47412801b5e8ddb8737c34ab38768cd1e9a940a",
   "catalogFingerprintAlgorithm": "sha256-mcel-package-catalog-v1",
   "format": "mcel-application-package-browser-catalog-v1",
   "packageCount": 2,
   "packages": [
     {
       "appId": "contract-counter",
-      "authoring": {},
+      "authoring": {
+        "ownership": "mcel_apps/contract-counter/mcel.generated.json",
+        "source": "mcel_apps/contract-counter/application.js"
+      },
       "blueprint": "mcel_apps/contract-counter/blueprint.json",
       "conformance": {
         "currentMode": "semantic-runtime-proven",
@@ -38,8 +41,8 @@ var McelApplicationPackages = (() => {
         "observation": "mcel_apps/contract-counter/contracts/observation.js",
         "surface": "mcel_apps/contract-counter/contracts/surface.js"
       },
-      "fileCount": 20,
-      "fingerprint": "sha256:1ab625e72e54349c8abae27ca30cf75ccca1d7895fd172a81d93f6863e6f92b6",
+      "fileCount": 22,
+      "fingerprint": "sha256:345ea6f70763faf284b71f5f08e398788d6247f09dceddad6843870b0807ea34",
       "fingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
       "manifest": "mcel_apps/contract-counter/mcel.app.json",
       "packageRoot": "mcel_apps/contract-counter",
@@ -52,7 +55,7 @@ var McelApplicationPackages = (() => {
       "runtimeProjection": {
         "documentUrl": "applications/mcel-packages/contract-counter/src/index.html",
         "fileCount": 11,
-        "fingerprint": "sha256:8641d80e0cf1caede1b8402c37c37206a941ff48bc0394d27ccabf93ed4c5037",
+        "fingerprint": "sha256:41be6db563b5ea69770b5b228ab3ea37d4d70518798cbdcad2a42c94c18dd80c",
         "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1",
         "manifest": "main_computer/web/applications/mcel-packages/contract-counter/mcel.runtime.json",
         "manifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",
@@ -71,9 +74,9 @@ var McelApplicationPackages = (() => {
     {
       "appId": "contract-workbench",
       "authoring": {
-        "definition": "mcel_apps/contract-workbench/application.js",
-        "featureMatrix": "mcel_apps/contract-workbench/forward-specification.json",
-        "normalizedDefinition": "mcel_apps/contract-workbench/generated/mcel.application.normalized.json"
+        "normalizedDefinition": "mcel_apps/contract-workbench/generated/mcel.application.normalized.json",
+        "ownership": "mcel_apps/contract-workbench/mcel.generated.json",
+        "source": "mcel_apps/contract-workbench/application.js"
       },
       "blueprint": "mcel_apps/contract-workbench/blueprint.json",
       "conformance": {
@@ -90,8 +93,8 @@ var McelApplicationPackages = (() => {
         "observation": "mcel_apps/contract-workbench/contracts/observation.js",
         "surface": "mcel_apps/contract-workbench/contracts/surface.js"
       },
-      "fileCount": 24,
-      "fingerprint": "sha256:d02fecc4fedd92a1c435a62f25deea63ed8d040bff00764843f6d9f7eb157be3",
+      "fileCount": 25,
+      "fingerprint": "sha256:d8e96b0c91376ae3973fa5d9d44f537afd141b05582e8437b0148f2222592df3",
       "fingerprintAlgorithm": "sha256-mcel-package-path-content-v1",
       "manifest": "mcel_apps/contract-workbench/mcel.app.json",
       "packageRoot": "mcel_apps/contract-workbench",
@@ -104,7 +107,7 @@ var McelApplicationPackages = (() => {
       "runtimeProjection": {
         "documentUrl": "applications/mcel-packages/contract-workbench/src/index.html",
         "fileCount": 11,
-        "fingerprint": "sha256:b5e519b24578db457fc3672b012a9dc32b0d15b06921442eb4b89ff0ac622c8a",
+        "fingerprint": "sha256:0d68369c6efe39e58646432a446e8f0bf82e09d4d8df90fcf2c131ee252acbf0",
         "fingerprintAlgorithm": "sha256-mcel-runtime-projection-v1",
         "manifest": "main_computer/web/applications/mcel-packages/contract-workbench/mcel.runtime.json",
         "manifestUrl": "applications/mcel-packages/contract-workbench/mcel.runtime.json",

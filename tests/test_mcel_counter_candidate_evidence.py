@@ -104,9 +104,9 @@ def _browser_probe() -> dict:
 def test_browser_effect_probe_passes_page_url_as_explicit_evaluate_argument() -> None:
     class FakePage:
         def evaluate(self, expression, argument):
-            assert "async ({pageUrl})" in expression
+            assert "async ({pageUrl, operationPrefix})" in expression
             assert "url: pageUrl" in expression
-            assert argument == {"pageUrl": "http://127.0.0.1:62186/candidate"}
+            assert argument == {"pageUrl": "http://127.0.0.1:62186/candidate", "operationPrefix": "candidate"}
             return {"url": argument["pageUrl"], "operations": []}
 
     result = _evaluate_browser_effect_probe(
