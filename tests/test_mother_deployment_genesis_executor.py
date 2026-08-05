@@ -21,6 +21,8 @@ from tools.mother.common.deployment_genesis_executor import (
     inspect_released_genesis,
 )
 from tools.mother.common.deployment_genesis_release import (
+    DEFAULT_HUB_GIT_REF,
+    DEFAULT_HUB_GIT_REPOSITORY,
     MotherDeploymentGenesisReleaseError,
     build_deployment_genesis_release,
     verify_deployment_genesis_release,
@@ -256,6 +258,7 @@ def test_genesis_release_binds_exact_a_only_compose_and_is_secret_free(tmp_path:
     ]
     assert plan["standalone_network_nodes_allowed"] is False
     assert plan["compose"]["hub_git_repository"] == HUB_GIT_REPOSITORY
+    assert plan["compose"]["hub_git_ref"] == HUB_GIT_COMMIT_SHA
     assert plan["compose"]["hub_git_commit_sha"] == HUB_GIT_COMMIT_SHA
     assert plan["compose"]["hub_local_rpc_url"] == "http://mainneta-super1:8545"
     assert services["mother-super-node-hub"]["environment"]["MAIN_COMPUTER_HUB_CHAIN_RPC_URL"] == "http://mainneta-super1:8545"
@@ -283,9 +286,67 @@ def test_genesis_release_binds_exact_a_only_compose_and_is_secret_free(tmp_path:
     assert verified["genesis_release_sha256"] == release_digest
     assert verified["genesis_transaction_sha256"] == transaction_digest
     assert verified["hub_git_repository"] == HUB_GIT_REPOSITORY
+    assert verified["hub_git_ref"] == HUB_GIT_COMMIT_SHA
     assert verified["hub_git_commit_sha"] == HUB_GIT_COMMIT_SHA
     assert verified["hub_service"] == "mother-super-node-hub"
     assert verified["hub_local_rpc_url"] == "http://mainneta-super1:8545"
+
+
+def test_genesis_release_defaults_to_main_computer_main(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, private_state, transaction_path, transaction_digest, _ = _genesis_transaction(
+        tmp_path, now=now
+    )
+    release = build_deployment_genesis_release(
+        paths,
+        private_state,
+        transaction_path,
+        acknowledged_genesis_transaction_sha256=transaction_digest,
+        selected_nodes=("mainneta-super1",),
+        created_at=_stamp(now),
+        now=now,
+    )
+    plan = release["execution_plan"]
+    expected_repository = f"{DEFAULT_HUB_GIT_REPOSITORY}.git"
+    assert plan["compose"]["hub_git_repository"] == expected_repository
+    assert plan["compose"]["hub_git_ref"] == DEFAULT_HUB_GIT_REF == "main"
+    assert plan["compose"]["hub_git_commit_sha"] is None
+    compose_document = yaml.safe_load(plan["compose"]["canonical_text"])
+    assert (
+        compose_document["services"]["mother-super-node-hub"]["build"]["context"]
+        == f"{expected_repository}#main"
+    )
+
+
+def test_release_genesis_cli_accepts_repository_and_ref_override(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, _, transaction_path, transaction_digest, _ = _genesis_transaction(
+        tmp_path, now=now
+    )
+    repository = "https://github.com/example/custom-main-computer"
+    code = mother_deploy.main([
+        "release-genesis",
+        "--runtime-state-root", str(paths.root.parent),
+        "--transaction", str(transaction_path),
+        "--acknowledge-genesis-transaction-sha256", transaction_digest,
+        "--hub-git-repository", repository,
+        "--hub-git-ref", "release/super-node-v2",
+        "--node", "mainneta-super1",
+    ])
+    assert code == 0
+    release = json.loads(capsys.readouterr().out)
+    compose = release["execution_plan"]["compose"]
+    assert compose["hub_git_repository"] == f"{repository}.git"
+    assert compose["hub_git_ref"] == "release/super-node-v2"
+    assert compose["hub_git_commit_sha"] is None
+    compose_document = yaml.safe_load(compose["canonical_text"])
+    assert (
+        compose_document["services"]["mother-super-node-hub"]["build"]["context"]
+        == f"{repository}.git#release/super-node-v2"
+    )
 
 
 def test_genesis_release_rejects_wrong_digest_and_soft_node_selection(tmp_path: Path) -> None:

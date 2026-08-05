@@ -9086,6 +9086,213 @@
     "combatEnabled": true,
     "healthHud": true,
     "alienTransportEnabled": true,
-    "consolePilotEnabled": true
+    "consolePilotEnabled": true,
+    "characterAI": {
+      "schema": "game.characterAI.v1",
+      "definitionVersion": "game.characterAI.definition.v1",
+      "stateVersion": "game.characterAI.state.v1",
+      "enabled": true,
+      "tickIntervalMs": 650,
+      "maxExternalDecisionAgeMs": 2500,
+      "receiptLimit": 192,
+      "vessels": [
+        {
+          "id": "ship.raider-01",
+          "label": "Raider Boarding Craft",
+          "faction": "faction.raider",
+          "role": "boarding-carrier",
+          "sceneObjectId": "alien-raider"
+        }
+      ],
+      "coverPoints": [
+        {
+          "id": "cover.shuttle.port-console",
+          "position": [
+            -3.1,
+            -0.55,
+            -2.1
+          ]
+        },
+        {
+          "id": "cover.shuttle.starboard-console",
+          "position": [
+            3.1,
+            -0.55,
+            -2.1
+          ]
+        },
+        {
+          "id": "cover.engineering.power-console",
+          "position": [
+            6.2,
+            -0.55,
+            -20.5
+          ]
+        },
+        {
+          "id": "cover.corridor.trunk",
+          "position": [
+            0.0,
+            -0.55,
+            -17.0
+          ]
+        }
+      ],
+      "patrolRoutes": {
+        "patrol.raider.shuttle": [
+          [
+            -2.7,
+            -0.55,
+            2.3
+          ],
+          [
+            2.7,
+            -0.55,
+            2.3
+          ],
+          [
+            2.2,
+            -0.55,
+            -3.2
+          ],
+          [
+            -2.2,
+            -0.55,
+            -3.2
+          ]
+        ],
+        "patrol.engineering.station": [
+          [
+            7.35,
+            -0.55,
+            -20.75
+          ],
+          [
+            5.9,
+            -0.55,
+            -20.2
+          ]
+        ]
+      },
+      "repairTargets": {
+        "system.engineering-main-power": {
+          "id": "system.engineering-main-power",
+          "label": "Engineering main power",
+          "position": [
+            7.35,
+            -0.55,
+            -20.75
+          ],
+          "systemId": "mother-ship.engineering"
+        }
+      },
+      "characters": [
+        {
+          "id": "enemy.raider-boarder-01",
+          "label": "Raider Boarder",
+          "kind": "enemy",
+          "faction": "faction.raider",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              0.0,
+              -0.55,
+              0.3
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.solace-reach"
+          },
+          "activePhases": [
+            "shuttle",
+            "mother-ship"
+          ],
+          "stats": {
+            "maxHealth": 72,
+            "speed": 1.15,
+            "perceptionRange": 14,
+            "attackRange": 1.35,
+            "attackDamage": 8,
+            "attackCooldownMs": 900,
+            "retreatHealth": 20,
+            "dangerRange": 5.5
+          },
+          "allowedActions": [
+            "patrol",
+            "move_to_player",
+            "take_cover",
+            "attack_player",
+            "retreat",
+            "call_support"
+          ],
+          "goals": [
+            "goal.raider.disable-shuttle",
+            "goal.raider.reach-engineering"
+          ],
+          "inventory": [
+            "weapon.raider-carbine"
+          ],
+          "patrolRouteId": "patrol.raider.shuttle",
+          "supportText": "Raider Boarder transmitted a reinforcement request to ship.raider-01.",
+          "memoryDefaults": {
+            "supportCalled": false,
+            "playerSeen": false,
+            "lastDamageAtMs": null
+          }
+        },
+        {
+          "id": "npc.engineering-officer-01",
+          "label": "Engineering Officer Mara Venn",
+          "kind": "npc",
+          "faction": "faction.haven",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              7.35,
+              -0.55,
+              -20.75
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.solace-reach"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "stats": {
+            "maxHealth": 100,
+            "speed": 0.9,
+            "perceptionRange": 12,
+            "attackRange": 0,
+            "attackDamage": 0,
+            "attackCooldownMs": 1000,
+            "retreatHealth": 25,
+            "repairRange": 1.8,
+            "dangerRange": 5.5
+          },
+          "allowedActions": [
+            "hold_position",
+            "warn_player",
+            "repair_power",
+            "follow_player",
+            "take_cover"
+          ],
+          "goals": [
+            "goal.engineering.restore-power",
+            "goal.engineering.protect-crew"
+          ],
+          "inventory": [
+            "tool.engineering-repair-kit"
+          ],
+          "patrolRouteId": "patrol.engineering.station",
+          "repairTargetId": "system.engineering-main-power",
+          "warningText": "Engineering Officer Mara Venn: Raider boarder detected. Keep it away from the power controls.",
+          "memoryDefaults": {
+            "warnedPlayer": false,
+            "protectedByPlayer": false,
+            "repairedPower": false,
+            "lastDamageAtMs": null
+          }
+        }
+      ]
+    }
   }
 }

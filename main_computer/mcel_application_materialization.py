@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from main_computer.mcel_counter_candidate_projection import generate_counter_contracts
 from main_computer.mcel_dsl_compiler import compile_dsl_application
+from main_computer.mcel_projection_profiles.contract_workbench_v1 import project_workbench_ir
 
 GENERATED_DIRECTORY_NAMES = frozenset({"contracts", "generated"})
 GENERATED_FILE_NAMES = frozenset({"mcel.generated.json"})
@@ -67,8 +68,8 @@ def materialize_generated_package_files(
         return generated
 
     if app_id == "contract-workbench":
-        generated = _workbench_profile_files(repo_root)
-        generated.pop("mcel.app.json", None)
+        projection = project_workbench_ir(compiled.normalized_ir)
+        generated = dict(projection.files)
         generated["mcel.generated.json"] = _ownership_bytes(
             app_id=app_id,
             generator="mcel.workbench.portable-ir-projection.v1",
@@ -90,13 +91,6 @@ def _manifest(text_files: Mapping[str, str]) -> Mapping[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, Mapping) else {}
-
-
-def _workbench_profile_files(repo_root: Path) -> dict[str, bytes]:
-    from main_computer.mcel_workbench_candidate_projection import _load_projection_profile
-
-    _manifest_value, files = _load_projection_profile(repo_root)
-    return dict(files)
 
 
 def _ownership_bytes(

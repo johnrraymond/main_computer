@@ -34,7 +34,7 @@ from .deployment_post_admission_steady_state import (
     _parse_utc,
     _timestamp,
 )
-from .deployment_private_rpc import _controller_config
+from .deployment_coolify_context import load_controller_config
 from .deployment_validator_admission_executor import _http
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
@@ -60,6 +60,26 @@ class MotherDeploymentCoolifyServiceLifecycleProbeError(RuntimeError):
 
 def _error(code: str, message: str) -> MotherDeploymentCoolifyServiceLifecycleProbeError:
     return MotherDeploymentCoolifyServiceLifecycleProbeError(code, message)
+
+
+def _controller_config(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+) -> dict[str, Any]:
+    """Load lifecycle-probe placement metadata without standalone-RPC coupling."""
+
+    return load_controller_config(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+        allowed_controllers=_ALLOWED_CONTROLLERS,
+        error_factory=_error,
+        rejected_code="MOTHER_DEPLOY_COOLIFY_SERVICE_LIFECYCLE_PROBE_CONTROLLER_INVALID",
+        invalid_code="MOTHER_DEPLOY_COOLIFY_SERVICE_LIFECYCLE_PROBE_PRIVATE_STATE_INVALID",
+        placement_description="Coolify lifecycle probing",
+    )
 
 
 def _validate(

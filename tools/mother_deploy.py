@@ -72,6 +72,8 @@ from tools.mother.common.deployment_genesis_rollback import (
     write_genesis_mutation_rollback_verification,
 )
 from tools.mother.common.deployment_genesis_release import (
+    DEFAULT_HUB_GIT_REF,
+    DEFAULT_HUB_GIT_REPOSITORY,
     MotherDeploymentGenesisReleaseError,
     build_deployment_genesis_release,
     verify_deployment_genesis_release,
@@ -679,13 +681,27 @@ def _parser() -> argparse.ArgumentParser:
     release_genesis.add_argument("--acknowledge-genesis-transaction-sha256", required=True)
     release_genesis.add_argument(
         "--hub-git-repository",
-        required=True,
-        help="credential-free HTTPS Git repository used to build the co-located Hub",
+        default=DEFAULT_HUB_GIT_REPOSITORY,
+        help=(
+            "credential-free HTTPS Git repository used to build the co-located Hub "
+            f"(default: {DEFAULT_HUB_GIT_REPOSITORY})"
+        ),
     )
-    release_genesis.add_argument(
+    hub_git_source = release_genesis.add_mutually_exclusive_group()
+    hub_git_source.add_argument(
+        "--hub-git-ref",
+        default=DEFAULT_HUB_GIT_REF,
+        help=(
+            "branch, tag, or lowercase commit ref used for the Hub build "
+            f"(default: {DEFAULT_HUB_GIT_REF})"
+        ),
+    )
+    hub_git_source.add_argument(
         "--hub-git-commit-sha",
-        required=True,
-        help="exact pushed lowercase 40-character commit containing Dockerfile.hub.exp-fdb",
+        help=(
+            "optional exact pushed lowercase 40-character commit; "
+            "legacy pinning alias for --hub-git-ref"
+        ),
     )
     release_genesis.add_argument("--expires-in-seconds", type=int, default=300)
     release_genesis.add_argument("--created-at")
@@ -1996,7 +2012,7 @@ def _cmd_release_genesis(args: argparse.Namespace, private_state) -> int:
         Path(args.transaction),
         acknowledged_genesis_transaction_sha256=args.acknowledge_genesis_transaction_sha256,
         hub_git_repository=args.hub_git_repository,
-        hub_git_commit_sha=args.hub_git_commit_sha,
+        hub_git_ref=(args.hub_git_commit_sha or args.hub_git_ref),
         selected_nodes=_selected_nodes(args.node),
         expires_in_seconds=args.expires_in_seconds,
         created_at=args.created_at,

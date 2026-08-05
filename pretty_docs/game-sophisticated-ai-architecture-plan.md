@@ -1372,6 +1372,35 @@ Implementation status:
 - the dock supports expanded, compact, and collapsed modes without timers or strategic-state changes;
 - desktop and narrow headless-browser geometry checks prove non-overlap.
 
+### AI-10A — Stable character policy foundation
+
+Objective:
+
+- introduce real in-world enemy and NPC identities behind one policy interface;
+- keep all movement, combat, repair, and communication effects inside game-owned validators and executors;
+- make later remote or local model calls optional rather than architectural dependencies.
+
+Acceptance proof:
+
+- `enemy.raider-boarder-01` and `npc.engineering-officer-01` render in the playable WebGL scene;
+- both receive bounded perception envelopes and choose only authored legal actions;
+- illegal, failed, pending, or stale external-policy results fall back deterministically;
+- phaser damage, player damage, engineering repair, support requests, and authored warnings generate receipts;
+- identity, health, position, memory, policy, and sequence restore from project-scoped local state;
+- a campaign-extension envelope exists for later repository-save promotion.
+
+Artifact boundary:
+
+- one browser-safe character runtime, one authored enemy, one authored NPC, one stable raider vessel identity, renderer integration, focused tests, and documentation.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-10-a-character-policy-and-playable-characters.md`;
+- the enemy supports patrol, pursuit, attack, cover, retreat, and one support request;
+- Engineering Officer Mara Venn supports repair, warning, cover, hold, protection memory, and follow behavior;
+- `RemoteCharacterPolicy` is nonblocking and can be registered without changing the renderer;
+- repository-backed character restoration remains constrained because the source snapshot does not include AI-9.5.
+
 ### AI-10 — Tactical and learned behavior experiments
 
 Objective:
@@ -1602,7 +1631,8 @@ Implemented:
 - developer inspection panel for real actor turns, off-screen advancement, campaign opportunities, commitments, communication, and full state inspection;
 - player-visible Vela Gate Authority channel using the live session, verified official action, safe briefing, and readable decision explanation;
 - exact-once navigation arrival integration with bounded off-screen progression and player-facing receipt-derived return summaries;
-- player-visible Solace Reach coordination with typed promise wording, one-shuttle allocation, kept-or-broken resolution, and trust-driven Osprey response.
+- player-visible Solace Reach coordination with typed promise wording, one-shuttle allocation, kept-or-broken resolution, and trust-driven Osprey response;
+- a browser-safe in-world character policy boundary with one stable raider boarder, Engineering Officer Mara Venn, bounded perceptions, legal actions, receipts, nonblocking remote-policy support, and deterministic fallback.
 
 Not implemented:
 
@@ -1612,28 +1642,26 @@ Not implemented:
 - report propagation outside authored Vela routes;
 - generated negotiation terms or unrestricted model prose;
 - multiple-resource plan search and independent promise deadlines;
-- tactical or real-time off-screen simulation;
+- tactical or real-time off-screen simulation beyond the first bounded in-world character encounter;
 - campaign-clock progression outside completed navigation arrivals or explicit director calls;
 - repository-backed strategic save integration;
 - additional player-facing Vela actors, deeper Solace negotiation, branching requests, and scene performance.
 
-The strategic stack now has a live browser harness, normal Vela and Solace interactions, completed-travel off-screen progression, player-facing return summaries, and a non-obscuring collapsible strategic UI dock. Repository-backed campaign save integration and scene performance remain unimplemented.
+The strategic stack now has a live browser harness, normal Vela and Solace interactions, completed-travel off-screen progression, player-facing return summaries, and a non-obscuring collapsible strategic UI dock. A separate in-world character runtime now drives one stable raider boarder and Engineering Officer Mara Venn through bounded perceptions, legal actions, receipts, and deterministic fallback. Repository-backed strategic and character save integration, real model transport, broader scene performance, and learned policies remain unimplemented.
 
 ## Smallest useful implementation slice
 
-AI-1 through AI-9.4.1 are implemented as a validated strategic stack, live project-scoped browser session, developer inspection panel, player-visible Vela and Solace interactions, exact-once travel progression, receipt-derived return summaries, and a non-obscuring collapsible strategic UI dock. The smallest useful next slice is AI-9.5's repository-backed campaign save integration and end-to-end replay proof:
+AI-1 through AI-9.4.1 and the constrained AI-10A character foundation are implemented in this snapshot. The smallest useful next slice remains repository persistence, now covering both strategic and character state:
 
 ```text
-complete Vela interaction
-→ travel and advance off-screen schedules
-→ resolve Solace allocation
-→ write one campaign save
-→ reload the application
-→ restore navigation, strategic state, arrival receipts, and acknowledgements
-→ reproduce the same next verified result
+apply or restore AI-9.5 repository campaign saves
+→ include game.characterAI.campaignExtension.v1
+→ reload fresh strategic, navigation, and character runtimes
+→ restore health, position, memory, receipts, and decision sequence
+→ reproduce the same next legal character action
 ```
 
-AI-9.5 should promote the existing compatible session envelope into the normal game save surface rather than introducing another strategic serialization format. AI-10 tactical or learned experiments should remain deferred until one durable cross-system campaign replay is proven.
+Only after that durable boundary should one real remote or local model call be attached through `RemoteCharacterPolicy`. The call must remain opt-in, bounded by a timeout, and unable to bypass action validation or deterministic fallback.
 
 ## Research basis
 

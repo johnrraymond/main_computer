@@ -1,9 +1,9 @@
 """Portable Contract Workbench candidate projection for Wave 11.
 
 The canonical candidate IR contains only registered constrained domain calls.
-A versioned projection profile supplies deterministic low-level JavaScript
-mechanics.  The projector never executes or rereads legacy callback source to
-generate candidate artifacts.
+A versioned in-code projection profile supplies deterministic low-level JavaScript
+mechanics. The projector never reads a generated snapshot or executes legacy
+callback source to generate candidate artifacts.
 """
 
 from __future__ import annotations
@@ -26,26 +26,22 @@ from main_computer.mcel_application_packages import (
 )
 from main_computer.mcel_application_runtime_projection import build_application_runtime_projection
 from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT, compile_dsl_application
+from main_computer.mcel_projection_profiles.contract_workbench_v1 import (
+    GENERATED_PATHS as PROFILE_GENERATED_PATHS,
+    PROFILE_ID,
+    project_workbench_ir,
+)
 
 APP_ID = "contract-workbench"
 REPORT_SCHEMA = "mcel.workbench-candidate-projection-report.v1"
 VERSION = "mcel-workbench-candidate-projection-wave11"
-PROJECTION_PROFILE = "mcel.workbench.portable-ir-projection.v1"
+PROJECTION_PROFILE = PROFILE_ID
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DSL_SOURCE = Path("mcel_apps/contract-workbench/application.js")
 DEFAULT_FIXTURE_IR = Path("tests/fixtures/mcel_application_ir/contract-workbench.ir.json")
 DEFAULT_PACKAGE_ROOT = Path("mcel_apps/contract-workbench")
-PROFILE_ROOT = Path("main_computer/mcel_projection_profiles/contract-workbench-v1")
-GENERATED_PATHS = (
-    "generated/mcel.application.normalized.json",
-    "contracts/domain.js",
-    "contracts/intents.js",
-    "contracts/adapter.js",
-    "contracts/surface.js",
-    "contracts/layout.js",
-    "contracts/acceptance.js",
-    "contracts/observation.js",
-)
+PROFILE_MODULE_PATH = Path("main_computer/mcel_projection_profiles/contract_workbench_v1.py")
+GENERATED_PATHS = PROFILE_GENERATED_PATHS
 
 
 @dataclass(frozen=True)
@@ -101,7 +97,7 @@ def project_workbench_candidate(
         return _result(False, "semantic-conflict", diagnostics, {"comparison": live_dsl})
 
     try:
-        profile_manifest, profile_files = _load_projection_profile(repo)
+        profile_manifest, profile_files = _load_projection_profile(dsl.normalized_ir)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         diagnostics.append(_diagnostic("MCEL_WORKBENCH_PROJECTION_PROFILE_INVALID", f"Portable Workbench projection profile is invalid: {exc}", "$projectionProfile"))
         return _result(False, "invalid-projection-profile", diagnostics, {})
@@ -192,7 +188,7 @@ def project_workbench_candidate(
             "opaqueCallbackDebt": _count_active_opaque(dsl.normalized_ir),
         },
         "projectionProfileBinding": {
-            "path": _display(_resolve(repo, PROFILE_ROOT)),
+            "path": _display(_resolve(repo, PROFILE_MODULE_PATH)),
             "profile": profile_manifest,
         },
         "comparison": {"liveToDsl": live_dsl, "status": "exact" if live_dsl.get("status") == "exact" else "conflicting"},
@@ -229,36 +225,11 @@ def project_workbench_candidate(
     return WorkbenchCandidateProjectionReport(exact, report["status"], tuple(diagnostics), report, candidate_directory if write_candidate else None, report_path)
 
 
-def _load_projection_profile(repo: Path) -> tuple[Mapping[str, Any], dict[str, bytes]]:
-    root = _resolve(repo, PROFILE_ROOT)
-    manifest = json.loads((root / "profile.json").read_text(encoding="utf-8"))
-    if manifest.get("schema") != "mcel.application-projection-profile.v1" or manifest.get("id") != PROJECTION_PROFILE:
-        raise ValueError("profile identity does not match the Workbench Wave 11 projection authority")
-    if manifest.get("appId") != APP_ID or manifest.get("portableIrProjectionComplete") is not True:
-        raise ValueError("profile does not declare complete portable Workbench projection")
-    from main_computer.mcel_constrained_expression import DomainOperatorRegistry
-    from main_computer.mcel_workbench_expression_profile import operator_records
-
-    registry = DomainOperatorRegistry.from_records(operator_records()).to_record()
-    if manifest.get("operatorCount") != len(registry.get("operators") or []):
-        raise ValueError("projection profile operator count does not match the constrained-expression registry")
-    if manifest.get("operatorRegistryFingerprint") != registry.get("fingerprint"):
-        raise ValueError("projection profile operator registry fingerprint is stale")
-    files: dict[str, bytes] = {}
-    for entry in manifest.get("files") or []:
-        relative = str((entry or {}).get("path") or "")
-        if relative == "mcel.app.json":
-            continue  # Legacy snapshot metadata is authored package state, not generated output.
-        if relative not in GENERATED_PATHS:
-            raise ValueError(f"unexpected projection file {relative!r}")
-        content = (root / relative).read_bytes()
-        observed = _sha(content)
-        if observed != entry.get("sha256"):
-            raise ValueError(f"projection profile hash mismatch for {relative}")
-        files[relative] = content
-    if set(files) != set(GENERATED_PATHS):
-        raise ValueError("projection profile file set is incomplete")
-    return manifest, files
+def _load_projection_profile(
+    application_ir: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], dict[str, bytes]]:
+    projection = project_workbench_ir(application_ir)
+    return projection.profile, dict(projection.files)
 
 
 def _count_active_opaque(value: Any) -> int:

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from main_computer.mcel_application_build import ensure_mcel_browser_build
 from main_computer.mcel_application_packages import build_application_package_catalog
+from main_computer.mcel_application_virtual_assets import (
+    CATALOG_ROUTE,
+    build_virtual_mcel_browser_assets,
+    normalize_mcel_asset_route,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +87,62 @@ def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path
     assert (runtime_root / "contract-counter/contracts/domain.js").is_file()
     assert (runtime_root / "contract-workbench/contracts/domain.js").is_file()
 
+    virtual_assets = build_virtual_mcel_browser_assets(REPO_ROOT)
+    physical_files = {
+        CATALOG_ROUTE: catalog_path.read_bytes(),
+    }
+    for path in sorted(runtime_root.rglob("*")):
+        if path.is_file():
+            route = "applications/mcel-packages/" + path.relative_to(runtime_root).as_posix()
+            physical_files[route] = path.read_bytes()
+    assert physical_files == dict(virtual_assets.files)
+
     for app_id in PROMOTED_APPS:
         assert not _files_beneath(REPO_ROOT / "mcel_apps" / app_id / "contracts")
     assert not _files_beneath(REPO_ROOT / "main_computer/web/applications/mcel-packages")
+
+
+def test_normal_viewport_mount_assets_stay_in_memory(tmp_path: Path) -> None:
+    shutil.copytree(REPO_ROOT / "mcel_apps", tmp_path / "mcel_apps")
+
+    assets = build_virtual_mcel_browser_assets(tmp_path)
+
+    assert assets.files[CATALOG_ROUTE].startswith(b"var McelApplicationPackages")
+    assert assets.files[
+        "applications/mcel-packages/contract-counter/contracts/domain.js"
+    ]
+    assert assets.files[
+        "applications/mcel-packages/contract-workbench/mcel.runtime.json"
+    ]
+    assert not (tmp_path / "runtime").exists()
+
+
+def test_normal_viewport_mount_path_has_no_materializing_build_dependency() -> None:
+    pages = (REPO_ROOT / "main_computer/viewport_pages.py").read_text(encoding="utf-8")
+    routes = (REPO_ROOT / "main_computer/viewport_routes_applications.py").read_text(encoding="utf-8")
+
+    assert "read_virtual_mcel_browser_asset" in pages
+    assert "read_virtual_mcel_browser_asset" in routes
+    assert "ensure_mcel_browser_build" not in pages
+    assert "ensure_mcel_browser_build" not in routes
+
+
+def test_virtual_mount_asset_paths_fail_closed() -> None:
+    assert (
+        normalize_mcel_asset_route("/applications/scripts/mcel-application-package-catalog.js")
+        == CATALOG_ROUTE
+    )
+
+    for path in (
+        "",
+        "/applications/mcel-packages/",
+        "/applications/mcel-packages/contract-counter",
+        "/applications/mcel-packages/../secret.txt",
+        "/main_computer/web/applications/scripts/mcel-core.js",
+    ):
+        try:
+            normalize_mcel_asset_route(path)
+        except RuntimeError:
+            continue
+        raise AssertionError(f"unsafe virtual MCEL asset path was accepted: {path!r}")
+

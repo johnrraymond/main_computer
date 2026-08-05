@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -186,19 +186,40 @@ def test_workbench_native_operator_migration_preserves_v1_semantic_identity() ->
     assert compare_application_ir(native, legacy_report.normalized)["status"] == "exact"
 
 
-def test_workbench_projection_profile_hashes_fail_closed(tmp_path: Path) -> None:
-    from main_computer.mcel_workbench_candidate_projection import PROFILE_ROOT, _load_projection_profile
+def test_workbench_projection_profile_is_deterministic_in_memory_and_fails_closed() -> None:
+    from main_computer.mcel_projection_profiles.contract_workbench_v1 import (
+        WorkbenchProjectionProfileError,
+        project_workbench_ir,
+    )
 
-    profile_source = REPO / PROFILE_ROOT
-    profile_target = tmp_path / PROFILE_ROOT
-    profile_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(profile_source, profile_target)
+    compiled = compile_dsl_application(DSL, compare_ir_path=IR)
+    assert compiled.valid is True
+    assert compiled.normalized_ir is not None
 
-    manifest, files = _load_projection_profile(tmp_path)
-    assert manifest["portableIrProjectionComplete"] is True
-    assert len(files) == 8
+    first = project_workbench_ir(compiled.normalized_ir)
+    second = project_workbench_ir(compiled.normalized_ir)
+    assert first.profile["portableIrProjectionComplete"] is True
+    assert first.profile["materialization"] == "in-memory"
+    assert first.definition_fingerprint == "sha256:6cb3c6d27a351fdd12e9d9e714e70ba75ed87468bc56815a54bf2078784c408d"
+    assert first.files == second.files
+    assert len(first.files) == 8
+    assert {
+        path: hashlib.sha256(content).hexdigest()
+        for path, content in sorted(first.files.items())
+    } == {
+        "contracts/acceptance.js": "5467b5046b047c7115d9d71d697a88708b0017d097633506cf0fde6fa6998649",
+        "contracts/adapter.js": "687f7c5796f762db76ae225930f1cb6b41b6ef8dd7a04b859514ef7b5d65b0de",
+        "contracts/domain.js": "c3521c700d23a511f421367963b4d289c45c69cc6061dfea306c02de5d012ef7",
+        "contracts/intents.js": "5af3195bbb6807c29bde73e938ebd50cde2873b86499c3acccf6aa18b341561a",
+        "contracts/layout.js": "26208932cfd0e3de4f8fddd43768850f8935fe32afde6314de4ff7df903f4a04",
+        "contracts/observation.js": "c6e81543499933b634b0f93b6f869fd3566f3e2fbe3349175aa075026be70fa4",
+        "contracts/surface.js": "ef28950b2af3acdcc7fb7cb5c7be9e806f7651b799135d15f2a88917f258688f",
+        "generated/mcel.application.normalized.json": "5c3b7436338c93aba3085c5ec2c8937d71e7c6320c56ba16e9b4af92b96b0cfe",
+    }
+    legacy_profile = REPO / "main_computer/mcel_projection_profiles/contract-workbench-v1"
+    assert not legacy_profile.exists() or not any(path.is_file() for path in legacy_profile.rglob("*"))
 
-    drifted = profile_target / "contracts/domain.js"
-    drifted.write_text(drifted.read_text(encoding="utf-8") + "\n// drift\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="hash mismatch"):
-        _load_projection_profile(tmp_path)
+    drifted = json.loads(json.dumps(compiled.normalized_ir))
+    drifted["fingerprints"]["semantic"] = "sha256:stale"
+    with pytest.raises(WorkbenchProjectionProfileError, match="semantic fingerprint"):
+        project_workbench_ir(drifted)

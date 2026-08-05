@@ -36,12 +36,7 @@ PLAN_SCHEMA = "mcel.application-promotion-plan.v1"
 OWNERSHIP_SCHEMA = "mcel.generated-file-ownership.v1"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_ROOT = Path("runtime/reports/mcel-compiler-candidates")
-PROMOTION_SUPPORT_ROOT = Path("main_computer/mcel_projection_profiles/contract-workbench-v1/promotion")
-PROMOTION_SUPPORT_FILES = (
-    "tests/test_forward_spec.py",
-    "tests/test_operations.py",
-    "tests/test_package.py",
-)
+PROMOTION_SUPPORT_FILES: tuple[str, ...] = ()
 
 
 class WorkbenchPromotionRehearsalError(RuntimeError):
@@ -148,7 +143,7 @@ def rehearse_workbench_promotion(
             evidence=evidence_payload,
         )
         _stage_material(rehearsal_state, plan, promoted, live_package)
-        _prepare_workspace(repo, workspace, candidate_package)
+        _prepare_workspace(repo, workspace, live_package)
         pre = _workspace_fingerprints(workspace)
         _apply_plan(workspace, plan, promoted)
         _verify_plan_after_hashes(workspace, plan)
@@ -238,9 +233,6 @@ def _build_promotion_plan(*, live_package: Path, candidate_package: Path, dsl_so
     promoted: dict[str, bytes] = {}
     root = f"mcel_apps/{APP_ID}"
     promoted[f"{root}/application.js"] = dsl_source.read_bytes()
-    profile_root = Path(__file__).resolve().parents[1] / PROMOTION_SUPPORT_ROOT
-    for relative in PROMOTION_SUPPORT_FILES:
-        promoted[f"{root}/{relative}"] = (profile_root / relative).read_bytes()
     generated_paths = sorted(path for path in GENERATED_PATHS if path != "mcel.app.json")
     for relative in generated_paths:
         promoted[f"{root}/{relative}"] = (candidate_package / relative).read_bytes()

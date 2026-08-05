@@ -91,12 +91,6 @@
       "order": 34
     },
     {
-      "path": "mcel-source-tree-dematerialization.md",
-      "title": "MCEL Source-Tree De-Materialization",
-      "kind": "markdown",
-      "order": 34.5
-    },
-    {
       "path": "mcel-system-guide.md",
       "title": "MCEL System Guide",
       "kind": "markdown",
@@ -427,46 +421,52 @@
       "order": 90
     },
     {
+      "path": "game-ai-patch-10-a-character-policy-and-playable-characters.md",
+      "title": "Game AI Patch 10A — Character Policy Foundation and Playable Characters",
+      "kind": "markdown",
+      "order": 91
+    },
+    {
       "path": "game-forty-system-scenario-bible.md",
       "title": "Thirty-Two-System Scenario Bible",
       "kind": "markdown",
-      "order": 91
+      "order": 92
     },
     {
       "path": "game-forty-system-route-scenarios.md",
       "title": "Thirty-Two-System Route Scenario Seeds",
       "kind": "markdown",
-      "order": 92
+      "order": 93
     },
     {
       "path": "game-scenarios-origin-region.md",
       "title": "Origin Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 93
+      "order": 94
     },
     {
       "path": "game-scenarios-meridian-region.md",
       "title": "Meridian Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 94
+      "order": 95
     },
     {
       "path": "game-scenarios-helix-region.md",
       "title": "Helix Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 95
+      "order": 96
     },
     {
       "path": "game-scenarios-crown-region.md",
       "title": "Crown Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 96
+      "order": 97
     },
     {
       "path": "game-scenarios-verge-region.md",
       "title": "Verge Cluster Scenario Dossiers",
       "kind": "markdown",
-      "order": 97
+      "order": 98
     }
   ]
 }

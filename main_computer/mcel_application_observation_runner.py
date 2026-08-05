@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
 from typing import Any, Mapping
 
@@ -309,12 +309,21 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
 
 
 def _scenario_linked_observation(repo: Path, record: Any) -> bool:
+    del repo  # Scenario authority comes from the catalog's logical package, not source-tree materialization.
     reference = str((record.contracts or {}).get("observation") or "")
-    if not reference:
+    package_root = str(getattr(record, "package_root", "") or "")
+    if not reference or not package_root:
         return False
     try:
-        source = (repo / reference).read_text(encoding="utf-8")
-    except OSError:
+        relative = PurePosixPath(reference).relative_to(PurePosixPath(package_root)).as_posix()
+    except ValueError:
+        return False
+    content = (getattr(record, "files", None) or {}).get(relative)
+    if not isinstance(content, (bytes, bytearray)):
+        return False
+    try:
+        source = bytes(content).decode("utf-8")
+    except UnicodeDecodeError:
         return False
     return '"currentStatus": "scenario-linked"' in source or 'currentStatus: "scenario-linked"' in source
 

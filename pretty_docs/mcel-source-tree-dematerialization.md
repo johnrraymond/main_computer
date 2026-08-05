@@ -23,16 +23,18 @@ mcel.generated.json
 
 Workbench also exposes `generated/mcel.application.normalized.json`. These bytes are computed, not durable application source.
 
-## Ephemeral browser build
+## Virtual viewport mount and ephemeral browser build
 
-Browser packages and the package catalog are materialized only beneath the ignored build root:
+Normal viewport mounting serves the package catalog, runtime manifest, contracts, and browser runtime files directly from the logical package in memory. Starting the viewport, opening the Applications page, and requesting an MCEL package asset do not publish a browser-build tree.
+
+Explicit build, observation, and proof workflows may still materialize the same deterministic bytes beneath the ignored build root:
 
 ```text
 runtime/build/mcel/web/applications/mcel-packages/
 runtime/build/mcel/web/applications/scripts/mcel-application-package-catalog.js
 ```
 
-The viewport and observation runner generate this build on demand. The whole `runtime/build/mcel` tree may be deleted at any time and reconstructed from authoritative source.
+The whole `runtime/build/mcel` tree is disposable. It may be deleted at any time and reconstructed from authoritative source when a workflow requires physical browser files.
 
 ## Deleted durable duplicates
 
@@ -53,6 +55,8 @@ repository-bound proof
 
 Package and catalog fingerprints may change when the logical package implementation or authored tests change. That is not a semantic application change.
 
-## Remaining compatibility debt
+## Workbench projection profile de-materialization
 
-Workbench generation still uses the centralized, versioned compatibility snapshot under `main_computer/mcel_projection_profiles/contract-workbench-v1`. That snapshot is no longer copied into `mcel_apps` or the checked-in browser tree, but it remains a compiler backend. A later change should replace the snapshot bundle with an actual deterministic projector before deleting it.
+Workbench generation no longer reads a checked-in compatibility snapshot. The versioned projector in `main_computer/mcel_projection_profiles/contract_workbench_v1.py` reconstructs the logical compatibility package deterministically from canonical Workbench IR plus compact projection policy.
+
+The copied profile manifest, normalized definition, generated contracts, and promotion-test snapshot under `main_computer/mcel_projection_profiles/contract-workbench-v1/` have been removed. Projection outputs exist only in memory or in disposable compiler-candidate, runtime-build, and promotion-transaction workspaces. Mounting the authoritative DSL package therefore does not create generated files beneath `mcel_apps`, the checked-in browser tree, or the projection-profile source tree.

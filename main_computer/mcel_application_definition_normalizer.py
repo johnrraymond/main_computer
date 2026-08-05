@@ -411,6 +411,47 @@ def _render_simple(app: Mapping[str, Any], export_name: str, fingerprint: str, k
     return source.encode("utf-8")
 
 
+def render_application_definition_files(
+    app_id: str,
+    definition: Mapping[str, Any],
+    *,
+    source_reference: str,
+    source_sha256: str,
+) -> tuple[str, dict[str, bytes]]:
+    """Render deterministic compatibility files without writing them to disk."""
+
+    if definition.get("id") != app_id:
+        raise ApplicationDefinitionNormalizationError(
+            "Application definition identity disagrees with requested projection identity."
+        )
+    normalized_body = {
+        "schema": NORMALIZED_SCHEMA,
+        "normalizer": NORMALIZER_VERSION,
+        "appId": app_id,
+        "source": source_reference,
+        "sourceSha256": source_sha256,
+        "definition": _without_function_sources(definition),
+    }
+    fingerprint = "sha256:" + _sha256(_canonical_json(normalized_body))
+    normalized = {**normalized_body, "definitionFingerprint": fingerprint}
+    class_name = _class_name(app_id)
+    files: dict[str, bytes] = {
+        NORMALIZED_PATH: _canonical_json(normalized),
+        "contracts/domain.js": _render_domain(definition, f"{class_name}Domain", fingerprint),
+        "contracts/intents.js": _render_intents(definition, f"{class_name}Intents", fingerprint),
+        "contracts/adapter.js": _render_adapter(definition, f"{class_name}Adapter", fingerprint),
+        "contracts/surface.js": _render_surface(definition, f"{class_name}Surface", fingerprint),
+        "contracts/layout.js": _render_simple(definition, f"{class_name}Layout", fingerprint, "layout"),
+        "contracts/acceptance.js": _render_simple(
+            definition, f"{class_name}Acceptance", fingerprint, "acceptance"
+        ),
+        "contracts/observation.js": _render_simple(
+            definition, f"{class_name}Observation", fingerprint, "observation"
+        ),
+    }
+    return fingerprint, files
+
+
 def build_normalization_plan(app_id: str, repo_root: Path | None = None) -> NormalizationPlan:
     repo = (Path(repo_root) if repo_root is not None else repository_root()).resolve()
     catalog = build_application_package_catalog(repo)
@@ -427,27 +468,12 @@ def build_normalization_plan(app_id: str, repo_root: Path | None = None) -> Norm
         raise ApplicationDefinitionNormalizationError("Application definition identity disagrees with package identity.")
     source_bytes = definition_path.read_bytes()
     source_sha = _sha256(source_bytes)
-    normalized_body = {
-        "schema": NORMALIZED_SCHEMA,
-        "normalizer": NORMALIZER_VERSION,
-        "appId": app_id,
-        "source": definition_reference,
-        "sourceSha256": source_sha,
-        "definition": _without_function_sources(exported),
-    }
-    fingerprint = "sha256:" + _sha256(_canonical_json(normalized_body))
-    normalized = {**normalized_body, "definitionFingerprint": fingerprint}
-    class_name = _class_name(app_id)
-    files: dict[str, bytes] = {
-        NORMALIZED_PATH: _canonical_json(normalized),
-        "contracts/domain.js": _render_domain(exported, f"{class_name}Domain", fingerprint),
-        "contracts/intents.js": _render_intents(exported, f"{class_name}Intents", fingerprint),
-        "contracts/adapter.js": _render_adapter(exported, f"{class_name}Adapter", fingerprint),
-        "contracts/surface.js": _render_surface(exported, f"{class_name}Surface", fingerprint),
-        "contracts/layout.js": _render_simple(exported, f"{class_name}Layout", fingerprint, "layout"),
-        "contracts/acceptance.js": _render_simple(exported, f"{class_name}Acceptance", fingerprint, "acceptance"),
-        "contracts/observation.js": _render_simple(exported, f"{class_name}Observation", fingerprint, "observation"),
-    }
+    fingerprint, files = render_application_definition_files(
+        app_id,
+        exported,
+        source_reference=definition_reference,
+        source_sha256=source_sha,
+    )
     manifest_path = package_root / "mcel.app.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     authoring = dict(manifest.get("authoring") or {})

@@ -5550,6 +5550,11 @@
           this.shipDefinitionValidation = this.interiorConfig.validationReport;
           this.spaceNavigationRuntime = this.createSpaceNavigationRuntime(options);
           this.spaceNavigationError = this.spaceNavigationRuntime ? "" : this.spaceNavigationError || "Space-navigation definition unavailable.";
+          this.characterAIRuntime = this.createCharacterAIRuntime(options);
+          this.characterAIError = this.characterAIRuntime ? "" : this.characterAIError || "Character AI definition unavailable.";
+          this.lastCharacterAIUiAt = -Infinity;
+          this.onCharacterAIChanged = null;
+          this.lastCharacterAIMessage = "";
           this.navigationConsoleOpen = false;
           this.navigationConsoleAccessTargetId = "";
           this.lastNavigationUiAt = -Infinity;
@@ -5836,6 +5841,190 @@
             console.error("Space-navigation runtime initialization failed", error);
             return null;
           }
+        }
+
+        createCharacterAIRuntime(options = {}) {
+          const api = globalThis.MainComputerCharacterAIRuntime;
+          const definition = options.characterAI
+            || options.project?.metadata?.characterAI
+            || null;
+          if ((!api?.ensure && !api?.create) || !definition) {
+            api?.clearCurrent?.();
+            return null;
+          }
+          try {
+            const projectId = options.projectId || options.project?.id || "game-project";
+            return api.ensure
+              ? api.ensure(projectId, definition)
+              : api.create(definition, {projectId});
+          } catch (error) {
+            this.characterAIError = error instanceof Error
+              ? error.message
+              : String(error || "Character AI runtime failed.");
+            api?.clearCurrent?.();
+            console.error("Character AI runtime initialization failed", error);
+            return null;
+          }
+        }
+
+        characterAIPhase() {
+          if (this.isDockingCutsceneActive?.()) return "transition";
+          return this.isShuttleBaySceneActive?.() ? "mother-ship" : "shuttle";
+        }
+
+        canCharacterOccupy(characterId, x, z) {
+          const {bounds, colliders} = this.movement;
+          const radius = 0.34;
+          if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
+          const blockedByFixture = colliders.some((collider) => (
+            x > collider.minX - radius
+            && x < collider.maxX + radius
+            && z > collider.minZ - radius
+            && z < collider.maxZ + radius
+          ));
+          if (blockedByFixture) return false;
+          const characters = this.characterAIRuntime?.activeCharacters?.() || [];
+          return !characters.some((other) => (
+            other.id !== characterId
+            && Math.hypot(x - other.position[0], z - other.position[2]) < radius * 1.7
+          ));
+        }
+
+        characterAIWorld(nowMs = this.lastFrameTime ?? 0) {
+          const navigation = this.navigationSnapshot?.(nowMs) || {};
+          return {
+            phase: this.characterAIPhase(),
+            player: {
+              alive: !this.gameOver && this.playerHealth > 0,
+              health: this.playerHealth,
+              position: this.camera.slice()
+            },
+            ship: {
+              power: String(this.shipState?.power || "unknown"),
+              security: String(this.shipState?.security || "unknown"),
+              currentSystemId: String(navigation.currentSystemId || "")
+            },
+            canOccupy: (characterId, x, z) => this.canCharacterOccupy(characterId, x, z)
+          };
+        }
+
+        visibleCharacterAICharacters() {
+          if (!this.characterAIRuntime?.activeCharacters) return [];
+          const phase = this.characterAIPhase();
+          return this.characterAIRuntime.activeCharacters().filter((character) => {
+            const definition = this.characterAIRuntime.characterDefinition?.(character.id);
+            const activePhases = Array.isArray(definition?.activePhases)
+              ? definition.activePhases
+              : [];
+            return !activePhases.length || activePhases.includes(phase);
+          });
+        }
+
+        characterAISnapshot() {
+          const summary = this.characterAIRuntime?.summary?.() || null;
+          return {
+            enabled: Boolean(summary),
+            error: this.characterAIError || "",
+            phase: this.characterAIPhase(),
+            summary,
+            characters: this.visibleCharacterAICharacters()
+          };
+        }
+
+        emitCharacterAIState(force = false) {
+          if (typeof this.onCharacterAIChanged !== "function") return;
+          const nowMs = Number.isFinite(this.lastFrameTime) ? this.lastFrameTime : 0;
+          if (!force && nowMs - this.lastCharacterAIUiAt < 120) return;
+          this.lastCharacterAIUiAt = nowMs;
+          this.onCharacterAIChanged(this.characterAISnapshot());
+        }
+
+        applyCharacterAIEffect(effect, nowMs) {
+          const item = effect && typeof effect === "object" ? effect : {};
+          if (item.type === "damage-player") {
+            this.playerHealth = Math.max(0, this.playerHealth - Math.max(0, Number(item.amount) || 0));
+            if (this.playerHealth <= 0) {
+              this.gameOver = true;
+              this.clearMovementKeys();
+            }
+            return true;
+          }
+          if (item.type === "repair-ship-power") {
+            if (this.shipState?.power !== "online") {
+              this.restoreEngineeringPower(null, {
+                status: "Engineering Officer Mara Venn restored main power. Bridge route confirmed open."
+              });
+            }
+            return true;
+          }
+          if (item.type === "character-message" || item.type === "support-requested") {
+            const message = String(item.message || "").trim();
+            if (message && message !== this.lastCharacterAIMessage) {
+              this.lastCharacterAIMessage = message;
+              this.setShipInteractionStatus?.(message);
+            }
+            return Boolean(message);
+          }
+          return false;
+        }
+
+        updateCharacterAI(nowMs, deltaSeconds) {
+          if (!this.characterAIRuntime?.step) return null;
+          if (this.isDockingCutsceneActive?.()) {
+            this.emitCharacterAIState();
+            return null;
+          }
+          let result = null;
+          try {
+            result = this.characterAIRuntime.step(this.characterAIWorld(nowMs), nowMs);
+            let effectChanged = false;
+            (result.effects || []).forEach((effect) => {
+              effectChanged = this.applyCharacterAIEffect(effect, nowMs) || effectChanged;
+            });
+            if (result.changed || effectChanged) {
+              this.emitCharacterAIState(true);
+              this.emitCombatState(true);
+              this.emitShipState(true);
+            } else {
+              this.emitCharacterAIState();
+            }
+          } catch (error) {
+            this.characterAIError = error instanceof Error
+              ? error.message
+              : String(error || "Character AI update failed.");
+            console.error("Character AI update failed", error);
+            this.emitCharacterAIState(true);
+          }
+          return result;
+        }
+
+        appendCharacterAIGeometry(builder, nowMs) {
+          const characters = this.visibleCharacterAICharacters();
+          characters.forEach((character) => {
+            const [x, y, z] = character.position;
+            const ratio = Math.max(0, Math.min(1, character.health / Math.max(1, character.maxHealth)));
+            const enemy = character.kind === "enemy";
+            const body = builder.color(enemy ? "#365314" : "#1d4ed8");
+            const armor = builder.color(enemy ? "#1a2e05" : "#0f172a");
+            const accent = builder.color(enemy ? "#ef4444" : "#67e8f9", true);
+            const healthBack = builder.color("#111827");
+            const healthFill = builder.color(enemy ? "#84cc16" : "#38bdf8", true);
+
+            builder.ellipsoid([x, y + 0.28, z], [0.32, 0.68, 0.28], 10, 6, body);
+            builder.ellipsoid([x, y + 1.02, z], [0.29, 0.31, 0.28], 10, 6, body);
+            builder.box([x - 0.43, y + 0.18, z - 0.15], [x + 0.43, y + 0.4, z + 0.15], armor);
+            builder.box([x - 0.18, y - 0.68, z - 0.14], [x - 0.04, y + 0.06, z + 0.14], armor);
+            builder.box([x + 0.04, y - 0.68, z - 0.14], [x + 0.18, y + 0.06, z + 0.14], armor);
+            builder.box([x - 0.18, y + 1.03, z - 0.31], [x + 0.18, y + 1.11, z - 0.27], accent);
+            builder.box([x - 0.46, y + 1.47, z - 0.06], [x + 0.46, y + 1.55, z + 0.06], healthBack);
+            if (ratio > 0) {
+              builder.box(
+                [x - 0.44, y + 1.48, z - 0.065],
+                [x - 0.44 + 0.88 * ratio, y + 1.54, z + 0.065],
+                healthFill
+              );
+            }
+          });
         }
 
         navigationSnapshot(nowMs = null) {
@@ -6678,8 +6867,18 @@
           return this.isDockingCutsceneActive() || this.isShuttleBaySceneActive();
         }
 
+        hasActiveCharacterEnemy() {
+          return this.visibleCharacterAICharacters()
+            .some((character) => character.kind === "enemy" && character.health > 0);
+        }
+
         isBoardingPaused() {
-          return Boolean(this.pilot?.active || this.isDockingSceneActive() || this.isWarpTravelActive());
+          return Boolean(
+            this.pilot?.active
+            || this.isDockingCutsceneActive()
+            || this.isWarpTravelActive()
+            || (this.isShuttleBaySceneActive() && !this.hasActiveCharacterEnemy())
+          );
         }
 
         dockingCutsceneSnapshot(nowMs = this.lastFrameTime ?? performance.now()) {
@@ -8036,6 +8235,7 @@
           this.appendPilotStationHighlights(builder, nowMs);
           this.appendPilotViewModel(builder);
           this.appendPhaserViewModel(builder);
+          this.appendCharacterAIGeometry(builder, nowMs);
 
           this.aliens.forEach((alien) => {
             const [x, y, z] = alien.position;
@@ -8084,12 +8284,14 @@
             0,
             this.combat.phaser.cooldownMs - (nowMs - this.lastPhaserShotAt)
           );
+          const characterEnemies = this.visibleCharacterAICharacters()
+            .filter((character) => character.kind === "enemy");
           return {
             enabled: this.combat.enabled,
             health: Math.max(0, Math.round(this.playerHealth)),
             maxHealth: this.combat.player.maxHealth,
-            alive: this.aliens.length,
-            active: this.aliens.filter((alien) => alien.state === "active").length,
+            alive: this.aliens.length + characterEnemies.length,
+            active: this.aliens.filter((alien) => alien.state === "active").length + characterEnemies.length,
             transporting: this.aliens.filter((alien) => alien.state === "transporting").length,
             kills: this.kills,
             gameOver: this.gameOver,
@@ -8159,7 +8361,7 @@
             return;
           }
 
-          if (nowMs >= this.nextTransportAtMs) {
+          if (!this.characterAIRuntime && nowMs >= this.nextTransportAtMs) {
             this.spawnAlien(nowMs);
             this.nextTransportAtMs = nowMs + this.combat.transport.intervalMs;
           }
@@ -8212,11 +8414,11 @@
             this.camera[1] + forward[1] * 0.42 + right[1] * 0.18 - up[1] * 0.1,
             this.camera[2] + forward[2] * 0.42 + right[2] * 0.18 - up[2] * 0.1
           ];
+
           let hitAlien = null;
+          let hitCharacter = null;
           let hitDistance = this.combat.phaser.range;
-          this.aliens.forEach((alien) => {
-            if (alien.state !== "active") return;
-            const center = [alien.position[0], alien.position[1] + 0.78, alien.position[2]];
+          const considerTarget = (target, center, radius, kind) => {
             const toCenter = shuttle3dSubtract(center, this.camera);
             const distanceAlongRay = shuttle3dDot(toCenter, forward);
             if (distanceAlongRay <= 0 || distanceAlongRay >= hitDistance) return;
@@ -8230,11 +8432,36 @@
               closest[1] - center[1],
               closest[2] - center[2]
             );
-            if (missDistance <= Math.max(0.68, this.combat.alien.radius * 1.7)) {
-              hitAlien = alien;
-              hitDistance = distanceAlongRay;
+            if (missDistance > radius) return;
+            hitDistance = distanceAlongRay;
+            if (kind === "character") {
+              hitCharacter = target;
+              hitAlien = null;
+            } else {
+              hitAlien = target;
+              hitCharacter = null;
             }
+          };
+
+          this.aliens.forEach((alien) => {
+            if (alien.state !== "active") return;
+            considerTarget(
+              alien,
+              [alien.position[0], alien.position[1] + 0.78, alien.position[2]],
+              Math.max(0.68, this.combat.alien.radius * 1.7),
+              "alien"
+            );
           });
+          this.visibleCharacterAICharacters()
+            .filter((character) => character.kind === "enemy")
+            .forEach((character) => {
+              considerTarget(
+                character,
+                [character.position[0], character.position[1] + 0.78, character.position[2]],
+                0.7,
+                "character"
+              );
+            });
 
           const end = [
             this.camera[0] + forward[0] * hitDistance,
@@ -8255,6 +8482,25 @@
               this.kills += 1;
             }
           }
+          if (hitCharacter && this.characterAIRuntime?.damageCharacter) {
+            const before = this.characterAIRuntime.character(hitCharacter.id);
+            const result = this.characterAIRuntime.damageCharacter(
+              hitCharacter.id,
+              this.combat.phaser.damage,
+              {sourceId: "player", nowMs}
+            );
+            if (before?.health > 0 && result.character?.health <= 0) {
+              this.kills += 1;
+              const engineer = this.characterAIRuntime.character("npc.engineering-officer-01");
+              if (engineer?.status === "active") {
+                this.characterAIRuntime.markProtectedByPlayer(
+                  "npc.engineering-officer-01",
+                  nowMs
+                );
+              }
+            }
+            this.emitCharacterAIState(true);
+          }
           this.emitCombatState(true);
           return true;
         }
@@ -8264,6 +8510,7 @@
           if (this.pilot.active) this.setPilotMode(false, null, nowMs);
           this.playerHealth = this.combat.player.startingHealth;
           this.aliens = [];
+          this.characterAIRuntime?.reset?.({emit: false});
           this.transportSequence = 0;
           this.kills = 0;
           this.gameOver = false;
@@ -8273,6 +8520,7 @@
           this.nextTransportAtMs = nowMs + Math.min(900, this.combat.transport.initialDelayMs);
           this.clearMovementKeys();
           this.resetFlightState();
+          this.emitCharacterAIState(true);
           this.emitCombatState(true);
           return true;
         }
@@ -8432,6 +8680,7 @@
           this.lastFrameTime = frameTime;
           this.updateSpaceNavigation(frameTime);
           this.updateMovement(deltaSeconds);
+          this.updateCharacterAI(frameTime, deltaSeconds);
           this.updateCombat(frameTime, deltaSeconds);
           this.dynamicGeometry = this.buildDynamicGeometry(frameTime);
           this.dynamicVertexCount = this.dynamicGeometry.length / 10;
@@ -9022,6 +9271,9 @@
         const combatLine = document.createElement("div");
         combatLine.className = "scene-shuttle3d-combat-line";
         combatLine.textContent = "BOARDERS 0 • KILLS 0";
+        const characterLine = document.createElement("div");
+        characterLine.className = "scene-shuttle3d-character-line";
+        characterLine.textContent = "CHARACTERS INITIALIZING";
         const phaserLine = document.createElement("div");
         phaserLine.className = "scene-shuttle3d-phaser-line";
         phaserLine.textContent = "TYPE-II PHASER READY";
@@ -9032,7 +9284,7 @@
         shipLine.className = "scene-shuttle3d-ship-line";
         shipLine.textContent = "SHIP: SHUTTLE IN FLIGHT";
         shipLine.hidden = true;
-        hud.append(healthPanel, combatLine, phaserLine, pilotLine, shipLine);
+        hud.append(healthPanel, combatLine, characterLine, phaserLine, pilotLine, shipLine);
 
         const crosshair = document.createElement("div");
         crosshair.className = "scene-shuttle3d-crosshair";
@@ -9311,6 +9563,33 @@
             lastHealth = combat.health;
             updateMovementStatus(renderer.camera);
           };
+          const updateCharacterAIHud = (snapshot) => {
+            const characters = Array.isArray(snapshot?.characters)
+              ? snapshot.characters
+              : [];
+            characterLine.hidden = !snapshot?.enabled;
+            if (!snapshot?.enabled) {
+              characterLine.textContent = snapshot?.error
+                ? `CHARACTER AI UNAVAILABLE • ${snapshot.error}`
+                : "CHARACTER AI UNAVAILABLE";
+              return;
+            }
+            const labels = characters.map((character) => {
+              const health = Math.max(0, Math.round(Number(character.health || 0)));
+              const maxHealth = Math.max(1, Math.round(Number(character.maxHealth || 1)));
+              const action = String(character.currentActionId || character.actionId || "hold_position")
+                .replace(/_/g, " ")
+                .toUpperCase();
+              return `${String(character.label || character.id)} ${health}/${maxHealth} • ${action}`;
+            });
+            characterLine.textContent = labels.length
+              ? labels.join(" || ")
+              : `CHARACTER AI • ${String(snapshot.phase || "inactive").toUpperCase()}`;
+            characterLine.dataset.characterCount = String(characters.length);
+            characterLine.dataset.characterPhase = String(snapshot.phase || "");
+            canvas.dataset.characterCount = String(characters.length);
+          };
+
           const updateShipHud = (ship) => {
             const visible = Boolean(ship?.enabled && renderer.pilotSnapshot().playerExitedToBay);
             shipLine.hidden = !visible;
@@ -9389,6 +9668,7 @@
           };
           renderer.onCameraMoved = updateMovementStatus;
           renderer.onCombatChanged = updateCombatHud;
+          renderer.onCharacterAIChanged = updateCharacterAIHud;
           renderer.onPilotChanged = updatePilotHud;
           renderer.onShipStateChanged = updateShipHud;
           renderer.onNavigationChanged = updateNavigationHud;
@@ -9396,6 +9676,7 @@
           renderer.emitPilotState(true);
           renderer.emitNavigationState(true);
           renderer.emitCombatState(true);
+          renderer.emitCharacterAIState(true);
           renderer.emitShipState(true);
         } catch (error) {
           shell.dataset.rendererError = "true";

@@ -103,7 +103,7 @@ def test_workbench_promotion_plan_declares_dsl_authority_and_eight_generated_art
     assert len(ownership["generatedFiles"]) == 8
     manifest = json.loads(promoted["mcel_apps/contract-workbench/mcel.app.json"])
     assert manifest["authoring"]["status"] == "dsl-authoritative"
-    assert len(plan["files"]) == 14
+    assert len(plan["files"]) == 11
 
 
 def test_workbench_apply_and_rollback_restore_package_exactly(tmp_path: Path) -> None:

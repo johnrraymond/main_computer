@@ -2,9 +2,11 @@
 
 The release binds one canonical genesis transaction to one initial-node service
 update and one deploy request.  The deployed Compose is a complete super-node:
-Besu/QBFT, its internal RPC surface, FoundationDB, and the Hub built from one
-exact pushed Git commit.  The release is secret-free, performs no network
-access, and deliberately excludes every soft-admission target.
+Besu/QBFT, its internal RPC surface, FoundationDB, and the Hub built from a
+credential-free Git repository and ref.  The default source is the main branch
+of johnrraymond/main_computer; operators may override the repository or pin an
+exact commit.  The release is secret-free, performs no network access, and
+deliberately excludes every soft-admission target.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ _HUB_PORT = 8790
 _FDB_PORT = 4550
 _HUB_SERVICE = "mother-super-node-hub"
 _FDB_SERVICE = "mother-super-node-fdb"
+DEFAULT_HUB_GIT_REPOSITORY = "https://github.com/johnrraymond/main_computer"
+DEFAULT_HUB_GIT_REF = "main"
 
 
 class MotherDeploymentGenesisReleaseError(RuntimeError):
@@ -94,6 +98,30 @@ def _git_commit_sha(value: Any, path: str) -> str:
             "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", f"{path} must be an exact lowercase 40-character Git commit SHA"
         )
     return value.strip()
+
+
+def _git_ref(value: Any, path: str) -> str:
+    if type(value) is not str or not value.strip():
+        raise MotherDeploymentGenesisReleaseError(
+            "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", f"{path} must be a non-empty Git ref"
+        )
+    text = value.strip()
+    if (
+        len(text) > 256
+        or re.fullmatch(r"[A-Za-z0-9._/-]+", text) is None
+        or text.startswith(("/", "."))
+        or text.endswith(("/", "."))
+        or "//" in text
+        or ".." in text
+        or "@{" in text
+        or text.endswith(".lock")
+        or any(part in {"", ".", ".."} for part in text.split("/"))
+    ):
+        raise MotherDeploymentGenesisReleaseError(
+            "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID",
+            f"{path} must be a safe branch, tag, or lowercase commit ref",
+        )
+    return text
 
 
 def _sha256(value: Any, path: str) -> str:
@@ -252,11 +280,11 @@ def _first_genesis_compose(
     chain_id: int,
     genesis: Mapping[str, Any],
     hub_git_repository: str,
-    hub_git_commit_sha: str,
+    hub_git_ref: str,
 ) -> str:
     genesis_bytes = canonical_json(dict(genesis))
     encoded = base64.b64encode(genesis_bytes).decode("ascii")
-    git_context = f"{hub_git_repository}#{hub_git_commit_sha}"
+    git_context = f"{hub_git_repository}#{hub_git_ref}"
     fdb_cluster = f"docker:docker@{_FDB_SERVICE}:{_FDB_PORT}"
     hub_root = f"/data/main-computer/hub/{node}"
     hub_rpc = f"http://{node}:8545"
@@ -358,7 +386,7 @@ def _first_genesis_compose(
             "    build:",
             f'      context: "{git_context}"',
             f"      dockerfile: {_HUB_DOCKERFILE}",
-            f"    image: {node}-hub:{hub_git_commit_sha[:12]}",
+            f"    image: {node}-hub:{hashlib.sha256(git_context.encode('utf-8')).hexdigest()[:12]}",
             "    pull_policy: build",
             "    restart: unless-stopped",
             "    depends_on:",
@@ -412,7 +440,7 @@ def _execution_plan(
     transaction: Mapping[str, Any],
     *,
     hub_git_repository: str,
-    hub_git_commit_sha: str,
+    hub_git_ref: str,
 ) -> dict[str, Any]:
     target = _initial_target(transaction)
     node = _identifier(target.get("node"), "initial target node")
@@ -439,13 +467,14 @@ def _execution_plan(
             "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", "canonical genesis digest does not match"
         )
     repository = _git_repository(hub_git_repository, "hub_git_repository")
-    commit_sha = _git_commit_sha(hub_git_commit_sha, "hub_git_commit_sha")
+    git_ref = _git_ref(hub_git_ref, "hub_git_ref")
+    commit_sha = git_ref if re.fullmatch(r"[0-9a-f]{40}", git_ref) is not None else None
     compose = _first_genesis_compose(
         node=node,
         chain_id=chain_id,
         genesis=genesis,
         hub_git_repository=repository,
-        hub_git_commit_sha=commit_sha,
+        hub_git_ref=git_ref,
     )
     compose_bytes = compose.encode("utf-8")
     compose_sha = hashlib.sha256(compose_bytes).hexdigest()
@@ -469,6 +498,7 @@ def _execution_plan(
             "foundationdb_image": _FDB_IMAGE,
             "hub_dockerfile": _HUB_DOCKERFILE,
             "hub_git_repository": repository,
+            "hub_git_ref": git_ref,
             "hub_git_commit_sha": commit_sha,
             "hub_service": _HUB_SERVICE,
             "hub_internal_port": _HUB_PORT,
@@ -536,8 +566,9 @@ def build_deployment_genesis_release(
     transaction_path: Path,
     *,
     acknowledged_genesis_transaction_sha256: str,
-    hub_git_repository: str,
-    hub_git_commit_sha: str,
+    hub_git_repository: str = DEFAULT_HUB_GIT_REPOSITORY,
+    hub_git_ref: str = DEFAULT_HUB_GIT_REF,
+    hub_git_commit_sha: str | None = None,
     selected_nodes: Iterable[str] = (),
     expires_in_seconds: int = 300,
     created_at: str | None = None,
@@ -558,10 +589,19 @@ def build_deployment_genesis_release(
         )
     candidate = Path(verified["transaction_path"])
     transaction, raw = _load_canonical_json(candidate, label="genesis transaction")
+    if hub_git_commit_sha is not None:
+        if hub_git_ref != DEFAULT_HUB_GIT_REF:
+            raise MotherDeploymentGenesisReleaseError(
+                "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID",
+                "hub_git_commit_sha cannot be combined with a non-default hub_git_ref",
+            )
+        effective_git_ref = _git_commit_sha(hub_git_commit_sha, "hub_git_commit_sha")
+    else:
+        effective_git_ref = _git_ref(hub_git_ref, "hub_git_ref")
     plan = _execution_plan(
         transaction,
         hub_git_repository=hub_git_repository,
-        hub_git_commit_sha=hub_git_commit_sha,
+        hub_git_ref=effective_git_ref,
     )
     requested = tuple(_identifier(item, "selected node") for item in selected_nodes)
     if requested and requested != (plan["initial_node"],):
@@ -627,6 +667,7 @@ def build_deployment_genesis_release(
             "transaction_apply_authorized": True,
             "live_execution_authorized": False,
             "remaining_blocker_codes": ["MOTHER_DEPLOY_GENESIS_EXECUTOR_NOT_IMPLEMENTED"],
+            "hub_git_ref": plan["compose"]["hub_git_ref"],
             "hub_git_commit_sha": plan["compose"]["hub_git_commit_sha"],
             "hub_local_rpc_url": plan["compose"]["hub_local_rpc_url"],
             "complete_super_node_compiled": True,
@@ -764,7 +805,11 @@ def verify_deployment_genesis_release(
         transaction_path,
         acknowledged_genesis_transaction_sha256=verified["genesis_transaction_sha256"],
         hub_git_repository=str(plan.get("compose", {}).get("hub_git_repository") or ""),
-        hub_git_commit_sha=str(plan.get("compose", {}).get("hub_git_commit_sha") or ""),
+        hub_git_ref=str(
+            plan.get("compose", {}).get("hub_git_ref")
+            or plan.get("compose", {}).get("hub_git_commit_sha")
+            or ""
+        ),
         selected_nodes=(str(plan.get("initial_node")),),
         expires_in_seconds=lifetime,
         created_at=release.get("created_at"),
@@ -791,6 +836,7 @@ def verify_deployment_genesis_release(
         "genesis_sha256": plan["genesis_sha256"],
         "compose_sha256": plan["compose"]["sha256"],
         "hub_git_repository": plan["compose"]["hub_git_repository"],
+        "hub_git_ref": plan["compose"]["hub_git_ref"],
         "hub_git_commit_sha": plan["compose"]["hub_git_commit_sha"],
         "hub_service": plan["compose"]["hub_service"],
         "hub_internal_port": plan["compose"]["hub_internal_port"],
@@ -807,6 +853,8 @@ def verify_deployment_genesis_release(
 
 
 __all__ = [
+    "DEFAULT_HUB_GIT_REF",
+    "DEFAULT_HUB_GIT_REPOSITORY",
     "MotherDeploymentGenesisReleaseError",
     "build_deployment_genesis_release",
     "verify_deployment_genesis_release",
