@@ -12,7 +12,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
@@ -68,6 +68,7 @@ class ApplicationPackageRecord:
     valid: bool
     errors: tuple[ApplicationPackageIssue, ...]
     warnings: tuple[ApplicationPackageIssue, ...]
+    files: Mapping[str, bytes] = field(default_factory=dict, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +108,7 @@ class ApplicationPackageCatalog:
     packages: tuple[ApplicationPackageRecord, ...]
     errors: tuple[ApplicationPackageIssue, ...]
     warnings: tuple[ApplicationPackageIssue, ...]
+    files: Mapping[str, bytes] = field(default_factory=dict, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -336,6 +338,31 @@ def _build_record(
     errors = list(read_errors)
     warnings: list[ApplicationPackageIssue] = []
 
+    # Promoted DSL packages keep only authored source in ``mcel_apps``. Build a
+    # deterministic virtual overlay for generated compatibility artifacts before
+    # package validation and fingerprinting. Existing generated source-tree files
+    # are ignored so stale intermediates cannot become authority.
+    try:
+        from main_computer.mcel_application_materialization import (
+            is_generated_source_tree_path,
+            materialize_generated_package_files,
+        )
+        manifest_probe = _load_json_text(text_files, "mcel.app.json") or {}
+        authoring_probe = manifest_probe.get("authoring") if isinstance(manifest_probe.get("authoring"), Mapping) else {}
+        if authoring_probe.get("status") == "dsl-authoritative":
+            byte_files = {path: content for path, content in byte_files.items() if not is_generated_source_tree_path(path)}
+            text_files = {path: content for path, content in text_files.items() if not is_generated_source_tree_path(path)}
+            generated = materialize_generated_package_files(repository, package_path, text_files)
+            byte_files.update(generated)
+            for path, content in generated.items():
+                text_files[path] = content.decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        errors.append(ApplicationPackageIssue(
+            "generated-package-materialization-failed",
+            f"Could not materialize DSL-authoritative package: {exc}",
+            package_root,
+        ))
+
     if not APP_ID_PATTERN.fullmatch(directory_name):
         errors.append(
             ApplicationPackageIssue(
@@ -430,6 +457,7 @@ def _build_record(
         valid=not deduplicated_errors,
         errors=deduplicated_errors,
         warnings=deduplicated_warnings,
+        files=dict(byte_files),
     )
 
 

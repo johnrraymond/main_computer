@@ -10,6 +10,7 @@ import pytest
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+BUILD_PACKAGE_ROOT = Path(__file__).resolve().parents[3] / "runtime/build/mcel/web/applications/mcel-packages/contract-counter"
 
 
 def _repository_root() -> Path:
@@ -62,9 +63,9 @@ async function importContract(filePath) {{
 }}
 
 (async () => {{
-  const domainModule = await importContract({json.dumps(str(PACKAGE_ROOT / "contracts" / "domain.js"))});
-  const intentsModule = await importContract({json.dumps(str(PACKAGE_ROOT / "contracts" / "intents.js"))});
-  const adapterModule = await importContract({json.dumps(str(PACKAGE_ROOT / "contracts" / "adapter.js"))});
+  const domainModule = await importContract({json.dumps(str(BUILD_PACKAGE_ROOT / "contracts" / "domain.js"))});
+  const intentsModule = await importContract({json.dumps(str(BUILD_PACKAGE_ROOT / "contracts" / "intents.js"))});
+  const adapterModule = await importContract({json.dumps(str(BUILD_PACKAGE_ROOT / "contracts" / "adapter.js"))});
   const definition = McelApplicationRuntime.defineApplication({{
     appId: "contract-counter",
     domain: domainModule.ContractCounterDomain,

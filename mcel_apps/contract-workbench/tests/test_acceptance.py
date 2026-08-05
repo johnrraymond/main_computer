@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from main_computer.mcel_package_test_support import logical_package_text
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
 
 
 def _normalized_definition() -> dict:
-    payload = json.loads((PACKAGE / "generated/mcel.application.normalized.json").read_text(encoding="utf-8"))
+    payload = json.loads(logical_package_text("contract-workbench", "generated/mcel.application.normalized.json"))
     return payload["definition"]
 
 
 def test_complete_application_acceptance_is_enforceable() -> None:
     requirements = (PACKAGE / "requirements.md").read_text(encoding="utf-8")
-    acceptance = (PACKAGE / "contracts/acceptance.js").read_text(encoding="utf-8")
+    acceptance = logical_package_text("contract-workbench", "contracts/acceptance.js")
     bindings = json.loads((PACKAGE / "tests/mcel_acceptance_bindings.json").read_text(encoding="utf-8"))
     assert "contract-workbench.acceptance.complete-application" in requirements
     assert "status: verified" in requirements

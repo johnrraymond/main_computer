@@ -1800,6 +1800,12 @@ def dispatch_get(self) -> None:
     if route_path == "/applications/spreadsheet/smoke":
         self._handle_spreadsheet_smoke_page()
         return
+    if (
+        route_path.startswith("/applications/mcel-packages/")
+        or route_path == "/applications/scripts/mcel-application-package-catalog.js"
+    ):
+        self._handle_mcel_generated_asset()
+        return
     if route_path.startswith("/applications/vendor/"):
         self._handle_applications_vendor_asset()
         return

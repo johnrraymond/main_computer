@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -117,28 +117,30 @@ def test_promoted_counter_earns_ir_native_intent_complete_proof() -> None:
 
 
 def test_generated_ownership_rejects_derived_contract_drift(tmp_path: Path) -> None:
-    package = tmp_path / "contract-counter"
-    shutil.copytree(PACKAGE, package)
-    (package / "contracts/domain.js").write_text("// drift\n", encoding="utf-8")
-    ownership = json.loads((package / "mcel.generated.json").read_text(encoding="utf-8"))
+    record = _record()
+    files = dict(record.files)
+    files["contracts/domain.js"] = b"// drift\n"
+    drifted_record = replace(record, files=files)
+    ownership = json.loads(record.files["mcel.generated.json"].decode("utf-8"))
 
     with pytest.raises(CounterIrNativeProofError, match="ownership drift"):
         _verify_generated_ownership(
-            package_root=package,
-            record=_record(),
+            package_root=tmp_path / "contract-counter",
+            record=drifted_record,
             ownership=ownership,
             semantic_fingerprint=ownership["sourceAuthority"]["semanticFingerprint"],
         )
 
 
 def test_generated_ownership_rejects_wrong_semantic_binding() -> None:
-    ownership = json.loads((PACKAGE / "mcel.generated.json").read_text(encoding="utf-8"))
+    record = _record()
+    ownership = json.loads(record.files["mcel.generated.json"].decode("utf-8"))
     ownership["sourceAuthority"]["semanticFingerprint"] = "sha256:wrong"
 
     with pytest.raises(CounterIrNativeProofError, match="authoritative DSL semantics"):
         _verify_generated_ownership(
             package_root=PACKAGE,
-            record=_record(),
+            record=record,
             ownership=ownership,
             semantic_fingerprint="sha256:expected",
         )

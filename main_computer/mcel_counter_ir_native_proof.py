@@ -60,9 +60,10 @@ def run_counter_ir_native_intent_proof(
             "Promoted Counter authoring must bind application.js and mcel.generated.json exactly."
         )
     source_path = repo / str(authoring.get("source") or "")
-    ownership_path = repo / str(authoring.get("ownership") or "")
-    if not source_path.is_file() or not ownership_path.is_file():
-        raise CounterIrNativeProofError("Authoritative DSL source or generated ownership manifest is missing.")
+    ownership_relative = Path(str(authoring.get("ownership") or "")).relative_to(Path(record.package_root)).as_posix()
+    ownership_bytes = record.files.get(ownership_relative)
+    if not source_path.is_file() or ownership_bytes is None:
+        raise CounterIrNativeProofError("Authoritative DSL source or virtual generated ownership manifest is missing.")
 
     compiled = compile_dsl_application(source_path)
     if not compiled.valid or compiled.normalized_ir is None:
@@ -80,7 +81,7 @@ def run_counter_ir_native_intent_proof(
         observation=observation,
     )
 
-    ownership = _load_json(ownership_path, "generated ownership manifest")
+    ownership = json.loads(ownership_bytes.decode("utf-8"))
     ownership_result = _verify_generated_ownership(
         package_root=package_root,
         record=record,
@@ -336,8 +337,8 @@ def _verify_generated_ownership(
         if not relative or relative in observed_paths or relative.startswith("/") or ".." in Path(relative).parts:
             raise CounterIrNativeProofError("Generated ownership contains an unsafe or duplicate path.")
         observed_paths.add(relative)
-        path = package_root / relative
-        actual = _sha256_prefixed(path) if path.is_file() else None
+        content = record.files.get(relative)
+        actual = "sha256:" + hashlib.sha256(content).hexdigest() if content is not None else None
         expected = str(entry.get("sha256") or "")
         exact = actual == expected and entry.get("generator") == "mcel.counter.explicit-projection.v1"
         files.append({"path": relative, "sha256": actual, "expectedSha256": expected, "exact": exact})
@@ -349,7 +350,7 @@ def _verify_generated_ownership(
     return {
         "schema": ownership.get("schema"),
         "path": "mcel.generated.json",
-        "sha256": _sha256_prefixed(package_root / "mcel.generated.json"),
+        "sha256": "sha256:" + hashlib.sha256(record.files["mcel.generated.json"]).hexdigest(),
         "exact": True,
         "semanticFingerprintExact": semantic_exact,
         "generatedFileCount": len(files),

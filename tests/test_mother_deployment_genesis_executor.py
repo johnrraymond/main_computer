@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import yaml
 
 from tools import mother_deploy
 from tools.mother.common.deployment_genesis import (
@@ -33,6 +34,10 @@ from tools.mother.common.deployment_genesis_rollback import (
 )
 from tests.test_mother_deployment_executor import TOKEN_A, _operation
 from tests.test_mother_deployment_genesis import _identity_execution
+
+
+HUB_GIT_REPOSITORY = "https://github.com/johnrraymond/main_computer.git"
+HUB_GIT_COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 def _stamp(value: datetime) -> str:
@@ -64,6 +69,8 @@ def _genesis_release(tmp_path: Path, *, now: datetime):
         private_state,
         transaction_path,
         acknowledged_genesis_transaction_sha256=transaction_digest,
+        hub_git_repository=HUB_GIT_REPOSITORY,
+        hub_git_commit_sha=HUB_GIT_COMMIT_SHA,
         selected_nodes=("mainneta-super1",),
         created_at=_stamp(now),
         now=now,
@@ -236,7 +243,28 @@ def test_genesis_release_binds_exact_a_only_compose_and_is_secret_free(tmp_path:
         }
     ]
     compose = plan["compose"]["canonical_text"]
+    compose_document = yaml.safe_load(compose)
+    services = compose_document["services"]
     assert "hyperledger/besu:latest" in compose
+    assert set(("mainneta-super1", "mother-super-node-hub", "mother-super-node-fdb")).issubset(services)
+    assert plan["super_node_components"] == [
+        "hub",
+        "local-rpc",
+        "besu",
+        "qbft-validator",
+        "foundationdb",
+    ]
+    assert plan["standalone_network_nodes_allowed"] is False
+    assert plan["compose"]["hub_git_repository"] == HUB_GIT_REPOSITORY
+    assert plan["compose"]["hub_git_commit_sha"] == HUB_GIT_COMMIT_SHA
+    assert plan["compose"]["hub_local_rpc_url"] == "http://mainneta-super1:8545"
+    assert services["mother-super-node-hub"]["environment"]["MAIN_COMPUTER_HUB_CHAIN_RPC_URL"] == "http://mainneta-super1:8545"
+    assert services["mother-super-node-hub"]["build"]["context"] == f"{HUB_GIT_REPOSITORY}#{HUB_GIT_COMMIT_SHA}"
+    assert services["mother-super-node-hub"].get("ports") is None
+    assert services["mother-super-node-hub"].get("labels")["main_computer.mother.component"] == "hub"
+    assert services["mother-super-node-fdb"]["volumes"] == ["mother-fdb-data:/var/fdb/data"]
+    assert "configure new single ssd" in services["mother-super-node-hub"]["command"][-1]
+    assert "traefik." not in compose
     assert transaction["genesis"]["canonical_json_sha256"] == plan["genesis_sha256"]
     assert "mainnetc-super1" not in compose
     rendered = json.dumps(release, sort_keys=True)
@@ -254,6 +282,10 @@ def test_genesis_release_binds_exact_a_only_compose_and_is_secret_free(tmp_path:
     assert verified["clean"] is True
     assert verified["genesis_release_sha256"] == release_digest
     assert verified["genesis_transaction_sha256"] == transaction_digest
+    assert verified["hub_git_repository"] == HUB_GIT_REPOSITORY
+    assert verified["hub_git_commit_sha"] == HUB_GIT_COMMIT_SHA
+    assert verified["hub_service"] == "mother-super-node-hub"
+    assert verified["hub_local_rpc_url"] == "http://mainneta-super1:8545"
 
 
 def test_genesis_release_rejects_wrong_digest_and_soft_node_selection(tmp_path: Path) -> None:
@@ -265,6 +297,8 @@ def test_genesis_release_rejects_wrong_digest_and_soft_node_selection(tmp_path: 
             private_state,
             transaction_path,
             acknowledged_genesis_transaction_sha256="0" * 64,
+            hub_git_repository=HUB_GIT_REPOSITORY,
+            hub_git_commit_sha=HUB_GIT_COMMIT_SHA,
             selected_nodes=("mainneta-super1",),
             created_at=_stamp(now),
             now=now,
@@ -277,6 +311,8 @@ def test_genesis_release_rejects_wrong_digest_and_soft_node_selection(tmp_path: 
             private_state,
             transaction_path,
             acknowledged_genesis_transaction_sha256=transaction_digest,
+            hub_git_repository=HUB_GIT_REPOSITORY,
+            hub_git_commit_sha=HUB_GIT_COMMIT_SHA,
             selected_nodes=("mainneta-super1", "mainnetc-super1"),
             created_at=_stamp(now),
             now=now,
@@ -340,6 +376,9 @@ def test_genesis_executor_updates_and_deploys_only_a(tmp_path: Path) -> None:
     update_body = live.requests[3]["body"]
     compose = base64.b64decode(update_body["docker_compose_raw"]).decode("utf-8")
     assert "mainneta-super1" in compose
+    assert "mother-super-node-hub" in compose
+    assert "mother-super-node-fdb" in compose
+    assert "MAIN_COMPUTER_HUB_CHAIN_RPC_URL: \"http://mainneta-super1:8545\"" in compose
     assert "mainnetc-super1" not in compose
     assert result["status"] == "pass"
     assert result["summary"]["compose_update_succeeded"] is True
@@ -593,6 +632,8 @@ def test_genesis_release_and_dry_run_cli(tmp_path: Path, capsys) -> None:
         "--runtime-state-root", str(runtime_root),
         "--transaction", str(transaction_path),
         "--acknowledge-genesis-transaction-sha256", transaction_digest,
+        "--hub-git-repository", HUB_GIT_REPOSITORY,
+        "--hub-git-commit-sha", HUB_GIT_COMMIT_SHA,
         "--node", "mainneta-super1",
         "--write-release",
     ])

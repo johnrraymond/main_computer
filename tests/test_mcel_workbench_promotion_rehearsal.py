@@ -26,7 +26,7 @@ from main_computer.mcel_workbench_promotion_rehearsal import (
 REPO = Path(__file__).resolve().parents[1]
 LIVE = REPO / "mcel_apps/contract-workbench"
 SEMANTIC = "sha256:3450eddcd5b67687fc09ff7589221fff5ef176efcc2d54231a9b43e2268ca78e"
-SOURCE = "sha256:d7c9d921ca19026dcf6366c762dad26bab3822790961701b189d06f28b6a92b1"
+SOURCE = "sha256:dd87dd149bff1e2271ecd926611f297f209d570358ab28613110b44a35633197"
 
 
 def _fake_evidence(**_kwargs):

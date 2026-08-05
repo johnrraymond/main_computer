@@ -20,7 +20,7 @@ from main_computer.mcel_application_runtime_projection import (
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PACKAGE = ROOT / "mcel_apps" / "contract-counter"
 TOOL = ROOT / "tools" / "mcel_application_runtime_projection.py"
-PROJECTION_ROOT = ROOT / "main_computer" / "web" / "applications" / "mcel-packages"
+PROJECTION_ROOT = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "mcel-packages"
 
 
 def _copy_package(target_root: Path) -> None:

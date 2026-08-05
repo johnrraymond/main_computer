@@ -76,6 +76,31 @@ def import_application_definition(
 ) -> ApplicationDefinitionIrResult:
     repo = repo_root.resolve()
     diagnostics: list[Mapping[str, Any]] = []
+
+    # Promoted applications no longer retain a normalized-definition file in
+    # their source tree. Their authoritative DSL already compiles directly to
+    # canonical Application IR, so use that authority instead of requiring a
+    # materialized legacy normalization artifact.
+    package_root = repo / "mcel_apps" / app_id
+    manifest_path = package_root / "mcel.app.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    authoring = manifest.get("authoring") if isinstance(manifest.get("authoring"), Mapping) else {}
+    if authoring.get("status") == "dsl-authoritative":
+        from main_computer.mcel_dsl_compiler import compile_dsl_application
+        source_reference = str(authoring.get("source") or "application.js")
+        source_path = package_root / source_reference
+        compiled = compile_dsl_application(source_path, write_candidate=False)
+        diagnostics.extend(compiled.diagnostics)
+        if not compiled.valid or compiled.normalized_ir is None:
+            return ApplicationDefinitionIrResult(False, "invalid-dsl", app_id, None, tuple(diagnostics), ())
+        source_files = ({
+            "path": (Path("mcel_apps") / app_id / source_reference).as_posix(),
+            "sha256": "sha256:" + hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        },)
+        return ApplicationDefinitionIrResult(True, "pass", app_id, compiled.normalized_ir, tuple(diagnostics), source_files)
     try:
         plan = build_normalization_plan(app_id, repo)
     except Exception as exc:

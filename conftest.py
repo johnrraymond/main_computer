@@ -34,3 +34,11 @@ def pytest_ignore_collect(collection_path: Any, config: Any) -> bool:
         return False
 
     return True
+
+
+def pytest_sessionstart(session: Any) -> None:
+    """Materialize ignored MCEL browser build artifacts for active tests."""
+
+    from main_computer.mcel_application_build import ensure_mcel_browser_build
+
+    ensure_mcel_browser_build(Path(__file__).resolve().parent)

@@ -1,8 +1,11 @@
 """Harmless Coolify service lifecycle probe for the Mother deployment operator.
 
 The probe creates one temporary no-secret, no-chain service, starts it, observes
-documented service and deployment inventory channels, and deletes it.  It never
-binds a wallet key, contacts validator RPC, opens a port, or creates a volume.
+documented service and deployment inventory channels, and deletes it.  Runtime
+readiness is proven by the exact log marker when available or by an exact
+health-bound marker file when Coolify runtime-log routes are unavailable.  It
+never binds a wallet key, contacts validator RPC, opens a port, or creates a
+persistent volume.
 """
 
 from __future__ import annotations
@@ -37,10 +40,11 @@ from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
 
-_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v6"
-_PREVIOUS_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v5"
-_OLDER_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v4"
-_LEGACY_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v3"
+_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v7"
+_PREVIOUS_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v6"
+_OLDER_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v5"
+_LEGACY_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v4"
+_EARLIEST_EVIDENCE_KIND = "main_computer.mother.deployment_coolify_service_lifecycle_probe_evidence.v3"
 _EVIDENCE_DIRECTORY = ("evidence", "deployment-coolify-service-lifecycle-probes")
 _ACKNOWLEDGEMENT = "NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE"
 _ALLOWED_CONTROLLERS = frozenset({"coolify-a", "coolify-c"})
@@ -101,6 +105,11 @@ def _probe_name(controller_id: str, operation: OperationIdentity) -> str:
 
 def _compose(name: str, observe_seconds: float) -> str:
     linger_seconds = max(90, int(observe_seconds) + 60)
+    marker = f"MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={name}"
+    ready_file = "/run/mother-probe/ready"
+    health_command = (
+        f'test "$(cat {ready_file} 2>/dev/null)" = \'{marker}\' && kill -0 1'
+    )
     text = (
         f"name: {name}\n\n"
         "services:\n"
@@ -108,17 +117,22 @@ def _compose(name: str, observe_seconds: float) -> str:
         f"    image: {_IMAGE}\n"
         "    restart: \"no\"\n"
         "    read_only: true\n"
+        "    tmpfs:\n"
+        "      - /run/mother-probe:size=64k,mode=0700\n"
         "    entrypoint:\n"
         "      - /bin/sh\n"
         "      - -ec\n"
         "    command:\n"
         "      - |\n"
-        f"        printf 'MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={name}\\n'\n"
+        "        umask 077\n"
+        f"        marker='{marker}'\n"
+        "        printf '%s\\n' \"$marker\"\n"
+        f"        printf '%s\\n' \"$marker\" > {ready_file}\n"
         f"        exec /bin/sleep {linger_seconds}\n"
         "    healthcheck:\n"
         "      test:\n"
         "        - CMD-SHELL\n"
-        "        - kill -0 1\n"
+        f"        - {health_command}\n"
         "      interval: 2s\n"
         "      timeout: 2s\n"
         "      retries: 10\n"
@@ -138,16 +152,19 @@ def _compose(name: str, observe_seconds: float) -> str:
     if not (
         isinstance(service, Mapping)
         and service.get("entrypoint") == ["/bin/sh", "-ec"]
+        and service.get("tmpfs") == ["/run/mother-probe:size=64k,mode=0700"]
         and type(service.get("command")) is list
         and len(service["command"]) == 1
+        and f"marker='{marker}'" in str(service["command"][0])
+        and f'> {ready_file}' in str(service["command"][0])
         and "exec /bin/sleep " in str(service["command"][0])
         and isinstance(service.get("healthcheck"), Mapping)
         and service["healthcheck"].get("test")
-        == ["CMD-SHELL", "kill -0 1"]
+        == ["CMD-SHELL", health_command]
     ):
         raise _error(
             "MOTHER_DEPLOY_COOLIFY_SERVICE_LIFECYCLE_PROBE_COMPOSE_INVALID",
-            "probe Compose does not override the image entrypoint with one exact shell script",
+            "probe Compose does not bind runtime readiness to the exact marker",
         )
     forbidden = ("ports:", "volumes:", "secrets:", "traefik.", "http://", "https://")
     if any(item in text for item in forbidden):
@@ -767,11 +784,16 @@ def inspect_coolify_service_lifecycle_probe(
             "single_script_argument": True,
             "healthcheck_required": True,
             "runtime_log_marker_required": True,
+            "runtime_result_channel_required": True,
+            "runtime_log_marker_preferred": True,
+            "health_bound_marker_fallback_allowed": True,
+            "health_bound_marker_file": "/run/mother-probe/ready",
             "runtime_log_endpoint_template": "/api/v1/services/{service_uuid}/applications/{application_uuid}/logs?lines=100&show_timestamps=false",
             "runtime_log_alternate_endpoint_template": "/api/v1/applications/{application_uuid}/logs?lines=100",
             "runtime_log_fallback_endpoint_template": "/api/v1/services/{service_uuid}/logs?sub_service_name={service_name}",
             "ports": [],
             "volumes": [],
+            "tmpfs": ["/run/mother-probe:size=64k,mode=0700"],
             "secrets": [],
         },
         "timing": {
@@ -787,6 +809,7 @@ def inspect_coolify_service_lifecycle_probe(
             "chain_rpc_call_count": 0,
             "public_endpoint_count": 0,
             "volume_count": 0,
+            "tmpfs_mount_count": 1,
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
         },
@@ -1045,6 +1068,7 @@ def execute_coolify_service_lifecycle_probe(
                     }
 
     service_status_values: set[str] = set()
+    healthy_inventory_channels: set[str] = set()
     service_list_seen = False
     service_detail_seen = False
     server_resource_seen = False
@@ -1079,12 +1103,37 @@ def execute_coolify_service_lifecycle_probe(
                 deployment_seen = True
             for match in matches:
                 if isinstance(match, Mapping) and type(match.get("status")) is str:
-                    service_status_values.add(match["status"])
+                    status = match["status"]
+                    service_status_values.add(status)
+                    if type(name) is str and _healthy_running_status(status):
+                        healthy_inventory_channels.add(name)
 
     healthy_running_status_values = sorted(
         value for value in service_status_values if _healthy_running_status(value)
     )
     healthy_running_observed = bool(healthy_running_status_values)
+    service_list_healthy_running_observed = "service-list" in healthy_inventory_channels
+    service_detail_healthy_running_observed = "service-detail" in healthy_inventory_channels
+    server_resource_healthy_running_observed = "server-resources" in healthy_inventory_channels
+    # _compose() rejects any document whose healthcheck is not bound to the
+    # exact marker written by PID 1 into the private ephemeral tmpfs.
+    runtime_health_marker_contract_verified = True
+    health_bound_runtime_marker_observed = bool(
+        runtime_health_marker_contract_verified
+        and service_list_healthy_running_observed
+        and service_detail_healthy_running_observed
+        and server_resource_healthy_running_observed
+    )
+    runtime_result_channel = (
+        "runtime-log-marker"
+        if service_log_endpoint_seen and service_log_marker_seen
+        else (
+            "health-bound-marker"
+            if health_bound_runtime_marker_observed
+            else None
+        )
+    )
+    runtime_result_channel_observed = runtime_result_channel is not None
     complete = bool(
         failure is None
         and cleanup_succeeded
@@ -1093,15 +1142,14 @@ def execute_coolify_service_lifecycle_probe(
         and service_detail_seen
         and server_resource_seen
         and healthy_running_observed
-        and service_log_endpoint_seen
-        and service_log_marker_seen
+        and runtime_result_channel_observed
         and len(receipts) == 3
         and [item.get("status") for item in receipts] == ["succeeded", "succeeded", "succeeded"]
     )
     completed_at = _timestamp()
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
-        "schema_version": 6,
+        "schema_version": 7,
         "started_at": started_at,
         "completed_at": completed_at,
         "status": "pass" if complete else "manual-review-required",
@@ -1133,6 +1181,14 @@ def execute_coolify_service_lifecycle_probe(
             "observed_status_values": sorted(service_status_values),
             "healthy_running_observed": healthy_running_observed,
             "healthy_running_status_values": healthy_running_status_values,
+            "service_list_healthy_running_observed": service_list_healthy_running_observed,
+            "service_detail_healthy_running_observed": service_detail_healthy_running_observed,
+            "server_resource_healthy_running_observed": server_resource_healthy_running_observed,
+            "runtime_result_channel_observed": runtime_result_channel_observed,
+            "runtime_result_channel": runtime_result_channel,
+            "runtime_health_marker_contract_verified": runtime_health_marker_contract_verified,
+            "health_bound_runtime_marker_observed": health_bound_runtime_marker_observed,
+            "health_bound_marker_file": "/run/mother-probe/ready",
             "service_runtime_log_endpoint_observed": service_log_endpoint_seen,
             "service_runtime_log_marker_observed": service_log_marker_seen,
             "service_runtime_log_response_classifications": sorted(
@@ -1146,10 +1202,11 @@ def execute_coolify_service_lifecycle_probe(
             "chain_rpc_call_count": 0,
             "public_endpoint_count": 0,
             "volume_count": 0,
+            "tmpfs_mount_count": 1,
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
             "next_phase": (
-                "service-runtime-log-result-channel-proven"
+                "service-runtime-result-channel-proven"
                 if complete
                 else "manual-review-required"
             ),
@@ -1200,10 +1257,11 @@ def verify_coolify_service_lifecycle_probe_evidence(
     )
     if not (
         evidence_version in {
-            (_LEGACY_EVIDENCE_KIND, 3),
-            (_OLDER_EVIDENCE_KIND, 4),
-            (_PREVIOUS_EVIDENCE_KIND, 5),
-            (_EVIDENCE_KIND, 6),
+            (_EARLIEST_EVIDENCE_KIND, 3),
+            (_LEGACY_EVIDENCE_KIND, 4),
+            (_OLDER_EVIDENCE_KIND, 5),
+            (_PREVIOUS_EVIDENCE_KIND, 6),
+            (_EVIDENCE_KIND, 7),
         }
         and document.get("coolify_service_lifecycle_probe_evidence_sha256") == digest
         and document.get("mother_binding") == _binding(private_state)
@@ -1222,13 +1280,52 @@ def verify_coolify_service_lifecycle_probe_evidence(
         )
     summary = document.get("summary")
     receipts = document.get("mutation_receipts")
+    is_current_evidence = evidence_version == (_EVIDENCE_KIND, 7)
     runtime_log_classification_contract = (
-        evidence_version == (_LEGACY_EVIDENCE_KIND, 3)
+        evidence_version == (_EARLIEST_EVIDENCE_KIND, 3)
         or (
             type(summary) is dict
             and type(summary.get("service_runtime_log_response_classifications")) is list
             and "ok-logs" in summary["service_runtime_log_response_classifications"]
         )
+    )
+    legacy_runtime_result_contract = bool(
+        not is_current_evidence
+        and isinstance(summary, Mapping)
+        and summary.get("service_runtime_log_endpoint_observed") is True
+        and summary.get("service_runtime_log_marker_observed") is True
+        and runtime_log_classification_contract
+    )
+    current_runtime_log_contract = bool(
+        is_current_evidence
+        and isinstance(summary, Mapping)
+        and summary.get("runtime_result_channel_observed") is True
+        and summary.get("runtime_result_channel") == "runtime-log-marker"
+        and summary.get("service_runtime_log_endpoint_observed") is True
+        and summary.get("service_runtime_log_marker_observed") is True
+        and summary.get("runtime_health_marker_contract_verified") is True
+        and summary.get("health_bound_marker_file") == "/run/mother-probe/ready"
+        and summary.get("tmpfs_mount_count") == 1
+        and runtime_log_classification_contract
+    )
+    current_health_bound_contract = bool(
+        is_current_evidence
+        and isinstance(summary, Mapping)
+        and summary.get("runtime_result_channel_observed") is True
+        and summary.get("runtime_result_channel") == "health-bound-marker"
+        and summary.get("runtime_health_marker_contract_verified") is True
+        and summary.get("health_bound_runtime_marker_observed") is True
+        and summary.get("health_bound_marker_file") == "/run/mother-probe/ready"
+        and summary.get("service_list_healthy_running_observed") is True
+        and summary.get("service_detail_healthy_running_observed") is True
+        and summary.get("server_resource_healthy_running_observed") is True
+        and summary.get("tmpfs_mount_count") == 1
+        and type(summary.get("service_runtime_log_response_classifications")) is list
+    )
+    runtime_result_contract = bool(
+        legacy_runtime_result_contract
+        or current_runtime_log_contract
+        or current_health_bound_contract
     )
     if not (
         isinstance(summary, Mapping)
@@ -1238,9 +1335,7 @@ def verify_coolify_service_lifecycle_probe_evidence(
         and summary.get("service_detail_record_observed") is True
         and summary.get("server_resource_record_observed") is True
         and summary.get("healthy_running_observed") is True
-        and summary.get("service_runtime_log_endpoint_observed") is True
-        and summary.get("service_runtime_log_marker_observed") is True
-        and runtime_log_classification_contract
+        and runtime_result_contract
         and summary.get("runtime_log_marker")
         == f"MOTHER_COOLIFY_SERVICE_LIFECYCLE_PROBE_READY={document.get('probe_name')}"
         and summary.get("image_entrypoint_override_verified") is True
@@ -1285,6 +1380,24 @@ def verify_coolify_service_lifecycle_probe_evidence(
         "observed_status_values": summary.get("observed_status_values"),
         "healthy_running_observed": summary.get("healthy_running_observed"),
         "healthy_running_status_values": summary.get("healthy_running_status_values"),
+        "service_list_healthy_running_observed": summary.get(
+            "service_list_healthy_running_observed"
+        ),
+        "service_detail_healthy_running_observed": summary.get(
+            "service_detail_healthy_running_observed"
+        ),
+        "server_resource_healthy_running_observed": summary.get(
+            "server_resource_healthy_running_observed"
+        ),
+        "runtime_result_channel_observed": summary.get("runtime_result_channel_observed"),
+        "runtime_result_channel": summary.get("runtime_result_channel"),
+        "runtime_health_marker_contract_verified": summary.get(
+            "runtime_health_marker_contract_verified"
+        ),
+        "health_bound_runtime_marker_observed": summary.get(
+            "health_bound_runtime_marker_observed"
+        ),
+        "health_bound_marker_file": summary.get("health_bound_marker_file"),
         "service_runtime_log_endpoint_observed": summary.get("service_runtime_log_endpoint_observed"),
         "service_runtime_log_marker_observed": summary.get("service_runtime_log_marker_observed"),
         "service_runtime_log_response_classifications": summary.get(
@@ -1293,6 +1406,7 @@ def verify_coolify_service_lifecycle_probe_evidence(
         "runtime_log_marker": summary.get("runtime_log_marker"),
         "image_entrypoint_override_verified": summary.get("image_entrypoint_override_verified"),
         "single_script_argument_verified": summary.get("single_script_argument_verified"),
+        "tmpfs_mount_count": summary.get("tmpfs_mount_count"),
         "secret_binding_count": 0,
         "chain_rpc_call_count": 0,
         "validator_mutation_count": 0,

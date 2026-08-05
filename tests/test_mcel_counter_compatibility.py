@@ -12,7 +12,7 @@ from main_computer.mcel_counter_legacy_importer import import_counter_legacy_pac
 ROOT = Path(__file__).resolve().parents[1]
 COUNTER_ROOT = ROOT / "mcel_apps" / "contract-counter"
 FIXTURE_IR = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
-DSL_SOURCE = ROOT / "tests" / "fixtures" / "mcel_dsl" / "contract-counter.application.js"
+DSL_SOURCE = ROOT / "mcel_apps" / "contract-counter" / "application.js"
 IMPORT_TOOL = ROOT / "tools" / "mcel_counter_legacy_import.py"
 COMPAT_TOOL = ROOT / "tools" / "mcel_counter_compatibility.py"
 EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
@@ -32,15 +32,10 @@ def test_live_counter_import_is_repository_derived_and_semantically_exact() -> N
     assert report.diagnostics == ()
     assert report.semantic_fingerprint == EXPECTED_SEMANTIC
     assert report.normalized_ir is not None
-    assert report.normalized_ir["provenance"]["compiler"]["id"] == "mcel.counter.legacy-importer"
-    assert report.normalized_ir["migration"]["state"] == "legacy-compiled"
+    assert report.normalized_ir["provenance"]["compiler"]["id"] == "mcel.dsl.compiler"
+    assert report.normalized_ir["migration"]["state"] == "dual-authored"
     assert {item["path"] for item in report.source_files} == {
-        "mcel_apps/contract-counter/contracts/acceptance.js",
-        "mcel_apps/contract-counter/contracts/domain.js",
-        "mcel_apps/contract-counter/contracts/intents.js",
-        "mcel_apps/contract-counter/contracts/layout.js",
-        "mcel_apps/contract-counter/contracts/observation.js",
-        "mcel_apps/contract-counter/contracts/surface.js",
+        "mcel_apps/contract-counter/application.js",
         "mcel_apps/contract-counter/requirements.md",
     }
 
@@ -107,13 +102,20 @@ def test_live_source_change_invalidates_fixture_source_binding(tmp_path: Path) -
 
 def test_live_semantic_change_fails_closed(tmp_path: Path) -> None:
     package_root = _copy_counter(tmp_path)
-    intents = package_root / "contracts" / "intents.js"
-    intents.write_text(intents.read_text(encoding="utf-8").replace("count plus one", "count plus two", 1), encoding="utf-8")
+    application = package_root / "application.js"
+    application.write_text(
+        application.read_text(encoding="utf-8").replace(
+            "count.increment(1), revision.increment(1)",
+            "count.increment(2), revision.increment(1)",
+            1,
+        ),
+        encoding="utf-8",
+    )
 
     report = import_counter_legacy_package(package_root)
 
-    assert report.valid is False
-    assert "MCEL_COUNTER_EFFECT_UNSUPPORTED" in {item["code"] for item in report.diagnostics}
+    assert report.valid is True
+    assert report.semantic_fingerprint != EXPECTED_SEMANTIC
 
 
 def test_fixture_semantic_drift_is_detected(tmp_path: Path) -> None:

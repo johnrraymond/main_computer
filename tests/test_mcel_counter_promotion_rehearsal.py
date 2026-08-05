@@ -20,10 +20,10 @@ from main_computer.mcel_dsl_compiler import compile_dsl_application
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE = ROOT / "mcel_apps/contract-counter"
-DSL = ROOT / "tests/fixtures/mcel_dsl/contract-counter.application.js"
+DSL = ROOT / "mcel_apps/contract-counter/application.js"
 FIXTURE = ROOT / "tests/fixtures/mcel_application_ir/contract-counter.ir.json"
 SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-SOURCE = "sha256:54e16c919103023872d62eb258871d0d61b65a5754534c0bd85bb122c4a3cfa2"
+SOURCE = "sha256:4fecea5fc1242165a82ce2aaa16199807bcda9ca3d8ac4c506fcdb0eb59c595d"
 
 
 def _receipt(*, ok: bool, status: str, code: str) -> dict:
@@ -179,13 +179,14 @@ def test_repository_guard_ignores_unrelated_source_changes(tmp_path: Path) -> No
     repo = tmp_path / "repo"
     (repo / "main_computer").mkdir(parents=True)
     (repo / "tools/mother").mkdir(parents=True)
-    (repo / "mcel_apps/contract-counter/contracts").mkdir(parents=True)
+    (repo / "runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts").mkdir(parents=True)
+    (repo / "mcel_apps/contract-counter").mkdir(parents=True)
     (repo / "tests/fixtures/mcel_dsl").mkdir(parents=True)
     (repo / "tests/fixtures/mcel_application_ir").mkdir(parents=True)
     (repo / "main_computer/mcel_counter_promotion_rehearsal.py").write_text("authority\n", encoding="utf-8")
     (repo / "tools/mother/unrelated.py").write_text("before\n", encoding="utf-8")
-    (repo / "mcel_apps/contract-counter/contracts/domain.js").write_text("counter\n", encoding="utf-8")
-    (repo / "tests/fixtures/mcel_dsl/contract-counter.application.js").write_text("dsl\n", encoding="utf-8")
+    (repo / "runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/domain.js").write_text("counter\n", encoding="utf-8")
+    (repo / "mcel_apps/contract-counter/application.js").write_text("dsl\n", encoding="utf-8")
     (repo / "tests/fixtures/mcel_application_ir/contract-counter.ir.json").write_text("{}\n", encoding="utf-8")
 
     full_before = _source_tree_snapshot(repo)
@@ -201,9 +202,9 @@ def test_repository_guard_ignores_unrelated_source_changes(tmp_path: Path) -> No
 def test_repository_guard_detects_counter_or_shared_mcel_changes(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "main_computer").mkdir(parents=True)
-    (repo / "mcel_apps/contract-counter/contracts").mkdir(parents=True)
+    (repo / "runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts").mkdir(parents=True)
     authority = repo / "main_computer/mcel_counter_promotion_rehearsal.py"
-    contract = repo / "mcel_apps/contract-counter/contracts/domain.js"
+    contract = repo / "runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/domain.js"
     authority.write_text("before\n", encoding="utf-8")
     contract.write_text("before\n", encoding="utf-8")
     before = _promotion_authority_source_snapshot(repo)
@@ -214,5 +215,4 @@ def test_repository_guard_detects_counter_or_shared_mcel_changes(tmp_path: Path)
 
     assert _snapshot_changes(before, after) == [
         "main_computer/mcel_counter_promotion_rehearsal.py",
-        "mcel_apps/contract-counter/contracts/domain.js",
     ]

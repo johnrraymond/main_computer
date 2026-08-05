@@ -41,7 +41,7 @@ def run_workbench_ir_native_intent_proof(
     if not compiled.valid or compiled.normalized_ir is None or compiled.comparison_status != "exact":
         raise WorkbenchIrNativeProofError("Authoritative Workbench DSL does not compile to the canonical IR exactly.")
     ir = compiled.normalized_ir
-    ownership = _verify_ownership(package, compiled)
+    ownership = _verify_ownership(package, compiled, record)
 
     if acceptance.get("status") != "pass" or acceptance.get("passed") is not True:
         raise WorkbenchIrNativeProofError("Workbench acceptance evidence did not pass.")
@@ -178,9 +178,12 @@ def run_workbench_ir_native_intent_proof(
     }
 
 
-def _verify_ownership(package: Path, compiled: Any) -> dict[str, Any]:
-    path = package / "mcel.generated.json"
-    value = _load_json(path, "Workbench generated ownership")
+def _verify_ownership(package: Path, compiled: Any, record: Any) -> dict[str, Any]:
+    del package
+    raw = record.files.get("mcel.generated.json")
+    if raw is None:
+        raise WorkbenchIrNativeProofError("Workbench virtual generated ownership manifest is missing.")
+    value = json.loads(raw.decode("utf-8"))
     if value.get("schema") != OWNERSHIP_SCHEMA or value.get("appId") != APP_ID:
         raise WorkbenchIrNativeProofError("Workbench generated ownership manifest identity is invalid.")
     authority = value.get("sourceAuthority") or {}
@@ -192,8 +195,8 @@ def _verify_ownership(package: Path, compiled: Any) -> dict[str, Any]:
         raise WorkbenchIrNativeProofError("Workbench generated ownership does not enumerate the exact derived artifact set.")
     files = []
     for relative in expected_paths:
-        artifact = package / relative
-        actual = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest() if artifact.is_file() else None
+        content = record.files.get(relative)
+        actual = "sha256:" + hashlib.sha256(content).hexdigest() if content is not None else None
         expected = entries[relative].get("sha256")
         exact = actual == expected
         files.append({"path": relative, "sha256": actual, "expectedSha256": expected, "exact": exact})

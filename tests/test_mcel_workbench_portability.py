@@ -22,7 +22,7 @@ from main_computer.mcel_workbench_expression_profile import (
 from main_computer.mcel_workbench_candidate_projection import project_workbench_candidate
 
 REPO = Path(__file__).resolve().parents[1]
-DSL = REPO / "tests/fixtures/mcel_dsl/contract-workbench.application.js"
+DSL = REPO / "mcel_apps/contract-workbench/application.js"
 IR = REPO / "tests/fixtures/mcel_application_ir/contract-workbench.ir.json"
 SEMANTIC = "sha256:3450eddcd5b67687fc09ff7589221fff5ef176efcc2d54231a9b43e2268ca78e"
 
@@ -72,8 +72,8 @@ def test_workbench_runs_through_generic_compile_project_and_authority_inspection
 
     authority = inspect_application_authority(app_id="contract-workbench", repo_root=REPO)
     assert authority.valid is True
-    assert authority.status == "legacy-authority"
-    assert authority.report["promotionExecuted"] is False
+    assert authority.status == "promoted"
+    assert authority.report["promotionExecuted"] is True
     assert authority.report["promotionSupported"] is True
 
 
@@ -196,7 +196,7 @@ def test_workbench_projection_profile_hashes_fail_closed(tmp_path: Path) -> None
 
     manifest, files = _load_projection_profile(tmp_path)
     assert manifest["portableIrProjectionComplete"] is True
-    assert len(files) == 9
+    assert len(files) == 8
 
     drifted = profile_target / "contracts/domain.js"
     drifted.write_text(drifted.read_text(encoding="utf-8") + "\n// drift\n", encoding="utf-8")

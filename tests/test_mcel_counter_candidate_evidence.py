@@ -170,7 +170,7 @@ def test_workspace_uses_candidate_package_without_changing_live_package(tmp_path
 
     _prepare_workspace(ROOT, workspace, candidate_package)
 
-    assert (workspace / "mcel_apps/contract-counter/contracts/domain.js").read_bytes() == before
+    assert (workspace / "runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/domain.js").read_bytes() == before
     assert (LIVE / "contracts/domain.js").read_bytes() == before
     assert not (workspace / "runtime").exists()
 

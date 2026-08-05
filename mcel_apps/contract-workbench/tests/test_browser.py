@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from main_computer.mcel_package_test_support import logical_package_text
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -22,8 +23,8 @@ def test_browser_entrypoint_declares_proven_runtime_without_hidden_feature_block
 
 
 def test_observation_contract_is_scenario_linked_and_complete() -> None:
-    observation = (PACKAGE / "contracts/observation.js").read_text(encoding="utf-8")
-    acceptance = (PACKAGE / "contracts/acceptance.js").read_text(encoding="utf-8")
+    observation = logical_package_text("contract-workbench", "contracts/observation.js")
+    acceptance = logical_package_text("contract-workbench", "contracts/acceptance.js")
     assert '"currentStatus": "scenario-linked"' in observation
     assert '"contract-workbench.acceptance.clear-all"' in acceptance
     assert acceptance.count('"kind": "workflow"') == 14

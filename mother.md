@@ -54,8 +54,8 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-009` | Rollback frames are armed before mutation and removed only after verified restoration | [Distributed rollback layers](#distributed-rollback-layers) | Interrupted-step, retry, and LIFO restoration tests | — | Implementable |
 | `MOTHER-REQ-010` | RPC routing is a typed, reversible distributed resource | [Typed RPC routing resource](#typed-rpc-routing-resource) | Complete-prestate and convergence tests | — | Implementable |
 | `MOTHER-REQ-011` | Hub/FDB topology is a typed, reversible distributed resource | [Typed Hub/FDB topology resource](#typed-hubfdb-topology-resource) | Participant convergence and rollback tests | — | Implementable |
-| `MOTHER-REQ-012` | `add-node` is one staged distributed lifecycle operation, including prospective-host enrollment when required | [Integrated add-node sequence](#integrated-add-node-sequence) | Established-host, prospective-host, reactivation, lifecycle, and rollback proof | — | Implementable |
-| `MOTHER-REQ-013` | `remove-node` is one staged distributed lifecycle operation and does not implicitly de-enroll a replica host | [Integrated remove-node sequence](#integrated-remove-node-sequence) | Last-node, last-validator, zero-validator, lifecycle, and rollback proof | — | Implementable |
+| `MOTHER-REQ-012` | `add-node` installs one complete super-node containing Hub, internal RPC, Besu, and QBFT validator duties, including prospective-host enrollment when required | [Integrated add-node sequence](#integrated-add-node-sequence) | Established-host, prospective-host, reactivation, lifecycle, and rollback proof | — | Implementable |
+| `MOTHER-REQ-013` | `remove-node` removes one complete super-node without permitting a partial Hub-only, RPC-only, Besu-only, or validator-only remainder and does not implicitly de-enroll a replica host | [Integrated remove-node sequence](#integrated-remove-node-sequence) | Last-node, last-validator, zero-validator, lifecycle, and rollback proof | — | Implementable |
 | `MOTHER-REQ-014` | QBFT membership changes use frozen participants, durable receipts, and convergence proof | [Frozen proposal and participant manifest](#frozen-proposal-and-participant-manifest) | Vote, receipt, effective-set, and block-proof tests | — | Implementable |
 | `MOTHER-REQ-015` | Schema and capability negotiation fails closed | [Startup and command preflight](#startup-and-command-preflight) | Compatibility matrix and unsupported-schema tests | — | Implementable |
 | `MOTHER-REQ-016` | Recovery transfers the complete transitive object and private-state closure | [Resolved design decisions](#resolved-design-decisions) | Closure traversal, missing-object, and hash tests | — | Implementable |
@@ -84,23 +84,64 @@ or roll it back. Mother commands MUST NOT mutate live infrastructure during
 discovery and MUST NOT borrow a destructive helper from another lifecycle path
 merely because it happens to touch the same service.
 
+## Super-node-only deployment invariant
 
-## Use case: first node, second node, topology handoff
+Mother recognizes exactly one deployable network-node topology: the complete
+super-node. Each super-node MUST be one governed deployment unit containing all
+of these responsibilities:
 
-This use case is the reference story for Mother. `add-node` and `remove-node`
-are complete user-facing distributed actions. Validator admission/removal,
-RPC routing, Hub/FDB topology, and service lifecycle are internal ordered phases
-of those actions; the operator does not run separate topology commands.
+- the Hub application and its required application services;
+- the private internal RPC surface used by that Hub and by authorized operators;
+- the Besu execution client and persistent chain data;
+- the QBFT validator identity, voting authority, and block-production duties;
+- the guard, health, recovery, and durable-state bindings required to operate the
+  complete unit safely.
 
-Goal:
+Mother MUST NOT create, reserve, stage, release, apply, or restore an independent
+Hub-only, RPC-only, Besu-only, validator-only, or non-validator network-node
+service. RPC routing remains an internal super-node resource; it does not define
+a second node type. Validator-RPC canary identities are bounded client wallets
+used to test the RPC surfaces of existing super-nodes and MUST NOT become
+deployable services or network members.
 
-```text
-Start with an unborn network: no committed birth record, seal, or journal head.
-Bootstrap the network and add the first super-node on coolify-a.
-Enroll coolify-c prospectively while adding the second super-node.
-Remove coolify-a's node without de-enrolling coolify-a.
-End with coolify-c as the solo validator while both hosts remain Mother replicas.
-```
+`add-node`, `remove-node`, `restore-service`, topology repair, and release rollout
+MUST preserve this complete-unit boundary. A partial service can exist only as a
+transient rollback-controlled implementation step inside the exact operation
+that creates, repairs, or removes its parent super-node. It MUST NOT become a
+committed network topology.
+
+## Canonical three-super-node lifecycle acceptance plan
+
+This is the required end-to-end Mother acceptance scenario for super-node
+deployment, removal, and reactivation. It tests only complete super-nodes.
+Internal Hub, RPC, Besu, QBFT, guard, health, recovery, and durable-state
+components move together as one governed node lifecycle.
+
+The canonical logical nodes are:
+
+| Alias | Mother node name | Coolify host | Complete role |
+| --- | --- | --- | --- |
+| `A1` | `mainneta-super1` | `coolify-a` | Hub + local RPC + Besu + QBFT validator + guards and durable state |
+| `C1` | `mainnetc-super1` | `coolify-c` | Hub + local RPC + Besu + QBFT validator + guards and durable state |
+| `C2` | `mainnetc-super2` | `coolify-c` | Hub + local RPC + Besu + QBFT validator + guards and durable state |
+
+The acceptance sequence and exact committed validator topology are:
+
+| Stage | Operation | Expected active super-nodes |
+| --- | --- | --- |
+| `T0` | Start from an unborn network | none |
+| `T1` | Add `A1` first | `A1` |
+| `T2` | Add `C1` second | `A1`, `C1` |
+| `T3` | Add `C2` third | `A1`, `C1`, `C2` |
+| `T4` | Remove one node from C by removing `C2` | `A1`, `C1` |
+| `T5` | Remove the node from A by removing `A1` | `C1` |
+| `T6` | Restore the intended two-node C topology by reactivating `C2` and reconciling `C1` | `C1`, `C2` |
+
+The phrase “re-add the two on C” means that the final committed topology contains
+the original two logical C nodes, `C1` and `C2`. `C1` remains active after `T5`,
+so `T6` verifies and reconciles `C1` and reactivates the removed `C2`. Mother
+MUST NOT create `mainnetc-super3`, duplicate `C1`, or replace either C identity
+with a new logical node to satisfy this stage.
 
 Prerequisite:
 
@@ -113,63 +154,59 @@ The Mother state root is the durable contract. The Mother container and API code
 are replaceable; authoritative identity, topology, action, rollback, route, guard,
 and lock state MUST NOT live only inside the container filesystem.
 
-`identity.private.yaml` is the source of reserved network identity. It contains
-the chain facts, officer/admin identity records, validator identity records, node
-reservations, routing reservations, and first-genesis material Mother needs
-before any service is deployed. The initial secret backend is inline local private
-YAML: private-key fields live directly in this file, and any key references are
-internal references to records in the same document.
-
-A representative flow:
+A representative operator flow is:
 
 ```text
-# 0. Observe the empty or partially empty world. Read-only only.
+# T0: Observe the unborn network. Read-only only.
 mother diagnose mainnet
 
-# 1. Add the first node as one distributed action.
+# T1: Add A1 first.
 mother add-node prep mainnet --node mainneta-super1 --host coolify-a --mode initial
 mother add-node do mainnet
-
-# Result before finalize:
-#   the service exists and owns its reserved identity;
-#   the first validator is active on Mother-owned first-genesis material;
-#   host-local canonical RPC routing is correct;
-#   Hub/FDB topology is correct on every current node;
-#   the network birth head and initial replica set precede live mutation;
-#   the node action remains rollback-capable until ordinary finalization.
-
 mother add-node finalize mainnet
 
-# 2. Add the second node as one distributed action.
+# T2: Add the first C super-node.
 mother add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
 mother add-node do mainnet
-
-# Result before finalize:
-#   coolify-c has enrollment readiness but no predecessor authority;
-#   both validator addresses are in the agreed QBFT set;
-#   affected RPC routes include the correct eligible backends;
-#   every node reports the new Hub/FDB topology;
-#   all distributed rollback layers remain active.
-
 mother add-node finalize mainnet
 
-# 3. Remove coolify-a's node as one distributed action.
-mother remove-node prep mainnet --node mainneta-super1 --mode soft
+# T3: Add the second C super-node on the same host.
+mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode soft
+mother add-node do mainnet
+mother add-node finalize mainnet
+
+# T4: Remove one C super-node. C1 remains.
+mother remove-node prep mainnet --node mainnetc-super2 --mode soft
 mother remove-node do mainnet
-
-# Result before finalize:
-#   Hub/FDB topology excludes mainneta-super1 everywhere;
-#   RPC routing excludes mainneta-super1;
-#   the validator is absent from the agreed QBFT set;
-#   the service is detached, disabled, archived, or removed as prepared;
-#   the complete distributed removal remains rollback-capable.
-
 mother remove-node finalize mainnet
 
-# Result:
-#   coolify-c's mainnetc-super1 is the solo validator;
-#   coolify-a remains a replica until separately de-enrolled.
+# T5: Remove A1. C1 becomes the sole active super-node.
+mother remove-node prep mainnet --node mainneta-super1 --mode soft
+mother remove-node do mainnet
+mother remove-node finalize mainnet
+
+# T6: Re-establish the two-node C target by reactivating C2.
+mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode reactivate
+mother add-node do mainnet
+mother add-node finalize mainnet
 ```
+
+Every finalized stage MUST prove all of the following:
+
+1. The active-node set and QBFT validator set exactly match the table.
+2. Every active logical node is a complete super-node; no Hub-only, RPC-only,
+   Besu-only, validator-only, or non-validator network node exists.
+3. Each active Hub uses the RPC surface co-located with its own super-node.
+4. Blocks advance and the latest block remains fresh whenever at least one
+   validator is active.
+5. A removed node is absent from Hub topology, RPC routing eligibility, QBFT
+   membership, and active Coolify service topology as prepared.
+6. Removing `A1` does not by itself de-enroll `coolify-a` from Mother replica
+   authority; host retirement remains a separate operation.
+7. Reactivated `C2` reuses its reserved logical name, validator identity,
+   genesis lineage, persistent chain state contract, and rollback lineage.
+8. The final committed state contains exactly `C1` and `C2` on `coolify-c`, with
+   `A1` absent and no third C node.
 
 Before either `add-node prep` or `remove-node prep` can succeed, every current
 replica MUST pass the authoritative journal/state barrier and every prospective
@@ -194,10 +231,9 @@ It resolves the active operation from the Mother control surface and unwinds the
 distributed durable rollback stack. The operator does not have to identify an
 internal validator, RPC, Hub/FDB, or service phase.
 
-The implementation MUST NOT hide an unknown in this use case. If a step
+The implementation MUST NOT hide an unknown in this acceptance plan. If a step
 depends on behavior that is not yet designed, the document MUST contain an
 explicit `MOTHER-OPEN-*` node before implementation begins.
-
 
 ## Design goals
 

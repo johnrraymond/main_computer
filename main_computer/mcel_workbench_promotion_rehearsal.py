@@ -378,7 +378,7 @@ def _tree_snapshot(root: Path) -> dict[str, str]:
 
 def _protected_source_snapshot(repo: Path) -> dict[str, str]:
     result = {}
-    roots = [repo / DEFAULT_PACKAGE_ROOT, repo / "tests/fixtures/mcel_dsl/contract-workbench.application.js", repo / "tests/fixtures/mcel_application_ir/contract-workbench.ir.json"]
+    roots = [repo / DEFAULT_PACKAGE_ROOT, repo / "mcel_apps/contract-workbench/application.js", repo / "tests/fixtures/mcel_application_ir/contract-workbench.ir.json"]
     roots.extend(sorted((repo / "main_computer").glob("mcel_*")))
     roots.extend(sorted((repo / "tools").glob("mcel_*")))
     for root in roots:

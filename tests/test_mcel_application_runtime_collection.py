@@ -10,8 +10,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCM = ROOT / "main_computer/web/applications/scripts/mcel-scm.js"
 RUNTIME = ROOT / "main_computer/web/applications/scripts/mcel-application-runtime.js"
-CATALOG = ROOT / "main_computer/web/applications/scripts/mcel-application-package-catalog.js"
-MANIFEST = ROOT / "main_computer/web/applications/mcel-packages/contract-workbench/mcel.runtime.json"
+CATALOG = ROOT / "runtime/build/mcel/web/applications/scripts/mcel-application-package-catalog.js"
+MANIFEST = ROOT / "runtime/build/mcel/web/applications/mcel-packages/contract-workbench/mcel.runtime.json"
 
 
 def _run_node_json(tmp_path: Path, body: str) -> dict:
@@ -168,9 +168,9 @@ const surface = {
 };
 const layout = {schema:"mcel.layout-grammar.v1",surfaceId:"collection.surface",regions:{shell:{direction:"column"},collection:{direction:"column"},evidence:{direction:"column"}},constraints:[]};
 (async()=>{
-  const domain=await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
-  const intents=await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
-  const adapter=await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
+  const domain=await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
+  const intents=await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
+  const adapter=await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
   const progressSnapshots=[];
   const mount=await McelApplicationRuntime.mountApplicationPackage({
     appId:"contract-workbench",root,packageCatalog,manifest:runtimeManifest,

@@ -9,7 +9,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = ROOT / "main_computer/web/applications/mcel-packages/contract-workbench"
+PACKAGE_ROOT = ROOT / "runtime/build/mcel/web/applications/mcel-packages/contract-workbench"
 SCM = ROOT / "main_computer/web/applications/scripts/mcel-scm.js"
 RUNTIME = ROOT / "main_computer/web/applications/scripts/mcel-application-runtime.js"
 SCENARIO_RUNNER = ROOT / "main_computer/web/applications/scripts/mcel-application-browser-scenario-runner.js"

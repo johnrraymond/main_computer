@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -1933,6 +1934,50 @@ class ViewportApplicationRoutesMixin:
             self._send_text(data, "text/html; charset=utf-8")
         except Exception as exc:
             self.server.signal("route-spreadsheet-smoke-error", error=exc)
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_mcel_generated_asset(self) -> None:
+        try:
+            from main_computer.mcel_application_build import ensure_mcel_browser_build
+
+            route_path = urlsplit(self.path).path.lstrip("/").replace("\\", "/")
+            allowed = (
+                route_path.startswith("applications/mcel-packages/"),
+                route_path == "applications/scripts/mcel-application-package-catalog.js",
+            )
+            if not any(allowed):
+                raise ValueError("MCEL generated asset route is invalid.")
+            parts = [part for part in route_path.split("/") if part and part != "."]
+            if any(part == ".." for part in parts):
+                raise ValueError("MCEL generated asset path is invalid.")
+            repo = Path(__file__).resolve().parents[1]
+            ensure_mcel_browser_build(repo)
+            root = (repo / "runtime/build/mcel/web").resolve()
+            path = (root.joinpath(*parts)).resolve()
+            try:
+                path.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("MCEL generated asset path must stay inside runtime/build/mcel/web.") from exc
+            if not path.is_file():
+                raise FileNotFoundError("MCEL generated asset does not exist.")
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if path.suffix.lower() == ".js":
+                content_type = "text/javascript; charset=utf-8"
+            elif path.suffix.lower() == ".json":
+                content_type = "application/json; charset=utf-8"
+            elif path.suffix.lower() == ".css":
+                content_type = "text/css; charset=utf-8"
+            data = path.read_bytes()
+            self.server.signal("api-mcel-generated-asset", path=path.relative_to(root).as_posix(), bytes=len(data))
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as exc:
+            self.server.signal("api-mcel-generated-asset-error", error=exc)
             self.send_error(HTTPStatus.NOT_FOUND)
 
     def _handle_applications_vendor_asset(self) -> None:

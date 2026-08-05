@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             "resultCode": exc.result_code,
             "mode": "check" if args.check else "write",
             "repositoryRoot": root.as_posix(),
-            "output": str(args.output or "main_computer/web/applications/mcel-packages"),
+            "output": str(args.output or "runtime/build/mcel/web/applications/mcel-packages"),
             "packageCount": 0,
             "catalogFingerprint": None,
             "changed": bool(args.check),

@@ -27,7 +27,7 @@ BROWSER_CATALOG_SCHEMA = "mcel.application-package-browser-catalog.v1"
 BROWSER_CATALOG_FORMAT = "mcel-application-package-browser-catalog-v1"
 BROWSER_CATALOG_RESULT_SCHEMA = "mcel.application-package-browser-catalog-result.v1"
 DEFAULT_BROWSER_CATALOG_RELATIVE_PATH = (
-    "main_computer/web/applications/scripts/mcel-application-package-catalog.js"
+    "runtime/build/mcel/web/applications/scripts/mcel-application-package-catalog.js"
 )
 
 

@@ -185,10 +185,20 @@ def test_legacy_intent_coverage_still_fails_closed() -> None:
             observation=observation,
         )
 
-def _workbench_coverage_inputs():
+def _workbench_coverage_inputs(tmp_path: Path):
     catalog = build_application_package_catalog(ROOT)
     record = next(item for item in catalog.packages if item.app_id == "contract-workbench")
-    normalized = prove._load_json(ROOT / record.authoring["normalizedDefinition"], "normalized definition")
+    normalized_bytes = record.files["generated/mcel.application.normalized.json"]
+    normalized_path = tmp_path / "mcel.application.normalized.json"
+    normalized_path.write_bytes(normalized_bytes)
+    manifest_path = tmp_path / "mcel.app.json"
+    manifest_path.write_text('{"authoring":{"status":"legacy-explicit"}}\n', encoding="utf-8")
+    record = replace(
+        record,
+        manifest=str(manifest_path),
+        authoring={"normalizedDefinition": str(normalized_path)},
+    )
+    normalized = prove._load_json(normalized_path, "normalized definition")
     scenario_ids = [entry["id"] for entry in normalized["definition"]["acceptance"]]
     acceptance = {
         "status": "pass",
@@ -211,8 +221,8 @@ def _workbench_coverage_inputs():
     return record, acceptance, observation
 
 
-def test_intent_complete_coverage_converges_for_workbench() -> None:
-    record, acceptance, observation = _workbench_coverage_inputs()
+def test_intent_complete_coverage_converges_for_workbench(tmp_path: Path) -> None:
+    record, acceptance, observation = _workbench_coverage_inputs(tmp_path)
     coverage = prove._intent_complete_coverage(
         repo=ROOT,
         app_id="contract-workbench",
@@ -230,8 +240,8 @@ def test_intent_complete_coverage_converges_for_workbench() -> None:
     assert coverage["crossCuttingChecks"]["clearAllObserved"] is True
 
 
-def test_intent_complete_coverage_rejects_missing_clear_all_browser_proof() -> None:
-    record, acceptance, observation = _workbench_coverage_inputs()
+def test_intent_complete_coverage_rejects_missing_clear_all_browser_proof(tmp_path: Path) -> None:
+    record, acceptance, observation = _workbench_coverage_inputs(tmp_path)
     observation["observation"]["scenarioResults"] = [
         entry for entry in observation["observation"]["scenarioResults"]
         if entry["id"] != "contract-workbench.acceptance.clear-all"

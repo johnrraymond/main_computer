@@ -32,7 +32,7 @@ import yaml
 
 from . import atomic_files
 from .canonical import canonical_json
-from .deployment_private_rpc import _controller_config, _load_soak
+from .deployment_coolify_context import load_controller_config
 from .deployment_post_admission_steady_state import (
     _binding,
     _canonical_under,
@@ -43,7 +43,11 @@ from .deployment_post_admission_steady_state import (
     _resolve,
     _timestamp,
 )
-from .deployment_mainnet_soak import _EVIDENCE_DIRECTORY as _SOAK_EVIDENCE_DIRECTORY
+from .deployment_mainnet_soak import (
+    _EVIDENCE_DIRECTORY as _SOAK_EVIDENCE_DIRECTORY,
+    _load_baseline as _load_continuation_baseline,
+    verify_mainnet_steady_state_soak_evidence,
+)
 from .ethereum_identity import generate_private_key, is_private_key, private_key_to_address
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
@@ -98,6 +102,78 @@ class MotherDeploymentValidatorRpcCanaryError(RuntimeError):
 
 def _error(code: str, message: str) -> MotherDeploymentValidatorRpcCanaryError:
     return MotherDeploymentValidatorRpcCanaryError(code, message)
+
+
+def _controller_config(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+) -> dict[str, Any]:
+    return load_controller_config(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+        allowed_controllers={_A_CONTROLLER, _C_CONTROLLER},
+        error_factory=_error,
+        rejected_code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_CONTROLLER_REJECTED",
+        invalid_code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_PRIVATE_STATE_INVALID",
+        placement_description="validator RPC canary placement",
+    )
+
+
+def _load_soak(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    network: str,
+    selected_nodes: Iterable[str],
+    max_age_seconds: int,
+) -> tuple[dict[str, Any], dict[str, Any], Path, str]:
+    verified = verify_mainnet_steady_state_soak_evidence(
+        paths,
+        private_state,
+        Path(evidence_path),
+        selected_nodes=selected_nodes,
+        max_age_seconds=max_age_seconds,
+        baseline_max_age_seconds=max_age_seconds,
+    )
+    if not (
+        verified.get("clean") is True
+        and verified.get("network") == network
+        and verified.get("blocks_advancing") is True
+        and verified.get("latest_block_fresh") is True
+        and verified.get("live_mutation_performed") is False
+        and verified.get("validator_vote_performed") is False
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_SOAK_INVALID",
+            "source soak evidence is not a clean completed mainnet proof",
+        )
+
+    canonical_path = Path(evidence_path).resolve(strict=False)
+    soak, _, file_sha = _canonical_under(
+        paths,
+        canonical_path,
+        _SOAK_EVIDENCE_DIRECTORY,
+        "mainnet soak evidence",
+    )
+    baseline_ref = _mapping(soak.get("baseline"), "soak.baseline")
+    continuation_path = _resolve(
+        paths,
+        baseline_ref.get("locator"),
+        ("evidence", "deployment-post-admission-steady-state-continuation"),
+        "steady-state continuation evidence",
+    )
+    _, release, _, _ = _load_continuation_baseline(
+        paths,
+        private_state,
+        continuation_path,
+        selected_nodes=selected_nodes,
+        baseline_max_age_seconds=max_age_seconds,
+    )
+    return soak, release, canonical_path, file_sha
 
 
 def _digest_without(document: Mapping[str, Any], field: str) -> str:

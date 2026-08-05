@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from main_computer.mcel_package_test_support import logical_package_text
 
 import pytest
 
@@ -26,7 +27,7 @@ def test_historical_feature_matrix_records_complete_platform_convergence() -> No
     manifest = json.loads((PACKAGE / "mcel.app.json").read_text(encoding="utf-8"))
     matrix = json.loads((PACKAGE / "forward-specification.json").read_text(encoding="utf-8"))
     if (manifest.get("authoring") or {}).get("status") == "dsl-authoritative":
-        normalized = json.loads((PACKAGE / "generated/mcel.application.normalized.json").read_text(encoding="utf-8"))
+        normalized = json.loads(logical_package_text("contract-workbench", "generated/mcel.application.normalized.json"))
         inspected = set((normalized.get("definition") or {}).get("requiredRuntimeFeatures") or [])
     else:
         completed = subprocess.run(

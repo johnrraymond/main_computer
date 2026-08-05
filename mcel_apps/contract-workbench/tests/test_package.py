@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from main_computer.mcel_scaffolding.package_validator import validate_package_path
+from main_computer.mcel_application_packages import build_application_package_catalog
+from main_computer.mcel_package_test_support import logical_package_text
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
 
 
 def test_semantic_runtime_package_is_structurally_valid() -> None:
-    result = validate_package_path(PACKAGE, expected_app_id="contract-workbench")
-    assert result.ok, [issue.to_dict() for issue in result.errors]
+    catalog = build_application_package_catalog(Path(__file__).resolve().parents[3])
+    record = next(item for item in catalog.packages if item.app_id == "contract-workbench")
+    assert record.valid, [issue.to_dict() for issue in record.errors]
 
 
 def test_package_declares_human_authoring_authority_and_zero_bridges() -> None:
@@ -25,7 +27,7 @@ def test_package_declares_human_authoring_authority_and_zero_bridges() -> None:
             "ownership": "mcel.generated.json",
             "normalizedDefinition": "generated/mcel.application.normalized.json",
         }
-        ownership = json.loads((PACKAGE / "mcel.generated.json").read_text(encoding="utf-8"))
+        ownership = json.loads(logical_package_text("contract-workbench", "mcel.generated.json"))
         assert ownership["sourceAuthority"]["kind"] == "mcel.dsl.v1"
         assert ownership["manualEditsProhibited"] is True
         assert len(ownership["generatedFiles"]) == 8

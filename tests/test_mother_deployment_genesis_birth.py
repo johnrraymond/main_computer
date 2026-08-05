@@ -30,7 +30,12 @@ from tools.mother.common.deployment_genesis_rollback import (
     write_genesis_mutation_rollback_verification,
 )
 from tests.test_mother_deployment_executor import TOKEN_A, _operation
-from tests.test_mother_deployment_genesis_executor import _GenesisOpener, _genesis_release
+from tests.test_mother_deployment_genesis_executor import (
+    HUB_GIT_COMMIT_SHA,
+    HUB_GIT_REPOSITORY,
+    _GenesisOpener,
+    _genesis_release,
+)
 
 
 def _successful_execution(tmp_path: Path):
@@ -98,6 +103,8 @@ def _successful_reapplication(tmp_path: Path):
         private_state,
         transaction_path,
         acknowledged_genesis_transaction_sha256=transaction_digest,
+        hub_git_repository=HUB_GIT_REPOSITORY,
+        hub_git_commit_sha=HUB_GIT_COMMIT_SHA,
         selected_nodes=("mainneta-super1",),
         created_at=second_now.isoformat(timespec="seconds").replace("+00:00", "Z"),
         now=second_now,
@@ -226,6 +233,13 @@ def test_birth_release_is_internal_only_and_removes_host_rpc_mapping(tmp_path: P
     assert "traefik." not in guardian
     assert release["proof_plan"]["proof"]["manual_ssh_required"] is False
     assert release["proof_plan"]["proof"]["public_endpoint_created"] is False
+    assert release["proof_plan"]["hub"]["service"] == "mother-super-node-hub"
+    assert release["proof_plan"]["hub"]["local_rpc_url"] == "http://mainneta-super1:8545"
+    assert "hub-health" in release["proof_plan"]["proof"]["predicates"]
+    assert "hub-local-rpc-binding" in release["proof_plan"]["proof"]["predicates"]
+    assert "HUB = 'http://mother-super-node-hub:8790'" in guardian
+    assert "hub('/api/hub/v1/health')" in guardian
+    assert "hub local RPC binding mismatch" in guardian
     verified = verify_genesis_birth_release(
         paths, private_state, release_path, selected_nodes=("mainneta-super1",)
     )
@@ -340,7 +354,12 @@ def test_birth_executor_proves_chain_through_internal_guardian_and_coolify(tmp_p
     assert result["summary"]["initial_chain_proven"] is True
     assert result["summary"]["manual_ssh_required"] is False
     assert result["summary"]["public_endpoint_created"] is False
+    assert result["summary"]["hub_healthy"] is True
+    assert result["summary"]["hub_local_rpc_verified"] is True
+    assert result["summary"]["complete_super_node_proven"] is True
     assert result["proof"]["service_status"] == "running:healthy"
+    assert result["proof"]["hub_service"] == "mother-super-node-hub"
+    assert result["proof"]["hub_local_rpc_url"] == "http://mainneta-super1:8545"
     assert all("coolify-c" not in path for _, path in opener.requests)
     verified = verify_genesis_birth_evidence(
         paths,
@@ -349,6 +368,16 @@ def test_birth_executor_proves_chain_through_internal_guardian_and_coolify(tmp_p
         selected_nodes=("mainneta-super1",),
     )
     assert verified["initial_chain_proven"] is True
+    assert verified["hub_healthy"] is True
+    assert verified["hub_local_rpc_verified"] is True
+    assert verified["complete_super_node_proven"] is True
+    assert verified["super_node_components"] == [
+        "hub",
+        "local-rpc",
+        "besu",
+        "qbft-validator",
+        "foundationdb",
+    ]
     assert verified["next_phase"] == "stage-soft-replica-configuration"
 
 

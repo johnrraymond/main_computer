@@ -91,6 +91,12 @@
       "order": 34
     },
     {
+      "path": "mcel-source-tree-dematerialization.md",
+      "title": "MCEL Source-Tree De-Materialization",
+      "kind": "markdown",
+      "order": 34.5
+    },
+    {
       "path": "mcel-system-guide.md",
       "title": "MCEL System Guide",
       "kind": "markdown",

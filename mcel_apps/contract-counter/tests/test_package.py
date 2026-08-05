@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from main_computer.mcel_package_test_support import logical_package_files
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -22,8 +23,9 @@ def test_generated_package_manifest_resolves_every_declared_authority() -> None:
     references.extend(manifest["contracts"].values())
     references.extend(manifest["runtime"].values())
     references.append(manifest["tests"]["acceptanceBindings"])
+    logical = logical_package_files("contract-counter")
     for relative_path in references:
-        assert (PACKAGE_ROOT / relative_path).is_file(), relative_path
+        assert relative_path in logical, relative_path
 
 
 def test_generated_package_reports_current_and_target_conformance_honestly() -> None:

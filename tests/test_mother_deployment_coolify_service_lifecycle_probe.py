@@ -26,6 +26,9 @@ class _LifecycleOpener:
         self,
         *,
         started_status: str = "running:healthy",
+        service_list_status_after_start: str | None = None,
+        service_detail_status_after_start: str | None = None,
+        server_resource_status_after_start: str | None = None,
         emit_runtime_log_marker: bool = True,
         subresource_name: str | None = None,
         include_subresources: bool = True,
@@ -37,6 +40,21 @@ class _LifecycleOpener:
     ) -> None:
         self.started = False
         self.started_status = started_status
+        self.service_list_status_after_start = (
+            started_status
+            if service_list_status_after_start is None
+            else service_list_status_after_start
+        )
+        self.service_detail_status_after_start = (
+            started_status
+            if service_detail_status_after_start is None
+            else service_detail_status_after_start
+        )
+        self.server_resource_status_after_start = (
+            started_status
+            if server_resource_status_after_start is None
+            else server_resource_status_after_start
+        )
         self.emit_runtime_log_marker = emit_runtime_log_marker
         self.subresource_name = subresource_name
         self.include_subresources = include_subresources
@@ -91,6 +109,9 @@ class _LifecycleOpener:
             assert "exec /bin/sleep " in compose
             assert "healthcheck:" in compose
             assert "kill -0 1" in compose
+            assert "/run/mother-probe/ready" in compose
+            assert "tmpfs:" in compose
+            assert "/run/mother-probe:size=64k,mode=0700" in compose
             assert "ports:" not in compose
             assert "volumes:" not in compose
             assert "secrets:" not in compose
@@ -99,7 +120,11 @@ class _LifecycleOpener:
             return _AdmissionResponse({"uuid": "probe-service-uuid"}, status=201)
 
         if method == "GET" and path == "/api/v1/services":
-            status = self.started_status if self.started else "exited:unhealthy"
+            status = (
+                self.service_list_status_after_start
+                if self.started
+                else "exited:unhealthy"
+            )
             return _AdmissionResponse(
                 [
                     {
@@ -117,7 +142,11 @@ class _LifecycleOpener:
             )
 
         if method == "GET" and path == "/api/v1/services/probe-service-uuid":
-            status = self.started_status if self.started else "exited:unhealthy"
+            status = (
+                self.service_detail_status_after_start
+                if self.started
+                else "exited:unhealthy"
+            )
             payload = {
                 "uuid": "probe-service-uuid",
                 "name": self.probe_name,
@@ -201,7 +230,11 @@ class _LifecycleOpener:
             return _AdmissionResponse([])
 
         if method == "GET" and path == "/api/v1/servers/server-a/resources":
-            status = self.started_status if self.started else "exited:unhealthy"
+            status = (
+                self.server_resource_status_after_start
+                if self.started
+                else "exited:unhealthy"
+            )
             return _AdmissionResponse(
                 [
                     {
@@ -267,6 +300,10 @@ def test_lifecycle_probe_inspection_is_no_secret_no_chain(tmp_path: Path, monkey
     assert result["compose"]["single_script_argument"] is True
     assert result["compose"]["healthcheck_required"] is True
     assert result["compose"]["runtime_log_marker_required"] is True
+    assert result["compose"]["runtime_result_channel_required"] is True
+    assert result["compose"]["health_bound_marker_fallback_allowed"] is True
+    assert result["compose"]["health_bound_marker_file"] == "/run/mother-probe/ready"
+    assert result["compose"]["tmpfs"] == ["/run/mother-probe:size=64k,mode=0700"]
     assert result["compose"]["image"] == "alpine:3.20"
     assert result["compose"]["runtime_log_endpoint_template"] == (
         "/api/v1/services/{service_uuid}/applications/{application_uuid}/logs"
@@ -326,6 +363,11 @@ def test_lifecycle_probe_executes_and_persists_observation_evidence(
     assert result["summary"]["healthy_running_status_values"] == ["running:healthy"]
     assert result["summary"]["image_entrypoint_override_verified"] is True
     assert result["summary"]["single_script_argument_verified"] is True
+    assert result["summary"]["runtime_result_channel_observed"] is True
+    assert result["summary"]["runtime_result_channel"] == "runtime-log-marker"
+    assert result["summary"]["runtime_health_marker_contract_verified"] is True
+    assert result["summary"]["health_bound_runtime_marker_observed"] is True
+    assert result["summary"]["health_bound_marker_file"] == "/run/mother-probe/ready"
     assert result["summary"]["service_runtime_log_endpoint_observed"] is True
     assert result["summary"]["service_runtime_log_marker_observed"] is True
     assert result["summary"]["runtime_log_marker"] == (
@@ -338,8 +380,8 @@ def test_lifecycle_probe_executes_and_persists_observation_evidence(
     assert TOKEN_A not in raw
     assert "private_key" not in raw
     evidence = json.loads(raw)
-    assert evidence["schema_version"] == 6
-    assert evidence["kind"].endswith(".v6")
+    assert evidence["schema_version"] == 7
+    assert evidence["kind"].endswith(".v7")
     assert [item["mutation_id"].rsplit(".", 1)[-1] for item in evidence["mutation_receipts"]] == [
         "create",
         "start",
@@ -401,6 +443,11 @@ def test_lifecycle_probe_executes_and_persists_observation_evidence(
     assert verified["healthy_running_status_values"] == ["running:healthy"]
     assert verified["image_entrypoint_override_verified"] is True
     assert verified["single_script_argument_verified"] is True
+    assert verified["runtime_result_channel_observed"] is True
+    assert verified["runtime_result_channel"] == "runtime-log-marker"
+    assert verified["runtime_health_marker_contract_verified"] is True
+    assert verified["health_bound_runtime_marker_observed"] is True
+    assert verified["health_bound_marker_file"] == "/run/mother-probe/ready"
     assert verified["service_runtime_log_endpoint_observed"] is True
     assert verified["service_runtime_log_marker_observed"] is True
     assert verified["service_runtime_log_response_classifications"] == [
@@ -537,6 +584,45 @@ def test_lifecycle_probe_verifier_keeps_schema_v5_evidence_compatible(
     ]
 
 
+def test_lifecycle_probe_verifier_keeps_schema_v6_evidence_compatible(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, private_state, *_ = _fixture(tmp_path, monkeypatch)
+    result = execute_coolify_service_lifecycle_probe(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        environment_name="mainnet",
+        acknowledged_probe="NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE",
+        observe_seconds=0,
+        poll_interval_seconds=0,
+        opener=_LifecycleOpener(),
+        operation=_operation("coolify-service-lifecycle-legacy-v6"),
+    )
+    evidence_path = Path(result["evidence"]["path"])
+    legacy = json.loads(evidence_path.read_text(encoding="utf-8"))
+    legacy["kind"] = (
+        "main_computer.mother."
+        "deployment_coolify_service_lifecycle_probe_evidence.v6"
+    )
+    legacy["schema_version"] = 6
+    legacy.pop("coolify_service_lifecycle_probe_evidence_sha256")
+    legacy_digest = hashlib.sha256(canonical_json(legacy)).hexdigest()
+    legacy["coolify_service_lifecycle_probe_evidence_sha256"] = legacy_digest
+    legacy_path = evidence_path.with_name("legacy-schema-v6.json")
+    legacy_path.write_bytes(canonical_json(legacy))
+
+    verified = verify_coolify_service_lifecycle_probe_evidence(
+        paths,
+        private_state,
+        legacy_path,
+    )
+    assert verified["clean"] is True
+    assert verified["service_runtime_log_marker_observed"] is True
+
+
 def test_lifecycle_probe_uses_the_single_service_detail_candidate(
     tmp_path: Path,
     monkeypatch,
@@ -616,7 +702,7 @@ def test_lifecycle_probe_falls_back_to_application_resource_logs(
     assert post_start_runtime["marker_observed"] is True
 
 
-def test_lifecycle_probe_classifies_healthy_container_log_404_without_raw_body(
+def test_lifecycle_probe_uses_health_bound_marker_when_all_log_routes_return_404(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -637,8 +723,16 @@ def test_lifecycle_probe_classifies_healthy_container_log_404_without_raw_body(
         opener=opener,
         operation=_operation("coolify-service-lifecycle-log-404"),
     )
-    assert result["status"] == "manual-review-required"
+    assert result["status"] == "pass"
     assert result["summary"]["healthy_running_observed"] is True
+    assert result["summary"]["runtime_result_channel_observed"] is True
+    assert result["summary"]["runtime_result_channel"] == "health-bound-marker"
+    assert result["summary"]["runtime_health_marker_contract_verified"] is True
+    assert result["summary"]["health_bound_runtime_marker_observed"] is True
+    assert result["summary"]["health_bound_marker_file"] == "/run/mother-probe/ready"
+    assert result["summary"]["service_list_healthy_running_observed"] is True
+    assert result["summary"]["service_detail_healthy_running_observed"] is True
+    assert result["summary"]["server_resource_healthy_running_observed"] is True
     assert result["summary"]["service_runtime_log_endpoint_observed"] is False
     assert result["summary"]["service_runtime_log_marker_observed"] is False
     assert result["summary"]["service_runtime_log_response_classifications"] == [
@@ -671,6 +765,52 @@ def test_lifecycle_probe_classifies_healthy_container_log_404_without_raw_body(
     assert post_start_runtime["logs_field_present"] is False
     assert post_start_runtime["marker_observed"] is False
 
+    verified = verify_coolify_service_lifecycle_probe_evidence(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+    )
+    assert verified["clean"] is True
+    assert verified["runtime_result_channel"] == "health-bound-marker"
+    assert verified["health_bound_runtime_marker_observed"] is True
+
+
+def test_lifecycle_probe_verifier_rejects_tampered_health_bound_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, private_state, *_ = _fixture(tmp_path, monkeypatch)
+    result = execute_coolify_service_lifecycle_probe(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        environment_name="mainnet",
+        acknowledged_probe="NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE",
+        observe_seconds=0,
+        poll_interval_seconds=0,
+        opener=_LifecycleOpener(runtime_log_status_after_start=404),
+        operation=_operation("coolify-service-lifecycle-health-bound-tamper"),
+    )
+    evidence_path = Path(result["evidence"]["path"])
+    tampered = json.loads(evidence_path.read_text(encoding="utf-8"))
+    tampered["summary"]["tmpfs_mount_count"] = 0
+    tampered.pop("coolify_service_lifecycle_probe_evidence_sha256")
+    tampered_digest = hashlib.sha256(canonical_json(tampered)).hexdigest()
+    tampered["coolify_service_lifecycle_probe_evidence_sha256"] = tampered_digest
+    tampered_path = evidence_path.with_name("tampered-health-bound.json")
+    tampered_path.write_bytes(canonical_json(tampered))
+
+    with pytest.raises(
+        MotherDeploymentCoolifyServiceLifecycleProbeError,
+        match="cleanup contract",
+    ):
+        verify_coolify_service_lifecycle_probe_evidence(
+            paths,
+            private_state,
+            tampered_path,
+        )
+
 
 def test_lifecycle_probe_records_missing_service_detail_subresources_without_log_request(
     tmp_path: Path,
@@ -690,8 +830,10 @@ def test_lifecycle_probe_records_missing_service_detail_subresources_without_log
         opener=opener,
         operation=_operation("coolify-service-lifecycle-no-subresources"),
     )
-    assert result["status"] == "manual-review-required"
+    assert result["status"] == "pass"
     assert result["summary"]["healthy_running_observed"] is True
+    assert result["summary"]["runtime_result_channel"] == "health-bound-marker"
+    assert result["summary"]["health_bound_runtime_marker_observed"] is True
     assert result["summary"]["service_runtime_log_endpoint_observed"] is False
     assert result["summary"]["service_runtime_log_response_classifications"] == [
         "sub-service-name-unresolved"
@@ -771,7 +913,37 @@ def test_lifecycle_probe_fails_closed_without_healthy_running_state(
 
 
 
-def test_lifecycle_probe_fails_closed_without_runtime_log_marker(
+def test_lifecycle_probe_health_bound_marker_requires_all_inventory_channels_healthy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, private_state, *_ = _fixture(tmp_path, monkeypatch)
+    result = execute_coolify_service_lifecycle_probe(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        environment_name="mainnet",
+        acknowledged_probe="NO_SECRET_NO_CHAIN_ONE_TEMPORARY_SERVICE",
+        observe_seconds=0,
+        poll_interval_seconds=0,
+        opener=_LifecycleOpener(
+            runtime_log_status_after_start=404,
+            service_detail_status_after_start="running:unhealthy",
+        ),
+        operation=_operation("coolify-service-lifecycle-partial-health"),
+    )
+    assert result["status"] == "manual-review-required"
+    assert result["summary"]["healthy_running_observed"] is True
+    assert result["summary"]["service_list_healthy_running_observed"] is True
+    assert result["summary"]["service_detail_healthy_running_observed"] is False
+    assert result["summary"]["server_resource_healthy_running_observed"] is True
+    assert result["summary"]["health_bound_runtime_marker_observed"] is False
+    assert result["summary"]["runtime_result_channel_observed"] is False
+    assert result["summary"]["temporary_service_deleted"] is True
+
+
+def test_lifecycle_probe_uses_health_bound_marker_when_log_body_lacks_marker(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -788,8 +960,10 @@ def test_lifecycle_probe_fails_closed_without_runtime_log_marker(
         opener=_LifecycleOpener(emit_runtime_log_marker=False),
         operation=_operation("coolify-service-lifecycle-missing-runtime-marker"),
     )
-    assert result["status"] == "manual-review-required"
+    assert result["status"] == "pass"
     assert result["summary"]["healthy_running_observed"] is True
+    assert result["summary"]["runtime_result_channel"] == "health-bound-marker"
+    assert result["summary"]["health_bound_runtime_marker_observed"] is True
     assert result["summary"]["service_runtime_log_endpoint_observed"] is True
     assert result["summary"]["service_runtime_log_marker_observed"] is False
     assert result["summary"]["temporary_service_deleted"] is True

@@ -540,7 +540,7 @@ def _promotion_authority_source_snapshot(repo: Path) -> dict[str, str]:
     full = _source_tree_snapshot(repo)
     protected: dict[str, str] = {}
     exact_paths = {
-        "tests/fixtures/mcel_dsl/contract-counter.application.js",
+        "mcel_apps/contract-counter/application.js",
         "tests/fixtures/mcel_application_ir/contract-counter.ir.json",
     }
     prefixes = (

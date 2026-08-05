@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from main_computer.mcel_package_test_support import logical_package_files
 from main_computer.mcel_counter_candidate_projection import (
     GENERATED_CONTRACTS,
     generate_counter_contracts,
@@ -14,12 +15,12 @@ from main_computer.mcel_counter_candidate_projection import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "mcel_counter_candidate_projection.py"
-DSL = ROOT / "tests" / "fixtures" / "mcel_dsl" / "contract-counter.application.js"
+DSL = ROOT / "mcel_apps" / "contract-counter" / "application.js"
 FIXTURE = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
 LIVE = ROOT / "mcel_apps" / "contract-counter"
 EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-EXPECTED_PACKAGE = "sha256:345ea6f70763faf284b71f5f08e398788d6247f09dceddad6843870b0807ea34"
-EXPECTED_RUNTIME = "sha256:70bd2e4cd9511c54ae6a428a3ff4e135a1c0c6a1fb3cf1023eb62f20d0c099f8"
+EXPECTED_PACKAGE = "sha256:f3336d36d830a7d505b646961051a3f90822372365df640628b31a08dab5d130"
+EXPECTED_RUNTIME = "sha256:688c36817768e1f20eebe429fd7d151897e3c56095d29e16e987f8277ec1c476"
 
 
 def _live_hashes() -> dict[str, str]:
@@ -54,9 +55,10 @@ def test_generated_contracts_are_byte_exact_with_live_package() -> None:
     ir = json.loads(FIXTURE.read_text(encoding="utf-8"))
     generated = generate_counter_contracts(ir)
 
+    logical = logical_package_files("contract-counter", ROOT)
     assert set(generated) == set(GENERATED_CONTRACTS)
     for relative, content in generated.items():
-        assert content == (LIVE / relative).read_bytes(), relative
+        assert content == logical[relative], relative
 
 
 def test_candidate_stages_projections_shadow_package_manifest_and_report(tmp_path: Path) -> None:
@@ -64,9 +66,10 @@ def test_candidate_stages_projections_shadow_package_manifest_and_report(tmp_pat
     assert report.candidate_directory is not None
     root = report.candidate_directory
 
+    logical = logical_package_files("contract-counter", ROOT)
     for relative in GENERATED_CONTRACTS:
-        assert (root / "projections" / relative).read_bytes() == (LIVE / relative).read_bytes()
-        assert (root / "package" / "mcel_apps" / "contract-counter" / relative).read_bytes() == (LIVE / relative).read_bytes()
+        assert (root / "projections" / relative).read_bytes() == logical[relative]
+        assert (root / "package" / "mcel_apps" / "contract-counter" / relative).read_bytes() == logical[relative]
     manifest = json.loads((root / "projections" / "mcel.runtime.json").read_text(encoding="utf-8"))
     assert manifest["projection"]["fingerprint"] == EXPECTED_RUNTIME
     assert manifest["source"]["packageFingerprint"] == EXPECTED_PACKAGE

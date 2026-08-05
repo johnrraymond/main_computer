@@ -388,7 +388,17 @@ def _package_requirements_contract(repo: Path, record: Any) -> tuple[dict[str, A
 
 
 def _adapter_id(repo: Path, record: Any) -> str:
-    source = (repo / record.contracts["adapter"]).read_text(encoding="utf-8")
+    adapter_path = Path(record.contracts["adapter"])
+    package_root = Path(record.package_root)
+    try:
+        relative = adapter_path.relative_to(package_root).as_posix()
+    except ValueError:
+        relative = adapter_path.as_posix()
+    content = record.files.get(relative)
+    if content is not None:
+        source = content.decode("utf-8")
+    else:
+        source = (repo / adapter_path).read_text(encoding="utf-8")
     match = re.search(r'adapterId\s*:\s*["\']([^"\']+)["\']', source)
     if not match:
         raise AppProofError("Package semantic adapter does not declare adapterId.")

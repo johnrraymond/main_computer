@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 _WEB_DIR = Path(__file__).with_name("web")
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_MCEL_BUILD_WEB_DIR = _REPOSITORY_ROOT / "runtime" / "build" / "mcel" / "web"
 _INCLUDE_RE = re.compile(r"^[ \t]*<!--\s*@include\s+([^>]+?)\s*-->", re.MULTILINE)
 
 _PAGE_FILES = {
@@ -29,8 +31,13 @@ def _expand_includes(text: str, base_dir: Path, seen: tuple[Path, ...] = ()) -> 
         include_name = match.group(1).strip()
         include_path = (base_dir / include_name).resolve()
         web_root = _WEB_DIR.resolve()
-        if web_root not in include_path.parents:
-            raise ValueError(f"Viewport include escapes web asset directory: {include_name}")
+        if not include_path.exists() and include_name == "applications/scripts/mcel-application-package-catalog.js":
+            from main_computer.mcel_application_build import ensure_mcel_browser_build
+            ensure_mcel_browser_build(_REPOSITORY_ROOT)
+            include_path = (_MCEL_BUILD_WEB_DIR / include_name).resolve()
+        allowed_roots = (web_root, _MCEL_BUILD_WEB_DIR.resolve())
+        if not any(root == include_path or root in include_path.parents for root in allowed_roots):
+            raise ValueError(f"Viewport include escapes web/build asset directories: {include_name}")
         if include_path in seen:
             chain = " -> ".join(path.name for path in (*seen, include_path))
             raise ValueError(f"Recursive viewport include detected: {chain}")

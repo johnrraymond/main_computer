@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from main_computer.mcel_package_test_support import logical_package_text
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ def test_html_supplies_static_hosts_and_dynamic_templates() -> None:
 
 
 def test_surface_contract_declares_dynamic_projection_vocabulary() -> None:
-    source = (PACKAGE / "contracts/surface.js").read_text(encoding="utf-8")
+    source = logical_package_text("contract-workbench", "contracts/surface.js")
     for kind in ("input", "property", "conditional", "collection", "operation-evidence"):
         assert f'"kind": "{kind}"' in source
     assert '"keyPath": "id"' in source

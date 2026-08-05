@@ -1,8 +1,10 @@
-"""Explicit expiring release for the exact A-side first-genesis deployment.
+"""Explicit expiring release for the exact A-side first super-node deployment.
 
 The release binds one canonical genesis transaction to one initial-node service
-update and one deploy request.  It is secret-free, performs no network access,
-and deliberately excludes every soft-admission target.
+update and one deploy request.  The deployed Compose is a complete super-node:
+Besu/QBFT, its internal RPC surface, FoundationDB, and the Hub built from one
+exact pushed Git commit.  The release is secret-free, performs no network
+access, and deliberately excludes every soft-admission target.
 """
 
 from __future__ import annotations
@@ -31,6 +33,12 @@ _MIN_RELEASE_SECONDS = 30
 _MAX_RELEASE_SECONDS = 900
 _BESU_IMAGE = "hyperledger/besu:latest"
 _INIT_IMAGE = "alpine:3.20"
+_FDB_IMAGE = "foundationdb/foundationdb:7.4.6"
+_HUB_DOCKERFILE = "Dockerfile.hub.exp-fdb"
+_HUB_PORT = 8790
+_FDB_PORT = 4550
+_HUB_SERVICE = "mother-super-node-hub"
+_FDB_SERVICE = "mother-super-node-fdb"
 
 
 class MotherDeploymentGenesisReleaseError(RuntimeError):
@@ -53,6 +61,39 @@ def _identifier(value: Any, path: str) -> str:
             "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", f"{path} is not a safe identifier"
         )
     return text
+
+
+def _git_repository(value: Any, path: str) -> str:
+    if type(value) is not str or not value.strip():
+        raise MotherDeploymentGenesisReleaseError(
+            "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", f"{path} must be a non-empty HTTPS Git repository URL"
+        )
+    text = value.strip()
+    parsed = urllib.parse.urlsplit(text)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise MotherDeploymentGenesisReleaseError(
+            "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID",
+            f"{path} must be a credential-free HTTPS Git repository URL without query or fragment",
+        )
+    normalized = urllib.parse.urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    if not normalized.endswith(".git"):
+        normalized += ".git"
+    return normalized
+
+
+def _git_commit_sha(value: Any, path: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value.strip()) is None:
+        raise MotherDeploymentGenesisReleaseError(
+            "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", f"{path} must be an exact lowercase 40-character Git commit SHA"
+        )
+    return value.strip()
 
 
 def _sha256(value: Any, path: str) -> str:
@@ -205,9 +246,41 @@ def _initial_target(transaction: Mapping[str, Any]) -> dict[str, Any]:
     return target
 
 
-def _first_genesis_compose(*, node: str, chain_id: int, genesis: Mapping[str, Any]) -> str:
+def _first_genesis_compose(
+    *,
+    node: str,
+    chain_id: int,
+    genesis: Mapping[str, Any],
+    hub_git_repository: str,
+    hub_git_commit_sha: str,
+) -> str:
     genesis_bytes = canonical_json(dict(genesis))
     encoded = base64.b64encode(genesis_bytes).decode("ascii")
+    git_context = f"{hub_git_repository}#{hub_git_commit_sha}"
+    fdb_cluster = f"docker:docker@{_FDB_SERVICE}:{_FDB_PORT}"
+    hub_root = f"/data/main-computer/hub/{node}"
+    hub_rpc = f"http://{node}:8545"
+    hub_bootstrap = "\n".join(
+        [
+            "set -eu",
+            f"mkdir -p {hub_root}",
+            f"printf '%s\\n' '{fdb_cluster}' > {hub_root}/fdb.cluster",
+            "for attempt in $(seq 1 90); do",
+            f"  fdbcli -C {hub_root}/fdb.cluster --exec 'configure new single ssd' --timeout 10 >/tmp/mother-fdb-configure.log 2>&1 || true",
+            f"  if fdbcli -C {hub_root}/fdb.cluster --exec 'status' --timeout 10 >/tmp/mother-fdb-status.log 2>&1; then",
+            "    break",
+            "  fi",
+            '  if [ "$attempt" = "90" ]; then',
+            "    cat /tmp/mother-fdb-configure.log >&2 || true",
+            "    cat /tmp/mother-fdb-status.log >&2 || true",
+            "    exit 1",
+            "  fi",
+            "  sleep 1",
+            "done",
+            "exec python /app/run-exp-fdb-hub.py",
+        ]
+    )
+    indented_bootstrap = "\n".join("        " + line for line in hub_bootstrap.splitlines())
     return "\n".join(
         [
             f"name: {node}",
@@ -229,7 +302,7 @@ def _first_genesis_compose(*, node: str, chain_id: int, genesis: Mapping[str, An
             f"        printf '%s' '{encoded}' | base64 -d > /config/genesis.json",
             '        key="$${MC_MOTHER_VALIDATOR_PRIVATE_KEY#0x}"',
             '        test "$${#key}" -eq 64',
-            '        printf \'%s\' "$${key}" > /config/nodekey',
+            "        printf '%s' \"$${key}\" > /config/nodekey",
             "        mkdir -p /var/lib/besu",
             "        chown -R 1000:1000 /config /var/lib/besu",
             "        chmod 0400 /config/nodekey",
@@ -253,7 +326,7 @@ def _first_genesis_compose(*, node: str, chain_id: int, genesis: Mapping[str, An
             "      - --rpc-http-host=0.0.0.0",
             "      - --rpc-http-port=8545",
             "      - --rpc-http-api=ETH,NET,WEB3,QBFT,ADMIN",
-            "      - --host-allowlist=localhost,127.0.0.1",
+            f"      - --host-allowlist=localhost,127.0.0.1,{node},{_HUB_SERVICE},mother-genesis-proof-guardian",
             "      - --min-gas-price=0",
             "    ports:",
             '      - "127.0.0.1:8545:8545/tcp"',
@@ -265,16 +338,82 @@ def _first_genesis_compose(*, node: str, chain_id: int, genesis: Mapping[str, An
             "    labels:",
             "      main_computer.mother.stage: first-genesis",
             f"      main_computer.mother.node: {node}",
+            "      main_computer.mother.component: besu-qbft-rpc",
+            f"  {_FDB_SERVICE}:",
+            f"    image: {_FDB_IMAGE}",
+            "    restart: unless-stopped",
+            "    environment:",
+            f'      FDB_PORT: "{_FDB_PORT}"',
+            f'      FDB_COORDINATOR_PORT: "{_FDB_PORT}"',
+            '      FDB_NETWORKING_MODE: "container"',
+            f'      FDB_CLUSTER_FILE_CONTENTS: "{fdb_cluster}"',
+            "    expose:",
+            f'      - "{_FDB_PORT}"',
+            "    volumes:",
+            "      - mother-fdb-data:/var/fdb/data",
+            "    labels:",
+            f"      main_computer.mother.node: {node}",
+            "      main_computer.mother.component: foundationdb",
+            f"  {_HUB_SERVICE}:",
+            "    build:",
+            f'      context: "{git_context}"',
+            f"      dockerfile: {_HUB_DOCKERFILE}",
+            f"    image: {node}-hub:{hub_git_commit_sha[:12]}",
+            "    pull_policy: build",
+            "    restart: unless-stopped",
+            "    depends_on:",
+            f"      {node}:",
+            "        condition: service_started",
+            f"      {_FDB_SERVICE}:",
+            "        condition: service_started",
+            "    expose:",
+            f'      - "{_HUB_PORT}"',
+            "    environment:",
+            f'      HUB_HEALTH_PORT: "{_HUB_PORT}"',
+            f'      PORT: "{_HUB_PORT}"',
+            '      MAIN_COMPUTER_HUB_NETWORK: "mainnet"',
+            f'      MAIN_COMPUTER_HUB_ROOT: "{hub_root}"',
+            f'      MAIN_COMPUTER_HUB_FDB_NAMESPACE: "main-computer-mainnet-{node}"',
+            f'      FDB_CLUSTER_FILE_CONTENTS: "{fdb_cluster}"',
+            f'      MAIN_COMPUTER_HUB_CHAIN_ID: "{chain_id}"',
+            f'      MAIN_COMPUTER_HUB_CHAIN_RPC_URL: "{hub_rpc}"',
+            '      MAIN_COMPUTER_HUB_CONTRACTS_PATH: "/app/main_computer/config/mainnet_contracts.json"',
+            '      MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER: "true"',
+            "    command:",
+            "      - sh",
+            "      - -lc",
+            "      - |",
+            indented_bootstrap,
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            f"        - curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:{_HUB_PORT}/api/hub/v1/health >/dev/null || exit 1",
+            "      interval: 15s",
+            "      timeout: 10s",
+            "      retries: 12",
+            "      start_period: 120s",
+            "    volumes:",
+            f"      - mother-hub-data:{hub_root}",
+            "    labels:",
+            f"      main_computer.mother.node: {node}",
+            "      main_computer.mother.component: hub",
             "",
             "volumes:",
             "  mother-config:",
             "  mother-data:",
+            "  mother-fdb-data:",
+            "  mother-hub-data:",
             "",
         ]
     )
 
 
-def _execution_plan(transaction: Mapping[str, Any]) -> dict[str, Any]:
+def _execution_plan(
+    transaction: Mapping[str, Any],
+    *,
+    hub_git_repository: str,
+    hub_git_commit_sha: str,
+) -> dict[str, Any]:
     target = _initial_target(transaction)
     node = _identifier(target.get("node"), "initial target node")
     controller_id = _identifier(target.get("controller_id"), "initial target controller_id")
@@ -299,7 +438,15 @@ def _execution_plan(transaction: Mapping[str, Any]) -> dict[str, Any]:
         raise MotherDeploymentGenesisReleaseError(
             "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", "canonical genesis digest does not match"
         )
-    compose = _first_genesis_compose(node=node, chain_id=chain_id, genesis=genesis)
+    repository = _git_repository(hub_git_repository, "hub_git_repository")
+    commit_sha = _git_commit_sha(hub_git_commit_sha, "hub_git_commit_sha")
+    compose = _first_genesis_compose(
+        node=node,
+        chain_id=chain_id,
+        genesis=genesis,
+        hub_git_repository=repository,
+        hub_git_commit_sha=commit_sha,
+    )
     compose_bytes = compose.encode("utf-8")
     compose_sha = hashlib.sha256(compose_bytes).hexdigest()
     body = {
@@ -309,7 +456,7 @@ def _execution_plan(transaction: Mapping[str, Any]) -> dict[str, Any]:
     body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
     encoded_uuid = urllib.parse.quote(service_uuid, safe="")
     return {
-        "scope": "install-and-start-first-genesis-on-initial-node",
+        "scope": "install-and-start-first-complete-super-node-on-initial-node",
         "initial_node": node,
         "controller_id": controller_id,
         "service_uuid": service_uuid,
@@ -319,6 +466,15 @@ def _execution_plan(transaction: Mapping[str, Any]) -> dict[str, Any]:
             "format": "docker-compose-yaml",
             "besu_image": _BESU_IMAGE,
             "init_image": _INIT_IMAGE,
+            "foundationdb_image": _FDB_IMAGE,
+            "hub_dockerfile": _HUB_DOCKERFILE,
+            "hub_git_repository": repository,
+            "hub_git_commit_sha": commit_sha,
+            "hub_service": _HUB_SERVICE,
+            "hub_internal_port": _HUB_PORT,
+            "hub_local_rpc_url": f"http://{node}:8545",
+            "foundationdb_service": _FDB_SERVICE,
+            "foundationdb_internal_port": _FDB_PORT,
             "sha256": compose_sha,
             "byte_length": len(compose_bytes),
             "canonical_text": compose,
@@ -368,7 +524,9 @@ def _execution_plan(transaction: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(item, Mapping) and item.get("node") != node
         ],
         "postcondition_scope": "deployment-request-accepted-only",
-        "initial_chain_proof_required_next": True,
+        "super_node_components": ["hub", "local-rpc", "besu", "qbft-validator", "foundationdb"],
+        "standalone_network_nodes_allowed": False,
+        "initial_chain_and_hub_proof_required_next": True,
     }
 
 
@@ -378,6 +536,8 @@ def build_deployment_genesis_release(
     transaction_path: Path,
     *,
     acknowledged_genesis_transaction_sha256: str,
+    hub_git_repository: str,
+    hub_git_commit_sha: str,
     selected_nodes: Iterable[str] = (),
     expires_in_seconds: int = 300,
     created_at: str | None = None,
@@ -398,7 +558,11 @@ def build_deployment_genesis_release(
         )
     candidate = Path(verified["transaction_path"])
     transaction, raw = _load_canonical_json(candidate, label="genesis transaction")
-    plan = _execution_plan(transaction)
+    plan = _execution_plan(
+        transaction,
+        hub_git_repository=hub_git_repository,
+        hub_git_commit_sha=hub_git_commit_sha,
+    )
     requested = tuple(_identifier(item, "selected node") for item in selected_nodes)
     if requested and requested != (plan["initial_node"],):
         raise MotherDeploymentGenesisReleaseError(
@@ -426,7 +590,7 @@ def build_deployment_genesis_release(
             "genesis_sha256": verified["genesis_sha256"],
         },
         "operator_release": {
-            "intent": "install-and-start-exact-first-genesis-on-initial-node",
+            "intent": "install-and-start-exact-first-complete-super-node-on-initial-node",
             "acknowledged_genesis_transaction_sha256": acknowledged,
             "requested_use_limit": 1,
             "expires_in_seconds": lifetime,
@@ -463,7 +627,10 @@ def build_deployment_genesis_release(
             "transaction_apply_authorized": True,
             "live_execution_authorized": False,
             "remaining_blocker_codes": ["MOTHER_DEPLOY_GENESIS_EXECUTOR_NOT_IMPLEMENTED"],
-            "next_phase_after_apply": "prove-initial-chain-birth",
+            "hub_git_commit_sha": plan["compose"]["hub_git_commit_sha"],
+            "hub_local_rpc_url": plan["compose"]["hub_local_rpc_url"],
+            "complete_super_node_compiled": True,
+            "next_phase_after_apply": "prove-initial-chain-and-hub-birth",
         },
     }
     if _contains_sensitive_key(release):
@@ -596,6 +763,8 @@ def verify_deployment_genesis_release(
         private_state,
         transaction_path,
         acknowledged_genesis_transaction_sha256=verified["genesis_transaction_sha256"],
+        hub_git_repository=str(plan.get("compose", {}).get("hub_git_repository") or ""),
+        hub_git_commit_sha=str(plan.get("compose", {}).get("hub_git_commit_sha") or ""),
         selected_nodes=(str(plan.get("initial_node")),),
         expires_in_seconds=lifetime,
         created_at=release.get("created_at"),
@@ -621,6 +790,12 @@ def verify_deployment_genesis_release(
         "genesis_transaction_sha256": verified["genesis_transaction_sha256"],
         "genesis_sha256": plan["genesis_sha256"],
         "compose_sha256": plan["compose"]["sha256"],
+        "hub_git_repository": plan["compose"]["hub_git_repository"],
+        "hub_git_commit_sha": plan["compose"]["hub_git_commit_sha"],
+        "hub_service": plan["compose"]["hub_service"],
+        "hub_internal_port": plan["compose"]["hub_internal_port"],
+        "hub_local_rpc_url": plan["compose"]["hub_local_rpc_url"],
+        "super_node_components": list(plan["super_node_components"]),
         "mutation_count": len(plan["mutations"]),
         "transaction_apply_authorized": True,
         "live_execution_authorized": False,

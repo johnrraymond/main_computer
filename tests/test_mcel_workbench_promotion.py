@@ -22,7 +22,7 @@ from main_computer.mcel_workbench_promotion_rehearsal import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-DSL = Path("tests/fixtures/mcel_dsl/contract-workbench.application.js")
+DSL = Path("mcel_apps/contract-workbench/application.js")
 FIXTURE = Path("tests/fixtures/mcel_application_ir/contract-workbench.ir.json")
 SEMANTIC = "sha256:3450eddcd5b67687fc09ff7589221fff5ef176efcc2d54231a9b43e2268ca78e"
 

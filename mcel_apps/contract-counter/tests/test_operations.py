@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from main_computer.mcel_package_test_support import logical_package_text
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_generated_operation_contract_contains_accept_and_refusal_paths() -> None:
-    intents = (PACKAGE_ROOT / "contracts" / "intents.js").read_text(encoding="utf-8")
-    adapter = (PACKAGE_ROOT / "contracts" / "adapter.js").read_text(encoding="utf-8")
+    intents = logical_package_text("contract-counter", "contracts/intents.js")
+    adapter = logical_package_text("contract-counter", "contracts/adapter.js")
 
     assert 'id: "increment"' in intents
     assert 'id: "reset"' in intents
@@ -21,8 +22,8 @@ def test_generated_operation_contract_contains_accept_and_refusal_paths() -> Non
 
 
 def test_generated_adapter_targets_the_live_scm_application_runtime() -> None:
-    domain = (PACKAGE_ROOT / "contracts" / "domain.js").read_text(encoding="utf-8")
-    adapter = (PACKAGE_ROOT / "contracts" / "adapter.js").read_text(encoding="utf-8")
+    domain = logical_package_text("contract-counter", "contracts/domain.js")
+    adapter = logical_package_text("contract-counter", "contracts/adapter.js")
 
     assert 'invariantReads: Object.freeze(["state.count", "state.revision"])' in domain
     assert 'currentRuntimeStatus: "scm-controlled"' in adapter

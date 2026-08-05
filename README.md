@@ -375,6 +375,7 @@ pretty_docs/mcel-semantic-change-and-evidence-impact.md
 pretty_docs/mcel-ai-authoring-and-migration-benchmark.md
 pretty_docs/mcel-ai-authoring-documentation-completeness-review.md
 pretty_docs/mcel-application-authoring.md
+pretty_docs/mcel-source-tree-dematerialization.md
 pretty_docs/mcel-code-studio-example.md
 pretty_docs/mcel-project-edit-transaction.md
 pretty_docs/mcel-requirements-language.md

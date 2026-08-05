@@ -3,7 +3,7 @@
 Status: operator-facing companion to `mother.md`
 
 Source reviewed: `mother.md` SHA-256
-`bbc69b2e602e234a0e1f844c51f3f079c22669b2ac19c100f7e7c4162549a442`
+`0225a462af56e196fc3b88d37466e032434d45fb1b0e7637624ccd8939d2f530`
 
 ## 1. Purpose and authority
 
@@ -179,6 +179,13 @@ hashes and MUST NOT guess at unknown fields.
 Use `add-node` to add or reactivate one complete super-node. It is a single
 distributed action covering service identity, validator membership, RPC
 routing, and Hub/FDB topology.
+
+For Mother, a complete super-node is one governed deployment unit containing the
+Hub, its private internal RPC surface, Besu, QBFT validator duties, and the
+required guard, health, recovery, and durable-state bindings. Mother MUST NOT
+offer a separate Hub-only, RPC-only, Besu-only, validator-only, or non-validator
+node-creation path. RPC canaries remain client tests against an existing
+super-node and are not deployable nodes.
 
 ```text
 mother add-node prep <network> \
@@ -871,6 +878,58 @@ mother <kind> finalize mainnet --operation-id <id>
 
 This advances the exact already-committed finalization head. It does not create
 a new topology decision.
+
+### 16.8 Canonical three-super-node lifecycle acceptance test
+
+This is the canonical deployment test plan. Each node name represents one
+complete super-node containing Hub, local RPC, Besu, QBFT validator duties,
+guards, and durable state.
+
+| Stage | Command target | Expected active topology |
+| --- | --- | --- |
+| `T1` | add `mainneta-super1` on `coolify-a` | `A1` |
+| `T2` | add `mainnetc-super1` on `coolify-c` | `A1`, `C1` |
+| `T3` | add `mainnetc-super2` on `coolify-c` | `A1`, `C1`, `C2` |
+| `T4` | remove `mainnetc-super2` | `A1`, `C1` |
+| `T5` | remove `mainneta-super1` | `C1` |
+| `T6` | reactivate `mainnetc-super2` and verify `mainnetc-super1` | `C1`, `C2` |
+
+```text
+mother diagnose mainnet
+
+mother add-node prep mainnet --node mainneta-super1 --host coolify-a --mode initial
+mother add-node do mainnet
+mother add-node finalize mainnet
+
+mother add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
+mother add-node do mainnet
+mother add-node finalize mainnet
+
+mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode soft
+mother add-node do mainnet
+mother add-node finalize mainnet
+
+mother remove-node prep mainnet --node mainnetc-super2 --mode soft
+mother remove-node do mainnet
+mother remove-node finalize mainnet
+
+mother remove-node prep mainnet --node mainneta-super1 --mode soft
+mother remove-node do mainnet
+mother remove-node finalize mainnet
+
+mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode reactivate
+mother add-node do mainnet
+mother add-node finalize mainnet
+```
+
+At `T6`, “re-add the two on C” means restore the intended pair `C1` and `C2`.
+`C1` is already active, so Mother verifies and reconciles it while reactivating
+`C2`. The operation MUST NOT create a third C node or replace either existing
+logical identity. After every `finalize`, the operator verifies the exact active
+node set, exact QBFT validator set, complete super-node component set, local Hub
+RPC routing, advancing blocks, fresh chain head, and absence of standalone
+network-node services.
+
 
 ## 17. Operator safety rules
 

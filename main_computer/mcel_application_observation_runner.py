@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from typing import Any, Mapping
 
 try:
@@ -48,13 +49,30 @@ def _slug(value: str) -> str:
 
 
 class _QuietStaticHandler(SimpleHTTPRequestHandler):
+    build_web_root: Path | None = None
+
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
+    def translate_path(self, path: str) -> str:
+        parsed = unquote(urlparse(path).path).lstrip("/")
+        if self.build_web_root is not None and (
+            parsed.startswith("applications/mcel-packages/")
+            or parsed == "applications/scripts/mcel-application-package-catalog.js"
+        ):
+            candidate = (self.build_web_root / parsed).resolve()
+            try:
+                candidate.relative_to(self.build_web_root.resolve())
+            except ValueError:
+                return str(self.build_web_root / "@invalid")
+            return str(candidate)
+        return super().translate_path(path)
+
 
 class _StaticServer:
-    def __init__(self, web_root: Path) -> None:
-        handler = partial(_QuietStaticHandler, directory=str(web_root))
+    def __init__(self, web_root: Path, build_web_root: Path | None = None) -> None:
+        handler_type = type("_McelBuildStaticHandler", (_QuietStaticHandler,), {"build_web_root": build_web_root})
+        handler = partial(handler_type, directory=str(web_root))
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -94,7 +112,8 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
         ) from exc
 
     web_root = repo / "main_computer" / "web"
-    with _StaticServer(web_root) as server, sync_playwright() as playwright:
+    build_web_root = repo / "runtime" / "build" / "mcel" / "web"
+    with _StaticServer(web_root, build_web_root) as server, sync_playwright() as playwright:
         launch_attempts: list[dict[str, Any]] = [{"headless": not headed}]
         executable = (
             os.environ.get("MCEL_CHROMIUM_EXECUTABLE")
@@ -331,6 +350,8 @@ def _render_markdown(report: Mapping[str, Any]) -> str:
 
 
 def run_observation(*, repo: Path, app_id: str, headed: bool = False) -> dict[str, Any]:
+    from main_computer.mcel_application_build import ensure_mcel_browser_build
+    ensure_mcel_browser_build(repo)
     catalog = build_application_package_catalog(repo)
     if not catalog.ok or catalog.invalid_count:
         raise ObservationRunnerError("The repository MCEL application-package catalog is invalid.")

@@ -173,24 +173,6 @@ from tools.mother.common.deployment_mainnet_soak import (
     run_mainnet_steady_state_soak,
     verify_mainnet_steady_state_soak_evidence,
 )
-from tools.mother.common.deployment_private_rpc import (
-    MotherDeploymentPrivateRpcError,
-    build_private_rpc_transaction,
-    verify_private_rpc_transaction,
-    write_private_rpc_transaction,
-)
-from tools.mother.common.deployment_private_rpc_release import (
-    MotherDeploymentPrivateRpcReleaseError,
-    build_private_rpc_release,
-    verify_private_rpc_release,
-    write_private_rpc_release,
-)
-from tools.mother.common.deployment_private_rpc_identity import (
-    MotherDeploymentPrivateRpcIdentityError,
-    inspect_private_rpc_identity_reservation,
-    reserve_private_rpc_identity,
-    verify_private_rpc_identity,
-)
 from tools.mother.common.deployment_validator_rpc_canary import (
     MotherDeploymentValidatorRpcCanaryError,
     build_validator_rpc_canary_transaction,
@@ -695,6 +677,16 @@ def _parser() -> argparse.ArgumentParser:
     _common(release_genesis)
     release_genesis.add_argument("--transaction", required=True)
     release_genesis.add_argument("--acknowledge-genesis-transaction-sha256", required=True)
+    release_genesis.add_argument(
+        "--hub-git-repository",
+        required=True,
+        help="credential-free HTTPS Git repository used to build the co-located Hub",
+    )
+    release_genesis.add_argument(
+        "--hub-git-commit-sha",
+        required=True,
+        help="exact pushed lowercase 40-character commit containing Dockerfile.hub.exp-fdb",
+    )
     release_genesis.add_argument("--expires-in-seconds", type=int, default=300)
     release_genesis.add_argument("--created-at")
     release_genesis.add_argument(
@@ -1295,111 +1287,6 @@ def _parser() -> argparse.ArgumentParser:
     verify_mainnet_soak.add_argument("--max-age-seconds", type=int, default=300)
     verify_mainnet_soak.add_argument("--baseline-max-age-seconds", type=int, default=604800)
 
-    reserve_private_rpc_identity_parser = subparsers.add_parser(
-        "reserve-private-rpc-identity",
-        help="reserve one protected non-validator RPC identity without network access",
-        allow_abbrev=False,
-    )
-    _common(reserve_private_rpc_identity_parser)
-    reserve_private_rpc_identity_parser.add_argument(
-        "--service-name",
-        default="mainnet-rpc1",
-    )
-    reserve_private_rpc_identity_parser.add_argument(
-        "--write-identity",
-        action="store_true",
-    )
-
-    verify_private_rpc_identity_parser = subparsers.add_parser(
-        "verify-private-rpc-identity",
-        help="verify one protected non-validator RPC identity artifact",
-        allow_abbrev=False,
-    )
-    _common(verify_private_rpc_identity_parser)
-    verify_private_rpc_identity_parser.add_argument("--identity", required=True)
-    verify_private_rpc_identity_parser.add_argument("--service-name")
-
-    stage_private_rpc = subparsers.add_parser(
-        "stage-private-rpc-transaction",
-        help="compile one private non-validator mainnet RPC service without network access",
-        allow_abbrev=False,
-    )
-    _common(stage_private_rpc)
-    stage_private_rpc.add_argument("--soak-evidence", required=True)
-    stage_private_rpc.add_argument("--soak-max-age-seconds", type=int, default=86400)
-    stage_private_rpc.add_argument(
-        "--controller-id",
-        required=True,
-        choices=("coolify-a", "coolify-c"),
-    )
-    stage_private_rpc.add_argument("--service-name", default="mainnet-rpc1")
-    stage_private_rpc.add_argument("--environment-name", default="mainnet")
-    stage_private_rpc.add_argument(
-        "--identity",
-        help="protected identity artifact from reserve-private-rpc-identity",
-    )
-    stage_private_rpc.add_argument("--rpc-node-id")
-    stage_private_rpc.add_argument("--rpc-node-address")
-    stage_private_rpc.add_argument("--write-transaction", action="store_true")
-    stage_private_rpc.add_argument("--full-output", action="store_true")
-
-    verify_private_rpc = subparsers.add_parser(
-        "verify-private-rpc-transaction",
-        help="verify an offline private non-validator RPC transaction",
-        allow_abbrev=False,
-    )
-    _common(verify_private_rpc)
-    verify_private_rpc.add_argument("--transaction", required=True)
-    verify_private_rpc.add_argument("--max-age-seconds", type=int, default=86400)
-    verify_private_rpc.add_argument("--soak-max-age-seconds", type=int, default=86400)
-
-    release_private_rpc = subparsers.add_parser(
-        "release-private-rpc",
-        help="authorize one exact private non-validator RPC transaction for a short window",
-        allow_abbrev=False,
-    )
-    _common(release_private_rpc)
-    release_private_rpc.add_argument("--transaction", required=True)
-    release_private_rpc.add_argument(
-        "--acknowledge-private-rpc-transaction-sha256",
-        required=True,
-    )
-    release_private_rpc.add_argument(
-        "--transaction-max-age-seconds",
-        type=int,
-        default=86400,
-    )
-    release_private_rpc.add_argument(
-        "--soak-max-age-seconds",
-        type=int,
-        default=86400,
-    )
-    release_private_rpc.add_argument("--expires-in-seconds", type=int, default=300)
-    release_private_rpc.add_argument("--created-at")
-    release_private_rpc.add_argument("--write-release", action="store_true")
-
-    verify_private_rpc_release_parser = subparsers.add_parser(
-        "verify-private-rpc-release",
-        help="verify one expiring private non-validator RPC release",
-        allow_abbrev=False,
-    )
-    _common(verify_private_rpc_release_parser)
-    verify_private_rpc_release_parser.add_argument("--release", required=True)
-    verify_private_rpc_release_parser.add_argument(
-        "--max-age-seconds",
-        type=int,
-        default=300,
-    )
-    verify_private_rpc_release_parser.add_argument(
-        "--transaction-max-age-seconds",
-        type=int,
-        default=86400,
-    )
-    verify_private_rpc_release_parser.add_argument(
-        "--soak-max-age-seconds",
-        type=int,
-        default=86400,
-    )
 
     reserve_validator_rpc_canary_identity_parser = subparsers.add_parser(
         "reserve-validator-rpc-canary-identity",
@@ -2108,6 +1995,8 @@ def _cmd_release_genesis(args: argparse.Namespace, private_state) -> int:
         private_state,
         Path(args.transaction),
         acknowledged_genesis_transaction_sha256=args.acknowledge_genesis_transaction_sha256,
+        hub_git_repository=args.hub_git_repository,
+        hub_git_commit_sha=args.hub_git_commit_sha,
         selected_nodes=_selected_nodes(args.node),
         expires_in_seconds=args.expires_in_seconds,
         created_at=args.created_at,
@@ -3048,211 +2937,6 @@ def _cmd_verify_mainnet_steady_state_soak_evidence(
     return 0
 
 
-def _cmd_reserve_private_rpc_identity(
-    args: argparse.Namespace,
-    private_state,
-) -> int:
-    operation = _operation(
-        "reserve-private-rpc-identity",
-        args.network,
-        args.operation_id,
-    )
-    if args.write_identity:
-        result = reserve_private_rpc_identity(
-            _paths(args),
-            private_state,
-            service_name=args.service_name,
-            network=args.network,
-            operation=operation,
-        )
-    else:
-        result = inspect_private_rpc_identity_reservation(
-            _paths(args),
-            private_state,
-            service_name=args.service_name,
-            network=args.network,
-            operation=operation,
-        )
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
-
-def _cmd_verify_private_rpc_identity(
-    args: argparse.Namespace,
-    private_state,
-) -> int:
-    result = verify_private_rpc_identity(
-        _paths(args),
-        private_state,
-        Path(args.identity),
-        network=args.network,
-        service_name=args.service_name,
-        operation=_operation(
-            "verify-private-rpc-identity",
-            args.network,
-            args.operation_id,
-        ),
-    )
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
-
-def _cmd_stage_private_rpc_transaction(
-    args: argparse.Namespace,
-    private_state,
-) -> int:
-    if args.identity:
-        if args.rpc_node_id is not None or args.rpc_node_address is not None:
-            raise MotherDeploymentPrivateRpcError(
-                "MOTHER_DEPLOY_PRIVATE_RPC_INVALID",
-                "--identity cannot be combined with --rpc-node-id or --rpc-node-address",
-            )
-        identity = verify_private_rpc_identity(
-            _paths(args),
-            private_state,
-            Path(args.identity),
-            network=args.network,
-            service_name=args.service_name,
-            operation=_operation(
-                "stage-private-rpc-identity",
-                args.network,
-                args.operation_id,
-            ),
-        )
-        rpc_node_id = identity["node_id"]
-        rpc_node_address = identity["address"]
-    else:
-        if args.rpc_node_id is None or args.rpc_node_address is None:
-            raise MotherDeploymentPrivateRpcError(
-                "MOTHER_DEPLOY_PRIVATE_RPC_INVALID",
-                "provide --identity or both --rpc-node-id and --rpc-node-address",
-            )
-        rpc_node_id = args.rpc_node_id
-        rpc_node_address = args.rpc_node_address
-
-    transaction = build_private_rpc_transaction(
-        _paths(args),
-        private_state,
-        Path(args.soak_evidence),
-        controller_id=args.controller_id,
-        rpc_node_id=rpc_node_id,
-        rpc_node_address=rpc_node_address,
-        service_name=args.service_name,
-        environment_name=args.environment_name,
-        network=args.network,
-        selected_nodes=_selected_nodes(args.node),
-        soak_max_age_seconds=args.soak_max_age_seconds,
-    )
-    result = dict(transaction)
-    if args.write_transaction:
-        path, digest = write_private_rpc_transaction(
-            _paths(args),
-            transaction,
-            operation=_operation(
-                "stage-private-rpc-transaction",
-                args.network,
-                args.operation_id,
-            ),
-        )
-        result["transaction_artifact"] = {
-            "path": str(path),
-            "sha256": digest,
-        }
-    if args.full_output:
-        output = result
-    else:
-        output = {
-            "status": "pass",
-            "network": result["network"],
-            "staged_scope": result["staged_scope"],
-            "chain": result["chain"],
-            "placement": result["placement"],
-            "identity": result["identity"],
-            "validator_peers": result["validator_peers"],
-            "required_secret_bindings": result["required_secret_bindings"],
-            "authority": result["authority"],
-            "summary": result["summary"],
-            "transaction_sha256": result["private_rpc_transaction_sha256"],
-            **(
-                {"transaction_artifact": result["transaction_artifact"]}
-                if "transaction_artifact" in result
-                else {}
-            ),
-        }
-    print(json.dumps(output, indent=2, sort_keys=True))
-    return 0
-
-
-def _cmd_verify_private_rpc_transaction(
-    args: argparse.Namespace,
-    private_state,
-) -> int:
-    result = verify_private_rpc_transaction(
-        _paths(args),
-        private_state,
-        Path(args.transaction),
-        selected_nodes=_selected_nodes(args.node),
-        max_age_seconds=args.max_age_seconds,
-        soak_max_age_seconds=args.soak_max_age_seconds,
-    )
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
-
-def _cmd_release_private_rpc(
-    args: argparse.Namespace,
-    private_state,
-) -> int:
-    release = build_private_rpc_release(
-        _paths(args),
-        private_state,
-        Path(args.transaction),
-        acknowledged_transaction_sha256=(
-            args.acknowledge_private_rpc_transaction_sha256
-        ),
-        selected_nodes=_selected_nodes(args.node),
-        transaction_max_age_seconds=args.transaction_max_age_seconds,
-        soak_max_age_seconds=args.soak_max_age_seconds,
-        expires_in_seconds=args.expires_in_seconds,
-        created_at=args.created_at,
-    )
-    if args.write_release:
-        path, digest = write_private_rpc_release(
-            _paths(args),
-            release,
-            operation=_operation(
-                "private-rpc-release",
-                args.network,
-                args.operation_id,
-            ),
-        )
-        release = {
-            **release,
-            "release_artifact": {
-                "path": str(path),
-                "sha256": digest,
-            },
-        }
-    print(json.dumps(release, indent=2, sort_keys=True))
-    return 0
-
-
-def _cmd_verify_private_rpc_release(
-    args: argparse.Namespace,
-    private_state,
-) -> int:
-    result = verify_private_rpc_release(
-        _paths(args),
-        private_state,
-        Path(args.release),
-        selected_nodes=_selected_nodes(args.node),
-        max_age_seconds=args.max_age_seconds,
-        transaction_max_age_seconds=args.transaction_max_age_seconds,
-        soak_max_age_seconds=args.soak_max_age_seconds,
-    )
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
 
 def _cmd_reserve_validator_rpc_canary_identity(
     args: argparse.Namespace,
@@ -3819,18 +3503,6 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_run_mainnet_steady_state_soak(args, private_state)
         if args.command == "verify-mainnet-steady-state-soak-evidence":
             return _cmd_verify_mainnet_steady_state_soak_evidence(args, private_state)
-        if args.command == "reserve-private-rpc-identity":
-            return _cmd_reserve_private_rpc_identity(args, private_state)
-        if args.command == "verify-private-rpc-identity":
-            return _cmd_verify_private_rpc_identity(args, private_state)
-        if args.command == "stage-private-rpc-transaction":
-            return _cmd_stage_private_rpc_transaction(args, private_state)
-        if args.command == "verify-private-rpc-transaction":
-            return _cmd_verify_private_rpc_transaction(args, private_state)
-        if args.command == "release-private-rpc":
-            return _cmd_release_private_rpc(args, private_state)
-        if args.command == "verify-private-rpc-release":
-            return _cmd_verify_private_rpc_release(args, private_state)
         if args.command == "reserve-validator-rpc-canary-identity":
             return _cmd_reserve_validator_rpc_canary_identity(args, private_state)
         if args.command == "verify-validator-rpc-canary-identity":
@@ -3884,9 +3556,6 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentValidatorQuorumRecoveryError,
         MotherDeploymentPostAdmissionSteadyStateContinuationError,
         MotherDeploymentMainnetSoakError,
-        MotherDeploymentPrivateRpcIdentityError,
-        MotherDeploymentPrivateRpcError,
-        MotherDeploymentPrivateRpcReleaseError,
         MotherDeploymentValidatorRpcCanaryError,
         MotherDeploymentValidatorRpcCanaryFundingError,
         MotherDeploymentPostAdmissionSteadyStateError,

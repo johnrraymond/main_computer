@@ -60,7 +60,7 @@ def test_check_detects_generated_contract_drift_without_touching_repository(tmp_
 
 def test_generated_adapter_preserves_synchronous_operation_semantics() -> None:
     source = """
-      import {ContractWorkbenchAdapter as adapter} from './mcel_apps/contract-workbench/contracts/adapter.js';
+      import {ContractWorkbenchAdapter as adapter} from './runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js';
       const state={contracts:[],nextContractId:1,revision:0};
       const input={expectedRevision:0,payload:{name:'Steel',quantity:12,category:'materials'}};
       const preflight=adapter.preflight({intentId:'add-contract',input,state});
@@ -86,7 +86,7 @@ def test_generated_adapter_preserves_synchronous_operation_semantics() -> None:
 
 def test_generated_domain_invariants_are_self_contained_and_executable() -> None:
     source = """
-      import {ContractWorkbenchDomain as domain} from './mcel_apps/contract-workbench/contracts/domain.js';
+      import {ContractWorkbenchDomain as domain} from './runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js';
       const valid={contracts:[],nextContractId:1,revision:0};
       const invalid={contracts:[{id:'x',name:'',category:'materials',quantity:1,quoteStatus:'idle',quoteAmount:0}],nextContractId:1,revision:0};
       process.stdout.write(JSON.stringify({
@@ -131,7 +131,7 @@ def test_manifest_records_full_definition_and_proof_convergence() -> None:
 
 def test_generated_domain_materializes_runtime_state_and_capability_definitions() -> None:
     source = """
-      import {ContractWorkbenchDomain as domain} from './mcel_apps/contract-workbench/contracts/domain.js';
+      import {ContractWorkbenchDomain as domain} from './runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js';
       const local=domain.rendererLocalStateDefinitions.map((entry)=>({id:entry.id,initial:entry.initial,schema:entry.schema.name}));
       const derived=domain.derivedState.map((entry)=>({id:entry.id,reads:entry.reads,schema:entry.schema.name,computeType:typeof entry.compute}));
       const provisional=domain.provisionalStateDefinitions.map((entry)=>({id:entry.id,initial:entry.initial,schema:entry.schema.name}));

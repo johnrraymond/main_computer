@@ -94,6 +94,33 @@ def import_counter_legacy_package(
     package_display = _display_path(package_root)
     diagnostics: list[Mapping[str, Any]] = []
 
+    # After promotion the legacy contract files are virtual build artifacts, not
+    # durable source. Preserve the compatibility API by compiling the live DSL
+    # authority directly when the package declares dsl-authoritative status.
+    try:
+        manifest = json.loads((package_root / "mcel.app.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    authoring = manifest.get("authoring") if isinstance(manifest.get("authoring"), Mapping) else {}
+    if authoring.get("status") == "dsl-authoritative":
+        from main_computer.mcel_dsl_compiler import compile_dsl_application
+        source = package_root / str(authoring.get("source") or "application.js")
+        compiled = compile_dsl_application(source, write_candidate=False)
+        diagnostics.extend(compiled.diagnostics)
+        source_files = [
+            {"path": _display_path(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+            {"path": _display_path(package_root / "requirements.md"), "sha256": hashlib.sha256((package_root / "requirements.md").read_bytes()).hexdigest()},
+        ]
+        if not compiled.valid or compiled.normalized_ir is None:
+            return _failure(package_display, diagnostics, source_files=source_files)
+        return CounterLegacyImportReport(
+            valid=True, status="pass", app_id=compiled.app_id, package_root=package_display,
+            diagnostics=tuple(diagnostics), normalized_ir=compiled.normalized_ir,
+            semantic_fingerprint=compiled.semantic_fingerprint,
+            source_binding_fingerprint=compiled.source_binding_fingerprint,
+            source_files=tuple(source_files), node_executable=compiled.node_executable, node_version=compiled.node_version,
+        )
+
     source_text: dict[str, str] = {}
     source_files: list[Mapping[str, str]] = []
     for relative in SOURCE_FILES:

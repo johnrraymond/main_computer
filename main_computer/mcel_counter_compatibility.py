@@ -21,7 +21,7 @@ COMPATIBILITY_REPORT_SCHEMA = "mcel.application-compatibility-report.v1"
 COMPATIBILITY_VERSION = "mcel-counter-compatibility-wave3"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE_IR = REPOSITORY_ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
-DEFAULT_DSL_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "mcel_dsl" / "contract-counter.application.js"
+DEFAULT_DSL_SOURCE = REPOSITORY_ROOT / "mcel_apps" / "contract-counter" / "application.js"
 DEFAULT_REPORT_ROOT = REPOSITORY_ROOT / "runtime" / "reports" / "mcel-application-compatibility" / "apps" / "contract-counter"
 INCIDENTAL_KEYS = {"source", "sourceName", "authoringStatus", "normalization", "fingerprints", "provenance", "migration"}
 
@@ -88,7 +88,9 @@ def compare_counter_representations(
     live_dsl = compare_application_ir(live_ir, dsl_ir) if live_ir is not None and dsl_ir is not None else {"status": "incomplete"}
     fixture_dsl = compare_application_ir(fixture_ir, dsl_ir) if fixture_ir is not None and dsl_ir is not None else {"status": "incomplete"}
 
-    source_hash_status, source_hash_details = _compare_source_hashes(live.source_files, fixture_ir)
+    source_hash_status, source_hash_details = _compare_source_hashes(
+        live.source_files, fixture_ir, package_root=package_root, promoted=source_authority == "mcel.dsl.v1"
+    )
     if source_hash_status != "exact":
         diagnostics.append(_diagnostic("MCEL_COUNTER_FIXTURE_SOURCE_BINDING_STALE", "The Counter IR fixture source hashes do not exactly match the live explicit package.", "$fixture.provenance.frontend.sourceFiles", observed=source_hash_details))
 
@@ -184,15 +186,64 @@ def _canonical_counter_source_path(raw: Any) -> str:
     return "mcel_apps/" + path[index:] if index >= 0 else path
 
 
-def _compare_source_hashes(live_source_files: tuple[Mapping[str, str], ...], fixture_ir: Mapping[str, Any] | None) -> tuple[str, Mapping[str, Any]]:
-    live = {_canonical_counter_source_path(item.get("path")): str(item.get("sha256") or "") for item in live_source_files}
+def _compare_source_hashes(
+    live_source_files: tuple[Mapping[str, str], ...],
+    fixture_ir: Mapping[str, Any] | None,
+    *,
+    package_root: Path,
+    promoted: bool,
+) -> tuple[str, Mapping[str, Any]]:
     frontend = ((fixture_ir or {}).get("provenance") or {}).get("frontend") or {}
-    fixture = {_canonical_counter_source_path(item.get("path")): str(item.get("sha256") or "") for item in frontend.get("sourceFiles") or [] if isinstance(item, Mapping)}
+    fixture = {
+        _canonical_counter_source_path(item.get("path")): str(item.get("sha256") or "")
+        for item in frontend.get("sourceFiles") or []
+        if isinstance(item, Mapping)
+    }
+    if promoted:
+        physical_text: dict[str, str] = {}
+        for path in package_root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                physical_text[path.relative_to(package_root).as_posix()] = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+        from main_computer.mcel_application_materialization import materialize_generated_package_files
+
+        generated = materialize_generated_package_files(
+            _repository_root_for_package(package_root), package_root, physical_text
+        )
+        live: dict[str, str] = {}
+        for canonical_path in fixture:
+            prefix = "mcel_apps/contract-counter/"
+            relative = canonical_path[len(prefix):] if canonical_path.startswith(prefix) else canonical_path
+            physical = package_root / relative
+            if physical.is_file():
+                content = physical.read_bytes()
+            elif relative in generated:
+                content = generated[relative]
+            else:
+                continue
+            import hashlib
+            live[canonical_path] = hashlib.sha256(content).hexdigest()
+    else:
+        live = {
+            _canonical_counter_source_path(item.get("path")): str(item.get("sha256") or "")
+            for item in live_source_files
+        }
     missing = sorted(set(live) - set(fixture))
     unexpected = sorted(set(fixture) - set(live))
     mismatched = sorted(path for path in set(live) & set(fixture) if live[path] != fixture[path])
     status = "exact" if not missing and not unexpected and not mismatched else "conflicting"
     return status, {"missingInFixture": missing, "unexpectedInFixture": unexpected, "hashMismatches": mismatched}
+
+
+def _repository_root_for_package(package_root: Path) -> Path:
+    resolved = package_root.resolve()
+    for parent in (resolved, *resolved.parents):
+        if (parent / "main_computer").is_dir() and (parent / "mcel_apps").is_dir():
+            return parent
+    return REPOSITORY_ROOT
 
 
 def _compare_features(live: Mapping[str, Any] | None, fixture: Mapping[str, Any] | None, dsl: Mapping[str, Any] | None) -> list[dict[str, Any]]:

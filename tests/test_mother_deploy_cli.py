@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from tools import mother_deploy
 from tools.mother.common.deployment_plan import (
     MotherDeploymentPlanError,
     build_starter_deployment_plan,
@@ -263,3 +264,26 @@ def test_direct_planner_does_not_import_or_call_network_clients(tmp_path: Path, 
     monkeypatch.setattr("socket.create_connection", forbidden)
     plan = build_starter_deployment_plan(state)
     assert plan["policy"]["network_access_performed"] is False
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "reserve-private-rpc-identity",
+        "verify-private-rpc-identity",
+        "stage-private-rpc-transaction",
+        "verify-private-rpc-transaction",
+        "release-private-rpc",
+        "verify-private-rpc-release",
+    ),
+)
+def test_standalone_private_rpc_commands_are_not_exposed(
+    command: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        mother_deploy._parser().parse_args([command])
+    assert caught.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "invalid choice" in stderr
+    assert command in stderr
+

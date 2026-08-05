@@ -23,6 +23,7 @@ import yaml
 
 from . import atomic_files
 from .canonical import canonical_json
+from .deployment_coolify_context import load_controller_config
 from .deployment_post_admission_steady_state import (
     _binding,
     _contains_sensitive,
@@ -35,7 +36,6 @@ from .deployment_post_admission_steady_state import (
     _timestamp,
 )
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
-from .deployment_private_rpc import _controller_config
 from .deployment_validator_admission_executor import _http
 from .deployment_validator_rpc_canary import (
     _TRANSACTION_DIRECTORY as _CANARY_TRANSACTION_DIRECTORY,
@@ -79,6 +79,24 @@ class MotherDeploymentValidatorRpcCanaryFundingError(RuntimeError):
 
 def _error(code: str, message: str) -> MotherDeploymentValidatorRpcCanaryFundingError:
     return MotherDeploymentValidatorRpcCanaryFundingError(code, message)
+
+
+def _controller_config(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+) -> dict[str, Any]:
+    return load_controller_config(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+        allowed_controllers={_A_CONTROLLER, _C_CONTROLLER},
+        error_factory=_error,
+        rejected_code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CONTROLLER_REJECTED",
+        invalid_code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_PRIVATE_STATE_INVALID",
+        placement_description="validator RPC canary funding placement",
+    )
 
 
 def _digest_without(document: Mapping[str, Any], field: str) -> str:

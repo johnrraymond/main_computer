@@ -57,9 +57,9 @@ async function importContract(relativePath) {{
 def test_contract_counter_executes_declared_intents_through_scm(tmp_path: Path) -> None:
     script = _runtime_bootstrap() + r'''
 (async () => {
-  const domainModule = await importContract("mcel_apps/contract-counter/contracts/domain.js");
-  const intentsModule = await importContract("mcel_apps/contract-counter/contracts/intents.js");
-  const adapterModule = await importContract("mcel_apps/contract-counter/contracts/adapter.js");
+  const domainModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/domain.js");
+  const intentsModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/intents.js");
+  const adapterModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/adapter.js");
 
   const definition = McelApplicationRuntime.defineApplication({
     appId: "contract-counter",
@@ -406,8 +406,8 @@ process.stdout.write(JSON.stringify({
 
 
 def test_mount_application_package_projects_state_and_binds_controls(tmp_path: Path) -> None:
-    catalog = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
-    manifest = ROOT / "main_computer" / "web" / "applications" / "mcel-packages" / "contract-counter" / "mcel.runtime.json"
+    catalog = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
+    manifest = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "mcel-packages" / "contract-counter" / "mcel.runtime.json"
     script = _runtime_bootstrap() + f'''
 const packageCatalog = require({json.dumps(str(catalog))});
 const runtimeManifest = JSON.parse(fs.readFileSync({json.dumps(str(manifest))}, "utf8"));
@@ -476,7 +476,7 @@ const root = new FakeElement({{
   const moduleLoader = async (url) => {{
     const marker = "/mcel-packages/contract-counter/";
     const relative = url.slice(url.indexOf(marker) + marker.length);
-    return importContract(`main_computer/web/applications/mcel-packages/contract-counter/${{relative}}`);
+    return importContract(`runtime/build/mcel/web/applications/mcel-packages/contract-counter/${{relative}}`);
   }};
   const mount = await McelApplicationRuntime.mountApplicationPackage({{
     appId: "contract-counter",
@@ -527,8 +527,8 @@ const root = new FakeElement({{
 
 
 def test_mount_application_package_refuses_fingerprint_and_surface_mismatch(tmp_path: Path) -> None:
-    catalog = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
-    manifest = ROOT / "main_computer" / "web" / "applications" / "mcel-packages" / "contract-counter" / "mcel.runtime.json"
+    catalog = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
+    manifest = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "mcel-packages" / "contract-counter" / "mcel.runtime.json"
     script = _runtime_bootstrap() + f'''
 const packageCatalog = require({json.dumps(str(catalog))});
 const runtimeManifest = JSON.parse(fs.readFileSync({json.dumps(str(manifest))}, "utf8"));
@@ -556,12 +556,12 @@ const root = {{
   }}
 
   const modules = {{
-    domain: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/domain.js"),
-    intents: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/intents.js"),
-    adapter: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/adapter.js"),
-    surface: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/surface.js"),
-    layout: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/layout.js"),
-    observation: await importContract("main_computer/web/applications/mcel-packages/contract-counter/contracts/observation.js")
+    domain: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/domain.js"),
+    intents: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/intents.js"),
+    adapter: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/adapter.js"),
+    surface: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/surface.js"),
+    layout: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/layout.js"),
+    observation: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/observation.js")
   }};
   try {{
     await McelApplicationRuntime.mountApplicationPackage({{
@@ -589,9 +589,9 @@ const root = {{
 def test_contract_workbench_renderer_local_and_derived_state_recompute(tmp_path: Path) -> None:
     script = _runtime_bootstrap() + r'''
 (async () => {
-  const domainModule = await importContract("mcel_apps/contract-workbench/contracts/domain.js");
-  const intentsModule = await importContract("mcel_apps/contract-workbench/contracts/intents.js");
-  const adapterModule = await importContract("mcel_apps/contract-workbench/contracts/adapter.js");
+  const domainModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
+  const intentsModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
+  const adapterModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
   const definition = McelApplicationRuntime.defineApplication({
     appId: "contract-workbench",
     domain: domainModule.ContractWorkbenchDomain,
@@ -680,9 +680,9 @@ def test_contract_workbench_renderer_local_and_derived_state_recompute(tmp_path:
 def test_renderer_local_state_is_schema_bounded_and_instance_isolated(tmp_path: Path) -> None:
     script = _runtime_bootstrap() + r'''
 (async () => {
-  const domainModule = await importContract("mcel_apps/contract-workbench/contracts/domain.js");
-  const intentsModule = await importContract("mcel_apps/contract-workbench/contracts/intents.js");
-  const adapterModule = await importContract("mcel_apps/contract-workbench/contracts/adapter.js");
+  const domainModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
+  const intentsModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
+  const adapterModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
   const definition = McelApplicationRuntime.defineApplication({
     appId: "contract-workbench",
     domain: domainModule.ContractWorkbenchDomain,
@@ -837,8 +837,8 @@ process.stdout.write(JSON.stringify({codes}));
 
 
 def test_mount_application_package_binds_renderer_local_inputs_and_extracts_typed_payloads(tmp_path: Path) -> None:
-    catalog = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
-    manifest = ROOT / "main_computer" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
+    catalog = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
+    manifest = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
     script = _runtime_bootstrap() + f'''
 const packageCatalog = require({json.dumps(str(catalog))});
 const runtimeManifest = JSON.parse(fs.readFileSync({json.dumps(str(manifest))}, "utf8"));
@@ -931,9 +931,9 @@ const layout = Object.freeze({{
 
 (async () => {{
   const modules = {{
-    ContractWorkbenchDomain: await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/domain.js"),
-    ContractWorkbenchIntents: await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/intents.js"),
-    ContractWorkbenchAdapter: await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/adapter.js")
+    ContractWorkbenchDomain: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js"),
+    ContractWorkbenchIntents: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js"),
+    ContractWorkbenchAdapter: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js")
   }};
   const moduleLoader = async (_url, entry) => {{
     if (entry.export === "ContractWorkbenchSurface") return {{ContractWorkbenchSurface: surface}};
@@ -1036,8 +1036,8 @@ const layout = Object.freeze({{
 
 
 def test_input_and_static_payload_contracts_fail_closed_with_stable_codes(tmp_path: Path) -> None:
-    catalog = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
-    manifest = ROOT / "main_computer" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
+    catalog = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
+    manifest = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
     script = _runtime_bootstrap() + f'''
 const packageCatalog = require({json.dumps(str(catalog))});
 const runtimeManifest = JSON.parse(fs.readFileSync({json.dumps(str(manifest))}, "utf8"));
@@ -1050,9 +1050,9 @@ class FakeElement {{
   removeEventListener(name, handler) {{ if(this.listeners.get(name)===handler)this.listeners.delete(name); }}
 }}
 (async () => {{
-  const domain = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
-  const intents = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
-  const adapter = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
+  const domain = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
+  const intents = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
+  const adapter = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
   const failures=[];
   const cases = [
     {{code:"APPLICATION_INPUT_LOCAL_PATH_UNKNOWN", input:{{localPath:"missing",inputType:"text"}}, payload:{{}}}},
@@ -1093,8 +1093,8 @@ class FakeElement {{
 
 
 def test_mount_application_package_projects_safe_properties_and_conditionals(tmp_path: Path) -> None:
-    catalog = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
-    manifest = ROOT / "main_computer" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
+    catalog = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
+    manifest = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
     script = _runtime_bootstrap() + f'''
 const packageCatalog = require({json.dumps(str(catalog))});
 const runtimeManifest = JSON.parse(fs.readFileSync({json.dumps(str(manifest))}, "utf8"));
@@ -1230,9 +1230,9 @@ const layout = Object.freeze({{
 
 (async () => {{
   const modules = {{
-    ContractWorkbenchDomain: await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/domain.js"),
-    ContractWorkbenchIntents: await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/intents.js"),
-    ContractWorkbenchAdapter: await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/adapter.js")
+    ContractWorkbenchDomain: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js"),
+    ContractWorkbenchIntents: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js"),
+    ContractWorkbenchAdapter: await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js")
   }};
   const moduleLoader = async (_url, entry) => {{
     if (entry.export === "ContractWorkbenchSurface") return {{ContractWorkbenchSurface: surface}};
@@ -1320,8 +1320,8 @@ const layout = Object.freeze({{
 
 
 def test_property_and_conditional_contracts_fail_closed_with_stable_codes(tmp_path: Path) -> None:
-    catalog = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
-    manifest = ROOT / "main_computer" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
+    catalog = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
+    manifest = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "mcel-packages" / "contract-workbench" / "mcel.runtime.json"
     script = _runtime_bootstrap() + f'''
 const packageCatalog = require({json.dumps(str(catalog))});
 const runtimeManifest = JSON.parse(fs.readFileSync({json.dumps(str(manifest))}, "utf8"));
@@ -1340,9 +1340,9 @@ class FakeElement {{
   appendChild(child) {{ this.children.push(child); return child; }}
 }}
 (async()=>{{
-  const domain=await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
-  const intents=await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
-  const adapter=await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
+  const domain=await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
+  const intents=await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
+  const adapter=await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
   const cases=[
     {{code:"APPLICATION_PROPERTY_STATE_PATH_UNKNOWN", node:{{kind:"property",statePath:"missing",property:"textContent"}}}},
     {{code:"APPLICATION_PROPERTY_UNSUPPORTED", node:{{kind:"property",statePath:"totalQuantity",property:"innerHTML"}}}},
@@ -1387,9 +1387,9 @@ class FakeElement {{
 def test_capability_runtime_streams_provisional_state_and_commits_once(tmp_path: Path) -> None:
     script = _runtime_bootstrap() + r'''
 (async () => {
-  const domainModule = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
-  const intentsModule = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
-  const adapterModule = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
+  const domainModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
+  const intentsModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
+  const adapterModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
   const definition = McelApplicationRuntime.defineApplication({
     appId: "contract-workbench",
     domain: domainModule.ContractWorkbenchDomain,
@@ -1491,9 +1491,9 @@ def test_capability_runtime_streams_provisional_state_and_commits_once(tmp_path:
 def test_latest_per_item_key_cancellation_parallelism_and_late_event_suppression(tmp_path: Path) -> None:
     script = _runtime_bootstrap() + r'''
 (async () => {
-  const domainModule = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
-  const intentsModule = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
-  const adapterModule = await importContract("main_computer/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
+  const domainModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/domain.js");
+  const intentsModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/intents.js");
+  const adapterModule = await importContract("runtime/build/mcel/web/applications/mcel-packages/contract-workbench/contracts/adapter.js");
   const definition = McelApplicationRuntime.defineApplication({
     appId: "contract-workbench",
     domain: domainModule.ContractWorkbenchDomain,

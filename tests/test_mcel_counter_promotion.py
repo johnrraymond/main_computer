@@ -18,7 +18,7 @@ from main_computer.mcel_counter_promotion_rehearsal import (
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 
 ROOT = Path(__file__).resolve().parents[1]
-DSL = ROOT / "tests/fixtures/mcel_dsl/contract-counter.application.js"
+DSL = ROOT / "mcel_apps/contract-counter/application.js"
 FIXTURE = ROOT / "tests/fixtures/mcel_application_ir/contract-counter.ir.json"
 SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
 SOURCE = "sha256:54e16c919103023872d62eb258871d0d61b65a5754534c0bd85bb122c4a3cfa2"
@@ -219,7 +219,7 @@ def test_rollback_refuses_to_overwrite_later_protected_source_drift(tmp_path: Pa
     _restore_legacy_counter(repo)
     result = _execute(repo)
     assert result.valid is True
-    domain = repo / "mcel_apps/contract-counter/contracts/domain.js"
+    domain = repo / "runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/domain.js"
     domain.write_text(domain.read_text(encoding="utf-8") + "\n// later protected change\n", encoding="utf-8")
 
     rollback = rollback_counter_promotion(

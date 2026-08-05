@@ -24,7 +24,7 @@ from main_computer.mcel_application_packages import build_application_package_ca
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PACKAGE = ROOT / "mcel_apps" / "contract-counter"
 TOOL = ROOT / "tools" / "mcel_application_package_browser_catalog.py"
-GENERATED = ROOT / "main_computer" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
+GENERATED = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
 
 
 def _copy_repository_package(target_root: Path) -> Path:

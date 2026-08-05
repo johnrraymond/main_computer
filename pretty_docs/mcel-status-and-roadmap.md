@@ -385,3 +385,24 @@ truth status: semantic-runtime-proven
 semantic fingerprint: unchanged
 rollback available: true
 ```
+
+## AI authoring implementation Wave 14
+
+Wave 14 de-materializes promoted MCEL packages. Counter and Workbench keep only durable authored files beneath `mcel_apps`; generated contracts, normalized definitions, and generated-ownership manifests are reconstructed as an in-memory logical package. Package validation, runtime projection, acceptance, observation, compatibility, and proof consume the logical file map rather than requiring compiler output beside `application.js`.
+
+The checked-in browser package tree and browser package catalog are removed. Browser-compatible packages now materialize on demand beneath ignored `runtime/build/mcel/web`, and the viewport serves those generated assets without repopulating `main_computer/web/applications` or `mcel_apps`.
+
+Required Wave 14 state:
+
+```text
+promoted application source trees: authored files only
+generated contracts in mcel_apps: absent
+checked-in browser package projections: absent
+logical generated package overlay: valid
+runtime build root: runtime/build/mcel/web
+runtime build reproducible after deletion: true
+Counter semantic fingerprint: unchanged
+Workbench semantic fingerprint: unchanged
+```
+
+The centralized Workbench portable-projection snapshot remains a compatibility backend and is not claimed as eliminated by this wave.

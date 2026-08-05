@@ -30,7 +30,7 @@ from main_computer.mcel_application_packages import (
 RUNTIME_PROJECTION_SCHEMA = "mcel.application-runtime-projection.v1"
 RUNTIME_PROJECTION_RESULT_SCHEMA = "mcel.application-runtime-projection-result.v1"
 RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM = "sha256-mcel-runtime-projection-v1"
-DEFAULT_RUNTIME_PROJECTION_ROOT = "main_computer/web/applications/mcel-packages"
+DEFAULT_RUNTIME_PROJECTION_ROOT = "runtime/build/mcel/web/applications/mcel-packages"
 RUNTIME_MANIFEST_NAME = "mcel.runtime.json"
 
 _BROWSER_CONTRACT_KEYS = ("domain", "intents", "adapter", "surface", "layout", "acceptance", "observation")
@@ -147,15 +147,35 @@ def _read_json(path: Path, label: str) -> Mapping[str, Any]:
     return value
 
 
+def _package_relative(record: ApplicationPackageRecord, reference: str | None, label: str) -> str:
+    if not reference:
+        raise InvalidRuntimeProjectionSource(f"Package is missing browser runtime reference: {label}.")
+    package_prefix = PurePosixPath(record.package_root)
+    reference_path = PurePosixPath(reference)
+    try:
+        return reference_path.relative_to(package_prefix).as_posix()
+    except ValueError as exc:
+        raise InvalidRuntimeProjectionSource(f"Package reference is outside its package root: {reference}.") from exc
+
+
 def _copy_sources(repo_root: Path, record: ApplicationPackageRecord) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     for key in _BROWSER_CONTRACT_KEYS:
-        source = _repository_path(repo_root, record.contracts.get(key), f"contracts.{key}")
-        files[f"contracts/{key}.js"] = source.read_bytes()
+        relative = _package_relative(record, record.contracts.get(key), f"contracts.{key}")
+        content = record.files.get(relative)
+        if content is None:
+            raise InvalidRuntimeProjectionSource(f"Virtual package contract is missing: {relative}.")
+        files[f"contracts/{key}.js"] = content
     for key in _BROWSER_RUNTIME_KEYS:
-        source = _repository_path(repo_root, record.runtime.get(key), f"runtime.{key}")
+        relative = _package_relative(record, record.runtime.get(key), f"runtime.{key}")
+        content = record.files.get(relative)
+        if content is None:
+            # Legacy records and externally assembled records may not expose the
+            # in-memory byte map; preserve safe repository fallback for them.
+            source = _repository_path(repo_root, record.runtime.get(key), f"runtime.{key}")
+            content = source.read_bytes()
         extension = {"document": "html", "script": "js", "style": "css"}[key]
-        files[f"src/{'index' if key == 'document' else 'app'}.{extension}"] = source.read_bytes()
+        files[f"src/{'index' if key == 'document' else 'app'}.{extension}"] = content
     return files
 
 

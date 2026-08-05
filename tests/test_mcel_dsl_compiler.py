@@ -11,7 +11,7 @@ from main_computer.mcel_application_ir import validate_application_ir
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DSL_FIXTURE = ROOT / "tests" / "fixtures" / "mcel_dsl" / "contract-counter.application.js"
+DSL_FIXTURE = ROOT / "mcel_apps" / "contract-counter" / "application.js"
 LEGACY_IR = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
 TOOL = ROOT / "tools" / "mcel_dsl_compile.py"
 EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"

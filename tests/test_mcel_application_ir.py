@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from main_computer.mcel_application_packages import build_application_package_catalog
 from main_computer.mcel_application_ir import (
     APPLICATION_IR_SCHEMA,
     APPLICATION_IR_SCHEMA_ID,
@@ -90,10 +91,21 @@ def test_counter_fixture_source_hashes_bind_to_current_repository_files() -> Non
     fixture = load_fixture()
     source_files = fixture["provenance"]["frontend"]["sourceFiles"]
 
+    catalog = build_application_package_catalog(ROOT)
+    package = next(item for item in catalog.packages if item.app_id == "contract-counter")
+
     for record in source_files:
-        path = ROOT / record["path"]
-        assert path.is_file(), record["path"]
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == record["sha256"]
+        relative_path = str(record["path"])
+        path = ROOT / relative_path
+        if path.is_file():
+            content = path.read_bytes()
+        else:
+            package_prefix = "mcel_apps/contract-counter/"
+            assert relative_path.startswith(package_prefix), relative_path
+            package_relative = relative_path[len(package_prefix):]
+            assert package_relative in package.files, relative_path
+            content = package.files[package_relative]
+        assert hashlib.sha256(content).hexdigest() == record["sha256"]
 
 
 def test_unordered_declarations_and_reference_lists_normalize_deterministically() -> None:

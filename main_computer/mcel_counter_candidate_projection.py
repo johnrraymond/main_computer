@@ -102,7 +102,13 @@ def project_counter_candidate(
         return _result(False, "unsupported-ir", diagnostics, dsl=dsl, live=live, comparison=comparison)
 
     live_root = live_package_root.resolve()
-    live_files = _read_package_files(live_root)
+    projection_repo = _repository_root_for_package(live_root)
+    catalog = build_application_package_catalog(projection_repo)
+    live_record = next((item for item in catalog.packages if item.app_id == "contract-counter"), None)
+    if live_record is None or not live_record.valid or not live_record.fingerprint:
+        diagnostics.append(_diagnostic("MCEL_COUNTER_LIVE_PACKAGE_RECORD_INVALID", "The live Counter package record is unavailable or invalid.", "$package"))
+        return _result(False, "invalid-live-package", diagnostics, dsl=dsl, live=live, comparison=comparison)
+    live_files = dict(live_record.files)
     file_results: list[dict[str, Any]] = []
     for relative in GENERATED_CONTRACTS:
         candidate_bytes = generated[relative]
@@ -121,13 +127,6 @@ def project_counter_candidate(
     candidate_package_files = dict(live_files)
     candidate_package_files.update(generated)
     candidate_package_fingerprint = fingerprint_package_files(candidate_package_files)
-
-    projection_repo = _repository_root_for_package(live_root)
-    catalog = build_application_package_catalog(projection_repo)
-    live_record = next((item for item in catalog.packages if item.app_id == "contract-counter"), None)
-    if live_record is None or not live_record.valid or not live_record.fingerprint:
-        diagnostics.append(_diagnostic("MCEL_COUNTER_LIVE_PACKAGE_RECORD_INVALID", "The live Counter package record is unavailable or invalid.", "$package"))
-        return _result(False, "invalid-live-package", diagnostics, dsl=dsl, live=live, comparison=comparison)
 
     candidate_catalog_fingerprint = _candidate_catalog_fingerprint(catalog.packages, candidate_package_fingerprint)
     candidate_runtime_fingerprint = _runtime_fingerprint(

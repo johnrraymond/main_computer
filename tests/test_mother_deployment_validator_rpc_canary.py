@@ -9,6 +9,7 @@ import yaml
 
 from tools import mother_deploy
 from tools.mother.common.canonical import canonical_json
+from tools.mother.common.deployment_mainnet_soak import run_mainnet_steady_state_soak
 from tools.mother.common.deployment_validator_rpc_canary import (
     MotherDeploymentValidatorRpcCanaryError,
     build_validator_rpc_canary_transaction,
@@ -18,14 +19,32 @@ from tools.mother.common.deployment_validator_rpc_canary import (
     write_validator_rpc_canary_transaction,
 )
 from tests.test_mother_deployment_executor import _operation
-from tests.test_mother_deployment_private_rpc import _soak_fixture
+from tests.test_mother_deployment_mainnet_soak import _completed_fixture
 
 
 CANARY_KEY = "0x" + "44" * 32
 
 
+def _steady_state_soak_fixture(tmp_path: Path, monkeypatch):
+    paths, private_state, opener, baseline_path, _ = _completed_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    soak = run_mainnet_steady_state_soak(
+        paths,
+        private_state,
+        baseline_path,
+        duration_seconds=50,
+        observation_interval_seconds=50,
+        opener=opener,
+        operation=_operation("validator-rpc-canary-source-soak"),
+    )
+    assert soak["status"] == "pass"
+    return paths, private_state, Path(soak["evidence"]["path"]), soak
+
+
 def _fixture(tmp_path: Path, monkeypatch):
-    paths, private_state, soak_path, soak = _soak_fixture(tmp_path, monkeypatch)
+    paths, private_state, soak_path, soak = _steady_state_soak_fixture(tmp_path, monkeypatch)
     identity = reserve_validator_rpc_canary_identity(
         paths,
         private_state,
@@ -96,7 +115,7 @@ def test_schema_v1_identity_remains_valid_for_schema_v2_transaction(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    paths, private_state, soak_path, _ = _soak_fixture(tmp_path, monkeypatch)
+    paths, private_state, soak_path, _ = _steady_state_soak_fixture(tmp_path, monkeypatch)
     identity = reserve_validator_rpc_canary_identity(
         paths,
         private_state,
@@ -280,7 +299,7 @@ def test_canary_compiler_rejects_validator_wallet_identity(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    paths, private_state, soak_path, soak = _soak_fixture(tmp_path, monkeypatch)
+    paths, private_state, soak_path, soak = _steady_state_soak_fixture(tmp_path, monkeypatch)
     document = json.loads(private_state.canonical_object_bytes.decode("utf-8"))
     validator_key = document["networks"]["mainnet"]["validators"]["mainneta-super1"][
         "private_key"

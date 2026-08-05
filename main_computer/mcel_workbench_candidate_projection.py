@@ -32,7 +32,7 @@ REPORT_SCHEMA = "mcel.workbench-candidate-projection-report.v1"
 VERSION = "mcel-workbench-candidate-projection-wave11"
 PROJECTION_PROFILE = "mcel.workbench.portable-ir-projection.v1"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DSL_SOURCE = Path("tests/fixtures/mcel_dsl/contract-workbench.application.js")
+DEFAULT_DSL_SOURCE = Path("mcel_apps/contract-workbench/application.js")
 DEFAULT_FIXTURE_IR = Path("tests/fixtures/mcel_application_ir/contract-workbench.ir.json")
 DEFAULT_PACKAGE_ROOT = Path("mcel_apps/contract-workbench")
 PROFILE_ROOT = Path("main_computer/mcel_projection_profiles/contract-workbench-v1")
@@ -45,7 +45,6 @@ GENERATED_PATHS = (
     "contracts/layout.js",
     "contracts/acceptance.js",
     "contracts/observation.js",
-    "mcel.app.json",
 )
 
 
@@ -107,11 +106,16 @@ def project_workbench_candidate(
         diagnostics.append(_diagnostic("MCEL_WORKBENCH_PROJECTION_PROFILE_INVALID", f"Portable Workbench projection profile is invalid: {exc}", "$projectionProfile"))
         return _result(False, "invalid-projection-profile", diagnostics, {})
 
+    live_catalog = build_application_package_catalog(repo)
+    live_record = next((record for record in live_catalog.packages if record.app_id == APP_ID), None)
+    if live_record is None or not live_record.valid or not live_record.fingerprint:
+        diagnostics.append(_diagnostic("MCEL_WORKBENCH_LIVE_PACKAGE_INVALID", "Live Workbench package is not a valid package record.", "$package"))
+        return _result(False, "invalid-live-package", diagnostics, {})
+
     file_results: list[dict[str, Any]] = []
     for relative in GENERATED_PATHS:
         candidate_bytes = profile_files.get(relative)
-        live_path = package_root / relative
-        live_bytes = live_path.read_bytes() if live_path.is_file() else None
+        live_bytes = live_record.files.get(relative)
         exact = candidate_bytes is not None and live_bytes == candidate_bytes
         file_results.append({
             "path": relative,
@@ -122,11 +126,6 @@ def project_workbench_candidate(
         if not exact:
             diagnostics.append(_diagnostic("MCEL_WORKBENCH_PROJECTION_FILE_CONFLICT", f"Generated Workbench projection differs from live {relative}.", f"$projections.{relative}"))
 
-    live_catalog = build_application_package_catalog(repo)
-    live_record = next((record for record in live_catalog.packages if record.app_id == APP_ID), None)
-    if live_record is None or not live_record.valid or not live_record.fingerprint:
-        diagnostics.append(_diagnostic("MCEL_WORKBENCH_LIVE_PACKAGE_INVALID", "Live Workbench package is not a valid package record.", "$package"))
-        return _result(False, "invalid-live-package", diagnostics, {})
     live_runtime = build_application_runtime_projection(repo, live_catalog, live_record)
 
     source_binding = str(dsl.source_binding_fingerprint or "").removeprefix("sha256:")
@@ -148,6 +147,10 @@ def project_workbench_candidate(
         if candidate_package.exists():
             shutil.rmtree(candidate_package)
         shutil.copytree(package_root, candidate_package, ignore=_copy_ignore)
+        for relative, content in live_record.files.items():
+            target = candidate_package / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
         for relative, content in profile_files.items():
             target = candidate_package / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +247,8 @@ def _load_projection_profile(repo: Path) -> tuple[Mapping[str, Any], dict[str, b
     files: dict[str, bytes] = {}
     for entry in manifest.get("files") or []:
         relative = str((entry or {}).get("path") or "")
+        if relative == "mcel.app.json":
+            continue  # Legacy snapshot metadata is authored package state, not generated output.
         if relative not in GENERATED_PATHS:
             raise ValueError(f"unexpected projection file {relative!r}")
         content = (root / relative).read_bytes()

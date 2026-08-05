@@ -1,11 +1,12 @@
-"""Internal-only first-genesis birth proof for Mother.
+"""Internal-only first-super-node birth proof for Mother.
 
-This boundary replaces manual SSH/RPC tunnelling.  An expiring release binds a
-successful A-side genesis execution to one exact Compose update that installs a
-non-routable proof guardian.  The guardian validates the genesis file digest,
-chain id, advancing block height, and sole QBFT validator entirely inside the
-Compose network.  Mother then proves the exact Compose commitment and the
-Coolify service's authenticated ``running:healthy`` state.
+This boundary replaces manual SSH/RPC and Hub tunnelling.  An expiring release
+binds a successful A-side genesis execution to one exact Compose update that
+installs a non-routable proof guardian.  The guardian validates the genesis
+file digest, chain id, advancing block height, sole QBFT validator, Hub health,
+and the Hub's exact co-located RPC configuration entirely inside the Compose
+network. Mother then proves the exact Compose commitment and the Coolify
+service's authenticated ``running:healthy`` state.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ _GENESIS_TRANSACTION_DIRECTORY = ("actions", "deployment-genesis-transactions")
 _MIN_RELEASE_SECONDS = 30
 _MAX_RELEASE_SECONDS = 900
 _PROOF_IMAGE = "python:3.12-alpine"
+_HUB_SERVICE = "mother-super-node-hub"
+_HUB_PORT = 8790
 
 
 class MotherDeploymentGenesisBirthError(RuntimeError):
@@ -326,19 +329,24 @@ def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_ad
     return "\n".join([
         "import hashlib, json, os, time, urllib.request",
         f"RPC = 'http://{node}:8545'",
+        f"HUB = 'http://{_HUB_SERVICE}:{_HUB_PORT}'",
         f"EXPECTED_CHAIN_ID = {chain_id}",
         f"EXPECTED_GENESIS_SHA256 = '{genesis_sha256}'",
         f"EXPECTED_VALIDATOR = '{expected_validator}'",
         "PROOF = '/proof/proof.json'",
         "HEALTHY = '/proof/healthy'",
+        "def read_json(request):",
+        "    with urllib.request.urlopen(request, timeout=5) as response:",
+        "        return json.loads(response.read(1048576).decode())",
         "def rpc(method, params):",
         "    body = json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}, separators=(',', ':')).encode()",
         "    req = urllib.request.Request(RPC, data=body, headers={'Content-Type':'application/json','Host':'localhost'}, method='POST')",
-        "    with urllib.request.urlopen(req, timeout=5) as response:",
-        "        value = json.loads(response.read(1048576).decode())",
+        "    value = read_json(req)",
         "    if value.get('error') is not None or 'result' not in value:",
         "        raise RuntimeError(method + ' failed')",
         "    return value['result']",
+        "def hub(path):",
+        "    return read_json(urllib.request.Request(HUB + path, headers={'Accept':'application/json'}, method='GET'))",
         "def prove():",
         "    with open('/config/genesis.json', 'rb') as handle:",
         "        genesis_digest = hashlib.sha256(handle.read()).hexdigest()",
@@ -358,7 +366,16 @@ def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_ad
         "    second = int(rpc('eth_blockNumber', []), 16)",
         "    if second <= first:",
         "        raise RuntimeError('block height did not advance')",
-        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "    health = hub('/api/hub/v1/health')",
+        "    if health.get('ok') is not True or health.get('service') != 'main-computer-hub' or health.get('network_key') != 'mainnet':",
+        "        raise RuntimeError('hub health mismatch')",
+        "    status = hub('/api/hub/v1/status')",
+        "    network = status.get('network') if isinstance(status, dict) else None",
+        "    if not isinstance(network, dict):",
+        "        raise RuntimeError('hub status network missing')",
+        "    if network.get('chain_id') != EXPECTED_CHAIN_ID or network.get('chain_rpc_url') != RPC:",
+        "        raise RuntimeError('hub local RPC binding mismatch')",
+        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'hub_health':True,'hub_service':'main-computer-hub','hub_network_key':'mainnet','hub_chain_rpc_url':RPC,'hub_chain_id':EXPECTED_CHAIN_ID,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         "    temporary = PROOF + '.tmp'",
         "    with open(temporary, 'w', encoding='utf-8') as handle:",
         "        json.dump(proof, handle, sort_keys=True, separators=(',', ':'))",
@@ -380,7 +397,7 @@ def _internal_proof_compose(
     original: str, *, node: str, chain_id: int, genesis_sha256: str, validator_address: str
 ) -> str:
     host_mapping = '      - "127.0.0.1:8545:8545/tcp"\n'
-    allowlist = "      - --host-allowlist=localhost,127.0.0.1\n"
+    allowlist = f"      - --host-allowlist=localhost,127.0.0.1,{node},{_HUB_SERVICE},mother-genesis-proof-guardian\n"
     marker = "\nvolumes:\n"
     if original.count(host_mapping) != 1 or original.count(allowlist) != 1 or original.count(marker) != 1:
         raise MotherDeploymentGenesisBirthError(
@@ -388,11 +405,6 @@ def _internal_proof_compose(
             "released first-genesis Compose does not match the supported secure template",
         )
     updated = original.replace(host_mapping, "", 1)
-    updated = updated.replace(
-        allowlist,
-        f"      - --host-allowlist=localhost,127.0.0.1,{node}\n",
-        1,
-    )
     script = _proof_script(
         node=node,
         chain_id=chain_id,
@@ -408,6 +420,8 @@ def _internal_proof_compose(
         "    depends_on:",
         f"      {node}:",
         "        condition: service_started",
+        f"      {_HUB_SERVICE}:",
+        "        condition: service_healthy",
         "    command:",
         "      - python",
         "      - -u",
@@ -646,7 +660,7 @@ def build_genesis_birth_release(
             "persistent_volume_cleanup_performed": False,
         },
         "operator_release": {
-            "intent": "install-internal-only-genesis-proof-guardian-and-prove-birth",
+            "intent": "install-internal-only-super-node-proof-guardian-and-prove-birth",
             "acknowledged_genesis_execution_sha256": acknowledged,
             "requested_use_limit": 1,
         },
@@ -657,6 +671,14 @@ def build_genesis_birth_release(
             "chain_id": chain["chain_id"],
             "genesis_sha256": chain["genesis_sha256"],
             "validator_set": [validator],
+            "hub": {
+                "service": _HUB_SERVICE,
+                "internal_port": _HUB_PORT,
+                "health_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}/api/hub/v1/health",
+                "status_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}/api/hub/v1/status",
+                "local_rpc_url": f"http://{chain['node']}:8545",
+                "public_endpoint_created": False,
+            },
             "original_compose": {
                 "sha256": chain["original_compose_sha256"],
                 "semantic_sha256": original_semantic_sha,
@@ -671,6 +693,8 @@ def build_genesis_birth_release(
                 "guardian_public_ports": [],
                 "guardian_domains": [],
                 "host_rpc_mapping_present": False,
+                "hub_service_present": True,
+                "hub_public_endpoint_present": False,
             },
             "preconditions": [
                 {"method": "GET", "endpoint": "/api/v1/services", "assertion": "exact A service exists"},
@@ -685,7 +709,16 @@ def build_genesis_birth_release(
                 "manual_ssh_required": False,
                 "public_endpoint_created": False,
                 "guardian_internal_only": True,
-                "predicates": ["genesis-file-sha256", "chain-id", "genesis-block-present", "block-height-advancing", "sole-qbft-validator"],
+                "predicates": [
+                    "genesis-file-sha256",
+                    "chain-id",
+                    "genesis-block-present",
+                    "block-height-advancing",
+                    "sole-qbft-validator",
+                    "hub-health",
+                    "hub-mainnet-binding",
+                    "hub-local-rpc-binding",
+                ],
                 "success_signal": "exact service reports running:healthy under the exact proof Compose commitment",
             },
             "soft_replica_untouched": True,
@@ -700,6 +733,8 @@ def build_genesis_birth_release(
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "host_rpc_mapping_removed": True,
+            "hub_internal_only": True,
+            "hub_local_rpc_required": True,
             "soft_replica_untouched": True,
             "private_keys_materialized": False,
             "private_keys_persisted": False,
@@ -1111,6 +1146,13 @@ def execute_genesis_birth_release(
             "predicates_proven_by_guardian": list(plan["proof"]["predicates"]),
             "chain_id": plan["chain_id"],
             "validator_set": list(plan["validator_set"]),
+            "hub_service": plan["hub"]["service"],
+            "hub_internal_port": plan["hub"]["internal_port"],
+            "hub_health_url": plan["hub"]["health_url"],
+            "hub_status_url": plan["hub"]["status_url"],
+            "hub_local_rpc_url": plan["hub"]["local_rpc_url"],
+            "hub_healthy": complete,
+            "hub_local_rpc_verified": complete,
         },
         "policy": {
             "allowed_http_methods": ["GET", "PATCH"],
@@ -1135,6 +1177,10 @@ def execute_genesis_birth_release(
             "genesis_block_present": complete,
             "blocks_advancing": complete,
             "validator_set_verified": complete,
+            "hub_healthy": complete,
+            "hub_mainnet_binding_verified": complete,
+            "hub_local_rpc_verified": complete,
+            "complete_super_node_proven": complete,
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "soft_replica_untouched": True,
@@ -1169,10 +1215,19 @@ def verify_genesis_birth_evidence(
         summary.get("manual_ssh_required") is False,
         summary.get("public_endpoint_created") is False,
         summary.get("soft_replica_untouched") is True,
+        summary.get("hub_healthy") is True,
+        summary.get("hub_mainnet_binding_verified") is True,
+        summary.get("hub_local_rpc_verified") is True,
+        summary.get("complete_super_node_proven") is True,
         summary.get("next_phase") == "stage-soft-replica-configuration",
         proof.get("guardian_internal_only") is True,
         proof.get("host_rpc_mapping_present") is False,
         proof.get("service_status") == "running:healthy",
+        proof.get("hub_healthy") is True,
+        proof.get("hub_local_rpc_verified") is True,
+        proof.get("hub_service") == _HUB_SERVICE,
+        proof.get("hub_internal_port") == _HUB_PORT,
+        proof.get("hub_local_rpc_url") == f"http://{evidence.get('initial_node')}:8545",
     ]):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_EVIDENCE_INVALID", "birth evidence assertions are incomplete")
     reference_now = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
@@ -1200,6 +1255,13 @@ def verify_genesis_birth_evidence(
         "manual_ssh_required": False,
         "public_endpoint_created": False,
         "guardian_internal_only": True,
+        "hub_service": proof["hub_service"],
+        "hub_internal_port": proof["hub_internal_port"],
+        "hub_healthy": True,
+        "hub_local_rpc_url": proof["hub_local_rpc_url"],
+        "hub_local_rpc_verified": True,
+        "complete_super_node_proven": True,
+        "super_node_components": ["hub", "local-rpc", "besu", "qbft-validator", "foundationdb"],
         "soft_replica_untouched": True,
         "next_phase": "stage-soft-replica-configuration",
     }
