@@ -1,0 +1,48 @@
+{
+  "appId": "calculator",
+  "authoring": {
+    "normalizedDefinition": "generated/mcel.application.normalized.json",
+    "ownership": "mcel.generated.json",
+    "schema": "mcel.application-authoring.v1",
+    "source": "application.js",
+    "status": "dsl-shadow"
+  },
+  "blueprint": "blueprint.json",
+  "conformance": {
+    "currentMode": "forward-specification",
+    "missingBridges": [
+      "host-bound-runtime-projection",
+      "browser-observation",
+      "promotion-rehearsal",
+      "legacy-semantic-adapter-retirement"
+    ],
+    "shadow": true,
+    "targetMode": "semantic-runtime-proven"
+  },
+  "contracts": {
+    "acceptance": "contracts/acceptance.js",
+    "adapter": "contracts/adapter.js",
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "surface": "contracts/surface.js"
+  },
+  "projection": {
+    "generatedArtifactsAreDerived": true,
+    "liveRuntimeChanged": false,
+    "presentationAuthority": "existing-host-html",
+    "profile": "mcel.calculator.shadow-projection.v1"
+  },
+  "requirements": "requirements.md",
+  "schema": "mcel.application-package.v1",
+  "template": {
+    "id": "mcel.host-bound-shadow-application",
+    "version": "0.1.0"
+  },
+  "tests": {
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json",
+    "root": "tests"
+  },
+  "title": "Calculator"
+}

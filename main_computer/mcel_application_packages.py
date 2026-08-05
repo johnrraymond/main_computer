@@ -338,8 +338,9 @@ def _build_record(
     errors = list(read_errors)
     warnings: list[ApplicationPackageIssue] = []
 
-    # Promoted DSL packages keep only authored source in ``mcel_apps``. Build a
-    # deterministic virtual overlay for generated compatibility artifacts before
+    # DSL-authored packages keep only authored source in ``mcel_apps``. Build a
+    # deterministic virtual overlay for promoted or explicitly shadowed package
+    # compatibility artifacts before
     # package validation and fingerprinting. Existing generated source-tree files
     # are ignored so stale intermediates cannot become authority.
     try:
@@ -349,7 +350,7 @@ def _build_record(
         )
         manifest_probe = _load_json_text(text_files, "mcel.app.json") or {}
         authoring_probe = manifest_probe.get("authoring") if isinstance(manifest_probe.get("authoring"), Mapping) else {}
-        if authoring_probe.get("status") == "dsl-authoritative":
+        if authoring_probe.get("status") in {"dsl-authoritative", "dsl-shadow"}:
             byte_files = {path: content for path, content in byte_files.items() if not is_generated_source_tree_path(path)}
             text_files = {path: content for path, content in text_files.items() if not is_generated_source_tree_path(path)}
             generated = materialize_generated_package_files(repository, package_path, text_files)

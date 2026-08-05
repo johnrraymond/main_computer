@@ -1401,6 +1401,37 @@ Implementation status:
 - `RemoteCharacterPolicy` is nonblocking and can be registered without changing the renderer;
 - repository-backed character restoration remains constrained because the source snapshot does not include AI-9.5.
 
+### AI-10B — Pax: Neutrality Under Fire
+
+Objective:
+
+- implement the authored Pax ceasefire and assassination crisis as one complete destination scenario;
+- prove that navigation, scenario stages, in-world characters, evidence, political choices, and persistent consequences can share stable authority boundaries.
+
+Acceptance proof:
+
+- the Pax scenario appears only in `system.pax`;
+- accepting the protection detail activates one named witness, one neutrality marshal, one Quiet Service assassin, and one authored support cutter;
+- Solace and Pax character casts cannot act outside their authored systems or scenario stages;
+- the assassin requests only the Quiet Service cutter, then uses the existing validated pursuit, attack, cover, and retreat actions;
+- defeating the assassin advances exactly once into investigation;
+- three evidence threads gate four conference resolutions;
+- defensive weapon use and post-threat intimidation are recorded separately and change resolution availability;
+- the selected resolution persists refugee, diplomacy, food, Kestrel gateway, security, and force-conduct consequences;
+- project-scoped scenario state and a campaign-extension envelope restore exactly.
+
+Artifact boundary:
+
+- one reusable system-scenario runtime, Pax project definition, system-and-stage character activation, Pax dock interaction, renderer/navigation integration, focused tests, and documentation.
+
+Implementation status:
+
+- complete in `pretty_docs/game-ai-patch-10-b-pax-neutrality-under-fire.md`;
+- `game.systemScenarios.v1` owns authored stages, evidence, requirements, outcomes, and receipts;
+- `enemy.pax.quiet-service-assassin-01`, `npc.pax.refugee-witness-01`, `npc.pax.neutrality-marshal-01`, and `ship.pax.quiet-service-cutter-01` use the existing character-policy authority boundary;
+- the Game Surface records weapon conduct without allowing the scenario UI or a policy to mutate combat health directly;
+- repository-backed restoration remains constrained because the source snapshot does not include AI-9.5.
+
 ### AI-10 — Tactical and learned behavior experiments
 
 Objective:
@@ -1632,7 +1663,8 @@ Implemented:
 - player-visible Vela Gate Authority channel using the live session, verified official action, safe briefing, and readable decision explanation;
 - exact-once navigation arrival integration with bounded off-screen progression and player-facing receipt-derived return summaries;
 - player-visible Solace Reach coordination with typed promise wording, one-shuttle allocation, kept-or-broken resolution, and trust-driven Osprey response;
-- a browser-safe in-world character policy boundary with one stable raider boarder, Engineering Officer Mara Venn, bounded perceptions, legal actions, receipts, nonblocking remote-policy support, and deterministic fallback.
+- a browser-safe in-world character policy boundary with one stable raider boarder, Engineering Officer Mara Venn, bounded perceptions, legal actions, receipts, nonblocking remote-policy support, and deterministic fallback;
+- one complete Pax destination scenario with navigation-gated visibility, system-and-stage-scoped characters, a Quiet Service support cutter, protective combat, evidence collection, conduct-aware conference choices, immutable consequences, and a reusable system-scenario state machine.
 
 Not implemented:
 
@@ -1642,26 +1674,27 @@ Not implemented:
 - report propagation outside authored Vela routes;
 - generated negotiation terms or unrestricted model prose;
 - multiple-resource plan search and independent promise deadlines;
-- tactical or real-time off-screen simulation beyond the first bounded in-world character encounter;
+- tactical or real-time off-screen simulation beyond the bounded Solace boarding encounter and Pax protection detail;
 - campaign-clock progression outside completed navigation arrivals or explicit director calls;
 - repository-backed strategic save integration;
-- additional player-facing Vela actors, deeper Solace negotiation, branching requests, and scene performance.
+- additional player-facing Vela actors, deeper Solace negotiation, surface or orbital Pax scene performance, and scenarios beyond the first complete Pax slice.
 
-The strategic stack now has a live browser harness, normal Vela and Solace interactions, completed-travel off-screen progression, player-facing return summaries, and a non-obscuring collapsible strategic UI dock. A separate in-world character runtime now drives one stable raider boarder and Engineering Officer Mara Venn through bounded perceptions, legal actions, receipts, and deterministic fallback. Repository-backed strategic and character save integration, real model transport, broader scene performance, and learned policies remain unimplemented.
+The strategic stack now has a live browser harness, normal Vela and Solace interactions, completed-travel off-screen progression, player-facing return summaries, and a non-obscuring collapsible strategic UI dock. A separate in-world character runtime drives the Solace raider and Engineering Officer Mara Venn, while the reusable system-scenario runtime now executes Pax's protection, investigation, conference, and consequence flow with three additional named characters and a Quiet Service support cutter. Repository-backed strategic, character, and system-scenario save integration, real model transport, broader scene performance, and learned policies remain unimplemented.
 
 ## Smallest useful implementation slice
 
-AI-1 through AI-9.4.1 and the constrained AI-10A character foundation are implemented in this snapshot. The smallest useful next slice remains repository persistence, now covering both strategic and character state:
+AI-1 through AI-9.4.1, the constrained AI-10A character foundation, and AI-10B's complete Pax scenario are implemented in this snapshot. The smallest useful next slice remains repository persistence, now covering strategic, navigation, character, and system-scenario state:
 
 ```text
 apply or restore AI-9.5 repository campaign saves
 → include game.characterAI.campaignExtension.v1
-→ reload fresh strategic, navigation, and character runtimes
-→ restore health, position, memory, receipts, and decision sequence
-→ reproduce the same next legal character action
+→ include game.systemScenarios.campaignExtension.v1
+→ reload fresh strategic, navigation, character, and scenario runtimes
+→ restore Pax stage, evidence, force conduct, characters, receipts, and resolution
+→ reproduce the same next legal character action and scenario view
 ```
 
-Only after that durable boundary should one real remote or local model call be attached through `RemoteCharacterPolicy`. The call must remain opt-in, bounded by a timeout, and unable to bypass action validation or deterministic fallback.
+Only after that durable boundary should one real remote or local model call be attached through `RemoteCharacterPolicy`. Nera Saye or Marshal Oren Vale can then receive bounded model decisions without changing combat, evidence, or scenario authority.
 
 ## Research basis
 

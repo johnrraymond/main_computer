@@ -124,8 +124,52 @@ def _workbench_profile() -> AppAuthoringProfile:
     )
 
 
+
+
+def _calculator_profile() -> AppAuthoringProfile:
+    from main_computer.mcel_calculator_candidate_projection import (
+        DEFAULT_DSL_SOURCE,
+        PROJECTION_PROFILE,
+        project_calculator_candidate,
+    )
+
+    def unsupported(*_args: Any, **_kwargs: Any) -> Any:
+        raise AppAuthoringProfileError(
+            "Calculator remains a shadow DSL authority; promotion and rollback are not registered."
+        )
+
+    def resolve_scenario_operation(scenario: Mapping[str, Any]) -> str:
+        intent_id = str(((scenario.get("intent") or {}).get("ref") or ""))
+        return intent_id.removeprefix("intent:calculator.")
+
+    return AppAuthoringProfile(
+        app_id="calculator",
+        profile_id="mcel.calculator.authoring-profile.shadow-v1",
+        projection_profile=PROJECTION_PROFILE,
+        fixture_ir=None,
+        candidate_source=DEFAULT_DSL_SOURCE,
+        authoring_frontend="mcel.dsl.v1",
+        project_candidate=project_calculator_candidate,
+        rehearse_promotion=unsupported,
+        execute_promotion=unsupported,
+        rollback_promotion=unsupported,
+        run_node_probe=None,
+        run_browser_probe=None,
+        build_effect_accounting=None,
+        run_ir_native_proof=None,
+        run_candidate_evidence=None,
+        resolve_scenario_operation=resolve_scenario_operation,
+        receipt_code_aliases={},
+        promotion_supported=False,
+        promotion_rehearsal_supported=False,
+        portable_ir_projection_complete=True,
+    )
+
+
 def get_app_authoring_profile(app_id: str) -> AppAuthoringProfile:
     normalized = str(app_id or "").strip()
+    if normalized == "calculator":
+        return _calculator_profile()
     if normalized == "contract-counter":
         return _counter_profile()
     if normalized == "contract-workbench":
@@ -136,4 +180,4 @@ def get_app_authoring_profile(app_id: str) -> AppAuthoringProfile:
 
 
 def registered_app_authoring_profiles() -> tuple[str, ...]:
-    return ("contract-counter", "contract-workbench")
+    return ("calculator", "contract-counter", "contract-workbench")

@@ -50,6 +50,11 @@
         resolve: null
       }
     };
+    window.MainComputerWebsiteBuilderRouteState = Object.freeze({
+      get selectedSiteId() {
+        return websiteBuilderStateModel.selectedSiteId;
+      }
+    });
 
     const websiteBuilderLinkedChatThreads = new Map();
 

@@ -9,9 +9,9 @@
     }
 
     function syncApplicationRoute(appName, {replace = false} = {}) {
-      const selectedWebsiteBuilderSite = typeof websiteBuilderStateModel !== "undefined"
-        ? websiteBuilderStateModel.selectedSiteId
-        : "";
+      const selectedWebsiteBuilderSite = String(
+        window.MainComputerWebsiteBuilderRouteState?.selectedSiteId || ""
+      ).trim();
       const nextPath = appName === "task-manager"
         ? taskManagerTabPath(taskNotebookTabFromPath(window.location.pathname))
         : appName === "website-builder"

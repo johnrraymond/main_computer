@@ -40,6 +40,10 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
     assert payload["schema"] == BROWSER_CATALOG_SCHEMA
     assert payload["format"] == BROWSER_CATALOG_FORMAT
     assert payload["packageCount"] == 2
+    assert {item["appId"] for item in payload["packages"]} == {
+        "contract-counter",
+        "contract-workbench",
+    }
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
 
     package = next(item for item in payload["packages"] if item["appId"] == "contract-counter")

@@ -138,9 +138,9 @@ class StrategicAIPanelLayoutTests(unittest.TestCase):
         style = LAYOUT_STYLE.read_text(encoding="utf-8")
         script = LAYOUT_SCRIPT.read_text(encoding="utf-8").lower()
 
-        self.assertEqual(webgl.count('data-strategic-ai-panel\n'), 3)
-        self.assertEqual(webgl.count("data-strategic-ai-panel-collapse"), 3)
-        self.assertEqual(webgl.count("data-strategic-ai-panel-compact"), 3)
+        self.assertEqual(webgl.count('data-strategic-ai-panel\n'), 4)
+        self.assertEqual(webgl.count("data-strategic-ai-panel-collapse"), 4)
+        self.assertEqual(webgl.count("data-strategic-ai-panel-compact"), 4)
         self.assertIn('id="strategic-ai-panel-dock"', webgl)
         self.assertLess(
             webgl.index('id="strategic-ai-panel-dock"'),
@@ -148,6 +148,10 @@ class StrategicAIPanelLayoutTests(unittest.TestCase):
         )
         self.assertLess(
             webgl.index('id="solace-strategic-contact"'),
+            webgl.index('id="strategic-ai-debug-toggle"'),
+        )
+        self.assertLess(
+            webgl.index('id="pax-scenario-contact"'),
             webgl.index('id="strategic-ai-debug-toggle"'),
         )
 

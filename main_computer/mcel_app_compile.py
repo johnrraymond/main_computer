@@ -62,7 +62,8 @@ def compile_application(
         raise AppCompileError(f"Could not load application manifest: {exc}") from exc
     authoring = manifest.get("authoring") or {}
     source_reference = str(authoring.get("source") or "").strip()
-    promoted = authoring.get("status") == "dsl-authoritative"
+    authoring_status = str(authoring.get("status") or "")
+    promoted = authoring_status == "dsl-authoritative"
     if source_reference:
         source = (repo / record.package_root / source_reference).resolve()
     elif profile.candidate_source is not None:
@@ -89,7 +90,13 @@ def compile_application(
         "valid": compiled.valid,
         "genericPipeline": True,
         "counterSpecificExecutionPathRequired": False,
-        "sourceAuthority": "mcel.dsl.v1" if promoted else "legacy-explicit-package",
+        "sourceAuthority": (
+            "mcel.dsl.v1"
+            if promoted
+            else "mcel.dsl.shadow.v1"
+            if authoring_status == "dsl-shadow"
+            else "legacy-explicit-package"
+        ),
         "candidateFrontend": profile.authoring_frontend,
         "applicationProfile": profile.profile_id,
         "promotionExecuted": promoted,

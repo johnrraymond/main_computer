@@ -14,6 +14,7 @@ from main_computer.mcel_application_virtual_assets import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMOTED_APPS = ("contract-counter", "contract-workbench")
+SHADOW_APPS = ("calculator",)
 GENERATED_SOURCE_NAMES = ("contracts", "generated", "mcel.generated.json")
 
 
@@ -29,8 +30,8 @@ def _files_beneath(path: Path) -> list[Path]:
     return [candidate for candidate in path.rglob("*") if candidate.is_file()]
 
 
-def test_promoted_packages_contain_no_materialized_generated_source() -> None:
-    for app_id in PROMOTED_APPS:
+def test_authored_packages_contain_no_materialized_generated_source() -> None:
+    for app_id in (*PROMOTED_APPS, *SHADOW_APPS):
         root = REPO_ROOT / "mcel_apps" / app_id
         for name in GENERATED_SOURCE_NAMES:
             path = root / name
@@ -53,10 +54,11 @@ def test_package_catalog_reconstructs_generated_files_in_memory() -> None:
     catalog = build_application_package_catalog(REPO_ROOT)
     assert catalog.ok
 
+    calculator = _package(catalog, "calculator")
     counter = _package(catalog, "contract-counter")
     workbench = _package(catalog, "contract-workbench")
 
-    for record in (counter, workbench):
+    for record in (calculator, counter, workbench):
         assert record.files["mcel.generated.json"]
         for contract in (
             "acceptance",
@@ -69,6 +71,7 @@ def test_package_catalog_reconstructs_generated_files_in_memory() -> None:
         ):
             assert record.files[f"contracts/{contract}.js"]
 
+    assert calculator.files["generated/mcel.application.normalized.json"]
     assert "generated/mcel.application.normalized.json" not in counter.files
     assert workbench.files["generated/mcel.application.normalized.json"]
 
@@ -86,6 +89,7 @@ def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path
     assert catalog_path.is_file()
     assert (runtime_root / "contract-counter/contracts/domain.js").is_file()
     assert (runtime_root / "contract-workbench/contracts/domain.js").is_file()
+    assert not (runtime_root / "calculator").exists()
 
     virtual_assets = build_virtual_mcel_browser_assets(REPO_ROOT)
     physical_files = {
@@ -97,7 +101,7 @@ def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path
             physical_files[route] = path.read_bytes()
     assert physical_files == dict(virtual_assets.files)
 
-    for app_id in PROMOTED_APPS:
+    for app_id in (*PROMOTED_APPS, *SHADOW_APPS):
         assert not _files_beneath(REPO_ROOT / "mcel_apps" / app_id / "contracts")
     assert not _files_beneath(REPO_ROOT / "main_computer/web/applications/mcel-packages")
 
@@ -114,6 +118,10 @@ def test_normal_viewport_mount_assets_stay_in_memory(tmp_path: Path) -> None:
     assert assets.files[
         "applications/mcel-packages/contract-workbench/mcel.runtime.json"
     ]
+    assert not any(
+        path.startswith("applications/mcel-packages/calculator/")
+        for path in assets.files
+    )
     assert not (tmp_path / "runtime").exists()
 
 

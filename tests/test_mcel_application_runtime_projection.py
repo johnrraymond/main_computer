@@ -32,6 +32,10 @@ def _copy_package(target_root: Path) -> None:
 def test_runtime_projection_contains_only_browser_execution_files() -> None:
     projection_set = build_runtime_projection_set(ROOT)
     assert projection_set.package_count == 2
+    assert {item.app_id for item in projection_set.projections} == {
+        "contract-counter",
+        "contract-workbench",
+    }
     projection = next(item for item in projection_set.projections if item.app_id == "contract-counter")
 
     assert projection.app_id == "contract-counter"

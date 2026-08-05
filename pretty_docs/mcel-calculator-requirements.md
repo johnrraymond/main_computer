@@ -4,6 +4,14 @@
 
 This is the documentation-first requirements contract for the Calculator app.
 
+The repository now also contains an unpromoted, authored-only shadow authority at
+`mcel_apps/calculator/application.js`. It declares the eleven stable Calculator
+operations, the existing `/applications/calculator` route and `#calculator-app`
+root, and explicit model, Mathics, and result-Q&A capability lanes. Its contracts
+and normalized IR are generated in memory. The existing HTML, CSS, runtime facade,
+and semantic adapter remain live until host-bound browser proof and promotion are
+completed.
+
 The current implementation has a calculator route, a rich calculator DOM, arithmetic input/result controls, scientific graphing controls, a graph canvas, Mathics symbolic panels, result Q&A, an embedded calculator chat panel, a calculator MCEL domain pack, a dedicated Calculator semantic adapter registered with the MCEL domain-adapter registry, and a five-layer Calculator semantic surface with shared layout grammar.
 
 The current semantic runtime is intentionally lane-explicit:
@@ -256,11 +264,15 @@ requirement: >
   than general JavaScript execution, even when the current sanitizer limits the
   character set before evaluation.
 current_state: >
-  The current frontend normalizes arithmetic input to digits, operators,
-  parentheses, decimal points, percentage, and spaces before evaluating.
+  Calculator arithmetic and graph expressions are parsed by the DOM-independent
+  calculator-core-v1 runtime. Arithmetic accepts only numbers, parentheses,
+  unary signs, multiplication, division, modulo, addition, and subtraction.
+  The runtime reports normalized input, grammar, parse status, parser failure
+  code, token count, and final numeric result without invoking JavaScript
+  Function or eval-style execution.
 target_state: >
-  A Calculator semantic adapter should expose the grammar, parse result,
-  validation failures, and final numeric result as evidence.
+  Calculator DSL projection should preserve this parser-owned core as the
+  deterministic implementation behind the stable HTML and runtime facade.
 acceptance:
   - Letters and unsupported tokens are rejected or stripped before evaluation.
   - Non-finite results surface a readable error.

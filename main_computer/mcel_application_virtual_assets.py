@@ -119,6 +119,7 @@ def _runtime_projections(
     return tuple(
         build_application_runtime_projection(repo, catalog, record)
         for record in sorted(catalog.packages, key=lambda item: item.app_id or item.package_root)
+        if all(record.runtime.get(key) for key in ("document", "script", "style"))
     )
 
 

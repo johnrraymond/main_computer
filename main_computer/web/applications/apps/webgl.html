@@ -1,4 +1,61 @@
           <div id="webgl-demo" class="project-game-surface scene-surface" aria-label="Scene-aware game surface" data-scene-viewer data-scene-id="default-empty-scene"></div>
+          <section
+            id="pax-scenario-arrival-briefing"
+            class="pax-scenario-arrival-briefing"
+            hidden
+            role="alertdialog"
+            aria-live="assertive"
+            aria-labelledby="pax-scenario-arrival-title"
+            aria-describedby="pax-scenario-arrival-description"
+            data-mc-component-id="system-scenario.pax.arrival-briefing"
+            data-mc-component-kind="notice"
+            data-mc-component-label="Pax Emergency Arrival Briefing"
+          >
+            <div class="pax-scenario-arrival-card">
+              <span class="pax-scenario-arrival-kicker">Priority one • automatic mission start</span>
+              <h2 id="pax-scenario-arrival-title">ASSASSIN ABOARD</h2>
+              <p id="pax-scenario-arrival-description">
+                Quiet Service has breached the mother ship during the Pax ceasefire conference.
+                Refugee witness Nera Saye is on the bridge and under immediate threat.
+              </p>
+              <dl class="pax-scenario-arrival-facts">
+                <div>
+                  <dt>Objective</dt>
+                  <dd>Protect Nera Saye</dd>
+                </div>
+                <div>
+                  <dt>Threat</dt>
+                  <dd>Bridge Access, behind the navigation stations</dd>
+                </div>
+                <div>
+                  <dt>Rules</dt>
+                  <dd>Defensive force is authorized</dd>
+                </div>
+              </dl>
+              <p class="pax-scenario-arrival-direction">
+                Turn away from the viewscreen, locate the hostile at Bridge Access, and stop the attack.
+              </p>
+              <button id="pax-scenario-arrival-ack" type="button">
+                Acknowledge — protect Nera
+              </button>
+            </div>
+          </section>
+
+          <aside
+            id="pax-scenario-objective-banner"
+            class="pax-scenario-objective-banner"
+            hidden
+            role="status"
+            aria-live="assertive"
+            data-mc-component-id="system-scenario.pax.objective-banner"
+            data-mc-component-kind="notice"
+            data-mc-component-label="Pax Active Mission Objective"
+          >
+            <span id="pax-scenario-objective-kicker">PAX PRIORITY ONE</span>
+            <strong id="pax-scenario-objective-title">PROTECT NERA SAYE</strong>
+            <small id="pax-scenario-objective-detail">HOSTILE AT BRIDGE ACCESS • TURN FROM THE VIEWSCREEN</small>
+          </aside>
+
           <div
             id="strategic-ai-panel-dock"
             class="strategic-ai-panel-dock"
@@ -222,6 +279,81 @@
               id="solace-strategic-outcome"
               class="solace-strategic-outcome"
               aria-label="Verified Solace coordination outcome"
+            ></ul>
+          </section>
+
+          <section
+            id="pax-scenario-contact"
+            class="pax-scenario-contact"
+            data-strategic-ai-panel
+            data-strategic-ai-panel-id="pax-scenario"
+            hidden
+            aria-labelledby="pax-scenario-title"
+            data-mc-component-id="system-scenario.pax.neutrality-under-fire"
+            data-mc-component-kind="interaction"
+            data-mc-component-label="Pax Neutrality Under Fire Scenario"
+            data-mc-feature-id="system-scenario.feature.pax-vertical-slice"
+          >
+            <header class="pax-scenario-head">
+              <div>
+                <span class="pax-scenario-kicker">Pax emergency channel</span>
+                <h2 id="pax-scenario-title">Neutrality Under Fire</h2>
+              </div>
+              <div class="strategic-ai-panel-actions">
+                <span class="pax-scenario-signal" aria-hidden="true"></span>
+                <button
+                  class="strategic-ai-panel-compact"
+                  type="button"
+                  data-strategic-ai-panel-compact
+                  aria-label="Use compact Pax scenario view"
+                >Compact</button>
+                <button
+                  class="strategic-ai-panel-collapse"
+                  type="button"
+                  data-strategic-ai-panel-collapse
+                  aria-expanded="true"
+                  aria-label="Collapse Pax scenario"
+                >Collapse</button>
+              </div>
+            </header>
+
+            <output
+              id="pax-scenario-status"
+              class="pax-scenario-status"
+              role="status"
+              aria-live="polite"
+            >Pax conference traffic is requesting a protection detail.</output>
+
+            <section class="pax-scenario-stage" aria-labelledby="pax-scenario-stage-title">
+              <span>Current stage</span>
+              <strong id="pax-scenario-stage-title">Arrival window</strong>
+              <p id="pax-scenario-stage-description"></p>
+            </section>
+
+            <p id="pax-scenario-local-rule" class="pax-scenario-local-rule"></p>
+            <p id="pax-scenario-vessel" class="pax-scenario-vessel"></p>
+
+            <section id="pax-scenario-characters" class="pax-scenario-characters" aria-label="Pax scenario characters"></section>
+
+            <fieldset id="pax-scenario-evidence" class="pax-scenario-evidence" hidden>
+              <legend>Secure evidence before the conference</legend>
+              <div id="pax-scenario-evidence-list" class="pax-scenario-evidence-list"></div>
+              <button
+                id="pax-scenario-proceed"
+                class="pax-scenario-primary"
+                type="button"
+              >Proceed to the emergency conference</button>
+            </fieldset>
+
+            <fieldset id="pax-scenario-resolutions" class="pax-scenario-resolutions" hidden>
+              <legend>Choose the Pax settlement</legend>
+              <div id="pax-scenario-resolution-list" class="pax-scenario-resolution-list"></div>
+            </fieldset>
+
+            <ul
+              id="pax-scenario-outcome"
+              class="pax-scenario-outcome"
+              aria-label="Pax scenario consequences"
             ></ul>
           </section>
 

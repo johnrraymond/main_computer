@@ -271,9 +271,12 @@ def build_runtime_projection_set(repo_root: Path | None = None) -> RuntimeProjec
     catalog = build_application_package_catalog(root)
     if not catalog.ok or catalog.invalid_count or catalog.errors:
         raise InvalidRuntimeProjectionSource("Repository application-package catalog must be valid before projection.")
+    # Source-only shadow authorities are valid repository packages but have no
+    # browser runtime sources until host-bound mounting is promoted.
     projections = tuple(
         build_application_runtime_projection(root, catalog, record)
         for record in sorted(catalog.packages, key=lambda item: item.app_id or item.package_root)
+        if all(record.runtime.get(key) for key in _BROWSER_RUNTIME_KEYS)
     )
     return RuntimeProjectionSet(
         repository_root=root.as_posix(),

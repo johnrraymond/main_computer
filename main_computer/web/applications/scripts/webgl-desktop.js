@@ -6,7 +6,9 @@
       loading: null,
       annotationSavePromise: Promise.resolve(),
       strategicSession: null,
-      strategicSessionError: ""
+      strategicSessionError: "",
+      systemScenarioRuntime: null,
+      systemScenarioError: ""
     };
 
     async function webglPost(path, payload = {}) {
@@ -34,6 +36,42 @@
         || navigation?.startSystem
         || ""
       );
+    }
+
+    function ensureWebglSystemScenarioRuntime(projectId, project, activeSystemId = "") {
+      const api = window.MainComputerSystemScenarioRuntime;
+      const definition = project?.metadata?.systemScenarios;
+      if (!api?.ensure || !definition) {
+        webglProjectState.systemScenarioRuntime = null;
+        webglProjectState.systemScenarioError = project
+          ? "System-scenario runtime unavailable."
+          : "";
+        api?.clearCurrent?.();
+        window.MainComputerPaxScenarioInteraction?.setRuntime?.(null);
+        return null;
+      }
+      try {
+        const runtime = api.ensure(projectId, definition, {
+          activeSystemId: String(activeSystemId || webglDefaultStrategicSystem(project))
+        });
+        webglProjectState.systemScenarioRuntime = runtime;
+        webglProjectState.systemScenarioError = "";
+        window.MainComputerPaxScenarioInteraction?.setRuntime?.(runtime);
+        const characters = window.MainComputerCharacterAIRuntime?.current?.() || null;
+        if (characters) {
+          window.MainComputerPaxScenarioInteraction?.setCharacterRuntime?.(characters);
+        }
+        return runtime;
+      } catch (error) {
+        webglProjectState.systemScenarioRuntime = null;
+        webglProjectState.systemScenarioError = error instanceof Error
+          ? error.message
+          : String(error || "System-scenario runtime failed.");
+        api?.clearCurrent?.();
+        window.MainComputerPaxScenarioInteraction?.setRuntime?.(null);
+        console.error("System-scenario runtime initialization failed", error);
+        return null;
+      }
     }
 
     function ensureWebglStrategicSession(projectId, project, activeSystemId = "") {
@@ -76,9 +114,24 @@
 
     function syncWebglStrategicNavigation(navigation = {}) {
       const session = webglProjectState.strategicSession;
+      const scenarioRuntime = webglProjectState.systemScenarioRuntime;
       const systemId = String(navigation?.currentSystemId || "");
-      if (!session || !systemId) return null;
+      if (!systemId) return null;
       try {
+        if (scenarioRuntime?.setActiveSystemId
+            && scenarioRuntime.state?.activeSystemId !== systemId) {
+          scenarioRuntime.setActiveSystemId(systemId);
+        }
+        const paxInteraction = window.MainComputerPaxScenarioInteraction;
+        paxInteraction?.setRuntime?.(scenarioRuntime || null);
+        const paxActivation = paxInteraction?.handleNavigation?.(navigation) || null;
+        if (!session) {
+          return {
+            activeSystemId: systemId,
+            strategicSession: false,
+            paxActivation
+          };
+        }
         const integration = window.MainComputerStrategicAITravelIntegration;
         if (integration?.handleNavigation) {
           return integration.handleNavigation(session, navigation);
@@ -1175,6 +1228,7 @@
       const project = candidate?.project || webglProjectState.project;
       const selectedObjectId = String(candidate?.selectedObjectId || "");
       ensureWebglStrategicSession(projectId, project);
+      ensureWebglSystemScenarioRuntime(projectId, project);
       gameSurfaceRuntime = window.MainComputerSceneViewer?.renderSceneSurface?.(surface, scene, {
         mode: "game-surface",
         label: `Vertex-built shuttle boarding-defense surface: ${scene.name || scene.id}`,
@@ -1207,6 +1261,9 @@
           }
         }
       }) || {scene};
+      window.MainComputerPaxScenarioInteraction?.setCharacterRuntime?.(
+        window.MainComputerCharacterAIRuntime?.current?.() || null
+      );
       if (window.MainComputerSceneStore?.saveScene) {
         window.MainComputerSceneStore.saveScene(scene, {source: "webgl-demo", notify: false});
         window.MainComputerSceneStore.setSelectedSceneId?.(String(scene.id || "default-empty-scene"), {source: "webgl-demo", notify: false});
@@ -1226,7 +1283,12 @@
           : webglProjectState.strategicSessionError
             ? ` • strategic unavailable: ${webglProjectState.strategicSessionError}`
             : "";
-        glStatus.textContent = `${projectId} / ${scene.name || scene.id} mirrored from ${source} (${count} ${count === 1 ? "entity" : "entities"})${dirtySuffix}${strategicSuffix}`;
+        const scenarioSuffix = webglProjectState.systemScenarioRuntime
+          ? ` • scenario ${webglProjectState.systemScenarioRuntime.activeScenarioContext().stageId || "standby"}`
+          : webglProjectState.systemScenarioError
+            ? ` • scenario unavailable: ${webglProjectState.systemScenarioError}`
+            : "";
+        glStatus.textContent = `${projectId} / ${scene.name || scene.id} mirrored from ${source} (${count} ${count === 1 ? "entity" : "entities"})${dirtySuffix}${strategicSuffix}${scenarioSuffix}`;
       }
       return gameSurfaceRuntime;
     }
@@ -1344,6 +1406,14 @@
       ensure: ensureWebglStrategicSession,
       current() {
         return webglProjectState.strategicSession;
+      },
+      projectState: webglProjectState
+    };
+
+    window.MainComputerWebglSystemScenario = {
+      ensure: ensureWebglSystemScenarioRuntime,
+      current() {
+        return webglProjectState.systemScenarioRuntime;
       },
       projectState: webglProjectState
     };

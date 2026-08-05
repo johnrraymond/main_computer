@@ -58,11 +58,12 @@ def project_application(
     else:
         source = repo / record.package_root / "application.js"
     package_root = repo / record.package_root
-    if profile.fixture_ir is None:
-        raise AppProjectionError(f"Application {app_id!r} has no compatibility IR binding.")
+    fixture_ir_path = None
+    if profile.fixture_ir is not None:
+        fixture_ir_path = repo / profile.fixture_ir if not profile.fixture_ir.is_absolute() else profile.fixture_ir
     raw = profile.project_candidate(
         dsl_source_path=source,
-        fixture_ir_path=repo / profile.fixture_ir if not profile.fixture_ir.is_absolute() else profile.fixture_ir,
+        fixture_ir_path=fixture_ir_path,
         live_package_root=package_root,
         candidate_root=repo / candidate_root if not candidate_root.is_absolute() else candidate_root,
         write_candidate=write_candidate,

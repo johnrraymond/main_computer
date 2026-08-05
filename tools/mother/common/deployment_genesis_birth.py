@@ -31,7 +31,14 @@ from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
 from .deployment_genesis_rollback import (
     MotherDeploymentGenesisRollbackError,
+    _cancel_active_deployments,
+    _stopped_status,
     verify_genesis_rollback_cycle_evidence,
+)
+from .deployment_node_remove import (
+    MotherDeploymentNodeRemoveError,
+    acknowledgement_for as node_removal_acknowledgement_for,
+    execute_node_removal,
 )
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
@@ -559,6 +566,8 @@ def build_genesis_birth_release(
     acknowledged_genesis_execution_sha256: str,
     genesis_rollback_verification_path: Path,
     selected_nodes: Iterable[str] = (),
+    superseded_service_uuid: str | None = None,
+    acknowledged_superseded_service_removal: str | None = None,
     expires_in_seconds: int = 300,
     created_at: str | None = None,
     now: datetime | None = None,
@@ -589,6 +598,32 @@ def build_genesis_birth_release(
         raise MotherDeploymentGenesisBirthError(
             "MOTHER_DEPLOY_GENESIS_BIRTH_SELECTION_MISMATCH", "birth proof may target only the initial node"
         )
+    removal_uuid: str | None = None
+    removal_acknowledgement: str | None = None
+    if superseded_service_uuid is not None or acknowledged_superseded_service_removal is not None:
+        if superseded_service_uuid is None or acknowledged_superseded_service_removal is None:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_SUPERSEDED_SERVICE_ACKNOWLEDGEMENT_REQUIRED",
+                "superseded service UUID and removal acknowledgement must be supplied together",
+            )
+        removal_uuid = _identifier(
+            superseded_service_uuid,
+            "superseded service UUID",
+        )
+        if removal_uuid == chain["service_uuid"]:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_SUPERSEDED_SERVICE_INVALID",
+                "superseded service UUID must differ from the birth target service UUID",
+            )
+        removal_acknowledgement = node_removal_acknowledgement_for(
+            chain["node"],
+            removal_uuid,
+        )
+        if acknowledged_superseded_service_removal != removal_acknowledgement:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_SUPERSEDED_SERVICE_ACKNOWLEDGEMENT_MISMATCH",
+                f"--acknowledge-superseded-service-removal must equal {removal_acknowledgement}",
+            )
     if type(expires_in_seconds) is not int or not _MIN_RELEASE_SECONDS <= expires_in_seconds <= _MAX_RELEASE_SECONDS:
         raise MotherDeploymentGenesisBirthError(
             "MOTHER_DEPLOY_GENESIS_BIRTH_TTL_INVALID",
@@ -663,11 +698,37 @@ def build_genesis_birth_release(
             "intent": "install-internal-only-super-node-proof-guardian-and-prove-birth",
             "acknowledged_genesis_execution_sha256": acknowledged,
             "requested_use_limit": 1,
+            "superseded_service_removal": (
+                {
+                    "authorized": True,
+                    "service_uuid": removal_uuid,
+                    "acknowledgement": removal_acknowledgement,
+                }
+                if removal_uuid is not None
+                else {
+                    "authorized": False,
+                    "service_uuid": None,
+                    "acknowledgement": None,
+                }
+            ),
         },
         "proof_plan": {
             "initial_node": chain["node"],
             "controller_id": chain["controller_id"],
             "service_uuid": chain["service_uuid"],
+            "superseded_service": (
+                {
+                    "service_uuid": removal_uuid,
+                    "expected_name": chain["node"],
+                    "removal": {
+                        "method": "DELETE",
+                        "endpoint": f"/api/v1/services/{urllib.parse.quote(removal_uuid, safe='')}",
+                        "allow_missing": True,
+                    },
+                }
+                if removal_uuid is not None
+                else None
+            ),
             "chain_id": chain["chain_id"],
             "genesis_sha256": chain["genesis_sha256"],
             "validator_set": [validator],
@@ -697,12 +758,66 @@ def build_genesis_birth_release(
                 "hub_public_endpoint_present": False,
             },
             "preconditions": [
+                *(
+                    [
+                        {
+                            "method": "GET",
+                            "endpoint": f"/api/v1/services/{urllib.parse.quote(removal_uuid, safe='')}",
+                            "assertion": "exact acknowledged superseded service is absent or belongs to the same node name before removal",
+                        }
+                    ]
+                    if removal_uuid is not None
+                    else []
+                ),
                 {"method": "GET", "endpoint": "/api/v1/services", "assertion": "exact A service exists"},
-                {"method": "GET", "endpoint": f"/api/v1/services/{service_uuid}", "assertion": "live Compose matches executed first-genesis Compose"},
+                {
+                    "method": "GET",
+                    "endpoint": f"/api/v1/services/{service_uuid}",
+                    "assertion": "live Compose matches executed first-genesis Compose or the exact released proof Compose",
+                },
             ],
+            "deployment_quiescence": {
+                "observe": {
+                    "method": "GET",
+                    "endpoint": "/api/v1/deployments",
+                    "assertion": "discover only active deployments exactly bound to the initial service",
+                },
+                "cancel": {
+                    "method": "POST",
+                    "endpoint_template": "/api/v1/deployments/{deployment_uuid}/cancel",
+                    "assertion": "cancel only discovered deployments exactly bound to the initial service",
+                },
+                "stop": {
+                    "method": "GET",
+                    "endpoint": f"/api/v1/services/{service_uuid}/stop",
+                    "assertion": "exact service is stopped before proof deployment",
+                },
+            },
             "mutations": [
-                {"ordinal": 1, "method": "PATCH", "endpoint": f"/api/v1/services/{service_uuid}", "canonical_request_body": body, "body_sha256": body_sha, "success_statuses": [200, 201, 202]},
-                {"ordinal": 2, "method": "GET", "endpoint": f"/api/v1/deploy?uuid={service_uuid}&force=true", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
+                {
+                    "ordinal": 1,
+                    "method": "GET",
+                    "endpoint": f"/api/v1/services/{service_uuid}/stop",
+                    "canonical_request_body": None,
+                    "body_sha256": None,
+                    "success_statuses": [200, 201, 202, 400],
+                },
+                {
+                    "ordinal": 2,
+                    "method": "PATCH",
+                    "endpoint": f"/api/v1/services/{service_uuid}",
+                    "canonical_request_body": body,
+                    "body_sha256": body_sha,
+                    "success_statuses": [200, 201, 202],
+                },
+                {
+                    "ordinal": 3,
+                    "method": "GET",
+                    "endpoint": f"/api/v1/deploy?uuid={service_uuid}&force=true",
+                    "canonical_request_body": None,
+                    "body_sha256": None,
+                    "success_statuses": [200, 201, 202],
+                },
             ],
             "proof": {
                 "transport": "coolify-control-plane-only",
@@ -729,10 +844,17 @@ def build_genesis_birth_release(
             "authorization_source": "explicit-operator-release",
         },
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": (
+                ["GET", "PATCH", "POST", "DELETE"]
+                if removal_uuid is not None
+                else ["GET", "PATCH", "POST"]
+            ),
+            "exact_superseded_service_removal_authorized": removal_uuid is not None,
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "host_rpc_mapping_removed": True,
+            "exact_active_deployments_cancelled_before_stop": True,
+            "exact_service_stopped_before_deploy": True,
             "hub_internal_only": True,
             "hub_local_rpc_required": True,
             "soft_replica_untouched": True,
@@ -798,21 +920,119 @@ def verify_genesis_birth_release(
     if not isinstance(plan, Mapping):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof plan is missing")
     node = _identifier(plan.get("initial_node"), "initial node")
+    service_uuid = _identifier(plan.get("service_uuid"), "service UUID")
     requested = tuple(_identifier(item, "selected node") for item in selected_nodes)
     if requested and requested != (node,):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_SELECTION_MISMATCH", "birth release targets only the initial node")
     proof = plan.get("proof")
     compose = plan.get("proof_compose")
     original = plan.get("original_compose")
-    if not isinstance(proof, Mapping) or not isinstance(compose, Mapping) or not isinstance(original, Mapping) or not all([
-        proof.get("manual_ssh_required") is False,
-        proof.get("public_endpoint_created") is False,
-        proof.get("guardian_internal_only") is True,
-        compose.get("guardian_public_ports") == [],
-        compose.get("guardian_domains") == [],
-        compose.get("host_rpc_mapping_present") is False,
-    ]):
+    quiescence = plan.get("deployment_quiescence")
+    mutations = plan.get("mutations")
+    release_policy = release.get("policy")
+    operator_release = release.get("operator_release")
+    superseded = plan.get("superseded_service")
+    superseded_uuid: str | None = None
+    if superseded is not None:
+        if not isinstance(superseded, Mapping):
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+                "superseded service plan is malformed",
+            )
+        superseded_uuid = _identifier(
+            superseded.get("service_uuid"),
+            "superseded service UUID",
+        )
+        removal = superseded.get("removal")
+        expected_acknowledgement = node_removal_acknowledgement_for(
+            node,
+            superseded_uuid,
+        )
+        operator_removal = (
+            operator_release.get("superseded_service_removal")
+            if isinstance(operator_release, Mapping)
+            else None
+        )
+        if (
+            superseded_uuid == service_uuid
+            or superseded.get("expected_name") != node
+            or not isinstance(removal, Mapping)
+            or removal.get("method") != "DELETE"
+            or removal.get("endpoint")
+            != f"/api/v1/services/{urllib.parse.quote(superseded_uuid, safe='')}"
+            or removal.get("allow_missing") is not True
+            or not isinstance(operator_removal, Mapping)
+            or operator_removal.get("authorized") is not True
+            or operator_removal.get("service_uuid") != superseded_uuid
+            or operator_removal.get("acknowledgement") != expected_acknowledgement
+        ):
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+                "superseded service removal authorization is invalid",
+            )
+    if (
+        not isinstance(proof, Mapping)
+        or not isinstance(compose, Mapping)
+        or not isinstance(original, Mapping)
+        or not isinstance(quiescence, Mapping)
+        or type(mutations) is not list
+        or not isinstance(release_policy, Mapping)
+        or not all([
+            proof.get("manual_ssh_required") is False,
+            proof.get("public_endpoint_created") is False,
+            proof.get("guardian_internal_only") is True,
+            compose.get("guardian_public_ports") == [],
+            compose.get("guardian_domains") == [],
+            compose.get("host_rpc_mapping_present") is False,
+        ])
+    ):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof exposure policy is invalid")
+    encoded_service_uuid = urllib.parse.quote(service_uuid, safe="")
+    observe = quiescence.get("observe")
+    cancel = quiescence.get("cancel")
+    stop = quiescence.get("stop")
+    expected_mutations = [
+        ("GET", f"/api/v1/services/{encoded_service_uuid}/stop"),
+        ("PATCH", f"/api/v1/services/{encoded_service_uuid}"),
+        ("GET", f"/api/v1/deploy?uuid={encoded_service_uuid}&force=true"),
+    ]
+    if (
+        not isinstance(observe, Mapping)
+        or observe.get("method") != "GET"
+        or observe.get("endpoint") != "/api/v1/deployments"
+        or not isinstance(cancel, Mapping)
+        or cancel.get("method") != "POST"
+        or cancel.get("endpoint_template")
+        != "/api/v1/deployments/{deployment_uuid}/cancel"
+        or not isinstance(stop, Mapping)
+        or stop.get("method") != "GET"
+        or stop.get("endpoint") != expected_mutations[0][1]
+        or release_policy.get("allowed_http_methods")
+        != (
+            ["GET", "PATCH", "POST", "DELETE"]
+            if superseded_uuid is not None
+            else ["GET", "PATCH", "POST"]
+        )
+        or release_policy.get("exact_superseded_service_removal_authorized")
+        is not (superseded_uuid is not None)
+        or release_policy.get("exact_active_deployments_cancelled_before_stop") is not True
+        or release_policy.get("exact_service_stopped_before_deploy") is not True
+        or len(mutations) != 3
+        or any(
+            not isinstance(item, Mapping)
+            or item.get("ordinal") != ordinal
+            or item.get("method") != expected[0]
+            or item.get("endpoint") != expected[1]
+            for ordinal, (item, expected) in enumerate(
+                zip(mutations, expected_mutations, strict=True),
+                start=1,
+            )
+        )
+    ):
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+            "proof deployment quiescence plan is invalid",
+        )
     canonical_text = compose.get("canonical_text")
     if type(canonical_text) is not str or hashlib.sha256(canonical_text.encode()).hexdigest() != compose.get("sha256"):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof Compose commitment is invalid")
@@ -877,7 +1097,9 @@ def verify_genesis_birth_release(
         "nodes": [node],
         "initial_node": node,
         "controller_id": plan["controller_id"],
-        "service_uuid": plan["service_uuid"],
+        "service_uuid": service_uuid,
+        "superseded_service_uuid": superseded_uuid,
+        "exact_superseded_service_removal_authorized": superseded_uuid is not None,
         "genesis_execution_sha256": chain["execution_sha256"],
         "genesis_sha256": plan["genesis_sha256"],
         "genesis_rollback_cycle_proven": True,
@@ -893,6 +1115,8 @@ def verify_genesis_birth_release(
         "manual_ssh_required": False,
         "public_endpoint_created": False,
         "guardian_internal_only": True,
+        "exact_active_deployments_cancelled_before_stop": True,
+        "exact_service_stopped_before_deploy": True,
         "transaction_apply_authorized": True,
         "live_execution_authorized": False,
         "remaining_blocker_codes": ["MOTHER_DEPLOY_GENESIS_BIRTH_EXECUTOR_NOT_RUN"],
@@ -1033,8 +1257,53 @@ def execute_genesis_birth_release(
     receipts: list[dict[str, Any]] = []
     preconditions: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    stop_observations: list[dict[str, Any]] = []
+    deployment_cancellation_receipts: list[dict[str, Any]] = []
+    superseded_service_removal: dict[str, Any] | None = None
     failure: dict[str, str] | None = None
+    deadline = time.monotonic() + max_wait_seconds
     try:
+        superseded_uuid = inspected.get("superseded_service_uuid")
+        if inspected.get("exact_superseded_service_removal_authorized") is True:
+            if type(superseded_uuid) is not str or not superseded_uuid:
+                raise MotherDeploymentGenesisBirthError(
+                    "MOTHER_DEPLOY_GENESIS_BIRTH_SUPERSEDED_SERVICE_INVALID",
+                    "authorized superseded service UUID is missing",
+                )
+            try:
+                superseded_service_removal = execute_node_removal(
+                    private_state,
+                    network=inspected["network"],
+                    controller_id=inspected["controller_id"],
+                    node=inspected["initial_node"],
+                    service_uuid=superseded_uuid,
+                    acknowledged_node_removal=node_removal_acknowledgement_for(
+                        inspected["initial_node"],
+                        superseded_uuid,
+                    ),
+                    allow_missing=True,
+                    timeout=timeout,
+                    max_wait_seconds=min(max(0.0, max_wait_seconds), 300.0),
+                    poll_interval_seconds=poll_interval_seconds,
+                    max_response_bytes=max_response_bytes,
+                    operation=operation,
+                    opener=opener,
+                )
+            except MotherDeploymentNodeRemoveError as exc:
+                raise MotherDeploymentGenesisBirthError(
+                    "MOTHER_DEPLOY_GENESIS_BIRTH_SUPERSEDED_SERVICE_REMOVAL_FAILED",
+                    str(exc),
+                ) from exc
+            if (
+                superseded_service_removal.get("status") != "pass"
+                or superseded_service_removal.get("clean") is not True
+                or superseded_service_removal.get("service_uuid") != superseded_uuid
+            ):
+                raise MotherDeploymentGenesisBirthError(
+                    "MOTHER_DEPLOY_GENESIS_BIRTH_SUPERSEDED_SERVICE_REMOVAL_FAILED",
+                    "superseded service removal did not produce a clean exact-service result",
+                )
+
         inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
         item = _service_item(inventory["payload"], inspected["service_uuid"], inspected["initial_node"])
         preconditions.append({"name": "initial-service-binding", "status": inventory["status"], "response_sha256": inventory["response_sha256"], "verified": inventory["ok"]})
@@ -1047,32 +1316,123 @@ def execute_genesis_birth_release(
                 "MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED",
                 f"Coolify service detail GET failed with HTTP {detail['status']}",
             )
-        original_binding = _match_service_compose(
-            detail["payload"],
-            plan["original_compose"]["canonical_text"],
-            "executed first-genesis Compose",
-        )
-        if original_binding["semantic_sha256"] != plan["original_compose"]["semantic_sha256"]:
+        compose_state = "executed-first-genesis"
+        try:
+            live_binding = _match_service_compose(
+                detail["payload"],
+                plan["original_compose"]["canonical_text"],
+                "executed first-genesis Compose",
+            )
+            expected_semantic_sha256 = plan["original_compose"]["semantic_sha256"]
+        except MotherDeploymentGenesisBirthError as exc:
+            if exc.code != "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_MISMATCH":
+                raise
+            live_binding = _match_service_compose(
+                detail["payload"],
+                plan["proof_compose"]["canonical_text"],
+                "already-installed internal proof Compose",
+            )
+            expected_semantic_sha256 = plan["proof_compose"]["semantic_sha256"]
+            compose_state = "proof-compose-already-installed"
+        if live_binding["semantic_sha256"] != expected_semantic_sha256:
             raise MotherDeploymentGenesisBirthError(
                 "MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED",
-                "released original Compose semantic commitment changed",
+                "released live Compose semantic commitment changed",
             )
         preconditions.append({
             "name": "executed-compose-binding",
             "status": detail["status"],
             "response_sha256": detail["response_sha256"],
             "verified": True,
-            "binding_mode": original_binding["mode"],
-            "semantic_sha256": original_binding["semantic_sha256"],
+            "compose_state": compose_state,
+            "binding_mode": live_binding["mode"],
+            "semantic_sha256": live_binding["semantic_sha256"],
         })
+
+        try:
+            deployment_cancellation_receipts = _cancel_active_deployments(
+                controller,
+                service_uuid=inspected["service_uuid"],
+                node=inspected["initial_node"],
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+        except MotherDeploymentGenesisRollbackError as exc:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_DEPLOYMENT_QUIESCE_FAILED",
+                str(exc),
+            ) from exc
+
         for mutation in plan["mutations"]:
             body = mutation.get("canonical_request_body")
-            response = _http(controller, mutation["method"], mutation["endpoint"], body=dict(body) if isinstance(body, Mapping) else None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-            ok = response["status"] in mutation["success_statuses"]
-            receipts.append({"ordinal": mutation["ordinal"], "method": mutation["method"], "endpoint": mutation["endpoint"], "body_sha256": mutation["body_sha256"], "status": "succeeded" if ok else "failed", "live_write_acknowledged": ok, "response": {k: response[k] for k in ("status", "response_sha256", "byte_length", "elapsed_ms")}})
-            if not ok:
-                raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_MUTATION_FAILED", f"Coolify rejected proof mutation {mutation['ordinal']}")
-        deadline = time.monotonic() + max_wait_seconds
+            response = _http(
+                controller,
+                mutation["method"],
+                mutation["endpoint"],
+                body=dict(body) if isinstance(body, Mapping) else None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            accepted = response["status"] in mutation["success_statuses"]
+            receipt = {
+                "ordinal": mutation["ordinal"],
+                "method": mutation["method"],
+                "endpoint": mutation["endpoint"],
+                "body_sha256": mutation["body_sha256"],
+                "status": "succeeded" if accepted else "failed",
+                "live_write_acknowledged": response["status"] in {200, 201, 202},
+                "response": {
+                    key: response[key]
+                    for key in ("status", "response_sha256", "byte_length", "elapsed_ms")
+                },
+            }
+            receipts.append(receipt)
+            if not accepted:
+                raise MotherDeploymentGenesisBirthError(
+                    "MOTHER_DEPLOY_GENESIS_BIRTH_MUTATION_FAILED",
+                    f"Coolify rejected proof mutation {mutation['ordinal']}",
+                )
+            if mutation["ordinal"] == 1:
+                stopped = False
+                while True:
+                    stop_inventory = _http(
+                        controller,
+                        "GET",
+                        "/api/v1/services",
+                        body=None,
+                        timeout=timeout,
+                        max_response_bytes=max_response_bytes,
+                        opener=opener,
+                    )
+                    if stop_inventory["ok"]:
+                        service = _service_item(
+                            stop_inventory["payload"],
+                            inspected["service_uuid"],
+                            inspected["initial_node"],
+                        )
+                        service_status = str(service.get("status") or "")
+                        stop_observations.append({
+                            "status": service_status,
+                            "response_sha256": stop_inventory["response_sha256"],
+                            "observed_at": _timestamp(),
+                        })
+                        if _stopped_status(service_status):
+                            stopped = True
+                            receipt["postcondition"] = {
+                                "service_stopped": True,
+                                "service_status": service_status,
+                            }
+                            break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(max(0.0, poll_interval_seconds))
+                if not stopped:
+                    raise MotherDeploymentGenesisBirthError(
+                        "MOTHER_DEPLOY_GENESIS_BIRTH_STOP_POSTCONDITION_FAILED",
+                        "exact service did not remain stopped before proof deployment",
+                    )
         healthy = False
         last_status = ""
         while True:
@@ -1118,7 +1478,7 @@ def execute_genesis_birth_release(
     except Exception:
         failure = {"code": "MOTHER_DEPLOY_GENESIS_BIRTH_UNEXPECTED_FAILURE", "message": "unexpected birth-proof failure"}
     completed = _timestamp()
-    complete = failure is None and len(receipts) == 2 and all(item["status"] == "succeeded" for item in receipts)
+    complete = failure is None and len(receipts) == 3 and all(item["status"] == "succeeded" for item in receipts)
     evidence = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -1155,8 +1515,21 @@ def execute_genesis_birth_release(
             "hub_local_rpc_verified": complete,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": (
+                ["GET", "PATCH", "POST", "DELETE"]
+                if inspected.get("exact_superseded_service_removal_authorized") is True
+                else ["GET", "PATCH", "POST"]
+            ),
+            "exact_superseded_service_removal_authorized": (
+                inspected.get("exact_superseded_service_removal_authorized") is True
+            ),
+            "exact_superseded_service_removed_before_deploy": (
+                superseded_service_removal is not None
+                and superseded_service_removal.get("status") == "pass"
+            ),
             "coolify_control_plane_only": True,
+            "exact_active_deployments_cancelled_before_stop": True,
+            "exact_service_stopped_before_deploy": True,
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "soft_replica_untouched": True,
@@ -1164,6 +1537,9 @@ def execute_genesis_birth_release(
             "automatic_rollback_performed": False,
         },
         "precondition_receipts": preconditions,
+        "superseded_service_removal": superseded_service_removal,
+        "deployment_cancellation_receipts": deployment_cancellation_receipts,
+        "stop_observations": stop_observations,
         "mutation_receipts": receipts,
         "health_observations": observations,
         "failure": failure,
@@ -1184,8 +1560,44 @@ def execute_genesis_birth_release(
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "soft_replica_untouched": True,
-            "network_access_performed": bool(preconditions or receipts or observations),
-            "live_mutation_performed": any(item.get("live_write_acknowledged") for item in receipts),
+            "superseded_service_uuid": inspected.get("superseded_service_uuid"),
+            "superseded_service_removal_authorized": (
+                inspected.get("exact_superseded_service_removal_authorized") is True
+            ),
+            "superseded_service_removed_before_deploy": (
+                superseded_service_removal is not None
+                and superseded_service_removal.get("status") == "pass"
+            ),
+            "observed_active_deployment_count": len(deployment_cancellation_receipts),
+            "cancelled_active_deployment_count": sum(
+                1
+                for item in deployment_cancellation_receipts
+                if item.get("request_accepted") is True
+            ),
+            "service_stopped_before_deploy": any(
+                item.get("postcondition", {}).get("service_stopped") is True
+                for item in receipts
+                if item.get("ordinal") == 1
+            ),
+            "network_access_performed": bool(
+                superseded_service_removal
+                or preconditions
+                or deployment_cancellation_receipts
+                or stop_observations
+                or receipts
+                or observations
+            ),
+            "live_mutation_performed": (
+                (
+                    superseded_service_removal is not None
+                    and superseded_service_removal.get("live_mutation_performed") is True
+                )
+                or any(
+                    item.get("request_accepted") is True
+                    for item in deployment_cancellation_receipts
+                )
+                or any(item.get("live_write_acknowledged") for item in receipts)
+            ),
             "complete": complete,
             "next_phase": "stage-soft-replica-configuration" if complete else "manual-review-required",
         },
@@ -1209,7 +1621,24 @@ def verify_genesis_birth_evidence(
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_EVIDENCE_INVALID", "birth evidence is not a clean current result")
     summary = evidence.get("summary")
     proof = evidence.get("proof")
-    if not isinstance(summary, Mapping) or not isinstance(proof, Mapping) or not all([
+    policy = evidence.get("policy")
+    mutation_receipts = evidence.get("mutation_receipts")
+    superseded_removal = evidence.get("superseded_service_removal")
+    removal_authorized = (
+        isinstance(policy, Mapping)
+        and policy.get("exact_superseded_service_removal_authorized") is True
+    )
+    expected_methods = (
+        ["GET", "PATCH", "POST", "DELETE"]
+        if removal_authorized
+        else ["GET", "PATCH", "POST"]
+    )
+    if (
+        not isinstance(summary, Mapping)
+        or not isinstance(proof, Mapping)
+        or not isinstance(policy, Mapping)
+        or type(mutation_receipts) is not list
+        or not all([
         summary.get("clean") is True,
         summary.get("initial_chain_proven") is True,
         summary.get("manual_ssh_required") is False,
@@ -1227,8 +1656,45 @@ def verify_genesis_birth_evidence(
         proof.get("hub_local_rpc_verified") is True,
         proof.get("hub_service") == _HUB_SERVICE,
         proof.get("hub_internal_port") == _HUB_PORT,
-        proof.get("hub_local_rpc_url") == f"http://{evidence.get('initial_node')}:8545",
-    ]):
+            summary.get("service_stopped_before_deploy") is True,
+            proof.get("hub_local_rpc_url") == f"http://{evidence.get('initial_node')}:8545",
+            policy.get("allowed_http_methods") == expected_methods,
+            policy.get("exact_active_deployments_cancelled_before_stop") is True,
+            policy.get("exact_service_stopped_before_deploy") is True,
+        ])
+        or len(mutation_receipts) != 3
+        or mutation_receipts[0].get("ordinal") != 1
+        or mutation_receipts[0].get("method") != "GET"
+        or not str(mutation_receipts[0].get("endpoint") or "").endswith("/stop")
+        or mutation_receipts[0].get("status") != "succeeded"
+        or mutation_receipts[0].get("postcondition", {}).get("service_stopped") is not True
+        or (
+            removal_authorized
+            and (
+                policy.get("exact_superseded_service_removed_before_deploy") is not True
+                or summary.get("superseded_service_removal_authorized") is not True
+                or summary.get("superseded_service_removed_before_deploy") is not True
+                or type(summary.get("superseded_service_uuid")) is not str
+                or not isinstance(superseded_removal, Mapping)
+                or superseded_removal.get("status") != "pass"
+                or superseded_removal.get("clean") is not True
+                or superseded_removal.get("service_uuid")
+                != summary.get("superseded_service_uuid")
+                or superseded_removal.get("node") != evidence.get("initial_node")
+                or superseded_removal.get("service_uuid") == evidence.get("service_uuid")
+            )
+        )
+        or (
+            not removal_authorized
+            and (
+                policy.get("exact_superseded_service_removed_before_deploy") is not False
+                or summary.get("superseded_service_removal_authorized") is not False
+                or summary.get("superseded_service_removed_before_deploy") is not False
+                or summary.get("superseded_service_uuid") is not None
+                or superseded_removal is not None
+            )
+        )
+    ):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_EVIDENCE_INVALID", "birth evidence assertions are incomplete")
     reference_now = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
     completed = _parse_utc(evidence.get("completed_at"), "completed_at")
@@ -1255,12 +1721,18 @@ def verify_genesis_birth_evidence(
         "manual_ssh_required": False,
         "public_endpoint_created": False,
         "guardian_internal_only": True,
+        "exact_active_deployments_cancelled_before_stop": True,
+        "exact_service_stopped_before_deploy": True,
         "hub_service": proof["hub_service"],
         "hub_internal_port": proof["hub_internal_port"],
         "hub_healthy": True,
         "hub_local_rpc_url": proof["hub_local_rpc_url"],
         "hub_local_rpc_verified": True,
         "complete_super_node_proven": True,
+        "superseded_service_uuid": summary.get("superseded_service_uuid"),
+        "superseded_service_removed_before_deploy": (
+            summary.get("superseded_service_removed_before_deploy") is True
+        ),
         "super_node_components": ["hub", "local-rpc", "besu", "qbft-validator", "foundationdb"],
         "soft_replica_untouched": True,
         "next_phase": "stage-soft-replica-configuration",

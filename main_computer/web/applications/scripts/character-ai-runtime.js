@@ -107,7 +107,13 @@
       .map((entry, index) => {
         const point = objectValue(entry);
         const id = stringValue(point.id || `cover-${index + 1}`);
-        return id ? {id, position: vector3(point.position)} : null;
+        return id
+          ? {
+            id,
+            position: vector3(point.position),
+            systemId: stringValue(point.systemId)
+          }
+          : null;
       })
       .filter(Boolean);
     const patrolRoutes = {};
@@ -138,7 +144,10 @@
             label: stringValue(vessel.label || id),
             faction: stringValue(vessel.faction),
             role: stringValue(vessel.role),
-            sceneObjectId: stringValue(vessel.sceneObjectId)
+            sceneObjectId: stringValue(vessel.sceneObjectId),
+            systemIds: [...new Set(
+              arrayValue(vessel.systemIds).map(stringValue).filter(Boolean)
+            )]
           }
           : null;
       })
@@ -185,6 +194,18 @@
         activePhases: [...new Set(
           arrayValue(character.activePhases).map(stringValue).filter(Boolean)
         )],
+        activeSystemIds: [...new Set(
+          (
+            arrayValue(character.activeSystemIds).length
+              ? arrayValue(character.activeSystemIds)
+              : [spawn.systemId]
+          ).map(stringValue).filter(Boolean)
+        )],
+        activeScenarioId: stringValue(character.activeScenarioId),
+        activeScenarioStages: [...new Set(
+          arrayValue(character.activeScenarioStages).map(stringValue).filter(Boolean)
+        )],
+        supportVesselId: stringValue(character.supportVesselId),
         warningText: stringValue(character.warningText),
         supportText: stringValue(character.supportText),
         memoryDefaults: clone(objectValue(character.memoryDefaults))
@@ -259,6 +280,14 @@
           && !definition.repairTargets[character.repairTargetId]) {
         errors.push(`${character.id} references an unknown repair target`);
       }
+      if (character.supportVesselId
+          && !vesselIds.has(character.supportVesselId)) {
+        errors.push(`${character.id} references an unknown support vessel`);
+      }
+      if (character.allowedActions.includes("call_support")
+          && !character.supportVesselId) {
+        errors.push(`${character.id} can call support but has no supportVesselId`);
+      }
     });
     return {ok: errors.length === 0, definition, errors, warnings};
   }
@@ -302,8 +331,13 @@
             && actor.attackReady && legal.has("attack_player")) {
           return {actionId: "attack_player", targetId: "player", rationale: "player in range"};
         }
-        if (player.visible && !recent.supportCalled && legal.has("call_support")) {
-          return {actionId: "call_support", targetId: "ship.raider-01", rationale: "contact established"};
+        if (player.visible && !recent.supportCalled && legal.has("call_support")
+            && actor.supportVesselId) {
+          return {
+            actionId: "call_support",
+            targetId: actor.supportVesselId,
+            rationale: "contact established"
+          };
         }
         if (player.visible && legal.has("move_to_player")) {
           return {actionId: "move_to_player", targetId: "player", rationale: "close distance"};
@@ -631,6 +665,41 @@
         .map(clone);
     }
 
+    characterIsActiveInWorld(characterId, worldValue = {}) {
+      const definition = this.characterDefinition(characterId);
+      const state = this.state.characters[stringValue(characterId)];
+      if (!definition || !state || state.status !== "active" || state.health <= 0) {
+        return false;
+      }
+      const world = objectValue(worldValue);
+      const phase = stringValue(world.phase);
+      if (definition.activePhases.length
+          && !definition.activePhases.includes(phase)) {
+        return false;
+      }
+      const currentSystemId = stringValue(objectValue(world.ship).currentSystemId);
+      if (definition.activeSystemIds.length
+          && !definition.activeSystemIds.includes(currentSystemId)) {
+        return false;
+      }
+      if (definition.activeScenarioId) {
+        const scenario = objectValue(world.scenario);
+        if (stringValue(scenario.id) !== definition.activeScenarioId) return false;
+        if (definition.activeScenarioStages.length
+            && !definition.activeScenarioStages.includes(stringValue(scenario.stageId))) {
+          return false;
+        }
+        if (stringValue(scenario.status) === "available") return false;
+      }
+      return true;
+    }
+
+    activeCharactersForWorld(worldValue = {}) {
+      return Object.values(this.state.characters)
+        .filter((character) => this.characterIsActiveInWorld(character.id, worldValue))
+        .map(clone);
+    }
+
     character(characterId) {
       const state = this.state.characters[stringValue(characterId)];
       return state ? clone(state) : null;
@@ -638,7 +707,7 @@
 
     nearestThreat(character, world) {
       const actor = objectValue(character);
-      const enemies = this.activeCharacters().filter((candidate) => (
+      const enemies = this.activeCharactersForWorld(world).filter((candidate) => (
         candidate.kind === "enemy"
         && candidate.faction !== actor.faction
       ));
@@ -659,11 +728,14 @@
 
     recommendedCover(character, world) {
       const playerPosition = vector3(objectValue(world.player).position);
-      const points = this.definition.coverPoints.map((point) => {
+      const currentSystemId = stringValue(objectValue(world.ship).currentSystemId);
+      const points = this.definition.coverPoints
+        .filter((point) => !point.systemId || point.systemId === currentSystemId)
+        .map((point) => {
         const actorDistance = distance2d(character.position, point.position);
         const playerDistance = distance2d(playerPosition, point.position);
-        return {...point, actorDistance, playerDistance};
-      });
+          return {...point, actorDistance, playerDistance};
+        });
       points.sort((left, right) => {
         const leftScore = left.actorDistance - Math.min(6, left.playerDistance) * 0.3;
         const rightScore = right.actorDistance - Math.min(6, right.playerDistance) * 0.3;
@@ -720,7 +792,10 @@
           attackRange: definition.stats.attackRange,
           dangerRange: definition.stats.dangerRange,
           attackReady: nowMs >= state.nextAttackAtMs,
-          spawnId: `${state.id}.spawn`
+          spawnId: `${state.id}.spawn`,
+          supportVesselId: definition.supportVesselId,
+          activeSystemIds: definition.activeSystemIds.slice(),
+          activeScenarioId: definition.activeScenarioId
         },
         player: {
           visible: playerVisible,
@@ -761,12 +836,17 @@
           power: stringValue(objectValue(world.ship).power || "unknown"),
           security: stringValue(objectValue(world.ship).security || "unknown"),
           currentSystemId: stringValue(objectValue(world.ship).currentSystemId),
-          knownVessels: this.definition.vessels.map((vessel) => ({
-            id: vessel.id,
-            label: vessel.label,
-            faction: vessel.faction,
-            role: vessel.role
-          }))
+          knownVessels: this.definition.vessels
+            .filter((vessel) => (
+              !vessel.systemIds.length
+              || vessel.systemIds.includes(stringValue(objectValue(world.ship).currentSystemId))
+            ))
+            .map((vessel) => ({
+              id: vessel.id,
+              label: vessel.label,
+              faction: vessel.faction,
+              role: vessel.role
+            }))
         },
         recent: {
           damagedRecently: nowMs - lastDamageAtMs <= 2500,
@@ -987,6 +1067,10 @@
         if (!this.definition.vessels.some((vessel) => vessel.id === result.targetId)) {
           return {ok: false, reason: "support-vessel-unknown"};
         }
+        if (definition.supportVesselId
+            && result.targetId !== definition.supportVesselId) {
+          return {ok: false, reason: "support-vessel-not-authorized"};
+        }
       }
       return {ok: true, reason: ""};
     }
@@ -1068,8 +1152,8 @@
         effects.push({
           type: "support-requested",
           characterId,
-          shipId: "ship.raider-01",
-          message: definition.supportText || "Raider boarder transmitted a support request."
+          shipId: result.targetId || definition.supportVesselId,
+          message: definition.supportText || `${state.label} transmitted a support request.`
         });
       } else if (actionId === "repair_power") {
         state.memory.repairedPower = true;
@@ -1173,8 +1257,7 @@
         .forEach((state) => {
           if (state.status !== "active" || state.health <= 0) return;
           const definition = this.characterDefinition(state.id);
-          if (definition.activePhases.length
-              && !definition.activePhases.includes(phase)) return;
+          if (!this.characterIsActiveInWorld(state.id, world)) return;
           if (clock < state.nextDecisionAtMs) return;
           const perception = this.buildPerception(state.id, world, clock);
           const selected = this.requestPolicy(state.id, perception, clock);

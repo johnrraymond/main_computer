@@ -34,6 +34,10 @@ REQUIRED_PACKAGE_FILES = (
     "tests/test_browser.py",
     "tests/test_truth.py",
 )
+SHADOW_PACKAGE_FILES = tuple(
+    path for path in REQUIRED_PACKAGE_FILES
+    if not path.startswith("src/")
+) + ("application.js",)
 REQUIRED_REQUIREMENTS_BLOCKS = {
     "mcel-app",
     "mcel-use-case",
@@ -239,7 +243,25 @@ def validate_package_files(
     errors: list[PackageValidationIssue] = []
     warnings: list[PackageValidationIssue] = []
 
-    for required_path in REQUIRED_PACKAGE_FILES:
+    manifest_probe: Mapping[str, Any] = {}
+    try:
+        raw_manifest_probe = json.loads(normalized.get("mcel.app.json", ""))
+        if isinstance(raw_manifest_probe, Mapping):
+            manifest_probe = raw_manifest_probe
+    except json.JSONDecodeError:
+        pass
+    authoring_probe = (
+        manifest_probe.get("authoring")
+        if isinstance(manifest_probe.get("authoring"), Mapping)
+        else {}
+    )
+    required_package_files = (
+        SHADOW_PACKAGE_FILES
+        if authoring_probe.get("status") == "dsl-shadow"
+        else REQUIRED_PACKAGE_FILES
+    )
+
+    for required_path in required_package_files:
         if required_path not in normalized:
             errors.append(
                 PackageValidationIssue(

@@ -21,7 +21,13 @@ contracts/observation.js
 mcel.generated.json
 ```
 
-Workbench also exposes `generated/mcel.application.normalized.json`. These bytes are computed, not durable application source.
+Workbench and the unpromoted Calculator shadow authority also expose `generated/mcel.application.normalized.json`. These bytes are computed, not durable application source.
+
+The Calculator shadow package is deliberately source-only. Package discovery compiles
+`mcel_apps/calculator/application.js` and overlays its generated contracts in memory,
+but browser runtime projection excludes it until host-bound mounting is implemented.
+The existing `/applications/calculator` HTML surface therefore remains the only live
+Calculator while the DSL authority can compile and project through generic tools.
 
 ## Virtual viewport mount and ephemeral browser build
 

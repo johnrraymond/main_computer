@@ -11,6 +11,23 @@
 
 The adapter is loaded after the domain-adapter registry and before truth-gate consumers. The live Calculator exposes `MainComputerCalculatorRuntime`; the adapter binds each semantic intent to one explicit runtime method.
 
+## Deterministic local core
+
+`calculator-core.js` is the DOM-independent implementation for local arithmetic
+and graph expression parsing. It is loaded before `calculator.js`, which keeps
+`window.MainComputerCalculatorRuntime` as the stable browser facade.
+
+The arithmetic grammar accepts only numeric literals, parentheses, unary signs,
+`+`, `-`, `*`, `/`, and `%`; `x` or `X` is normalized to multiplication for
+keypad compatibility. Parsing produces normalized-expression, grammar,
+parse-status, parser-code, token-count, and result evidence. Arbitrary
+JavaScript identifiers, member access, assignment, imports, and dynamic code
+execution are outside the grammar.
+
+The graph lane uses the same core boundary with its existing bounded function,
+constant, variable, range, and canvas behavior. Neither local lane performs a
+network, filesystem, repository, package, shell, or provider operation.
+
 ## Execution lanes
 
 | Lane | Intents | Authority |

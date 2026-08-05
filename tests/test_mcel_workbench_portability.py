@@ -147,6 +147,7 @@ def test_workbench_generated_candidate_drift_fails_closed(tmp_path: Path) -> Non
 
 
 def test_workbench_profile_is_registered_with_transactional_promotion_authority() -> None:
+    assert "calculator" in registered_app_authoring_profiles()
     assert "contract-workbench" in registered_app_authoring_profiles()
     profile = get_app_authoring_profile("contract-workbench")
     assert profile.promotion_supported is True

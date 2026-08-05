@@ -133,7 +133,11 @@ def _successful_reapplication(tmp_path: Path):
     )
 
 
-def _birth_release(tmp_path: Path):
+def _birth_release(
+    tmp_path: Path,
+    *,
+    superseded_service_uuid: str | None = None,
+):
     (
         paths,
         private_state,
@@ -149,6 +153,12 @@ def _birth_release(tmp_path: Path):
         acknowledged_genesis_execution_sha256=execution["result_artifact"]["sha256"],
         genesis_rollback_verification_path=rollback_evidence_path,
         selected_nodes=("mainneta-super1",),
+        superseded_service_uuid=superseded_service_uuid,
+        acknowledged_superseded_service_removal=(
+            f"REMOVE:mainneta-super1:{superseded_service_uuid}"
+            if superseded_service_uuid is not None
+            else None
+        ),
     )
     path, digest = write_genesis_birth_release(
         paths, release, operation=_operation("birth-release")
@@ -182,6 +192,9 @@ class _BirthOpener:
         normalized_readback: bool = False,
         wrapped_readback: bool = False,
         omit_compose: bool = False,
+        already_proof: bool = False,
+        active_deployment: bool = False,
+        superseded_service_uuid: str | None = None,
     ) -> None:
         self.original_compose = original_compose
         self.proof_compose = proof_compose
@@ -190,7 +203,12 @@ class _BirthOpener:
         self.wrapped_readback = wrapped_readback
         self.omit_compose = omit_compose
         self.requests: list[tuple[str, str]] = []
-        self.patched = False
+        self.patched = already_proof
+        self.stopped = False
+        self.deployed = False
+        self.active_deployment = active_deployment
+        self.superseded_service_uuid = superseded_service_uuid
+        self.superseded_service_present = superseded_service_uuid is not None
 
     def open(self, request, timeout: float):  # noqa: ANN001
         parsed = urlsplit(request.full_url)
@@ -201,8 +219,44 @@ class _BirthOpener:
         assert request.headers.get("Authorization") == f"Bearer {TOKEN_A}"
         assert timeout > 0
         if method == "GET" and path == "/api/v1/services":
-            status = "running:healthy" if self.patched and self.healthy else "running:unknown"
+            if self.deployed and self.healthy:
+                status = "running:healthy"
+            elif self.stopped:
+                status = "exited"
+            else:
+                status = "running:unknown"
             return _Response([{"uuid": "svc-mainneta-super1", "name": "mainneta-super1", "status": status}])
+        if method == "GET" and path == "/api/v1/deployments":
+            if not self.active_deployment:
+                return _Response([])
+            return _Response([
+                {
+                    "deployment_uuid": "active-proof-deployment",
+                    "service_uuid": "svc-mainneta-super1",
+                    "status": "in_progress",
+                }
+            ])
+        if method == "POST" and path == "/api/v1/deployments/active-proof-deployment/cancel":
+            assert self.active_deployment is True
+            self.active_deployment = False
+            return _Response({"message": "cancelled"}, status=200)
+        superseded_path = (
+            f"/api/v1/services/{self.superseded_service_uuid}"
+            if self.superseded_service_uuid is not None
+            else None
+        )
+        if superseded_path is not None and path == superseded_path:
+            if method == "GET":
+                if not self.superseded_service_present:
+                    return _Response({}, status=404)
+                return _Response({
+                    "uuid": self.superseded_service_uuid,
+                    "name": "mainneta-super1",
+                    "status": "running:healthy",
+                })
+            if method == "DELETE":
+                self.superseded_service_present = False
+                return _Response({}, status=204)
         if method == "GET" and path == "/api/v1/services/svc-mainneta-super1":
             compose = self.proof_compose if self.patched else self.original_compose
             if self.omit_compose:
@@ -212,13 +266,20 @@ class _BirthOpener:
                     compose = yaml.safe_dump(yaml.safe_load(compose), sort_keys=True)
                 payload = {"uuid": "svc-mainneta-super1", "name": "mainneta-super1", "docker_compose_raw": compose}
             return _Response({"service": payload} if self.wrapped_readback else payload)
+        if method == "GET" and path == "/api/v1/services/svc-mainneta-super1/stop":
+            self.stopped = True
+            return _Response({"message": "stopped"}, status=200)
         if method == "PATCH" and path == "/api/v1/services/svc-mainneta-super1":
+            assert self.stopped is True
             body = json.loads(request.data.decode("utf-8"))
             import base64
             assert base64.b64decode(body["docker_compose_raw"]).decode("utf-8") == self.proof_compose
             self.patched = True
             return _Response({"uuid": "svc-mainneta-super1"}, status=200)
         if method == "GET" and path == "/api/v1/deploy":
+            assert self.stopped is True
+            self.deployed = True
+            self.stopped = False
             return _Response({"deployment_uuid": "proof-deploy"}, status=200)
         raise AssertionError(f"unexpected request {method} {request.full_url}")
 
@@ -260,6 +321,36 @@ def test_birth_release_rejects_wrong_execution_digest(tmp_path: Path) -> None:
             selected_nodes=("mainneta-super1",),
         )
     assert caught.value.code == "MOTHER_DEPLOY_GENESIS_BIRTH_ACKNOWLEDGEMENT_MISMATCH"
+
+
+
+def test_birth_release_requires_exact_superseded_service_removal_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    (
+        paths,
+        private_state,
+        execution_path,
+        execution,
+        _,
+        rollback_evidence_path,
+    ) = _successful_reapplication(tmp_path)
+    with pytest.raises(
+        MotherDeploymentGenesisBirthError,
+        match="--acknowledge-superseded-service-removal must equal",
+    ):
+        build_genesis_birth_release(
+            paths,
+            private_state,
+            execution_path,
+            acknowledged_genesis_execution_sha256=execution[
+                "result_artifact"
+            ]["sha256"],
+            genesis_rollback_verification_path=rollback_evidence_path,
+            selected_nodes=("mainneta-super1",),
+            superseded_service_uuid="pc20bsxvq3ykjnpzque08l63",
+            acknowledged_superseded_service_removal="REMOVE:wrong:value",
+        )
 
 
 def test_birth_release_rejects_rolled_back_execution_without_reapplication(tmp_path: Path) -> None:
@@ -360,6 +451,9 @@ def test_birth_executor_proves_chain_through_internal_guardian_and_coolify(tmp_p
     assert result["proof"]["service_status"] == "running:healthy"
     assert result["proof"]["hub_service"] == "mother-super-node-hub"
     assert result["proof"]["hub_local_rpc_url"] == "http://mainneta-super1:8545"
+    assert result["summary"]["service_stopped_before_deploy"] is True
+    assert len(result["mutation_receipts"]) == 3
+    assert result["mutation_receipts"][0]["endpoint"].endswith("/stop")
     assert all("coolify-c" not in path for _, path in opener.requests)
     verified = verify_genesis_birth_evidence(
         paths,
@@ -379,6 +473,136 @@ def test_birth_executor_proves_chain_through_internal_guardian_and_coolify(tmp_p
         "foundationdb",
     ]
     assert verified["next_phase"] == "stage-soft-replica-configuration"
+
+
+def test_birth_executor_quiesces_active_deployment_and_recovers_partial_retry(
+    tmp_path: Path,
+) -> None:
+    paths, private_state, _, _, genesis_release, release_path, digest, release = _birth_release(tmp_path)
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        release["proof_plan"]["proof_compose"]["canonical_text"],
+        already_proof=True,
+        active_deployment=True,
+    )
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-partial-retry"),
+    )
+    assert result["status"] == "pass"
+    assert result["summary"]["observed_active_deployment_count"] == 1
+    assert result["summary"]["cancelled_active_deployment_count"] == 1
+    assert result["summary"]["service_stopped_before_deploy"] is True
+    assert result["deployment_cancellation_receipts"] == [
+        {
+            "deployment_uuid": "active-proof-deployment",
+            "status": "cancelled",
+            "request_accepted": True,
+            "response": {
+                "status": 200,
+                "response_sha256": result["deployment_cancellation_receipts"][0]["response"]["response_sha256"],
+                "elapsed_ms": result["deployment_cancellation_receipts"][0]["response"]["elapsed_ms"],
+            },
+            "observed_status": "in_progress",
+        }
+    ]
+    compose_receipt = next(
+        item
+        for item in result["precondition_receipts"]
+        if item["name"] == "executed-compose-binding"
+    )
+    assert compose_receipt["compose_state"] == "proof-compose-already-installed"
+    cancel_index = opener.requests.index(
+        ("POST", "/api/v1/deployments/active-proof-deployment/cancel")
+    )
+    stop_index = opener.requests.index(
+        ("GET", "/api/v1/services/svc-mainneta-super1/stop")
+    )
+    patch_index = opener.requests.index(
+        ("PATCH", "/api/v1/services/svc-mainneta-super1")
+    )
+    deploy_index = opener.requests.index(("GET", "/api/v1/deploy"))
+    assert cancel_index < stop_index < patch_index < deploy_index
+
+
+def test_birth_executor_removes_exact_acknowledged_superseded_service_before_deploy(
+    tmp_path: Path,
+) -> None:
+    superseded_uuid = "pc20bsxvq3ykjnpzque08l63"
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        genesis_release,
+        release_path,
+        digest,
+        release,
+    ) = _birth_release(
+        tmp_path,
+        superseded_service_uuid=superseded_uuid,
+    )
+    verified_release = verify_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        selected_nodes=("mainneta-super1",),
+    )
+    assert verified_release[
+        "exact_superseded_service_removal_authorized"
+    ] is True
+    assert verified_release["superseded_service_uuid"] == superseded_uuid
+
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        release["proof_plan"]["proof_compose"]["canonical_text"],
+        already_proof=True,
+        superseded_service_uuid=superseded_uuid,
+    )
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-remove-superseded-service"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["superseded_service_removal"]["status"] == "pass"
+    assert result["superseded_service_removal"]["service_uuid"] == superseded_uuid
+    assert result["superseded_service_removal"]["already_absent"] is False
+    assert result["summary"]["superseded_service_removed_before_deploy"] is True
+    assert result["policy"]["exact_superseded_service_removed_before_deploy"] is True
+    verified_evidence = verify_genesis_birth_evidence(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+        selected_nodes=("mainneta-super1",),
+    )
+    assert verified_evidence["superseded_service_uuid"] == superseded_uuid
+    assert verified_evidence["superseded_service_removed_before_deploy"] is True
+
+    stale_endpoint = f"/api/v1/services/{superseded_uuid}"
+    delete_index = opener.requests.index(("DELETE", stale_endpoint))
+    target_stop_index = opener.requests.index(
+        ("GET", "/api/v1/services/svc-mainneta-super1/stop")
+    )
+    target_patch_index = opener.requests.index(
+        ("PATCH", "/api/v1/services/svc-mainneta-super1")
+    )
+    target_deploy_index = opener.requests.index(("GET", "/api/v1/deploy"))
+    assert delete_index < target_stop_index < target_patch_index < target_deploy_index
 
 
 def test_birth_executor_accepts_semantically_equivalent_normalized_compose_readback(tmp_path: Path) -> None:

@@ -1,20 +1,17 @@
-    function normalizeCalculatorExpression(value) {
-      return value.replace(/[xX]/g, "*").replace(/[^\d+\-*/%.() ]/g, "");
+    function requireCalculatorCore() {
+      const core = window.MainComputerCalculatorCore;
+      if (!core) {
+        throw new Error("Calculator core is unavailable; reload the Applications viewport");
+      }
+      return core;
     }
+
+    function normalizeCalculatorExpression(value) {
+      return requireCalculatorCore().normalizeCalculatorExpression(value);
+    }
+
     function evaluateCalculatorArithmeticExpression(rawExpression) {
-      const expression = normalizeCalculatorExpression(String(rawExpression || "").trim());
-      if (!expression) {
-        return {ok: false, expression: "", error: "enter an expression"};
-      }
-      try {
-        const value = Function(`"use strict"; return (${expression});`)();
-        if (!Number.isFinite(value)) {
-          return {ok: false, expression, error: "result is not finite"};
-        }
-        return {ok: true, expression, value};
-      } catch {
-        return {ok: false, expression, error: "check expression"};
-      }
+      return requireCalculatorCore().evaluateCalculatorArithmeticExpression(rawExpression);
     }
     function extractCalculatorExpression(modelText) {
       const cleaned = String(modelText || "").replace(/```(?:javascript|js|text)?/gi, "").replace(/```/g, "");
@@ -36,7 +33,8 @@
         .replace(/\bf\s*\(\s*x\s*\)\s*=/gi, "")
         .replace(/\by\s*=/gi, "")
         .toLowerCase();
-      const allowedNames = Object.keys(calculatorGraphFunctions).concat(Object.keys(calculatorGraphConstants), ["x"]).join("|");
+      const core = requireCalculatorCore();
+      const allowedNames = Object.keys(core.graphFunctions).concat(Object.keys(core.graphConstants), ["x"]).join("|");
       const candidatePattern = new RegExp(`(?:${allowedNames}|[0-9.e+\\-*/%^(),\\s])+`, "g");
       const candidates = cleaned.match(candidatePattern) || [];
       const scored = candidates
@@ -79,25 +77,6 @@
         code: result.ok ? "" : "expression-invalid"
       };
     }
-    const calculatorGraphFunctions = {
-      sin: Math.sin,
-      cos: Math.cos,
-      tan: Math.tan,
-      asin: Math.asin,
-      acos: Math.acos,
-      atan: Math.atan,
-      sqrt: Math.sqrt,
-      abs: Math.abs,
-      log: Math.log10,
-      ln: Math.log,
-      exp: Math.exp,
-      floor: Math.floor,
-      ceil: Math.ceil,
-      round: Math.round,
-      min: Math.min,
-      max: Math.max
-    };
-    const calculatorGraphConstants = {pi: Math.PI, e: Math.E};
     let calculatorEmbeddedChatController = null;
 
     function calculatorEmbeddedChatContextSnapshot() {
@@ -207,122 +186,17 @@
     }
 
     function normalizeGraphExpression(value) {
-      return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
+      return requireCalculatorCore().normalizeGraphExpression(value);
     }
+
     function tokenizeCalculatorGraphExpression(expression) {
-      const tokens = [];
-      let index = 0;
-      while (index < expression.length) {
-        const char = expression[index];
-        if (/\d|\./.test(char)) {
-          const match = expression.slice(index).match(/^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/i);
-          if (!match) throw new Error("unsupported number");
-          tokens.push({type: "number", value: Number(match[0])});
-          index += match[0].length;
-        } else if (/[a-z]/.test(char)) {
-          const match = expression.slice(index).match(/^[a-z]+/);
-          const name = match[0];
-          if (name !== "x" && !(name in calculatorGraphConstants) && !(name in calculatorGraphFunctions)) {
-            throw new Error(`unsupported token: ${name}`);
-          }
-          tokens.push({type: "name", value: name});
-          index += name.length;
-        } else if ("+-*/%^(),".includes(char)) {
-          tokens.push({type: char, value: char});
-          index += 1;
-        } else {
-          throw new Error(`unsupported token: ${char}`);
-        }
-      }
-      return tokens;
+      return requireCalculatorCore().tokenizeCalculatorGraphExpression(expression).tokens;
     }
+
     function compileGraphExpression(rawExpression) {
-      const expression = normalizeGraphExpression(rawExpression);
-      if (!expression) throw new Error("enter f(x) before graphing");
-      const tokens = tokenizeCalculatorGraphExpression(expression);
-      let position = 0;
-      const peek = () => tokens[position];
-      const take = (type) => {
-        if (peek()?.type === type) {
-          position += 1;
-          return true;
-        }
-        return false;
-      };
-      const expect = (type) => {
-        if (!take(type)) throw new Error(`expected ${type}`);
-      };
-      function parseExpression() {
-        let node = parseTerm();
-        while (peek()?.type === "+" || peek()?.type === "-") {
-          const op = tokens[position++].type;
-          const right = parseTerm();
-          const left = node;
-          node = (x) => op === "+" ? left(x) + right(x) : left(x) - right(x);
-        }
-        return node;
-      }
-      function parseTerm() {
-        let node = parsePower();
-        while (peek()?.type === "*" || peek()?.type === "/" || peek()?.type === "%") {
-          const op = tokens[position++].type;
-          const right = parsePower();
-          const left = node;
-          node = (x) => op === "*" ? left(x) * right(x) : op === "/" ? left(x) / right(x) : left(x) % right(x);
-        }
-        return node;
-      }
-      function parsePower() {
-        const left = parseUnary();
-        if (take("^")) {
-          const right = parsePower();
-          return (x) => Math.pow(left(x), right(x));
-        }
-        return left;
-      }
-      function parseUnary() {
-        if (take("+")) return parseUnary();
-        if (take("-")) {
-          const node = parseUnary();
-          return (x) => -node(x);
-        }
-        return parsePrimary();
-      }
-      function parsePrimary() {
-        const token = peek();
-        if (!token) throw new Error("incomplete expression");
-        if (take("number")) {
-          const value = token.value;
-          if (!Number.isFinite(value)) throw new Error("invalid number");
-          return () => value;
-        }
-        if (token.type === "name") {
-          position += 1;
-          const name = token.value;
-          if (name === "x") return (x) => x;
-          if (name in calculatorGraphConstants) return () => calculatorGraphConstants[name];
-          expect("(");
-          const args = [];
-          if (!take(")")) {
-            do {
-              args.push(parseExpression());
-            } while (take(","));
-            expect(")");
-          }
-          const fn = calculatorGraphFunctions[name];
-          return (x) => fn(...args.map((arg) => arg(x)));
-        }
-        if (take("(")) {
-          const node = parseExpression();
-          expect(")");
-          return node;
-        }
-        throw new Error(`unexpected token: ${token.value}`);
-      }
-      const evaluator = parseExpression();
-      if (position !== tokens.length) throw new Error(`unexpected token: ${tokens[position].value}`);
-      return evaluator;
+      return requireCalculatorCore().compileGraphExpression(rawExpression);
     }
+
     function parseGraphRange() {
       const range = {
         xMin: Number(calculatorGraphXMin.value),

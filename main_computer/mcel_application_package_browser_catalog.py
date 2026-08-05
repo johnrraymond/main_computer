@@ -94,13 +94,18 @@ def build_browser_catalog_payload(
             "Repository application-package catalog must be valid before browser projection."
         )
 
+    # Publish only packages with validated browser runtime projections. Source-
+    # only shadow authorities remain discoverable to authoring tools but cannot
+    # appear as duplicate live applications.
     packages = [
-        _browser_record(record, runtime_projections.get(record.app_id or "", {}))
+        _browser_record(record, runtime_projections[record.app_id or ""])
         for record in catalog.packages
+        if (record.app_id or "") in runtime_projections
     ]
-    if any(not package["runtimeProjection"] for package in packages):
+    orphaned = sorted(set(runtime_projections) - {str(record.app_id or "") for record in catalog.packages})
+    if orphaned:
         raise InvalidRepositoryPackageCatalog(
-            "Every browser package record requires a validated runtime projection."
+            f"Runtime projections have no repository package authority: {orphaned!r}."
         )
     packages.sort(key=lambda package: package["appId"])
     return {

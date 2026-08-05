@@ -1,0 +1,18 @@
+{
+  "appId": "calculator",
+  "bindings": [
+    {
+      "acceptanceContractId": "calculator.acceptance.shadow-authority",
+      "id": "calculator.binding.shadow-authority",
+      "notes": "Compiles and projects the shadow Calculator authority without mounting or promoting it.",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py",
+        "tests/test_operations.py",
+        "tests/test_surface.py",
+        "tests/test_browser.py"
+      ]
+    }
+  ],
+  "schema": "mcel.package-acceptance-bindings.v1"
+}

@@ -9102,6 +9102,16 @@
           "faction": "faction.raider",
           "role": "boarding-carrier",
           "sceneObjectId": "alien-raider"
+        },
+        {
+          "id": "ship.pax.quiet-service-cutter-01",
+          "label": "Quiet Service Cutter",
+          "faction": "faction.pax.quiet-service",
+          "role": "covert-extraction-cutter",
+          "sceneObjectId": "alien-raider",
+          "systemIds": [
+            "system.pax"
+          ]
         }
       ],
       "coverPoints": [
@@ -9136,6 +9146,42 @@
             -0.55,
             -17.0
           ]
+        },
+        {
+          "id": "cover.pax.bridge-port",
+          "position": [
+            -3.6,
+            -0.55,
+            -35.4
+          ],
+          "systemId": "system.pax"
+        },
+        {
+          "id": "cover.pax.bridge-starboard",
+          "position": [
+            3.6,
+            -0.55,
+            -35.4
+          ],
+          "systemId": "system.pax"
+        },
+        {
+          "id": "cover.pax.bridge-access",
+          "position": [
+            0.0,
+            -0.55,
+            -29.2
+          ],
+          "systemId": "system.pax"
+        },
+        {
+          "id": "cover.pax.corridor",
+          "position": [
+            -2.2,
+            -0.55,
+            -24.8
+          ],
+          "systemId": "system.pax"
         }
       ],
       "patrolRoutes": {
@@ -9171,6 +9217,52 @@
             5.9,
             -0.55,
             -20.2
+          ]
+        ],
+        "patrol.pax.assassin-bridge": [
+          [
+            0.0,
+            -0.55,
+            -29.2
+          ],
+          [
+            -3.1,
+            -0.55,
+            -34.4
+          ],
+          [
+            3.1,
+            -0.55,
+            -34.4
+          ],
+          [
+            0.0,
+            -0.55,
+            -37.0
+          ]
+        ],
+        "patrol.pax.witness-cover": [
+          [
+            -3.4,
+            -0.55,
+            -35.2
+          ],
+          [
+            -2.8,
+            -0.55,
+            -33.8
+          ]
+        ],
+        "patrol.pax.marshal-bridge": [
+          [
+            3.4,
+            -0.55,
+            -35.2
+          ],
+          [
+            2.8,
+            -0.55,
+            -33.8
           ]
         ]
       },
@@ -9237,7 +9329,11 @@
             "supportCalled": false,
             "playerSeen": false,
             "lastDamageAtMs": null
-          }
+          },
+          "activeSystemIds": [
+            "system.solace-reach"
+          ],
+          "supportVesselId": "ship.raider-01"
         },
         {
           "id": "npc.engineering-officer-01",
@@ -9290,7 +9386,353 @@
             "protectedByPlayer": false,
             "repairedPower": false,
             "lastDamageAtMs": null
+          },
+          "activeSystemIds": [
+            "system.solace-reach"
+          ]
+        },
+        {
+          "id": "enemy.pax.quiet-service-assassin-01",
+          "label": "Quiet Service Assassin",
+          "kind": "enemy",
+          "faction": "faction.pax.quiet-service",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              0.0,
+              -0.55,
+              -29.2
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness"
+          ],
+          "supportVesselId": "ship.pax.quiet-service-cutter-01",
+          "stats": {
+            "maxHealth": 86,
+            "speed": 1.25,
+            "perceptionRange": 16,
+            "attackRange": 1.45,
+            "attackDamage": 10,
+            "attackCooldownMs": 850,
+            "retreatHealth": 22,
+            "dangerRange": 6.0
+          },
+          "allowedActions": [
+            "patrol",
+            "move_to_player",
+            "take_cover",
+            "attack_player",
+            "retreat",
+            "call_support"
+          ],
+          "goals": [
+            "goal.pax.silence-refugee-witness",
+            "goal.pax.preserve-quiet-service-deniability"
+          ],
+          "inventory": [
+            "weapon.pax.quiet-service-pulse-pistol"
+          ],
+          "patrolRouteId": "patrol.pax.assassin-bridge",
+          "supportText": "The Quiet Service assassin ordered extraction support from ship.pax.quiet-service-cutter-01.",
+          "memoryDefaults": {
+            "supportCalled": false,
+            "playerSeen": false,
+            "lastDamageAtMs": null
           }
+        },
+        {
+          "id": "npc.pax.refugee-witness-01",
+          "label": "Refugee Witness Nera Saye",
+          "kind": "npc",
+          "faction": "faction.pax.refugee-assembly",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              -3.4,
+              -0.55,
+              -35.2
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness",
+            "investigation",
+            "conference",
+            "resolved"
+          ],
+          "stats": {
+            "maxHealth": 78,
+            "speed": 0.82,
+            "perceptionRange": 14,
+            "attackRange": 0.25,
+            "attackDamage": 0,
+            "attackCooldownMs": 1000,
+            "retreatHealth": 24,
+            "dangerRange": 6.5
+          },
+          "allowedActions": [
+            "hold_position",
+            "warn_player",
+            "follow_player",
+            "take_cover"
+          ],
+          "goals": [
+            "goal.pax.survive-conference",
+            "goal.pax.authenticate-detention-testimony"
+          ],
+          "inventory": [
+            "evidence.pax.refugee-testimony"
+          ],
+          "patrolRouteId": "patrol.pax.witness-cover",
+          "warningText": "Nera Saye: That attacker is Quiet Service. The conference must see who sent them.",
+          "memoryDefaults": {
+            "warnedPlayer": false,
+            "protectedByPlayer": false,
+            "lastDamageAtMs": null
+          }
+        },
+        {
+          "id": "npc.pax.neutrality-marshal-01",
+          "label": "Neutrality Marshal Oren Vale",
+          "kind": "npc",
+          "faction": "faction.pax.neutrality-council",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              3.4,
+              -0.55,
+              -35.2
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness",
+            "investigation",
+            "conference",
+            "resolved"
+          ],
+          "stats": {
+            "maxHealth": 100,
+            "speed": 0.95,
+            "perceptionRange": 15,
+            "attackRange": 0.25,
+            "attackDamage": 0,
+            "attackCooldownMs": 1000,
+            "retreatHealth": 25,
+            "dangerRange": 6.0
+          },
+          "allowedActions": [
+            "hold_position",
+            "warn_player",
+            "follow_player",
+            "take_cover"
+          ],
+          "goals": [
+            "goal.pax.keep-delegates-alive",
+            "goal.pax.prevent-mass-internment"
+          ],
+          "inventory": [
+            "authority.pax.conference-security"
+          ],
+          "patrolRouteId": "patrol.pax.marshal-bridge",
+          "warningText": "Marshal Oren Vale: Defensive force only. If we turn this bridge into a firing line, the conference dies with the attacker.",
+          "memoryDefaults": {
+            "warnedPlayer": false,
+            "protectedByPlayer": false,
+            "lastDamageAtMs": null
+          }
+        }
+      ]
+    },
+    "systemScenarios": {
+      "schema": "game.systemScenarios.v1",
+      "definitionVersion": "game.systemScenarios.definition.v1",
+      "stateVersion": "game.systemScenarios.state.v1",
+      "enabled": true,
+      "receiptLimit": 128,
+      "scenarios": [
+        {
+          "id": "scenario.pax.neutrality-under-fire",
+          "systemId": "system.pax",
+          "title": "Neutrality Under Fire",
+          "subtitle": "Pax ceasefire conference and assassination crisis",
+          "description": "Protect a refugee witness, expose the weapon supply chain, and decide who defines the emergency before Pax turns neutrality into mass internment.",
+          "localRule": "Defensive force can protect the conference. Intimidation or unsupported accusations can collapse it.",
+          "startStageId": "arrival",
+          "protectionStageId": "protect-witness",
+          "investigationStageId": "investigation",
+          "conferenceStageId": "conference",
+          "resolvedStageId": "resolved",
+          "completionCharacterId": "enemy.pax.quiet-service-assassin-01",
+          "characterIds": [
+            "npc.pax.refugee-witness-01",
+            "npc.pax.neutrality-marshal-01",
+            "enemy.pax.quiet-service-assassin-01"
+          ],
+          "vesselIds": [
+            "ship.pax.quiet-service-cutter-01"
+          ],
+          "stages": [
+            {
+              "id": "arrival",
+              "label": "Arrival window",
+              "description": "The ceasefire delegations are docking while Pax authorities prepare emergency detention orders.",
+              "vesselStatus": "Quiet Service cutter shadowing the diplomatic orbital",
+              "nextStageId": "protect-witness"
+            },
+            {
+              "id": "protect-witness",
+              "label": "Protect the witness",
+              "description": "A Quiet Service assassin has breached the mother ship. Keep Nera Saye alive and stop the attack.",
+              "vesselStatus": "Quiet Service cutter jamming conference traffic",
+              "nextStageId": "investigation"
+            },
+            {
+              "id": "investigation",
+              "label": "Build the case",
+              "description": "Secure evidence before Pax authorities can blame the refugee flotillas.",
+              "vesselStatus": "Quiet Service cutter attempting extraction",
+              "nextStageId": "conference"
+            },
+            {
+              "id": "conference",
+              "label": "Emergency conference",
+              "description": "Present a defensible account and choose who receives power after the attack.",
+              "vesselStatus": "Quiet Service cutter held at the edge of the demilitarized lane",
+              "nextStageId": "resolved"
+            },
+            {
+              "id": "resolved",
+              "label": "Pax outcome",
+              "description": "The conference has adopted the player-backed emergency settlement.",
+              "vesselStatus": "Cutter disposition follows the conference resolution",
+              "nextStageId": ""
+            }
+          ],
+          "evidence": [
+            {
+              "id": "evidence.pax.weapon-serial",
+              "label": "Quiet Service weapon serial",
+              "description": "The assassin's weapon is traced to a sealed Neutrality Council procurement channel."
+            },
+            {
+              "id": "evidence.pax.refugee-testimony",
+              "label": "Nera Saye's testimony",
+              "description": "The refugee witness identifies the same weapons moving through a concealed detention transfer."
+            },
+            {
+              "id": "evidence.pax.cutter-signal",
+              "label": "Cutter extraction signal",
+              "description": "The mother ship records a coded extraction order from the Quiet Service cutter."
+            }
+          ],
+          "resolutions": [
+            {
+              "id": "resolution.pax.expose-quiet-service",
+              "label": "Expose the Quiet Service",
+              "description": "Publish the procurement chain and demand civilian arrests and oversight.",
+              "requirement": {
+                "allEvidenceIds": [
+                  "evidence.pax.weapon-serial",
+                  "evidence.pax.cutter-signal"
+                ],
+                "anyEvidenceCount": 2,
+                "maxIntimidationShots": 0
+              },
+              "vesselStatus": "Quiet Service cutter detained for inspection",
+              "consequences": {
+                "refugeeSupport": "strong",
+                "diplomaticAccess": "open-under-civilian-oversight",
+                "foodSupply": "stable",
+                "kestrelGateway": "independent-courier-monitoring",
+                "securityPosture": "quiet-service-dismantled"
+              }
+            },
+            {
+              "id": "resolution.pax.controlled-disclosure",
+              "label": "Preserve the conference through controlled disclosure",
+              "description": "Reveal enough evidence to stop internment while delaying public attribution.",
+              "requirement": {
+                "allEvidenceIds": [],
+                "anyEvidenceCount": 2,
+                "maxIntimidationShots": 1
+              },
+              "vesselStatus": "Quiet Service cutter released under monitored withdrawal",
+              "consequences": {
+                "refugeeSupport": "uneasy",
+                "diplomaticAccess": "conference-preserved",
+                "foodSupply": "stable",
+                "kestrelGateway": "restricted-but-open",
+                "securityPosture": "quiet-service-contained"
+              }
+            },
+            {
+              "id": "resolution.pax.refugee-power",
+              "label": "Give refugees formal power",
+              "description": "Use the complete case to seat refugee representatives with emergency oversight authority.",
+              "requirement": {
+                "allEvidenceIds": [
+                  "evidence.pax.weapon-serial",
+                  "evidence.pax.refugee-testimony",
+                  "evidence.pax.cutter-signal"
+                ],
+                "anyEvidenceCount": 3,
+                "maxIntimidationShots": 0
+              },
+              "vesselStatus": "Quiet Service cutter impounded by a joint civilian commission",
+              "consequences": {
+                "refugeeSupport": "allied",
+                "diplomaticAccess": "open-with-refugee-representation",
+                "foodSupply": "priority-relief",
+                "kestrelGateway": "civilian-courier-protected",
+                "securityPosture": "shared-civilian-oversight"
+              }
+            },
+            {
+              "id": "resolution.pax.withdraw",
+              "label": "Withdraw from the emergency",
+              "description": "Decline endorsement and leave Pax factions to settle the crisis.",
+              "requirement": {
+                "allEvidenceIds": [],
+                "anyEvidenceCount": 0,
+                "maxIntimidationShots": null
+              },
+              "vesselStatus": "Quiet Service cutter disappears into civilian traffic",
+              "consequences": {
+                "refugeeSupport": "lost",
+                "diplomaticAccess": "closed",
+                "foodSupply": "at-risk",
+                "kestrelGateway": "militarized",
+                "securityPosture": "emergency-internment"
+              }
+            }
+          ]
         }
       ]
     }

@@ -5904,12 +5904,21 @@
               security: String(this.shipState?.security || "unknown"),
               currentSystemId: String(navigation.currentSystemId || "")
             },
+            scenario: globalThis.MainComputerSystemScenarioRuntime
+              ?.current?.()
+              ?.activeScenarioContext?.()
+              || {id: "", status: "none", stageId: ""},
             canOccupy: (characterId, x, z) => this.canCharacterOccupy(characterId, x, z)
           };
         }
 
         visibleCharacterAICharacters() {
           if (!this.characterAIRuntime?.activeCharacters) return [];
+          if (this.characterAIRuntime.activeCharactersForWorld) {
+            return this.characterAIRuntime.activeCharactersForWorld(
+              this.characterAIWorld(this.lastFrameTime ?? 0)
+            );
+          }
           const phase = this.characterAIPhase();
           return this.characterAIRuntime.activeCharacters().filter((character) => {
             const definition = this.characterAIRuntime.characterDefinition?.(character.id);
@@ -6201,17 +6210,29 @@
           }
           const clock = Number.isFinite(nowMs) ? nowMs : 0;
           if (update.changed || snapshot.travelling && clock - this.lastNavigationUiAt >= 80) {
-            this.emitNavigationState(Boolean(update.changed), nowMs);
+            this.emitNavigationState(
+              Boolean(update.changed),
+              nowMs,
+              update.arrived ? "arrival-committed" : ""
+            );
           }
           return update;
         }
 
-        emitNavigationState(force = false, nowMs = this.lastFrameTime ?? performance.now()) {
+        emitNavigationState(
+          force = false,
+          nowMs = this.lastFrameTime ?? performance.now(),
+          changeReason = ""
+        ) {
           if (typeof this.onNavigationChanged !== "function") return;
           const clock = Number.isFinite(nowMs) ? nowMs : 0;
           if (!force && clock - this.lastNavigationUiAt < 80) return;
           this.lastNavigationUiAt = clock;
-          this.onNavigationChanged(this.navigationSnapshot(nowMs));
+          const navigation = this.navigationSnapshot(nowMs);
+          if (String(changeReason || "").trim()) {
+            navigation.changeReason = String(changeReason).trim();
+          }
+          this.onNavigationChanged(navigation);
         }
 
         openBridgeNavigationConsole(target, interaction) {
@@ -8474,6 +8495,25 @@
             expiresAtMs: nowMs + this.combat.phaser.beamDurationMs
           };
 
+          const scenarioRuntime = globalThis.MainComputerSystemScenarioRuntime?.current?.();
+          const scenarioContext = scenarioRuntime?.activeScenarioContext?.() || {};
+          if (scenarioContext.id && scenarioContext.status === "active") {
+            scenarioRuntime.recordPlayerAction?.(
+              scenarioContext.id,
+              "weapon-discharge",
+              {
+                targetId: hitCharacter?.id || hitAlien?.id || "",
+                targetKind: hitCharacter
+                  ? "character"
+                  : hitAlien
+                    ? "legacy-alien"
+                    : "none",
+                defensive: scenarioContext.stageId === "protect-witness"
+              },
+              {nowMs}
+            );
+          }
+
           if (hitAlien) {
             hitAlien.health -= this.combat.phaser.damage;
             hitAlien.hitFlashUntilMs = nowMs + 120;
@@ -8491,13 +8531,14 @@
             );
             if (before?.health > 0 && result.character?.health <= 0) {
               this.kills += 1;
-              const engineer = this.characterAIRuntime.character("npc.engineering-officer-01");
-              if (engineer?.status === "active") {
-                this.characterAIRuntime.markProtectedByPlayer(
-                  "npc.engineering-officer-01",
-                  nowMs
-                );
-              }
+              this.visibleCharacterAICharacters()
+                .filter((character) => character.kind === "npc")
+                .forEach((character) => {
+                  this.characterAIRuntime.markProtectedByPlayer(
+                    character.id,
+                    nowMs
+                  );
+                });
             }
             this.emitCharacterAIState(true);
           }

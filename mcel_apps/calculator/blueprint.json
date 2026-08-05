@@ -1,0 +1,51 @@
+{
+  "appId": "calculator",
+  "aspects": [
+    "overview",
+    "form",
+    "objects",
+    "workflows",
+    "layout",
+    "actions",
+    "capabilities",
+    "evidence",
+    "source",
+    "tests"
+  ],
+  "dominantObject": "Calculator expression and result context",
+  "label": "Calculator",
+  "layoutZones": [
+    "mode",
+    "arithmetic",
+    "graph",
+    "mathics",
+    "result-qa",
+    "chat"
+  ],
+  "presentationAuthority": {
+    "document": "main_computer/web/applications/apps/calculator.html",
+    "kind": "existing-host-html",
+    "runtimeFacade": "MainComputerCalculatorRuntime",
+    "style": "main_computer/web/applications/styles/calculator.css"
+  },
+  "purpose": "Describe the existing HTML Calculator through a shadow MCEL authority without copying its presentation source.",
+  "rootSelector": "#calculator-app",
+  "route": "/applications/calculator",
+  "schema": "mcel.application-blueprint.v1",
+  "sourceHints": [
+    "application.js",
+    "requirements.md",
+    "main_computer/web/applications/apps/calculator.html",
+    "main_computer/web/applications/styles/calculator.css",
+    "main_computer/web/applications/scripts/calculator.js"
+  ],
+  "testHints": [
+    "tests/mcel_acceptance_bindings.json",
+    "tests/test_acceptance.py",
+    "tests/test_package.py",
+    "tests/test_operations.py",
+    "tests/test_surface.py",
+    "tests/test_browser.py",
+    "tests/test_truth.py"
+  ]
+}

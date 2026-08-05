@@ -155,12 +155,14 @@ class _GenesisOpener:
         wrong_service: bool = False,
         restart_until_standby: bool = False,
         never_stops: bool = False,
+        active_deployment: bool = False,
         stop_statuses: tuple[int, ...] = (),
     ) -> None:
         self.fail_deploy = fail_deploy
         self.wrong_service = wrong_service
         self.restart_until_standby = restart_until_standby
         self.never_stops = never_stops
+        self.active_deployment = active_deployment
         self.stop_statuses = list(stop_statuses)
         self.requests: list[dict[str, Any]] = []
         self.current_compose = _standby_compose()
@@ -182,6 +184,22 @@ class _GenesisOpener:
         assert timeout > 0
         assert host == "coolify-a.invalid"
         assert request.headers.get("Authorization") == f"Bearer {TOKEN_A}"
+        if method == "GET" and path == "/api/v1/deployments":
+            deployments = []
+            if self.active_deployment:
+                deployments.append({
+                    "deployment_uuid": "deploy-a",
+                    "application_name": "mainneta-super1",
+                    "status": "in_progress",
+                })
+            return _Response(deployments)
+        if method == "POST" and path == "/api/v1/deployments/deploy-a/cancel":
+            self.active_deployment = False
+            return _Response({
+                "message": "Deployment cancelled successfully.",
+                "deployment_uuid": "deploy-a",
+                "status": "cancelled-by-user",
+            })
         if method == "GET" and path == "/api/v1/services":
             name = "wrong-name" if self.wrong_service else "mainneta-super1"
             return _Response([{
@@ -209,7 +227,7 @@ class _GenesisOpener:
         if method == "GET" and path == "/api/v1/services/svc-mainneta-super1/stop":
             response_status = self.stop_statuses.pop(0) if self.stop_statuses else 200
             if response_status in {200, 201, 202}:
-                if self.never_stops or (
+                if self.never_stops or self.active_deployment or (
                     self.restart_until_standby and self.current_compose != _standby_compose()
                 ):
                     self.status = "running:healthy"
@@ -643,6 +661,73 @@ def test_genesis_rollback_tolerates_stop_http_400_only_with_verified_final_state
     if stop_statuses[1] == 400:
         assert restore_receipt["post_restore_stop_response"]["status"] == 400
         assert restore_receipt["post_restore_stop_response"]["request_accepted"] is False
+
+
+def test_genesis_rollback_cancels_exact_active_deployment_before_stopping(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    paths, private_state, _, _, _, release_path, release_digest, _ = _genesis_release(
+        tmp_path, now=now
+    )
+    live = _GenesisOpener(active_deployment=True)
+    execution = execute_released_genesis(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        opener=live,
+        operation=_operation("genesis-rollback-active-deployment-execution"),
+    )
+    assert execution["status"] == "pass"
+
+    # Model Coolify having already accepted the restored standby Compose while the
+    # original deployment worker still owns the service and keeps it running.
+    live.current_compose = _standby_compose()
+    live.status = "running:healthy"
+
+    rolled_back = execute_genesis_mutation_rollback(
+        paths,
+        private_state,
+        Path(execution["result_artifact"]["path"]),
+        acknowledged_execution_sha256=execution["result_artifact"]["sha256"],
+        opener=live,
+        max_wait_seconds=1.0,
+        poll_interval_seconds=0.0,
+        operation=_operation("genesis-rollback-active-deployment"),
+    )
+
+    assert rolled_back["status"] == "pass"
+    assert rolled_back["summary"]["observed_active_deployment_count"] == 1
+    assert rolled_back["summary"]["cancelled_active_deployment_count"] == 1
+    assert rolled_back["summary"]["service_stopped"] is True
+    assert rolled_back["summary"]["standby_compose_restored"] is True
+    assert rolled_back["summary"]["identity_keys_preserved"] is True
+    cancellation = rolled_back["deployment_cancellation_receipts"]
+    assert len(cancellation) == 1
+    assert cancellation[0]["deployment_uuid"] == "deploy-a"
+    assert cancellation[0]["status"] == "cancelled"
+    assert cancellation[0]["request_accepted"] is True
+    assert cancellation[0]["observed_status"] == "in_progress"
+    assert cancellation[0]["response"]["status"] == 200
+    cancel_index = live.requests.index(
+        {
+            "method": "POST",
+            "host": "coolify-a.invalid",
+            "path": "/api/v1/deployments/deploy-a/cancel",
+            "query": {},
+            "body": None,
+        }
+    )
+    stop_index = next(
+        index
+        for index, request in enumerate(live.requests)
+        if index > cancel_index
+        and request["method"] == "GET"
+        and request["path"] == "/api/v1/services/svc-mainneta-super1/stop"
+    )
+    assert cancel_index < stop_index
+    assert live.status == "exited"
 
 
 def test_genesis_rollback_reports_accepted_mutations_when_stop_never_stabilizes(

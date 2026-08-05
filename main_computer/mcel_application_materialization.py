@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from main_computer.mcel_counter_candidate_projection import generate_counter_contracts
 from main_computer.mcel_dsl_compiler import compile_dsl_application
+from main_computer.mcel_projection_profiles.calculator_shadow_v1 import project_calculator_ir
 from main_computer.mcel_projection_profiles.contract_workbench_v1 import project_workbench_ir
 
 GENERATED_DIRECTORY_NAMES = frozenset({"contracts", "generated"})
@@ -34,15 +35,17 @@ def materialize_generated_package_files(
     package_path: Path,
     physical_text_files: Mapping[str, str],
 ) -> dict[str, bytes]:
-    """Return generated package files for a promoted DSL package.
+    """Return generated package files for a DSL-authored logical package.
 
-    Legacy packages return an empty mapping. The materialized file bytes are
+    Legacy packages return an empty mapping. Promoted and explicitly shadowed
+    DSL packages are projected in memory; the materialized file bytes are
     deterministic and are used as a virtual overlay by package discovery.
     """
 
     manifest = _manifest(physical_text_files)
     authoring = manifest.get("authoring") if isinstance(manifest.get("authoring"), Mapping) else {}
-    if authoring.get("status") != "dsl-authoritative":
+    authoring_status = str(authoring.get("status") or "")
+    if authoring_status not in {"dsl-authoritative", "dsl-shadow"}:
         return {}
     app_id = str(manifest.get("appId") or package_path.name)
     source_rel = str(authoring.get("source") or "application.js")
@@ -77,6 +80,21 @@ def materialize_generated_package_files(
             source_binding_fingerprint=_WORKBENCH_SOURCE_BINDING,
             generated=generated,
             version="mcel-app-promotion-rehearsal-wave12",
+        )
+        return generated
+
+    if app_id == "calculator":
+        if authoring_status != "dsl-shadow":
+            raise ValueError("Calculator projection is registered only for the unpromoted DSL shadow package.")
+        projection = project_calculator_ir(compiled.normalized_ir)
+        generated = dict(projection.files)
+        generated["mcel.generated.json"] = _ownership_bytes(
+            app_id=app_id,
+            generator=projection.profile_id,
+            semantic_fingerprint=str(compiled.semantic_fingerprint),
+            source_binding_fingerprint=str(compiled.source_binding_fingerprint),
+            generated=generated,
+            version="mcel-calculator-shadow-projection-v1",
         )
         return generated
 

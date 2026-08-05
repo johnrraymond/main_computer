@@ -794,6 +794,14 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="proof that the same genesis was applied, rolled back, verified, and then reapplied",
     )
+    release_birth.add_argument(
+        "--superseded-service-uuid",
+        help="exact older Coolify service UUID to remove before birth deployment",
+    )
+    release_birth.add_argument(
+        "--acknowledge-superseded-service-removal",
+        help="must equal REMOVE:<node>:<service_uuid> when superseded removal is requested",
+    )
     release_birth.add_argument("--expires-in-seconds", type=int, default=300)
     release_birth.add_argument("--created-at")
     release_birth.add_argument("--write-release", action="store_true")
@@ -2154,6 +2162,10 @@ def _cmd_release_genesis_birth(args: argparse.Namespace, private_state) -> int:
         acknowledged_genesis_execution_sha256=args.acknowledge_genesis_execution_sha256,
         genesis_rollback_verification_path=Path(args.genesis_rollback_verification),
         selected_nodes=_selected_nodes(args.node),
+        superseded_service_uuid=args.superseded_service_uuid,
+        acknowledged_superseded_service_removal=(
+            args.acknowledge_superseded_service_removal
+        ),
         expires_in_seconds=args.expires_in_seconds,
         created_at=args.created_at,
     )

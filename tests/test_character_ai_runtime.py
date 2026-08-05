@@ -38,7 +38,7 @@ class CharacterAIRuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         return json.loads(result.stdout)
 
-    def test_project_definition_has_two_stable_characters_and_raider_ship(self) -> None:
+    def test_project_definition_has_stable_solace_and_pax_characters(self) -> None:
         project = json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
         definition = project["metadata"]["characterAI"]
         self.assertEqual(definition["schema"], "game.characterAI.v1")
@@ -57,6 +57,9 @@ class CharacterAIRuntimeTests(unittest.TestCase):
             {
                 "enemy.raider-boarder-01",
                 "npc.engineering-officer-01",
+                "enemy.pax.quiet-service-assassin-01",
+                "npc.pax.refugee-witness-01",
+                "npc.pax.neutrality-marshal-01",
             },
         )
         self.assertEqual(
@@ -79,9 +82,31 @@ class CharacterAIRuntimeTests(unittest.TestCase):
             characters["npc.engineering-officer-01"]["activePhases"],
             ["mother-ship"],
         )
+        self.assertEqual(
+            characters["enemy.raider-boarder-01"]["activeSystemIds"],
+            ["system.solace-reach"],
+        )
+        self.assertEqual(
+            characters["enemy.pax.quiet-service-assassin-01"]["supportVesselId"],
+            "ship.pax.quiet-service-cutter-01",
+        )
+        self.assertEqual(
+            characters["npc.pax.refugee-witness-01"]["activeScenarioId"],
+            "scenario.pax.neutrality-under-fire",
+        )
+        self.assertIn(
+            "protect-witness",
+            characters["npc.pax.neutrality-marshal-01"]["activeScenarioStages"],
+        )
 
         vessels = {item["id"]: item for item in definition["vessels"]}
-        self.assertEqual(set(vessels), {"ship.raider-01"})
+        self.assertEqual(
+            set(vessels),
+            {
+                "ship.raider-01",
+                "ship.pax.quiet-service-cutter-01",
+            },
+        )
         self.assertEqual(
             vessels["ship.raider-01"]["sceneObjectId"],
             "alien-raider",

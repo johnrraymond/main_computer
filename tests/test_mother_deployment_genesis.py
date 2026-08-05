@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import socket
@@ -9,6 +10,7 @@ import pytest
 import yaml
 
 from tools import mother_deploy
+from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_genesis import (
     MotherDeploymentGenesisError,
     build_deployment_genesis_transaction,
@@ -123,6 +125,93 @@ def _identity_execution(tmp_path: Path):
         Path(result["result_artifact"]["path"]),
         verification_path,
     )
+
+
+def _single_node_identity_execution(tmp_path: Path):
+    paths, private_state, execution_path, rollback_verification_path = _identity_execution(tmp_path)
+
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    execution["nodes"] = ["mainneta-super1"]
+    execution["mutation_receipts"] = [
+        item
+        for item in execution["mutation_receipts"]
+        if item["node"] == "mainneta-super1"
+    ]
+    for key in (
+        "planned_mutation_count",
+        "attempted_mutation_count",
+        "succeeded_mutation_count",
+        "commitment_verified_count",
+    ):
+        execution["summary"][key] = 2
+    profile_sha256 = "1" * 64
+    execution["identity_profile_sha256"] = profile_sha256
+    single_execution_path = execution_path.with_name("single-node-identity-execution.json")
+    single_execution_path.write_bytes(canonical_json(execution))
+
+    verification = json.loads(rollback_verification_path.read_text(encoding="utf-8"))
+    verification["nodes"] = ["mainneta-super1"]
+    verification["identity_profile_sha256"] = profile_sha256
+    verification["checks"] = [
+        item
+        for item in verification["checks"]
+        if item["node"] == "mainneta-super1"
+    ]
+    verification["summary"]["expected_absent_count"] = 2
+    verification["summary"]["absent_count"] = 2
+    semantic = dict(verification)
+    semantic.pop("identity_rollback_verification_sha256", None)
+    verification["identity_rollback_verification_sha256"] = hashlib.sha256(
+        canonical_json(semantic)
+    ).hexdigest()
+    single_verification_path = rollback_verification_path.with_name(
+        "single-node-identity-rollback-verification.json"
+    )
+    single_verification_path.write_bytes(canonical_json(verification))
+    return paths, private_state, single_execution_path, single_verification_path
+
+
+def test_genesis_compiler_accepts_one_node_two_commitment_identity_execution(
+    tmp_path: Path,
+) -> None:
+    paths, private_state, execution_path, rollback_verification_path = (
+        _single_node_identity_execution(tmp_path)
+    )
+
+    transaction = build_deployment_genesis_transaction(
+        paths,
+        private_state,
+        execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
+        selected_nodes=("mainneta-super1",),
+        created_at="2026-08-05T20:18:00Z",
+    )
+
+    assert transaction["summary"]["target_count"] == 1
+    assert transaction["summary"]["identity_commitment_count"] == 2
+    assert transaction["summary"]["replica_admission_count"] == 0
+    assert transaction["service_targets"][0]["node"] == "mainneta-super1"
+    assert set(transaction["service_targets"][0]["identity_commitments"]) == {
+        "MC_MOTHER_VALIDATOR_PRIVATE_KEY",
+        "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY",
+    }
+    assert transaction["replica_admissions"] == []
+
+    transaction_path, digest = write_deployment_genesis_transaction(
+        paths,
+        transaction,
+        operation=_operation("single-node-genesis-transaction-write"),
+    )
+    verified = verify_deployment_genesis_transaction(
+        paths,
+        private_state,
+        transaction_path,
+        selected_nodes=("mainneta-super1",),
+    )
+    assert verified["clean"] is True
+    assert verified["genesis_transaction_sha256"] == digest
+    assert verified["identity_commitment_count"] == 2
+    assert verified["replica_admission_count"] == 0
 
 
 def test_genesis_compiler_builds_one_initial_validator_and_one_soft_admission(

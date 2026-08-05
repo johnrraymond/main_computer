@@ -871,9 +871,11 @@ def build_report(
             ),
         },
         "bindingCatalog": dict(binding_metadata),
-        "applicationPackages": list(
-            ((binding_metadata.get("packages") or {}).get("packages") or [])
-        ),
+        "applicationPackages": [
+            dict(package)
+            for package in ((binding_metadata.get("packages") or {}).get("packages") or [])
+            if not selected_apps or safe_string(package.get("appId")) in selected_apps
+        ],
         "summary": {
             "appCount": len(results),
             "appStatusCounts": dict(sorted(app_status_counts.items())),

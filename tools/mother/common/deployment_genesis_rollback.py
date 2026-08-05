@@ -1,8 +1,9 @@
 """Rollback and crash recovery for first-genesis installation.
 
-The rollback restores the exact Mother standby Compose that was verified before
-the first genesis PATCH, leaves the reserved identity variables intact, and
-proves that the initial service is stopped.  Coolify-managed persistent volumes
+The rollback cancels exact active Coolify deployments for the initial service,
+restores the exact Mother standby Compose that was verified before the first
+genesis PATCH, leaves the reserved identity variables intact, and proves that
+the initial service is stopped.  Coolify-managed persistent volumes
 are not deleted because the public service API exposes no volume-delete
 operation; every result reports that limitation explicitly.
 """
@@ -318,6 +319,105 @@ def _service_record(payload: Any, *, service_uuid: str, node: str) -> Mapping[st
             "Coolify does not expose the exact initial-node service binding",
         )
     return matches[0]
+
+
+def _active_deployment_records(
+    payload: Any,
+    *,
+    service_uuid: str,
+    node: str,
+) -> list[dict[str, str]]:
+    """Return sanitized currently-running deployment bindings for the exact service."""
+
+    matches: dict[str, dict[str, str]] = {}
+    for item in _items(payload):
+        deployment_uuid = _item_text(item, "deployment_uuid", "uuid", "id")
+        if not deployment_uuid:
+            continue
+        exact_ids = {
+            _item_text(item, "application_id"),
+            _item_text(item, "application_uuid"),
+            _item_text(item, "resource_uuid"),
+            _item_text(item, "service_uuid"),
+        }
+        exact_names = {
+            _item_text(item, "application_name"),
+            _item_text(item, "name"),
+        }
+        if service_uuid not in exact_ids and node not in exact_names:
+            continue
+        safe_uuid = _identifier(deployment_uuid, "deployment UUID")
+        record = {"deployment_uuid": safe_uuid}
+        status = _item_text(item, "status")
+        if status:
+            record["status"] = status[:128]
+        matches[safe_uuid] = record
+    return [matches[key] for key in sorted(matches)]
+
+
+def _cancel_active_deployments(
+    controller: Any,
+    *,
+    service_uuid: str,
+    node: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> list[dict[str, Any]]:
+    observed = _http_json(
+        controller,
+        "GET",
+        "/api/v1/deployments",
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if not observed["ok"]:
+        raise MotherDeploymentGenesisRollbackError(
+            "MOTHER_DEPLOY_GENESIS_ROLLBACK_DEPLOYMENT_OBSERVATION_FAILED",
+            f"Coolify active deployment GET failed with HTTP {observed['status']}",
+        )
+
+    receipts: list[dict[str, Any]] = []
+    for binding in _active_deployment_records(
+        observed["payload"],
+        service_uuid=service_uuid,
+        node=node,
+    ):
+        deployment_uuid = binding["deployment_uuid"]
+        cancelled = _http_json(
+            controller,
+            "POST",
+            f"/api/v1/deployments/{deployment_uuid}/cancel",
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if cancelled["status"] not in {200, 201, 202, 400}:
+            raise MotherDeploymentGenesisRollbackError(
+                "MOTHER_DEPLOY_GENESIS_ROLLBACK_DEPLOYMENT_CANCEL_FAILED",
+                (
+                    f"Coolify rejected cancellation of deployment "
+                    f"{deployment_uuid!r} with HTTP {cancelled['status']}"
+                ),
+            )
+        request_accepted = cancelled["status"] in {200, 201, 202}
+        receipt: dict[str, Any] = {
+            "deployment_uuid": deployment_uuid,
+            "status": "cancelled" if request_accepted else "already-terminal",
+            "request_accepted": request_accepted,
+            "response": {
+                "status": cancelled["status"],
+                "response_sha256": cancelled["response_sha256"],
+                "elapsed_ms": cancelled["elapsed_ms"],
+            },
+        }
+        if "status" in binding:
+            receipt["observed_status"] = binding["status"]
+        receipts.append(receipt)
+    return receipts
 
 
 def _stopped_status(value: str) -> bool:
@@ -757,12 +857,26 @@ def execute_genesis_journal_rollback(
     service_uuid = inspected["service_uuid"]
     started_at = _utc_now()
     receipts: list[dict[str, Any]] = []
+    deployment_cancellation_receipts: list[dict[str, Any]] = []
     failure: dict[str, Any] | None = None
     live_mutation_performed = False
     service_stopped = False
     standby_compose_restored = False
     identity_keys_preserved = False
     try:
+        deployment_cancellation_receipts = _cancel_active_deployments(
+            controller,
+            service_uuid=service_uuid,
+            node=node,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        live_mutation_performed = any(
+            item.get("request_accepted") is True
+            for item in deployment_cancellation_receipts
+        )
+
         detail = _http_json(
             controller, "GET", f"/api/v1/services/{service_uuid}", body=None,
             timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
@@ -808,7 +922,7 @@ def execute_genesis_journal_rollback(
                     f"Coolify rejected the stop request with HTTP {stop['status']}",
                 )
             stop_accepted = stop["status"] in {200, 201, 202}
-            live_mutation_performed = stop_accepted
+            live_mutation_performed = live_mutation_performed or stop_accepted
             stop_receipt = {
                 "ordinal": 1,
                 "operation_id": f"{node}.stop-first-genesis",
@@ -855,7 +969,7 @@ def execute_genesis_journal_rollback(
                     f"Coolify rejected the stop request with HTTP {stop['status']}",
                 )
             stop_accepted = stop["status"] in {200, 201, 202}
-            live_mutation_performed = stop_accepted
+            live_mutation_performed = live_mutation_performed or stop_accepted
             stop_receipt = {
                 "ordinal": 1,
                 "operation_id": f"{node}.stop-first-genesis",
@@ -996,10 +1110,12 @@ def execute_genesis_journal_rollback(
             "idempotent_retry_allowed": True,
         },
         "rollback_frame": inspected["frame"],
+        "deployment_cancellation_receipts": deployment_cancellation_receipts,
         "rollback_receipts": receipts,
         "failure": failure,
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": ["GET", "PATCH", "POST"],
+            "exact_active_deployments_cancelled_before_stop": True,
             "exact_service_uuid_required": True,
             "exact_standby_compose_required": True,
             "reserved_identity_keys_preserved": True,
@@ -1020,6 +1136,12 @@ def execute_genesis_journal_rollback(
             "standby_compose_restored": standby_compose_restored,
             "identity_keys_preserved": identity_keys_preserved,
             "persistent_volume_cleanup_performed": False,
+            "observed_active_deployment_count": len(deployment_cancellation_receipts),
+            "cancelled_active_deployment_count": sum(
+                1
+                for item in deployment_cancellation_receipts
+                if item.get("request_accepted") is True
+            ),
             "live_mutation_performed": live_mutation_performed,
             "network_access_performed": True,
         },

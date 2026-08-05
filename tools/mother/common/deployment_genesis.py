@@ -335,24 +335,6 @@ def _identity_execution(
             "MOTHER_DEPLOY_GENESIS_SELECTION_MISMATCH",
             "identity execution is for a different network",
         )
-    summary = execution.get("summary")
-    if not isinstance(summary, Mapping) or not all(
-        [
-            summary.get("complete") is True,
-            summary.get("planned_mutation_count") == 4,
-            summary.get("attempted_mutation_count") == 4,
-            summary.get("succeeded_mutation_count") == 4,
-            summary.get("failed_mutation_count") == 0,
-            summary.get("commitment_verified_count") == 4,
-            summary.get("persisted_secret_value_count") == 0,
-            summary.get("next_phase") == "prove-identity-rollback-cycle-before-genesis",
-            summary.get("genesis_blocked_pending_identity_rollback_cycle") is True,
-        ]
-    ):
-        raise MotherDeploymentGenesisError(
-            "MOTHER_DEPLOY_GENESIS_IDENTITY_EXECUTION_INVALID",
-            "identity execution is incomplete or does not prove all four commitments",
-        )
     actual_nodes = tuple(_identifier(item, "identity execution node") for item in execution.get("nodes", []))
     if selected_nodes and selected_nodes != actual_nodes:
         raise MotherDeploymentGenesisError(
@@ -364,17 +346,42 @@ def _identity_execution(
             "MOTHER_DEPLOY_GENESIS_IDENTITY_EXECUTION_INVALID",
             "identity execution contains no nodes",
         )
-    receipts = execution.get("mutation_receipts")
-    if type(receipts) is not list or len(receipts) != 4:
+    expected_keys = {"MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY"}
+    expected_commitment_count = len(actual_nodes) * len(expected_keys)
+    summary = execution.get("summary")
+    if not isinstance(summary, Mapping) or not all(
+        [
+            summary.get("complete") is True,
+            summary.get("planned_mutation_count") == expected_commitment_count,
+            summary.get("attempted_mutation_count") == expected_commitment_count,
+            summary.get("succeeded_mutation_count") == expected_commitment_count,
+            summary.get("failed_mutation_count") == 0,
+            summary.get("commitment_verified_count") == expected_commitment_count,
+            summary.get("persisted_secret_value_count") == 0,
+            summary.get("next_phase") == "prove-identity-rollback-cycle-before-genesis",
+            summary.get("genesis_blocked_pending_identity_rollback_cycle") is True,
+        ]
+    ):
         raise MotherDeploymentGenesisError(
             "MOTHER_DEPLOY_GENESIS_IDENTITY_EXECUTION_INVALID",
-            "identity execution must contain exactly four mutation receipts",
+            (
+                "identity execution is incomplete or does not prove exactly "
+                f"{expected_commitment_count} commitments for {len(actual_nodes)} selected node(s)"
+            ),
+        )
+    receipts = execution.get("mutation_receipts")
+    if type(receipts) is not list or len(receipts) != expected_commitment_count:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_IDENTITY_EXECUTION_INVALID",
+            (
+                "identity execution must contain exactly "
+                f"{expected_commitment_count} mutation receipts for {len(actual_nodes)} selected node(s)"
+            ),
         )
     node_bindings: dict[str, dict[str, Any]] = {
         node: {"service_uuid": None, "controller_id": None, "commitments": {}}
         for node in actual_nodes
     }
-    expected_keys = {"MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY"}
     for index, raw_receipt in enumerate(receipts):
         receipt = _mapping(raw_receipt, f"mutation_receipts[{index}]")
         node = _identifier(receipt.get("node"), f"mutation_receipts[{index}].node")

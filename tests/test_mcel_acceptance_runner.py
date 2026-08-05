@@ -362,9 +362,19 @@ def test_package_local_acceptance_is_discovered_with_package_provenance() -> Non
     contracts, bindings, metadata = runner.load_package_acceptance(ROOT)
 
     assert [block.block_id for block in contracts] == [
+        "calculator.acceptance.shadow-authority",
         "contract-counter.acceptance.operation-control",
         "contract-workbench.acceptance.complete-application",
     ]
+    calculator = bindings["calculator.acceptance.shadow-authority"]
+    assert calculator.source_kind == "package"
+    assert calculator.source_path == "mcel_apps/calculator/tests/mcel_acceptance_bindings.json"
+    assert calculator.selectors == (
+        "mcel_apps/calculator/tests/test_acceptance.py",
+        "mcel_apps/calculator/tests/test_operations.py",
+        "mcel_apps/calculator/tests/test_surface.py",
+        "mcel_apps/calculator/tests/test_browser.py",
+    )
     bound = bindings["contract-counter.acceptance.operation-control"]
     assert bound.source_kind == "package"
     assert bound.source_path == "mcel_apps/contract-counter/tests/mcel_acceptance_bindings.json"
@@ -375,8 +385,8 @@ def test_package_local_acceptance_is_discovered_with_package_provenance() -> Non
         "mcel_apps/contract-counter/tests/test_acceptance.py::test_package_acceptance_operation_control",
     )
     assert bound.package_fingerprint.startswith("sha256:")
-    assert metadata["packageCount"] == 2
-    assert metadata["bindingCount"] == 2
+    assert metadata["packageCount"] == 3
+    assert metadata["bindingCount"] == 3
     counter = next(item for item in metadata["packages"] if item["appId"] == "contract-counter")
     assert counter["packageFingerprint"] == bound.package_fingerprint
     forward = bindings["contract-workbench.acceptance.complete-application"]
