@@ -101,3 +101,15 @@ def test_calculator_core_include_precedes_runtime_include_and_legacy_layers_are_
     assert shell.index(core) < shell.index(runtime)
     assert "calculator-semantic-adapter.js" not in shell
     assert "mcel-calculator-surface.js" not in shell
+
+
+def test_calculator_authoritative_dsl_source_is_structured_not_a_portable_ir_snapshot() -> None:
+    source = (PACKAGE / "application.js").read_text(encoding="utf-8")
+
+    assert "const portableApplication =" not in source
+    assert "Shadow Calculator authority" not in source
+    assert "STATE_FIELDS" in source
+    assert "CAPABILITY_LANES" in source
+    assert "INTENT_DEFINITIONS" in source
+    assert "buildApplicationIr()" in source
+    assert len(source.splitlines()) < 500
