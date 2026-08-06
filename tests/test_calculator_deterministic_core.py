@@ -84,15 +84,27 @@ def test_calculator_runtime_delegates_local_math_to_core_and_capabilities_to_bri
 
     assert "window.MainComputerCalculatorCore" in runtime_source
     assert "window.MainComputerCalculatorCapabilities" in runtime_source
+    assert "requireCalculatorCore().appendCalculatorDisplayToken" in runtime_source
+    assert "requireCalculatorCore().clearCalculatorDisplayExpression" in runtime_source
+    assert "requireCalculatorCore().backspaceCalculatorDisplayExpression" in runtime_source
+    assert "requireCalculatorCore().insertCalculatorGraphText" in runtime_source
+    assert "requireCalculatorCore().clearCalculatorGraphExpression" in runtime_source
+    assert "requireCalculatorCore().backspaceCalculatorGraphExpression" in runtime_source
     assert "requireCalculatorCore().evaluateCalculatorArithmeticExpression" in runtime_source
-    assert "requireCalculatorCore().compileGraphExpression" in runtime_source
+    assert "requireCalculatorCore().sampleCalculatorGraphExpression" in runtime_source
     assert "requireCalculatorCapabilities().askArithmeticModel" in runtime_source
     assert "requireCalculatorCapabilities().askGraphModel" in runtime_source
     assert "requireCalculatorCapabilities().askMathicsModel" in runtime_source
     assert "requireCalculatorCapabilities().evaluateMathics" in runtime_source
     assert "requireCalculatorCapabilities().askResultQuestion" in runtime_source
+    assert "requireCalculatorCore().extractCalculatorExpression" in runtime_source
+    assert "requireCalculatorCore().extractCalculatorGraphExpression" in runtime_source
     assert "window.MainComputerCalculatorRuntime" in runtime_source
 
+    assert "function extractCalculatorExpression" in core_source
+    assert "function extractCalculatorGraphExpression" in core_source
+    assert "function extractCalculatorExpression" not in runtime_source
+    assert "function extractCalculatorGraphExpression" not in runtime_source
     assert "fetch(" not in runtime_source
     assert "/api/chat" not in runtime_source
     assert "/api/applications/calculator/" not in runtime_source
@@ -148,6 +160,102 @@ def test_calculator_capability_bridge_owns_provider_and_backend_requests() -> No
     assert result["responses"][2]["expression"] == "Factor[x^2-1]"
     assert result["responses"][3]["output"] == "(x - 1)(x + 1)"
     assert result["responses"][4]["answer"] == "The result is 4."
+
+
+
+def test_calculator_core_owns_display_entry_state_transitions() -> None:
+    result = run_node_json(
+        """
+        const transitions = {
+          enterDigitFromZero: core.appendCalculatorDisplayToken("0", "7"),
+          enterOperatorAfterDigit: core.appendCalculatorDisplayToken("7", "+"),
+          clear: core.clearCalculatorDisplayExpression(),
+          backspaceToDigit: core.backspaceCalculatorDisplayExpression("123"),
+          backspaceToZero: core.backspaceCalculatorDisplayExpression("7"),
+          backspaceEmpty: core.backspaceCalculatorDisplayExpression("")
+        };
+        process.stdout.write(JSON.stringify(transitions));
+        """
+    )
+
+    assert result["enterDigitFromZero"]["expression"] == "7"
+    assert result["enterDigitFromZero"]["result"] == "ready"
+    assert result["enterDigitFromZero"]["statusText"] == "ready"
+    assert result["enterOperatorAfterDigit"]["expression"] == "7+"
+    assert result["clear"]["expression"] == "0"
+    assert result["backspaceToDigit"]["expression"] == "12"
+    assert result["backspaceToZero"]["expression"] == "0"
+    assert result["backspaceEmpty"]["expression"] == "0"
+
+def test_calculator_core_owns_graph_expression_edit_state_transitions() -> None:
+    result = run_node_json(
+        """
+        const transitions = {
+          insertAtCaret: core.insertCalculatorGraphText("sin()", "x", 4, 4, 0),
+          insertTemplate: core.insertCalculatorGraphText("", "sin()", 0, 0, 1),
+          replaceSelection: core.insertCalculatorGraphText("sin(x)", "cos", 0, 3, 0),
+          clear: core.clearCalculatorGraphExpression(),
+          backspaceSelection: core.backspaceCalculatorGraphExpression("sin(x)", 0, 3),
+          backspaceCaret: core.backspaceCalculatorGraphExpression("sin(x)", 4, 4),
+          backspaceStart: core.backspaceCalculatorGraphExpression("sin(x)", 0, 0)
+        };
+        process.stdout.write(JSON.stringify(transitions));
+        """
+    )
+
+    assert result["insertAtCaret"]["expression"] == "sin(x)"
+    assert result["insertAtCaret"]["selectionStart"] == 5
+    assert result["insertTemplate"]["expression"] == "sin()"
+    assert result["insertTemplate"]["selectionStart"] == 4
+    assert result["replaceSelection"]["expression"] == "cos(x)"
+    assert result["replaceSelection"]["selectionStart"] == 3
+    assert result["clear"]["expression"] == ""
+    assert result["clear"]["selectionStart"] == 0
+    assert result["backspaceSelection"]["expression"] == "(x)"
+    assert result["backspaceSelection"]["selectionStart"] == 0
+    assert result["backspaceCaret"]["expression"] == "sinx)"
+    assert result["backspaceCaret"]["selectionStart"] == 3
+    assert result["backspaceStart"]["expression"] == "sin(x)"
+    assert result["backspaceStart"]["selectionStart"] == 0
+
+
+def test_calculator_core_owns_graph_range_validation_and_sampling() -> None:
+    result = run_node_json(
+        """
+        const plot = core.sampleCalculatorGraphExpression("x", {xMin: -1, xMax: 1, yMin: -1, yMax: 1}, 4);
+        let invalidRange = "";
+        try {
+          core.sampleCalculatorGraphExpression("x", {xMin: 1, xMax: -1, yMin: -1, yMax: 1}, 4);
+        } catch (error) {
+          invalidRange = error.message;
+        }
+        let invalidExpression = "";
+        try {
+          core.sampleCalculatorGraphExpression("process.exit()", {xMin: -1, xMax: 1, yMin: -1, yMax: 1}, 4);
+        } catch (error) {
+          invalidExpression = error.message;
+        }
+        process.stdout.write(JSON.stringify({plot, invalidRange, invalidExpression}));
+        """
+    )
+
+    assert result["plot"]["ok"] is True
+    assert result["plot"]["expression"] == "x"
+    assert result["plot"]["range"] == {"xMin": -1, "xMax": 1, "yMin": -1, "yMax": 1}
+    assert result["plot"]["width"] == 4
+    assert result["plot"]["finiteCount"] == 5
+    assert len(result["plot"]["samples"]) == 5
+    assert result["plot"]["samples"][0]["px"] == 0
+    assert result["plot"]["samples"][0]["x"] == -1
+    assert result["plot"]["samples"][0]["y"] == -1
+    assert result["plot"]["samples"][0]["visible"] is True
+    assert result["plot"]["samples"][-1]["px"] == 4
+    assert result["plot"]["samples"][-1]["x"] == 1
+    assert result["plot"]["samples"][-1]["y"] == 1
+    assert result["plot"]["samples"][-1]["visible"] is True
+    assert result["invalidRange"] == "x min must be less than x max"
+    assert "unsupported token" in result["invalidExpression"].lower()
+
 
 
 def test_arithmetic_parser_preserves_calculator_precedence_and_evidence() -> None:
@@ -238,6 +346,28 @@ def test_arithmetic_parser_rejects_javascript_and_reports_bounded_failures() -> 
     assert result["blank"]["ok"] is False
     assert result["blank"]["parseStatus"] == "invalid"
     assert result["blank"]["parserCode"] == "expression-required"
+
+
+
+def test_model_expression_extraction_is_core_domain_logic() -> None:
+    result = run_node_json(
+        """
+        const arithmetic = [
+          core.extractCalculatorExpression("Use this: 2 + 3 * 4"),
+          core.extractCalculatorExpression("```js\\n7 x 6\\n```"),
+          core.extractCalculatorExpression("Please call Math.max(1, 2)")
+        ];
+        const graph = [
+          core.extractCalculatorGraphExpression("f(x) = sin(x) + x^2"),
+          core.extractCalculatorGraphExpression("y = sqrt(abs(x))"),
+          core.extractCalculatorGraphExpression("window.alert(secret)")
+        ];
+        process.stdout.write(JSON.stringify({arithmetic, graph}));
+        """
+    )
+
+    assert result["arithmetic"] == ["2 + 3 * 4", "7 * 6", ""]
+    assert result["graph"] == ["sin(x)+x^2", "sqrt(abs(x))", ""]
 
 
 def test_graph_parser_remains_deterministic_and_dom_independent() -> None:

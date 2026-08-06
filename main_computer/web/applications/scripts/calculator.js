@@ -21,50 +21,6 @@
     function evaluateCalculatorArithmeticExpression(rawExpression) {
       return requireCalculatorCore().evaluateCalculatorArithmeticExpression(rawExpression);
     }
-    function extractCalculatorExpression(modelText) {
-      const cleaned = String(modelText || "").replace(/```(?:javascript|js|text)?/gi, "").replace(/```/g, "");
-      const candidates = cleaned.match(/[-+*/%().\d xX]+/g) || [];
-      const scored = candidates
-        .map((candidate) => normalizeCalculatorExpression(candidate).trim())
-        .filter((candidate) => candidate.length > 0)
-        .sort((left, right) => {
-          const leftHasOperator = /[+\-*/%]/.test(left) ? 1 : 0;
-          const rightHasOperator = /[+\-*/%]/.test(right) ? 1 : 0;
-          return rightHasOperator - leftHasOperator || right.length - left.length;
-        });
-      return scored[0] || normalizeCalculatorExpression(cleaned).trim();
-    }
-    function extractCalculatorGraphExpression(modelText) {
-      const cleaned = String(modelText || "")
-        .replace(/```(?:javascript|js|text|math)?/gi, "")
-        .replace(/```/g, "")
-        .replace(/\bf\s*\(\s*x\s*\)\s*=/gi, "")
-        .replace(/\by\s*=/gi, "")
-        .toLowerCase();
-      const core = requireCalculatorCore();
-      const allowedNames = Object.keys(core.graphFunctions).concat(Object.keys(core.graphConstants), ["x"]).join("|");
-      const candidatePattern = new RegExp(`(?:${allowedNames}|[0-9.e+\\-*/%^(),\\s])+`, "g");
-      const candidates = cleaned.match(candidatePattern) || [];
-      const scored = candidates
-        .map((candidate) => normalizeGraphExpression(candidate))
-        .filter((candidate) => candidate && /^[a-z0-9+\-*/%^(),.]+$/.test(candidate))
-        .filter((candidate) => {
-          try {
-            tokenizeCalculatorGraphExpression(candidate);
-            return true;
-          } catch {
-            return false;
-          }
-        })
-        .sort((left, right) => {
-          const leftHasX = /\bx\b/.test(left) ? 1 : 0;
-          const rightHasX = /\bx\b/.test(right) ? 1 : 0;
-          const leftHasFn = /[a-z]{2,}\(/.test(left) ? 1 : 0;
-          const rightHasFn = /[a-z]{2,}\(/.test(right) ? 1 : 0;
-          return rightHasX - leftHasX || rightHasFn - leftHasFn || right.length - left.length;
-        });
-      return scored[0] || "";
-    }
     function calculateExpression() {
       const result = evaluateCalculatorArithmeticExpression(calculatorDisplay.value);
       if (!result.expression) {
@@ -205,18 +161,6 @@
       return requireCalculatorCore().compileGraphExpression(rawExpression);
     }
 
-    function parseGraphRange() {
-      const range = {
-        xMin: Number(calculatorGraphXMin.value),
-        xMax: Number(calculatorGraphXMax.value),
-        yMin: Number(calculatorGraphYMin.value),
-        yMax: Number(calculatorGraphYMax.value)
-      };
-      if (!Object.values(range).every(Number.isFinite)) throw new Error("range values must be finite numbers");
-      if (range.xMin >= range.xMax) throw new Error("x min must be less than x max");
-      if (range.yMin >= range.yMax) throw new Error("y min must be less than y max");
-      return range;
-    }
     function drawCalculatorGraph() {
       const canvasContext = calculatorGraphCanvas.getContext("2d");
       const rect = calculatorGraphCanvas.getBoundingClientRect();
@@ -230,8 +174,17 @@
       canvasContext.fillStyle = "#010201";
       canvasContext.fillRect(0, 0, width, height);
       try {
-        const evaluator = compileGraphExpression(calculatorGraphExpression.value);
-        const range = parseGraphRange();
+        const plot = requireCalculatorCore().sampleCalculatorGraphExpression(
+          calculatorGraphExpression.value,
+          {
+            xMin: calculatorGraphXMin.value,
+            xMax: calculatorGraphXMax.value,
+            yMin: calculatorGraphYMin.value,
+            yMax: calculatorGraphYMax.value
+          },
+          width
+        );
+        const range = plot.range;
         const toPx = (x) => (x - range.xMin) / (range.xMax - range.xMin) * width;
         const toPy = (y) => height - (y - range.yMin) / (range.yMax - range.yMin) * height;
         canvasContext.lineWidth = 1;
@@ -265,27 +218,23 @@
         canvasContext.strokeStyle = "#a7d86d";
         canvasContext.beginPath();
         let hasPoint = false;
-        let finiteCount = 0;
-        for (let px = 0; px <= width; px += 1) {
-          const x = range.xMin + (px / width) * (range.xMax - range.xMin);
-          const y = evaluator(x);
-          if (!Number.isFinite(y) || y < range.yMin || y > range.yMax) {
+        for (const sample of plot.samples) {
+          if (!sample.visible) {
             hasPoint = false;
             continue;
           }
-          const py = toPy(y);
-          if (hasPoint) canvasContext.lineTo(px, py);
-          else canvasContext.moveTo(px, py);
+          const py = toPy(sample.y);
+          if (hasPoint) canvasContext.lineTo(sample.px, py);
+          else canvasContext.moveTo(sample.px, py);
           hasPoint = true;
-          finiteCount += 1;
         }
         canvasContext.stroke();
-        calculatorGraphStatus.textContent = `graphed ${normalizeGraphExpression(calculatorGraphExpression.value)} | ${finiteCount} visible samples`;
+        calculatorGraphStatus.textContent = `graphed ${plot.expression} | ${plot.finiteCount} visible samples`;
         return {
           ok: true,
-          expression: normalizeGraphExpression(calculatorGraphExpression.value),
+          expression: plot.expression,
           range,
-          finiteCount,
+          finiteCount: plot.finiteCount,
           statusText: calculatorGraphStatus.textContent
         };
       } catch (error) {
@@ -326,7 +275,7 @@
       calculatorModelStatus.textContent = "asking model";
       try {
         const data = await requireCalculatorCapabilities().askArithmeticModel(problem);
-        const expression = extractCalculatorExpression(data.content || "");
+        const expression = requireCalculatorCore().extractCalculatorExpression(data.content || "");
         if (!expression) {
           throw new Error("no expression returned");
         }
@@ -504,32 +453,27 @@
       });
     }
 
+    function applyReadyCalculatorState(state, focusTarget = calculatorDisplay) {
+      calculatorDisplay.value = state.expression || "0";
+      calculatorResult.textContent = state.statusText || state.result || "ready";
+      focusTarget?.focus?.();
+      return state;
+    }
+
     function applyCalculatorToken(key) {
-      if (calculatorDisplay.value === "0" && /\d/.test(key)) {
-        calculatorDisplay.value = key;
-      } else {
-        calculatorDisplay.value += key;
-      }
-      calculatorResult.textContent = "ready";
-      calculatorDisplay.focus();
-      return {
-        ok: true,
-        expression: calculatorDisplay.value,
-        result: calculatorResult.textContent,
-        statusText: "ready"
-      };
+      return applyReadyCalculatorState(
+        requireCalculatorCore().appendCalculatorDisplayToken(calculatorDisplay.value, key)
+      );
     }
 
     function clearCalculatorExpression() {
-      calculatorDisplay.value = "0";
-      calculatorResult.textContent = "ready";
-      calculatorDisplay.focus();
-      return {
-        ok: true,
-        expression: calculatorDisplay.value,
-        result: calculatorResult.textContent,
-        statusText: "ready"
-      };
+      return applyReadyCalculatorState(requireCalculatorCore().clearCalculatorDisplayExpression());
+    }
+
+    function backspaceCalculatorExpression() {
+      return applyReadyCalculatorState(
+        requireCalculatorCore().backspaceCalculatorDisplayExpression(calculatorDisplay.value)
+      );
     }
 
     function calculatorGraphIntentPayload() {
@@ -620,9 +564,7 @@
             clearCalculatorExpression
           );
         } else if (action === "backspace") {
-          calculatorDisplay.value = calculatorDisplay.value.slice(0, -1) || "0";
-          calculatorResult.textContent = "ready";
-          calculatorDisplay.focus();
+          backspaceCalculatorExpression();
         } else if (action === "equals") {
           executeCalculatorSemanticIntent(
             "evaluateExpression",
@@ -728,19 +670,14 @@
       button.addEventListener("click", () => {
         const action = button.dataset.calcGraphAction;
         if (action === "clear") {
-          calculatorGraphExpression.value = "";
+          applyCalculatorGraphEditState(requireCalculatorCore().clearCalculatorGraphExpression());
         } else if (action === "backspace") {
-          const start = calculatorGraphExpression.selectionStart ?? calculatorGraphExpression.value.length;
-          const end = calculatorGraphExpression.selectionEnd ?? calculatorGraphExpression.value.length;
-          if (start !== end) {
-            calculatorGraphExpression.value = calculatorGraphExpression.value.slice(0, start) + calculatorGraphExpression.value.slice(end);
-            calculatorGraphExpression.setSelectionRange(start, start);
-          } else if (start > 0) {
-            calculatorGraphExpression.value = calculatorGraphExpression.value.slice(0, start - 1) + calculatorGraphExpression.value.slice(start);
-            calculatorGraphExpression.setSelectionRange(start - 1, start - 1);
-          }
+          applyCalculatorGraphEditState(requireCalculatorCore().backspaceCalculatorGraphExpression(
+            calculatorGraphExpression.value,
+            calculatorGraphExpression.selectionStart,
+            calculatorGraphExpression.selectionEnd
+          ));
         }
-        calculatorGraphExpression.focus();
       });
     });
     calculatorAskModel.addEventListener("click", () => executeCalculatorSemanticIntent(
@@ -799,7 +736,7 @@
       calculatorScientificModelStatus.textContent = "asking model";
       try {
         const data = await requireCalculatorCapabilities().askGraphModel(problem);
-        const expression = extractCalculatorGraphExpression(data.content || "");
+        const expression = requireCalculatorCore().extractCalculatorGraphExpression(data.content || "");
         if (!expression) {
           throw new Error("no graph expression returned");
         }
@@ -819,13 +756,19 @@
         calculatorScientificAskModel.disabled = false;
       }
     }
-    function insertCalculatorGraphText(text, caretBack = 0) {
-      const start = calculatorGraphExpression.selectionStart ?? calculatorGraphExpression.value.length;
-      const end = calculatorGraphExpression.selectionEnd ?? calculatorGraphExpression.value.length;
-      const before = calculatorGraphExpression.value.slice(0, start);
-      const after = calculatorGraphExpression.value.slice(end);
-      calculatorGraphExpression.value = `${before}${text}${after}`;
-      const caret = start + text.length - caretBack;
+    function applyCalculatorGraphEditState(state) {
+      calculatorGraphExpression.value = state.expression || "";
       calculatorGraphExpression.focus();
-      calculatorGraphExpression.setSelectionRange(caret, caret);
+      calculatorGraphExpression.setSelectionRange(state.selectionStart || 0, state.selectionEnd || state.selectionStart || 0);
+      return state;
+    }
+
+    function insertCalculatorGraphText(text, caretBack = 0) {
+      return applyCalculatorGraphEditState(requireCalculatorCore().insertCalculatorGraphText(
+        calculatorGraphExpression.value,
+        text,
+        calculatorGraphExpression.selectionStart,
+        calculatorGraphExpression.selectionEnd,
+        caretBack
+      ));
     }

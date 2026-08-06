@@ -952,5 +952,19 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertIn("this.isBoardingPaused()", update_guard)
         self.assertNotIn("this.isWeaponFirePaused()", update_guard)
 
+
+    def test_persisted_defeated_pax_boarders_recover_once_when_runtime_attaches(self) -> None:
+        source = PAX_INTERACTION.read_text(encoding="utf-8")
+        self.assertIn("recoverDefeatedProtectionBoardersOnAttach", source)
+        self.assertIn("uiState.recoveredCharacterRuntime === runtime", source)
+        self.assertIn('view.state?.stageId !== PROTECTION_STAGE_ID', source)
+        self.assertIn("boarders.every((character) => character", source)
+        self.assertIn('character.status === "down" || Number(character.health) <= 0', source)
+        self.assertIn(
+            '"character-runtime-attach-defeated-boarder-recovery"',
+            source,
+        )
+        self.assertIn("const recovery = recoverDefeatedProtectionBoardersOnAttach(runtime);", source)
+
 if __name__ == "__main__":
     unittest.main()

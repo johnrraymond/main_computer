@@ -301,6 +301,65 @@ def _service_status(record: Mapping[str, Any]) -> str:
     return value.strip().lower() if type(value) is str else ""
 
 
+def _component_status_records(payload: Any) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def walk(value: Any, application_context: bool = False) -> None:
+        if isinstance(value, Mapping):
+            name = value.get("name") or value.get("service_name") or value.get("container_name")
+            status = value.get("status") or value.get("health_status") or value.get("state")
+            uuid = value.get("uuid")
+            image = value.get("image") or value.get("image_name")
+            if application_context and type(name) is str and name.strip():
+                key = (str(uuid or ""), name.strip())
+                if key not in seen:
+                    seen.add(key)
+                    records.append({
+                        "name": name.strip()[:200],
+                        "uuid": str(uuid or "")[:200],
+                        "status": str(status or "")[:100],
+                        "image": str(image or "")[:300],
+                    })
+            for key, nested in value.items():
+                clean = str(key).lower()
+                walk(
+                    nested,
+                    application_context
+                    or clean
+                    in {
+                        "applications",
+                        "application",
+                        "service_applications",
+                        "service_application",
+                        "serviceapplications",
+                        "serviceapplication",
+                        "containers",
+                    },
+                )
+        elif type(value) is list:
+            for nested in value:
+                walk(nested, application_context)
+
+    walk(payload)
+    return records[:64]
+
+
+def _healthy_besu_component(payload: Any, node: str) -> tuple[bool, list[dict[str, str]]]:
+    records = _component_status_records(payload)
+    matches = [
+        item
+        for item in records
+        if item.get("name") == node
+        and item.get("status") == "running:healthy"
+        and (
+            item.get("image", "").startswith("hyperledger/besu:")
+            or item.get("image", "").startswith("hyperledger/besu@")
+        )
+    ]
+    return len(matches) == 1, records
+
+
 def _verified_service(
     *,
     controller: Any,
@@ -460,31 +519,38 @@ def _verified_replica_service(
     compose_label = "C synchronization-proof Compose"
     candidate_compose = expected_compose
     if status != "running:healthy":
-        accepted = recovery.get("accepted_service_statuses")
-        stale = recovery.get("stale_replica_compose")
-        allowed_modes = recovery.get("requires_initial_precondition_modes")
-        if type(allowed_modes) is not list:
-            allowed_modes = [recovery.get("requires_initial_precondition_mode")]
-        valid = (
-            recovery.get("allowed") is True
-            and recovery.get("cause_code") == "sole-validator-sync-guardian-invalidated-by-candidate-activation"
-            and initial_precondition_mode in allowed_modes
-            and type(accepted) is list
-            and status in accepted
-            and recovery.get("read_only") is True
-            and isinstance(stale, Mapping)
-            and type(stale.get("canonical_text")) is str
-            and stale.get("canonical_text") == expected_compose
-        )
-        if not valid:
-            inventory_receipt["service_status"] = status
-            raise MotherDeploymentValidatorAdmissionExecutorError(
-                "MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_SERVICE_UNHEALTHY",
-                f"{node} is not running:healthy and is not in the exact post-admission guardian-drift state",
+        component_healthy, component_records = _healthy_besu_component(detail["payload"], node)
+        if component_healthy:
+            mode = "normal-replica-proof-compose-component-health"
+            inventory_receipt["component_health_mode"] = "besu-application-running-healthy"
+            inventory_receipt["component_statuses"] = component_records
+        else:
+            accepted = recovery.get("accepted_service_statuses")
+            stale = recovery.get("stale_replica_compose")
+            allowed_modes = recovery.get("requires_initial_precondition_modes")
+            if type(allowed_modes) is not list:
+                allowed_modes = [recovery.get("requires_initial_precondition_mode")]
+            valid = (
+                recovery.get("allowed") is True
+                and recovery.get("cause_code") == "sole-validator-sync-guardian-invalidated-by-candidate-activation"
+                and initial_precondition_mode in allowed_modes
+                and type(accepted) is list
+                and status in accepted
+                and recovery.get("read_only") is True
+                and isinstance(stale, Mapping)
+                and type(stale.get("canonical_text")) is str
+                and stale.get("canonical_text") == expected_compose
             )
-        mode = "known-post-admission-replica-guardian-drift"
-        compose_label = "exact stale C sole-validator synchronization guardian Compose"
-        candidate_compose = stale["canonical_text"]
+            if not valid:
+                inventory_receipt["service_status"] = status
+                inventory_receipt["component_statuses"] = component_records
+                raise MotherDeploymentValidatorAdmissionExecutorError(
+                    "MOTHER_DEPLOY_VALIDATOR_ADMISSION_EXECUTOR_SERVICE_UNHEALTHY",
+                    f"{node} is not running:healthy and does not have an exact healthy Besu component or exact post-admission guardian-drift state",
+                )
+            mode = "known-post-admission-replica-guardian-drift"
+            compose_label = "exact stale C sole-validator synchronization guardian Compose"
+            candidate_compose = stale["canonical_text"]
 
     try:
         binding = _match_service_compose(detail["payload"], candidate_compose, compose_label)
@@ -954,6 +1020,7 @@ def execute_validator_admission_release(
         "known-exact-failed-release-recovery",
     }
     replica_guardian_drift_used = replica_precondition_mode == "known-post-admission-replica-guardian-drift"
+    replica_component_health_used = replica_precondition_mode == "normal-replica-proof-compose-component-health"
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -996,6 +1063,7 @@ def execute_validator_admission_release(
             "validator_set_order_recovery_used": order_recovery_used,
             "replica_precondition_mode": replica_precondition_mode,
             "replica_guardian_drift_recovery_used": replica_guardian_drift_used,
+            "replica_component_health_used": replica_component_health_used,
         },
         "authority": {
             "release_consumed": True,
@@ -1023,6 +1091,7 @@ def execute_validator_admission_release(
             "known_replica_post_admission_guardian_recovery_allowed": True,
             "replica_precondition_mode": replica_precondition_mode,
             "replica_guardian_drift_recovery_used": replica_guardian_drift_used,
+            "replica_component_health_used": replica_component_health_used,
         },
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
@@ -1039,9 +1108,10 @@ def execute_validator_admission_release(
             "blocks_advancing": complete,
             "latest_block_fresh": complete,
             "initial_node_running_healthy": complete,
-            "replica_node_running_healthy": complete and not replica_guardian_drift_used,
+            "replica_node_running_healthy": complete and not replica_guardian_drift_used and not replica_component_health_used,
             "replica_node_reachable_via_initial_peer": complete,
             "replica_guardian_drift_recovery_used": replica_guardian_drift_used,
+            "replica_component_health_used": replica_component_health_used,
             "replica_precondition_mode": replica_precondition_mode,
             "replica_node_read_only": True,
             "known_guardian_recovery_used": known_recovery_used,

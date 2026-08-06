@@ -298,9 +298,11 @@ class _AdmissionOpener:
         fail_patch: bool = False,
         recovery_mode: bool = False,
         recovery_compose_override: str | None = None,
+        c_besu_component_healthy: bool = False,
     ) -> None:
         self.release = release
         self.c_healthy = c_healthy
+        self.c_besu_component_healthy = c_besu_component_healthy
         self.recovery_mode = recovery_mode
         self.recovery_compose_override = recovery_compose_override
         default_statuses = ["degraded:unhealthy", "running:healthy"] if recovery_mode else ["running:healthy"]
@@ -363,13 +365,33 @@ class _AdmissionOpener:
                     "status": "running:healthy" if self.c_healthy else "running:unhealthy",
                 }])
             if path == f"/api/v1/services/{replica['service_uuid']}":
-                return _AdmissionResponse({
-                    "service": {
-                        "uuid": replica["service_uuid"],
-                        "name": replica["node"],
-                        "docker_compose_raw": replica["proof_compose"]["canonical_text"],
-                    }
-                })
+                service = {
+                    "uuid": replica["service_uuid"],
+                    "name": replica["node"],
+                    "docker_compose_raw": replica["proof_compose"]["canonical_text"],
+                }
+                if self.c_besu_component_healthy:
+                    service["applications"] = [
+                        {
+                            "uuid": "replica-init",
+                            "name": "mother-replica-init",
+                            "image": "alpine:3.20",
+                            "status": "exited",
+                        },
+                        {
+                            "uuid": "replica-besu",
+                            "name": replica["node"],
+                            "image": "hyperledger/besu:latest",
+                            "status": "running:healthy",
+                        },
+                        {
+                            "uuid": "replica-sync-guardian",
+                            "name": "mother-replica-sync-guardian",
+                            "image": "python:3.12-alpine",
+                            "status": "running:unhealthy",
+                        },
+                    ]
+                return _AdmissionResponse({"service": service})
         raise AssertionError(f"unexpected request {method} {request.full_url}")
 
 
@@ -510,6 +532,34 @@ def test_admission_executor_votes_from_a_and_proves_exact_final_set(tmp_path: Pa
     assert verified["validator_vote_proven"] is True
     assert verified["validator_activation_proven"] is True
     assert verified["final_validator_set"] == release["execution_plan"]["desired_validator_set"]
+
+
+def test_admission_executor_accepts_unhealthy_c_aggregate_when_besu_component_is_healthy(tmp_path: Path) -> None:
+    paths, private_state, _, _, _, release, release_path, release_digest = _release_fixture(tmp_path)
+    opener = _AdmissionOpener(release, c_healthy=False, c_besu_component_healthy=True)
+    result = execute_validator_admission_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        selected_nodes=("mainnetc-super1",),
+        opener=opener,
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        operation=_operation("validator-admission-c-component-healthy"),
+    )
+    assert result["status"] == "pass"
+    assert result["summary"]["validator_vote_proven"] is True
+    assert result["summary"]["validator_activation_proven"] is True
+    assert result["summary"]["replica_node_running_healthy"] is False
+    assert result["summary"]["replica_node_reachable_via_initial_peer"] is True
+    assert result["summary"]["replica_component_health_used"] is True
+    assert result["summary"]["replica_precondition_mode"] == "normal-replica-proof-compose-component-health"
+    assert all(method == "GET" for host, method, _ in opener.requests if host == "coolify-c.invalid")
+    assert any(
+        receipt.get("component_health_mode") == "besu-application-running-healthy"
+        for receipt in result["precondition_receipts"]
+    )
 
 
 def test_admission_executor_fails_before_mutation_when_c_unhealthy_and_consumes_release(tmp_path: Path) -> None:

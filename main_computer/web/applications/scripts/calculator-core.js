@@ -79,8 +79,164 @@
       .replace(/[^\d+\-*/%.() ]/g, "");
   }
 
+  function calculatorReadyState(expression, extras = {}) {
+    return Object.freeze(Object.assign({
+      ok: true,
+      expression: expressionText(expression) || "0",
+      result: "ready",
+      statusText: "ready"
+    }, extras));
+  }
+
+  function appendCalculatorDisplayToken(expression, token) {
+    const current = expressionText(expression) || "0";
+    const key = expressionText(token);
+    const nextExpression = current === "0" && /\d/.test(key) ? key : current + key;
+    return calculatorReadyState(nextExpression, {token: key});
+  }
+
+  function clearCalculatorDisplayExpression() {
+    return calculatorReadyState("0");
+  }
+
+  function backspaceCalculatorDisplayExpression(expression) {
+    const current = expressionText(expression) || "0";
+    const nextExpression = current.slice(0, -1) || "0";
+    return calculatorReadyState(nextExpression);
+  }
+
+  function normalizedTextSelection(expression, selectionStart, selectionEnd) {
+    const value = expressionText(expression);
+    const fallback = value.length;
+    const start = Number.isFinite(Number(selectionStart))
+      ? Math.max(0, Math.min(value.length, Number(selectionStart)))
+      : fallback;
+    const end = Number.isFinite(Number(selectionEnd))
+      ? Math.max(0, Math.min(value.length, Number(selectionEnd)))
+      : start;
+    return Object.freeze({
+      value,
+      start: Math.min(start, end),
+      end: Math.max(start, end)
+    });
+  }
+
+  function calculatorGraphEditState(expression, selectionStart, selectionEnd) {
+    const selection = normalizedTextSelection(expression, selectionStart, selectionEnd);
+    return Object.freeze({
+      expression: selection.value,
+      selectionStart: selection.start,
+      selectionEnd: selection.end,
+      statusText: "ready"
+    });
+  }
+
+  function insertCalculatorGraphText(expression, text, selectionStart, selectionEnd, caretBack = 0) {
+    const selection = normalizedTextSelection(expression, selectionStart, selectionEnd);
+    const inserted = expressionText(text);
+    const nextExpression = selection.value.slice(0, selection.start) + inserted + selection.value.slice(selection.end);
+    const caret = Math.max(0, Math.min(nextExpression.length, selection.start + inserted.length - Number(caretBack || 0)));
+    return Object.freeze({
+      expression: nextExpression,
+      selectionStart: caret,
+      selectionEnd: caret,
+      statusText: "ready",
+      inserted
+    });
+  }
+
+  function clearCalculatorGraphExpression() {
+    return calculatorGraphEditState("", 0, 0);
+  }
+
+  function backspaceCalculatorGraphExpression(expression, selectionStart, selectionEnd) {
+    const selection = normalizedTextSelection(expression, selectionStart, selectionEnd);
+    if (selection.start !== selection.end) {
+      return calculatorGraphEditState(
+        selection.value.slice(0, selection.start) + selection.value.slice(selection.end),
+        selection.start,
+        selection.start
+      );
+    }
+    if (selection.start <= 0) {
+      return calculatorGraphEditState(selection.value, 0, 0);
+    }
+    const nextExpression = selection.value.slice(0, selection.start - 1) + selection.value.slice(selection.start);
+    return calculatorGraphEditState(nextExpression, selection.start - 1, selection.start - 1);
+  }
+
   function normalizeGraphExpression(value) {
     return expressionText(value).trim().replace(/\s+/g, "").toLowerCase();
+  }
+
+  function extractCalculatorExpression(modelText) {
+    const cleaned = expressionText(modelText)
+      .replace(/```(?:javascript|js|text)?/gi, "")
+      .replace(/```/g, "");
+    const candidates = cleaned.match(/[-+*/%().\d xX]+/g) || [];
+    const scored = candidates
+      .map((candidate) => normalizeCalculatorExpression(candidate).trim())
+      .filter((candidate) => candidate.length > 0)
+      .filter((candidate) => {
+        try {
+          parseCalculatorArithmeticExpression(candidate);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .sort((left, right) => {
+        const leftHasOperator = /[+\-*/%]/.test(left) ? 1 : 0;
+        const rightHasOperator = /[+\-*/%]/.test(right) ? 1 : 0;
+        return rightHasOperator - leftHasOperator || right.length - left.length;
+      });
+    if (scored[0]) return scored[0];
+
+    const fallback = normalizeCalculatorExpression(cleaned).trim();
+    try {
+      parseCalculatorArithmeticExpression(fallback);
+      return fallback;
+    } catch {
+      return "";
+    }
+  }
+
+  function extractCalculatorGraphExpression(modelText) {
+    const cleaned = expressionText(modelText)
+      .replace(/```(?:javascript|js|text|math)?/gi, "")
+      .replace(/```/g, "")
+      .replace(/\bf\s*\(\s*x\s*\)\s*=/gi, "")
+      .replace(/\by\s*=/gi, "")
+      .toLowerCase();
+    const allowedNames = Object.keys(calculatorGraphFunctions).concat(Object.keys(calculatorGraphConstants), ["x"]).join("|");
+    const graphNumber = "(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+\\-]?\\d+)?";
+    const candidatePattern = new RegExp(`(?:\\b(?:${allowedNames})\\b|${graphNumber}|[+\\-*/%^(),\\s])+`, "g");
+    const candidates = cleaned.match(candidatePattern) || [];
+    const scored = candidates
+      .map((candidate) => normalizeGraphExpression(candidate))
+      .filter((candidate) => candidate && /^[a-z0-9+\-*/%^(),.]+$/.test(candidate))
+      .filter((candidate) => (
+        /\d/.test(candidate)
+        || /\bx\b/.test(candidate)
+        || Object.keys(calculatorGraphFunctions).some((name) => candidate.includes(`${name}(`))
+        || Object.keys(calculatorGraphConstants).some((name) => new RegExp(`\\b${name}\\b`).test(candidate))
+      ))
+      .filter((candidate) => {
+        try {
+          tokenizeCalculatorGraphExpression(candidate);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .sort((left, right) => {
+        const leftHasX = /\bx\b/.test(left) ? 1 : 0;
+        const rightHasX = /\bx\b/.test(right) ? 1 : 0;
+        const leftHasFn = /[a-z]{2,}\(/.test(left) ? 1 : 0;
+        const rightHasFn = /[a-z]{2,}\(/.test(right) ? 1 : 0;
+        return rightHasX - leftHasX || rightHasFn - leftHasFn || right.length - left.length;
+      });
+    return scored[0] || "";
   }
 
   function prepareArithmeticExpression(rawExpression) {
@@ -615,6 +771,52 @@
     });
   }
 
+  function normalizeCalculatorGraphRange(rawRange = {}) {
+    const range = Object.freeze({
+      xMin: Number(rawRange && rawRange.xMin),
+      xMax: Number(rawRange && rawRange.xMax),
+      yMin: Number(rawRange && rawRange.yMin),
+      yMax: Number(rawRange && rawRange.yMax)
+    });
+    if (!Object.values(range).every(Number.isFinite)) {
+      throw new Error("range values must be finite numbers");
+    }
+    if (range.xMin >= range.xMax) {
+      throw new Error("x min must be less than x max");
+    }
+    if (range.yMin >= range.yMax) {
+      throw new Error("y min must be less than y max");
+    }
+    return range;
+  }
+
+  function sampleCalculatorGraphExpression(rawExpression, rawRange, pixelWidth) {
+    const evaluator = compileGraphExpression(rawExpression);
+    const range = normalizeCalculatorGraphRange(rawRange || {});
+    const width = Math.max(1, Math.floor(Number(pixelWidth) || 1));
+    const samples = [];
+    let finiteCount = 0;
+    for (let px = 0; px <= width; px += 1) {
+      const x = range.xMin + (px / width) * (range.xMax - range.xMin);
+      const y = evaluator(x);
+      const visible = Number.isFinite(y) && y >= range.yMin && y <= range.yMax;
+      if (visible) finiteCount += 1;
+      samples.push(Object.freeze({px, x, y, visible}));
+    }
+    return Object.freeze({
+      ok: true,
+      expression: evaluator.expression,
+      normalizedExpression: evaluator.normalizedExpression,
+      grammar: evaluator.grammar,
+      parseStatus: evaluator.parseStatus,
+      tokenCount: evaluator.tokenCount,
+      range,
+      width,
+      finiteCount,
+      samples: Object.freeze(samples)
+    });
+  }
+
   return Object.freeze({
     schema: "main-computer-calculator-core-v1",
     version: "calculator-core-v1",
@@ -628,13 +830,23 @@
     graphFunctions: calculatorGraphFunctions,
     graphConstants: calculatorGraphConstants,
     normalizeCalculatorExpression,
+    appendCalculatorDisplayToken,
+    clearCalculatorDisplayExpression,
+    backspaceCalculatorDisplayExpression,
+    insertCalculatorGraphText,
+    clearCalculatorGraphExpression,
+    backspaceCalculatorGraphExpression,
     normalizeGraphExpression,
+    extractCalculatorExpression,
+    extractCalculatorGraphExpression,
     tokenizeCalculatorArithmeticExpression,
     tokenizeCalculatorGraphExpression,
     parseCalculatorArithmeticExpression,
     parseCalculatorGraphExpression,
     evaluateCalculatorArithmeticExpression,
     compileGraphExpression,
-    evaluateGraphExpression
+    evaluateGraphExpression,
+    normalizeCalculatorGraphRange,
+    sampleCalculatorGraphExpression
   });
 });

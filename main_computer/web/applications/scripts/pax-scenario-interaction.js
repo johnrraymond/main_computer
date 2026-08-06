@@ -80,6 +80,7 @@
     recoveryInProgress: false,
     lastError: "",
     lastHardKickoff: null,
+    recoveredCharacterRuntime: null,
     worldSnapshot: null,
     acknowledgedBriefings: new Set()
   };
@@ -1053,14 +1054,60 @@
     return uiState.runtime;
   }
 
+
+  function recoverDefeatedProtectionBoardersOnAttach(runtime) {
+    if (!runtime || uiState.recoveredCharacterRuntime === runtime) {
+      return {recovered: false, reason: "already-checked"};
+    }
+    uiState.recoveredCharacterRuntime = runtime;
+
+    const scenarioRuntime = uiState.runtime
+      || global.MainComputerSystemScenarioRuntime?.current?.()
+      || null;
+    const view = scenarioRuntime?.view?.(SCENARIO_ID) || null;
+    if (!view?.visible
+        || view.state?.status !== "active"
+        || view.state?.stageId !== PROTECTION_STAGE_ID) {
+      return {recovered: false, reason: "protection-not-active"};
+    }
+
+    const snapshot = runtime.snapshot?.() || {};
+    const characters = objectValue(snapshot.characters);
+    const boarders = BOARDER_IDS.map((characterId) => characters[characterId] || null);
+    const allPersistedDown = boarders.length === BOARDER_IDS.length
+      && boarders.every((character) => character
+        && (character.status === "down" || Number(character.health) <= 0));
+
+    if (!allPersistedDown) {
+      return {recovered: false, reason: "boarders-not-all-down"};
+    }
+
+    uiState.lastHardKickoff = null;
+    const result = forcePaxCharacterStates(
+      "character-runtime-attach-defeated-boarder-recovery",
+      {nowMs: nowMs({})}
+    );
+    return {
+      recovered: Boolean(result?.forced),
+      reason: result?.forced ? "persisted-defeated-boarders-reset" : "force-failed",
+      result
+    };
+  }
+
   function setCharacterRuntime(runtime) {
     if (uiState.characterUnsubscribe) uiState.characterUnsubscribe();
     uiState.characterRuntime = runtime || null;
+    const recovery = recoverDefeatedProtectionBoardersOnAttach(runtime);
     uiState.characterUnsubscribe = runtime?.subscribe?.(() => {
       syncProtection();
       render();
     }) || null;
     render();
+    if (recovery.recovered && typeof global.CustomEvent === "function") {
+      global.dispatchEvent?.(new global.CustomEvent("main-computer-pax-boarders-recovered", {
+        detail: recovery
+      }));
+    }
     return uiState.characterRuntime;
   }
 
