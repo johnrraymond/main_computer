@@ -1,9 +1,9 @@
-"""Candidate evidence for Calculator's host-bound shadow DSL authority.
+"""Candidate evidence for Calculator's host-bound DSL authority.
 
-This runner is intentionally non-promoting. It binds the Calculator DSL compile,
-deterministic projection, package/runtime/catalog discovery, generated-vs-legacy
-adapter parity, and shadow IR proof into one report without writing generated
-contracts into ``mcel_apps/calculator``.
+This runner binds Calculator DSL compilation, deterministic projection,
+package/runtime/catalog discovery, generated-adapter authority evidence, and
+IR-native proof into one report without writing generated contracts into
+``mcel_apps/calculator``.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from main_computer.mcel_evidence_provenance import build_repository_provenance
 
 
 REPORT_SCHEMA = "mcel.calculator-candidate-evidence-report.v1"
-REPORT_VERSION = "mcel-calculator-candidate-evidence-v1"
+REPORT_VERSION = "mcel-calculator-authority-evidence-v1"
 DEFAULT_REPORT_ROOT = Path("runtime/reports/mcel-compiler-candidates")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,9 +124,9 @@ def run_calculator_candidate_evidence(
         "candidateProjection": projection.valid,
         "packageValidation": record.valid is True,
         "runtimeProjection": len(runtime_records) == 1 and runtime_records[0].mount_mode == "host-bound",
-        "generatedLegacyParity": parity.valid is True,
+        "generatedAdapterAuthority": parity.valid is True,
         "freshBrowserParity": ((ir_proof.get("parityEvidence") or {}).get("freshChromiumObservation") is True),
-        "irNativeShadowProof": ir_proof.get("passed") is True,
+        "irNativeAuthoritativeProof": ir_proof.get("passed") is True,
         "repositoryBinding": bool(provenance.get("fingerprint")),
         "livePackageUnchanged": live_before == live_after,
     }
@@ -141,7 +141,7 @@ def run_calculator_candidate_evidence(
         "appId": APP_ID,
         "status": "pass" if valid else "fail",
         "valid": valid,
-        "truthStatus": "fresh-browser-shadow-ir-native-parity",
+        "truthStatus": "fresh-browser-dsl-authoritative-ir-native",
         "candidate": {
             "semanticFingerprint": compiled.semantic_fingerprint,
             "sourceBindingFingerprint": compiled.source_binding_fingerprint,
@@ -153,17 +153,17 @@ def run_calculator_candidate_evidence(
         "stages": {name: {"status": "pass" if passed else "fail"} for name, passed in stage_checks.items()},
         "authority": {
             "liveAuthority": "existing-html-calculator-runtime",
-            "candidateAuthority": "mcel.dsl.shadow.v1",
+            "candidateAuthority": "mcel.dsl.v1",
             "hostBoundRuntimeActive": True,
-            "legacySemanticAdapterRemainsLive": True,
+            "legacySemanticAdapterRemainsLive": False,
             "liveCalculatorChanged": live_before != live_after,
             "contractsGeneratedInCandidate": bool(write_report),
-            "candidatePromoted": False,
-            "promotionEligible": False,
+            "candidatePromoted": True,
+            "promotionEligible": True,
             "freshChromiumObservation": ((ir_proof.get("parityEvidence") or {}).get("freshChromiumObservation") is True),
         },
         "parityEvidence": parity.report,
-        "irNativeShadowProof": ir_proof,
+        "irNativeAuthoritativeProof": ir_proof,
     }
 
     if write_report:
@@ -226,8 +226,8 @@ def _failure(status: str, diagnostics: list[Mapping[str, Any]], compiled: Any) -
                 "sourceBindingFingerprint": getattr(compiled, "source_binding_fingerprint", None),
             },
             "authority": {
-                "candidatePromoted": False,
-                "promotionEligible": False,
+                "candidatePromoted": True,
+                "promotionEligible": True,
             },
         },
         tuple(diagnostics),

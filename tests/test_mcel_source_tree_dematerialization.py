@@ -13,8 +13,8 @@ from main_computer.mcel_application_virtual_assets import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PROMOTED_APPS = ("contract-counter", "contract-workbench")
-SHADOW_APPS = ("calculator",)
+PROMOTED_APPS = ("calculator", "contract-counter", "contract-workbench")
+SHADOW_APPS: tuple[str, ...] = ()
 GENERATED_SOURCE_NAMES = ("contracts", "generated", "mcel.generated.json")
 
 

@@ -1,17 +1,14 @@
-"""Calculator generated-adapter parity evidence for the host-bound shadow DSL.
+"""Calculator generated-adapter evidence for the host-bound DSL authority.
 
-This authority does not promote Calculator. It proves that the generated DSL
-adapter and the legacy semantic adapter name the same stable runtime facade
-methods, that host-bound runtime projection is active, and that local Calculator
-intents remain provider-free. When requested through the profile hook it also
-delegates to the fresh browser parity observation runner.
+This authority is post-promotion: the generated DSL adapter is the semantic
+adapter.  The evidence proves that the generated bindings cover the eleven
+stable Calculator runtime methods, that host-bound runtime projection is active,
+and that local Calculator intents remain provider-free.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,15 +22,14 @@ from main_computer.mcel_projection_profiles.calculator_shadow_v1 import EXPECTED
 
 
 APP_ID = "calculator"
-REPORT_SCHEMA = "mcel.calculator-generated-adapter-parity.v1"
+REPORT_SCHEMA = "mcel.calculator-generated-adapter-authority.v1"
 LOCAL_LANES = frozenset({"local-ui", "local-arithmetic", "local-graph"})
 CAPABILITY_LANES = frozenset({"model-arithmetic", "model-graph", "model-mathics", "mathics", "model-result-qa", "result-qa"})
 DEFAULT_DSL_SOURCE = Path("mcel_apps/calculator/application.js")
-LEGACY_ADAPTER = Path("main_computer/web/applications/scripts/calculator-semantic-adapter.js")
 
 
 class CalculatorParityError(RuntimeError):
-    """Raised when Calculator shadow parity evidence cannot converge."""
+    """Raised when Calculator generated-adapter evidence cannot converge."""
 
 
 @dataclass(frozen=True)
@@ -57,24 +53,22 @@ class CalculatorParityResult:
 def run_calculator_generated_adapter_parity(
     *,
     repo_root: Path,
-    operation_prefix: str = "candidate",
+    operation_prefix: str = "promoted",
 ) -> CalculatorParityResult:
-    """Compare generated Calculator adapter bindings with the live semantic facade."""
+    """Prove the generated Calculator adapter is the live semantic authority."""
 
     repo = Path(repo_root).resolve()
     diagnostics: list[Mapping[str, Any]] = []
     dsl_source = repo / DEFAULT_DSL_SOURCE
-    legacy_path = repo / LEGACY_ADAPTER
 
     compiled = compile_dsl_application(dsl_source, write_candidate=False)
     diagnostics.extend(compiled.diagnostics)
     if not compiled.valid or compiled.normalized_ir is None:
-        diagnostics.append(_diagnostic("MCEL_CALCULATOR_PARITY_DSL_INVALID", "Calculator DSL did not compile.", "$source"))
+        diagnostics.append(_diagnostic("MCEL_CALCULATOR_AUTHORITY_DSL_INVALID", "Calculator DSL did not compile.", "$source"))
         return _result(False, "fail", diagnostics, {})
 
     projection = project_calculator_ir(compiled.normalized_ir)
     generated = _generated_bindings(compiled.normalized_ir)
-    legacy = _legacy_bindings(legacy_path)
     catalog = build_application_package_catalog(repo)
     runtime = build_runtime_projection_set(repo)
     browser = build_repository_browser_catalog_payload(repo)
@@ -82,8 +76,8 @@ def run_calculator_generated_adapter_parity(
     package_records = [item for item in catalog.packages if item.app_id == APP_ID]
     runtime_records = [item for item in runtime.projections if item.app_id == APP_ID]
     browser_records = [item for item in browser.get("packages") or [] if item.get("appId") == APP_ID]
+    manifest = _manifest(repo)
 
-    parity = _compare_bindings(generated, legacy)
     local_provider_free = {
         name: (
             binding.get("lane") in LOCAL_LANES
@@ -92,6 +86,10 @@ def run_calculator_generated_adapter_parity(
         )
         for name, binding in generated.items()
         if binding.get("lane") in LOCAL_LANES
+    }
+    runtime_binding_checks = {
+        name: binding.get("runtimeMethod") == EXPECTED_INTENTS.get(name)
+        for name, binding in generated.items()
     }
     capability_accounting = _capability_accounting(compiled.normalized_ir, generated)
     projected_files = [
@@ -104,6 +102,9 @@ def run_calculator_generated_adapter_parity(
 
     checks = {
         "dslCompiled": compiled.valid and compiled.normalized_ir is not None,
+        "manifestAuthoritative": (manifest.get("authoring") or {}).get("status") == "dsl-authoritative",
+        "legacyAdapterRetired": not (repo / "main_computer/web/applications/scripts/calculator-semantic-adapter.js").exists(),
+        "legacySurfaceRetired": not (repo / "main_computer/web/applications/scripts/mcel-calculator-surface.js").exists(),
         "packageDiscoveredOnce": len(package_records) == 1 and bool(package_records and package_records[0].valid),
         "runtimeProjectionHostBound": (
             len(runtime_records) == 1
@@ -121,8 +122,7 @@ def run_calculator_generated_adapter_parity(
             and (browser_records[0].get("runtimeProjection") or {}).get("hostRoute") == "/applications/calculator"
         ),
         "generatedIntentSetExact": set(generated) == set(EXPECTED_INTENTS),
-        "legacyIntentSetExact": set(legacy) == set(EXPECTED_INTENTS),
-        "generatedLegacyBindingsMatch": all(item.get("match") is True for item in parity.values()),
+        "generatedRuntimeBindingsExact": bool(runtime_binding_checks) and all(runtime_binding_checks.values()),
         "localIntentsProviderFree": bool(local_provider_free) and all(local_provider_free.values()),
         "capabilityAccountingClosed": capability_accounting.get("status") == "closed",
         "projectionFileSetExact": sorted(projection.files) == [
@@ -138,18 +138,18 @@ def run_calculator_generated_adapter_parity(
     }
     for key, passed in checks.items():
         if not passed:
-            diagnostics.append(_diagnostic("MCEL_CALCULATOR_PARITY_CHECK_FAILED", f"Calculator parity check failed: {key}.", f"$checks.{key}"))
+            diagnostics.append(_diagnostic("MCEL_CALCULATOR_AUTHORITY_CHECK_FAILED", f"Calculator authority check failed: {key}.", f"$checks.{key}"))
 
     valid = not diagnostics and all(checks.values())
     report: dict[str, Any] = {
         "schema": REPORT_SCHEMA,
-        "version": "mcel-calculator-generated-adapter-parity-v1",
+        "version": "mcel-calculator-generated-adapter-authority-v1",
         "appId": APP_ID,
         "status": "pass" if valid else "fail",
         "valid": valid,
         "operationPrefix": operation_prefix,
         "generatedAt": _utc_now(),
-        "coverageMode": "host-bound-generated-adapter-vs-legacy-semantic-adapter",
+        "coverageMode": "host-bound-generated-adapter-authority",
         "semanticFingerprint": compiled.semantic_fingerprint,
         "sourceBindingFingerprint": compiled.source_binding_fingerprint,
         "projectionProfile": projection.profile_id,
@@ -162,8 +162,7 @@ def run_calculator_generated_adapter_parity(
         "checks": checks,
         "intentCount": len(generated),
         "generatedBindings": generated,
-        "legacyBindings": legacy,
-        "bindingParity": parity,
+        "runtimeBindingChecks": runtime_binding_checks,
         "localProviderFree": local_provider_free,
         "capabilityAccounting": capability_accounting,
         "projection": {
@@ -173,10 +172,11 @@ def run_calculator_generated_adapter_parity(
             "publishedAsSecondCalculator": False,
         },
         "authority": {
-            "liveCalculatorChanged": False,
-            "legacySemanticAdapterRemainsLive": True,
-            "candidatePromoted": False,
-            "promotionEligible": False,
+            "liveCalculatorChanged": True,
+            "legacySemanticAdapterRemainsLive": False,
+            "legacySemanticAdapterRetired": True,
+            "candidatePromoted": True,
+            "promotionEligible": True,
             "freshChromiumObservation": False,
         },
     }
@@ -186,21 +186,15 @@ def run_calculator_generated_adapter_parity(
 def run_calculator_browser_parity_probe(
     repo: Path,
     headed: bool = False,
-    operation_prefix: str = "candidate",
+    operation_prefix: str = "promoted",
 ) -> Mapping[str, Any]:
-    """Profile hook compatible with the generic app authoring probe signature.
-
-    This is now a fresh Chromium parity observation. It loads the real
-    Calculator route, exercises the host-bound generated adapter and the legacy
-    semantic adapter through the same runtime facade, and fails closed when the
-    browser evidence cannot be produced.
-    """
+    """Profile hook compatible with the generic app authoring probe signature."""
 
     from main_computer.mcel_calculator_browser_observation import run_calculator_browser_observation
 
     static = run_calculator_generated_adapter_parity(repo_root=repo, operation_prefix=operation_prefix)
     if not static.valid:
-        raise CalculatorParityError("; ".join(str(item.get("summary")) for item in static.diagnostics) or "Calculator parity failed.")
+        raise CalculatorParityError("; ".join(str(item.get("summary")) for item in static.diagnostics) or "Calculator authority evidence failed.")
     browser = run_calculator_browser_observation(
         repo_root=repo,
         headed=headed,
@@ -208,14 +202,22 @@ def run_calculator_browser_parity_probe(
         require_browser=True,
     )
     if not browser.valid:
-        raise CalculatorParityError("; ".join(str(item.get("summary")) for item in browser.diagnostics) or "Calculator browser parity failed.")
+        raise CalculatorParityError("; ".join(str(item.get("summary")) for item in browser.diagnostics) or "Calculator browser observation failed.")
     report = dict(static.report)
-    report["schema"] = "mcel.calculator-browser-parity-probe.v2"
-    report["coverageMode"] = "fresh-browser-host-bound-generated-adapter-vs-legacy-semantic-adapter"
+    report["schema"] = "mcel.calculator-browser-authority-probe.v1"
+    report["coverageMode"] = "fresh-browser-host-bound-generated-adapter-authority"
     report["browserObservation"] = dict(browser.report)
     report.setdefault("authority", {})["freshChromiumObservation"] = True
-    report.setdefault("checks", {})["freshBrowserParity"] = True
+    report.setdefault("checks", {})["freshBrowserAuthority"] = True
     return report
+
+
+def _manifest(repo: Path) -> Mapping[str, Any]:
+    try:
+        value = __import__("json").loads((repo / "mcel_apps/calculator/mcel.app.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return value if isinstance(value, Mapping) else {}
 
 
 def _generated_bindings(ir: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -235,67 +237,6 @@ def _generated_bindings(ir: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             "risk": str(intent.get("risk") or ""),
             "operationKind": str(intent.get("operationKind") or ""),
             "effectRefs": [str((ref or {}).get("ref") or "") for ref in intent.get("effectRefs") or [] if isinstance(ref, Mapping)],
-        }
-    return out
-
-
-def _legacy_bindings(path: Path) -> dict[str, dict[str, Any]]:
-    source = path.read_text(encoding="utf-8")
-    marker = "const INTENT_DEFINITIONS = Object.freeze(["
-    start = source.find(marker)
-    if start < 0:
-        raise CalculatorParityError("Legacy Calculator semantic adapter no longer declares INTENT_DEFINITIONS.")
-    body_start = source.find("[", start)
-    body_end = source.find("]);", body_start)
-    if body_start < 0 or body_end < 0:
-        raise CalculatorParityError("Could not isolate Calculator INTENT_DEFINITIONS.")
-    body = source[body_start:body_end]
-    records: dict[str, dict[str, Any]] = {}
-    for match in re.finditer(r"Object\.freeze\(\{(?P<body>.*?)\}\)", body, flags=re.S):
-        raw = match.group("body")
-        intent_id = _string_property(raw, "id")
-        if not intent_id:
-            continue
-        records[intent_id] = {
-            "sourceName": intent_id,
-            "runtimeMethod": _string_property(raw, "runtimeMethod"),
-            "executionBinding": _string_property(raw, "executionBinding"),
-            "lane": _string_property(raw, "lane"),
-            "risk": _string_property(raw, "risk"),
-            "mutates": _bool_property(raw, "mutates"),
-        }
-    if set(records) != set(EXPECTED_INTENTS):
-        raise CalculatorParityError(
-            "Legacy Calculator semantic adapter intent set drifted: "
-            f"missing={sorted(set(EXPECTED_INTENTS) - set(records))}, extra={sorted(set(records) - set(EXPECTED_INTENTS))}"
-        )
-    return records
-
-
-def _compare_bindings(generated: Mapping[str, Mapping[str, Any]], legacy: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for name in sorted(set(generated) | set(legacy)):
-        gen = generated.get(name) or {}
-        old = legacy.get(name) or {}
-        risk_match = gen.get("risk") == old.get("risk")
-        if gen.get("lane") in CAPABILITY_LANES:
-            # The shadow DSL intentionally upgrades provider-backed lanes to
-            # explicit external-read capability risk while the legacy adapter
-            # still labels them non-mutating/read-only. Parity here is the
-            # stable runtime binding; risk sharpening is recorded, not a drift.
-            risk_match = gen.get("risk") == "external-read" and old.get("mutates") is False
-        checks = {
-            "runtimeMethod": gen.get("runtimeMethod") == old.get("runtimeMethod") == EXPECTED_INTENTS.get(name),
-            "executionBinding": gen.get("executionBinding") == old.get("executionBinding"),
-            "lane": gen.get("lane") == old.get("lane"),
-            "riskCompatible": risk_match,
-            "legacyNonMutating": old.get("mutates") is False,
-        }
-        out[name] = {
-            "match": all(checks.values()),
-            "checks": checks,
-            "generated": {key: gen.get(key) for key in ("intentId", "runtimeMethod", "executionBinding", "lane", "risk")},
-            "legacy": {key: old.get(key) for key in ("runtimeMethod", "executionBinding", "lane", "risk", "mutates")},
         }
     return out
 
@@ -335,22 +276,10 @@ def _capability_accounting(ir: Mapping[str, Any], generated: Mapping[str, Mappin
     }
 
 
-def _string_property(raw: str, name: str) -> str:
-    match = re.search(rf"\b{re.escape(name)}\s*:\s*[\"']([^\"']+)[\"']", raw)
-    return match.group(1) if match else ""
-
-
-def _bool_property(raw: str, name: str) -> bool | None:
-    match = re.search(rf"\b{re.escape(name)}\s*:\s*(true|false)\b", raw)
-    if not match:
-        return None
-    return match.group(1) == "true"
-
-
 def _result(valid: bool, status: str, diagnostics: list[Mapping[str, Any]], extra: Mapping[str, Any]) -> CalculatorParityResult:
     report = {
         "schema": REPORT_SCHEMA,
-        "version": "mcel-calculator-generated-adapter-parity-v1",
+        "version": "mcel-calculator-generated-adapter-authority-v1",
         "appId": APP_ID,
         "status": status,
         "valid": valid,

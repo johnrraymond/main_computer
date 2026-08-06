@@ -16,34 +16,35 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "mcel_apps/calculator"
 
 
-def test_calculator_shadow_is_valid_authored_only_repository_authority() -> None:
+def test_calculator_authoritative_package_is_authored_only_repository_authority() -> None:
     catalog = build_application_package_catalog(ROOT)
     assert catalog.ok is True
     record = next(item for item in catalog.packages if item.app_id == "calculator")
     assert record.valid is True
-    assert record.conformance["shadow"] is True
+    assert record.conformance["shadow"] is False
+    assert record.conformance["currentMode"] == "semantic-runtime-proven"
     assert record.runtime == {}
-    assert len(record.files) == 20
     assert not (PACKAGE / "contracts").exists()
     assert not (PACKAGE / "generated").exists()
     assert not (PACKAGE / "mcel.generated.json").exists()
     assert not (PACKAGE / "src").exists()
 
 
-def test_calculator_shadow_compiles_and_projects_through_generic_commands() -> None:
+def test_calculator_authoritative_dsl_compiles_and_projects_through_generic_commands() -> None:
     compiled = compile_application(app_id="calculator", repo_root=ROOT)
     assert compiled.valid is True
-    assert compiled.report["sourceAuthority"] == "mcel.dsl.shadow.v1"
-    assert compiled.report["promotionExecuted"] is False
+    assert compiled.report["sourceAuthority"] == "mcel.dsl.v1"
+    assert compiled.report["promotionExecuted"] is True
 
     projected = project_application(app_id="calculator", repo_root=ROOT)
     assert projected.valid is True
-    assert projected.report["projectionProfile"] == "mcel.calculator.shadow-projection.v1"
+    assert projected.report["projectionProfile"] == "mcel.calculator.host-bound-projection.v1"
     assert projected.report["projection"]["projection"]["intentCount"] == 11
-    assert projected.report["projection"]["authority"]["liveCalculatorChanged"] is False
+    assert projected.report["projection"]["authority"]["liveCalculatorChanged"] is True
+    assert projected.report["projection"]["authority"]["promotionEligible"] is True
 
 
-def test_calculator_shadow_candidate_write_is_isolated_and_deterministic(tmp_path: Path) -> None:
+def test_calculator_authoritative_candidate_write_is_isolated_and_deterministic(tmp_path: Path) -> None:
     before = {
         path.relative_to(PACKAGE).as_posix(): path.read_bytes()
         for path in PACKAGE.rglob("*")
@@ -76,7 +77,7 @@ def test_calculator_shadow_candidate_write_is_isolated_and_deterministic(tmp_pat
     assert (first.candidate_directory / "projections/generated/mcel.application.normalized.json").is_file()
 
 
-def test_shadow_package_is_published_only_as_host_bound_calculator_runtime() -> None:
+def test_authoritative_package_is_published_only_as_host_bound_calculator_runtime() -> None:
     runtime = build_runtime_projection_set(ROOT)
     browser = build_repository_browser_catalog_payload(ROOT)
     runtime_records = [item for item in runtime.projections if item.app_id == "calculator"]
@@ -91,10 +92,12 @@ def test_shadow_package_is_published_only_as_host_bound_calculator_runtime() -> 
     assert browser_records[0]["runtimeProjection"]["mountMode"] == "host-bound"
 
 
-def test_calculator_core_include_precedes_runtime_include() -> None:
+def test_calculator_core_include_precedes_runtime_include_and_legacy_layers_are_removed() -> None:
     shell = (ROOT / "main_computer/web/applications.html").read_text(encoding="utf-8")
     core = "<!-- @include applications/scripts/calculator-core.js -->"
     runtime = "<!-- @include applications/scripts/calculator.js -->"
     assert core in shell
     assert runtime in shell
     assert shell.index(core) < shell.index(runtime)
+    assert "calculator-semantic-adapter.js" not in shell
+    assert "mcel-calculator-surface.js" not in shell

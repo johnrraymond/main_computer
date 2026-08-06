@@ -1,8 +1,9 @@
-"""Deterministic compatibility projection for the shadow Calculator DSL.
+"""Deterministic host-bound projection for the Calculator DSL authority.
 
 The profile projects canonical Calculator Application IR into browser contract
 modules without reading or copying the live Calculator HTML, CSS, or runtime.
-Those stable host interfaces remain authoritative until a later promotion.
+Those stable host interfaces remain the durable presentation boundary while the
+DSL is the semantic authority.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any, Mapping
 from main_computer.mcel_application_ir import canonical_json_bytes
 
 
-PROFILE_ID = "mcel.calculator.shadow-projection.v1"
+PROFILE_ID = "mcel.calculator.host-bound-projection.v1"
 APP_ID = "calculator"
 NORMALIZED_DEFINITION = "generated/mcel.application.normalized.json"
 EXPECTED_INTENTS = {
@@ -78,11 +79,11 @@ def project_calculator_ir(application_ir: Mapping[str, Any]) -> CalculatorProjec
             )
         if intent.get("writes"):
             raise CalculatorProjectionProfileError(
-                f"Shadow Calculator intent {source_name!r} may not claim canonical writes."
+                f"Calculator intent {source_name!r} may not claim canonical writes."
             )
         if intent.get("transition"):
             raise CalculatorProjectionProfileError(
-                f"Shadow Calculator intent {source_name!r} may not embed a canonical transition."
+                f"Calculator intent {source_name!r} may not embed a canonical transition."
             )
 
     capability_ids = {
@@ -280,7 +281,7 @@ function bindingFor(intentName) {{
 export const CalculatorAdapter = Object.freeze({{
   schema: "mcel.semantic-adapter.v1",
   appId: "calculator",
-  adapterId: "calculator.dsl-shadow-adapter.v1",
+  adapterId: "calculator.dsl-authoritative-adapter.v1",
   bindings: BINDINGS,
   invoke(intentName, ...args) {{
     const binding = bindingFor(intentName);

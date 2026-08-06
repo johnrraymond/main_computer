@@ -58,7 +58,6 @@ MCEL_LAYER_INVENTORY = {
         "main_computer/web/applications/scripts/mcel-app-surface-registry.js",
         "main_computer/web/applications/scripts/mcel-app-truth-gate.js",
         "main_computer/web/applications/scripts/mcel-authored-surface-document.js",
-        "main_computer/web/applications/scripts/mcel-calculator-surface.js",
         "main_computer/web/applications/scripts/mcel-code-editor-authoring-status.js",
         "main_computer/web/applications/scripts/mcel-code-editor-preview-host.js",
         "main_computer/web/applications/scripts/mcel-code-editor-ridge-inspector.js",

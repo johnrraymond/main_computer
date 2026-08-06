@@ -1,8 +1,8 @@
-"""IR-native shadow proof for the host-bound Calculator DSL.
+"""IR-native proof for the host-bound Calculator DSL authority.
 
-Calculator is not promoted in this stage. This proof establishes that the
-shadow DSL, generated adapter, host-bound projection, legacy semantic adapter,
-and explicit capability lanes converge. Fresh Chromium parity observation is required here; promotion rehearsal remains a later authority.
+This proof establishes that the authoritative DSL, generated adapter,
+host-bound projection, stable runtime facade, and explicit capability lanes
+converge. Fresh Chromium generated-adapter observation is required.
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ from main_computer.mcel_calculator_parity import (
 )
 
 
-REPORT_SCHEMA = "mcel.calculator-ir-native-shadow-proof.v1"
-REPORT_VERSION = "mcel-calculator-ir-native-shadow-proof-v1"
+REPORT_SCHEMA = "mcel.calculator-ir-native-authoritative-proof.v1"
+REPORT_VERSION = "mcel-calculator-ir-native-authoritative-proof-v1"
 
 
 class CalculatorIrNativeProofError(RuntimeError):
-    """Raised when Calculator shadow IR proof cannot converge."""
+    """Raised when Calculator IR proof cannot converge."""
 
 
 def run_calculator_ir_native_intent_proof(
@@ -51,21 +51,21 @@ def run_calculator_ir_native_intent_proof(
         raise CalculatorIrNativeProofError(str(exc)) from exc
 
     if parity.get("valid") is not True or parity.get("status") != "pass":
-        raise CalculatorIrNativeProofError("Calculator generated/legacy adapter parity did not pass.")
+        raise CalculatorIrNativeProofError("Calculator generated-adapter authority evidence did not pass.")
 
     generated = parity.get("generatedBindings") or {}
-    binding_parity = parity.get("bindingParity") or {}
+    runtime_binding_checks = parity.get("runtimeBindingChecks") or {}
     local_provider_free = parity.get("localProviderFree") or {}
     capability_accounting = parity.get("capabilityAccounting") or {}
     checks = {
-        "shadowDslCompiled": bool(parity.get("semanticFingerprint")),
+        "dslAuthorityCompiled": bool(parity.get("semanticFingerprint")),
         "hostBoundProjectionActive": (parity.get("checks") or {}).get("runtimeProjectionHostBound") is True,
         "browserCatalogHostBound": (parity.get("checks") or {}).get("browserCatalogHostBound") is True,
-        "generatedLegacyBindingsMatch": all((entry or {}).get("match") is True for entry in binding_parity.values()),
+        "generatedRuntimeBindingsExact": bool(runtime_binding_checks) and all(runtime_binding_checks.values()),
         "allLocalIntentsProviderFree": bool(local_provider_free) and all(local_provider_free.values()),
         "capabilityAccountingClosed": capability_accounting.get("status") == "closed",
-        "legacyAdapterStillLive": (parity.get("authority") or {}).get("legacySemanticAdapterRemainsLive") is True,
-        "notPromoted": (parity.get("authority") or {}).get("promotionEligible") is False,
+        "legacyAdapterRetired": (parity.get("authority") or {}).get("legacySemanticAdapterRetired") is True,
+        "promoted": (parity.get("authority") or {}).get("promotionEligible") is True,
         "freshBrowserParity": (parity.get("authority") or {}).get("freshChromiumObservation") is True,
     }
 
@@ -74,12 +74,12 @@ def run_calculator_ir_native_intent_proof(
     scenario_count = _scenario_count(parity)
     intent_results = {
         str(name): {
-            "passed": bool((binding_parity.get(name) or {}).get("match")),
+            "passed": bool(runtime_binding_checks.get(name)),
             "runtimeMethod": (generated.get(name) or {}).get("runtimeMethod"),
             "lane": (generated.get(name) or {}).get("lane"),
             "risk": (generated.get(name) or {}).get("risk"),
             "effectRefs": list((generated.get(name) or {}).get("effectRefs") or []),
-            "checks": (binding_parity.get(name) or {}).get("checks") or {},
+            "checks": {"runtimeBinding": bool(runtime_binding_checks.get(name))},
         }
         for name in sorted(generated)
     }
@@ -89,7 +89,7 @@ def run_calculator_ir_native_intent_proof(
     if not passed:
         failed = failed_intents + [key for key, value in checks.items() if value is not True]
         raise CalculatorIrNativeProofError(
-            "Calculator shadow IR proof did not converge"
+            "Calculator IR proof did not converge"
             + (": " + ", ".join(failed[:12]) if failed else ".")
         )
 
@@ -97,10 +97,10 @@ def run_calculator_ir_native_intent_proof(
         "schema": REPORT_SCHEMA,
         "version": REPORT_VERSION,
         "appId": APP_ID,
-        "status": "ir-native-shadow",
+        "status": "ir-native-authoritative",
         "passed": True,
         "applicable": True,
-        "coverageMode": "fresh-browser-shadow-dsl-host-bound-generated-adapter-parity",
+        "coverageMode": "fresh-browser-dsl-authoritative-host-bound-generated-adapter",
         "semanticFingerprint": parity.get("semanticFingerprint"),
         "sourceBindingFingerprint": parity.get("sourceBindingFingerprint"),
         "declaredIntentCount": len(intent_results),
@@ -116,10 +116,10 @@ def run_calculator_ir_native_intent_proof(
         "observationBinding": observation_status,
         "intents": intent_results,
         "scenarios": {
-            f"calculator.shadow-parity.{name}": {
+            f"calculator.authoritative.{name}": {
                 "passed": True,
                 "intentId": (generated.get(name) or {}).get("intentId"),
-                "evidence": "generated-adapter/legacy-adapter binding parity",
+                "evidence": "generated-adapter runtime authority",
             }
             for name in sorted(generated)
         },
@@ -137,7 +137,7 @@ def run_calculator_ir_native_intent_proof(
             },
         },
         "legacyEvidenceRequired": False,
-        "promotionEligible": False,
+        "promotionEligible": True,
     }
 
 

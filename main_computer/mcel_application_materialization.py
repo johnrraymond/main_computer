@@ -95,7 +95,7 @@ def materialize_generated_package_files(
             version=(
                 "mcel-calculator-promotion-rehearsal-v1"
                 if authoring_status == "dsl-authoritative"
-                else "mcel-calculator-shadow-projection-v1"
+                else "mcel-calculator-host-bound-projection-v1"
             ),
         )
         return generated

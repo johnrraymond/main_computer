@@ -109,6 +109,12 @@
       "order": 37
     },
     {
+      "path": "mcel-dsl-app-authoring-surface.md",
+      "title": "MCEL DSL App Authoring Surface",
+      "kind": "markdown",
+      "order": 38
+    },
+    {
       "path": "mcel-requirements-language.md",
       "title": "MCEL Requirements Language",
       "kind": "markdown",
@@ -326,109 +332,109 @@
     },
     {
       "path": "game-ai-patch-01-strategic-data-contract.md",
-      "title": "Game AI Patch 01 — Strategic Data Contract",
+      "title": "Game AI Patch 01 \u2014 Strategic Data Contract",
       "kind": "markdown",
       "order": 75
     },
     {
       "path": "game-ai-patch-02-deterministic-cognition-kernel.md",
-      "title": "Game AI Patch 02 — Deterministic Cognition Kernel",
+      "title": "Game AI Patch 02 \u2014 Deterministic Cognition Kernel",
       "kind": "markdown",
       "order": 76
     },
     {
       "path": "game-ai-patch-03-action-authority-and-consequences.md",
-      "title": "Game AI Patch 03 — Action Authority and Consequences",
+      "title": "Game AI Patch 03 \u2014 Action Authority and Consequences",
       "kind": "markdown",
       "order": 77
     },
     {
       "path": "game-ai-patch-03-1-strategic-turn-coordination-and-revision-lock.md",
-      "title": "Game AI Patch 03.1 — Strategic Turn Coordination and Revision Lock",
+      "title": "Game AI Patch 03.1 \u2014 Strategic Turn Coordination and Revision Lock",
       "kind": "markdown",
       "order": 78
     },
     {
       "path": "game-ai-patch-04-vela-gate-three-agent-prototype.md",
-      "title": "Game AI Patch 04 — Vela Gate Three-Agent Prototype",
+      "title": "Game AI Patch 04 \u2014 Vela Gate Three-Agent Prototype",
       "kind": "markdown",
       "order": 79
     },
     {
       "path": "game-ai-patch-05-knowledge-propagation-and-captain-modeling.md",
-      "title": "Game AI Patch 05 — Knowledge Propagation and Captain Modeling",
+      "title": "Game AI Patch 05 \u2014 Knowledge Propagation and Captain Modeling",
       "kind": "markdown",
       "order": 80
     },
     {
       "path": "game-ai-patch-06-solace-reach-coordination-and-promises.md",
-      "title": "Game AI Patch 06 — Solace Reach Coordination and Promises",
+      "title": "Game AI Patch 06 \u2014 Solace Reach Coordination and Promises",
       "kind": "markdown",
       "order": 81
     },
     {
       "path": "game-ai-patch-07-bounded-campaign-director.md",
-      "title": "Game AI Patch 07 — Bounded Campaign Director",
+      "title": "Game AI Patch 07 \u2014 Bounded Campaign Director",
       "kind": "markdown",
       "order": 82
     },
     {
       "path": "game-ai-patch-08-communicative-intent-and-safe-wording.md",
-      "title": "Game AI Patch 08 — Communicative Intent and Safe Wording",
+      "title": "Game AI Patch 08 \u2014 Communicative Intent and Safe Wording",
       "kind": "markdown",
       "order": 83
     },
     {
       "path": "game-ai-patch-09-deterministic-budgeted-offscreen-simulation.md",
-      "title": "Game AI Patch 09 — Deterministic Budgeted Off-Screen Simulation",
+      "title": "Game AI Patch 09 \u2014 Deterministic Budgeted Off-Screen Simulation",
       "kind": "markdown",
       "order": 84
     },
     {
       "path": "game-ai-patch-09-1-live-strategic-session-and-developer-harness.md",
-      "title": "Game AI Patch 09.1 — Live Strategic Session and Developer Harness",
+      "title": "Game AI Patch 09.1 \u2014 Live Strategic Session and Developer Harness",
       "kind": "markdown",
       "order": 85
     },
     {
       "path": "game-ai-patch-09-2-player-visible-vela-gate-interaction.md",
-      "title": "Game AI Patch 09.2 — Player-Visible Vela Gate Interaction",
+      "title": "Game AI Patch 09.2 \u2014 Player-Visible Vela Gate Interaction",
       "kind": "markdown",
       "order": 86
     },
     {
       "path": "game-ai-patch-09-2-1-live-interface-polish.md",
-      "title": "Game AI Patch 09.2.1 — Live Interface Polish",
+      "title": "Game AI Patch 09.2.1 \u2014 Live Interface Polish",
       "kind": "markdown",
       "order": 87
     },
     {
       "path": "game-ai-patch-09-3-travel-triggered-offscreen-progression-and-return-summary.md",
-      "title": "Game AI Patch 09.3 — Travel-Triggered Off-Screen Progression and Return Summary",
+      "title": "Game AI Patch 09.3 \u2014 Travel-Triggered Off-Screen Progression and Return Summary",
       "kind": "markdown",
       "order": 88
     },
     {
       "path": "game-ai-patch-09-4-player-visible-solace-coordination.md",
-      "title": "Game AI Patch 09.4 — Player-Visible Solace Reach Coordination",
+      "title": "Game AI Patch 09.4 \u2014 Player-Visible Solace Reach Coordination",
       "kind": "markdown",
       "order": 89
     },
     {
       "path": "game-ai-patch-09-4-1-non-obscuring-collapsible-strategic-ui.md",
-      "title": "Game AI Patch 09.4.1 — Non-Obscuring Collapsible Strategic UI",
+      "title": "Game AI Patch 09.4.1 \u2014 Non-Obscuring Collapsible Strategic UI",
       "kind": "markdown",
       "order": 90
     },
     {
       "path": "game-ai-patch-10-a-character-policy-and-playable-characters.md",
-      "title": "Game AI Patch 10A — Character Policy Foundation and Playable Characters",
+      "title": "Game AI Patch 10A \u2014 Character Policy Foundation and Playable Characters",
       "kind": "markdown",
       "order": 91
     },
     {
       "path": "game-ai-patch-10-b-pax-neutrality-under-fire.md",
-      "title": "Game AI Patch 10B — Pax: Neutrality Under Fire",
+      "title": "Game AI Patch 10B \u2014 Pax: Neutrality Under Fire",
       "kind": "markdown",
       "order": 92
     },

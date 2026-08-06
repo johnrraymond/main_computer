@@ -4,29 +4,43 @@
 
 This is the documentation-first requirements contract for the Calculator app.
 
-The repository now also contains an unpromoted, authored-only shadow authority at
-`mcel_apps/calculator/application.js`. It declares the eleven stable Calculator
-operations, the existing `/applications/calculator` route and `#calculator-app`
-root, and explicit model, Mathics, and result-Q&A capability lanes. Its contracts
-and normalized IR are generated in memory. A host-bound virtual runtime now mounts
-the generated adapter onto the existing HTML through `MainComputerCalculatorRuntime`
-without copying HTML, CSS, or package source. The handwritten semantic adapter remains
-live until browser parity proof and promotion are completed.
+Calculator is now a `dsl-authoritative` host-bound MCEL application. The durable
+semantic source is `mcel_apps/calculator/application.js`; the durable presentation
+surface remains the existing `/applications/calculator` route, `#calculator-app`
+root, `calculator.html`, `calculator.css`, `calculator-core.js`, and
+`calculator.js` runtime facade.
 
-The current implementation has a calculator route, a rich calculator DOM, arithmetic input/result controls, scientific graphing controls, a graph canvas, Mathics symbolic panels, result Q&A, an embedded calculator chat panel, a calculator MCEL domain pack, a dedicated Calculator semantic adapter registered with the MCEL domain-adapter registry, and a five-layer Calculator semantic surface with shared layout grammar.
+The generated MCEL adapter is mounted onto the existing HTML through
+`MainComputerCalculatorRuntime`. Generated contracts, normalized IR, runtime
+manifests, browser catalog entries, proof inputs, and promotion reports are
+derived artifacts and are not checked into the Calculator package.
+
+The generic authoring surface for this pattern is documented in
+`pretty_docs/mcel-dsl-app-authoring-surface.md`.
+
+The former handwritten Calculator semantic adapter and Calculator-specific
+surface script have been retired. Historical docs may describe that bridge, but
+the current semantic authority is the DSL and its generated host-bound adapter.
 
 The current semantic runtime is intentionally lane-explicit:
 
 ```text
 local arithmetic: deterministic browser evaluation
-local graphing: deterministic parser and canvas rendering
+local arithmetic implementation: deterministic parser/evaluator in calculator-core.js
+local graphing: deterministic parser/evaluator and canvas rendering in calculator-core.js
 Mathics: explicit symbolic backend request
 model arithmetic/graph/Mathics: explicit provider requests
 result Q&A: explicit provider request over a visible calculator context snapshot
 hidden file/Git/shell/package/publish mutation: prohibited
 ```
 
-The requirements registry parses this document. MCEL Lab and the repository truth audit compare it with app blueprints, adapter coverage, surface policy, runtime evidence, and acceptance evidence. This document is specification evidence, not implementation proof. Calculator should be the small reference app for a complete MCEL semantic runtime because its core workflows are deterministic, low-risk, and easy to verify.
+The requirements registry parses this document. MCEL Lab and the repository truth
+audit compare it with app blueprints, adapter coverage, surface policy, runtime
+evidence, and acceptance evidence. This document is specification evidence, not
+implementation proof. Calculator should be the small reference app and is now the reference host-bound MCEL app because its
+stable HTML/CSS presentation surface remains live while its semantic authority is
+provided by the DSL.
+
 
 ## Roadmap use case: compare monthly costs
 
@@ -98,14 +112,14 @@ current_sources:
   - main_computer/web/applications/apps/calculator.html
   - main_computer/web/applications/scripts/calculator.js
   - main_computer/web/applications/scripts/mcel-host-bound-application-runtime.js
-  - main_computer/web/applications/scripts/calculator-semantic-adapter.js
-  - main_computer/web/applications/scripts/mcel-calculator-surface.js
+  - main_computer/web/applications/scripts/the retired Calculator semantic-adapter bridge
+  - main_computer/web/applications/scripts/the retired Calculator semantic-surface bridge
   - main_computer/web/applications/scripts/dom-bindings/calculator.js
   - main_computer/web/applications/scripts/mcel-supercut-packs-calculator.js
   - main_computer/web/applications/styles/calculator.css
   - main_computer/web/applications/scripts/mcel-specimen-planner.js
 semantic_adapter:
-  - main_computer/web/applications/scripts/calculator-semantic-adapter.js
+  - main_computer/web/applications/scripts/the retired Calculator semantic-adapter bridge
 verification:
   - tests/test_viewport_app_routes.py
   - tests/test_viewport_applications_static_core.py
@@ -980,7 +994,7 @@ desired_behavior: >
   without allowing hidden mutation or lane fallback.
 source_candidates:
   - main_computer/web/applications/scripts/calculator.js
-  - main_computer/web/applications/scripts/calculator-semantic-adapter.js
+  - main_computer/web/applications/scripts/the retired Calculator semantic-adapter bridge
   - main_computer/web/applications/scripts/mcel-domain-adapter-registry.js
 required_checks:
   - adapter reports runtimeCoreReady

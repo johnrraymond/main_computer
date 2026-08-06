@@ -1,4 +1,4 @@
-"""Isolated deterministic projection for the shadow Calculator DSL."""
+"""Isolated deterministic projection for the Calculator DSL authority."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from main_computer.mcel_projection_profiles.calculator_shadow_v1 import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DSL_SOURCE = Path("mcel_apps/calculator/application.js")
 DEFAULT_PACKAGE_ROOT = Path("mcel_apps/calculator")
-REPORT_SCHEMA = "mcel.calculator-shadow-projection-report.v1"
-VERSION = "mcel-calculator-shadow-projection-v1"
+REPORT_SCHEMA = "mcel.calculator-authoritative-projection-report.v1"
+VERSION = "mcel-calculator-host-bound-projection-v1"
 PROJECTION_PROFILE = PROFILE_ID
 
 
@@ -58,7 +58,7 @@ def project_calculator_candidate(
     candidate_root: Path = DEFAULT_CANDIDATE_ROOT,
     write_candidate: bool = False,
 ) -> CalculatorCandidateProjectionReport:
-    """Compile and project Calculator without mutating its live HTML/runtime."""
+    """Compile and project Calculator without copying its live HTML/runtime."""
 
     del fixture_ir_path  # Calculator has no checked-in compatibility IR snapshot.
     repo = _repository_root_for_source(dsl_source_path)
@@ -132,12 +132,12 @@ def project_calculator_candidate(
             "hostBoundRuntimeActive": True,
         },
         "authority": {
-            "liveCalculatorChanged": False,
+            "liveCalculatorChanged": True,
             "hostBoundRuntimeActive": True,
-            "legacySemanticAdapterRemainsLive": True,
+            "legacySemanticAdapterRemainsLive": False,
             "contractsGeneratedInCandidate": bool(write_candidate and not drift),
-            "candidatePromoted": False,
-            "promotionEligible": False,
+            "candidatePromoted": True,
+            "promotionEligible": True,
             "generatedArtifactsAreDerived": True,
         },
     }
@@ -259,11 +259,11 @@ def _result(
                 "sourceBindingFingerprint": getattr(compiled, "source_binding_fingerprint", None),
             },
             "authority": {
-                "liveCalculatorChanged": False,
+                "liveCalculatorChanged": True,
                 "hostBoundRuntimeActive": True,
                 "contractsGeneratedInCandidate": False,
-                "candidatePromoted": False,
-                "promotionEligible": False,
+                "candidatePromoted": True,
+                "promotionEligible": True,
             },
         },
     )

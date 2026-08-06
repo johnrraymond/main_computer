@@ -63,13 +63,13 @@ def test_repository_catalog_discovers_checked_in_contract_counter() -> None:
     assert "application-package-discovery" not in record.conformance["missingBridges"]
 
 
-def test_repository_catalog_materializes_calculator_shadow_contracts_in_memory() -> None:
+def test_repository_catalog_materializes_calculator_authoritative_contracts_in_memory() -> None:
     catalog = build_application_package_catalog(ROOT)
     record = next(item for item in catalog.packages if item.app_id == "calculator")
 
     assert record.valid is True
-    assert record.conformance["currentMode"] == "forward-specification"
-    assert record.conformance["shadow"] is True
+    assert record.conformance["currentMode"] == "semantic-runtime-proven"
+    assert record.conformance["shadow"] is False
     assert record.runtime == {}
     assert record.files["contracts/domain.js"]
     assert record.files["contracts/adapter.js"]

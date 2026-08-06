@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import shutil
 from pathlib import Path
 import socket
 
@@ -12,12 +13,14 @@ from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_genesis_birth import execute_genesis_birth_release
 from tools.mother.common.deployment_soft_replica import (
     MotherDeploymentSoftReplicaError,
+    _identity_binding_from_execution,
     build_soft_replica_transaction,
     verify_soft_replica_transaction,
     write_soft_replica_transaction,
 )
 from tests.test_mother_deployment_executor import _operation
 from tests.test_mother_deployment_genesis_birth import _BirthOpener, _birth_release
+from tests.test_mother_deployment_genesis import _single_node_identity_execution
 
 
 def _birth_evidence(tmp_path: Path):
@@ -167,6 +170,113 @@ def test_soft_replica_staging_rejects_a_or_multi_node_selection(tmp_path: Path) 
                 selected_nodes=selected,
             )
         assert caught.value.code == "MOTHER_DEPLOY_SOFT_REPLICA_SELECTION_MISMATCH"
+
+
+
+def test_post_genesis_identity_lookup_accepts_executor_result_receipts() -> None:
+    document = {
+        "kind": "main_computer.mother.deployment_identity_execution_result.v1",
+        "status": "pass",
+        "network": "mainnet",
+        "nodes": ["mainnetc-super1"],
+        "staged_scope": "install-reserved-identity",
+        "summary": {"complete": True},
+        "mutation_receipts": [
+            {
+                "node": "mainnetc-super1",
+                "controller_id": "coolify-c",
+                "endpoint": "/api/v1/services/c1-service-uuid/envs",
+                "environment_key": "MC_MOTHER_VALIDATOR_PRIVATE_KEY",
+                "source_ref": "reserved-mainnetc-super1-validator",
+                "value_sha256": "a" * 64,
+                "environment_variable_uuid": "env-validator",
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "postcondition": {
+                    "commitment_verified": True,
+                    "key_unique": True,
+                    "proof_mode": "readback-value-sha256",
+                },
+            },
+            {
+                "node": "mainnetc-super1",
+                "controller_id": "coolify-c",
+                "endpoint": "/api/v1/services/c1-service-uuid/envs",
+                "environment_key": "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY",
+                "source_ref": "reserved-mainnetc-super1-hub-admin",
+                "value_sha256": "b" * 64,
+                "environment_variable_uuid": "env-hub-admin",
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "postcondition": {
+                    "commitment_verified": True,
+                    "key_unique": True,
+                    "proof_mode": "readback-value-sha256",
+                },
+            },
+        ],
+    }
+
+    binding = _identity_binding_from_execution(document, "mainnetc-super1")
+
+    assert binding == {
+        "service_uuid": "c1-service-uuid",
+        "controller_id": "coolify-c",
+        "commitments": {
+            "MC_MOTHER_VALIDATOR_PRIVATE_KEY": {
+                "value_sha256": "a" * 64,
+                "environment_variable_uuid": "env-validator",
+                "source_ref": "reserved-mainnetc-super1-validator",
+            },
+            "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY": {
+                "value_sha256": "b" * 64,
+                "environment_variable_uuid": "env-hub-admin",
+                "source_ref": "reserved-mainnetc-super1-hub-admin",
+            },
+        },
+    }
+
+
+def test_post_genesis_c1_target_requires_successful_c1_identity_execution(tmp_path: Path) -> None:
+    paths, private_state, execution_path, rollback_verification_path = _single_node_identity_execution(tmp_path)
+    from tools.mother.common.deployment_genesis import (
+        build_deployment_genesis_transaction,
+        write_deployment_genesis_transaction,
+    )
+
+    transaction = build_deployment_genesis_transaction(
+        paths,
+        private_state,
+        execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
+        selected_nodes=("mainneta-super1",),
+        created_at="2026-08-06T18:00:00Z",
+    )
+    transaction_path, _ = write_deployment_genesis_transaction(
+        paths,
+        transaction,
+        operation=_operation("soft-replica-a1-only-genesis-write"),
+    )
+    verified = json.loads(transaction_path.read_text(encoding="utf-8"))
+    assert [target["node"] for target in verified["service_targets"]] == ["mainneta-super1"]
+    shutil.rmtree(paths.root / "actions" / "deployment-identity-executions")
+
+    # The post-genesis C1 target is no longer required to be in the A1
+    # genesis transaction, but Mother must still refuse to stage C1 until a
+    # separate C1 identity execution has installed and proven the service/env
+    # bindings that the soft-replica executor will later verify.
+    with pytest.raises(MotherDeploymentSoftReplicaError) as caught:
+        from tools.mother.common.deployment_soft_replica import _canonical_post_genesis_soft_target
+
+        _canonical_post_genesis_soft_target(
+            paths,
+            private_state,
+            network="mainnet",
+            node="mainnetc-super1",
+            genesis_sha256=transaction["genesis"]["canonical_json_sha256"],
+            current_validator_set=transaction["genesis"]["validator_set"],
+        )
+    assert caught.value.code == "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_REQUIRED"
 
 
 def test_cli_stages_and_verifies_soft_replica_transaction(

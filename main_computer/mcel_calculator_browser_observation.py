@@ -1,11 +1,9 @@
-"""Fresh browser parity observation for host-bound Calculator MCEL.
+"""Fresh browser observation for host-bound authoritative Calculator MCEL.
 
-The runner loads the real Applications viewport HTML, mounts the generated
-host-bound Calculator adapter, stubs only external Calculator capability
-endpoints, and compares generated-adapter execution against the legacy semantic
-adapter through the same live ``MainComputerCalculatorRuntime`` facade.
-
-It does not promote Calculator and does not write generated files to
+The runner loads the real Calculator host HTML, mounts the generated host-bound
+Calculator adapter, stubs only external Calculator capability endpoints, and
+compares generated-adapter execution against the stable
+``MainComputerCalculatorRuntime`` facade.  It writes no generated files to
 ``mcel_apps/calculator``.
 """
 
@@ -188,7 +186,7 @@ def run_calculator_browser_observation(
     operation_prefix: str = "candidate",
     require_browser: bool = True,
 ) -> CalculatorBrowserObservationResult:
-    """Run fresh generated/legacy Calculator parity inside Chromium.
+    """Run fresh generated Calculator adapter observation inside Chromium.
 
     ``require_browser`` exists for controlled tests that inspect the report shape
     without asserting local browser availability. Production profile hooks use
@@ -225,11 +223,10 @@ def run_calculator_browser_observation(
     checks = {
         "freshChromiumObservation": browser_report.get("freshChromiumObservation") is True,
         "generatedAdapterMounted": browser_report.get("generatedAdapterMounted") is True,
-        "legacyAdapterMounted": browser_report.get("legacyAdapterMounted") is True,
         "runtimeFacadeAvailable": browser_report.get("runtimeFacadeAvailable") is True,
         "intentsObserved": len(intent_results) == len(INTENT_PAYLOADS),
         "allIntentsPassed": bool(intent_results) and all(item.get("status") == "pass" for item in intent_results),
-        "legacyParityStatus": all((item.get("parity") or {}).get("status") == "pass" for item in intent_results),
+        "generatedRuntimeParityStatus": all((item.get("parity") or {}).get("status") == "pass" for item in intent_results),
         "localProviderFree": all(
             (item.get("network") or {}).get("requestCount") == 0
             for item in intent_results
@@ -273,10 +270,10 @@ def run_calculator_browser_observation(
         },
         "authority": {
             "hostBoundRuntimeActive": True,
-            "legacySemanticAdapterRemainsLive": True,
+            "legacySemanticAdapterRemainsLive": False,
             "freshChromiumObservation": browser_report.get("freshChromiumObservation") is True,
-            "promotionEligible": False,
-            "candidatePromoted": False,
+            "promotionEligible": True,
+            "candidatePromoted": True,
         },
     }
     return CalculatorBrowserObservationResult(valid, "pass" if valid else "fail", report, tuple(diagnostics))
@@ -376,7 +373,6 @@ def _run_playwright(*, repo: Path, headed: bool, operation_prefix: str) -> dict[
             page.wait_for_function(
                 """() => (
                     window.MainComputerCalculatorRuntime
-                    && window.CalculatorSemanticAdapter
                     && window.McelHostBoundApplicationRuntime
                     && window.McelHostBoundApplicationRuntime.getMount("calculator")
                     && window.McelHostBoundApplicationRuntime.getMount("calculator").active === true
@@ -421,7 +417,6 @@ def _calculator_observation_html(repo: Path) -> str:
         web / "scripts/dom-bindings/calculator.js",
         web / "scripts/mcel-semantic-adapter-toolkit.js",
         web / "scripts/calculator-core.js",
-        web / "scripts/calculator-semantic-adapter.js",
         web / "scripts/calculator.js",
     ]
     scripts = "\n".join(
@@ -473,7 +468,7 @@ def _browser_injected_projection(repo: Path) -> tuple[dict[str, Any], dict[str, 
         "CalculatorAdapter": {
             "schema": "mcel.semantic-adapter.v1",
             "appId": APP_ID,
-            "adapterId": "calculator.dsl-shadow-adapter.v1",
+            "adapterId": "calculator.dsl-authoritative-adapter.v1",
             "bindings": bindings,
         }
     }
@@ -552,11 +547,9 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
     });
   };
   const mount = window.McelHostBoundApplicationRuntime.getMount("calculator");
-  const legacy = window.CalculatorSemanticAdapter;
   const runtime = window.MainComputerCalculatorRuntime;
   const catalogRecord = window.McelApplicationPackages.getPackage("calculator");
   const generatedBindings = mount.modules.adapter.bindings;
-  const legacyIntents = Object.fromEntries((legacy.INTENT_DEFINITIONS || []).map((item) => [item.id, item]));
   const root = document.querySelector("#calculator-app");
 
   function domSnapshot() {
@@ -584,7 +577,6 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
   }
 
   async function resetFor(intentName) {
-    if (legacy && typeof legacy.resetState === "function") legacy.resetState();
     try { runtime.clearExpression(); } catch (_) {}
     try { runtime.resetGraph(); } catch (_) {}
     try { runtime.switchMode({mode: "basic"}); } catch (_) {}
@@ -595,41 +587,24 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
     await settle();
   }
 
-  function comparableState(snapshot) {
-    return {
-      mode: snapshot.mode,
-      expression: snapshot.expression,
-      result: snapshot.result,
-      graphExpression: snapshot.graphExpression,
-      graphStatus: snapshot.graphStatus,
-      mathicsExpression: snapshot.mathicsExpression,
-      mathicsOutput: snapshot.mathicsOutput,
-      qaAnswer: snapshot.qaAnswer,
-      qaStatus: snapshot.qaStatus,
-      hostBoundStatus: snapshot.hostBoundStatus,
-      hostBoundApp: snapshot.hostBoundApp
-    };
-  }
-
   function focusedComparable(intentName, snapshot) {
-    const state = comparableState(snapshot);
-    if (intentName === "switchMode") return {mode: state.mode, hostBoundStatus: state.hostBoundStatus, hostBoundApp: state.hostBoundApp};
+    if (intentName === "switchMode") return {mode: snapshot.mode, hostBoundStatus: snapshot.hostBoundStatus, hostBoundApp: snapshot.hostBoundApp};
     if (intentName === "enterToken" || intentName === "clearExpression" || intentName === "evaluateExpression" || intentName === "askModelForExpression") {
-      return {expression: state.expression, result: state.result, hostBoundStatus: state.hostBoundStatus, hostBoundApp: state.hostBoundApp};
+      return {expression: snapshot.expression, result: snapshot.result, hostBoundStatus: snapshot.hostBoundStatus, hostBoundApp: snapshot.hostBoundApp};
     }
     if (intentName === "drawGraph" || intentName === "resetGraph" || intentName === "askModelForGraphExpression") {
-      return {graphExpression: state.graphExpression, graphStatus: state.graphStatus, hostBoundStatus: state.hostBoundStatus, hostBoundApp: state.hostBoundApp};
+      return {graphExpression: snapshot.graphExpression, graphStatus: snapshot.graphStatus, hostBoundStatus: snapshot.hostBoundStatus, hostBoundApp: snapshot.hostBoundApp};
     }
     if (intentName === "askModelForMathicsExpression") {
-      return {mathicsExpression: state.mathicsExpression, hostBoundStatus: state.hostBoundStatus, hostBoundApp: state.hostBoundApp};
+      return {mathicsExpression: snapshot.mathicsExpression, hostBoundStatus: snapshot.hostBoundStatus, hostBoundApp: snapshot.hostBoundApp};
     }
     if (intentName === "evaluateMathics") {
-      return {mathicsExpression: state.mathicsExpression, mathicsOutput: state.mathicsOutput, mathicsStatus: state.mathicsStatus, hostBoundStatus: state.hostBoundStatus, hostBoundApp: state.hostBoundApp};
+      return {mathicsExpression: snapshot.mathicsExpression, mathicsOutput: snapshot.mathicsOutput, mathicsStatus: snapshot.mathicsStatus, hostBoundStatus: snapshot.hostBoundStatus, hostBoundApp: snapshot.hostBoundApp};
     }
     if (intentName === "askResultQuestion") {
-      return {qaAnswer: state.qaAnswer, qaStatus: state.qaStatus, hostBoundStatus: state.hostBoundStatus, hostBoundApp: state.hostBoundApp};
+      return {qaAnswer: snapshot.qaAnswer, qaStatus: snapshot.qaStatus, hostBoundStatus: snapshot.hostBoundStatus, hostBoundApp: snapshot.hostBoundApp};
     }
-    return state;
+    return snapshot;
   }
 
   const intentResults = [];
@@ -651,34 +626,15 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
     const generatedSnapshot = domSnapshot();
     const generatedRequests = finishRequests(generatedStart);
 
-    await resetFor(intentName);
-    const legacyStart = startRequests();
-    let legacyResult = null;
-    let legacyError = null;
-    try {
-      legacyResult = await legacy.executeIntent(intentName, clone(payload), {
-        operationId: `${operationPrefix}.${intentName}.legacy`,
-        expectedRevision: 0
-      });
-    } catch (error) {
-      legacyError = {message: error?.message || String(error), name: error?.name || "Error"};
-    }
-    await settle();
-    const legacySnapshot = domSnapshot();
-    const legacyRequests = finishRequests(legacyStart);
-
     const generatedComparable = focusedComparable(intentName, generatedSnapshot);
-    const legacyComparable = focusedComparable(intentName, legacySnapshot);
     const binding = generatedBindings[intentName] || {};
-    const legacyBinding = legacyIntents[intentName] || {};
-    const networkRequestCount = generatedRequests.length + legacyRequests.length;
+    const networkRequestCount = generatedRequests.length;
     requestCounts[intentName] = networkRequestCount;
     const parityChecks = {
       noGeneratedError: generatedError === null,
-      noLegacyError: legacyError === null,
-      runtimeMethod: binding.runtimeMethod === legacyBinding.runtimeMethod,
-      executionBinding: binding.executionBinding === legacyBinding.executionBinding,
-      domOutcome: JSON.stringify(generatedComparable) === JSON.stringify(legacyComparable),
+      runtimeMethod: typeof runtime?.[binding.runtimeMethod] === "function",
+      declaredBinding: binding.runtimeMethod === intentName,
+      hostBoundMounted: generatedSnapshot.hostBoundStatus === "mounted" && generatedSnapshot.hostBoundApp === "calculator",
       localProviderFree: localIntentNames.has(intentName) ? networkRequestCount === 0 : true,
       capabilityObserved: capabilityIntentNames.has(intentName) ? networkRequestCount > 0 : true
     };
@@ -687,7 +643,7 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
       intentName,
       status: passed ? "pass" : "fail",
       payload: clone(payload),
-      lane: legacyBinding.lane || "",
+      lane: binding.executionBinding || "",
       runtimeMethod: binding.runtimeMethod || "",
       generated: {
         ok: !generatedError,
@@ -696,13 +652,6 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
         snapshot: generatedSnapshot,
         comparable: generatedComparable
       },
-      legacy: {
-        ok: !legacyError && legacyResult?.ok !== false,
-        result: clone(legacyResult),
-        error: legacyError,
-        snapshot: legacySnapshot,
-        comparable: legacyComparable
-      },
       parity: {
         status: passed ? "pass" : "fail",
         checks: parityChecks
@@ -710,8 +659,7 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
       network: {
         requestCount: networkRequestCount,
         generatedRequestCount: generatedRequests.length,
-        legacyRequestCount: legacyRequests.length,
-        urls: [...generatedRequests, ...legacyRequests].map((entry) => entry.url)
+        urls: generatedRequests.map((entry) => entry.url)
       }
     });
   }
@@ -724,10 +672,10 @@ _BROWSER_PARITY_SCRIPT = r"""async ({operationPrefix}) => {
     .every((entry) => entry.network.requestCount > 0);
   const allPassed = intentResults.every((entry) => entry.status === "pass");
   return {
-    schema: "mcel.calculator-browser-parity-observation.browser-result.v1",
+    schema: "mcel.calculator-browser-observation.browser-result.v1",
     freshChromiumObservation: true,
     generatedAdapterMounted: !!mount?.active,
-    legacyAdapterMounted: !!legacy,
+    legacyAdapterMounted: false,
     runtimeFacadeAvailable: !!runtime,
     semanticFingerprint: catalogRecord?.semanticFingerprint || "",
     sourceBindingFingerprint: catalogRecord?.sourceBindingFingerprint || "",

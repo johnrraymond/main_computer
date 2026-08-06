@@ -16,6 +16,45 @@ HTML says what exists. The application contract says what it means and what tran
 
 The three surfaces must converge on the same stable component identities. None of them should create a private, competing layout language.
 
+
+## Current DSL app authoring surface
+
+The current generic MCEL DSL app authoring contract is documented in
+`pretty_docs/mcel-dsl-app-authoring-surface.md`.
+
+That guide is the canonical entry point for app authors who need to know which
+files are durable source, which artifacts are derived, which runtime
+presentation mode to choose, and how proof and promotion are separated.
+
+The short current surface is:
+
+```text
+mcel_apps/<app-id>/application.js        semantic DSL source
+mcel_apps/<app-id>/mcel.app.json         package, authority, projection, and evidence manifest
+mcel_apps/<app-id>/blueprint.json        product identity and framing
+mcel_apps/<app-id>/requirements.md       app-local requirements contract
+mcel_apps/<app-id>/tests/                authored tests and acceptance bindings
+optional existing route/HTML/CSS/facade  host-bound presentation authority
+```
+
+Generated contracts, normalized IR, browser package catalogs, candidates, proof
+reports, and promotion material are not app source. They are logical package
+outputs reconstructed in memory or beneath ignored disposable runtime/candidate
+locations.
+
+MCEL currently supports two presentation modes:
+
+| Mode | Durable presentation source | Runtime shape |
+| --- | --- | --- |
+| `package-document` | the app package owns its browser document | generated contracts mount beside authored package `src/` files |
+| `host-bound` | an existing route, HTML/CSS, root selector, and runtime facade remain stable | the generated MCEL adapter mounts onto the existing page |
+
+Counter and Workbench are `package-document` examples. Calculator is the
+reference `host-bound` example: its visible UI remains
+`/applications/calculator` and `#calculator-app`, while the DSL-generated
+adapter is the semantic authority.
+
+
 ## Status of this guide
 
 MCEL now has two related implementation layers:

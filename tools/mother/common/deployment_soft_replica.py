@@ -24,7 +24,7 @@ from .canonical import canonical_json
 from .coolify_state import resolve_coolify_controller
 from .deployment_genesis import verify_deployment_genesis_transaction
 from .deployment_genesis_birth import verify_genesis_birth_evidence
-from .ethereum_identity import is_private_key
+from .ethereum_identity import is_address, is_private_key
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -36,6 +36,10 @@ _BIRTH_RELEASE_DIRECTORY = ("actions", "deployment-genesis-birth-releases")
 _GENESIS_EXECUTION_DIRECTORY = ("actions", "deployment-genesis-executions")
 _GENESIS_RELEASE_DIRECTORY = ("actions", "deployment-genesis-releases")
 _GENESIS_TRANSACTION_DIRECTORY = ("actions", "deployment-genesis-transactions")
+_IDENTITY_EXECUTION_DIRECTORY = ("actions", "deployment-identity-executions")
+_IDENTITY_EXECUTION_RESULT_KIND = "main_computer.mother.deployment_identity_execution_result.v1"
+_EXPECTED_IDENTITY_KEYS = ("MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY")
+_SERVICE_ENV_ENDPOINT_RE = re.compile(r"^/api/v1/services/([^/]+)/envs(?:/[^/]+)?$")
 _BESU_IMAGE = "hyperledger/besu:latest"
 _INIT_IMAGE = "alpine:3.20"
 
@@ -113,6 +117,23 @@ def _private_document(private_state: PrivateStateReadResult) -> dict[str, Any]:
             "MOTHER_DEPLOY_SOFT_REPLICA_STATE_INVALID", "Mother private state is not an object"
         )
     return value
+
+
+
+def _mapping(value: Any, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_STATE_INVALID", f"{path} must be a mapping"
+        )
+    return value
+
+
+def _address(value: Any, path: str) -> str:
+    if type(value) is not str or not is_address(value):
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_STATE_INVALID", f"{path} must be an Ethereum address"
+        )
+    return value.lower()
 
 
 def _contains_sensitive(value: Any) -> bool:
@@ -295,7 +316,6 @@ def _trace_genesis_transaction(
         paths,
         private_state,
         transaction_path,
-        selected_nodes=("mainneta-super1", "mainnetc-super1"),
     )
     transaction, _, transaction_sha = _canonical_under(
         paths, transaction_path, _GENESIS_TRANSACTION_DIRECTORY, "genesis transaction"
@@ -314,6 +334,193 @@ def _trace_genesis_transaction(
         verified_birth, evidence, birth_evidence_path.resolve(strict=False), evidence_sha,
         transaction, transaction_path.resolve(strict=False), transaction_sha,
     )
+
+
+
+def _identity_binding_from_execution(document: Mapping[str, Any], node: str) -> dict[str, Any] | None:
+    if document.get("kind") != _IDENTITY_EXECUTION_RESULT_KIND or document.get("status") != "pass":
+        return None
+    if document.get("network") != "mainnet":
+        return None
+    nodes = document.get("nodes")
+    if type(nodes) is not list or node not in nodes:
+        return None
+    summary = document.get("summary")
+    if not isinstance(summary, Mapping) or summary.get("complete") is not True:
+        return None
+    receipts = document.get("mutation_receipts")
+    if type(receipts) is not list:
+        return None
+    service_uuid: str | None = None
+    controller_id: str | None = None
+    commitments: dict[str, Any] = {}
+    for index, raw_receipt in enumerate(receipts):
+        if not isinstance(raw_receipt, Mapping) or raw_receipt.get("node") != node:
+            continue
+        endpoint = raw_receipt.get("endpoint")
+        match = _SERVICE_ENV_ENDPOINT_RE.fullmatch(str(endpoint or ""))
+        if match is None:
+            raise MotherDeploymentSoftReplicaError(
+                "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_INVALID",
+                "post-genesis identity receipt does not bind one exact Coolify service",
+            )
+        current_service_uuid = _identifier(match.group(1), f"identity_receipts[{index}].service_uuid")
+        current_controller_id = _identifier(raw_receipt.get("controller_id"), f"identity_receipts[{index}].controller_id")
+        if service_uuid not in (None, current_service_uuid) or controller_id not in (None, current_controller_id):
+            raise MotherDeploymentSoftReplicaError(
+                "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_INVALID",
+                "post-genesis identity receipts disagree about the replica service binding",
+            )
+        service_uuid = current_service_uuid
+        controller_id = current_controller_id
+        env_key = _identifier(raw_receipt.get("environment_key"), f"identity_receipts[{index}].environment_key")
+        if env_key not in _EXPECTED_IDENTITY_KEYS:
+            raise MotherDeploymentSoftReplicaError(
+                "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_INVALID",
+                "post-genesis identity receipt contains an unexpected environment key",
+            )
+        postcondition = raw_receipt.get("postcondition")
+        if not isinstance(postcondition, Mapping) or not all(
+            [
+                raw_receipt.get("status") == "succeeded",
+                raw_receipt.get("live_write_acknowledged") is True,
+                postcondition.get("commitment_verified") is True,
+                postcondition.get("key_unique") is True,
+                postcondition.get("proof_mode") == "readback-value-sha256",
+            ]
+        ):
+            raise MotherDeploymentSoftReplicaError(
+                "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_INVALID",
+                "post-genesis identity receipt lacks a successful readback commitment proof",
+            )
+        if env_key in commitments:
+            raise MotherDeploymentSoftReplicaError(
+                "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_INVALID",
+                "post-genesis identity execution repeats an environment-key receipt",
+            )
+        commitments[env_key] = {
+            "value_sha256": _sha256(raw_receipt.get("value_sha256"), f"identity_receipts[{index}].value_sha256"),
+            "environment_variable_uuid": _identifier(
+                raw_receipt.get("environment_variable_uuid"),
+                f"identity_receipts[{index}].environment_variable_uuid",
+            ),
+            "source_ref": _identifier(raw_receipt.get("source_ref"), f"identity_receipts[{index}].source_ref"),
+        }
+    if service_uuid is None or controller_id is None or set(commitments) != set(_EXPECTED_IDENTITY_KEYS):
+        return None
+    return {
+        "service_uuid": service_uuid,
+        "controller_id": controller_id,
+        "commitments": commitments,
+    }
+
+
+def _latest_post_genesis_identity_binding(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    *,
+    node: str,
+) -> dict[str, Any] | None:
+    root = paths.root / _IDENTITY_EXECUTION_DIRECTORY[0] / _IDENTITY_EXECUTION_DIRECTORY[1]
+    if not root.exists():
+        return None
+    matches: list[tuple[str, Path, dict[str, Any]]] = []
+    for candidate in root.glob("*.json"):
+        try:
+            document, raw, _ = _canonical_under(
+                paths, candidate, _IDENTITY_EXECUTION_DIRECTORY, "identity execution"
+            )
+        except MotherDeploymentSoftReplicaError:
+            continue
+        if document.get("mother_binding") != _binding(private_state) or _contains_sensitive(document):
+            continue
+        binding = _identity_binding_from_execution(document, node)
+        if binding is None:
+            continue
+        completed_at = str(document.get("completed_at") or document.get("started_at") or "")
+        matches.append((completed_at, candidate, binding))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[0], item[1].name))
+    return matches[-1][2]
+
+
+def _canonical_post_genesis_soft_target(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    node: str,
+    genesis_sha256: str,
+    current_validator_set: list[str],
+) -> dict[str, Any]:
+    if node != "mainnetc-super1":
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_SELECTION_MISMATCH",
+            "post-genesis soft-replica staging may target only canonical C1",
+        )
+    document = _private_document(private_state)
+    network_state = _mapping(_mapping(document.get("networks"), "networks").get(network), f"networks.{network}")
+    deployment = _mapping(network_state.get("deployment"), f"networks.{network}.deployment")
+    targets = _mapping(deployment.get("targets"), f"networks.{network}.deployment.targets")
+    target_names = list(targets)
+    if len(target_names) < 2 or target_names[0] != "mainneta-super1" or target_names[1] != node:
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_CANONICAL_TOPOLOGY_MISMATCH",
+            "post-genesis soft-replica staging requires canonical A1 then C1 topology",
+        )
+    target_config = _mapping(targets.get(node), f"networks.{network}.deployment.targets.{node}")
+    if target_config.get("desired_service_name") != node:
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_CANONICAL_TOPOLOGY_MISMATCH",
+            "canonical C1 target service name is not stable",
+        )
+    controller_ref = _identifier(target_config.get("controller_ref"), f"networks.{network}.deployment.targets.{node}.controller_ref")
+    if not controller_ref.endswith(".coolify-c"):
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_CANONICAL_TOPOLOGY_MISMATCH",
+            "canonical C1 target is not bound to coolify-c",
+        )
+    validators = _mapping(network_state.get("validators"), f"networks.{network}.validators")
+    validator = _mapping(validators.get(node), f"networks.{network}.validators.{node}")
+    validator_address = _address(validator.get("address"), f"networks.{network}.validators.{node}.address")
+    binding = _latest_post_genesis_identity_binding(paths, private_state, node=node)
+    if binding is None:
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_REQUIRED",
+            "canonical C1 staging requires a successful post-genesis identity execution for mainnetc-super1",
+        )
+    if binding["controller_id"] != "coolify-c":
+        raise MotherDeploymentSoftReplicaError(
+            "MOTHER_DEPLOY_SOFT_REPLICA_IDENTITY_INVALID",
+            "post-genesis C1 identity execution is not bound to coolify-c",
+        )
+    desired_validator_set = list(current_validator_set)
+    if validator_address not in desired_validator_set:
+        desired_validator_set.append(validator_address)
+    return {
+        "node": node,
+        "mode": "soft",
+        "controller_id": "coolify-c",
+        "service_uuid": binding["service_uuid"],
+        "validator_address": validator_address,
+        "genesis_sha256": genesis_sha256,
+        "identity_commitments": dict(binding["commitments"]),
+        "service_start_authorized": False,
+        "validator_activation_authorized": False,
+        "phase": "admit-replica-after-birth",
+        "role": "prospective-validator",
+        "admission": {
+            "node": node,
+            "mode": "soft",
+            "validator_address": validator_address,
+            "current_validator_set": list(current_validator_set),
+            "desired_validator_set": desired_validator_set,
+            "requires_initial_chain_proof": True,
+            "live_vote_authorized": False,
+            "source": "canonical-post-genesis-topology",
+        },
+    }
 
 
 def _target(transaction: Mapping[str, Any], node: str) -> dict[str, Any]:
@@ -475,7 +682,19 @@ def build_soft_replica_transaction(
             "MOTHER_DEPLOY_SOFT_REPLICA_CHAIN_INVALID", "starter soft-replica compiler requires mainneta-super1"
         )
     replica_node = "mainnetc-super1"
-    target = _target(genesis_tx, replica_node)
+    try:
+        target = _target(genesis_tx, replica_node)
+    except MotherDeploymentSoftReplicaError as exc:
+        if exc.code != "MOTHER_DEPLOY_SOFT_REPLICA_TRANSACTION_INVALID":
+            raise
+        target = _canonical_post_genesis_soft_target(
+            paths,
+            private_state,
+            network=network,
+            node=replica_node,
+            genesis_sha256=genesis_sha,
+            current_validator_set=list(verified_birth["validator_set"]),
+        )
     admission = target.get("admission")
     if not isinstance(admission, Mapping) or admission.get("requires_initial_chain_proof") is not True:
         raise MotherDeploymentSoftReplicaError(

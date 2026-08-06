@@ -137,12 +137,11 @@ def _calculator_profile() -> AppAuthoringProfile:
         project_calculator_candidate,
     )
     from main_computer.mcel_calculator_ir_native_proof import run_calculator_ir_native_intent_proof
-    from main_computer.mcel_calculator_promotion_rehearsal import rehearse_calculator_promotion
-
-    def unsupported(*_args: Any, **_kwargs: Any) -> Any:
-        raise AppAuthoringProfileError(
-            "Calculator remains a shadow DSL authority; promotion and rollback are not registered."
-        )
+    from main_computer.mcel_calculator_promotion_rehearsal import (
+        execute_calculator_promotion,
+        rehearse_calculator_promotion,
+        rollback_calculator_promotion,
+    )
 
     def resolve_scenario_operation(scenario: Mapping[str, Any]) -> str:
         intent_id = str(((scenario.get("intent") or {}).get("ref") or ""))
@@ -150,15 +149,15 @@ def _calculator_profile() -> AppAuthoringProfile:
 
     return AppAuthoringProfile(
         app_id="calculator",
-        profile_id="mcel.calculator.authoring-profile.shadow-v1",
+        profile_id="mcel.calculator.authoring-profile.v1",
         projection_profile=PROJECTION_PROFILE,
         fixture_ir=None,
         candidate_source=DEFAULT_DSL_SOURCE,
         authoring_frontend="mcel.dsl.v1",
         project_candidate=project_calculator_candidate,
         rehearse_promotion=rehearse_calculator_promotion,
-        execute_promotion=unsupported,
-        rollback_promotion=unsupported,
+        execute_promotion=execute_calculator_promotion,
+        rollback_promotion=rollback_calculator_promotion,
         run_node_probe=None,
         run_browser_probe=run_calculator_browser_parity_probe,
         build_effect_accounting=None,
@@ -166,11 +165,10 @@ def _calculator_profile() -> AppAuthoringProfile:
         run_candidate_evidence=run_calculator_candidate_evidence,
         resolve_scenario_operation=resolve_scenario_operation,
         receipt_code_aliases={},
-        promotion_supported=False,
+        promotion_supported=True,
         promotion_rehearsal_supported=True,
         portable_ir_projection_complete=True,
     )
-
 
 def get_app_authoring_profile(app_id: str) -> AppAuthoringProfile:
     normalized = str(app_id or "").strip()

@@ -498,7 +498,23 @@
     }
 
     function calculatorSemanticAdapter() {
-      return window.CalculatorSemanticAdapter || null;
+      const hostRuntime = window.McelHostBoundApplicationRuntime;
+      const mount = hostRuntime && typeof hostRuntime.getMount === "function"
+        ? hostRuntime.getMount("calculator")
+        : null;
+      if (!mount || mount.active !== true || typeof mount.invoke !== "function") {
+        return null;
+      }
+      return {
+        executeIntent(intentId, payload) {
+          return Promise.resolve(mount.invoke(intentId, payload || {})).then((result) => {
+            if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "ok")) {
+              return result;
+            }
+            return {ok: true, status: "pass", result};
+          });
+        }
+      };
     }
 
     function executeCalculatorSemanticIntent(intentId, payload, fallback) {

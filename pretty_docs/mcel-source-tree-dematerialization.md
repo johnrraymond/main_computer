@@ -2,13 +2,33 @@
 
 ## Rule
 
-A promoted MCEL application has one durable authored representation under `mcel_apps/<app>/`: its authoritative `application.js`, package metadata, requirements, runtime UI source, and authored tests. Generated compatibility contracts, normalized application records, browser packages, catalogs, candidates, and proof reports are not application source.
+A promoted MCEL DSL application has one durable authored representation under
+`mcel_apps/<app>/`: its authoritative `application.js`, package metadata,
+requirements, and authored tests. It may also bind to durable presentation files
+outside `mcel_apps` when the app uses host-bound mode.
+
+Generated compatibility contracts, normalized application records, browser
+packages, catalogs, candidates, proof inputs, proof reports, and promotion
+reports are not application source.
 
 ## Logical packages
 
-Package discovery compiles a `dsl-authoritative` application and overlays its deterministic generated files in memory. Validation, package fingerprinting, runtime projection, acceptance, observation, proof, and compatibility consume that logical package. If stale `contracts/`, `generated/`, or `mcel.generated.json` files are present beside the source, package discovery excludes them so they cannot regain authority.
+Package discovery compiles a `dsl-authoritative` application and overlays its
+deterministic generated files in memory. Validation, package fingerprinting,
+runtime projection, acceptance, observation, proof, compatibility, and promotion
+consume that logical package.
 
-The logical package still exposes the compatibility files expected by the current runtime:
+If stale generated files are present beside the source, package discovery
+excludes them so they cannot regain authority:
+
+```text
+mcel_apps/<app>/contracts/
+mcel_apps/<app>/generated/
+mcel_apps/<app>/mcel.generated.json
+```
+
+The logical package still exposes the compatibility paths expected by the
+runtime and proof tools:
 
 ```text
 contracts/domain.js
@@ -19,51 +39,91 @@ contracts/layout.js
 contracts/acceptance.js
 contracts/observation.js
 mcel.generated.json
+generated/mcel.application.normalized.json   # only where the app's profile exposes it
+mcel.runtime.json
 ```
 
-Workbench and the unpromoted Calculator shadow authority also expose `generated/mcel.application.normalized.json`. These bytes are computed, not durable application source.
+These bytes are computed outputs, not durable application source.
 
-The Calculator shadow package is deliberately source-only. Package discovery compiles
-`mcel_apps/calculator/application.js`, overlays its generated contracts in memory, and
-publishes a host-bound runtime manifest with no copied `src/` presentation files. The
-generated adapter mounts onto the existing `/applications/calculator` surface and
-`#calculator-app` root through `MainComputerCalculatorRuntime`, so the existing HTML
-remains the only live Calculator while the shadow authority becomes browser-addressable.
+## Presentation modes
 
-## Virtual viewport mount and ephemeral browser build
+The current generic authoring surface is defined in
+`pretty_docs/mcel-dsl-app-authoring-surface.md`. Source-tree
+de-materialization applies to both supported runtime modes.
 
-Normal viewport mounting serves the package catalog, runtime manifest, contracts, and browser runtime files directly from the logical package in memory. Starting the viewport, opening the Applications page, and requesting an MCEL package asset do not publish a browser-build tree.
+### Package-document apps
 
-Explicit build, observation, and proof workflows may still materialize the same deterministic bytes beneath the ignored build root:
+`contract-counter` and `contract-workbench` are package-document apps. Their
+authored package may include durable browser document files where those files
+are actual source, but their generated contracts, normalized records, browser
+catalog entries, and proof material remain logical outputs.
+
+### Host-bound apps
+
+`calculator` is a host-bound app. Its durable presentation source remains:
+
+```text
+main_computer/web/applications/apps/calculator.html
+main_computer/web/applications/styles/calculator.css
+main_computer/web/applications/scripts/calculator.js
+main_computer/web/applications/scripts/calculator-core.js
+```
+
+Its durable semantic source is:
+
+```text
+mcel_apps/calculator/application.js
+mcel_apps/calculator/mcel.app.json
+mcel_apps/calculator/blueprint.json
+mcel_apps/calculator/requirements.md
+```
+
+The generated Calculator adapter mounts onto `/applications/calculator` and
+`#calculator-app` through `MainComputerCalculatorRuntime`. No Calculator
+`src/` package document, copied HTML/CSS, generated contracts, or normalized
+IR snapshots are checked into `mcel_apps/calculator`.
+
+## Runtime build output
+
+The explicit physical browser build remains available for proof, inspection,
+and deployment checks. It writes beneath ignored runtime output:
 
 ```text
 runtime/build/mcel/web/applications/mcel-packages/
 runtime/build/mcel/web/applications/scripts/mcel-application-package-catalog.js
 ```
 
-The whole `runtime/build/mcel` tree is disposable. It may be deleted at any time and reconstructed from authoritative source when a workflow requires physical browser files.
+Normal viewport mounting uses virtual assets and does not call the physical
+build helper. The physical build can be deleted and recreated without changing
+the source tree.
 
-## Deleted durable duplicates
+## Evidence roots
 
-The repository no longer stores generated contracts or ownership manifests beneath the promoted Counter and Workbench package roots. It no longer stores browser package projections beneath `main_computer/web/applications`, and tests no longer keep complete duplicate copies of the live Counter and Workbench DSL sources.
-
-## Invariants
-
-De-materialization must preserve:
+Compiler candidates, acceptance reports, browser observation, app proof,
+promotion rehearsal, and promotion execution reports remain evidence, not
+source. They belong beneath ignored runtime report/state locations such as:
 
 ```text
-application semantic fingerprint
-logical package validity
-runtime projection determinism
-acceptance and browser evidence
-IR-native intent completeness
-repository-bound proof
+runtime/reports/
+runtime/state/
+runtime/build/
 ```
 
-Package and catalog fingerprints may change when the logical package implementation or authored tests change. That is not a semantic application change.
+## Current de-materialized app boundary
 
-## Workbench projection profile de-materialization
+The current promoted DSL apps are:
 
-Workbench generation no longer reads a checked-in compatibility snapshot. The versioned projector in `main_computer/mcel_projection_profiles/contract_workbench_v1.py` reconstructs the logical compatibility package deterministically from canonical Workbench IR plus compact projection policy.
+```text
+contract-counter
+contract-workbench
+calculator
+```
 
-The copied profile manifest, normalized definition, generated contracts, and promotion-test snapshot under `main_computer/mcel_projection_profiles/contract-workbench-v1/` have been removed. Projection outputs exist only in memory or in disposable compiler-candidate, runtime-build, and promotion-transaction workspaces. Mounting the authoritative DSL package therefore does not create generated files beneath `mcel_apps`, the checked-in browser tree, or the projection-profile source tree.
+All three reconstruct generated contracts from authored source and compact
+projection code. Calculator additionally demonstrates the host-bound pattern:
+the existing HTML/CSS are stable presentation authority, while the DSL and
+generated host-bound adapter are semantic authority.
+
+A clean checkout should contain no generated contract tree under any promoted app package and no checked-in browser projection under
+`main_computer/web/applications/mcel-packages/`.
+

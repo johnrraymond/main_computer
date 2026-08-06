@@ -909,5 +909,33 @@ class PaxSystemScenarioTests(unittest.TestCase):
         between = source[mother_ship_return:shuttle_aliens]
         self.assertNotIn("appendCharacterAIGeometry", between)
 
+    def test_shuttle_boarders_spawn_even_when_character_ai_runtime_exists(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        self.assertIn(
+            'if (this.characterAIPhase() === "shuttle" && nowMs >= this.nextTransportAtMs)',
+            source,
+        )
+        self.assertNotIn(
+            "if (!this.characterAIRuntime && nowMs >= this.nextTransportAtMs)",
+            source,
+        )
+
+    def test_mother_ship_phaser_beam_is_safe_and_does_not_replace_boarder_geometry(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        helper_start = source.index("appendPhaserBeamGeometry(builder, nowMs)")
+        helper_end = source.index("buildDynamicGeometry(nowMs)", helper_start)
+        helper = source[helper_start:helper_end]
+        self.assertIn("start.every(Number.isFinite)", helper)
+        self.assertIn("end.every(Number.isFinite)", helper)
+        self.assertIn("length < 0.05", helper)
+
+        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
+        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", build_dynamic)
+        mother_ship_return = source.index("return builder.toFloat32Array();", mother_ship_guard)
+        branch = source[mother_ship_guard:mother_ship_return]
+        beam_call = branch.index("this.appendPhaserBeamGeometry(builder, nowMs);")
+        character_call = branch.index("this.appendCharacterAIGeometry(builder, nowMs);")
+        self.assertLess(beam_call, character_call)
+
 if __name__ == "__main__":
     unittest.main()

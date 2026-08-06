@@ -14,6 +14,8 @@ Use MCEL information in this order:
 
 Requirements prose records product intent. Adapter registries record executable semantic coverage. Runtime and acceptance evidence record proof. None of those layers may silently stand in for another.
 
+For current MCEL DSL application authoring mechanics, use `pretty_docs/mcel-dsl-app-authoring-surface.md`. It names the durable app files, the `package-document` and `host-bound` presentation modes, virtual generated artifacts, and proof/promotion gates.
+
 ## Current generated baseline
 
 The current snapshot produces the following requirements-registry baseline:

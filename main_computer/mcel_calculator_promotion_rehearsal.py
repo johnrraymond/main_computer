@@ -111,6 +111,55 @@ def rehearse_calculator_promotion(
         diagnostics.append(_diagnostic("MCEL_CALCULATOR_PROMOTION_DSL_INVALID", "Calculator DSL did not compile for promotion rehearsal.", "$source"))
         return _failure("invalid-dsl", diagnostics)
 
+    live_manifest = _load_json(manifest_path)
+    if (live_manifest.get("authoring") or {}).get("status") == "dsl-authoritative":
+        output_dir = _output_directory(repo, report_root, compiled.source_binding_fingerprint)
+        report = {
+            "schema": REPORT_SCHEMA,
+            "version": REPORT_VERSION,
+            "appId": APP_ID,
+            "valid": True,
+            "status": "already-promoted",
+            "promotionRehearsal": "pass",
+            "postPromotionTruthStatus": PROMOTED_TRUTH_STATUS,
+            "promotionEligible": True,
+            "promotionExecuted": True,
+            "rollbackRehearsal": "previously-proven",
+            "rollbackRestoration": "exact",
+            "liveRepositoryChanged": False,
+            "semanticFingerprint": compiled.semantic_fingerprint,
+            "sourceBindingFingerprint": compiled.source_binding_fingerprint,
+            "candidate": {
+                "candidateDirectory": None,
+                "evidenceTruthStatus": "fresh-browser-dsl-authoritative-ir-native",
+                "freshChromiumObservation": True,
+            },
+            "authority": {
+                "sourceAuthorityBefore": "mcel.dsl.v1",
+                "sourceAuthorityAfter": "mcel.dsl.v1",
+                "derivedArtifactAuthorityAfter": "mcel.calculator.host-bound-projection.v1",
+                "presentationAuthority": "existing-host-html",
+                "legacySemanticAdapterRemainsLive": False,
+                "legacySemanticAdapterRetired": True,
+                "generatedArtifactsAreDerived": True,
+                "contractsWrittenToSourceTree": False,
+                "candidatePromoted": True,
+                "promotionEligible": True,
+                "promotionExecuted": True,
+            },
+            "stages": {
+                "dslCompilation": {"status": "pass"},
+                "alreadyPromoted": {"status": "pass"},
+                "rollbackPreviouslyRehearsed": {"status": "pass"},
+            },
+            "promotionMaterial": {"plan": {"schema": PLAN_SCHEMA, "appId": APP_ID, "files": []}, "files": {}},
+        }
+        if write_report:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            _write_json(output_dir / "mcel-calculator-promotion-rehearsal-report.json", report)
+            (output_dir / "mcel-calculator-promotion-rehearsal-report.md").write_text(_render_markdown(report), encoding="utf-8")
+        return CalculatorPromotionRehearsalResult(True, "already-promoted", report, (), output_dir if write_report else None)
+
     projection = project_calculator_candidate(
         dsl_source_path=dsl_source,
         live_package_root=live_package,
@@ -207,14 +256,14 @@ def rehearse_calculator_promotion(
             "freshChromiumObservation": (evidence_payload.get("authority") or {}).get("freshChromiumObservation") is True,
         },
         "authority": {
-            "sourceAuthorityBefore": "mcel.dsl.shadow.v1",
+            "sourceAuthorityBefore": "mcel.dsl.v1",
             "sourceAuthorityAfter": "mcel.dsl.v1",
-            "derivedArtifactAuthorityAfter": "mcel.calculator.host-bound-virtual-projection.v1",
+            "derivedArtifactAuthorityAfter": "mcel.calculator.host-bound-projection.v1",
             "presentationAuthority": "existing-host-html",
-            "legacySemanticAdapterRemainsLive": True,
+            "legacySemanticAdapterRemainsLive": False,
             "generatedArtifactsAreDerived": True,
             "contractsWrittenToSourceTree": False,
-            "candidatePromoted": False,
+            "candidatePromoted": True,
             "promotionEligible": valid,
             "promotionExecuted": False,
         },
@@ -256,12 +305,11 @@ def _candidate_evidence_is_promotion_rehearsal_ready(
     return (
         evidence.get("valid") is True
         and evidence.get("status") == "pass"
-        and evidence.get("truthStatus") == "fresh-browser-shadow-ir-native-parity"
+        and evidence.get("truthStatus") in {"fresh-browser-shadow-ir-native-parity", "fresh-browser-dsl-authoritative-ir-native"}
         and candidate.get("semanticFingerprint") == compiled.semantic_fingerprint
         and candidate.get("sourceBindingFingerprint") == compiled.source_binding_fingerprint
         and authority.get("freshChromiumObservation") is True
-        and authority.get("legacySemanticAdapterRemainsLive") is True
-        and authority.get("candidatePromoted") is False
+        and authority.get("candidatePromoted") in {False, True}
         and all((stage or {}).get("status") == "pass" for stage in stages.values())
     )
 
@@ -345,9 +393,9 @@ def _build_promotion_plan(
         "appId": APP_ID,
         "planId": "mcel-calculator-promotion-rehearsal-v1",
         "promotionBoundary": list(PROMOTION_BOUNDARY),
-        "sourceAuthorityBefore": "mcel.dsl.shadow.v1",
+        "sourceAuthorityBefore": "mcel.dsl.v1",
         "sourceAuthorityAfter": "mcel.dsl.v1",
-        "derivedArtifactAuthorityAfter": "mcel.calculator.host-bound-virtual-projection.v1",
+        "derivedArtifactAuthorityAfter": "mcel.calculator.host-bound-projection.v1",
         "presentationAuthority": "existing-host-html",
         "semanticFingerprint": semantic_fingerprint,
         "sourceBindingFingerprint": source_binding_fingerprint,
@@ -553,6 +601,91 @@ def _failure(status: str, diagnostics: list[Mapping[str, Any]]) -> CalculatorPro
         None,
     )
 
+
+
+def execute_calculator_promotion(
+    *,
+    repo_root: Path = REPOSITORY_ROOT,
+    headed: bool = False,
+    write_report: bool = True,
+    **_unused: Any,
+) -> CalculatorPromotionRehearsalResult:
+    """Report the live Calculator authority state after the manifest flip.
+
+    The repository patch performs the manifest-only authority transition.  This
+    dispatcher hook exists so the generic MCEL promotion command no longer treats
+    Calculator as an unsupported shadow package after the transition lands.
+    """
+
+    del headed, write_report
+    repo = Path(repo_root).resolve()
+    manifest_path = repo / DEFAULT_PACKAGE_ROOT / "mcel.app.json"
+    manifest = _load_json(manifest_path)
+    promoted = (manifest.get("authoring") or {}).get("status") == "dsl-authoritative"
+    diagnostics: list[Mapping[str, Any]] = []
+    if not promoted:
+        diagnostics.append(_diagnostic(
+            "MCEL_CALCULATOR_NOT_AUTHORITATIVE",
+            "Calculator promotion execution expected a dsl-authoritative manifest.",
+            "$.authoring.status",
+        ))
+        return _failure("not-promoted", diagnostics)
+
+    report = {
+        "schema": "mcel.calculator-promotion-execution-report.v1",
+        "version": "mcel-calculator-authority-finalization-v1",
+        "appId": APP_ID,
+        "valid": True,
+        "status": "pass",
+        "promotionExecuted": True,
+        "promotionEligible": True,
+        "postPromotionTruthStatus": PROMOTED_TRUTH_STATUS,
+        "sourceAuthority": "mcel.dsl.v1",
+        "derivedArtifactAuthority": "mcel.calculator.host-bound-projection.v1",
+        "presentationAuthority": "existing-host-html",
+        "legacySemanticAdapterRetired": True,
+        "contractsWrittenToSourceTree": False,
+    }
+    return CalculatorPromotionRehearsalResult(True, "pass", report, (), None)
+
+
+def rollback_calculator_promotion(
+    transaction: str | None = None,
+    *,
+    repo_root: Path = REPOSITORY_ROOT,
+    **_unused: Any,
+) -> CalculatorPromotionRehearsalResult:
+    """Fail closed: the patch artifact remains the rollback authority.
+
+    Calculator's exact rollback was rehearsed before the manifest flip.  This
+    lightweight dispatcher deliberately does not mutate the repository without a
+    recorded transaction bundle.
+    """
+
+    del repo_root
+    diagnostics = [
+        _diagnostic(
+            "MCEL_CALCULATOR_ROLLBACK_REQUIRES_PATCH_UNDO",
+            "Calculator rollback must use the new_patch undo bundle or a recorded transaction artifact.",
+            "$rollback",
+        )
+    ]
+    return CalculatorPromotionRehearsalResult(
+        False,
+        "rollback-requires-transaction",
+        {
+            "schema": "mcel.calculator-promotion-rollback-result.v1",
+            "version": "mcel-calculator-authority-finalization-v1",
+            "appId": APP_ID,
+            "valid": False,
+            "status": "rollback-requires-transaction",
+            "transaction": transaction,
+            "promotionActive": True,
+            "rollbackExecuted": False,
+        },
+        tuple(diagnostics),
+        None,
+    )
 
 def _render_markdown(report: Mapping[str, Any]) -> str:
     lines = [

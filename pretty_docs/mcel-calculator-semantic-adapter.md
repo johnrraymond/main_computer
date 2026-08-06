@@ -1,15 +1,24 @@
-# MCEL Calculator semantic adapter
+# MCEL Calculator generated adapter authority
 
-## Status
+## Current status
 
-`CalculatorSemanticAdapter` is the executable MCEL domain adapter for Calculator's current application scope.
+Calculator no longer uses a live handwritten semantic adapter as semantic
+authority. The current semantic authority is:
 
-- Adapter ID: `calculator-domain-adapter`
-- Version: `calculator-semantic-adapter-v1`
-- Runtime scope: `calculator-compute-and-helper-lanes-v1`
-- Registry authority: `McelDomainAdapterRegistry`
+```text
+mcel_apps/calculator/application.js
+→ canonical Calculator IR
+→ generated virtual contracts
+→ generated host-bound adapter
+→ MainComputerCalculatorRuntime
+```
 
-The adapter is loaded after the domain-adapter registry and before truth-gate consumers. The live Calculator exposes `MainComputerCalculatorRuntime`; the adapter binds each semantic intent to one explicit runtime method.
+The generated adapter is mounted by the host-bound MCEL runtime onto the existing
+Calculator page. The existing HTML/CSS remain the presentation surface; the DSL
+and generated adapter own semantic meaning.
+
+The generic authoring-surface rule is documented in
+`pretty_docs/mcel-dsl-app-authoring-surface.md`.
 
 ## Deterministic local core
 
@@ -24,67 +33,45 @@ parse-status, parser-code, token-count, and result evidence. Arbitrary
 JavaScript identifiers, member access, assignment, imports, and dynamic code
 execution are outside the grammar.
 
-The graph lane uses the same core boundary with its existing bounded function,
-constant, variable, range, and canvas behavior. Neither local lane performs a
-network, filesystem, repository, package, shell, or provider operation.
+The graph lane uses the same core boundary with its bounded function, constant,
+variable, range, and canvas behavior. Neither local lane performs a network,
+filesystem, repository, package, shell, or provider operation.
 
 ## Execution lanes
 
-| Lane | Intents | Authority |
-|---|---|---|
-| Local UI | `switchMode` | Calculator DOM state |
-| Local arithmetic | `enterToken`, `clearExpression`, `evaluateExpression` | bounded arithmetic evaluator |
-| Local graph | `drawGraph`, `resetGraph` | graph parser and canvas renderer |
-| Model arithmetic | `askModelForExpression` | explicit `/api/chat` request |
-| Model graph | `askModelForGraphExpression` | explicit `/api/chat` request |
-| Model Mathics | `askModelForMathicsExpression` | explicit Mathics ask endpoint |
-| Mathics | `evaluateMathics` | explicit Mathics evaluation endpoint |
-| Result Q&A | `askResultQuestion` | explicit calculator Q&A endpoint |
+| Lane | Authority | Effect boundary |
+| --- | --- | --- |
+| arithmetic | deterministic core through generated adapter | local, provider-free |
+| graphing | deterministic core through generated adapter | local, provider-free |
+| mode and clear actions | runtime facade through generated adapter | local UI state |
+| model arithmetic assistance | explicit provider capability | remote/provider effect |
+| model graph assistance | explicit provider capability | remote/provider effect |
+| Mathics assistance | explicit provider capability | remote/provider effect |
+| Mathics evaluation | explicit backend capability | backend symbolic effect |
+| result Q&A | explicit provider capability | remote/provider effect |
 
-No execution lane silently falls through into another. Local arithmetic and graphing do not invoke providers. Provider and Mathics failures preserve the visible deterministic calculator state.
+The DSL declares these lanes as intents and capabilities. The generated adapter
+binds them to stable facade operations. Proof and evidence close accounting over
+the declared effects.
 
-## Safety boundary
+## Browser evidence
 
-Every current-scope intent is classified as executable and non-mutating with respect to files, repositories, shells, packages, revisions, checkpoints, and publishing. Payload keys that request those operations are blocked before a runtime method is called.
+The Calculator browser parity/evidence path proves that:
 
-Receipts record:
-
-- intent and lane;
-- preflight decision;
-- execution binding;
-- result or failure class;
-- recovery guidance;
-- `mutationAllowed: false`;
-- `mutationAttempted: false`;
-- `hiddenMutationDetected: false`.
-
-## Readiness proof
-
-The adapter implements the registry-required methods:
-
-- `getState`
-- `listObjects`
-- `listIntents`
-- `preflightIntent`
-- `executeIntent`
-- `buildReceipt`
-- `mapEvidence`
-- `classifyFailure`
-- `buildRecoveryOptions`
-- `getRecoveryCoverage`
-- `getIntentCoverage`
-
-Intent coverage is derived from the eleven current Calculator intents. Recovery coverage is derived from the adapter's complete failure-class catalog. The adapter may claim `fullApplicationSemanticReady` only while both audits pass.
-
-## Verification
-
-Run:
-
-```powershell
-python -m pytest tests/test_mcel_calculator_semantic_adapter.py -q
-python main_computer/flog_mcel_runtime_smoke.py
-python main_computer/mcel_acceptance_runner.py
-python main_computer/mcel_truth_audit.py --release-gate
+```text
+the generated adapter mounts onto #calculator-app
+all declared intents are observable
+local deterministic lanes remain provider-free
+capability lanes are explicit
+legacy handwritten semantic authority is retired
+the visible route remains /applications/calculator
+normal mounting writes no source-tree files
 ```
 
-The repository truth audit is the combined authority because FLOG alone does not include the separately generated acceptance report.
+## Historical note
+
+Older docs and migration evidence may mention a handwritten Calculator semantic
+adapter and Calculator surface script. Those were temporary compatibility
+bridges used before the host-bound DSL path was promoted. They should not be
+used as current implementation instructions.
+
