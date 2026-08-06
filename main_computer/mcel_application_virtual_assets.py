@@ -22,14 +22,10 @@ from main_computer.mcel_application_package_browser_catalog import (
 from main_computer.mcel_application_packages import (
     IGNORED_PACKAGE_DIRECTORY_NAMES,
     IGNORED_PACKAGE_FILE_SUFFIXES,
-    ApplicationPackageCatalog,
     build_application_package_catalog,
     repository_root,
 )
-from main_computer.mcel_application_runtime_projection import (
-    ApplicationRuntimeProjection,
-    build_application_runtime_projection,
-)
+from main_computer.mcel_application_runtime_projection import build_runtime_projection_set
 
 
 CATALOG_ROUTE = "applications/scripts/mcel-application-package-catalog.js"
@@ -112,17 +108,6 @@ def _source_tree_stamp(repo: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _runtime_projections(
-    repo: Path,
-    catalog: ApplicationPackageCatalog,
-) -> tuple[ApplicationRuntimeProjection, ...]:
-    return tuple(
-        build_application_runtime_projection(repo, catalog, record)
-        for record in sorted(catalog.packages, key=lambda item: item.app_id or item.package_root)
-        if all(record.runtime.get(key) for key in ("document", "script", "style"))
-    )
-
-
 def build_virtual_mcel_browser_assets(
     repo_root: Path | None = None,
     *,
@@ -135,7 +120,10 @@ def build_virtual_mcel_browser_assets(
             "Repository application-package catalog must be valid before virtual browser projection."
         )
 
-    projections = _runtime_projections(repo, catalog)
+    projection_set = build_runtime_projection_set(repo)
+    if projection_set.catalog_fingerprint != catalog.fingerprint:
+        raise VirtualMcelAssetError("Runtime projection catalog fingerprint does not match package authority.")
+    projections = projection_set.projections
     runtime_records = {projection.app_id: projection.browser_record() for projection in projections}
     payload = build_browser_catalog_payload(catalog, runtime_records)
 

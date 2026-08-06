@@ -9401,7 +9401,7 @@
             "position": [
               0.0,
               -0.55,
-              -29.2
+              -32.9
             ],
             "sceneId": "default-empty-scene",
             "systemId": "system.pax"
@@ -9425,7 +9425,8 @@
             "attackDamage": 10,
             "attackCooldownMs": 850,
             "retreatHealth": 22,
-            "dangerRange": 6.0
+            "dangerRange": 6.0,
+            "attackTelegraphMs": 1400
           },
           "allowedActions": [
             "patrol",
@@ -9567,6 +9568,306 @@
             "protectedByPlayer": false,
             "lastDamageAtMs": null
           }
+        },
+        {
+          "id": "enemy.pax.boarder-01",
+          "label": "Quiet Service Boarder Alpha",
+          "kind": "enemy",
+          "faction": "faction.pax.quiet-service",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              -2.15,
+              -0.55,
+              -33.8
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness"
+          ],
+          "supportVesselId": "ship.pax.quiet-service-cutter-01",
+          "stats": {
+            "maxHealth": 72,
+            "speed": 1.15,
+            "perceptionRange": 16,
+            "attackRange": 1.45,
+            "attackDamage": 8,
+            "attackCooldownMs": 1000,
+            "retreatHealth": 22,
+            "dangerRange": 6.0,
+            "attackTelegraphMs": 1400
+          },
+          "allowedActions": [
+            "patrol",
+            "move_to_player",
+            "take_cover",
+            "attack_player",
+            "retreat",
+            "call_support"
+          ],
+          "goals": [
+            "goal.pax.seize-player-ship",
+            "goal.pax.disable-conference-response"
+          ],
+          "inventory": [
+            "weapon.pax.boarding-pulse-carbine"
+          ],
+          "patrolRouteId": "patrol.pax.assassin-bridge",
+          "supportText": "The boarder signals the Quiet Service breach team.",
+          "memoryDefaults": {
+            "supportCalled": false,
+            "playerSeen": false,
+            "lastDamageAtMs": null
+          }
+        },
+        {
+          "id": "enemy.pax.boarder-02",
+          "label": "Quiet Service Boarder Beta",
+          "kind": "enemy",
+          "faction": "faction.pax.quiet-service",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              2.15,
+              -0.55,
+              -33.8
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness"
+          ],
+          "supportVesselId": "ship.pax.quiet-service-cutter-01",
+          "stats": {
+            "maxHealth": 72,
+            "speed": 1.15,
+            "perceptionRange": 16,
+            "attackRange": 1.45,
+            "attackDamage": 8,
+            "attackCooldownMs": 1000,
+            "retreatHealth": 22,
+            "dangerRange": 6.0,
+            "attackTelegraphMs": 1400
+          },
+          "allowedActions": [
+            "patrol",
+            "move_to_player",
+            "take_cover",
+            "attack_player",
+            "retreat",
+            "call_support"
+          ],
+          "goals": [
+            "goal.pax.seize-player-ship",
+            "goal.pax.disable-conference-response"
+          ],
+          "inventory": [
+            "weapon.pax.boarding-pulse-carbine"
+          ],
+          "patrolRouteId": "patrol.pax.assassin-bridge",
+          "supportText": "The boarder signals the Quiet Service breach team.",
+          "memoryDefaults": {
+            "supportCalled": false,
+            "playerSeen": false,
+            "lastDamageAtMs": null
+          }
+        },
+        {
+          "id": "enemy.pax.boarder-03",
+          "label": "Quiet Service Boarder Gamma",
+          "kind": "enemy",
+          "faction": "faction.pax.quiet-service",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              -1.65,
+              -0.55,
+              -31.8
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness"
+          ],
+          "supportVesselId": "ship.pax.quiet-service-cutter-01",
+          "stats": {
+            "maxHealth": 76,
+            "speed": 1.2,
+            "perceptionRange": 16,
+            "attackRange": 1.45,
+            "attackDamage": 9,
+            "attackCooldownMs": 1000,
+            "retreatHealth": 22,
+            "dangerRange": 6.0,
+            "attackTelegraphMs": 1400
+          },
+          "allowedActions": [
+            "patrol",
+            "move_to_player",
+            "take_cover",
+            "attack_player",
+            "retreat",
+            "call_support"
+          ],
+          "goals": [
+            "goal.pax.seize-player-ship",
+            "goal.pax.disable-conference-response"
+          ],
+          "inventory": [
+            "weapon.pax.boarding-pulse-carbine"
+          ],
+          "patrolRouteId": "patrol.pax.assassin-bridge",
+          "supportText": "The boarder signals the Quiet Service breach team.",
+          "memoryDefaults": {
+            "supportCalled": false,
+            "playerSeen": false,
+            "lastDamageAtMs": null
+          }
+        },
+        {
+          "id": "enemy.pax.boarder-04",
+          "label": "Quiet Service Boarder Delta",
+          "kind": "enemy",
+          "faction": "faction.pax.quiet-service",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              1.65,
+              -0.55,
+              -31.8
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness"
+          ],
+          "supportVesselId": "ship.pax.quiet-service-cutter-01",
+          "stats": {
+            "maxHealth": 76,
+            "speed": 1.2,
+            "perceptionRange": 16,
+            "attackRange": 1.45,
+            "attackDamage": 9,
+            "attackCooldownMs": 1000,
+            "retreatHealth": 22,
+            "dangerRange": 6.0,
+            "attackTelegraphMs": 1400
+          },
+          "allowedActions": [
+            "patrol",
+            "move_to_player",
+            "take_cover",
+            "attack_player",
+            "retreat",
+            "call_support"
+          ],
+          "goals": [
+            "goal.pax.seize-player-ship",
+            "goal.pax.disable-conference-response"
+          ],
+          "inventory": [
+            "weapon.pax.boarding-pulse-carbine"
+          ],
+          "patrolRouteId": "patrol.pax.assassin-bridge",
+          "supportText": "The boarder signals the Quiet Service breach team.",
+          "memoryDefaults": {
+            "supportCalled": false,
+            "playerSeen": false,
+            "lastDamageAtMs": null
+          }
+        },
+        {
+          "id": "enemy.pax.boarder-05",
+          "label": "Quiet Service Breach Leader",
+          "kind": "enemy",
+          "faction": "faction.pax.quiet-service",
+          "policyId": "policy.character.deterministic-v1",
+          "spawn": {
+            "position": [
+              0.0,
+              -0.55,
+              -29.2
+            ],
+            "sceneId": "default-empty-scene",
+            "systemId": "system.pax"
+          },
+          "activePhases": [
+            "mother-ship"
+          ],
+          "activeSystemIds": [
+            "system.pax"
+          ],
+          "activeScenarioId": "scenario.pax.neutrality-under-fire",
+          "activeScenarioStages": [
+            "protect-witness"
+          ],
+          "supportVesselId": "ship.pax.quiet-service-cutter-01",
+          "stats": {
+            "maxHealth": 110,
+            "speed": 1.0,
+            "perceptionRange": 16,
+            "attackRange": 1.45,
+            "attackDamage": 12,
+            "attackCooldownMs": 1200,
+            "retreatHealth": 22,
+            "dangerRange": 6.0,
+            "attackTelegraphMs": 1400
+          },
+          "allowedActions": [
+            "patrol",
+            "move_to_player",
+            "take_cover",
+            "attack_player",
+            "retreat",
+            "call_support"
+          ],
+          "goals": [
+            "goal.pax.seize-player-ship",
+            "goal.pax.disable-conference-response"
+          ],
+          "inventory": [
+            "weapon.pax.boarding-pulse-carbine"
+          ],
+          "patrolRouteId": "patrol.pax.assassin-bridge",
+          "supportText": "The boarder signals the Quiet Service breach team.",
+          "memoryDefaults": {
+            "supportCalled": false,
+            "playerSeen": false,
+            "lastDamageAtMs": null
+          }
         }
       ]
     },
@@ -9580,9 +9881,9 @@
         {
           "id": "scenario.pax.neutrality-under-fire",
           "systemId": "system.pax",
-          "title": "Neutrality Under Fire",
-          "subtitle": "Pax ceasefire conference and assassination crisis",
-          "description": "Protect a refugee witness, expose the weapon supply chain, and decide who defines the emergency before Pax turns neutrality into mass internment.",
+          "title": "Pax Boarding Emergency",
+          "subtitle": "Repel a Quiet Service boarding party before the conference",
+          "description": "Hostile boarders breach the player ship on arrival in Pax. Repel the squad, recover their command data automatically, and carry the proof into the emergency conference.",
           "localRule": "Defensive force can protect the conference. Intimidation or unsupported accusations can collapse it.",
           "startStageId": "arrival",
           "protectionStageId": "protect-witness",
@@ -9593,7 +9894,12 @@
           "characterIds": [
             "npc.pax.refugee-witness-01",
             "npc.pax.neutrality-marshal-01",
-            "enemy.pax.quiet-service-assassin-01"
+            "enemy.pax.quiet-service-assassin-01",
+            "enemy.pax.boarder-01",
+            "enemy.pax.boarder-02",
+            "enemy.pax.boarder-03",
+            "enemy.pax.boarder-04",
+            "enemy.pax.boarder-05"
           ],
           "vesselIds": [
             "ship.pax.quiet-service-cutter-01"
@@ -9602,22 +9908,22 @@
             {
               "id": "arrival",
               "label": "Arrival window",
-              "description": "The ceasefire delegations are docking while Pax authorities prepare emergency detention orders.",
+              "description": "Pax traffic control reports a hostile cutter on an intercept course. Prepare for boarding.",
               "vesselStatus": "Quiet Service cutter shadowing the diplomatic orbital",
               "nextStageId": "protect-witness"
             },
             {
               "id": "protect-witness",
-              "label": "Protect the witness",
-              "description": "A Quiet Service assassin has breached the mother ship. Keep Nera Saye alive and stop the attack.",
-              "vesselStatus": "Quiet Service cutter jamming conference traffic",
+              "label": "Repel the boarders",
+              "description": "Six Quiet Service hostiles have breached the player ship. Eliminate every boarder and protect the bridge.",
+              "vesselStatus": "Multiple hostile contacts aboard; breach alarms active",
               "nextStageId": "investigation"
             },
             {
               "id": "investigation",
-              "label": "Build the case",
-              "description": "Secure evidence before Pax authorities can blame the refugee flotillas.",
-              "vesselStatus": "Quiet Service cutter attempting extraction",
+              "label": "Boarding party eliminated",
+              "description": "Command data and weapon records were recovered automatically from the defeated squad.",
+              "vesselStatus": "Boarding cutter disabled; recovered data ready for conference",
               "nextStageId": "conference"
             },
             {
@@ -9732,6 +10038,14 @@
                 "securityPosture": "emergency-internment"
               }
             }
+          ],
+          "completionCharacterIds": [
+            "enemy.pax.quiet-service-assassin-01",
+            "enemy.pax.boarder-01",
+            "enemy.pax.boarder-02",
+            "enemy.pax.boarder-03",
+            "enemy.pax.boarder-04",
+            "enemy.pax.boarder-05"
           ]
         }
       ]

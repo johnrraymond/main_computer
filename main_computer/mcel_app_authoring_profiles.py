@@ -127,11 +127,17 @@ def _workbench_profile() -> AppAuthoringProfile:
 
 
 def _calculator_profile() -> AppAuthoringProfile:
+    from main_computer.mcel_calculator_candidate_evidence import (
+        run_calculator_browser_parity_probe,
+        run_calculator_candidate_evidence,
+    )
     from main_computer.mcel_calculator_candidate_projection import (
         DEFAULT_DSL_SOURCE,
         PROJECTION_PROFILE,
         project_calculator_candidate,
     )
+    from main_computer.mcel_calculator_ir_native_proof import run_calculator_ir_native_intent_proof
+    from main_computer.mcel_calculator_promotion_rehearsal import rehearse_calculator_promotion
 
     def unsupported(*_args: Any, **_kwargs: Any) -> Any:
         raise AppAuthoringProfileError(
@@ -150,18 +156,18 @@ def _calculator_profile() -> AppAuthoringProfile:
         candidate_source=DEFAULT_DSL_SOURCE,
         authoring_frontend="mcel.dsl.v1",
         project_candidate=project_calculator_candidate,
-        rehearse_promotion=unsupported,
+        rehearse_promotion=rehearse_calculator_promotion,
         execute_promotion=unsupported,
         rollback_promotion=unsupported,
         run_node_probe=None,
-        run_browser_probe=None,
+        run_browser_probe=run_calculator_browser_parity_probe,
         build_effect_accounting=None,
-        run_ir_native_proof=None,
-        run_candidate_evidence=None,
+        run_ir_native_proof=run_calculator_ir_native_intent_proof,
+        run_candidate_evidence=run_calculator_candidate_evidence,
         resolve_scenario_operation=resolve_scenario_operation,
         receipt_code_aliases={},
         promotion_supported=False,
-        promotion_rehearsal_supported=False,
+        promotion_rehearsal_supported=True,
         portable_ir_projection_complete=True,
     )
 

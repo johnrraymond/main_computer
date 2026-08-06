@@ -13,9 +13,11 @@ def test_calculator_shadow_truth_status_remains_explicitly_unpromoted() -> None:
     assert conformance["currentMode"] == "forward-specification"
     assert conformance["targetMode"] == "semantic-runtime-proven"
     assert conformance["shadow"] is True
+    assert "host-bound-runtime-projection" not in conformance["missingBridges"]
     assert {
-        "host-bound-runtime-projection",
         "browser-observation",
         "promotion-rehearsal",
         "legacy-semantic-adapter-retirement",
     }.issubset(set(conformance["missingBridges"]))
+    assert manifest["projection"]["hostBoundRuntimeActive"] is True
+    assert manifest["projection"]["mountMode"] == "host-bound"

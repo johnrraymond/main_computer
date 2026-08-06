@@ -129,9 +129,11 @@ def project_calculator_candidate(
             "hostRoute": "/applications/calculator",
             "rootSelector": "#calculator-app",
             "presentationAuthority": "existing-host-html",
+            "hostBoundRuntimeActive": True,
         },
         "authority": {
             "liveCalculatorChanged": False,
+            "hostBoundRuntimeActive": True,
             "legacySemanticAdapterRemainsLive": True,
             "contractsGeneratedInCandidate": bool(write_candidate and not drift),
             "candidatePromoted": False,
@@ -258,6 +260,7 @@ def _result(
             },
             "authority": {
                 "liveCalculatorChanged": False,
+                "hostBoundRuntimeActive": True,
                 "contractsGeneratedInCandidate": False,
                 "candidatePromoted": False,
                 "promotionEligible": False,

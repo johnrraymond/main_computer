@@ -182,6 +182,7 @@
           attackRange: finiteNumber(stats.attackRange, 1.35, 0.25, 20),
           attackDamage: finiteNumber(stats.attackDamage, 8, 0, 1000),
           attackCooldownMs: integerValue(stats.attackCooldownMs, 900, 100, 30000),
+          attackTelegraphMs: integerValue(stats.attackTelegraphMs, 0, 0, 10000),
           retreatHealth: finiteNumber(stats.retreatHealth, 18, 0, 10000),
           repairRange: finiteNumber(stats.repairRange, 1.8, 0.25, 20),
           dangerRange: finiteNumber(stats.dangerRange, 5.5, 0.5, 100)
@@ -659,6 +660,73 @@
       return this.snapshot();
     }
 
+    forceCharacterState(characterId, updates = {}, options = {}) {
+      const id = stringValue(characterId);
+      const definition = this.characterDefinition(id);
+      const state = this.state.characters[id];
+      if (!definition || !state) {
+        throw new CharacterAIStateError(`Unknown character ${id}.`);
+      }
+      const raw = objectValue(updates);
+      const before = clone(state);
+      if (raw.position !== undefined) {
+        state.position = vector3(raw.position, state.position);
+      }
+      if (raw.policyId !== undefined) {
+        const policyId = stringValue(raw.policyId);
+        if (policyId && !this.policyRegistry.has(policyId)) {
+          throw new CharacterAIStateError(`Unknown character policy ${policyId}.`);
+        }
+        state.policyId = policyId || state.policyId;
+      }
+      if (raw.health !== undefined || raw.revive) {
+        state.health = raw.health === "max" || raw.revive
+          ? definition.stats.maxHealth
+          : finiteNumber(raw.health, state.health, 0, definition.stats.maxHealth);
+      }
+      if (raw.status !== undefined) {
+        state.status = stringValue(raw.status || state.status);
+      }
+      if (state.health <= 0) {
+        state.status = "down";
+        state.currentActionId = "down";
+        state.currentTargetId = "";
+      } else if (state.status === "down") {
+        state.status = "active";
+      }
+      if (raw.currentActionId !== undefined) {
+        state.currentActionId = stringValue(raw.currentActionId || state.currentActionId);
+      }
+      if (raw.currentTargetId !== undefined) {
+        state.currentTargetId = stringValue(raw.currentTargetId);
+      }
+      if (raw.nextDecisionAtMs !== undefined) {
+        state.nextDecisionAtMs = finiteNumber(raw.nextDecisionAtMs, state.nextDecisionAtMs, 0);
+      }
+      if (raw.nextAttackAtMs !== undefined) {
+        state.nextAttackAtMs = finiteNumber(raw.nextAttackAtMs, state.nextAttackAtMs, 0);
+      }
+      if (raw.patrolIndex !== undefined) {
+        state.patrolIndex = integerValue(raw.patrolIndex, state.patrolIndex, 0);
+      }
+      if (raw.memory !== undefined) {
+        state.memory = {
+          ...clone(definition.memoryDefaults),
+          ...clone(objectValue(state.memory)),
+          ...clone(objectValue(raw.memory))
+        };
+      }
+      const nowMs = finiteNumber(options.nowMs, 0, 0);
+      const receipt = this.record("character-state-forced", {
+        characterId: id,
+        source: stringValue(options.source || options.reason || "runtime-recovery"),
+        before,
+        after: clone(state),
+        nowMs
+      });
+      return {character: clone(state), receipt};
+    }
+
     activeCharacters() {
       return Object.values(this.state.characters)
         .filter((character) => character.status === "active" && character.health > 0)
@@ -1123,6 +1191,7 @@
       const definition = this.characterDefinition(characterId);
       const actionId = result.actionId;
       const effects = [];
+      let decisionDelayMs = this.definition.tickIntervalMs;
       const before = {
         position: state.position.slice(),
         health: state.health,
@@ -1141,12 +1210,38 @@
           if (route.length) state.patrolIndex = (state.patrolIndex + 1) % route.length;
         }
       } else if (actionId === "attack_player") {
-        state.nextAttackAtMs = nowMs + definition.stats.attackCooldownMs;
-        effects.push({
-          type: "damage-player",
-          characterId,
-          amount: definition.stats.attackDamage
-        });
+        const telegraphMs = definition.stats.attackTelegraphMs;
+        const telegraphAtMs = finiteNumber(state.memory.attackTelegraphAtMs, -1);
+        const telegraphTargetId = stringValue(state.memory.attackTelegraphTargetId);
+        const telegraphReady = telegraphMs <= 0 || (
+          telegraphTargetId === "player"
+          && telegraphAtMs >= 0
+          && nowMs - telegraphAtMs >= telegraphMs
+        );
+        if (!telegraphReady) {
+          state.memory.attackTelegraphAtMs = nowMs;
+          state.memory.attackTelegraphTargetId = "player";
+          decisionDelayMs = Math.max(this.definition.tickIntervalMs, telegraphMs);
+          effects.push({
+            type: "threat-warning",
+            characterId,
+            label: state.label,
+            position: state.position.slice(),
+            delayMs: telegraphMs,
+            message: `${state.label} is aiming at you — move to cover.`
+          });
+        } else {
+          state.nextAttackAtMs = nowMs + definition.stats.attackCooldownMs;
+          delete state.memory.attackTelegraphAtMs;
+          delete state.memory.attackTelegraphTargetId;
+          effects.push({
+            type: "damage-player",
+            characterId,
+            label: state.label,
+            position: state.position.slice(),
+            amount: definition.stats.attackDamage
+          });
+        }
       } else if (actionId === "call_support") {
         state.memory.supportCalled = true;
         effects.push({
@@ -1175,7 +1270,7 @@
       if (perception.player.visible) state.memory.playerSeen = true;
       state.currentActionId = actionId;
       state.currentTargetId = result.targetId;
-      state.nextDecisionAtMs = nowMs + this.definition.tickIntervalMs;
+      state.nextDecisionAtMs = nowMs + decisionDelayMs;
       state.decisionCount += 1;
       state.memory.lastDecisionAtMs = nowMs;
       state.memory.lastRationale = result.rationale;

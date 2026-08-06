@@ -25,6 +25,7 @@ MCEL_LAYER_INVENTORY = {
     "strict-composition": [
         "main_computer/web/applications/scripts/mcel-scm.js",
         "main_computer/web/applications/scripts/mcel-application-runtime.js",
+        "main_computer/web/applications/scripts/mcel-host-bound-application-runtime.js",
     ],
     "law-internal": [
         "main_computer/web/applications/scripts/mcel-law-registry.js",

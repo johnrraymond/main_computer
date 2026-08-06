@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from tools import mother_deploy
+import tools.mother.common.deployment_genesis_birth as birth_module
 from tools.mother.common.deployment_genesis_birth import (
     MotherDeploymentGenesisBirthError,
     build_genesis_birth_release,
@@ -195,8 +196,13 @@ class _BirthOpener:
         already_proof: bool = False,
         active_deployment: bool = False,
         superseded_service_uuid: str | None = None,
+        initial_compose: str | None = None,
+        cleanup_failure_log: bool = False,
     ) -> None:
         self.original_compose = original_compose
+        self.initial_compose = (
+            initial_compose if initial_compose is not None else original_compose
+        )
         self.proof_compose = proof_compose
         self.healthy = healthy
         self.normalized_readback = normalized_readback
@@ -209,6 +215,7 @@ class _BirthOpener:
         self.active_deployment = active_deployment
         self.superseded_service_uuid = superseded_service_uuid
         self.superseded_service_present = superseded_service_uuid is not None
+        self.cleanup_failure_log = cleanup_failure_log
 
     def open(self, request, timeout: float):  # noqa: ANN001
         parsed = urlsplit(request.full_url)
@@ -257,8 +264,24 @@ class _BirthOpener:
             if method == "DELETE":
                 self.superseded_service_present = False
                 return _Response({}, status=204)
+        if method == "GET" and path in {
+            "/api/v1/services/svc-mainneta-super1/logs",
+            "/api/v1/services/svc-mainneta-super1/docker/logs",
+            "/api/v1/services/svc-mainneta-super1/applications/logs",
+        }:
+            if self.cleanup_failure_log:
+                return _Response({
+                    "logs": (
+                        'Container mother-superseded-service-cleanup-lmjwoglwv7ryvrfsbfuu4o7k Error '
+                        'service "mother-superseded-service-cleanup" did not complete successfully: exit 1\n'
+                        'refusing container outside acknowledged cleanup boundary'
+                    )
+                })
+            return _Response({
+                "logs": "mother-superseded-service-cleanup completed successfully"
+            })
         if method == "GET" and path == "/api/v1/services/svc-mainneta-super1":
-            compose = self.proof_compose if self.patched else self.original_compose
+            compose = self.proof_compose if self.patched else self.initial_compose
             if self.omit_compose:
                 payload: dict[str, Any] = {"uuid": "svc-mainneta-super1", "name": "mainneta-super1"}
             else:
@@ -288,6 +311,29 @@ def test_birth_release_is_internal_only_and_removes_host_rpc_mapping(tmp_path: P
     paths, private_state, _, execution, _, release_path, digest, release = _birth_release(tmp_path)
     compose = release["proof_plan"]["proof_compose"]["canonical_text"]
     guardian = compose.split("  mother-genesis-proof-guardian:", 1)[1].split("\nvolumes:\n", 1)[0]
+    compose_document = yaml.safe_load(compose)
+    services = compose_document["services"]
+    assert services["mother-genesis-init"]["pull_policy"] == "missing"
+    assert services["mother-genesis-init"]["exclude_from_hc"] is True
+    assert services["mainneta-super1"]["pull_policy"] == "missing"
+    assert services["mother-super-node-fdb"]["pull_policy"] == "missing"
+    assert services["mother-genesis-proof-guardian"]["pull_policy"] == "missing"
+    assert services["mother-super-node-hub"]["pull_policy"] == "build"
+    fdb_healthcheck = services["mother-super-node-fdb"]["healthcheck"]["test"]
+    assert "fdbcli" in " ".join(fdb_healthcheck)
+    assert "status" in " ".join(fdb_healthcheck)
+    assert (
+        release["proof_plan"]["proof_compose"]["coolify_health_model"][
+            "foundationdb_healthcheck"
+        ]
+        is True
+    )
+    assert (
+        release["proof_plan"]["proof_compose"]["coolify_health_model"][
+            "init_excluded_from_hc"
+        ]
+        is True
+    )
     assert "127.0.0.1:8545:8545" not in compose
     assert "ports:" not in guardian
     assert "expose:" not in guardian
@@ -605,6 +651,246 @@ def test_birth_executor_removes_exact_acknowledged_superseded_service_before_dep
     assert delete_index < target_stop_index < target_patch_index < target_deploy_index
 
 
+def test_birth_executor_recovers_api_absent_orphan_with_exact_host_cleanup_gate(
+    tmp_path: Path,
+) -> None:
+    superseded_uuid = "pc20bsxvq3ykjnpzque08l63"
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        genesis_release,
+        release_path,
+        digest,
+        release,
+    ) = _birth_release(
+        tmp_path,
+        superseded_service_uuid=superseded_uuid,
+    )
+    final_compose = release["proof_plan"]["proof_compose"]["canonical_text"]
+    precleanup = release["proof_plan"]["precleanup_proof_compose"]
+    assert isinstance(precleanup, dict)
+    precleanup_compose = precleanup["canonical_text"]
+
+    document = yaml.safe_load(final_compose)
+    cleanup = document["services"]["mother-superseded-service-cleanup"]
+    assert cleanup["image"] == "docker:27-cli"
+    assert cleanup["pull_policy"] == "missing"
+    assert cleanup["exclude_from_hc"] is True
+    assert document["services"]["mother-genesis-init"]["pull_policy"] == "missing"
+    assert document["services"]["mother-genesis-init"]["exclude_from_hc"] is True
+    assert document["services"]["mainneta-super1"]["pull_policy"] == "missing"
+    assert document["services"]["mother-super-node-fdb"]["pull_policy"] == "missing"
+    assert document["services"]["mother-super-node-fdb"]["healthcheck"]["test"] == [
+        "CMD-SHELL",
+        "fdbcli --exec status >/dev/null 2>&1 || exit 1",
+    ]
+    assert document["services"]["mother-genesis-proof-guardian"]["pull_policy"] == "missing"
+    assert cleanup["restart"] == "no"
+    assert cleanup["read_only"] is True
+    assert cleanup["network_mode"] == "none"
+    assert cleanup["volumes"] == [
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "mother-proof:/proof",
+    ]
+    cleanup_script = cleanup["command"][-1]
+    assert f"project='{superseded_uuid}'" in cleanup_script
+    assert "node='mainneta-super1'" in cleanup_script
+    assert (
+        "recovery_guardian='mother-validator-quorum-recovery-initial-guardian'"
+        in cleanup_script
+    )
+    assert "refusing container outside acknowledged cleanup boundary" in cleanup_script
+    assert 'docker rm -f "$$id"' in cleanup_script
+    assert "/proof/superseded-host-cleanup.json" in cleanup_script
+    assert "port 30303 still owned after superseded cleanup" in cleanup_script
+    assert "docker volume" not in cleanup_script
+    assert "docker system prune" not in cleanup_script
+    assert "docker compose down" not in cleanup_script
+    assert (
+        document["services"]["mainneta-super1"]["depends_on"][
+            "mother-superseded-service-cleanup"
+        ]["condition"]
+        == "service_completed_successfully"
+    )
+    assert "mother-superseded-service-cleanup" not in precleanup_compose
+    assert "/var/run/docker.sock" not in precleanup_compose
+
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        final_compose,
+        initial_compose=precleanup_compose,
+        superseded_service_uuid=superseded_uuid,
+    )
+    opener.superseded_service_present = False
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-remove-api-absent-orphan"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["superseded_service_removal"]["already_absent"] is True
+    assert result["summary"][
+        "superseded_host_containers_removed_before_besu"
+    ] is True
+    assert result["policy"][
+        "exact_superseded_host_container_cleanup_authorized"
+    ] is True
+    assert result["proof"]["host_cleanup_guardian_proof_required"] is True
+    assert result["host_cleanup_log_snapshots"]
+    assert result["summary"]["host_cleanup_logs_observed"] is True
+    compose_receipt = next(
+        item
+        for item in result["precondition_receipts"]
+        if item["name"] == "executed-compose-binding"
+    )
+    assert (
+        compose_receipt["compose_state"]
+        == "precleanup-proof-compose-already-installed"
+    )
+    stale_endpoint = f"/api/v1/services/{superseded_uuid}"
+    assert ("GET", stale_endpoint) in opener.requests
+    assert ("DELETE", stale_endpoint) not in opener.requests
+    target_patch_index = opener.requests.index(
+        ("PATCH", "/api/v1/services/svc-mainneta-super1")
+    )
+    target_deploy_index = opener.requests.index(("GET", "/api/v1/deploy"))
+    assert target_patch_index < target_deploy_index
+
+
+def test_birth_executor_accepts_pre_coolify_health_model_retry_state(
+    tmp_path: Path,
+) -> None:
+    superseded_uuid = "pc20bsxvq3ykjnpzque08l63"
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        genesis_release,
+        release_path,
+        digest,
+        release,
+    ) = _birth_release(
+        tmp_path,
+        superseded_service_uuid=superseded_uuid,
+    )
+    final_compose = release["proof_plan"]["proof_compose"]["canonical_text"]
+    legacy_live_compose = birth_module._without_coolify_health_model(final_compose)
+    legacy_document = yaml.safe_load(legacy_live_compose)
+    assert "healthcheck" not in legacy_document["services"]["mother-super-node-fdb"]
+    assert (
+        "exclude_from_hc"
+        not in legacy_document["services"]["mother-superseded-service-cleanup"]
+    )
+    assert "exclude_from_hc" not in legacy_document["services"]["mother-genesis-init"]
+
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        final_compose,
+        initial_compose=legacy_live_compose,
+        superseded_service_uuid=superseded_uuid,
+    )
+    opener.superseded_service_present = False
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-pre-coolify-health-model-retry-state"),
+    )
+
+    assert result["status"] == "pass"
+    compose_receipt = next(
+        item
+        for item in result["precondition_receipts"]
+        if item["name"] == "executed-compose-binding"
+    )
+    assert (
+        compose_receipt["compose_state"]
+        == "proof-compose-without-coolify-health-model-already-installed"
+    )
+    target_patch_index = opener.requests.index(
+        ("PATCH", "/api/v1/services/svc-mainneta-super1")
+    )
+    target_deploy_index = opener.requests.index(("GET", "/api/v1/deploy"))
+    assert target_patch_index < target_deploy_index
+
+
+def test_birth_executor_accepts_pre_pull_policy_internal_proof_retry_state(
+    tmp_path: Path,
+) -> None:
+    superseded_uuid = "pc20bsxvq3ykjnpzque08l63"
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        genesis_release,
+        release_path,
+        digest,
+        release,
+    ) = _birth_release(
+        tmp_path,
+        superseded_service_uuid=superseded_uuid,
+    )
+    final_compose = release["proof_plan"]["proof_compose"]["canonical_text"]
+    legacy_live_compose = birth_module._without_pull_policy_missing(final_compose)
+    legacy_document = yaml.safe_load(legacy_live_compose)
+    assert "pull_policy" not in legacy_document["services"]["mother-super-node-fdb"]
+    assert (
+        legacy_document["services"]["mother-super-node-hub"]["pull_policy"]
+        == "build"
+    )
+
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        final_compose,
+        initial_compose=legacy_live_compose,
+        superseded_service_uuid=superseded_uuid,
+    )
+    opener.superseded_service_present = False
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-pre-pull-policy-retry-state"),
+    )
+
+    assert result["status"] == "pass"
+    compose_receipt = next(
+        item
+        for item in result["precondition_receipts"]
+        if item["name"] == "executed-compose-binding"
+    )
+    assert (
+        compose_receipt["compose_state"]
+        == "proof-compose-without-runtime-pull-policy-already-installed"
+    )
+    target_patch_index = opener.requests.index(
+        ("PATCH", "/api/v1/services/svc-mainneta-super1")
+    )
+    target_deploy_index = opener.requests.index(("GET", "/api/v1/deploy"))
+    assert target_patch_index < target_deploy_index
+
+
 def test_birth_executor_accepts_semantically_equivalent_normalized_compose_readback(tmp_path: Path) -> None:
     paths, private_state, _, _, genesis_release, release_path, digest, release = _birth_release(tmp_path)
     opener = _BirthOpener(
@@ -657,6 +943,83 @@ def test_birth_executor_fails_closed_when_compose_fields_are_unavailable(tmp_pat
     assert result["summary"]["live_mutation_performed"] is False
 
 
+
+def test_birth_cleanup_log_404_snapshots_are_not_failure_or_observed_logs() -> None:
+    snapshots = [
+        {
+            "classification": "coolify-log-endpoint-unavailable",
+            "ok": False,
+            "status": 404,
+            "log_excerpt": (
+                'Not found. service "mother-superseded-service-cleanup" '
+                "did not complete successfully: exit 1"
+            ),
+        }
+    ]
+
+    assert birth_module._host_cleanup_failed_from_logs(snapshots) is None
+    assert (
+        birth_module._cleanup_log_snapshot_has_runtime_text(snapshots[0])
+        is False
+    )
+
+
+def test_birth_executor_reports_superseded_cleanup_failure_logs(
+    tmp_path: Path,
+) -> None:
+    superseded_uuid = "pc20bsxvq3ykjnpzque08l63"
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        genesis_release,
+        release_path,
+        digest,
+        release,
+    ) = _birth_release(
+        tmp_path,
+        superseded_service_uuid=superseded_uuid,
+    )
+    opener = _BirthOpener(
+        genesis_release["execution_plan"]["compose"]["canonical_text"],
+        release["proof_plan"]["proof_compose"]["canonical_text"],
+        initial_compose=release["proof_plan"]["precleanup_proof_compose"][
+            "canonical_text"
+        ],
+        superseded_service_uuid=superseded_uuid,
+        healthy=False,
+        cleanup_failure_log=True,
+    )
+    opener.superseded_service_present = False
+
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        opener=opener,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-cleanup-failure-logs"),
+    )
+
+    assert result["status"] == "failed"
+    assert (
+        result["failure"]["code"]
+        == "MOTHER_DEPLOY_GENESIS_BIRTH_HOST_CLEANUP_FAILED"
+    )
+    assert result["host_cleanup_log_snapshots"]
+    assert any(
+        "mother-superseded-service-cleanup" in item.get("log_excerpt", "")
+        for item in result["host_cleanup_log_snapshots"]
+    )
+    assert result["summary"]["host_cleanup_logs_observed"] is True
+    assert result["summary"]["complete"] is False
+    assert result["summary"]["next_phase"] == "manual-review-required"
+
+
 def test_birth_executor_fails_closed_when_guardian_never_becomes_healthy(tmp_path: Path) -> None:
     paths, private_state, _, _, genesis_release, release_path, digest, release = _birth_release(tmp_path)
     opener = _BirthOpener(
@@ -678,6 +1041,52 @@ def test_birth_executor_fails_closed_when_guardian_never_becomes_healthy(tmp_pat
     assert result["status"] == "failed"
     assert result["failure"]["code"] == "MOTHER_DEPLOY_GENESIS_BIRTH_NOT_HEALTHY"
     assert result["summary"]["initial_chain_proven"] is False
+    inspected = inspect_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+    )
+    assert inspected["release_already_claimed"] is True
+
+
+def test_birth_executor_writes_evidence_when_interrupted_after_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, _, _, _genesis_release, release_path, digest, _release = _birth_release(tmp_path)
+
+    def interrupt_after_claim(*_args: Any, **_kwargs: Any):  # noqa: ANN401
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(
+        birth_module,
+        "resolve_coolify_controller",
+        interrupt_after_claim,
+    )
+
+    result = execute_genesis_birth_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=digest,
+        selected_nodes=("mainneta-super1",),
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("birth-interrupted-after-claim"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_GENESIS_BIRTH_INTERRUPTED"
+    assert result["mutation_receipts"] == []
+    assert result["summary"]["live_mutation_performed"] is False
+    evidence_path = Path(result["evidence"]["path"])
+    assert evidence_path.is_file()
+    persisted = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert persisted["release"]["sha256"] == digest
+    assert persisted["failure"]["code"] == "MOTHER_DEPLOY_GENESIS_BIRTH_INTERRUPTED"
+
     inspected = inspect_genesis_birth_release(
         paths,
         private_state,

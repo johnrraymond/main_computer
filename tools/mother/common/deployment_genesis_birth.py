@@ -57,7 +57,379 @@ _MIN_RELEASE_SECONDS = 30
 _MAX_RELEASE_SECONDS = 900
 _PROOF_IMAGE = "python:3.12-alpine"
 _HUB_SERVICE = "mother-super-node-hub"
+_FDB_SERVICE = "mother-super-node-fdb"
 _HUB_PORT = 8790
+_HOST_CLEANUP_SERVICE = "mother-superseded-service-cleanup"
+_HOST_CLEANUP_IMAGE = "docker:27-cli"
+
+
+def _ensure_pull_policy_missing(
+    compose: str,
+    *,
+    required_services: Iterable[str],
+    optional_services: Iterable[str] = (),
+) -> str:
+    """Add an explicit Compose pull policy to runtime image services.
+
+    Coolify may hand Docker Compose a service update that is later deployed on a
+    host without all runtime images cached.  The birth Compose therefore states
+    the image-pull contract directly for every external image service that must
+    run before proof can complete.  Hub keeps its own ``pull_policy: build``.
+    """
+    lines = compose.splitlines()
+    final_newline = compose.endswith("\n")
+
+    def service_bounds(service: str) -> tuple[int, int] | None:
+        marker = f"  {service}:"
+        for index, line in enumerate(lines):
+            if line == marker:
+                end = len(lines)
+                for scan in range(index + 1, len(lines)):
+                    candidate = lines[scan]
+                    if candidate and not candidate.startswith(" "):
+                        end = scan
+                        break
+                    if candidate.startswith("  ") and not candidate.startswith("    "):
+                        end = scan
+                        break
+                return index, end
+        return None
+
+    def ensure(service: str, *, required: bool) -> None:
+        bounds = service_bounds(service)
+        if bounds is None:
+            if required:
+                raise MotherDeploymentGenesisBirthError(
+                    "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_UNSUPPORTED",
+                    f"released proof Compose is missing required service {service}",
+                )
+            return
+        start, end = bounds
+        if any(
+            line.startswith("    pull_policy:")
+            for line in lines[start + 1:end]
+        ):
+            return
+        image_index = next(
+            (
+                index
+                for index in range(start + 1, end)
+                if lines[index].startswith("    image:")
+            ),
+            None,
+        )
+        if image_index is None:
+            if required:
+                raise MotherDeploymentGenesisBirthError(
+                    "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_UNSUPPORTED",
+                    f"released proof Compose service {service} is missing an image",
+                )
+            return
+        lines.insert(image_index + 1, "    pull_policy: missing")
+
+    for service in required_services:
+        ensure(service, required=True)
+    for service in optional_services:
+        ensure(service, required=False)
+
+    result = "\n".join(lines)
+    return result + ("\n" if final_newline else "")
+
+
+def _without_pull_policy_missing(compose: str) -> str:
+    """Return the same Compose text without runtime pull-policy declarations.
+
+    This is a bounded compatibility state for retrying a birth service that was
+    already moved to an earlier internal-proof Compose before the explicit image
+    pull contract existed.  It does not relax service names, cleanup authority,
+    ports, volumes, or guardian proof requirements.
+    """
+    lines = compose.splitlines()
+    final_newline = compose.endswith("\n")
+    result = "\n".join(
+        line for line in lines if line != "    pull_policy: missing"
+    )
+    return result + ("\n" if final_newline else "")
+
+
+def _service_bounds(lines: list[str], service: str) -> tuple[int, int] | None:
+    marker = f"  {service}:"
+    for index, line in enumerate(lines):
+        if line == marker:
+            end = len(lines)
+            for scan in range(index + 1, len(lines)):
+                candidate = lines[scan]
+                if candidate and not candidate.startswith(" "):
+                    end = scan
+                    break
+                if candidate.startswith("  ") and not candidate.startswith("    "):
+                    end = scan
+                    break
+            return index, end
+    return None
+
+
+def _ensure_coolify_health_model(
+    compose: str,
+    *,
+    node: str,
+    optional_excluded_services: Iterable[str] = (),
+) -> str:
+    """Make the generated Compose status model match Coolify aggregation.
+
+    The super-node stack contains both long-running runtime services and
+    one-shot jobs.  Coolify can only promote the service aggregate to
+    ``running:healthy`` when long-running services have healthchecks and
+    completed one-shot jobs are excluded from aggregate health evaluation.
+    """
+
+    lines = compose.splitlines()
+    final_newline = compose.endswith("\n")
+
+    def bounds(service: str, *, required: bool = True) -> tuple[int, int] | None:
+        result = _service_bounds(lines, service)
+        if result is None and required:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_UNSUPPORTED",
+                f"released proof Compose is missing required service {service}",
+            )
+        return result
+
+    def insert_after_service_key(
+        service: str,
+        line: str,
+        *,
+        preferred_key: str,
+        required: bool = True,
+    ) -> None:
+        result = bounds(service, required=required)
+        if result is None:
+            return
+        start, end = result
+        if any(existing == line for existing in lines[start + 1:end]):
+            return
+        preferred_index = next(
+            (
+                index
+                for index in range(start + 1, end)
+                if lines[index].startswith(preferred_key)
+            ),
+            None,
+        )
+        if preferred_index is None:
+            preferred_index = next(
+                (
+                    index
+                    for index in range(start + 1, end)
+                    if lines[index].startswith("    image:")
+                ),
+                start,
+            )
+        lines.insert(preferred_index + 1, line)
+
+    def ensure_fdb_healthcheck() -> None:
+        result = bounds(_FDB_SERVICE)
+        if result is None:
+            return
+        start, end = result
+        if any(lines[index].startswith("    healthcheck:") for index in range(start + 1, end)):
+            return
+        insert_index = next(
+            (
+                index
+                for index in range(start + 1, end)
+                if lines[index].startswith("    volumes:")
+            ),
+            end,
+        )
+        lines[insert_index:insert_index] = [
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            "        - fdbcli --exec status >/dev/null 2>&1 || exit 1",
+            "      interval: 10s",
+            "      timeout: 5s",
+            "      retries: 30",
+            "      start_period: 60s",
+        ]
+
+    insert_after_service_key(
+        "mother-genesis-init",
+        "    exclude_from_hc: true",
+        preferred_key="    pull_policy:",
+    )
+    for service in optional_excluded_services:
+        insert_after_service_key(
+            service,
+            "    exclude_from_hc: true",
+            preferred_key="    pull_policy:",
+            required=False,
+        )
+    ensure_fdb_healthcheck()
+
+    result = "\n".join(lines)
+    return result + ("\n" if final_newline else "")
+
+
+def _without_coolify_health_model(compose: str) -> str:
+    """Return Compose text without the Coolify health-model additions.
+
+    This is a compatibility state for services already moved to an earlier
+    internal proof Compose before one-shot health exclusion and the FDB
+    healthcheck were added.
+    """
+
+    lines = compose.splitlines()
+    final_newline = compose.endswith("\n")
+    remove: set[int] = set()
+
+    for service in ("mother-genesis-init", _HOST_CLEANUP_SERVICE):
+        result = _service_bounds(lines, service)
+        if result is None:
+            continue
+        start, end = result
+        for index in range(start + 1, end):
+            if lines[index] == "    exclude_from_hc: true":
+                remove.add(index)
+
+    fdb_bounds = _service_bounds(lines, _FDB_SERVICE)
+    if fdb_bounds is not None:
+        start, end = fdb_bounds
+        for index in range(start + 1, end):
+            if lines[index].startswith("    healthcheck:"):
+                remove.add(index)
+                scan = index + 1
+                while scan < end and not (
+                    lines[scan].startswith("    ")
+                    and not lines[scan].startswith("      ")
+                ):
+                    remove.add(scan)
+                    scan += 1
+                break
+
+    result = "\n".join(
+        line for index, line in enumerate(lines) if index not in remove
+    )
+    return result + ("\n" if final_newline else "")
+
+
+def _legacy_compose_transition_variants(
+    compose: Mapping[str, Any],
+    *,
+    base_state: str,
+    base_label: str,
+) -> list[tuple[str, Mapping[str, Any], str]]:
+    text = str(compose.get("canonical_text", ""))
+    variants: list[tuple[str, str, str]] = []
+    without_health = _without_coolify_health_model(text)
+    if without_health != text:
+        variants.append((
+            f"{base_state}-without-coolify-health-model-already-installed",
+            without_health,
+            f"{base_label} without Coolify health model",
+        ))
+    without_pull = _without_pull_policy_missing(text)
+    if without_pull != text:
+        variants.append((
+            f"{base_state}-without-runtime-pull-policy-already-installed",
+            without_pull,
+            f"{base_label} without runtime pull policy",
+        ))
+    without_health_and_pull = _without_pull_policy_missing(without_health)
+    if without_health_and_pull != text and without_health_and_pull not in {
+        item[1] for item in variants
+    }:
+        variants.append((
+            f"{base_state}-without-coolify-health-model-or-runtime-pull-policy-already-installed",
+            without_health_and_pull,
+            f"{base_label} without Coolify health model or runtime pull policy",
+        ))
+    return [
+        (
+            state,
+            {
+                "canonical_text": candidate_text,
+                "semantic_sha256": _compose_semantic_sha256(
+                    candidate_text,
+                    label,
+                ),
+            },
+            label,
+        )
+        for state, candidate_text, label in variants
+    ]
+
+
+def _compose_health_model(document: Mapping[str, Any], *, node: str) -> dict[str, Any]:
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        return {"valid": False}
+    init = services.get("mother-genesis-init")
+    fdb = services.get(_FDB_SERVICE)
+    hub = services.get(_HUB_SERVICE)
+    guardian = services.get("mother-genesis-proof-guardian")
+    besu = services.get(node)
+    cleanup = services.get(_HOST_CLEANUP_SERVICE)
+
+    def has_healthcheck(value: Any) -> bool:
+        return isinstance(value, Mapping) and isinstance(value.get("healthcheck"), Mapping)
+
+    def fdb_healthcheck_valid(value: Any) -> bool:
+        if not has_healthcheck(value):
+            return False
+        test = value.get("healthcheck", {}).get("test")
+        rendered = " ".join(str(item) for item in test) if isinstance(test, list) else str(test)
+        return "fdbcli" in rendered and "status" in rendered
+
+    return {
+        "valid": (
+            isinstance(init, Mapping)
+            and init.get("exclude_from_hc") is True
+            and isinstance(fdb, Mapping)
+            and fdb_healthcheck_valid(fdb)
+            and isinstance(hub, Mapping)
+            and has_healthcheck(hub)
+            and (not isinstance(guardian, Mapping) or has_healthcheck(guardian))
+            and (not isinstance(cleanup, Mapping) or cleanup.get("exclude_from_hc") is True)
+            and isinstance(besu, Mapping)
+        ),
+        "init_excluded_from_hc": isinstance(init, Mapping)
+        and init.get("exclude_from_hc") is True,
+        "cleanup_excluded_from_hc": (
+            None if not isinstance(cleanup, Mapping) else cleanup.get("exclude_from_hc") is True
+        ),
+        "foundationdb_healthcheck": isinstance(fdb, Mapping)
+        and fdb_healthcheck_valid(fdb),
+        "hub_healthcheck": isinstance(hub, Mapping) and has_healthcheck(hub),
+        "guardian_healthcheck": (
+            None if not isinstance(guardian, Mapping) else has_healthcheck(guardian)
+        ),
+        "besu_service_present": isinstance(besu, Mapping),
+    }
+
+
+def _compose_candidate_commitments(payload: Any) -> list[dict[str, Any]]:
+    """Return non-secret commitments for exposed live Compose candidates."""
+
+    results: list[dict[str, Any]] = []
+    for index, candidate in enumerate(_compose_strings(payload)):
+        item: dict[str, Any] = {
+            "index": index,
+            "byte_length": len(candidate.encode("utf-8")),
+            "byte_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+            "normalized_sha256": hashlib.sha256(
+                candidate.replace("\r\n", "\n").rstrip().encode("utf-8")
+            ).hexdigest(),
+        }
+        try:
+            item["semantic_sha256"] = _compose_semantic_sha256(
+                candidate,
+                "live Compose candidate",
+            )
+        except MotherDeploymentGenesisBirthError as exc:
+            item["semantic_error_code"] = exc.code
+        results.append(item)
+    return results
 
 
 class MotherDeploymentGenesisBirthError(RuntimeError):
@@ -331,8 +703,17 @@ def _match_service_compose(payload: Any, expected: str, label: str) -> dict[str,
     )
 
 
-def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_address: str) -> str:
+def _proof_script(
+    *,
+    node: str,
+    chain_id: int,
+    genesis_sha256: str,
+    validator_address: str,
+    cleanup_project_uuid: str | None = None,
+) -> str:
     expected_validator = validator_address.lower()
+    cleanup_value = cleanup_project_uuid if cleanup_project_uuid is not None else ""
+    cleanup_required = cleanup_project_uuid is not None
     return "\n".join([
         "import hashlib, json, os, time, urllib.request",
         f"RPC = 'http://{node}:8545'",
@@ -340,8 +721,11 @@ def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_ad
         f"EXPECTED_CHAIN_ID = {chain_id}",
         f"EXPECTED_GENESIS_SHA256 = '{genesis_sha256}'",
         f"EXPECTED_VALIDATOR = '{expected_validator}'",
+        f"EXPECTED_HOST_CLEANUP_PROJECT = '{cleanup_value}'",
+        f"HOST_CLEANUP_REQUIRED = {cleanup_required!r}",
         "PROOF = '/proof/proof.json'",
         "HEALTHY = '/proof/healthy'",
+        "HOST_CLEANUP_PROOF = '/proof/superseded-host-cleanup.json'",
         "def read_json(request):",
         "    with urllib.request.urlopen(request, timeout=5) as response:",
         "        return json.loads(response.read(1048576).decode())",
@@ -354,7 +738,26 @@ def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_ad
         "    return value['result']",
         "def hub(path):",
         "    return read_json(urllib.request.Request(HUB + path, headers={'Accept':'application/json'}, method='GET'))",
+        "def cleanup_proof():",
+        "    if not HOST_CLEANUP_REQUIRED:",
+        "        return None",
+        "    with open(HOST_CLEANUP_PROOF, 'r', encoding='utf-8') as handle:",
+        "        proof = json.load(handle)",
+        "    if proof.get('project_uuid') != EXPECTED_HOST_CLEANUP_PROJECT:",
+        "        raise RuntimeError('host cleanup project mismatch')",
+        "    if proof.get('exact_project_only') is not True:",
+        "        raise RuntimeError('host cleanup exact-project proof missing')",
+        "    if proof.get('persistent_volumes_preserved') is not True:",
+        "        raise RuntimeError('host cleanup volume preservation proof missing')",
+        "    if proof.get('remaining_project_container_count') != 0:",
+        "        raise RuntimeError('superseded project containers remain')",
+        "    if proof.get('port_30303_owner_after') not in ('', None):",
+        "        raise RuntimeError('port 30303 was not released by cleanup')",
+        "    if proof.get('completed') is not True:",
+        "        raise RuntimeError('host cleanup did not complete')",
+        "    return proof",
         "def prove():",
+        "    host_cleanup = cleanup_proof()",
         "    with open('/config/genesis.json', 'rb') as handle:",
         "        genesis_digest = hashlib.sha256(handle.read()).hexdigest()",
         "    if genesis_digest != EXPECTED_GENESIS_SHA256:",
@@ -382,7 +785,7 @@ def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_ad
         "        raise RuntimeError('hub status network missing')",
         "    if network.get('chain_id') != EXPECTED_CHAIN_ID or network.get('chain_rpc_url') != RPC:",
         "        raise RuntimeError('hub local RPC binding mismatch')",
-        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'hub_health':True,'hub_service':'main-computer-hub','hub_network_key':'mainnet','hub_chain_rpc_url':RPC,'hub_chain_id':EXPECTED_CHAIN_ID,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'hub_health':True,'hub_service':'main-computer-hub','hub_network_key':'mainnet','hub_chain_rpc_url':RPC,'hub_chain_id':EXPECTED_CHAIN_ID,'host_cleanup':host_cleanup,'host_cleanup_project_uuid':EXPECTED_HOST_CLEANUP_PROJECT or None,'host_cleanup_proven':(host_cleanup is not None or not HOST_CLEANUP_REQUIRED),'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         "    temporary = PROOF + '.tmp'",
         "    with open(temporary, 'w', encoding='utf-8') as handle:",
         "        json.dump(proof, handle, sort_keys=True, separators=(',', ':'))",
@@ -400,8 +803,89 @@ def _proof_script(*, node: str, chain_id: int, genesis_sha256: str, validator_ad
     ])
 
 
+def _superseded_host_cleanup_script(*, node: str, project_uuid: str) -> str:
+    node_value = _identifier(node, "cleanup node")
+    project_value = _identifier(project_uuid, "superseded Compose project UUID")
+    recovery_guardian = "mother-validator-quorum-recovery-initial-guardian"
+    return "\n".join([
+        "set -eu",
+        f"project='{project_value}'",
+        f"node='{node_value}'",
+        f"recovery_guardian='{recovery_guardian}'",
+        "proof='/proof/superseded-host-cleanup.json'",
+        "tmp=\"$${proof}.tmp\"",
+        'ids="$$(docker ps -aq --filter \"label=com.docker.compose.project=$$project\")"',
+        'port_before="$$(docker ps --filter publish=30303 --format \"{{.Names}}\" | paste -sd, -)"',
+        "count=0",
+        'removed_names=""',
+        'for id in $$ids; do',
+        '  count=$$((count + 1))',
+        '  actual_project="$$(docker inspect --format \'{{ index .Config.Labels \"com.docker.compose.project\" }}\' \"$$id\")"',
+        '  actual_managed="$$(docker inspect --format \'{{ index .Config.Labels \"coolify.managed\" }}\' \"$$id\")"',
+        '  actual_service="$$(docker inspect --format \'{{ index .Config.Labels \"coolify.serviceName\" }}\' \"$$id\")"',
+        '  actual_node="$$(docker inspect --format \'{{ index .Config.Labels \"main_computer.mother.node\" }}\' \"$$id\")"',
+        '  actual_compose_service="$$(docker inspect --format \'{{ index .Config.Labels \"com.docker.compose.service\" }}\' \"$$id\")"',
+        '  actual_name="$$(docker inspect --format \'{{ .Name }}\' \"$$id\" | sed "s#^/##")"',
+        '  test "$$actual_project" = "$$project"',
+        '  test "$$actual_managed" = "true"',
+        '  allowed=false',
+        '  if [ "$$actual_service" = "$$node" ] || [ "$$actual_node" = "$$node" ] || [ "$$actual_compose_service" = "$$node" ]; then',
+        '    allowed=true',
+        '  fi',
+        '  if [ "$$actual_service" = "$$recovery_guardian" ] || [ "$$actual_compose_service" = "$$recovery_guardian" ]; then',
+        '    allowed=true',
+        '  fi',
+        '  if [ "$$allowed" != "true" ]; then',
+        '    echo "refusing container outside acknowledged cleanup boundary: id=$$id name=$$actual_name service=$$actual_service compose_service=$$actual_compose_service mother_node=$$actual_node project=$$actual_project" >&2',
+        '    exit 1',
+        '  fi',
+        'done',
+        'for id in $$ids; do',
+        '  actual_name="$$(docker inspect --format \'{{ .Name }}\' \"$$id\" | sed "s#^/##")"',
+        '  docker rm -f "$$id"',
+        '  if [ -n "$$removed_names" ]; then removed_names="$$removed_names,$$actual_name"; else removed_names="$$actual_name"; fi',
+        'done',
+        'remaining="$$(docker ps -aq --filter \"label=com.docker.compose.project=$$project\")"',
+        'port_after="$$(docker ps --filter publish=30303 --format \"{{.Names}}\" | paste -sd, -)"',
+        'remaining_count=0',
+        'for id in $$remaining; do remaining_count=$$((remaining_count + 1)); done',
+        'if [ "$$remaining_count" -ne 0 ]; then',
+        '  echo "superseded project containers remain after cleanup: $$remaining" >&2',
+        '  exit 1',
+        'fi',
+        'if [ -n "$$port_after" ]; then',
+        '  echo "port 30303 still owned after superseded cleanup: $$port_after" >&2',
+        '  exit 1',
+        'fi',
+        'mkdir -p /proof',
+        'cat > "$$tmp" <<EOF',
+        '{',
+        '  "completed": true,',
+        f'  "expected_node": "{node_value}",',
+        '  "exact_project_only": true,',
+        '  "persistent_volumes_preserved": true,',
+        '  "port_30303_owner_after": "'"$$port_after"'",',
+        '  "port_30303_owner_before": "'"$$port_before"'",',
+        f'  "project_uuid": "{project_value}",',
+        '  "recovery_guardian_service": "'"$$recovery_guardian"'",',
+        '  "remaining_project_container_count": '"$$remaining_count"',',
+        '  "removed_container_count": '"$$count"',',
+        '  "removed_container_names": "'"$$removed_names"'"',
+        '}',
+        'EOF',
+        'mv "$$tmp" "$$proof"',
+        'echo "superseded host cleanup completed: project=$$project removed=$$count port_30303_before=$$port_before port_30303_after=$$port_after"',
+    ])
+
+
 def _internal_proof_compose(
-    original: str, *, node: str, chain_id: int, genesis_sha256: str, validator_address: str
+    original: str,
+    *,
+    node: str,
+    chain_id: int,
+    genesis_sha256: str,
+    validator_address: str,
+    superseded_service_uuid: str | None = None,
 ) -> str:
     host_mapping = '      - "127.0.0.1:8545:8545/tcp"\n'
     allowlist = f"      - --host-allowlist=localhost,127.0.0.1,{node},{_HUB_SERVICE},mother-genesis-proof-guardian\n"
@@ -412,11 +896,65 @@ def _internal_proof_compose(
             "released first-genesis Compose does not match the supported secure template",
         )
     updated = original.replace(host_mapping, "", 1)
+
+    cleanup_service = ""
+    if superseded_service_uuid is not None:
+        project_uuid = _identifier(
+            superseded_service_uuid,
+            "superseded Compose project UUID",
+        )
+        dependency = "\n".join([
+            "    depends_on:",
+            "      mother-genesis-init:",
+            "        condition: service_completed_successfully",
+        ])
+        if updated.count(dependency) != 1:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_UNSUPPORTED",
+                "released first-genesis Compose does not expose the supported Besu dependency block",
+            )
+        updated = updated.replace(
+            dependency,
+            dependency
+            + "\n"
+            + f"      {_HOST_CLEANUP_SERVICE}:\n"
+            + "        condition: service_completed_successfully",
+            1,
+        )
+        cleanup_script = _superseded_host_cleanup_script(
+            node=node,
+            project_uuid=project_uuid,
+        )
+        indented_cleanup = "\n".join(
+            "        " + line for line in cleanup_script.splitlines()
+        )
+        cleanup_service = "\n".join([
+            f"  {_HOST_CLEANUP_SERVICE}:",
+            f"    image: {_HOST_CLEANUP_IMAGE}",
+            '    restart: "no"',
+            "    read_only: true",
+            "    network_mode: none",
+            "    command:",
+            "      - sh",
+            "      - -ec",
+            "      - |",
+            indented_cleanup,
+            "    volumes:",
+            "      - /var/run/docker.sock:/var/run/docker.sock",
+            "      - mother-proof:/proof",
+            "    labels:",
+            f"      main_computer.mother.node: {node}",
+            "      main_computer.mother.component: superseded-service-host-cleanup",
+            f"      main_computer.mother.superseded-project: {project_uuid}",
+            "",
+        ])
+
     script = _proof_script(
         node=node,
         chain_id=chain_id,
         genesis_sha256=genesis_sha256,
         validator_address=validator_address,
+        cleanup_project_uuid=superseded_service_uuid,
     )
     indented_script = "\n".join("        " + line for line in script.splitlines())
     guardian = "\n".join([
@@ -450,8 +988,24 @@ def _internal_proof_compose(
         "      - mother-proof:/proof",
         "",
     ])
-    updated = updated.replace(marker, "\n" + guardian + marker, 1)
+    inserted = cleanup_service + guardian
+    updated = updated.replace(marker, "\n" + inserted + marker, 1)
     updated = updated.replace("  mother-data:\n", "  mother-data:\n  mother-proof:\n", 1)
+    updated = _ensure_pull_policy_missing(
+        updated,
+        required_services=(
+            "mother-genesis-init",
+            node,
+            "mother-super-node-fdb",
+            "mother-genesis-proof-guardian",
+        ),
+        optional_services=(_HOST_CLEANUP_SERVICE,),
+    )
+    updated = _ensure_coolify_health_model(
+        updated,
+        node=node,
+        optional_excluded_services=(_HOST_CLEANUP_SERVICE,),
+    )
     forbidden = ("ports:", "expose:", "traefik.", "domains:", "fqdn:")
     guardian_section = updated.split("  mother-genesis-proof-guardian:", 1)[1].split("\nvolumes:\n", 1)[0]
     if any(item in guardian_section for item in forbidden):
@@ -462,6 +1016,53 @@ def _internal_proof_compose(
     if '127.0.0.1:8545:8545' in updated:
         raise MotherDeploymentGenesisBirthError(
             "MOTHER_DEPLOY_GENESIS_BIRTH_RPC_EXPOSED", "proof Compose must remove the host RPC mapping"
+        )
+    if superseded_service_uuid is not None:
+        cleanup_section = updated.split(
+            f"\n  {_HOST_CLEANUP_SERVICE}:",
+            1,
+        )[1].split(
+            "\n  mother-genesis-proof-guardian:",
+            1,
+        )[0]
+        required = (
+            f"image: {_HOST_CLEANUP_IMAGE}",
+            "pull_policy: missing",
+            "exclude_from_hc: true",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "mother-proof:/proof",
+            f"project='{superseded_service_uuid}'",
+            f"node='{node}'",
+            "recovery_guardian='mother-validator-quorum-recovery-initial-guardian'",
+            'docker rm -f "$$id"',
+            "HOST_CLEANUP_REQUIRED = True",
+            "host_cleanup_project_uuid",
+            f"      {_HOST_CLEANUP_SERVICE}:",
+            "        condition: service_completed_successfully",
+        )
+        forbidden_cleanup = (
+            "docker volume",
+            "docker system prune",
+            "docker container prune",
+            "docker network prune",
+            "docker compose down",
+            "docker-compose down",
+            "ports:",
+            "expose:",
+        )
+        if (
+            any(item not in updated for item in required)
+            or any(item in cleanup_section for item in forbidden_cleanup)
+            or updated.count("/var/run/docker.sock:/var/run/docker.sock") != 1
+        ):
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_HOST_CLEANUP_UNSAFE",
+                "superseded host cleanup must be exact-project, volume-preserving, and non-routable",
+            )
+    elif _HOST_CLEANUP_SERVICE in updated or "/var/run/docker.sock" in updated:
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_HOST_CLEANUP_UNAUTHORIZED",
+            "proof Compose must not mount the Docker socket without an exact superseded service authorization",
         )
     return updated
 
@@ -638,20 +1239,46 @@ def build_genesis_birth_release(
         raise MotherDeploymentGenesisBirthError(
             "MOTHER_DEPLOY_GENESIS_BIRTH_EXECUTION_INVALID", "initial validator address is invalid"
         )
+    precleanup_proof_compose = _internal_proof_compose(
+        chain["original_compose"],
+        node=chain["node"],
+        chain_id=chain["chain_id"],
+        genesis_sha256=chain["genesis_sha256"],
+        validator_address=validator,
+        superseded_service_uuid=None,
+    )
     proof_compose = _internal_proof_compose(
         chain["original_compose"],
         node=chain["node"],
         chain_id=chain["chain_id"],
         genesis_sha256=chain["genesis_sha256"],
         validator_address=validator,
+        superseded_service_uuid=removal_uuid,
     )
     proof_bytes = proof_compose.encode("utf-8")
     proof_sha = hashlib.sha256(proof_bytes).hexdigest()
+    precleanup_proof_bytes = precleanup_proof_compose.encode("utf-8")
+    precleanup_proof_sha = hashlib.sha256(precleanup_proof_bytes).hexdigest()
     original_semantic_sha = _compose_semantic_sha256(
         chain["original_compose"], "released first-genesis Compose"
     )
     proof_semantic_sha = _compose_semantic_sha256(
         proof_compose, "released internal proof Compose"
+    )
+    precleanup_proof_semantic_sha = _compose_semantic_sha256(
+        precleanup_proof_compose,
+        "released pre-cleanup internal proof Compose",
+    )
+    precleanup_health_model = _compose_health_model(
+        _compose_document(
+            precleanup_proof_compose,
+            "released pre-cleanup internal proof Compose",
+        ),
+        node=chain["node"],
+    )
+    proof_health_model = _compose_health_model(
+        _compose_document(proof_compose, "released internal proof Compose"),
+        node=chain["node"],
     )
     body = {"name": chain["node"], "docker_compose_raw": base64.b64encode(proof_bytes).decode("ascii")}
     body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
@@ -725,6 +1352,22 @@ def build_genesis_birth_release(
                         "endpoint": f"/api/v1/services/{urllib.parse.quote(removal_uuid, safe='')}",
                         "allow_missing": True,
                     },
+                    "host_container_cleanup": {
+                        "service": _HOST_CLEANUP_SERVICE,
+                        "image": _HOST_CLEANUP_IMAGE,
+                        "compose_project_label": removal_uuid,
+                        "expected_node": chain["node"],
+                        "allowed_service_names": [
+                            chain["node"],
+                            "mother-validator-quorum-recovery-initial-guardian",
+                        ],
+                        "docker_socket": "/var/run/docker.sock",
+                        "proof_path": "/proof/superseded-host-cleanup.json",
+                        "exact_project_only": True,
+                        "persistent_volumes_preserved": True,
+                        "runs_before_besu": True,
+                        "guardian_proof_required": True,
+                    },
                 }
                 if removal_uuid is not None
                 else None
@@ -745,6 +1388,18 @@ def build_genesis_birth_release(
                 "semantic_sha256": original_semantic_sha,
                 "canonical_text": chain["original_compose"],
             },
+            "precleanup_proof_compose": (
+                {
+                    "sha256": precleanup_proof_sha,
+                    "semantic_sha256": precleanup_proof_semantic_sha,
+                    "byte_length": len(precleanup_proof_bytes),
+                    "canonical_text": precleanup_proof_compose,
+                    "host_cleanup_service_present": False,
+                    "coolify_health_model": precleanup_health_model,
+                }
+                if removal_uuid is not None
+                else None
+            ),
             "proof_compose": {
                 "sha256": proof_sha,
                 "semantic_sha256": proof_semantic_sha,
@@ -756,6 +1411,30 @@ def build_genesis_birth_release(
                 "host_rpc_mapping_present": False,
                 "hub_service_present": True,
                 "hub_public_endpoint_present": False,
+                "host_cleanup_service_present": removal_uuid is not None,
+                "host_cleanup_service": (
+                    _HOST_CLEANUP_SERVICE if removal_uuid is not None else None
+                ),
+                "host_cleanup_image": (
+                    _HOST_CLEANUP_IMAGE if removal_uuid is not None else None
+                ),
+                "host_cleanup_project_uuid": removal_uuid,
+                "host_cleanup_proof_path": (
+                    "/proof/superseded-host-cleanup.json"
+                    if removal_uuid is not None
+                    else None
+                ),
+                "host_cleanup_guardian_proof_required": removal_uuid is not None,
+                "host_cleanup_allowed_service_names": (
+                    [
+                        chain["node"],
+                        "mother-validator-quorum-recovery-initial-guardian",
+                    ]
+                    if removal_uuid is not None
+                    else []
+                ),
+                "host_cleanup_persistent_volumes_preserved": True,
+                "coolify_health_model": proof_health_model,
             },
             "preconditions": [
                 *(
@@ -773,7 +1452,7 @@ def build_genesis_birth_release(
                 {
                     "method": "GET",
                     "endpoint": f"/api/v1/services/{service_uuid}",
-                    "assertion": "live Compose matches executed first-genesis Compose or the exact released proof Compose",
+                    "assertion": "live Compose matches executed first-genesis, pre-cleanup proof, or exact released proof Compose",
                 },
             ],
             "deployment_quiescence": {
@@ -850,6 +1529,9 @@ def build_genesis_birth_release(
                 else ["GET", "PATCH", "POST"]
             ),
             "exact_superseded_service_removal_authorized": removal_uuid is not None,
+            "exact_superseded_host_container_cleanup_authorized": removal_uuid is not None,
+            "host_cleanup_exact_project_only": removal_uuid is not None,
+            "host_cleanup_persistent_volumes_preserved": True,
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "host_rpc_mapping_removed": True,
@@ -926,6 +1608,7 @@ def verify_genesis_birth_release(
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_SELECTION_MISMATCH", "birth release targets only the initial node")
     proof = plan.get("proof")
     compose = plan.get("proof_compose")
+    precleanup_compose = plan.get("precleanup_proof_compose")
     original = plan.get("original_compose")
     quiescence = plan.get("deployment_quiescence")
     mutations = plan.get("mutations")
@@ -944,6 +1627,7 @@ def verify_genesis_birth_release(
             "superseded service UUID",
         )
         removal = superseded.get("removal")
+        host_cleanup = superseded.get("host_container_cleanup")
         expected_acknowledgement = node_removal_acknowledgement_for(
             node,
             superseded_uuid,
@@ -961,6 +1645,22 @@ def verify_genesis_birth_release(
             or removal.get("endpoint")
             != f"/api/v1/services/{urllib.parse.quote(superseded_uuid, safe='')}"
             or removal.get("allow_missing") is not True
+            or not isinstance(host_cleanup, Mapping)
+            or host_cleanup.get("service") != _HOST_CLEANUP_SERVICE
+            or host_cleanup.get("image") != _HOST_CLEANUP_IMAGE
+            or host_cleanup.get("compose_project_label") != superseded_uuid
+            or host_cleanup.get("expected_node") != node
+            or host_cleanup.get("docker_socket") != "/var/run/docker.sock"
+            or host_cleanup.get("proof_path") != "/proof/superseded-host-cleanup.json"
+            or host_cleanup.get("allowed_service_names")
+            != [
+                node,
+                "mother-validator-quorum-recovery-initial-guardian",
+            ]
+            or host_cleanup.get("exact_project_only") is not True
+            or host_cleanup.get("persistent_volumes_preserved") is not True
+            or host_cleanup.get("runs_before_besu") is not True
+            or host_cleanup.get("guardian_proof_required") is not True
             or not isinstance(operator_removal, Mapping)
             or operator_removal.get("authorized") is not True
             or operator_removal.get("service_uuid") != superseded_uuid
@@ -984,6 +1684,31 @@ def verify_genesis_birth_release(
             compose.get("guardian_public_ports") == [],
             compose.get("guardian_domains") == [],
             compose.get("host_rpc_mapping_present") is False,
+            compose.get("host_cleanup_service_present")
+            is (superseded_uuid is not None),
+            compose.get("host_cleanup_service")
+            == (_HOST_CLEANUP_SERVICE if superseded_uuid is not None else None),
+            compose.get("host_cleanup_image")
+            == (_HOST_CLEANUP_IMAGE if superseded_uuid is not None else None),
+            compose.get("host_cleanup_project_uuid") == superseded_uuid,
+            compose.get("host_cleanup_proof_path")
+            == (
+                "/proof/superseded-host-cleanup.json"
+                if superseded_uuid is not None
+                else None
+            ),
+            compose.get("host_cleanup_guardian_proof_required")
+            is (superseded_uuid is not None),
+            compose.get("host_cleanup_allowed_service_names")
+            == (
+                [
+                    node,
+                    "mother-validator-quorum-recovery-initial-guardian",
+                ]
+                if superseded_uuid is not None
+                else []
+            ),
+            compose.get("host_cleanup_persistent_volumes_preserved") is True,
         ])
     ):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof exposure policy is invalid")
@@ -1015,6 +1740,11 @@ def verify_genesis_birth_release(
         )
         or release_policy.get("exact_superseded_service_removal_authorized")
         is not (superseded_uuid is not None)
+        or release_policy.get("exact_superseded_host_container_cleanup_authorized")
+        is not (superseded_uuid is not None)
+        or release_policy.get("host_cleanup_exact_project_only")
+        is not (superseded_uuid is not None)
+        or release_policy.get("host_cleanup_persistent_volumes_preserved") is not True
         or release_policy.get("exact_active_deployments_cancelled_before_stop") is not True
         or release_policy.get("exact_service_stopped_before_deploy") is not True
         or len(mutations) != 3
@@ -1038,6 +1768,71 @@ def verify_genesis_birth_release(
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof Compose commitment is invalid")
     if _compose_semantic_sha256(canonical_text, "released proof Compose") != compose.get("semantic_sha256"):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "proof Compose semantic commitment is invalid")
+    proof_health_model = _compose_health_model(
+        _compose_document(canonical_text, "released proof Compose"),
+        node=node,
+    )
+    if (
+        proof_health_model.get("valid") is not True
+        or compose.get("coolify_health_model") != proof_health_model
+    ):
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+            "proof Compose Coolify health model is invalid",
+        )
+    if superseded_uuid is not None:
+        if not isinstance(precleanup_compose, Mapping):
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+                "pre-cleanup proof Compose commitment is missing",
+            )
+        precleanup_text = precleanup_compose.get("canonical_text")
+        precleanup_health_model = (
+            _compose_health_model(
+                _compose_document(
+                    precleanup_text,
+                    "released pre-cleanup proof Compose",
+                ),
+                node=node,
+            )
+            if type(precleanup_text) is str
+            else {"valid": False}
+        )
+        if (
+            type(precleanup_text) is not str
+            or hashlib.sha256(precleanup_text.encode()).hexdigest()
+            != precleanup_compose.get("sha256")
+            or _compose_semantic_sha256(
+                precleanup_text,
+                "released pre-cleanup proof Compose",
+            )
+            != precleanup_compose.get("semantic_sha256")
+            or precleanup_compose.get("coolify_health_model")
+            != precleanup_health_model
+            or precleanup_health_model.get("valid") is not True
+            or precleanup_health_model.get("cleanup_excluded_from_hc")
+            is not None
+            or precleanup_compose.get("host_cleanup_service_present") is not False
+            or _HOST_CLEANUP_SERVICE in precleanup_text
+            or "/var/run/docker.sock" in precleanup_text
+            or _HOST_CLEANUP_SERVICE not in canonical_text
+            or "/var/run/docker.sock:/var/run/docker.sock" not in canonical_text
+            or f"project='{superseded_uuid}'" not in canonical_text
+            or f"node='{node}'" not in canonical_text
+            or 'docker rm -f "$$id"' not in canonical_text
+            or "docker volume" in canonical_text
+            or "docker system prune" in canonical_text
+            or "docker compose down" in canonical_text
+        ):
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+                "superseded host cleanup Compose boundary is invalid",
+            )
+    elif precleanup_compose is not None:
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID",
+            "pre-cleanup proof Compose is unauthorized without a superseded service",
+        )
     original_text = original.get("canonical_text")
     if type(original_text) is not str or hashlib.sha256(original_text.encode()).hexdigest() != original.get("sha256"):
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_INVALID", "original Compose commitment is invalid")
@@ -1100,6 +1895,33 @@ def verify_genesis_birth_release(
         "service_uuid": service_uuid,
         "superseded_service_uuid": superseded_uuid,
         "exact_superseded_service_removal_authorized": superseded_uuid is not None,
+        "exact_superseded_host_container_cleanup_authorized": (
+            superseded_uuid is not None
+        ),
+        "host_cleanup_service": (
+            _HOST_CLEANUP_SERVICE if superseded_uuid is not None else None
+        ),
+        "host_cleanup_project_uuid": superseded_uuid,
+        "host_cleanup_allowed_service_names": (
+            [
+                node,
+                "mother-validator-quorum-recovery-initial-guardian",
+            ]
+            if superseded_uuid is not None
+            else []
+        ),
+        "host_cleanup_proof_path": (
+            "/proof/superseded-host-cleanup.json"
+            if superseded_uuid is not None
+            else None
+        ),
+        "host_cleanup_guardian_proof_required": superseded_uuid is not None,
+        "host_cleanup_persistent_volumes_preserved": True,
+        "precleanup_proof_compose_sha256": (
+            precleanup_compose["sha256"]
+            if isinstance(precleanup_compose, Mapping)
+            else None
+        ),
         "genesis_execution_sha256": chain["execution_sha256"],
         "genesis_sha256": plan["genesis_sha256"],
         "genesis_rollback_cycle_proven": True,
@@ -1185,6 +2007,146 @@ def _http(controller: Any, method: str, endpoint: str, *, body: Mapping[str, Any
     return {"status": status, "ok": 200 <= status < 300, "payload": payload, "response_sha256": hashlib.sha256(raw).hexdigest(), "byte_length": len(raw), "elapsed_ms": int((time.monotonic() - started) * 1000)}
 
 
+
+
+def _payload_log_text(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, Mapping):
+        parts: list[str] = []
+        for key in ("logs", "log", "data", "message", "output", "error"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, list):
+                parts.extend(str(item) for item in value if isinstance(item, (str, int, float)))
+        return "\n".join(parts)
+    if isinstance(payload, list):
+        return "\n".join(str(item) for item in payload[:50])
+    return ""
+
+
+def _log_excerpt(value: str, *, limit: int = 4000) -> str:
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _collect_birth_log_snapshots(
+    controller: Any,
+    *,
+    service_uuid: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> list[dict[str, Any]]:
+    quoted = urllib.parse.quote(service_uuid, safe="")
+    endpoints = [
+        f"/api/v1/services/{quoted}/logs?lines=500",
+        f"/api/v1/services/{quoted}/logs?tail=500",
+        f"/api/v1/services/{quoted}/docker/logs?lines=500",
+        f"/api/v1/services/{quoted}/applications/logs?lines=500",
+    ]
+    snapshots: list[dict[str, Any]] = []
+    for endpoint in endpoints:
+        try:
+            response = _http(
+                controller,
+                "GET",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+        except MotherDeploymentGenesisBirthError as exc:
+            snapshots.append({
+                "endpoint": endpoint,
+                "ok": False,
+                "error_code": exc.code,
+                "observed_at": _timestamp(),
+            })
+            continue
+        text = _payload_log_text(response["payload"])
+        classification = (
+            "runtime-log"
+            if response["ok"] and text.strip()
+            else (
+                "coolify-log-endpoint-unavailable"
+                if response["status"] == 404
+                else "empty-or-unusable"
+            )
+        )
+        snapshot = {
+            "endpoint": endpoint,
+            "status": response["status"],
+            "ok": response["ok"],
+            "available": classification == "runtime-log",
+            "classification": classification,
+            "response_sha256": response["response_sha256"],
+            "byte_length": response["byte_length"],
+            "observed_at": _timestamp(),
+            "log_excerpt": _log_excerpt(text),
+        }
+        snapshots.append(snapshot)
+        if classification == "runtime-log":
+            break
+    return snapshots
+
+
+def _cleanup_log_snapshot_has_runtime_text(snapshot: Mapping[str, Any]) -> bool:
+    return (
+        snapshot.get("classification") == "runtime-log"
+        and snapshot.get("ok") is True
+        and bool(str(snapshot.get("log_excerpt") or "").strip())
+    )
+
+
+def _cleanup_log_endpoints_unavailable(
+    snapshots: Iterable[Mapping[str, Any]],
+) -> bool:
+    snapshot_list = list(snapshots)
+    return bool(snapshot_list) and all(
+        snapshot.get("classification") == "coolify-log-endpoint-unavailable"
+        for snapshot in snapshot_list
+    )
+
+
+def _host_cleanup_failed_from_logs(snapshots: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
+    needles = (
+        "mother-superseded-service-cleanup",
+        "superseded host cleanup",
+        "refusing container outside acknowledged cleanup boundary",
+        "refusing container outside acknowledged node lineage",
+        "service \"mother-superseded-service-cleanup\" didn't complete successfully",
+        "didn't complete successfully: exit 1",
+        "port 30303 still owned after superseded cleanup",
+        "superseded project containers remain after cleanup",
+    )
+    failure_needles = (
+        "refusing container",
+        "didn't complete successfully",
+        "exit 1",
+        "port 30303 still owned",
+        "containers remain after cleanup",
+    )
+    for snapshot in snapshots:
+        if not _cleanup_log_snapshot_has_runtime_text(snapshot):
+            continue
+        text = str(snapshot.get("log_excerpt") or "")
+        lowered = text.lower()
+        if any(item.lower() in lowered for item in needles) and any(
+            item.lower() in lowered for item in failure_needles
+        ):
+            return {
+                "endpoint": snapshot.get("endpoint"),
+                "status": snapshot.get("status"),
+                "message": _log_excerpt(text, limit=1000),
+            }
+    return None
+
+
 def _service_item(payload: Any, service_uuid: str, node: str) -> Mapping[str, Any]:
     items = payload if type(payload) is list else payload.get("services", []) if isinstance(payload, Mapping) else []
     matches = [item for item in items if isinstance(item, Mapping) and str(item.get("uuid") or item.get("id")) == service_uuid]
@@ -1250,19 +2212,22 @@ def execute_genesis_birth_release(
     claim_path = claim_root / f"{digest}.json"
     if claim_path.exists():
         raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_RELEASE_ALREADY_CONSUMED", "birth release already has a claim")
-    atomic_files.durable_create(claim_path, canonical_json(claim), operation=operation)
-    _secure_private_path(claim_path, is_directory=False, operation=operation)
-    controller = resolve_coolify_controller(private_state, inspected["network"], inspected["controller_id"])
     started = _timestamp()
     receipts: list[dict[str, Any]] = []
     preconditions: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     stop_observations: list[dict[str, Any]] = []
     deployment_cancellation_receipts: list[dict[str, Any]] = []
+    host_cleanup_log_snapshots: list[dict[str, Any]] = []
     superseded_service_removal: dict[str, Any] | None = None
-    failure: dict[str, str] | None = None
+    failure: dict[str, Any] | None = None
+    cleanup_authorized = False
+    cleanup_log_endpoints_unavailable = False
     deadline = time.monotonic() + max_wait_seconds
     try:
+        atomic_files.durable_create(claim_path, canonical_json(claim), operation=operation)
+        _secure_private_path(claim_path, is_directory=False, operation=operation)
+        controller = resolve_coolify_controller(private_state, inspected["network"], inspected["controller_id"])
         superseded_uuid = inspected.get("superseded_service_uuid")
         if inspected.get("exact_superseded_service_removal_authorized") is True:
             if type(superseded_uuid) is not str or not superseded_uuid:
@@ -1316,24 +2281,78 @@ def execute_genesis_birth_release(
                 "MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED",
                 f"Coolify service detail GET failed with HTTP {detail['status']}",
             )
-        compose_state = "executed-first-genesis"
-        try:
-            live_binding = _match_service_compose(
-                detail["payload"],
-                plan["original_compose"]["canonical_text"],
+        compose_candidates: list[tuple[str, Mapping[str, Any], str]] = [
+            (
+                "executed-first-genesis",
+                plan["original_compose"],
                 "executed first-genesis Compose",
+            ),
+        ]
+        precleanup_compose = plan.get("precleanup_proof_compose")
+        if isinstance(precleanup_compose, Mapping):
+            compose_candidates.append(
+                (
+                    "precleanup-proof-compose-already-installed",
+                    precleanup_compose,
+                    "already-installed pre-cleanup internal proof Compose",
+                )
             )
-            expected_semantic_sha256 = plan["original_compose"]["semantic_sha256"]
-        except MotherDeploymentGenesisBirthError as exc:
-            if exc.code != "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_MISMATCH":
-                raise
-            live_binding = _match_service_compose(
-                detail["payload"],
-                plan["proof_compose"]["canonical_text"],
+            compose_candidates.extend(
+                _legacy_compose_transition_variants(
+                    precleanup_compose,
+                    base_state="precleanup-proof-compose",
+                    base_label="already-installed pre-cleanup internal proof Compose",
+                )
+            )
+        compose_candidates.append(
+            (
+                "proof-compose-already-installed",
+                plan["proof_compose"],
                 "already-installed internal proof Compose",
             )
-            expected_semantic_sha256 = plan["proof_compose"]["semantic_sha256"]
-            compose_state = "proof-compose-already-installed"
+        )
+        compose_candidates.extend(
+            _legacy_compose_transition_variants(
+                plan["proof_compose"],
+                base_state="proof-compose",
+                base_label="already-installed internal proof Compose",
+            )
+        )
+        live_binding: dict[str, str] | None = None
+        expected_semantic_sha256 = ""
+        compose_state = ""
+        for candidate_state, candidate, candidate_label in compose_candidates:
+            try:
+                live_binding = _match_service_compose(
+                    detail["payload"],
+                    candidate["canonical_text"],
+                    candidate_label,
+                )
+            except MotherDeploymentGenesisBirthError as exc:
+                if exc.code == "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_MISMATCH":
+                    continue
+                raise
+            expected_semantic_sha256 = candidate["semantic_sha256"]
+            compose_state = candidate_state
+            break
+        if live_binding is None:
+            preconditions.append({
+                "name": "live-compose-mismatch",
+                "status": detail["status"],
+                "response_sha256": detail["response_sha256"],
+                "verified": False,
+                "expected_states": [
+                    candidate_state
+                    for candidate_state, _, _ in compose_candidates
+                ],
+                "live_candidates": _compose_candidate_commitments(
+                    detail["payload"]
+                ),
+            })
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_MISMATCH",
+                "live Compose does not match any released genesis-birth transition state",
+            )
         if live_binding["semantic_sha256"] != expected_semantic_sha256:
             raise MotherDeploymentGenesisBirthError(
                 "MOTHER_DEPLOY_GENESIS_BIRTH_PRECONDITION_FAILED",
@@ -1394,6 +2413,30 @@ def execute_genesis_birth_release(
                     "MOTHER_DEPLOY_GENESIS_BIRTH_MUTATION_FAILED",
                     f"Coolify rejected proof mutation {mutation['ordinal']}",
                 )
+            if (
+                mutation["ordinal"] == 3
+                and inspected.get(
+                    "exact_superseded_host_container_cleanup_authorized"
+                )
+                is True
+            ):
+                snapshots = _collect_birth_log_snapshots(
+                    controller,
+                    service_uuid=inspected["service_uuid"],
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                host_cleanup_log_snapshots.extend(snapshots)
+                if _cleanup_log_endpoints_unavailable(snapshots):
+                    cleanup_log_endpoints_unavailable = True
+                cleanup_failure = _host_cleanup_failed_from_logs(snapshots)
+                if cleanup_failure is not None:
+                    raise MotherDeploymentGenesisBirthError(
+                        "MOTHER_DEPLOY_GENESIS_BIRTH_HOST_CLEANUP_FAILED",
+                        "superseded host cleanup failed: "
+                        + str(cleanup_failure.get("message") or "")[:512],
+                    )
             if mutation["ordinal"] == 1:
                 stopped = False
                 while True:
@@ -1435,6 +2478,10 @@ def execute_genesis_birth_release(
                     )
         healthy = False
         last_status = ""
+        cleanup_authorized = (
+            inspected.get("exact_superseded_host_container_cleanup_authorized")
+            is True
+        )
         while True:
             inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
             if inventory["ok"]:
@@ -1444,10 +2491,46 @@ def execute_genesis_birth_release(
                 if last_status == "running:healthy":
                     healthy = True
                     break
+            if cleanup_authorized and not cleanup_log_endpoints_unavailable:
+                snapshots = _collect_birth_log_snapshots(
+                    controller,
+                    service_uuid=inspected["service_uuid"],
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                host_cleanup_log_snapshots.extend(snapshots)
+                if _cleanup_log_endpoints_unavailable(snapshots):
+                    cleanup_log_endpoints_unavailable = True
+                cleanup_failure = _host_cleanup_failed_from_logs(snapshots)
+                if cleanup_failure is not None:
+                    raise MotherDeploymentGenesisBirthError(
+                        "MOTHER_DEPLOY_GENESIS_BIRTH_HOST_CLEANUP_FAILED",
+                        "superseded host cleanup failed: "
+                        + str(cleanup_failure.get("message") or "")[:512],
+                    )
             if time.monotonic() >= deadline:
                 break
             time.sleep(max(0.0, poll_interval_seconds))
         if not healthy:
+            if cleanup_authorized and not cleanup_log_endpoints_unavailable:
+                snapshots = _collect_birth_log_snapshots(
+                    controller,
+                    service_uuid=inspected["service_uuid"],
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                host_cleanup_log_snapshots.extend(snapshots)
+                if _cleanup_log_endpoints_unavailable(snapshots):
+                    cleanup_log_endpoints_unavailable = True
+                cleanup_failure = _host_cleanup_failed_from_logs(snapshots)
+                if cleanup_failure is not None:
+                    raise MotherDeploymentGenesisBirthError(
+                        "MOTHER_DEPLOY_GENESIS_BIRTH_HOST_CLEANUP_FAILED",
+                        "superseded host cleanup failed: "
+                        + str(cleanup_failure.get("message") or "")[:512],
+                    )
             raise MotherDeploymentGenesisBirthError("MOTHER_DEPLOY_GENESIS_BIRTH_NOT_HEALTHY", f"proof guardian did not reach running:healthy (last status {last_status!r})")
         detail = _http(controller, "GET", detail_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
         if not detail["ok"]:
@@ -1475,10 +2558,28 @@ def execute_genesis_birth_release(
         })
     except MotherDeploymentGenesisBirthError as exc:
         failure = {"code": exc.code, "message": str(exc)[:512]}
-    except Exception:
-        failure = {"code": "MOTHER_DEPLOY_GENESIS_BIRTH_UNEXPECTED_FAILURE", "message": "unexpected birth-proof failure"}
+    except KeyboardInterrupt:
+        failure = {
+            "code": "MOTHER_DEPLOY_GENESIS_BIRTH_INTERRUPTED",
+            "message": "birth execution was interrupted after the release claim was written",
+        }
+    except SystemExit as exc:
+        failure = {
+            "code": "MOTHER_DEPLOY_GENESIS_BIRTH_SYSTEM_EXIT",
+            "message": f"birth execution exited after the release claim was written: {exc.code!r}"[:512],
+        }
+    except BaseException as exc:
+        failure = {
+            "code": "MOTHER_DEPLOY_GENESIS_BIRTH_UNEXPECTED_FAILURE",
+            "message": f"unexpected birth-proof failure after release claim: {type(exc).__name__}"[:512],
+        }
     completed = _timestamp()
     complete = failure is None and len(receipts) == 3 and all(item["status"] == "succeeded" for item in receipts)
+    usable_host_cleanup_log_count = sum(
+        1
+        for snapshot in host_cleanup_log_snapshots
+        if _cleanup_log_snapshot_has_runtime_text(snapshot)
+    )
     evidence = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -1513,7 +2614,25 @@ def execute_genesis_birth_release(
             "hub_local_rpc_url": plan["hub"]["local_rpc_url"],
             "hub_healthy": complete,
             "hub_local_rpc_verified": complete,
+            "host_cleanup_service": (
+                _HOST_CLEANUP_SERVICE
+                if inspected.get("exact_superseded_service_removal_authorized") is True
+                else None
+            ),
+            "host_cleanup_project_uuid": inspected.get("superseded_service_uuid"),
+            "host_cleanup_completed_before_besu": (
+                complete
+                and inspected.get("exact_superseded_service_removal_authorized") is True
+            ),
+            "host_cleanup_persistent_volumes_preserved": True,
+            "host_cleanup_guardian_proof_required": (
+                inspected.get("exact_superseded_host_container_cleanup_authorized")
+                is True
+            ),
+            "host_cleanup_log_snapshot_count": len(host_cleanup_log_snapshots),
+            "host_cleanup_runtime_log_snapshot_count": usable_host_cleanup_log_count,
         },
+        "host_cleanup_log_snapshots": host_cleanup_log_snapshots,
         "policy": {
             "allowed_http_methods": (
                 ["GET", "PATCH", "POST", "DELETE"]
@@ -1523,6 +2642,15 @@ def execute_genesis_birth_release(
             "exact_superseded_service_removal_authorized": (
                 inspected.get("exact_superseded_service_removal_authorized") is True
             ),
+            "exact_superseded_host_container_cleanup_authorized": (
+                inspected.get("exact_superseded_host_container_cleanup_authorized")
+                is True
+            ),
+            "host_cleanup_exact_project_only": (
+                inspected.get("exact_superseded_host_container_cleanup_authorized")
+                is True
+            ),
+            "host_cleanup_persistent_volumes_preserved": True,
             "exact_superseded_service_removed_before_deploy": (
                 superseded_service_removal is not None
                 and superseded_service_removal.get("status") == "pass"
@@ -1567,6 +2695,26 @@ def execute_genesis_birth_release(
             "superseded_service_removed_before_deploy": (
                 superseded_service_removal is not None
                 and superseded_service_removal.get("status") == "pass"
+            ),
+            "superseded_host_container_cleanup_authorized": (
+                inspected.get("exact_superseded_host_container_cleanup_authorized")
+                is True
+            ),
+            "superseded_host_containers_removed_before_besu": (
+                complete
+                and inspected.get("exact_superseded_host_container_cleanup_authorized")
+                is True
+            ),
+            "host_cleanup_persistent_volumes_preserved": True,
+            "host_cleanup_guardian_proof_required": (
+                inspected.get("exact_superseded_host_container_cleanup_authorized")
+                is True
+            ),
+            "host_cleanup_logs_observed": usable_host_cleanup_log_count > 0,
+            "host_cleanup_log_endpoints_unavailable": (
+                cleanup_authorized
+                and bool(host_cleanup_log_snapshots)
+                and usable_host_cleanup_log_count == 0
             ),
             "observed_active_deployment_count": len(deployment_cancellation_receipts),
             "cancelled_active_deployment_count": sum(
@@ -1661,6 +2809,8 @@ def verify_genesis_birth_evidence(
             policy.get("allowed_http_methods") == expected_methods,
             policy.get("exact_active_deployments_cancelled_before_stop") is True,
             policy.get("exact_service_stopped_before_deploy") is True,
+            policy.get("host_cleanup_persistent_volumes_preserved") is True,
+            proof.get("host_cleanup_persistent_volumes_preserved") is True,
         ])
         or len(mutation_receipts) != 3
         or mutation_receipts[0].get("ordinal") != 1
@@ -1682,6 +2832,23 @@ def verify_genesis_birth_evidence(
                 != summary.get("superseded_service_uuid")
                 or superseded_removal.get("node") != evidence.get("initial_node")
                 or superseded_removal.get("service_uuid") == evidence.get("service_uuid")
+                or policy.get(
+                    "exact_superseded_host_container_cleanup_authorized"
+                ) is not True
+                or policy.get("host_cleanup_exact_project_only") is not True
+                or summary.get(
+                    "superseded_host_container_cleanup_authorized"
+                ) is not True
+                or summary.get(
+                    "superseded_host_containers_removed_before_besu"
+                ) is not True
+                or summary.get(
+                    "host_cleanup_persistent_volumes_preserved"
+                ) is not True
+                or proof.get("host_cleanup_service") != _HOST_CLEANUP_SERVICE
+                or proof.get("host_cleanup_project_uuid")
+                != summary.get("superseded_service_uuid")
+                or proof.get("host_cleanup_completed_before_besu") is not True
             )
         )
         or (
@@ -1692,6 +2859,19 @@ def verify_genesis_birth_evidence(
                 or summary.get("superseded_service_removed_before_deploy") is not False
                 or summary.get("superseded_service_uuid") is not None
                 or superseded_removal is not None
+                or policy.get(
+                    "exact_superseded_host_container_cleanup_authorized"
+                ) is not False
+                or policy.get("host_cleanup_exact_project_only") is not False
+                or summary.get(
+                    "superseded_host_container_cleanup_authorized"
+                ) is not False
+                or summary.get(
+                    "superseded_host_containers_removed_before_besu"
+                ) is not False
+                or proof.get("host_cleanup_service") is not None
+                or proof.get("host_cleanup_project_uuid") is not None
+                or proof.get("host_cleanup_completed_before_besu") is not False
             )
         )
     ):
@@ -1733,6 +2913,15 @@ def verify_genesis_birth_evidence(
         "superseded_service_removed_before_deploy": (
             summary.get("superseded_service_removed_before_deploy") is True
         ),
+        "superseded_host_container_cleanup_authorized": (
+            summary.get("superseded_host_container_cleanup_authorized") is True
+        ),
+        "superseded_host_containers_removed_before_besu": (
+            summary.get("superseded_host_containers_removed_before_besu") is True
+        ),
+        "host_cleanup_service": proof.get("host_cleanup_service"),
+        "host_cleanup_project_uuid": proof.get("host_cleanup_project_uuid"),
+        "host_cleanup_persistent_volumes_preserved": True,
         "super_node_components": ["hub", "local-rpc", "besu", "qbft-validator", "foundationdb"],
         "soft_replica_untouched": True,
         "next_phase": "stage-soft-replica-configuration",

@@ -797,9 +797,43 @@ authority.
 | Undo an unfinished operation before commit | `rollback` |
 | Complete a post-commit interrupted finalization | Retry the exact `finalize` |
 
-## 16. Canonical examples
+## 16. Coolify health model for super-node birth
 
-### 16.1 First node
+A first-node birth is not complete merely because containers exist, and it is not
+failed merely because Coolify says `running:unknown`. The generated Compose must
+make Coolify's aggregate health model match the super-node shape.
+
+Expected shape:
+
+```text
+long-running services:
+  Besu node service             healthcheck required/preserved
+  mother-super-node-fdb         healthcheck required
+  mother-super-node-hub         healthcheck required
+  mother-genesis-proof-guardian healthcheck required
+
+one-shot services:
+  mother-genesis-init                 exclude_from_hc: true
+  mother-superseded-service-cleanup   exclude_from_hc: true when present
+```
+
+Operator diagnosis rule:
+
+```text
+If Besu, Hub, FDB, and the proof guardian are alive but Coolify remains
+running:unknown, inspect the generated Compose health model before treating the
+chain as unhealthy.
+```
+
+A repeated HTTP `404 Not found` from Coolify service-log endpoints is not a proof
+failure by itself. It means that Coolify did not expose logs at that API path for
+that resource shape. Cleanup failure must come from cleanup runtime output,
+cleanup proof data, or a failed cleanup container, not from the absence of a
+service-log endpoint.
+
+## 17. Canonical examples
+
+### 17.1 First node
 
 ```text
 mother diagnose mainnet
@@ -811,7 +845,7 @@ mother add-node do mainnet
 mother add-node finalize mainnet
 ```
 
-### 16.2 Second node on a new replica host
+### 17.2 Second node on a new replica host
 
 ```text
 mother add-node prep mainnet \
@@ -824,7 +858,7 @@ mother add-node finalize mainnet
 
 The same operation stages and activates `coolify-c` as a replica.
 
-### 16.3 Remove a node but retain the host replica
+### 17.3 Remove a node but retain the host replica
 
 ```text
 mother remove-node prep mainnet \
@@ -837,7 +871,7 @@ mother remove-node finalize mainnet
 `coolify-a` remains a Mother replica until a separate membership operation
 retires it.
 
-### 16.4 Intentional zero-validator state
+### 17.4 Intentional zero-validator state
 
 ```text
 mother remove-node prep mainnet \
@@ -848,7 +882,7 @@ mother remove-node do mainnet
 mother remove-node finalize mainnet
 ```
 
-### 16.5 Reactivate a born zero-validator network
+### 17.5 Reactivate a born zero-validator network
 
 ```text
 mother add-node prep mainnet \
@@ -859,7 +893,7 @@ mother add-node do mainnet
 mother add-node finalize mainnet
 ```
 
-### 16.6 Resume or roll back an interrupted operation
+### 17.6 Resume or roll back an interrupted operation
 
 ```text
 mother diagnose mainnet
@@ -869,7 +903,7 @@ mother add-node do mainnet
 mother rollback mainnet --all
 ```
 
-### 16.7 Complete finalization after a participant returns
+### 17.7 Complete finalization after a participant returns
 
 ```text
 mother diagnose mainnet
@@ -879,7 +913,7 @@ mother <kind> finalize mainnet --operation-id <id>
 This advances the exact already-committed finalization head. It does not create
 a new topology decision.
 
-### 16.8 Canonical three-super-node lifecycle acceptance test
+### 17.8 Canonical three-super-node lifecycle acceptance test
 
 This is the canonical deployment test plan. Each node name represents one
 complete super-node containing Hub, local RPC, Besu, QBFT validator duties,
@@ -931,7 +965,7 @@ RPC routing, advancing blocks, fresh chain head, and absence of standalone
 network-node services.
 
 
-## 17. Operator safety rules
+## 18. Operator safety rules
 
 1. Diagnose before acting and after every ambiguous result.
 2. Follow `allowed_next_commands`; do not infer legality from the last process
@@ -951,7 +985,7 @@ network-node services.
 12. If Mother cannot prove the current head, participant set, prestate, or
     rollback closure, stop and use the diagnosis-directed recovery path.
 
-## 18. Remaining open items
+## 19. Remaining open items
 
 This catalog is the operation-ID authority, but not every public surface or
 mutating contract is closed.

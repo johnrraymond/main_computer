@@ -128,6 +128,12 @@
         conferenceStageId: stringValue(scenario.conferenceStageId),
         resolvedStageId: stringValue(scenario.resolvedStageId || "resolved"),
         completionCharacterId: stringValue(scenario.completionCharacterId),
+        completionCharacterIds: [...new Set(
+          arrayValue(scenario.completionCharacterIds)
+            .map(stringValue)
+            .filter(Boolean)
+            .concat(stringValue(scenario.completionCharacterId) ? [stringValue(scenario.completionCharacterId)] : [])
+        )],
         characterIds: [...new Set(
           arrayValue(scenario.characterIds).map(stringValue).filter(Boolean)
         )],
@@ -612,21 +618,34 @@
       const definition = this.scenarioDefinition(scenarioId);
       const state = this.state.scenarios[stringValue(scenarioId)];
       if (!definition || !state) throw new SystemScenarioStateError("Unknown scenario.");
+      const completionCharacterIds = arrayValue(definition.completionCharacterIds);
       if (state.status !== "active"
           || state.stageId !== definition.protectionStageId
-          || !definition.completionCharacterId) {
+          || !completionCharacterIds.length) {
         return {changed: false, view: this.view(definition.id)};
       }
-      const character = characterRuntime?.character?.(definition.completionCharacterId);
-      if (!character || character.status === "active" && character.health > 0) {
-        return {changed: false, view: this.view(definition.id)};
+      const activeCompletionCharacters = completionCharacterIds.filter((characterId) => {
+        const character = characterRuntime?.character?.(characterId);
+        return character && character.status === "active" && character.health > 0;
+      });
+      if (activeCompletionCharacters.length) {
+        return {
+          changed: false,
+          remainingCharacterIds: activeCompletionCharacters,
+          view: this.view(definition.id)
+        };
       }
       state.stageId = definition.investigationStageId;
+      definition.evidence.forEach((item) => {
+        if (!state.evidenceIds.includes(item.id)) state.evidenceIds.push(item.id);
+      });
       const receipt = this.record(
         definition.id,
         "protection-completed",
         {
           characterId: definition.completionCharacterId,
+          characterIds: completionCharacterIds.slice(),
+          evidenceIds: state.evidenceIds.slice(),
           stageId: state.stageId
         },
         options.nowMs
@@ -658,7 +677,7 @@
         ? explicitDefensive
         : (
           state.stageId === definition.protectionStageId
-          && targetId === definition.completionCharacterId
+          && arrayValue(definition.completionCharacterIds).includes(targetId)
         );
       state.metrics.weaponDischarges += 1;
       if (defensive) state.metrics.defensiveDischarges += 1;

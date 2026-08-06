@@ -58,6 +58,11 @@ class CharacterAIRuntimeTests(unittest.TestCase):
                 "enemy.raider-boarder-01",
                 "npc.engineering-officer-01",
                 "enemy.pax.quiet-service-assassin-01",
+                "enemy.pax.boarder-01",
+                "enemy.pax.boarder-02",
+                "enemy.pax.boarder-03",
+                "enemy.pax.boarder-04",
+                "enemy.pax.boarder-05",
                 "npc.pax.refugee-witness-01",
                 "npc.pax.neutrality-marshal-01",
             },
@@ -463,6 +468,73 @@ class CharacterAIRuntimeTests(unittest.TestCase):
         self.assertIn("campaignExtension()", runtime)
         self.assertNotIn("setInterval(", runtime)
         self.assertNotIn("requestAnimationFrame(", runtime)
+
+
+    def test_pax_assassin_telegraphs_before_dealing_damage(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const api = require(process.argv[1]);
+            const project = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+            const runtime = api.create(project.metadata.characterAI, {
+              projectId: "webgl-demo",
+              storage: null,
+              restore: false
+            });
+            [
+              "enemy.pax.boarder-01",
+              "enemy.pax.boarder-02",
+              "enemy.pax.boarder-03",
+              "enemy.pax.boarder-04",
+              "enemy.pax.boarder-05"
+            ].forEach((characterId) => runtime.forceCharacterState(
+              characterId,
+              {status: "down", health: 0, currentActionId: "down"},
+              {nowMs: 0, source: "test-isolation"}
+            ));
+            runtime.forceCharacterState(
+              "enemy.pax.quiet-service-assassin-01",
+              {
+                status: "active",
+                position: [0, -0.55, -37],
+                nextDecisionAtMs: 0,
+                nextAttackAtMs: 0,
+                memory: {playerSeen: false, supportCalled: true}
+              },
+              {nowMs: 0, source: "test"}
+            );
+            const world = {
+              phase: "mother-ship",
+              player: {alive: true, health: 100, position: [0, -0.55, -37.5]},
+              ship: {power: "online", security: "alert", currentSystemId: "system.pax"},
+              scenario: {
+                id: "scenario.pax.neutrality-under-fire",
+                status: "active",
+                stageId: "protect-witness"
+              }
+            };
+            const warning = runtime.step(world, 0);
+            const tooSoon = runtime.step(world, 1000);
+            const attack = runtime.step(world, 1400);
+            process.stdout.write(JSON.stringify({
+              telegraphMs: runtime.characterDefinition(
+                "enemy.pax.quiet-service-assassin-01"
+              ).stats.attackTelegraphMs,
+              warningEffects: warning.effects,
+              tooSoonEffects: tooSoon.effects,
+              attackEffects: attack.effects
+            }));
+            """
+        )
+        self.assertEqual(result["telegraphMs"], 1400)
+        self.assertEqual(result["warningEffects"][0]["type"], "threat-warning")
+        self.assertIn("aiming at you", result["warningEffects"][0]["message"])
+        self.assertEqual(result["tooSoonEffects"], [])
+        self.assertEqual(result["attackEffects"][0]["type"], "damage-player")
+        self.assertEqual(
+            result["attackEffects"][0]["label"],
+            "Quiet Service Assassin",
+        )
 
 
 if __name__ == "__main__":

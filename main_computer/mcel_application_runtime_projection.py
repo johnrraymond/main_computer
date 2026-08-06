@@ -1,11 +1,11 @@
 """Build browser-safe runtime projections for validated MCEL application packages.
 
-Wave 5A keeps canonical packages under the repository-root ``mcel_apps`` authority
-and projects only the files required to mount an application in a browser.  The
-projection is deterministic, contains source and catalog fingerprints, and never
-copies requirements, tests, or other development-only package contents into the
-served web tree. Acceptance and observation contracts are browser-safe proof inputs
-and are projected once a package declares executable browser scenarios.
+Canonical packages remain under the repository-root ``mcel_apps`` authority.
+Package-owned applications project their browser document, script, and style;
+host-bound applications project only contracts plus a manifest that names the
+existing route, root selector, and stable runtime facade. Every projection is
+deterministic, fingerprinted, and excludes requirements, tests, and other
+development-only package contents from the served web tree.
 """
 
 from __future__ import annotations
@@ -35,6 +35,8 @@ RUNTIME_MANIFEST_NAME = "mcel.runtime.json"
 
 _BROWSER_CONTRACT_KEYS = ("domain", "intents", "adapter", "surface", "layout", "acceptance", "observation")
 _BROWSER_RUNTIME_KEYS = ("document", "script", "style")
+HOST_BOUND_RUNTIME_MODE = "host-bound"
+COPIED_RUNTIME_MODE = "package-document"
 
 
 class RuntimeProjectionError(RuntimeError):
@@ -67,9 +69,13 @@ class ApplicationRuntimeProjection:
     projection_root: str
     manifest_path: str
     manifest_url: str
-    document_url: str
-    script_url: str
-    style_url: str
+    document_url: str | None
+    script_url: str | None
+    style_url: str | None
+    mount_mode: str
+    host_route: str | None
+    root_selector: str
+    runtime_facade: str | None
     fingerprint: str
     fingerprint_algorithm: str
     files: Mapping[str, bytes]
@@ -84,6 +90,10 @@ class ApplicationRuntimeProjection:
             "documentUrl": self.document_url,
             "scriptUrl": self.script_url,
             "styleUrl": self.style_url,
+            "mountMode": self.mount_mode,
+            "hostRoute": self.host_route,
+            "rootSelector": self.root_selector,
+            "runtimeFacade": self.runtime_facade,
             "fingerprint": self.fingerprint,
             "fingerprintAlgorithm": self.fingerprint_algorithm,
             "fileCount": len(self.files),
@@ -147,6 +157,36 @@ def _read_json(path: Path, label: str) -> Mapping[str, Any]:
     return value
 
 
+def _host_binding(blueprint: Mapping[str, Any]) -> Mapping[str, str] | None:
+    authority = blueprint.get("presentationAuthority")
+    if not isinstance(authority, Mapping) or authority.get("kind") != "existing-host-html":
+        return None
+    route = blueprint.get("route")
+    root_selector = blueprint.get("rootSelector")
+    runtime_facade = authority.get("runtimeFacade")
+    if not isinstance(route, str) or not route.startswith("/"):
+        raise InvalidRuntimeProjectionSource("Host-bound application blueprint requires an absolute route.")
+    if not isinstance(root_selector, str) or not root_selector.strip():
+        raise InvalidRuntimeProjectionSource("Host-bound application blueprint requires rootSelector.")
+    if not isinstance(runtime_facade, str) or not runtime_facade.strip():
+        raise InvalidRuntimeProjectionSource("Host-bound application blueprint requires runtimeFacade.")
+    return {
+        "route": route.strip(),
+        "rootSelector": root_selector.strip(),
+        "runtimeFacade": runtime_facade.strip(),
+    }
+
+
+def _record_blueprint(repo_root: Path, record: ApplicationPackageRecord) -> Mapping[str, Any]:
+    return _read_json(_repository_path(repo_root, record.blueprint, "blueprint"), "application blueprint")
+
+
+def is_runtime_projectable_record(repo_root: Path, record: ApplicationPackageRecord) -> bool:
+    if all(record.runtime.get(key) for key in _BROWSER_RUNTIME_KEYS):
+        return True
+    return _host_binding(_record_blueprint(repo_root, record)) is not None
+
+
 def _package_relative(record: ApplicationPackageRecord, reference: str | None, label: str) -> str:
     if not reference:
         raise InvalidRuntimeProjectionSource(f"Package is missing browser runtime reference: {label}.")
@@ -158,7 +198,12 @@ def _package_relative(record: ApplicationPackageRecord, reference: str | None, l
         raise InvalidRuntimeProjectionSource(f"Package reference is outside its package root: {reference}.") from exc
 
 
-def _copy_sources(repo_root: Path, record: ApplicationPackageRecord) -> dict[str, bytes]:
+def _copy_sources(
+    repo_root: Path,
+    record: ApplicationPackageRecord,
+    *,
+    host_bound: bool,
+) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     for key in _BROWSER_CONTRACT_KEYS:
         relative = _package_relative(record, record.contracts.get(key), f"contracts.{key}")
@@ -166,12 +211,12 @@ def _copy_sources(repo_root: Path, record: ApplicationPackageRecord) -> dict[str
         if content is None:
             raise InvalidRuntimeProjectionSource(f"Virtual package contract is missing: {relative}.")
         files[f"contracts/{key}.js"] = content
+    if host_bound:
+        return files
     for key in _BROWSER_RUNTIME_KEYS:
         relative = _package_relative(record, record.runtime.get(key), f"runtime.{key}")
         content = record.files.get(relative)
         if content is None:
-            # Legacy records and externally assembled records may not expose the
-            # in-memory byte map; preserve safe repository fallback for them.
             source = _repository_path(repo_root, record.runtime.get(key), f"runtime.{key}")
             content = source.read_bytes()
         extension = {"document": "html", "script": "js", "style": "css"}[key]
@@ -187,12 +232,19 @@ def build_application_runtime_projection(
     if not catalog.ok or catalog.invalid_count or not record.valid or not record.app_id or not record.fingerprint:
         raise InvalidRuntimeProjectionSource("Only valid repository application packages may be projected.")
 
-    blueprint = _read_json(_repository_path(repo_root, record.blueprint, "blueprint"), "application blueprint")
+    blueprint = _record_blueprint(repo_root, record)
     root_selector = blueprint.get("rootSelector")
     if not isinstance(root_selector, str) or not root_selector.strip():
         raise InvalidRuntimeProjectionSource(f"Application {record.app_id} blueprint requires rootSelector.")
+    host_binding = _host_binding(blueprint)
+    has_copied_runtime = all(record.runtime.get(key) for key in _BROWSER_RUNTIME_KEYS)
+    if host_binding is None and not has_copied_runtime:
+        raise InvalidRuntimeProjectionSource(
+            f"Application {record.app_id} has neither package runtime files nor a valid host binding."
+        )
+    host_bound = host_binding is not None and not has_copied_runtime
 
-    copied = _copy_sources(repo_root, record)
+    copied = _copy_sources(repo_root, record, host_bound=host_bound)
     fingerprint_inputs = dict(copied)
     fingerprint_inputs["@source-package-fingerprint"] = record.fingerprint.encode("utf-8")
     fingerprint_inputs["@catalog-fingerprint"] = catalog.fingerprint.encode("utf-8")
@@ -233,11 +285,21 @@ def build_application_runtime_projection(
             "acceptance": {"path": "contracts/acceptance.js", "export": f"{class_name}Acceptance"},
             "observation": {"path": "contracts/observation.js", "export": f"{class_name}Observation"},
         },
-        "runtime": {
-            "document": "src/index.html",
-            "script": "src/app.js",
-            "style": "src/app.css",
-        },
+        "runtime": (
+            {
+                "mode": HOST_BOUND_RUNTIME_MODE,
+                "route": host_binding["route"],
+                "rootSelector": host_binding["rootSelector"],
+                "facade": host_binding["runtimeFacade"],
+            }
+            if host_bound and host_binding is not None
+            else {
+                "mode": COPIED_RUNTIME_MODE,
+                "document": "src/index.html",
+                "script": "src/app.js",
+                "style": "src/app.css",
+            }
+        ),
         "conformance": {
             "currentMode": record.conformance.get("currentMode", "structural-only"),
             "targetMode": record.conformance.get("targetMode", "semantic-runtime-proven"),
@@ -256,9 +318,13 @@ def build_application_runtime_projection(
         projection_root=projection_root,
         manifest_path=PurePosixPath(projection_root, RUNTIME_MANIFEST_NAME).as_posix(),
         manifest_url=PurePosixPath(browser_root, RUNTIME_MANIFEST_NAME).as_posix(),
-        document_url=PurePosixPath(browser_root, "src/index.html").as_posix(),
-        script_url=PurePosixPath(browser_root, "src/app.js").as_posix(),
-        style_url=PurePosixPath(browser_root, "src/app.css").as_posix(),
+        document_url=None if host_bound else PurePosixPath(browser_root, "src/index.html").as_posix(),
+        script_url=None if host_bound else PurePosixPath(browser_root, "src/app.js").as_posix(),
+        style_url=None if host_bound else PurePosixPath(browser_root, "src/app.css").as_posix(),
+        mount_mode=HOST_BOUND_RUNTIME_MODE if host_bound else COPIED_RUNTIME_MODE,
+        host_route=host_binding["route"] if host_bound and host_binding is not None else None,
+        root_selector=root_selector.strip(),
+        runtime_facade=host_binding["runtimeFacade"] if host_bound and host_binding is not None else None,
         fingerprint=projection_fingerprint,
         fingerprint_algorithm=RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM,
         files=files,
@@ -271,12 +337,10 @@ def build_runtime_projection_set(repo_root: Path | None = None) -> RuntimeProjec
     catalog = build_application_package_catalog(root)
     if not catalog.ok or catalog.invalid_count or catalog.errors:
         raise InvalidRuntimeProjectionSource("Repository application-package catalog must be valid before projection.")
-    # Source-only shadow authorities are valid repository packages but have no
-    # browser runtime sources until host-bound mounting is promoted.
     projections = tuple(
         build_application_runtime_projection(root, catalog, record)
         for record in sorted(catalog.packages, key=lambda item: item.app_id or item.package_root)
-        if all(record.runtime.get(key) for key in _BROWSER_RUNTIME_KEYS)
+        if is_runtime_projectable_record(root, record)
     )
     return RuntimeProjectionSet(
         repository_root=root.as_posix(),

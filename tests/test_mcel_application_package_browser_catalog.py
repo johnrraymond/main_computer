@@ -39,8 +39,9 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
 
     assert payload["schema"] == BROWSER_CATALOG_SCHEMA
     assert payload["format"] == BROWSER_CATALOG_FORMAT
-    assert payload["packageCount"] == 2
+    assert payload["packageCount"] == 3
     assert {item["appId"] for item in payload["packages"]} == {
+        "calculator",
         "contract-counter",
         "contract-workbench",
     }
@@ -52,6 +53,17 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
     assert package["runtime"]["document"] == "mcel_apps/contract-counter/src/index.html"
     assert package["runtimeProjection"]["manifestUrl"] == "applications/mcel-packages/contract-counter/mcel.runtime.json"
     assert package["runtimeProjection"]["fingerprint"].startswith("sha256:")
+
+    calculator = next(item for item in payload["packages"] if item["appId"] == "calculator")
+    assert calculator["runtime"] == {}
+    assert calculator["runtimeProjection"]["mountMode"] == "host-bound"
+    assert calculator["runtimeProjection"]["hostRoute"] == "/applications/calculator"
+    assert calculator["runtimeProjection"]["rootSelector"] == "#calculator-app"
+    assert calculator["runtimeProjection"]["runtimeFacade"] == "MainComputerCalculatorRuntime"
+    assert calculator["runtimeProjection"]["documentUrl"] is None
+    assert calculator["runtimeProjection"]["scriptUrl"] is None
+    assert calculator["runtimeProjection"]["styleUrl"] is None
+
     assert set(package) == {
         "appId",
         "title",
@@ -131,7 +143,7 @@ def test_browser_catalog_cli_check_and_json_output() -> None:
     payload = json.loads(completed.stdout)
     assert payload["schema"] == "mcel.application-package-browser-catalog-result.v1"
     assert payload["resultCode"] == "browser_catalog_fresh"
-    assert payload["packageCount"] == 2
+    assert payload["packageCount"] == 3
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
 
 
@@ -201,7 +213,7 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
     assert payload == {
         "schema": BROWSER_CATALOG_SCHEMA,
         "format": BROWSER_CATALOG_FORMAT,
-        "packageCount": 2,
+        "packageCount": 3,
         "hasCounter": True,
         "missing": None,
         "title": "Contract Counter",
@@ -239,5 +251,8 @@ def test_browser_shell_loads_package_catalog_before_surface_registry() -> None:
     catalog_include = "<!-- @include applications/scripts/mcel-application-package-catalog.js -->"
     surface_include = "<!-- @include applications/scripts/mcel-app-surface-registry.js -->"
 
+    host_bound_include = "<!-- @include applications/scripts/mcel-host-bound-application-runtime.js -->"
     assert catalog_include in shell
-    assert shell.index(catalog_include) < shell.index(surface_include)
+    assert host_bound_include in shell
+    assert shell.index(catalog_include) < shell.index(host_bound_include)
+    assert shell.index(host_bound_include) < shell.index(surface_include)

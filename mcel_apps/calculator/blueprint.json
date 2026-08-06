@@ -24,6 +24,7 @@
   ],
   "presentationAuthority": {
     "document": "main_computer/web/applications/apps/calculator.html",
+    "hostBoundRuntimeActive": true,
     "kind": "existing-host-html",
     "runtimeFacade": "MainComputerCalculatorRuntime",
     "style": "main_computer/web/applications/styles/calculator.css"

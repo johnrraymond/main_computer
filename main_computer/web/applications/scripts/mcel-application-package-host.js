@@ -145,6 +145,12 @@ async function loadPackage() {
   const catalog = requireAuthority("McelApplicationPackages", "getPackage");
   const record = catalog.getPackage(appId);
   if (!record?.runtimeProjection) throw new Error(`Unknown or unprojected MCEL application package: ${appId || "<empty>"}.`);
+  if (record.runtimeProjection.mountMode === "host-bound") {
+    const hostRoute = String(record.runtimeProjection.hostRoute || "").trim();
+    if (!hostRoute.startsWith("/")) throw new Error(`Host-bound MCEL application ${appId} has no valid host route.`);
+    location.replace(new URL(hostRoute, location.origin).href);
+    return;
+  }
 
   const manifestUrl = absoluteUrl(record.runtimeProjection.manifestUrl);
   const response = await fetch(manifestUrl, {cache: "no-store"});

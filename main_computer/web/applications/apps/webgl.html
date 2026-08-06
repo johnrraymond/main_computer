@@ -25,7 +25,7 @@
                 </div>
                 <div>
                   <dt>Threat</dt>
-                  <dd>Bridge Access, behind the navigation stations</dd>
+                  <dd>Bridge deck, front viewscreen side</dd>
                 </div>
                 <div>
                   <dt>Rules</dt>
@@ -33,7 +33,7 @@
                 </div>
               </dl>
               <p class="pax-scenario-arrival-direction">
-                Turn away from the viewscreen, locate the hostile at Bridge Access, and stop the attack.
+                Look toward the bridge viewscreen, locate the hostile beside the witness, and stop the attack.
               </p>
               <button id="pax-scenario-arrival-ack" type="button">
                 Acknowledge — protect Nera
@@ -53,7 +53,44 @@
           >
             <span id="pax-scenario-objective-kicker">PAX PRIORITY ONE</span>
             <strong id="pax-scenario-objective-title">PROTECT NERA SAYE</strong>
-            <small id="pax-scenario-objective-detail">HOSTILE AT BRIDGE ACCESS • TURN FROM THE VIEWSCREEN</small>
+            <small id="pax-scenario-objective-detail">HOSTILE ON THE BRIDGE • FRONT VIEWSCREEN SIDE • SHOOT THE ATTACKER</small>
+          </aside>
+
+          <aside
+            id="pax-scenario-threat-tracker"
+            class="pax-scenario-threat-tracker"
+            hidden
+            role="status"
+            aria-live="assertive"
+            data-mc-component-id="system-scenario.pax.threat-tracker"
+            data-mc-component-kind="notice"
+            data-mc-component-label="Pax Visible Attacker Tracker"
+          >
+            <span>ATTACKER</span>
+            <strong id="pax-scenario-threat-name">QUIET SERVICE ASSASSIN</strong>
+            <small id="pax-scenario-threat-detail">
+              RED BEACON OVER HOSTILE • BRIDGE VIEWSCREEN SIDE
+            </small>
+            <em id="pax-scenario-threat-action">CALL SUPPORT</em>
+          </aside>
+
+          <aside
+            id="pax-scenario-hard-start"
+            class="pax-scenario-hard-start"
+            hidden
+            role="status"
+            aria-live="assertive"
+            data-mc-component-id="system-scenario.pax.hard-start"
+            data-mc-component-kind="notice"
+            data-mc-component-label="Pax Mission Hard Start Status"
+          >
+            <strong id="pax-scenario-hard-start-title">PAX MISSION STATUS</strong>
+            <span id="pax-scenario-hard-start-detail">
+              Pax is active. Use Start / recover Pax if no character encounter is visible.
+            </span>
+            <button id="pax-scenario-hard-start-button" type="button">
+              Start / recover Pax
+            </button>
           </aside>
 
           <div

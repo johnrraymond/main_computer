@@ -110,6 +110,39 @@ transient rollback-controlled implementation step inside the exact operation
 that creates, repairs, or removes its parent super-node. It MUST NOT become a
 committed network topology.
 
+## Coolify health model for complete super-nodes
+
+Mother-generated Coolify Compose for a complete super-node MUST describe two
+different runtime classes explicitly:
+
+1. Long-running runtime/proof services that are expected to remain healthy.
+2. One-shot jobs that are expected to exit `0` and MUST NOT be counted as failed
+   long-running services by Coolify aggregate health.
+
+The first-genesis and genesis-birth Compose health contract is:
+
+| Service | Runtime class | Health requirement |
+| --- | --- | --- |
+| Besu node service, for example `mainneta-super1` | long-running runtime | remains running and healthy while producing QBFT blocks |
+| `mother-super-node-fdb` | long-running runtime | has an explicit FoundationDB healthcheck based on `fdbcli --exec status` |
+| `mother-super-node-hub` | long-running runtime | has an HTTP healthcheck on the internal Hub health endpoint |
+| `mother-genesis-proof-guardian` | long-running proof | has an internal proof-file freshness healthcheck and no public route |
+| `mother-genesis-init` | one-shot setup job | exits `0` and is marked `exclude_from_hc: true` |
+| `mother-superseded-service-cleanup` | one-shot host-cleanup job | exits `0`, preserves persistent volumes, and is marked `exclude_from_hc: true` |
+
+A generated super-node Compose MUST NOT rely on Coolify's aggregate
+`running:healthy` status while leaving any long-running service without a
+healthcheck or leaving any expected one-shot job inside aggregate health
+evaluation. `running:unknown` after all component containers are healthy is a
+health-model defect in the generated Compose, not proof that the chain, Hub, or
+guardian failed.
+
+Coolify service-log endpoints are optional observation channels. A missing
+service-log endpoint, including HTTP `404 Not found`, MUST be recorded only as log
+endpoint unavailability. It MUST NOT be treated as cleanup failure evidence.
+Cleanup failure evidence requires runtime log text or proof data from the
+cleanup/proof path itself.
+
 ## Canonical three-super-node lifecycle acceptance plan
 
 This is the required end-to-end Mother acceptance scenario for super-node

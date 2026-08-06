@@ -8,9 +8,10 @@ The repository now also contains an unpromoted, authored-only shadow authority a
 `mcel_apps/calculator/application.js`. It declares the eleven stable Calculator
 operations, the existing `/applications/calculator` route and `#calculator-app`
 root, and explicit model, Mathics, and result-Q&A capability lanes. Its contracts
-and normalized IR are generated in memory. The existing HTML, CSS, runtime facade,
-and semantic adapter remain live until host-bound browser proof and promotion are
-completed.
+and normalized IR are generated in memory. A host-bound virtual runtime now mounts
+the generated adapter onto the existing HTML through `MainComputerCalculatorRuntime`
+without copying HTML, CSS, or package source. The handwritten semantic adapter remains
+live until browser parity proof and promotion are completed.
 
 The current implementation has a calculator route, a rich calculator DOM, arithmetic input/result controls, scientific graphing controls, a graph canvas, Mathics symbolic panels, result Q&A, an embedded calculator chat panel, a calculator MCEL domain pack, a dedicated Calculator semantic adapter registered with the MCEL domain-adapter registry, and a five-layer Calculator semantic surface with shared layout grammar.
 
@@ -93,8 +94,10 @@ primary_user_goal: >
   symbolic evaluations, and ask contextual questions without hidden filesystem,
   remote-sync, or command-execution side effects.
 current_sources:
+  - mcel_apps/calculator/application.js
   - main_computer/web/applications/apps/calculator.html
   - main_computer/web/applications/scripts/calculator.js
+  - main_computer/web/applications/scripts/mcel-host-bound-application-runtime.js
   - main_computer/web/applications/scripts/calculator-semantic-adapter.js
   - main_computer/web/applications/scripts/mcel-calculator-surface.js
   - main_computer/web/applications/scripts/dom-bindings/calculator.js
@@ -107,6 +110,7 @@ verification:
   - tests/test_viewport_app_routes.py
   - tests/test_viewport_applications_static_core.py
   - tests/test_mcel_calculator_semantic_adapter.py
+  - tests/test_mcel_calculator_host_bound_runtime.py
   - tests/test_mcel_calculator_surface.py
   - tests/test_mcel_documentation.py
 ```

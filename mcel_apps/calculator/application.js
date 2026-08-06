@@ -605,7 +605,6 @@ const portableApplication = {
     "knownGaps": [
       "browser-observation-not-yet-bound",
       "candidate-not-promoted",
-      "host-bound-runtime-projection-not-yet-active",
       "legacy-calculator-semantic-adapter-remains-live"
     ],
     "sourceFamily": "official-vanilla-javascript-dsl",

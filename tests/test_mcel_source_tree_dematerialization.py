@@ -89,7 +89,8 @@ def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path
     assert catalog_path.is_file()
     assert (runtime_root / "contract-counter/contracts/domain.js").is_file()
     assert (runtime_root / "contract-workbench/contracts/domain.js").is_file()
-    assert not (runtime_root / "calculator").exists()
+    assert (runtime_root / "calculator/contracts/domain.js").is_file()
+    assert not (runtime_root / "calculator/src").exists()
 
     virtual_assets = build_virtual_mcel_browser_assets(REPO_ROOT)
     physical_files = {
@@ -118,8 +119,14 @@ def test_normal_viewport_mount_assets_stay_in_memory(tmp_path: Path) -> None:
     assert assets.files[
         "applications/mcel-packages/contract-workbench/mcel.runtime.json"
     ]
+    assert assets.files[
+        "applications/mcel-packages/calculator/contracts/adapter.js"
+    ]
+    assert assets.files[
+        "applications/mcel-packages/calculator/mcel.runtime.json"
+    ]
     assert not any(
-        path.startswith("applications/mcel-packages/calculator/")
+        path.startswith("applications/mcel-packages/calculator/src/")
         for path in assets.files
     )
     assert not (tmp_path / "runtime").exists()

@@ -5873,17 +5873,31 @@
         }
 
         canCharacterOccupy(characterId, x, z) {
-          const {bounds, colliders} = this.movement;
           const radius = 0.34;
-          if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
-          const blockedByFixture = colliders.some((collider) => (
-            x > collider.minX - radius
-            && x < collider.maxX + radius
-            && z > collider.minZ - radius
-            && z < collider.maxZ + radius
-          ));
-          if (blockedByFixture) return false;
           const characters = this.characterAIRuntime?.activeCharacters?.() || [];
+
+          if (this.characterAIPhase() === "mother-ship") {
+            // Mother-ship boarders share the bridge world, not the shuttle combat deck.
+            // Reusing shuttle bounds/colliders here pinned every boarder in place because
+            // their bridge coordinates were outside that unrelated movement mesh.
+            const camera = Array.isArray(this.camera) ? this.camera : [0, 0, 0];
+            const withinBridgeEncounter = (
+              Math.abs(x - camera[0]) <= 18
+              && Math.abs(z - camera[2]) <= 24
+            );
+            if (!withinBridgeEncounter) return false;
+          } else {
+            const {bounds, colliders} = this.movement;
+            if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
+            const blockedByFixture = colliders.some((collider) => (
+              x > collider.minX - radius
+              && x < collider.maxX + radius
+              && z > collider.minZ - radius
+              && z < collider.maxZ + radius
+            ));
+            if (blockedByFixture) return false;
+          }
+
           return !characters.some((other) => (
             other.id !== characterId
             && Math.hypot(x - other.position[0], z - other.position[2]) < radius * 1.7
@@ -5931,12 +5945,25 @@
 
         characterAISnapshot() {
           const summary = this.characterAIRuntime?.summary?.() || null;
+          const characters = this.visibleCharacterAICharacters();
+          const activeThreats = characters.filter((character) => (
+            character.kind === "enemy"
+            && character.status === "active"
+            && Number(character.health || 0) > 0
+          ));
           return {
             enabled: Boolean(summary),
             error: this.characterAIError || "",
             phase: this.characterAIPhase(),
+            player: {
+              alive: !this.gameOver && this.playerHealth > 0,
+              health: this.playerHealth,
+              position: this.camera.slice()
+            },
+            activeThreatCount: activeThreats.length,
+            activeThreatIds: activeThreats.map((character) => character.id),
             summary,
-            characters: this.visibleCharacterAICharacters()
+            characters
           };
         }
 
@@ -5951,12 +5978,26 @@
         applyCharacterAIEffect(effect, nowMs) {
           const item = effect && typeof effect === "object" ? effect : {};
           if (item.type === "damage-player") {
-            this.playerHealth = Math.max(0, this.playerHealth - Math.max(0, Number(item.amount) || 0));
+            const amount = Math.max(0, Number(item.amount) || 0);
+            const attacker = String(item.label || item.characterId || "Hostile").trim();
+            this.playerHealth = Math.max(0, this.playerHealth - amount);
+            this.lastCharacterAIMessage = `HIT BY ${attacker.toUpperCase()} (-${amount}) — BREAK LINE OF SIGHT`;
+            this.setShipInteractionStatus?.(this.lastCharacterAIMessage);
             if (this.playerHealth <= 0) {
               this.gameOver = true;
               this.clearMovementKeys();
             }
             return true;
+          }
+          if (item.type === "threat-warning") {
+            const message = String(
+              item.message || `${item.label || item.characterId || "Hostile"} is aiming at you — move to cover.`
+            ).trim();
+            if (message) {
+              this.lastCharacterAIMessage = message;
+              this.setShipInteractionStatus?.(message);
+            }
+            return Boolean(message);
           }
           if (item.type === "repair-ship-power") {
             if (this.shipState?.power !== "online") {
@@ -6013,11 +6054,20 @@
             const [x, y, z] = character.position;
             const ratio = Math.max(0, Math.min(1, character.health / Math.max(1, character.maxHealth)));
             const enemy = character.kind === "enemy";
-            const body = builder.color(enemy ? "#365314" : "#1d4ed8");
-            const armor = builder.color(enemy ? "#1a2e05" : "#0f172a");
-            const accent = builder.color(enemy ? "#ef4444" : "#67e8f9", true);
+            const body = builder.color(enemy ? "#991b1b" : "#1d4ed8");
+            const armor = builder.color(enemy ? "#450a0a" : "#0f172a");
+            const accent = builder.color(enemy ? "#fef2f2" : "#67e8f9", true);
+            const threatBeacon = builder.color("#ff2d2d", true);
             const healthBack = builder.color("#111827");
-            const healthFill = builder.color(enemy ? "#84cc16" : "#38bdf8", true);
+            const healthFill = builder.color(enemy ? "#f87171" : "#38bdf8", true);
+
+            if (enemy) {
+              builder.beam([x, y + 1.58, z], [x, y + 2.72, z], 0.06, threatBeacon);
+              builder.box([x - 0.72, y + 2.5, z - 0.055], [x + 0.72, y + 2.62, z + 0.055], threatBeacon);
+              builder.box([x - 0.055, y + 2.5, z - 0.72], [x + 0.055, y + 2.62, z + 0.72], threatBeacon);
+              builder.box([x - 0.86, y - 0.7, z - 0.045], [x + 0.86, y - 0.65, z + 0.045], threatBeacon);
+              builder.box([x - 0.045, y - 0.7, z - 0.86], [x + 0.045, y - 0.65, z + 0.86], threatBeacon);
+            }
 
             builder.ellipsoid([x, y + 0.28, z], [0.32, 0.68, 0.28], 10, 6, body);
             builder.ellipsoid([x, y + 1.02, z], [0.29, 0.31, 0.28], 10, 6, body);
@@ -8248,15 +8298,25 @@
           const healthBack = builder.color("#111827");
           const healthFill = builder.color("#84cc16", true);
           this.appendFlightScene(builder, nowMs);
-          if (this.isDockingSceneActive()) {
+          if (this.isDockingCutsceneActive()) {
             this.dynamicAnnotationPrimitiveTargets = annotationTargets;
-          this.refreshAnnotationPrimitiveTargets?.();
-          return builder.toFloat32Array();
+            this.refreshAnnotationPrimitiveTargets?.();
+            return builder.toFloat32Array();
+          }
+          if (this.isShuttleBaySceneActive()) {
+            // The mother-ship bridge is implemented as the shuttle-bay scene. Character
+            // AI remains active there, so include its geometry before returning from the
+            // alternate-scene branch. The previous combined docking guard returned first,
+            // leaving live boarders in runtime state without any rendered entity geometry.
+            this.appendPhaserViewModel(builder);
+            this.appendCharacterAIGeometry(builder, nowMs);
+            this.dynamicAnnotationPrimitiveTargets = annotationTargets;
+            this.refreshAnnotationPrimitiveTargets?.();
+            return builder.toFloat32Array();
           }
           this.appendPilotStationHighlights(builder, nowMs);
           this.appendPilotViewModel(builder);
           this.appendPhaserViewModel(builder);
-          this.appendCharacterAIGeometry(builder, nowMs);
 
           this.aliens.forEach((alien) => {
             const [x, y, z] = alien.position;
@@ -9605,6 +9665,7 @@
             updateMovementStatus(renderer.camera);
           };
           const updateCharacterAIHud = (snapshot) => {
+            window.MainComputerPaxScenarioInteraction?.setWorldSnapshot?.(snapshot || null);
             const characters = Array.isArray(snapshot?.characters)
               ? snapshot.characters
               : [];
@@ -9621,10 +9682,12 @@
               const action = String(character.currentActionId || character.actionId || "hold_position")
                 .replace(/_/g, " ")
                 .toUpperCase();
-              return `${String(character.label || character.id)} ${health}/${maxHealth} • ${action}`;
+              const prefix = character.kind === "enemy" ? "HOSTILE" : "ALLY";
+              return `${prefix}: ${String(character.label || character.id)} ${health}/${maxHealth} • ${action}`;
             });
+            const threatCount = Math.max(0, Number(snapshot?.activeThreatCount || 0));
             characterLine.textContent = labels.length
-              ? labels.join(" || ")
+              ? `${threatCount ? `ACTIVE THREATS ${threatCount} • ` : ""}${labels.join(" || ")}`
               : `CHARACTER AI • ${String(snapshot.phase || "inactive").toUpperCase()}`;
             characterLine.dataset.characterCount = String(characters.length);
             characterLine.dataset.characterPhase = String(snapshot.phase || "");

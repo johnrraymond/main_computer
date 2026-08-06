@@ -24,10 +24,11 @@ mcel.generated.json
 Workbench and the unpromoted Calculator shadow authority also expose `generated/mcel.application.normalized.json`. These bytes are computed, not durable application source.
 
 The Calculator shadow package is deliberately source-only. Package discovery compiles
-`mcel_apps/calculator/application.js` and overlays its generated contracts in memory,
-but browser runtime projection excludes it until host-bound mounting is implemented.
-The existing `/applications/calculator` HTML surface therefore remains the only live
-Calculator while the DSL authority can compile and project through generic tools.
+`mcel_apps/calculator/application.js`, overlays its generated contracts in memory, and
+publishes a host-bound runtime manifest with no copied `src/` presentation files. The
+generated adapter mounts onto the existing `/applications/calculator` surface and
+`#calculator-app` root through `MainComputerCalculatorRuntime`, so the existing HTML
+remains the only live Calculator while the shadow authority becomes browser-addressable.
 
 ## Virtual viewport mount and ephemeral browser build
 

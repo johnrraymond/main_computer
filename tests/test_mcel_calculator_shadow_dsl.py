@@ -76,11 +76,19 @@ def test_calculator_shadow_candidate_write_is_isolated_and_deterministic(tmp_pat
     assert (first.candidate_directory / "projections/generated/mcel.application.normalized.json").is_file()
 
 
-def test_shadow_package_is_not_published_as_a_second_calculator_application() -> None:
+def test_shadow_package_is_published_only_as_host_bound_calculator_runtime() -> None:
     runtime = build_runtime_projection_set(ROOT)
     browser = build_repository_browser_catalog_payload(ROOT)
-    assert "calculator" not in {item.app_id for item in runtime.projections}
-    assert "calculator" not in {item["appId"] for item in browser["packages"]}
+    runtime_records = [item for item in runtime.projections if item.app_id == "calculator"]
+    browser_records = [item for item in browser["packages"] if item["appId"] == "calculator"]
+
+    assert len(runtime_records) == 1
+    assert runtime_records[0].mount_mode == "host-bound"
+    assert runtime_records[0].document_url is None
+    assert runtime_records[0].script_url is None
+    assert runtime_records[0].style_url is None
+    assert len(browser_records) == 1
+    assert browser_records[0]["runtimeProjection"]["mountMode"] == "host-bound"
 
 
 def test_calculator_core_include_precedes_runtime_include() -> None:

@@ -255,9 +255,23 @@ def validate_package_files(
         if isinstance(manifest_probe.get("authoring"), Mapping)
         else {}
     )
+    projection_probe = (
+        manifest_probe.get("projection")
+        if isinstance(manifest_probe.get("projection"), Mapping)
+        else {}
+    )
+    template_probe = (
+        manifest_probe.get("template")
+        if isinstance(manifest_probe.get("template"), Mapping)
+        else {}
+    )
+    host_bound_package = (
+        projection_probe.get("mountMode") == "host-bound"
+        or str(template_probe.get("id") or "").startswith("mcel.host-bound-")
+    )
     required_package_files = (
         SHADOW_PACKAGE_FILES
-        if authoring_probe.get("status") == "dsl-shadow"
+        if authoring_probe.get("status") == "dsl-shadow" or host_bound_package
         else REQUIRED_PACKAGE_FILES
     )
 

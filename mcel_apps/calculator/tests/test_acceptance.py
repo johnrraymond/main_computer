@@ -39,5 +39,7 @@ def test_calculator_shadow_candidate_projection_is_non_promoting() -> None:
     assert payload["projection"]["intentCount"] == 11
     assert payload["projection"]["capabilityCount"] == 3
     assert payload["authority"]["liveCalculatorChanged"] is False
+    assert payload["authority"]["hostBoundRuntimeActive"] is True
+    assert payload["projection"]["hostBoundRuntimeActive"] is True
     assert payload["authority"]["candidatePromoted"] is False
     assert payload["authority"]["promotionEligible"] is False

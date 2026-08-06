@@ -20,3 +20,12 @@ def test_calculator_host_document_and_runtime_facade_remain_stable() -> None:
     runtime = (REPO / "main_computer/web/applications/scripts/calculator.js").read_text(encoding="utf-8")
     assert 'id="calculator-app"' in html
     assert "window.MainComputerCalculatorRuntime" in runtime
+
+
+def test_calculator_host_bound_runtime_loads_after_virtual_catalog() -> None:
+    shell = (REPO / "main_computer/web/applications.html").read_text(encoding="utf-8")
+    catalog = "<!-- @include applications/scripts/mcel-application-package-catalog.js -->"
+    host_runtime = "<!-- @include applications/scripts/mcel-host-bound-application-runtime.js -->"
+    assert catalog in shell
+    assert host_runtime in shell
+    assert shell.index(catalog) < shell.index(host_runtime)

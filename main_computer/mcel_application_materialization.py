@@ -84,8 +84,6 @@ def materialize_generated_package_files(
         return generated
 
     if app_id == "calculator":
-        if authoring_status != "dsl-shadow":
-            raise ValueError("Calculator projection is registered only for the unpromoted DSL shadow package.")
         projection = project_calculator_ir(compiled.normalized_ir)
         generated = dict(projection.files)
         generated["mcel.generated.json"] = _ownership_bytes(
@@ -94,7 +92,11 @@ def materialize_generated_package_files(
             semantic_fingerprint=str(compiled.semantic_fingerprint),
             source_binding_fingerprint=str(compiled.source_binding_fingerprint),
             generated=generated,
-            version="mcel-calculator-shadow-projection-v1",
+            version=(
+                "mcel-calculator-promotion-rehearsal-v1"
+                if authoring_status == "dsl-authoritative"
+                else "mcel-calculator-shadow-projection-v1"
+            ),
         )
         return generated
 

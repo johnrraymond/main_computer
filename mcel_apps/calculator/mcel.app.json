@@ -11,11 +11,9 @@
   "conformance": {
     "currentMode": "forward-specification",
     "missingBridges": [
-      "host-bound-runtime-projection",
-      "browser-observation",
-      "promotion-rehearsal",
       "legacy-semantic-adapter-retirement"
     ],
+    "promotionRehearsalSupported": true,
     "shadow": true,
     "targetMode": "semantic-runtime-proven"
   },
@@ -28,9 +26,15 @@
     "observation": "contracts/observation.js",
     "surface": "contracts/surface.js"
   },
+  "evidence": {
+    "freshBrowserParity": "mcel.calculator-browser-parity-observation.v1",
+    "promotionRehearsal": "mcel.calculator-promotion-rehearsal-report.v1"
+  },
   "projection": {
     "generatedArtifactsAreDerived": true,
-    "liveRuntimeChanged": false,
+    "hostBoundRuntimeActive": true,
+    "liveRuntimeChanged": true,
+    "mountMode": "host-bound",
     "presentationAuthority": "existing-host-html",
     "profile": "mcel.calculator.shadow-projection.v1"
   },

@@ -283,6 +283,15 @@ def test_genesis_release_binds_exact_a_only_compose_and_is_secret_free(tmp_path:
     assert services["mother-super-node-hub"]["build"]["context"] == f"{HUB_GIT_REPOSITORY}#{HUB_GIT_COMMIT_SHA}"
     assert services["mother-super-node-hub"].get("ports") is None
     assert services["mother-super-node-hub"].get("labels")["main_computer.mother.component"] == "hub"
+    assert services["mother-genesis-init"]["pull_policy"] == "missing"
+    assert services["mother-genesis-init"]["exclude_from_hc"] is True
+    assert services["mainneta-super1"]["pull_policy"] == "missing"
+    assert services["mother-super-node-fdb"]["pull_policy"] == "missing"
+    assert services["mother-super-node-fdb"]["healthcheck"]["test"] == [
+        "CMD-SHELL",
+        "fdbcli --exec status >/dev/null 2>&1 || exit 1",
+    ]
+    assert services["mother-super-node-hub"]["pull_policy"] == "build"
     assert services["mother-super-node-fdb"]["volumes"] == ["mother-fdb-data:/var/fdb/data"]
     assert "configure new single ssd" in services["mother-super-node-hub"]["command"][-1]
     assert "traefik." not in compose

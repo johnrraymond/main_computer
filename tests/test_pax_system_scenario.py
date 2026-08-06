@@ -69,6 +69,12 @@ class PaxSystemScenarioTests(unittest.TestCase):
         )
         self.assertEqual(len(scenario["evidence"]), 3)
         self.assertEqual(len(scenario["resolutions"]), 4)
+        self.assertEqual(len(scenario["completionCharacterIds"]), 6)
+        self.assertEqual(
+            len([item for item in project["metadata"]["characterAI"]["characters"]
+                 if item["id"] in scenario["completionCharacterIds"]]),
+            6,
+        )
         self.assertIn("Defensive force", scenario["localRule"])
 
         result = self.run_node(
@@ -106,11 +112,12 @@ class PaxSystemScenarioTests(unittest.TestCase):
               "scenario.pax.neutrality-under-fire",
               {nowMs: 10}
             );
-            characters.damageCharacter(
-              "enemy.pax.quiet-service-assassin-01",
-              999,
-              {sourceId: "player", nowMs: 20}
-            );
+            project.metadata.systemScenarios.scenarios[0].completionCharacterIds
+              .forEach((characterId, index) => characters.damageCharacter(
+                characterId,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              ));
             const synced = scenario.syncCharacterRuntime(
               "scenario.pax.neutrality-under-fire",
               characters,
@@ -202,7 +209,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
             result["restoredResolution"],
             "resolution.pax.refugee-power",
         )
-        self.assertGreaterEqual(result["sequence"], 7)
+        self.assertGreaterEqual(result["sequence"], 4)
         self.assertEqual(
             result["campaignSchema"],
             "game.systemScenarios.campaignExtension.v1",
@@ -373,12 +380,12 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertEqual(result["legacyStageId"], "protect-witness")
         self.assertTrue(result["legacyObjectiveVisible"])
         self.assertTrue(result["legacyObjectiveUrgent"])
-        self.assertEqual(result["legacyObjectiveTitle"], "PROTECT NERA SAYE")
+        self.assertEqual(result["legacyObjectiveTitle"], "REPEL THE BOARDERS")
         self.assertTrue(result["briefingVisible"])
         self.assertTrue(result["objectiveVisible"])
         self.assertEqual(
             result["renderedObjectiveTitle"],
-            "PROTECT NERA SAYE",
+            "REPEL THE BOARDERS",
         )
         self.assertTrue(result["cueKey"])
 
@@ -421,15 +428,16 @@ class PaxSystemScenarioTests(unittest.TestCase):
               },
               {nowMs: 2}
             );
-            characters.damageCharacter(
-              "enemy.pax.quiet-service-assassin-01",
-              999,
-              {sourceId: "player", nowMs: 3}
-            );
+            project.metadata.systemScenarios.scenarios[0].completionCharacterIds
+              .forEach((characterId, index) => characters.damageCharacter(
+                characterId,
+                999,
+                {sourceId: "player", nowMs: 3 + index}
+              ));
             scenario.syncCharacterRuntime(
               "scenario.pax.neutrality-under-fire",
               characters,
-              {nowMs: 4}
+              {nowMs: 12}
             );
             const intimidation = scenario.recordPlayerAction(
               "scenario.pax.neutrality-under-fire",
@@ -590,6 +598,11 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertEqual(
             result["active"],
             [
+                "enemy.pax.boarder-01",
+                "enemy.pax.boarder-02",
+                "enemy.pax.boarder-03",
+                "enemy.pax.boarder-04",
+                "enemy.pax.boarder-05",
                 "enemy.pax.quiet-service-assassin-01",
                 "npc.pax.neutrality-marshal-01",
                 "npc.pax.refugee-witness-01",
@@ -622,6 +635,146 @@ class PaxSystemScenarioTests(unittest.TestCase):
             result["supportVesselId"],
             "ship.pax.quiet-service-cutter-01",
         )
+
+    def test_hard_kickoff_recovers_visible_pax_and_forces_bridge_cast(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+            const interaction = require(process.argv[4]);
+
+            const scenarioId = "scenario.pax.neutrality-under-fire";
+            const assassinId = "enemy.pax.quiet-service-assassin-01";
+            const witnessId = "npc.pax.refugee-witness-01";
+            const marshalId = "npc.pax.neutrality-marshal-01";
+
+            scenarioApi.clearCurrent();
+            characterApi.clearCurrent();
+            const scenarioRuntime = scenarioApi.ensure(
+              "webgl-demo",
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characterRuntime = characterApi.ensure(
+              "webgl-demo",
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+            interaction.setRuntime(scenarioRuntime);
+            interaction.setCharacterRuntime(characterRuntime);
+
+            characterRuntime.forceCharacterState(
+              assassinId,
+              {
+                health: 0,
+                status: "down",
+                position: [8, -0.55, 4],
+                currentActionId: "down"
+              },
+              {nowMs: 100, source: "test-stale-state"}
+            );
+
+            const started = interaction.startOrRecoverPax(
+              "test-hard-kickoff",
+              {nowMs: 250, allowSystemChange: false}
+            );
+            const view = scenarioRuntime.view(scenarioId);
+            const context = scenarioRuntime.activeScenarioContext();
+            const world = {
+              phase: "mother-ship",
+              player: {position: [-2.85, -0.55, -36.7]},
+              ship: {currentSystemId: "system.pax"},
+              scenario: context
+            };
+            const activeIds = characterRuntime
+              .activeCharactersForWorld(world)
+              .map((character) => character.id)
+              .sort();
+            const assassin = characterRuntime.character(assassinId);
+            const witness = characterRuntime.character(witnessId);
+            const marshal = characterRuntime.character(marshalId);
+            const hardPresentation = interaction.hardStartPresentation(view);
+            const objective = interaction.objectivePresentation(view);
+            interaction.setWorldSnapshot({
+              player: {position: [-2.85, -0.55, -36.7]},
+              activeThreatCount: 1,
+              activeThreatIds: [assassinId],
+              characters: [
+                characterRuntime.character(assassinId),
+                characterRuntime.character(witnessId)
+              ]
+            });
+            const threat = interaction.threatPresentation(view);
+            const receiptReasons = characterRuntime
+              .snapshot()
+              .receipts
+              .map((receipt) => receipt.reason);
+
+            process.stdout.write(JSON.stringify({
+              started: started.started,
+              forced: started.forced,
+              status: view.state.status,
+              stageId: view.state.stageId,
+              activeIds,
+              assassinStatus: assassin.status,
+              assassinHealth: assassin.health,
+              assassinPosition: assassin.position,
+              assassinAction: assassin.currentActionId,
+              witnessPosition: witness.position,
+              marshalPosition: marshal.position,
+              hardVisible: hardPresentation.visible,
+              hardTitle: hardPresentation.title,
+              hardButton: hardPresentation.button,
+              objectiveVisible: objective.visible,
+              objectiveDetail: objective.detail,
+              threatVisible: threat.visible,
+              threatName: threat.name,
+              threatDetail: threat.detail,
+              threatAction: threat.action,
+              forceReceiptCount: receiptReasons.filter(
+                (reason) => reason === "character-state-forced"
+              ).length,
+              kickoffReason: interaction.state.lastHardKickoff.reason
+            }));
+            """
+        )
+
+        self.assertTrue(result["started"], result)
+        self.assertTrue(result["forced"], result)
+        self.assertEqual(result["status"], "active")
+        self.assertEqual(result["stageId"], "protect-witness")
+        self.assertIn("enemy.pax.quiet-service-assassin-01", result["activeIds"])
+        self.assertIn("npc.pax.refugee-witness-01", result["activeIds"])
+        self.assertIn("npc.pax.neutrality-marshal-01", result["activeIds"])
+        self.assertEqual(result["assassinStatus"], "active")
+        self.assertGreater(result["assassinHealth"], 0)
+        self.assertEqual(result["assassinPosition"], [0, -0.55, -40])
+        self.assertEqual(result["assassinAction"], "call_support")
+        self.assertEqual(result["witnessPosition"], [-1.45, -0.55, -36.45])
+        self.assertEqual(result["marshalPosition"], [1.45, -0.55, -36.35])
+        self.assertTrue(result["hardVisible"])
+        self.assertEqual(result["hardTitle"], "PAX MISSION LIVE")
+        self.assertEqual(result["hardButton"], "Respawn visible encounter")
+        self.assertTrue(result["objectiveVisible"])
+        self.assertIn("SIX HOSTILES ABOARD", result["objectiveDetail"])
+        self.assertTrue(result["threatVisible"])
+        self.assertEqual(result["threatName"], "REPEL THE BOARDERS — 1 REMAIN")
+        self.assertIn("NEAREST:", result["threatDetail"])
+        self.assertIn("AHEAD / VIEWSCREEN SIDE", result["threatDetail"])
+        self.assertIn("Red beacons mark every hostile", result["threatAction"])
+        self.assertGreaterEqual(result["forceReceiptCount"], 4)
+        self.assertEqual(result["kickoffReason"], "test-hard-kickoff")
 
     def test_game_surface_exposes_pax_scenario_without_polling(self) -> None:
         applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
@@ -657,8 +810,12 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertIn('id="pax-scenario-arrival-briefing"', webgl)
         self.assertIn('id="pax-scenario-arrival-ack"', webgl)
         self.assertIn('id="pax-scenario-objective-banner"', webgl)
+        self.assertIn('id="pax-scenario-threat-tracker"', webgl)
+        self.assertIn('id="pax-scenario-threat-name"', webgl)
+        self.assertIn('id="pax-scenario-hard-start"', webgl)
+        self.assertIn('id="pax-scenario-hard-start-button"', webgl)
         self.assertIn("ASSASSIN ABOARD", webgl)
-        self.assertIn("Bridge Access, behind the navigation stations", webgl)
+        self.assertIn("Bridge deck, front viewscreen side", webgl)
         self.assertNotIn('id="pax-scenario-start"', webgl)
         self.assertNotIn("Take the conference protection detail", webgl)
         self.assertIn('id="pax-scenario-evidence-list"', webgl)
@@ -672,7 +829,11 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertIn('"arrival-committed"', interaction)
         self.assertIn("navigation-current-system-recovery", interaction)
         self.assertIn("rendermissioncues", interaction)
+        self.assertIn("startorrecoverpax", interaction)
+        self.assertIn("forcepaxcharacterstates", interaction)
         self.assertIn("objectivepresentation", interaction)
+        self.assertIn("threatpresentation", interaction)
+        self.assertIn("setworldsnapshot", interaction)
         self.assertIn("briefingacknowledged", interaction)
         self.assertIn("paxinteraction?.handlenavigation?.(navigation)", desktop.lower())
         self.assertIn('update.arrived ? "arrival-committed" : ""', scene)
@@ -689,8 +850,64 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertIn("@media (max-width: 620px)", style)
         self.assertIn(".pax-scenario-arrival-briefing", style)
         self.assertIn(".pax-scenario-objective-banner", style)
+        self.assertIn(".pax-scenario-threat-tracker", style)
+        self.assertIn(".pax-scenario-hard-start", style)
         self.assertIn("@keyframes pax-arrival-pulse", style)
+        self.assertIn("@keyframes pax-threat-pulse", style)
+        self.assertIn("setWorldSnapshot", scene)
+        self.assertIn("activeThreatCount", scene)
+        self.assertIn("#ff2d2d", scene)
 
+    def test_pax_boarders_deploy_in_front_of_active_camera(self) -> None:
+        source = PAX_INTERACTION.read_text(encoding="utf-8")
+        self.assertIn("cameraRelativeBoardingPositions", source)
+        self.assertIn("__mainComputerShuttle3dRenderer", source)
+        self.assertIn("renderer.cameraDirection()", source)
+        self.assertIn("position: deploymentPositions[index]", source)
+
+
+    def test_mother_ship_scene_renders_character_ai_before_alternate_scene_return(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
+        docking_guard = source.index("if (this.isDockingCutsceneActive())", build_dynamic)
+        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", docking_guard)
+        append_characters = source.index(
+            "this.appendCharacterAIGeometry(builder, nowMs);",
+            mother_ship_guard,
+        )
+        alternate_return = source.index(
+            "return builder.toFloat32Array();",
+            mother_ship_guard,
+        )
+        self.assertLess(append_characters, alternate_return)
+        self.assertNotIn(
+            "if (this.isDockingSceneActive()) {\n"
+            "            this.dynamicAnnotationPrimitiveTargets = annotationTargets;",
+            source,
+        )
+
+
+    def test_mother_ship_character_movement_uses_bridge_space_not_shuttle_colliders(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        start = source.index("canCharacterOccupy(characterId, x, z)")
+        end = source.index("characterAIWorld(", start)
+        occupancy = source[start:end]
+        self.assertIn('this.characterAIPhase() === "mother-ship"', occupancy)
+        self.assertIn("withinBridgeEncounter", occupancy)
+        self.assertIn("const {bounds, colliders} = this.movement;", occupancy)
+        self.assertLess(
+            occupancy.index('this.characterAIPhase() === "mother-ship"'),
+            occupancy.index("const {bounds, colliders} = this.movement;"),
+        )
+
+    def test_shuttle_scene_does_not_render_scenario_characters_over_legacy_aliens(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
+        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", build_dynamic)
+        mother_ship_return = source.index("return builder.toFloat32Array();", mother_ship_guard)
+        shuttle_aliens = source.index("this.aliens.forEach((alien)", mother_ship_return)
+        between = source[mother_ship_return:shuttle_aliens]
+        self.assertNotIn("appendCharacterAIGeometry", between)
 
 if __name__ == "__main__":
     unittest.main()

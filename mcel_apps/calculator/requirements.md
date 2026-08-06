@@ -1,6 +1,6 @@
-# Calculator Shadow MCEL Authority
+# Calculator Host-Bound Shadow MCEL Authority
 
-This package is an authored-only shadow authority for the existing Calculator.
+This package is an authored-only shadow authority mounted onto the existing Calculator through an in-memory host-bound runtime projection.
 The durable presentation remains `main_computer/web/applications/apps/calculator.html`,
 the stable root remains `#calculator-app`, and the live compatibility facade remains
 `window.MainComputerCalculatorRuntime`. Generated contracts and normalized IR are
@@ -13,7 +13,7 @@ The detailed product and safety requirements remain in
 id: calculator
 title: Calculator
 status: shadow-specified
-current_runtime_status: legacy-html-runtime
+current_runtime_status: host-bound-shadow-runtime
 target_runtime_status: semantic-runtime-proven
 dominant_object: Calculator expression and result context
 primary_user_goal: Perform deterministic local calculation and bounded helper operations through stable HTML interfaces.
@@ -26,6 +26,7 @@ verification:
   - DSL compilation
   - deterministic contract projection
   - package-local shadow acceptance
+  - host-bound virtual runtime mount
 ```
 
 ```mcel-use-case
@@ -54,7 +55,7 @@ status: specified
 type: architecture
 aspect: source
 object: Calculator presentation
-requirement: The existing HTML and CSS remain presentation authority while MCEL semantics are compiled and projected in shadow.
+requirement: The existing HTML and CSS remain presentation authority while MCEL semantics are compiled, projected in memory, and mounted through the stable runtime facade.
 acceptance: No Calculator HTML, CSS, generated contracts, or normalized IR snapshot is copied into the authored package.
 ```
 
@@ -94,6 +95,8 @@ requires:
   - generated projection is deterministic
   - /applications/calculator and #calculator-app remain the host interfaces
   - normal viewport assembly loads calculator-core.js before calculator.js
+  - the virtual package catalog exposes one host-bound Calculator record
+  - the generated adapter can invoke all declared operations through MainComputerCalculatorRuntime
 ```
 
 ```mcel-finding
@@ -102,6 +105,6 @@ app: calculator
 status: open
 aspect: implementation
 severity: info
-problem: The shadow authority is not yet the live host-bound runtime projection and the handwritten semantic adapter remains active.
-desired_behavior: Close browser observation, host-bound projection, promotion rehearsal, and legacy adapter retirement only after parity proof.
+problem: The host-bound shadow runtime is active, but browser observation, promotion rehearsal, and handwritten semantic adapter retirement remain open.
+desired_behavior: Prove generated-versus-handwritten browser parity before promotion and legacy adapter retirement.
 ```
