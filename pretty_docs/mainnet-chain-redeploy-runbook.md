@@ -190,6 +190,31 @@ Get-Content .\main_computer\config\mainnet_contracts.json
 Get-Content .\runtime\deployments\mainnet\latest.json
 ```
 
+## Validator-RPC canary funding proof
+
+When the Mother validator-RPC canary is used after steady-state deployment, the
+funding step is not complete merely because a temporary helper service starts or
+exits. Completion requires an observed on-chain postcondition:
+
+```text
+canary balance on A == exact required funding amount
+canary balance on C == exact required funding amount
+```
+
+The helper scripts must use `cast balance --rpc-url "$RPC" <address>`, which
+returns wei by default, and must compare balances with Python integer checks
+rather than shell arithmetic. The scripts must not use `--ether=false`.
+
+If the exact-balance and zero-balance classifiers both fail before the funder is
+started, no funding release should be repeated blindly. The evidence state
+`unchanged-before-funder-start` means the captain key was not bound to a funder
+and no transfer was attempted. Fix the classifier/transport problem first, then
+restage a new funding transaction from the canary transaction.
+
+A successful funding evidence document must show the A-side post-funding exact
+balance verifier and the C-side funded/reconciled verifier passing before any
+canary execution release is authorized.
+
 ## Post-deploy network hardening
 
 A successful contract deployment is not the same as a healthy persistent

@@ -103,7 +103,7 @@ def test_calculator_basic_evaluate_and_graph_are_local_only() -> None:
     graph = _javascript_function(source, "drawCalculatorGraph")
 
     assert "evaluateCalculatorArithmeticExpression" in calculate
-    assert "sampleCalculatorGraphExpression" in graph
+    assert "buildCalculatorGraphRenderModel" in graph
     assert "calculatorGraphCanvas.getContext" in graph
 
     for body in (arithmetic, calculate, graph):

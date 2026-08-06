@@ -104,6 +104,31 @@ a second node type. Validator-RPC canary identities are bounded client wallets
 used to test the RPC surfaces of existing super-nodes and MUST NOT become
 deployable services or network members.
 
+### Validator-RPC canary funding proof contract
+
+The validator-RPC canary funding path MUST treat the on-chain balance as the
+funding source of truth. A helper container is only an observation transport; its
+status is not itself the balance fact. The compiled helper command MUST use the
+supported `cast balance --rpc-url "$RPC" <address>` wei output form and MUST NOT
+invent a false-valued boolean option such as `--ether=false`.
+
+A canary funding execution is complete only when the path has proved one of
+these bounded states:
+
+- the A-side canary balance is already the exact required amount, and C
+  independently verifies that exact balance; or
+- A proves the canary balance is zero, the exact capped transfer is executed
+  once, A independently proves the post-funding exact balance, and C
+  independently proves the exact balance and matching recent receipt.
+
+If neither the zero-balance classifier nor the exact-balance classifier reaches
+a positive proof, Mother MUST fail closed before binding the captain key or
+starting the funder. Evidence MUST make clear that the chain remained
+`unchanged-before-funder-start`. Recovery MUST reconcile an already-funded exact
+balance without sending another transfer, and MUST NOT repeat a funding attempt
+after an indeterminate started-funder state unless the post-state is safely
+classified by the normal funding proof contract.
+
 `add-node`, `remove-node`, `restore-service`, topology repair, and release rollout
 MUST preserve this complete-unit boundary. A partial service can exist only as a
 transient rollback-controlled implementation step inside the exact operation

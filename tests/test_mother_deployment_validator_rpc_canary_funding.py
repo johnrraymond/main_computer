@@ -85,6 +85,7 @@ class _StatusHealthFundingOpener:
         "mainnet-canary1-classify-exact-a": "classify-exact-a-uuid",
         "mainnet-canary1-classify-zero-a": "classify-zero-a-uuid",
         "mainnet-canary1-fund-a": "fund-a-service-uuid",
+        "mainnet-canary1-verify-funded-a": "verify-funded-a-uuid",
         "mainnet-canary1-verify-funded-c": "verify-funded-c-uuid",
         "mainnet-canary1-verify-reconciled-c": "verify-reconciled-c-uuid",
     }
@@ -117,6 +118,8 @@ class _StatusHealthFundingOpener:
             return "exited" if self.already_funded else "running:healthy"
         if name.endswith("fund-a"):
             return "running:unhealthy" if self.bad_funder else "running:healthy"
+        if name.endswith("verify-funded-a"):
+            return "running:healthy:excluded"
         if name.endswith("verify-funded-c") or name.endswith("verify-reconciled-c"):
             return "running:unhealthy" if self.bad_c else "running:healthy:excluded"
         raise AssertionError(name)
@@ -207,8 +210,8 @@ def test_funding_compiler_binds_status_health_result_channel(
     monkeypatch,
 ) -> None:
     _, _, _, funding, _, _ = _funding_fixture(tmp_path, monkeypatch)
-    assert funding["schema_version"] == 6
-    assert funding["kind"].endswith(".v6")
+    assert funding["schema_version"] == 7
+    assert funding["kind"].endswith(".v7")
     assert funding["funding_source"]["role"] == "captain"
     assert funding["funding_source"]["private_key_material_in_transaction"] is False
     assert funding["destination"]["allowed_pre_execution_balances_wei"] == [
@@ -229,6 +232,7 @@ def test_funding_compiler_binds_status_health_result_channel(
         "a_exact_balance_classifier",
         "a_zero_balance_classifier",
         "a_funder",
+        "a_post_funding_verifier",
         "c_funded_verifier",
         "c_reconciled_verifier",
     }
@@ -239,6 +243,10 @@ def test_funding_compiler_binds_status_health_result_channel(
         assert "exec sleep 900" in compose
         assert "ports:" not in compose
         assert "traefik." not in compose
+        assert "--ether=false" not in compose
+    assert "cast balance --rpc-url \"$RPC\"" in funding["applications"]["a_zero_balance_classifier"]["compose"]["canonical_text"]
+    assert "integer comparison failed" in funding["applications"]["a_zero_balance_classifier"]["compose"]["canonical_text"]
+    assert "SOURCE_BAL=$(cast balance --rpc-url \"$RPC\"" in funding["applications"]["a_funder"]["compose"]["canonical_text"]
     assert (
         funding["applications"]["a_funder"]["captain_secret_binding_required"]
         is True
@@ -250,7 +258,7 @@ def test_funding_compiler_binds_status_health_result_channel(
     assert funding["summary"]["service_health_result_channel_compiled"] is True
     assert funding["summary"]["runtime_log_result_channel_authorized"] is False
     assert funding["summary"]["deployment_uuid_required"] is False
-    assert funding["summary"]["maximum_service_mutation_count"] == 13
+    assert funding["summary"]["maximum_service_mutation_count"] == 16
     assert funding["summary"]["minimum_service_mutation_count"] == 6
 
 
@@ -274,7 +282,7 @@ def test_funding_transaction_persists_and_rebuild_verifies(
     assert verified["runtime_log_result_channel_authorized"] is False
     assert verified["deployment_uuid_required"] is False
     assert verified["deployment_inventory_resolution_required"] is False
-    assert verified["maximum_service_mutation_count"] == 13
+    assert verified["maximum_service_mutation_count"] == 16
 
 
 def test_funding_verifier_rejects_tampered_cap(tmp_path: Path, monkeypatch) -> None:
@@ -376,15 +384,17 @@ def test_funded_path_uses_positive_classifiers_and_cross_validator_health_proof(
     assert result["transaction_hash_recorded"] is False
     assert result["chain_state"] == "exact-cross-validator-verified"
     assert result["summary"]["funding_receipt_verified_on_C"] is True
+    assert result["summary"]["canary_balance_verified_on_A"] is True
     assert result["summary"]["canary_balance_verified_on_C"] is True
     assert result["summary"]["temporary_services_deleted"] is True
-    assert result["summary"]["temporary_service_count"] == 4
-    assert result["summary"]["application_mutation_count"] == 13
+    assert result["summary"]["temporary_service_count"] == 5
+    assert result["summary"]["application_mutation_count"] == 16
     assert opener.secret_bound is True
     assert opener.deleted == {
         "mainnet-canary1-classify-exact-a",
         "mainnet-canary1-classify-zero-a",
         "mainnet-canary1-fund-a",
+        "mainnet-canary1-verify-funded-a",
         "mainnet-canary1-verify-funded-c",
     }
     assert not any("/logs" in path for _, _, path in opener.requests)
@@ -400,6 +410,7 @@ def test_funded_path_uses_positive_classifiers_and_cross_validator_health_proof(
     assert verified["funding_mode"] == "funded"
     assert verified["funding_transaction_hash"] is None
     assert verified["funding_receipt_verified_on_C"] is True
+    assert verified["canary_balance_verified_on_A"] is True
     assert verified["result_channel"] == "service-detail-health"
 
     with pytest.raises(MotherDeploymentValidatorRpcCanaryFundingError) as caught:

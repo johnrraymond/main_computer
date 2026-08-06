@@ -13,14 +13,16 @@ def test_calculator_runtime_does_not_abort_viewport_when_core_is_temporarily_una
     shell = SHELL.read_text(encoding="utf-8")
 
     core_include = "<!-- @include applications/scripts/calculator-core.js -->"
+    view_model_include = "<!-- @include applications/scripts/calculator-view-model.js -->"
     runtime_include = "<!-- @include applications/scripts/calculator.js -->"
-    assert shell.index(core_include) < shell.index(runtime_include)
+    assert shell.index(core_include) < shell.index(view_model_include) < shell.index(runtime_include)
 
     assert "function requireCalculatorCore()" in runtime
+    assert "function requireCalculatorViewModel()" in runtime
     assert "const calculatorCore = window.MainComputerCalculatorCore" not in runtime
     assert 'throw new Error("Calculator core must load before Calculator runtime")' not in runtime
     assert "requireCalculatorCore().evaluateCalculatorArithmeticExpression" in runtime
-    assert "requireCalculatorCore().compileGraphExpression" in runtime
+    assert "requireCalculatorViewModel().buildCalculatorGraphRenderModel" in runtime
 
 
 def test_application_routing_does_not_read_website_builder_lexical_state_before_initialization() -> None:

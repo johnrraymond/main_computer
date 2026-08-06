@@ -6,6 +6,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -333,6 +334,7 @@ class _SteadyStateOpener:
         blank_inventory_status_after_c: bool = False,
         degraded_aggregate_with_obsolete_c: bool = False,
         obsolete_c_status: str = "exited",
+        include_a_retained_services: bool = False,
     ) -> None:
         self.release = release
         self.keep_obsolete_c = keep_obsolete_c
@@ -340,6 +342,7 @@ class _SteadyStateOpener:
         self.blank_inventory_status_after_c = blank_inventory_status_after_c
         self.degraded_aggregate_with_obsolete_c = degraded_aggregate_with_obsolete_c
         self.obsolete_c_status = obsolete_c_status
+        self.include_a_retained_services = include_a_retained_services
         self.guardian_refreshed = False
         self.a_post_c_detail_observations = 0
         self.a_patch_after_guardian_refresh = False
@@ -367,6 +370,23 @@ class _SteadyStateOpener:
                 "image": "python:3.12-alpine",
             },
         ]
+        if (
+            node == "mainneta-super1"
+            and self.include_a_retained_services
+            and not self.patched[node]
+        ):
+            recovered = yaml.safe_load(target["recovered_compose"]["canonical_text"])
+            for index, name in enumerate(sorted(recovered["services"])):
+                if name in {node, guardian} or name in target["recognized_obsolete_components"]:
+                    continue
+                applications.append(
+                    {
+                        "uuid": f"{node}-retained-{index}",
+                        "name": name,
+                        "status": "running:healthy",
+                        "image": "retained-service:test",
+                    }
+                )
         if not self.deployed[node] or (node == "mainnetc-super1" and self.keep_obsolete_c):
             for index, name in enumerate(target["recognized_obsolete_components"]):
                 applications.append(
@@ -713,6 +733,72 @@ def test_executor_fails_when_recognized_obsolete_component_remains(tmp_path: Pat
     assert result["failure"]["code"] == "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_NOT_HEALTHY"
     assert result["summary"]["complete"] is False
     assert result["summary"]["validator_vote_performed"] is False
+
+
+
+def test_compiler_preserves_known_a1_genesis_services(tmp_path: Path) -> None:
+    paths, private_state, reconciliation_path, _, _, _, _, _, _ = _fixture(tmp_path)
+    reconciliation = json.loads(reconciliation_path.read_text(encoding="utf-8"))
+    source_path = paths.root / Path(reconciliation["source_release"]["locator"])
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    compose = source["execution_plan"]["initial_quorum_compose"]["canonical_text"]
+    retained = (
+        "  mother-superseded-service-cleanup:\n"
+        "    image: docker:27-cli\n\n"
+    )
+    changed = compose.replace("\nvolumes:\n", "\n" + retained + "volumes:\n", 1)
+    changed = changed.replace(
+        "    depends_on:\n"
+        "      mother-genesis-init:\n"
+        "        condition: service_completed_successfully\n",
+        "    depends_on:\n"
+        "      mother-genesis-init:\n"
+        "        condition: service_completed_successfully\n"
+        "      mother-super-node-fdb:\n"
+        "        condition: service_healthy\n",
+        1,
+    )
+    source["execution_plan"]["initial_quorum_compose"]["canonical_text"] = changed
+    source["execution_plan"]["initial_quorum_compose"]["sha256"] = hashlib.sha256(
+        changed.encode("utf-8")
+    ).hexdigest()
+    source["execution_plan"]["initial_quorum_compose"]["semantic_sha256"] = _compose_semantic_sha256(
+        changed, "changed"
+    )
+    source["validator_quorum_recovery_release_sha256"] = hashlib.sha256(
+        canonical_json(
+            {
+                key: value
+                for key, value in source.items()
+                if key != "validator_quorum_recovery_release_sha256"
+            }
+        )
+    ).hexdigest()
+    source_path.write_bytes(canonical_json(source))
+    reconciliation["source_release"]["sha256"] = source["validator_quorum_recovery_release_sha256"]
+    reconciliation["source_release"]["file_sha256"] = hashlib.sha256(
+        source_path.read_bytes()
+    ).hexdigest()
+    for target in reconciliation["targets"]:
+        if target["node"] == "mainneta-super1":
+            target["compose_binding"]["semantic_sha256"] = source["execution_plan"][
+                "initial_quorum_compose"
+            ]["semantic_sha256"]
+    reconciliation_path.write_bytes(canonical_json(reconciliation))
+
+    transaction = build_post_admission_steady_state_transaction(
+        paths,
+        private_state,
+        reconciliation_path,
+        selected_nodes=("mainnetc-super1", "mainneta-super1"),
+    )
+    a1_compose = transaction["targets"]["mainneta-super1"]["steady_state_compose"][
+        "canonical_text"
+    ]
+    assert "mother-super-node-fdb:" in a1_compose
+    assert "mother-super-node-hub:" in a1_compose
+    assert "mother-superseded-service-cleanup:" in a1_compose
+    assert "mother-super-node-fdb" in yaml.safe_load(a1_compose)["services"]["mainneta-super1"]["depends_on"]
 
 
 def test_compiler_rejects_unexpected_recovered_service_lineage(tmp_path: Path) -> None:
@@ -1096,6 +1182,100 @@ def test_read_only_reconciliation_proves_C_steady_A_recovered_after_blank_invent
     assert verified["C_steady_state_verified"] is True
     assert verified["A_recovered_state_verified"] is True
     assert verified["live_mutation_performed"] is False
+
+
+def test_runtime_observation_accepts_services_from_exact_recovered_compose() -> None:
+    expected_compose = yaml.safe_dump(
+        {
+            "services": {
+                "mainneta-super1": {"image": "hyperledger/besu:latest"},
+                "mother-validator-quorum-recovery-initial-guardian": {
+                    "image": "python:3.12-alpine"
+                },
+                "mother-super-node-fdb": {"image": "foundationdb:7.4.6"},
+                "mother-super-node-hub": {"image": "hub:test"},
+                "mother-superseded-service-cleanup": {"image": "docker:27-cli"},
+            }
+        },
+        sort_keys=True,
+    )
+    target = {
+        "node": "mainneta-super1",
+        "controller_id": "coolify-a",
+        "service_uuid": "service-a",
+        "required_healthy_components": [
+            "mainneta-super1",
+            "mother-validator-quorum-recovery-initial-guardian",
+        ],
+        "recognized_obsolete_components": [
+            "mother-genesis-init",
+            "mother-genesis-proof-guardian",
+            "mother-validator-admission-guardian",
+        ],
+    }
+
+    class _ObservationOpener:
+        def open(self, request, timeout: float):  # noqa: ANN001
+            parsed = urlsplit(request.full_url)
+            if parsed.path == "/api/v1/services":
+                return _AdmissionResponse(
+                    [{"uuid": "service-a", "name": "mainneta-super1", "status": "degraded:unhealthy"}]
+                )
+            if parsed.path == "/api/v1/services/service-a":
+                applications = [
+                    {
+                        "uuid": name + "-uuid",
+                        "name": name,
+                        "status": "exited" if name.startswith("mother-genesis") or name == "mother-validator-admission-guardian" or name == "mother-superseded-service-cleanup" else "running:healthy",
+                        "image": "test",
+                    }
+                    for name in yaml.safe_load(expected_compose)["services"]
+                ]
+                applications.extend(
+                    [
+                        {
+                            "uuid": "obsolete-proof",
+                            "name": "mother-genesis-proof-guardian",
+                            "status": "exited",
+                            "image": "python:3.12-alpine",
+                        },
+                        {
+                            "uuid": "obsolete-admission",
+                            "name": "mother-validator-admission-guardian",
+                            "status": "exited",
+                            "image": "python:3.12-alpine",
+                        },
+                    ]
+                )
+                return _AdmissionResponse(
+                    {
+                        "service": {
+                            "uuid": "service-a",
+                            "name": "mainneta-super1",
+                            "status": "degraded:unhealthy",
+                            "docker_compose_raw": expected_compose,
+                            "applications": applications,
+                        }
+                    }
+                )
+            raise AssertionError(parsed.path)
+
+    observation = steady_state._runtime_target_observation(
+        controller=SimpleNamespace(base_url="https://coolify-a.invalid", api_token=TOKEN_A),
+        target=target,
+        expected_compose=expected_compose,
+        expected_mode="recovered",
+        require_aggregate_healthy=False,
+        require_obsolete_absent=False,
+        timeout=30,
+        max_response_bytes=1024 * 1024,
+        opener=_ObservationOpener(),
+    )
+
+    assert observation["compose_matches"] is True
+    assert observation["required_components_healthy"] is True
+    assert observation["unexpected_component_records_present"] == []
+    assert observation["verified"] is True
 
 
 def test_read_only_reconciliation_accepts_recognized_exited_coolify_phantom_records(

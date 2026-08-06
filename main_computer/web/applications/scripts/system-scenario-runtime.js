@@ -614,6 +614,45 @@
       return {reused: false, receipt, view: this.view(definition.id)};
     }
 
+    resetProtectionEncounter(scenarioId, options = {}) {
+      const definition = this.scenarioDefinition(scenarioId);
+      const state = this.state.scenarios[stringValue(scenarioId)];
+      if (!definition || !state) throw new SystemScenarioStateError("Unknown scenario.");
+      if (state.status === "resolved") {
+        return {
+          reset: false,
+          reason: "scenario-resolved",
+          view: this.view(definition.id)
+        };
+      }
+      state.status = "active";
+      state.stageId = definition.protectionStageId || definition.startStageId;
+      state.evidenceIds = [];
+      state.resolutionId = "";
+      state.consequences = {};
+      state.metrics = {
+        weaponDischarges: 0,
+        defensiveDischarges: 0,
+        intimidationDischarges: 0
+      };
+      const receipt = this.record(
+        definition.id,
+        "protection-encounter-reset",
+        {
+          stageId: state.stageId,
+          evidenceIds: [],
+          metrics: clone(state.metrics),
+          source: stringValue(options.source || "manual")
+        },
+        options.nowMs
+      );
+      return {
+        reset: true,
+        receipt,
+        view: this.view(definition.id)
+      };
+    }
+
     syncCharacterRuntime(scenarioId, characterRuntime, options = {}) {
       const definition = this.scenarioDefinition(scenarioId);
       const state = this.state.scenarios[stringValue(scenarioId)];

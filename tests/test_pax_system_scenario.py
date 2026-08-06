@@ -953,18 +953,394 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertNotIn("this.isWeaponFirePaused()", update_guard)
 
 
-    def test_persisted_defeated_pax_boarders_recover_once_when_runtime_attaches(self) -> None:
+    def test_persisted_defeated_pax_boarders_use_shared_reconciliation_on_attach(self) -> None:
         source = PAX_INTERACTION.read_text(encoding="utf-8")
-        self.assertIn("recoverDefeatedProtectionBoardersOnAttach", source)
-        self.assertIn("uiState.recoveredCharacterRuntime === runtime", source)
-        self.assertIn('view.state?.stageId !== PROTECTION_STAGE_ID', source)
-        self.assertIn("boarders.every((character) => character", source)
-        self.assertIn('character.status === "down" || Number(character.health) <= 0', source)
+        self.assertIn("function classifyBoarderGroup", source)
+        self.assertIn("function classifyPaxProtectionState", source)
+        self.assertIn("function reconcilePaxProtectionState", source)
+        self.assertIn('status = "recoverable-protection-defeated"', source)
+        self.assertIn('status = "recoverable-investigation-defeated"', source)
+        self.assertIn('recovery = "restart-encounter"', source)
+        self.assertIn("uiState.recoveredCharacterRuntime !== runtime", source)
         self.assertIn(
-            '"character-runtime-attach-defeated-boarder-recovery"',
+            '"character-runtime-attach-encounter-reconciliation"',
             source,
         )
-        self.assertIn("const recovery = recoverDefeatedProtectionBoardersOnAttach(runtime);", source)
+        self.assertIn("recoverDefeated: true", source)
+        self.assertIn('"scenario-runtime-attach-inconsistent-recovery"', source)
+        self.assertNotIn("recoverDefeatedProtectionBoardersOnAttach", source)
+
+
+    def test_pax_restart_resets_stage_before_replaying_boarding_encounter(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            interaction.setCharacterRuntime(characters);
+
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const before = scenario.view(interaction.SCENARIO_ID);
+            const reset = interaction.startOrRecoverPax(
+              "test-restart",
+              {
+                nowMs: 50,
+                restartProtectionEncounter: true
+              }
+            );
+            const after = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              beforeStage: before.state.stageId,
+              reset: reset.reset,
+              forced: reset.forced,
+              afterStage: after.state.stageId,
+              evidenceIds: after.state.evidenceIds,
+              metrics: after.state.metrics,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  id,
+                  status: character.status,
+                  health: character.health,
+                  action: character.currentActionId
+                };
+              }),
+              receiptReasons: after.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertEqual(result["beforeStage"], "investigation")
+        self.assertTrue(result["reset"], result)
+        self.assertTrue(result["forced"], result)
+        self.assertEqual(result["afterStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertEqual(
+            result["metrics"],
+            {
+                "weaponDischarges": 0,
+                "defensiveDischarges": 0,
+                "intimidationDischarges": 0,
+            },
+        )
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
+    def test_pax_restart_button_requests_atomic_protection_reset(self) -> None:
+        source = PAX_INTERACTION.read_text(encoding="utf-8")
+        runtime = SCENARIO_RUNTIME.read_text(encoding="utf-8")
+        self.assertIn("resetPaxProtectionEncounter", source)
+        self.assertIn("restartProtectionEncounter", source)
+        self.assertIn("Restart boarding encounter", source)
+        self.assertIn("resetProtectionEncounter(scenarioId", runtime)
+        self.assertIn('"protection-encounter-reset"', runtime)
+
+
+    def test_investigation_with_all_boarders_active_auto_recovers_to_protection(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            interaction.setCharacterRuntime(characters);
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            interaction.forcePaxCharacterStates(
+              "test-create-inconsistent-active-boarders",
+              {nowMs: 50}
+            );
+
+            const recovered = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              inconsistentStage: "investigation",
+              recoveredStage: recovered.state.stageId,
+              evidenceIds: recovered.state.evidenceIds,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  status: character.status,
+                  health: character.health
+                };
+              }),
+              receiptReasons: recovered.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertEqual(result["inconsistentStage"], "investigation")
+        self.assertEqual(result["recoveredStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
+
+    def test_attach_recovers_investigation_with_all_boarders_down(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const before = scenario.view(interaction.SCENARIO_ID);
+            interaction.setCharacterRuntime(characters);
+            const after = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              beforeStage: before.state.stageId,
+              afterStage: after.state.stageId,
+              evidenceIds: after.state.evidenceIds,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  status: character.status,
+                  health: character.health
+                };
+              }),
+              receiptReasons: after.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertEqual(result["beforeStage"], "investigation")
+        self.assertEqual(result["afterStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
+
+    def test_scenario_attach_recovers_after_character_runtime_attached_too_early(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            let currentScenario = null;
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => currentScenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+
+            /*
+             * Browser startup can attach the character runtime before the
+             * scenario runtime is ready. That early no-op must not suppress
+             * the later scenario-runtime recovery pass.
+             */
+            interaction.setCharacterRuntime(characters);
+            const markedAfterEarlyAttach =
+              interaction.state.recoveredCharacterRuntime === characters;
+
+            currentScenario = scenario;
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const before = scenario.view(interaction.SCENARIO_ID);
+            interaction.setRuntime(scenario);
+            const after = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              markedAfterEarlyAttach,
+              beforeStage: before.state.stageId,
+              afterStage: after.state.stageId,
+              evidenceIds: after.state.evidenceIds,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  status: character.status,
+                  health: character.health
+                };
+              }),
+              receiptReasons: after.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertFalse(result["markedAfterEarlyAttach"], result)
+        self.assertEqual(result["beforeStage"], "investigation")
+        self.assertEqual(result["afterStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

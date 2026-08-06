@@ -46,8 +46,8 @@ from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
 
-_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_transaction.v6"
-_SCHEMA_VERSION = 6
+_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_transaction.v7"
+_SCHEMA_VERSION = 7
 _DIRECTORY = ("actions", "deployment-validator-rpc-canary-funding-transactions")
 _RELEASE_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_release.v2"
 _CLAIM_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_execution_claim.v1"
@@ -213,11 +213,41 @@ def _compose(name: str, command: str) -> str:
 
 
 
+def _assert_int_comparison_script(left_env: str, operator: str, right: int) -> str:
+    if operator not in {"eq", "le", "ge"}:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
+            "unsupported integer comparison operator",
+        )
+    return (
+        "python - <<'PY'\n"
+        "import os, re\n"
+        f"left = os.environ.get('{left_env}', '')\n"
+        "if not re.fullmatch(r'[0-9]+', left):\n"
+        "    raise SystemExit(f'non-decimal wei value: {left!r}')\n"
+        "left_int = int(left)\n"
+        f"right_int = {right}\n"
+        f"op = '{operator}'\n"
+        "ok = (left_int == right_int if op == 'eq' else left_int <= right_int if op == 'le' else left_int >= right_int)\n"
+        "if not ok:\n"
+        "    raise SystemExit(f'integer comparison failed: {left_int} {op} {right_int}')\n"
+        "PY"
+    )
+
+
+def _cast_balance_line(destination: str, env_name: str) -> str:
+    # Foundry's `cast balance` returns wei by default. Do not pass
+    # `--ether=false`; `--ether` is a flag, and the false-valued form turns the
+    # classifier into a tooling failure instead of a balance proof.
+    return f'{env_name}=$(cast balance --rpc-url "$RPC" {destination})'
+
+
 def _balance_classifier_script(host: str, destination: str, expected_balance: int) -> str:
     return f"""set -eu
 RPC=http://{host}:8545
-BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
-test "$BAL" -eq {expected_balance}
+{_cast_balance_line(destination, "BAL")}
+export BAL
+{_assert_int_comparison_script("BAL", "eq", expected_balance)}
 exec sleep 900
 """
 
@@ -228,16 +258,20 @@ test -n "${{{_CAPTAIN_SECRET_ENV}:-}}"
 RPC=http://{_A}:8545
 FROM=$(cast wallet address --private-key "${{{_CAPTAIN_SECRET_ENV}}}" | tr '[:upper:]' '[:lower:]')
 test "$FROM" = "{source}"
-DEST_BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
-test "$DEST_BAL" -eq 0
+{_cast_balance_line(destination, "DEST_BAL")}
+export DEST_BAL
+{_assert_int_comparison_script("DEST_BAL", "eq", 0)}
 BASE=$(cast rpc --rpc-url "$RPC" eth_getBlockByNumber latest false | python -c 'import json,sys; v=json.load(sys.stdin).get("baseFeePerGas"); assert isinstance(v,str) and v.startswith("0x"); print(int(v,16))')
-test "$BASE" -le {_MAX_FEE_PER_GAS_WEI}
-SOURCE_BAL=$(cast balance --rpc-url "$RPC" --ether=false {source})
-test "$SOURCE_BAL" -ge {amount + _FUNDING_TX_MAX_FEE_WEI}
+export BASE
+{_assert_int_comparison_script("BASE", "le", _MAX_FEE_PER_GAS_WEI)}
+{_cast_balance_line(source, "SOURCE_BAL")}
+export SOURCE_BAL
+{_assert_int_comparison_script("SOURCE_BAL", "ge", amount + _FUNDING_TX_MAX_FEE_WEI)}
 TX=$(cast send --json --rpc-url "$RPC" --private-key "${{{_CAPTAIN_SECRET_ENV}}}" --gas-limit {_FUNDING_GAS_LIMIT} --gas-price {_MAX_FEE_PER_GAS_WEI} --priority-gas-price {_MAX_PRIORITY_FEE_PER_GAS_WEI} --value {amount} {destination})
 printf '%s' "$TX" | python -c 'import json,sys; v=json.load(sys.stdin); s=v.get("status"); n=int(s,0) if isinstance(s,str) else int(s); assert n==1'
-POST_BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
-test "$POST_BAL" -eq {amount}
+{_cast_balance_line(destination, "POST_BAL")}
+export POST_BAL
+{_assert_int_comparison_script("POST_BAL", "eq", amount)}
 exec sleep 900
 """
 
@@ -298,14 +332,19 @@ exec sleep 900
 """
 
 
-def _verifier_script(destination: str, amount: int) -> str:
-    """Exact-balance reconciliation proof used when no transfer was required."""
+def _exact_balance_verifier_script(host: str, destination: str, amount: int) -> str:
     return f"""set -eu
-RPC=http://{_C}:8545
-BAL=$(cast balance --rpc-url "$RPC" --ether=false {destination})
-test "$BAL" -eq {amount}
+RPC=http://{host}:8545
+{_cast_balance_line(destination, "BAL")}
+export BAL
+{_assert_int_comparison_script("BAL", "eq", amount)}
 exec sleep 900
 """
+
+
+def _verifier_script(destination: str, amount: int) -> str:
+    """Exact-balance reconciliation proof used when no transfer was required."""
+    return _exact_balance_verifier_script(_C, destination, amount)
 
 
 def _compose_record(text: str) -> dict[str, Any]:
@@ -496,6 +535,16 @@ def build_validator_rpc_canary_funding_transaction(
             secret_binding=True,
         ),
         spec(
+            "a_post_funding_verifier",
+            controller_id=_A_CONTROLLER,
+            name=f"{canary_name}-verify-funded-a",
+            command=_exact_balance_verifier_script(_A, destination, amount),
+            proof=(
+                "A independently verifies the exact destination balance after the "
+                "funding service completes"
+            ),
+        ),
+        spec(
             "c_funded_verifier",
             controller_id=_C_CONTROLLER,
             name=f"{canary_name}-verify-funded-c",
@@ -520,6 +569,7 @@ def build_validator_rpc_canary_funding_transaction(
         "a_exact_balance_classifier",
         "a_zero_balance_classifier",
         "a_funder",
+        "a_post_funding_verifier",
         "c_funded_verifier",
         "c_reconciled_verifier",
     ):
@@ -648,7 +698,8 @@ def build_validator_rpc_canary_funding_transaction(
             ],
             "funded_path": [
                 "start the exact capped A funder only after zero classification",
-                "accept A completion only from the committed healthy service state",
+                "accept A funder completion only from the committed healthy service state",
+                "require a separate A exact-balance verifier after the funder completes",
                 "accept C completion only after independent transfer discovery, receipt verification, and exact balance verification",
             ],
             "reconciled_path": [
@@ -697,7 +748,7 @@ def build_validator_rpc_canary_funding_transaction(
             "transfer_value_wei": amount,
             "funding_value_cap_wei": amount,
             "source_maximum_total_debit_wei": amount + _FUNDING_TX_MAX_FEE_WEI,
-            "maximum_service_mutation_count": 13,
+            "maximum_service_mutation_count": 16,
             "minimum_service_mutation_count": 6,
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
@@ -818,6 +869,7 @@ def verify_validator_rpc_canary_funding_transaction(
             "a_exact_balance_classifier",
             "a_zero_balance_classifier",
             "a_funder",
+            "a_post_funding_verifier",
             "c_funded_verifier",
             "c_reconciled_verifier",
         }
@@ -858,7 +910,7 @@ def verify_validator_rpc_canary_funding_transaction(
         "deployment_inventory_resolution_required": False,
         "generic_deploy_endpoint_authorized": False,
         "minimum_service_mutation_count": 6,
-        "maximum_service_mutation_count": 13,
+        "maximum_service_mutation_count": 16,
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
         "public_endpoint_count": 0,
@@ -1216,7 +1268,7 @@ def verify_validator_rpc_canary_funding_release(
         "transfer_value_wei": document["funding_policy"]["transfer_value_wei"],
         "funding_value_cap_wei": document["funding_policy"]["transfer_value_cap_wei"],
         "minimum_service_mutation_count": 6,
-        "maximum_service_mutation_count": 13,
+        "maximum_service_mutation_count": 16,
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
         "public_endpoint_count": 0,
@@ -1715,6 +1767,7 @@ def execute_validator_rpc_canary_funding_release(
     funding_mode: str | None = None
     funding_start_acknowledged = False
     a_funder_health_proven = False
+    a_post_funding_balance_proven = False
     cross_validator_proof: dict[str, Any] | None = None
     chain_state = "unchanged-before-funder-start"
     started_at = _timestamp()
@@ -1722,7 +1775,7 @@ def execute_validator_rpc_canary_funding_release(
     destination = str(release["destination"]["address"]).lower()
 
     def run_service(spec_key: str, *, bind_captain_secret: bool = False) -> Mapping[str, Any]:
-        nonlocal funding_start_acknowledged, a_funder_health_proven
+        nonlocal funding_start_acknowledged, a_funder_health_proven, a_post_funding_balance_proven
         spec = _mapping(applications.get(spec_key), f"release.applications.{spec_key}")
         controller_id = str(spec["controller_id"])
         controller = controllers[controller_id]
@@ -1832,6 +1885,8 @@ def execute_validator_rpc_canary_funding_release(
             proofs[spec_key] = proof
             if spec_key == "a_funder" and proof.get("healthy") is True:
                 a_funder_health_proven = True
+            if spec_key == "a_post_funding_verifier" and proof.get("healthy") is True:
+                a_post_funding_balance_proven = True
             return proof
         finally:
             if service_uuid is not None:
@@ -1885,6 +1940,12 @@ def execute_validator_rpc_canary_funding_release(
                 raise _error(
                     "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_UNAVAILABLE",
                     "A funder did not reach its committed healthy completion state",
+                )
+            a_post_funding_proof = run_service("a_post_funding_verifier")
+            if a_post_funding_proof.get("healthy") is not True:
+                raise _error(
+                    "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_A_BALANCE_NOT_VERIFIED",
+                    "A did not independently prove the exact destination balance after funding",
                 )
             chain_state = "exact-on-A-not-yet-verified-on-C"
 
@@ -1948,6 +2009,7 @@ def execute_validator_rpc_canary_funding_release(
     success = bool(
         failure is None
         and funding_mode in {"funded", "already-funded"}
+        and (funding_mode == "already-funded" or a_post_funding_balance_proven)
         and cross_validator_proof is not None
         and chain_state == "exact-cross-validator-verified"
         and all_deleted
@@ -2004,6 +2066,7 @@ def execute_validator_rpc_canary_funding_release(
             "funding_performed": funding_performed,
             "funding_reconciled_from_prior_execution": funding_reconciled,
             "funding_receipt_verified_on_C": receipt_verified,
+            "canary_balance_verified_on_A": success,
             "canary_balance_verified_on_C": success,
             "exact_transfer_value_verified": success,
             "transaction_hash_recorded": False,
@@ -2169,11 +2232,13 @@ def verify_validator_rpc_canary_funding_evidence(
             "a_exact_balance_classifier",
             "a_zero_balance_classifier",
             "a_funder",
+            "a_post_funding_verifier",
             "c_funded_verifier",
         ]
         required_healthy = {
             "a_zero_balance_classifier",
             "a_funder",
+            "a_post_funding_verifier",
             "c_funded_verifier",
         }
         required_nonhealthy = {"a_exact_balance_classifier"}
@@ -2283,6 +2348,7 @@ def verify_validator_rpc_canary_funding_evidence(
         and summary.get("clean") is True
         and summary.get("complete") is True
         and summary.get("funding_complete") is True
+        and summary.get("canary_balance_verified_on_A") is True
         and summary.get("canary_balance_verified_on_C") is True
         and summary.get("exact_transfer_value_verified") is True
         and summary.get("transaction_hash_recorded") is False
@@ -2337,6 +2403,7 @@ def verify_validator_rpc_canary_funding_evidence(
         "canary_address": document["canary_address"],
         "transfer_value_wei": document["transfer_value_wei"],
         "funding_receipt_verified_on_C": funded,
+        "canary_balance_verified_on_A": True,
         "canary_balance_verified_on_C": True,
         "funding_reconciled_from_prior_execution": reconciled,
         "result_channel": "service-detail-health",

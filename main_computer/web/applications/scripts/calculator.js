@@ -6,6 +6,14 @@
       return core;
     }
 
+    function requireCalculatorViewModel() {
+      const viewModel = window.MainComputerCalculatorViewModel;
+      if (!viewModel) {
+        throw new Error("Calculator view model is unavailable; reload the Applications viewport");
+      }
+      return viewModel;
+    }
+
     function requireCalculatorCapabilities() {
       const capabilities = window.MainComputerCalculatorCapabilities;
       if (!capabilities) {
@@ -22,58 +30,34 @@
       return requireCalculatorCore().evaluateCalculatorArithmeticExpression(rawExpression);
     }
     function calculateExpression() {
-      const result = evaluateCalculatorArithmeticExpression(calculatorDisplay.value);
-      if (!result.expression) {
-        calculatorDisplay.value = "0";
-        calculatorResult.textContent = "ready";
-        return {ok: false, expression: "", result: "ready", code: "expression-required", error: "enter an expression"};
-      }
-      if (result.ok) {
-        calculatorResult.textContent = String(result.value);
-        calculatorDisplay.value = String(result.value);
-      } else {
-        calculatorResult.textContent = result.error || "check expression";
-      }
-      return {
-        ...result,
-        result: calculatorResult.textContent,
-        statusText: result.ok ? "ready" : "error",
-        code: result.ok ? "" : "expression-invalid"
-      };
+      const viewModel = requireCalculatorViewModel().buildCalculatorVisibleResultModel(
+        evaluateCalculatorArithmeticExpression(calculatorDisplay.value)
+      );
+      calculatorDisplay.value = viewModel.displayExpression;
+      calculatorResult.textContent = viewModel.resultText;
+      return viewModel.runtimeResult;
     }
     let calculatorEmbeddedChatController = null;
 
     function calculatorEmbeddedChatContextSnapshot() {
       const graphing = calculatorModeGraphing?.classList?.contains("active") || false;
-      return {
-        app: "calculator",
-        target_kind: "calculator-session",
-        target_id: "calculator",
-        active_mode: graphing ? "scientific-graphing" : "basic",
-        arithmetic: {
-          expression: calculatorDisplay?.value || "",
-          result: calculatorResult?.textContent || "",
-          prompt: calculatorPrompt?.value || ""
-        },
-        graph: {
-          expression: calculatorGraphExpression?.value || "",
-          x_min: calculatorGraphXMin?.value || "",
-          x_max: calculatorGraphXMax?.value || "",
-          y_min: calculatorGraphYMin?.value || "",
-          y_max: calculatorGraphYMax?.value || "",
-          status: calculatorGraphStatus?.textContent || ""
-        },
-        mathics: {
-          prompt: calculatorMathicsPrompt?.value || "",
-          expression: calculatorMathicsExpression?.value || "",
-          status: calculatorMathicsEvaluationStatus?.textContent || ""
-        },
-        qa: {
-          prompt: calculatorQaPrompt?.value || "",
-          status: calculatorQaStatus?.textContent || ""
-        },
-        allowed_tools: ["arithmetic", "scientific-graphing", "mathics", "calculator-qa"]
-      };
+      return requireCalculatorViewModel().buildCalculatorSessionContextSnapshot({
+        activeMode: graphing ? "scientific-graphing" : "basic",
+        arithmeticExpression: calculatorDisplay?.value,
+        arithmeticResult: calculatorResult?.textContent,
+        arithmeticPrompt: calculatorPrompt?.value,
+        graphExpression: calculatorGraphExpression?.value,
+        graphXMin: calculatorGraphXMin?.value,
+        graphXMax: calculatorGraphXMax?.value,
+        graphYMin: calculatorGraphYMin?.value,
+        graphYMax: calculatorGraphYMax?.value,
+        graphStatus: calculatorGraphStatus?.textContent,
+        mathicsPrompt: calculatorMathicsPrompt?.value,
+        mathicsExpression: calculatorMathicsExpression?.value,
+        mathicsStatus: calculatorMathicsEvaluationStatus?.textContent,
+        qaPrompt: calculatorQaPrompt?.value,
+        qaStatus: calculatorQaStatus?.textContent
+      });
     }
 
     window.MainComputerCalculatorContext = {
@@ -126,39 +110,45 @@
       return calculatorEmbeddedChatController;
     }
 
-    function setCalculatorMode(mode) {
-      const graphing = mode === "graphing";
-      calculatorModeBasic.classList.toggle("active", !graphing);
-      calculatorModeGraphing.classList.toggle("active", graphing);
-      calculatorShell.classList.toggle("graphing-active", graphing);
-      calculatorShell.classList.add("chat-docked");
-      calculatorShell.classList.remove("chat-active");
-      calculatorBasicPanel.hidden = false;
-      calculatorGraphingPanel.hidden = !graphing;
-      calculatorMathicsPanel.hidden = !graphing;
-      if (calculatorChatPanel) calculatorChatPanel.hidden = false;
-      calculatorResult.textContent = "ready";
-      if (calculatorChatPanel) {
+    function applyCalculatorModeSwitchViewModel(viewModel) {
+      calculatorModeBasic.classList.toggle("active", !!viewModel.buttons?.basicActive);
+      calculatorModeGraphing.classList.toggle("active", !!viewModel.buttons?.graphingActive);
+      calculatorShell.classList.toggle("graphing-active", !!viewModel.shell?.graphingActive);
+      calculatorShell.classList.toggle("chat-docked", viewModel.shell?.chatDocked !== false);
+      calculatorShell.classList.toggle("chat-active", !!viewModel.shell?.chatActive);
+      calculatorBasicPanel.hidden = !!viewModel.panels?.basicHidden;
+      calculatorGraphingPanel.hidden = !!viewModel.panels?.graphingHidden;
+      calculatorMathicsPanel.hidden = !!viewModel.panels?.mathicsHidden;
+      if (calculatorChatPanel) calculatorChatPanel.hidden = !!viewModel.panels?.chatHidden;
+      calculatorResult.textContent = viewModel.statusText || "ready";
+      if (calculatorChatPanel && viewModel.shouldMountChat) {
         mountCalculatorEmbeddedChat();
       }
-      if (graphing) {
+      if (viewModel.focusTarget === "graphExpression") {
         calculatorGraphExpression.focus();
-        setTimeout(drawCalculatorGraph, 0);
       } else {
         calculatorDisplay.focus();
       }
+      if (viewModel.shouldDrawGraph) {
+        setTimeout(drawCalculatorGraph, 0);
+      }
+      return viewModel.runtimeResult || viewModel;
     }
 
-    function normalizeGraphExpression(value) {
-      return requireCalculatorCore().normalizeGraphExpression(value);
+    function setCalculatorMode(mode) {
+      return applyCalculatorModeSwitchViewModel(
+        requireCalculatorViewModel().buildCalculatorModeSwitchViewModel(mode, {
+          expression: calculatorDisplay.value,
+          graphExpression: calculatorGraphExpression.value
+        })
+      );
     }
 
-    function tokenizeCalculatorGraphExpression(expression) {
-      return requireCalculatorCore().tokenizeCalculatorGraphExpression(expression).tokens;
-    }
-
-    function compileGraphExpression(rawExpression) {
-      return requireCalculatorCore().compileGraphExpression(rawExpression);
+    function drawCalculatorLineSet(canvasContext, lines) {
+      for (const line of lines) {
+        canvasContext.moveTo(line.x1, line.y1);
+        canvasContext.lineTo(line.x2, line.y2);
+      }
     }
 
     function drawCalculatorGraph() {
@@ -173,89 +163,50 @@
       canvasContext.clearRect(0, 0, width, height);
       canvasContext.fillStyle = "#010201";
       canvasContext.fillRect(0, 0, width, height);
-      try {
-        const plot = requireCalculatorCore().sampleCalculatorGraphExpression(
-          calculatorGraphExpression.value,
-          {
-            xMin: calculatorGraphXMin.value,
-            xMax: calculatorGraphXMax.value,
-            yMin: calculatorGraphYMin.value,
-            yMax: calculatorGraphYMax.value
-          },
-          width
-        );
-        const range = plot.range;
-        const toPx = (x) => (x - range.xMin) / (range.xMax - range.xMin) * width;
-        const toPy = (y) => height - (y - range.yMin) / (range.yMax - range.yMin) * height;
-        canvasContext.lineWidth = 1;
-        canvasContext.strokeStyle = "#26291e";
-        canvasContext.beginPath();
-        const xStep = (range.xMax - range.xMin) / 10;
-        const yStep = (range.yMax - range.yMin) / 10;
-        for (let i = 0; i <= 10; i += 1) {
-          const x = toPx(range.xMin + xStep * i);
-          canvasContext.moveTo(x, 0);
-          canvasContext.lineTo(x, height);
-          const y = toPy(range.yMin + yStep * i);
-          canvasContext.moveTo(0, y);
-          canvasContext.lineTo(width, y);
-        }
-        canvasContext.stroke();
-        canvasContext.strokeStyle = "#4f493a";
-        canvasContext.beginPath();
-        if (range.xMin <= 0 && range.xMax >= 0) {
-          const axisX = toPx(0);
-          canvasContext.moveTo(axisX, 0);
-          canvasContext.lineTo(axisX, height);
-        }
-        if (range.yMin <= 0 && range.yMax >= 0) {
-          const axisY = toPy(0);
-          canvasContext.moveTo(0, axisY);
-          canvasContext.lineTo(width, axisY);
-        }
-        canvasContext.stroke();
-        canvasContext.lineWidth = 2;
-        canvasContext.strokeStyle = "#a7d86d";
-        canvasContext.beginPath();
-        let hasPoint = false;
-        for (const sample of plot.samples) {
-          if (!sample.visible) {
-            hasPoint = false;
-            continue;
-          }
-          const py = toPy(sample.y);
-          if (hasPoint) canvasContext.lineTo(sample.px, py);
-          else canvasContext.moveTo(sample.px, py);
-          hasPoint = true;
-        }
-        canvasContext.stroke();
-        calculatorGraphStatus.textContent = `graphed ${plot.expression} | ${plot.finiteCount} visible samples`;
-        return {
-          ok: true,
-          expression: plot.expression,
-          range,
-          finiteCount: plot.finiteCount,
-          statusText: calculatorGraphStatus.textContent
-        };
-      } catch (error) {
+
+      const renderModel = requireCalculatorViewModel().buildCalculatorGraphRenderModel(
+        calculatorGraphExpression.value,
+        {
+          xMin: calculatorGraphXMin.value,
+          xMax: calculatorGraphXMax.value,
+          yMin: calculatorGraphYMin.value,
+          yMax: calculatorGraphYMax.value
+        },
+        {width, height}
+      );
+
+      if (!renderModel.ok) {
         canvasContext.fillStyle = "#ff8f70";
         canvasContext.font = "700 14px Arial, Helvetica, sans-serif";
-        canvasContext.fillText("Graph error", 14, 28);
-        calculatorGraphStatus.textContent = `graph error: ${error.message || error}`;
-        return {
-          ok: false,
-          expression: normalizeGraphExpression(calculatorGraphExpression.value),
-          range: {
-            xMin: Number(calculatorGraphXMin.value),
-            xMax: Number(calculatorGraphXMax.value),
-            yMin: Number(calculatorGraphYMin.value),
-            yMax: Number(calculatorGraphYMax.value)
-          },
-          statusText: calculatorGraphStatus.textContent,
-          code: /range/i.test(error.message || "") ? "graph-range-invalid" : "graph-expression-required",
-          error: error.message || String(error)
-        };
+        canvasContext.fillText(renderModel.errorLabel || "Graph error", 14, 28);
+        calculatorGraphStatus.textContent = renderModel.statusText;
+        return renderModel.runtimeResult;
       }
+
+      canvasContext.lineWidth = 1;
+      canvasContext.strokeStyle = "#26291e";
+      canvasContext.beginPath();
+      drawCalculatorLineSet(canvasContext, renderModel.gridLines);
+      canvasContext.stroke();
+
+      canvasContext.strokeStyle = "#4f493a";
+      canvasContext.beginPath();
+      drawCalculatorLineSet(canvasContext, renderModel.axisLines);
+      canvasContext.stroke();
+
+      canvasContext.lineWidth = 2;
+      canvasContext.strokeStyle = "#a7d86d";
+      canvasContext.beginPath();
+      for (const segment of renderModel.curveSegments) {
+        segment.forEach((point, index) => {
+          if (index === 0) canvasContext.moveTo(point.x, point.y);
+          else canvasContext.lineTo(point.x, point.y);
+        });
+      }
+      canvasContext.stroke();
+
+      calculatorGraphStatus.textContent = renderModel.statusText;
+      return renderModel.runtimeResult;
     }
     function resetCalculatorGraphView() {
       calculatorGraphXMin.value = "-10";
@@ -274,23 +225,26 @@
       calculatorAskModel.disabled = true;
       calculatorModelStatus.textContent = "asking model";
       try {
-        const data = await requireCalculatorCapabilities().askArithmeticModel(problem);
-        const expression = requireCalculatorCore().extractCalculatorExpression(data.content || "");
-        if (!expression) {
-          throw new Error("no expression returned");
+        const viewModel = requireCalculatorViewModel().buildCalculatorAssistedExpressionViewModel(
+          "arithmetic",
+          await requireCalculatorCapabilities().askArithmeticModel(problem)
+        );
+        if (!viewModel.ok) {
+          calculatorModelStatus.textContent = viewModel.statusText;
+          return viewModel.runtimeResult;
         }
-        calculatorDisplay.value = expression;
-        calculatorModelStatus.textContent = `model expression: ${expression}`;
+        calculatorDisplay.value = viewModel.expressionText;
+        calculatorModelStatus.textContent = viewModel.statusText;
         const evaluation = calculateExpression();
         return {
-          ok: true,
-          expression,
+          ...viewModel.runtimeResult,
           result: calculatorResult.textContent,
           evaluation
         };
       } catch (error) {
-        calculatorModelStatus.textContent = error.message || "model prompt failed";
-        return {ok: false, code: "provider-request-failed", error: error.message || "model prompt failed"};
+        const viewModel = requireCalculatorViewModel().buildCalculatorAssistedExpressionErrorViewModel("arithmetic", error);
+        calculatorModelStatus.textContent = viewModel.statusText;
+        return viewModel.runtimeResult;
       } finally {
         calculatorAskModel.disabled = false;
       }
@@ -298,6 +252,18 @@
     function setCalculatorMathicsOutput(text, state = "ready") {
       calculatorMathicsOutput.textContent = text || "";
       calculatorMathicsOutput.classList.toggle("error", state === "error");
+    }
+    function applyCalculatorMathicsViewModel(viewModel) {
+      if (Object.prototype.hasOwnProperty.call(viewModel, "expressionText")) {
+        calculatorMathicsExpression.value = viewModel.expressionText;
+      }
+      if (viewModel.modelStatusText) calculatorMathicsModelStatus.textContent = viewModel.modelStatusText;
+      if (viewModel.evaluationStatusText) calculatorMathicsEvaluationStatus.textContent = viewModel.evaluationStatusText;
+      if (Object.prototype.hasOwnProperty.call(viewModel, "outputText")) {
+        setCalculatorMathicsOutput(viewModel.outputText, viewModel.outputState);
+      }
+      if (viewModel.focusExpression) calculatorMathicsExpression.focus();
+      return viewModel.runtimeResult || viewModel;
     }
     async function askCalculatorMathicsModel() {
       const prompt = calculatorMathicsPrompt.value.trim();
@@ -309,14 +275,13 @@
       calculatorMathicsAskModel.disabled = true;
       calculatorMathicsModelStatus.textContent = "asking model";
       try {
-        const data = await requireCalculatorCapabilities().askMathicsModel(prompt);
-        calculatorMathicsExpression.value = data.expression || "";
-        calculatorMathicsModelStatus.textContent = `mathics expression: ${data.expression || ""}`;
-        calculatorMathicsExpression.focus();
-        return {ok: true, expression: data.expression || ""};
+        const viewModel = requireCalculatorViewModel().buildCalculatorMathicsModelViewModel(
+          await requireCalculatorCapabilities().askMathicsModel(prompt)
+        );
+        return applyCalculatorMathicsViewModel(viewModel);
       } catch (error) {
-        calculatorMathicsModelStatus.textContent = error.message || "mathics model prompt failed";
-        return {ok: false, code: "provider-request-failed", error: error.message || "mathics model prompt failed"};
+        const viewModel = requireCalculatorViewModel().buildCalculatorMathicsModelErrorViewModel(error);
+        return applyCalculatorMathicsViewModel(viewModel);
       } finally {
         calculatorMathicsAskModel.disabled = false;
       }
@@ -329,58 +294,50 @@
         return;
       }
       calculatorMathicsEvaluate.disabled = true;
-      calculatorMathicsEvaluationStatus.textContent = "evaluating Mathics expression";
-      setCalculatorMathicsOutput("Evaluating...", "ready");
+      const pendingViewModel = requireCalculatorViewModel().buildCalculatorMathicsEvaluationPendingViewModel();
+      applyCalculatorMathicsViewModel(pendingViewModel);
       try {
-        const data = await requireCalculatorCapabilities().evaluateMathics(expression);
-        calculatorMathicsEvaluationStatus.textContent = "Mathics result ready";
-        setCalculatorMathicsOutput(data.output || "(no result)", "ready");
-        return {
-          ok: true,
+        const viewModel = requireCalculatorViewModel().buildCalculatorMathicsEvaluationViewModel(
           expression,
-          output: data.output || "(no result)",
-          statusText: "ready"
-        };
+          await requireCalculatorCapabilities().evaluateMathics(expression)
+        );
+        return applyCalculatorMathicsViewModel(viewModel);
       } catch (error) {
-        calculatorMathicsEvaluationStatus.textContent = error.message || "Mathics evaluation failed";
-        setCalculatorMathicsOutput(error.message || "Mathics evaluation failed", "error");
-        return {
-          ok: false,
-          expression,
-          code: "mathics-evaluation-failed",
-          error: error.message || "Mathics evaluation failed",
-          statusText: "error"
-        };
+        const viewModel = requireCalculatorViewModel().buildCalculatorMathicsEvaluationErrorViewModel(expression, error);
+        return applyCalculatorMathicsViewModel(viewModel);
       } finally {
         calculatorMathicsEvaluate.disabled = false;
       }
     }
     function clearCalculatorMathics() {
-      calculatorMathicsExpression.value = "";
-      setCalculatorMathicsOutput("Mathics ready.", "ready");
-      calculatorMathicsEvaluationStatus.textContent = "mathics evaluation ready";
-      calculatorMathicsExpression.focus();
+      const viewModel = requireCalculatorViewModel().buildCalculatorMathicsClearViewModel();
+      return applyCalculatorMathicsViewModel(viewModel);
     }
     function calculatorQaContext() {
-      return {
-        basic_expression: calculatorDisplay?.value || "",
-        basic_result: calculatorResult?.textContent || "",
-        graph_expression: calculatorGraphExpression?.value || "",
-        graph_status: calculatorGraphStatus?.textContent || "",
-        graph_range: {
-          x_min: calculatorGraphXMin?.value || "",
-          x_max: calculatorGraphXMax?.value || "",
-          y_min: calculatorGraphYMin?.value || "",
-          y_max: calculatorGraphYMax?.value || ""
-        },
-        mathics_expression: calculatorMathicsExpression?.value || "",
-        mathics_output: calculatorMathicsOutput?.textContent || ""
-      };
+      return requireCalculatorViewModel().buildCalculatorResultQaContext({
+        arithmeticExpression: calculatorDisplay?.value,
+        arithmeticResult: calculatorResult?.textContent,
+        graphExpression: calculatorGraphExpression?.value,
+        graphStatus: calculatorGraphStatus?.textContent,
+        graphXMin: calculatorGraphXMin?.value,
+        graphXMax: calculatorGraphXMax?.value,
+        graphYMin: calculatorGraphYMin?.value,
+        graphYMax: calculatorGraphYMax?.value,
+        mathicsExpression: calculatorMathicsExpression?.value,
+        mathicsOutput: calculatorMathicsOutput?.textContent
+      });
     }
     function setCalculatorQaAnswer(text, state = "ready") {
       if (!calculatorQaAnswer) return;
       calculatorQaAnswer.textContent = text || "";
       calculatorQaAnswer.classList.toggle("error", state === "error");
+    }
+    function applyCalculatorQaViewModel(viewModel) {
+      if (calculatorQaStatus && viewModel.qaStatusText) calculatorQaStatus.textContent = viewModel.qaStatusText;
+      if (Object.prototype.hasOwnProperty.call(viewModel, "answerText")) {
+        setCalculatorQaAnswer(viewModel.answerText, viewModel.answerState);
+      }
+      return viewModel.runtimeResult || viewModel;
     }
     async function askCalculatorQa() {
       if (!calculatorQaPrompt || !calculatorQaAsk || !calculatorQaStatus) return;
@@ -391,23 +348,16 @@
         return;
       }
       calculatorQaAsk.disabled = true;
-      calculatorQaStatus.textContent = "asking model about results";
-      setCalculatorQaAnswer("Asking about the current calculator context...", "ready");
+      applyCalculatorQaViewModel(requireCalculatorViewModel().buildCalculatorResultQaPendingViewModel());
       try {
-        const data = await requireCalculatorCapabilities().askResultQuestion(question, calculatorQaContext());
-        calculatorQaStatus.textContent = "result Q&A answered";
-        setCalculatorQaAnswer(data.answer || "(no answer returned)", "ready");
-        return {
-          ok: true,
+        const viewModel = requireCalculatorViewModel().buildCalculatorResultQaAnswerViewModel(
           question,
-          answer: data.answer || "(no answer returned)",
-          statusText: "ready"
-        };
+          await requireCalculatorCapabilities().askResultQuestion(question, calculatorQaContext())
+        );
+        return applyCalculatorQaViewModel(viewModel);
       } catch (error) {
-        const message = error.message || "calculator Q&A failed";
-        calculatorQaStatus.textContent = message;
-        setCalculatorQaAnswer(message, "error");
-        return {ok: false, question, code: "result-qa-failed", error: message, statusText: "error"};
+        const viewModel = requireCalculatorViewModel().buildCalculatorResultQaErrorViewModel(question, error);
+        return applyCalculatorQaViewModel(viewModel);
       } finally {
         calculatorQaAsk.disabled = false;
       }
@@ -491,13 +441,7 @@
     window.MainComputerCalculatorRuntime = Object.freeze({
       snapshot: calculatorEmbeddedChatContextSnapshot,
       switchMode({mode} = {}) {
-        setCalculatorMode(mode);
-        return {
-          ok: true,
-          mode,
-          expression: calculatorDisplay.value,
-          graphExpression: calculatorGraphExpression.value
-        };
+        return setCalculatorMode(mode);
       },
       enterToken({token} = {}) {
         return applyCalculatorToken(String(token || ""));
@@ -735,23 +679,26 @@
       calculatorScientificAskModel.disabled = true;
       calculatorScientificModelStatus.textContent = "asking model";
       try {
-        const data = await requireCalculatorCapabilities().askGraphModel(problem);
-        const expression = requireCalculatorCore().extractCalculatorGraphExpression(data.content || "");
-        if (!expression) {
-          throw new Error("no graph expression returned");
+        const viewModel = requireCalculatorViewModel().buildCalculatorAssistedExpressionViewModel(
+          "graph",
+          await requireCalculatorCapabilities().askGraphModel(problem)
+        );
+        if (!viewModel.ok) {
+          calculatorScientificModelStatus.textContent = viewModel.statusText;
+          return viewModel.runtimeResult;
         }
-        calculatorGraphExpression.value = expression;
-        calculatorScientificModelStatus.textContent = `f(x): ${expression}`;
+        calculatorGraphExpression.value = viewModel.expressionText;
+        calculatorScientificModelStatus.textContent = viewModel.statusText;
         const graph = drawCalculatorGraph();
         return {
+          ...viewModel.runtimeResult,
           ok: graph?.ok !== false,
-          expression,
-          statusText: calculatorScientificModelStatus.textContent,
           graph
         };
       } catch (error) {
-        calculatorScientificModelStatus.textContent = error.message || "scientific model prompt failed";
-        return {ok: false, code: "provider-request-failed", error: error.message || "scientific model prompt failed"};
+        const viewModel = requireCalculatorViewModel().buildCalculatorAssistedExpressionErrorViewModel("graph", error);
+        calculatorScientificModelStatus.textContent = viewModel.statusText;
+        return viewModel.runtimeResult;
       } finally {
         calculatorScientificAskModel.disabled = false;
       }

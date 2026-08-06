@@ -82,6 +82,15 @@ _TARGETS: dict[str, dict[str, Any]] = {
             "mother-genesis-proof-guardian",
             "mother-validator-admission-guardian",
         ),
+        "retained_services": (
+            "mother-super-node-fdb",
+            "mother-super-node-hub",
+            "mother-superseded-service-cleanup",
+        ),
+        "retained_volumes": (
+            "mother-fdb-data",
+            "mother-hub-data",
+        ),
     },
     "mainnetc-super1": {
         "controller_id": "coolify-c",
@@ -296,26 +305,72 @@ def _remove_service_block(compose: str, service: str, label: str) -> str:
 
 
 def _remove_init_dependency(compose: str, node: str, init_service: str, label: str) -> str:
-    marker = (
-        "    depends_on:\n"
-        f"      {init_service}:\n"
-        "        condition: service_completed_successfully\n"
-    )
-    node_marker = f"  {node}:\n"
-    node_matches = list(re.finditer(rf"(?m)^  {re.escape(node)}:\n", compose))
-    if len(node_matches) != 1 or compose.count(marker) != 1:
+    lines = compose.splitlines(keepends=True)
+    node_line = f"  {node}:"
+    node_indexes = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == node_line]
+    if len(node_indexes) != 1:
         raise _error(
             "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_COMPOSE_UNSUPPORTED",
             f"{label} init dependency is not canonical",
         )
-    node_start = node_matches[0].start()
-    marker_start = compose.index(marker)
-    if marker_start < node_start:
+    node_start = node_indexes[0]
+    node_end = len(lines)
+    for index in range(node_start + 1, len(lines)):
+        stripped = lines[index].rstrip("\r\n")
+        if re.fullmatch(r"  [A-Za-z0-9_.-]+:", stripped) or stripped == "volumes:":
+            node_end = index
+            break
+
+    depends_indexes = [
+        index
+        for index in range(node_start + 1, node_end)
+        if lines[index].rstrip("\r\n") == "    depends_on:"
+    ]
+    dependency_line = f"      {init_service}:"
+    dependency_indexes = [
+        index
+        for index in range(node_start + 1, node_end)
+        if lines[index].rstrip("\r\n") == dependency_line
+    ]
+    if len(depends_indexes) != 1 or len(dependency_indexes) != 1:
+        raise _error(
+            "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_COMPOSE_UNSUPPORTED",
+            f"{label} init dependency is not canonical",
+        )
+    depends_index = depends_indexes[0]
+    dependency_start = dependency_indexes[0]
+    if dependency_start <= depends_index:
         raise _error(
             "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_COMPOSE_UNSUPPORTED",
             f"{label} init dependency is outside {node}",
         )
-    return compose.replace(marker, "", 1)
+
+    dependency_end = dependency_start + 1
+    while dependency_end < node_end:
+        line = lines[dependency_end]
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if stripped and indent <= 6:
+            break
+        dependency_end += 1
+
+    del lines[dependency_start:dependency_end]
+
+    remaining_dependency = False
+    scan_end = node_end - (dependency_end - dependency_start)
+    for index in range(depends_index + 1, scan_end):
+        line = lines[index]
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if stripped and indent <= 4:
+            break
+        if stripped and indent == 6 and stripped.endswith(":"):
+            remaining_dependency = True
+            break
+    if not remaining_dependency:
+        del lines[depends_index]
+
+    return "".join(lines)
 
 
 def _replace_exact(compose: str, old: str, new: str, label: str) -> str:
@@ -333,9 +388,22 @@ def _steady_compose(source: str, node: str) -> tuple[str, tuple[str, ...]]:
     original = _load_yaml(source, label)
     services = _mapping(original.get("services"), f"{label}.services")
     volumes = _mapping(original.get("volumes"), f"{label}.volumes")
-    expected_services = {spec["init_service"], node, spec["guardian"]}
-    expected_volumes = {"mother-config", "mother-data", spec["proof_volume"]}
-    if original.get("name") != node or set(services) != expected_services or set(volumes) != expected_volumes:
+    allowed_retained_services = set(spec.get("retained_services", ()))
+    required_services = {spec["init_service"], node, spec["guardian"]}
+    actual_services = set(services)
+    retained_services = actual_services - required_services
+    expected_volumes = {
+        "mother-config",
+        "mother-data",
+        spec["proof_volume"],
+        *spec.get("retained_volumes", ()),
+    }
+    if (
+        original.get("name") != node
+        or not required_services.issubset(actual_services)
+        or not retained_services.issubset(allowed_retained_services)
+        or set(volumes) != expected_volumes
+    ):
         raise _error(
             "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_LINEAGE_MISMATCH",
             f"{node} recovered Compose is not the exact supported quorum-recovery lineage",
@@ -378,7 +446,8 @@ def _steady_compose(source: str, node: str) -> tuple[str, tuple[str, ...]]:
     final = _load_yaml(updated, f"{node} steady-state Compose")
     final_services = _mapping(final.get("services"), f"{node} steady-state services")
     final_volumes = _mapping(final.get("volumes"), f"{node} steady-state volumes")
-    if set(final_services) != {node, spec["guardian"]} or set(final_volumes) != expected_volumes:
+    expected_final_services = {node, spec["guardian"]} | retained_services
+    if set(final_services) != expected_final_services or set(final_volumes) != expected_volumes:
         raise _error(
             "MOTHER_DEPLOY_POST_ADMISSION_STEADY_STATE_COMPOSE_UNSUPPORTED",
             f"{node} steady-state Compose has an unexpected service or volume",
@@ -908,7 +977,12 @@ def build_post_admission_steady_state_transaction(
                 "canonical_text": steady_text,
                 "sha256": hashlib.sha256(steady_bytes).hexdigest(),
                 "semantic_sha256": _compose_semantic_sha256(steady_text, f"{node} steady-state Compose"),
-                "retained_services": [node, spec["guardian"]],
+                "retained_services": sorted(
+                    _mapping(
+                        _load_yaml(steady_text, f"{node} steady-state Compose").get("services"),
+                        f"{node} steady-state services",
+                    )
+                ),
                 "retained_guardian_name": spec["guardian"],
                 "retained_guardian_semantics": True,
                 "static_peer_configuration_retained": True,
@@ -2379,9 +2453,27 @@ def _runtime_target_observation(
 
     recognized_obsolete = set(target["recognized_obsolete_components"])
     required_names = set(required)
+
+    expected_services: set[str] = set()
+    try:
+        expected_document = yaml.safe_load(expected_compose)
+        if isinstance(expected_document, Mapping):
+            services = expected_document.get("services")
+            if isinstance(services, Mapping):
+                expected_services = {
+                    str(name)
+                    for name in services
+                    if type(name) is str and name
+                }
+    except Exception:
+        expected_services = set()
+
     obsolete_present = sorted(recognized_obsolete.intersection(component_names))
     unexpected_present = sorted(
-        set(component_names).difference(required_names).difference(recognized_obsolete)
+        set(component_names)
+        .difference(required_names)
+        .difference(recognized_obsolete)
+        .difference(expected_services)
     )
     obsolete_statuses = sorted(
         (
@@ -2399,19 +2491,6 @@ def _runtime_target_observation(
         for item in obsolete_statuses
     )
 
-    expected_services: set[str] = set()
-    try:
-        expected_document = yaml.safe_load(expected_compose)
-        if isinstance(expected_document, Mapping):
-            services = expected_document.get("services")
-            if isinstance(services, Mapping):
-                expected_services = {
-                    str(name)
-                    for name in services
-                    if type(name) is str and name
-                }
-    except Exception:
-        expected_services = set()
     obsolete_compose_services_absent = bool(expected_services) and not (
         recognized_obsolete.intersection(expected_services)
     )

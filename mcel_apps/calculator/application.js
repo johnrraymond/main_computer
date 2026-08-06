@@ -6,172 +6,10 @@ const APP_ID = "calculator";
 const TITLE = "Calculator";
 const TARGET_TRUTH_STATUS = "semantic-runtime-proven";
 
-const HOST_SURFACE = Object.freeze({
-  route: "/applications/calculator",
-  root: "#calculator-app",
-  presentationAuthority: "existing-host-html",
-  runtimeFacade: "MainComputerCalculatorRuntime",
+const field = Object.freeze({
+  string: () => ({kind: "string"}),
+  record: () => ({kind: "record"}),
 });
-
-const STATE_FIELDS = Object.freeze([
-  ["mode", "renderer-local", "string", "basic"],
-  ["arithmetic-expression", "renderer-local", "string", ""],
-  ["arithmetic-result", "derived", "string", ""],
-  ["graph-expression", "renderer-local", "string", "sin(x)"],
-  ["graph-range", "renderer-local", "record", {xMin: -10, xMax: 10, yMin: -5, yMax: 5}],
-  ["mathics-expression", "renderer-local", "string", ""],
-  ["mathics-result", "derived", "string", ""],
-  ["result-context", "derived", "string", ""],
-]);
-
-const CAPABILITY_LANES = Object.freeze([
-  {
-    name: "model-assistance",
-    sourceName: "modelAssistance",
-    risk: "external-read",
-    description: "Request bounded expression assistance without granting calculator state mutation authority.",
-    operations: [
-      ["arithmetic-expression", "askModelForExpression"],
-      ["graph-expression", "askModelForGraphExpression"],
-      ["mathics-expression", "askModelForMathicsExpression"],
-    ],
-  },
-  {
-    name: "mathics",
-    sourceName: "mathics",
-    risk: "external-read",
-    description: "Evaluate one bounded symbolic expression through the existing Calculator Mathics API.",
-    operations: [["evaluate", "evaluateMathics"]],
-  },
-  {
-    name: "result-qa",
-    sourceName: "resultQa",
-    risk: "external-read",
-    description: "Ask a read-only contextual question about the currently visible result.",
-    operations: [["ask", "askResultQuestion"]],
-  },
-]);
-
-const INTENT_DEFINITIONS = Object.freeze([
-  {
-    name: "switch-mode",
-    sourceName: "switchMode",
-    runtimeMethod: "switchMode",
-    binding: "switch-mode",
-    label: "Switch calculator mode",
-    lane: "local-ui",
-    risk: "read-only",
-    reads: ["mode"],
-  },
-  {
-    name: "enter-token",
-    sourceName: "enterToken",
-    runtimeMethod: "enterToken",
-    binding: "enter-token",
-    label: "Enter an arithmetic token",
-    lane: "local-arithmetic",
-    risk: "read-only",
-    reads: ["arithmetic-expression"],
-  },
-  {
-    name: "clear-expression",
-    sourceName: "clearExpression",
-    runtimeMethod: "clearExpression",
-    binding: "clear-expression",
-    label: "Clear the arithmetic expression",
-    lane: "local-arithmetic",
-    risk: "read-only",
-    reads: ["arithmetic-expression"],
-  },
-  {
-    name: "evaluate-expression",
-    sourceName: "evaluateExpression",
-    runtimeMethod: "evaluateExpression",
-    binding: "evaluate-expression",
-    label: "Evaluate a deterministic arithmetic expression",
-    lane: "local-arithmetic",
-    risk: "read-only",
-    reads: ["arithmetic-expression"],
-  },
-  {
-    name: "draw-graph",
-    sourceName: "drawGraph",
-    runtimeMethod: "drawGraph",
-    binding: "draw-graph",
-    label: "Draw a deterministic graph",
-    lane: "local-graph",
-    risk: "read-only",
-    reads: ["graph-expression", "graph-range"],
-  },
-  {
-    name: "reset-graph",
-    sourceName: "resetGraph",
-    runtimeMethod: "resetGraph",
-    binding: "reset-graph",
-    label: "Reset graph ranges",
-    lane: "local-graph",
-    risk: "read-only",
-    reads: ["graph-range"],
-  },
-  {
-    name: "ask-model-for-expression",
-    sourceName: "askModelForExpression",
-    runtimeMethod: "askModelForExpression",
-    binding: "ask-model-expression",
-    label: "Ask a model for an arithmetic expression",
-    lane: "model-arithmetic",
-    risk: "external-read",
-    reads: ["arithmetic-expression"],
-    capability: "model-assistance",
-  },
-  {
-    name: "ask-model-for-graph-expression",
-    sourceName: "askModelForGraphExpression",
-    runtimeMethod: "askModelForGraphExpression",
-    binding: "ask-model-graph-expression",
-    label: "Ask a model for a graph expression",
-    lane: "model-graph",
-    risk: "external-read",
-    reads: ["graph-expression"],
-    capability: "model-assistance",
-  },
-  {
-    name: "ask-model-for-mathics-expression",
-    sourceName: "askModelForMathicsExpression",
-    runtimeMethod: "askModelForMathicsExpression",
-    binding: "ask-model-mathics-expression",
-    label: "Ask a model for a Mathics expression",
-    lane: "model-mathics",
-    risk: "external-read",
-    reads: ["mathics-expression"],
-    capability: "model-assistance",
-  },
-  {
-    name: "evaluate-mathics",
-    sourceName: "evaluateMathics",
-    runtimeMethod: "evaluateMathics",
-    binding: "evaluate-mathics",
-    label: "Evaluate a symbolic Mathics expression",
-    lane: "mathics",
-    risk: "external-read",
-    reads: ["mathics-expression"],
-    capability: "mathics",
-  },
-  {
-    name: "ask-result-question",
-    sourceName: "askResultQuestion",
-    runtimeMethod: "askResultQuestion",
-    binding: "ask-result-question",
-    label: "Ask a contextual result question",
-    lane: "model-result-qa",
-    risk: "external-read",
-    reads: ["result-context"],
-    capability: "result-qa",
-  },
-]);
-
-const LAYOUT_ZONES = Object.freeze(["mode", "arithmetic", "graph", "mathics", "result-qa", "chat"]);
-const RECEIPT_SUCCESS = Object.freeze([{kind: "claim.receipt-disposition", authority: "operation-receipt", expected: "completed"}]);
 
 function appRef(kind, name) {
   return `${kind}:${APP_ID}.${name}`;
@@ -181,148 +19,360 @@ function ref(kind, name) {
   return {ref: appRef(kind, name)};
 }
 
-function stateRecord([name, authority, schemaKind, initial]) {
+function camelCase(name) {
+  return name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function receiptSuccessClaim() {
   return {
-    id: appRef("state", name),
-    kind: "state",
-    sourceName: name.includes("-") ? name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()) : name,
-    authority,
-    schema: {kind: schemaKind},
-    initial,
+    kind: "claim.receipt-disposition",
+    authority: "operation-receipt",
+    expected: "completed",
   };
 }
 
-function capabilityRecord(lane) {
+function createCalculatorApplication(metadata) {
+  let presentation = null;
+  let proof = null;
+  let zones = [];
+  const states = [];
+  const capabilities = [];
+  const intents = [];
+  const effects = [];
+  const surfaceNodes = [];
+  const scenarios = [];
+
+  function stateRecord(name, authority, schema, initial) {
+    const record = {
+      id: appRef("state", name),
+      kind: "state",
+      sourceName: camelCase(name),
+      authority,
+      schema,
+      initial,
+    };
+    states.push(record);
+    return Object.freeze({id: record.id, name, record});
+  }
+
+  function capabilityRecord(name, options = {}) {
+    const operations = [];
+    const record = {
+      id: appRef("capability", name),
+      kind: "capability",
+      sourceName: options.sourceName || camelCase(name),
+      risk: options.risk || "external-read",
+      description: options.description || "",
+      operations,
+    };
+    capabilities.push(record);
+    return Object.freeze({
+      id: record.id,
+      name,
+      record,
+      operation(operationName, runtimeMethod) {
+        operations.push({name: operationName, runtimeMethod, cancellable: false});
+        return this;
+      },
+    });
+  }
+
+  function effectRecord(intent, capability) {
+    const record = {
+      id: appRef("effect", `${intent.name}.request`),
+      kind: "effect",
+      effectKind: "capability-request",
+      owner: ref("intent", intent.name),
+      risk: intent.risk,
+      target: ref("capability", capability.name),
+      authority: ref("capability", capability.name),
+      cardinality: {minimum: 0, maximum: 1},
+      allowedFinalDispositions: ["completed", "refused-before-attempt", "failed", "cancelled"],
+      requiredEvidence: ["operation-receipt", "capability-response", "visible-outcome"],
+      cleanupObligations: [],
+    };
+    effects.push(record);
+    return record;
+  }
+
+  function intentRecord(name, options, capability = null) {
+    const effect = capability ? effectRecord({name, risk: options.risk || "external-read"}, capability) : null;
+    const record = {
+      id: appRef("intent", name),
+      kind: "intent",
+      sourceName: options.sourceName || camelCase(name),
+      label: options.label,
+      operationKind: capability ? "capability" : "interaction",
+      lane: options.lane,
+      runtimeMethod: options.runtimeMethod,
+      executionBinding: `calculator-runtime.${options.binding}`,
+      cancellable: false,
+      risk: options.risk || (capability ? "external-read" : "read-only"),
+      input: [],
+      reads: (options.reads || []).map((stateName) => ref("state", stateName)),
+      writes: [],
+      refusals: [],
+      invariants: [],
+      effectRefs: effect ? [{ref: effect.id}] : [],
+      outcomes: ["completed", "refused", "failed"],
+    };
+    intents.push(record);
+    surfaceNodes.push({
+      id: appRef("surface-node", name),
+      kind: "surface-node",
+      sourceName: record.sourceName,
+      label: record.label,
+      nodeKind: "control",
+      intent: ref("intent", name),
+    });
+    scenarios.push({
+      id: appRef("scenario", name),
+      kind: "scenario",
+      intent: ref("intent", name),
+      steps: [receiptSuccessClaim()],
+    });
+    return Object.freeze({id: record.id, name, record});
+  }
+
   return {
-    id: appRef("capability", lane.name),
-    kind: "capability",
-    sourceName: lane.sourceName,
-    risk: lane.risk,
-    description: lane.description,
-    operations: lane.operations.map(([name, runtimeMethod]) => ({name, runtimeMethod, cancellable: false})),
+    presentation: {
+      hostBound(name, options) {
+        presentation = {
+          id: appRef("surface", name),
+          kind: "surface",
+          sourceName: options.sourceName || "CalculatorSurface",
+          route: options.route,
+          root: options.root,
+          presentationAuthority: options.presentationAuthority,
+        };
+      },
+    },
+    state: {
+      rendererLocal(name, schema, options = {}) {
+        return stateRecord(name, "renderer-local", schema, options.initial);
+      },
+      derived(name, schema, options = {}) {
+        return stateRecord(name, "derived", schema, options.initial);
+      },
+    },
+    capability: {
+      external: capabilityRecord,
+    },
+    intent: {
+      interaction: intentRecord,
+      capabilityRequest(name, capability, options) {
+        return intentRecord(name, options, capability);
+      },
+    },
+    layout: {
+      zones(zoneNames) {
+        zones = [...zoneNames];
+      },
+    },
+    proof: {
+      semanticRuntimeProven(options = {}) {
+        proof = {
+          invariants: [],
+          requiredAuthorities: options.requiredAuthorities || [
+            "visible-surface",
+            "operation-receipt",
+            "capability-response",
+          ],
+          targetTruthStatus: TARGET_TRUTH_STATUS,
+        };
+      },
+    },
+    toIr() {
+      if (!presentation) throw new Error("Calculator presentation must be declared.");
+      if (!proof) throw new Error("Calculator proof contract must be declared.");
+
+      return {
+        schema: "mcel.application-ir.v1",
+        application: {
+          id: `app:${APP_ID}`,
+          kind: "application",
+          appId: APP_ID,
+          semanticVersion: String(metadata.semanticVersion || "1"),
+          title: metadata.title,
+          targetTruthStatus: metadata.targetTruthStatus || TARGET_TRUTH_STATUS,
+          authoringStatus: "dsl-authoritative",
+        },
+        models: [],
+        states,
+        derivations: [],
+        intents,
+        capabilities,
+        effects,
+        surfaces: [{...presentation, nodes: surfaceNodes}],
+        layouts: [
+          {
+            id: appRef("layout", "workspace"),
+            kind: "layout",
+            surface: ref("surface", "workspace"),
+            zones,
+            orderedChildren: surfaceNodes.map((node) => ({ref: node.id})),
+          },
+        ],
+        scenarios,
+        proof,
+        migration: {
+          state: "dsl-authoritative",
+          sourceFamily: "official-vanilla-javascript-dsl",
+          knownGaps: [],
+        },
+        provenance: {
+          frontend: {id: "mcel.dsl.v1", version: "1", sourceFiles: []},
+          nodeBindings: [],
+        },
+      };
+    },
   };
 }
 
-function effectId(intentName) {
-  return appRef("effect", `${intentName}.request`);
-}
+function declareCalculator(app) {
+  app.presentation.hostBound("workspace", {
+    route: "/applications/calculator",
+    root: "#calculator-app",
+    presentationAuthority: "existing-host-html",
+    runtimeFacade: "MainComputerCalculatorRuntime",
+  });
 
-function effectRecord(intent) {
-  return {
-    id: effectId(intent.name),
-    kind: "effect",
-    effectKind: "capability-request",
-    owner: ref("intent", intent.name),
-    risk: intent.risk,
-    target: ref("capability", intent.capability),
-    authority: ref("capability", intent.capability),
-    cardinality: {minimum: 0, maximum: 1},
-    allowedFinalDispositions: ["completed", "refused-before-attempt", "failed", "cancelled"],
-    requiredEvidence: ["operation-receipt", "capability-response", "visible-outcome"],
-    cleanupObligations: [],
-  };
-}
+  app.state.rendererLocal("mode", field.string(), {initial: "basic"});
+  app.state.rendererLocal("arithmetic-expression", field.string(), {initial: ""});
+  app.state.derived("arithmetic-result", field.string(), {initial: ""});
+  app.state.rendererLocal("graph-expression", field.string(), {initial: "sin(x)"});
+  app.state.rendererLocal("graph-range", field.record(), {
+    initial: {xMin: -10, xMax: 10, yMin: -5, yMax: 5},
+  });
+  app.state.rendererLocal("mathics-expression", field.string(), {initial: ""});
+  app.state.derived("mathics-result", field.string(), {initial: ""});
+  app.state.derived("result-context", field.string(), {initial: ""});
 
-function intentRecord(intent) {
-  const effectRefs = intent.capability ? [{ref: effectId(intent.name)}] : [];
-  return {
-    id: appRef("intent", intent.name),
-    kind: "intent",
-    sourceName: intent.sourceName,
-    label: intent.label,
-    operationKind: intent.capability ? "capability" : "interaction",
-    lane: intent.lane,
-    runtimeMethod: intent.runtimeMethod,
-    executionBinding: `calculator-runtime.${intent.binding}`,
-    cancellable: false,
-    risk: intent.risk,
-    input: [],
-    reads: intent.reads.map((name) => ref("state", name)),
-    writes: [],
-    refusals: [],
-    invariants: [],
-    effectRefs,
-    outcomes: ["completed", "refused", "failed"],
-  };
-}
+  const modelAssistance = app.capability
+    .external("model-assistance", {
+      sourceName: "modelAssistance",
+      description: "Request bounded expression assistance without granting calculator state mutation authority.",
+    })
+    .operation("arithmetic-expression", "askModelForExpression")
+    .operation("graph-expression", "askModelForGraphExpression")
+    .operation("mathics-expression", "askModelForMathicsExpression");
 
-function surfaceNode(intent) {
-  return {
-    id: appRef("surface-node", intent.name),
-    kind: "surface-node",
-    sourceName: intent.sourceName,
-    label: intent.label,
-    nodeKind: "control",
-    intent: ref("intent", intent.name),
-  };
-}
+  const mathics = app.capability
+    .external("mathics", {
+      description: "Evaluate one bounded symbolic expression through the existing Calculator Mathics API.",
+    })
+    .operation("evaluate", "evaluateMathics");
 
-function scenarioRecord(intent) {
-  return {
-    id: appRef("scenario", intent.name),
-    kind: "scenario",
-    intent: ref("intent", intent.name),
-    steps: RECEIPT_SUCCESS,
-  };
+  const resultQa = app.capability
+    .external("result-qa", {
+      sourceName: "resultQa",
+      description: "Ask a read-only contextual question about the currently visible result.",
+    })
+    .operation("ask", "askResultQuestion");
+
+  app.intent.interaction("switch-mode", {
+    sourceName: "switchMode",
+    runtimeMethod: "switchMode",
+    binding: "switch-mode",
+    label: "Switch calculator mode",
+    lane: "local-ui",
+    reads: ["mode"],
+  });
+  app.intent.interaction("enter-token", {
+    sourceName: "enterToken",
+    runtimeMethod: "enterToken",
+    binding: "enter-token",
+    label: "Enter an arithmetic token",
+    lane: "local-arithmetic",
+    reads: ["arithmetic-expression"],
+  });
+  app.intent.interaction("clear-expression", {
+    sourceName: "clearExpression",
+    runtimeMethod: "clearExpression",
+    binding: "clear-expression",
+    label: "Clear the arithmetic expression",
+    lane: "local-arithmetic",
+    reads: ["arithmetic-expression"],
+  });
+  app.intent.interaction("evaluate-expression", {
+    sourceName: "evaluateExpression",
+    runtimeMethod: "evaluateExpression",
+    binding: "evaluate-expression",
+    label: "Evaluate a deterministic arithmetic expression",
+    lane: "local-arithmetic",
+    reads: ["arithmetic-expression"],
+  });
+  app.intent.interaction("draw-graph", {
+    sourceName: "drawGraph",
+    runtimeMethod: "drawGraph",
+    binding: "draw-graph",
+    label: "Draw a deterministic graph",
+    lane: "local-graph",
+    reads: ["graph-expression", "graph-range"],
+  });
+  app.intent.interaction("reset-graph", {
+    sourceName: "resetGraph",
+    runtimeMethod: "resetGraph",
+    binding: "reset-graph",
+    label: "Reset graph ranges",
+    lane: "local-graph",
+    reads: ["graph-range"],
+  });
+
+  app.intent.capabilityRequest("ask-model-for-expression", modelAssistance, {
+    sourceName: "askModelForExpression",
+    runtimeMethod: "askModelForExpression",
+    binding: "ask-model-expression",
+    label: "Ask a model for an arithmetic expression",
+    lane: "model-arithmetic",
+    reads: ["arithmetic-expression"],
+  });
+  app.intent.capabilityRequest("ask-model-for-graph-expression", modelAssistance, {
+    sourceName: "askModelForGraphExpression",
+    runtimeMethod: "askModelForGraphExpression",
+    binding: "ask-model-graph-expression",
+    label: "Ask a model for a graph expression",
+    lane: "model-graph",
+    reads: ["graph-expression"],
+  });
+  app.intent.capabilityRequest("ask-model-for-mathics-expression", modelAssistance, {
+    sourceName: "askModelForMathicsExpression",
+    runtimeMethod: "askModelForMathicsExpression",
+    binding: "ask-model-mathics-expression",
+    label: "Ask a model for a Mathics expression",
+    lane: "model-mathics",
+    reads: ["mathics-expression"],
+  });
+  app.intent.capabilityRequest("evaluate-mathics", mathics, {
+    sourceName: "evaluateMathics",
+    runtimeMethod: "evaluateMathics",
+    binding: "evaluate-mathics",
+    label: "Evaluate a symbolic Mathics expression",
+    lane: "mathics",
+    reads: ["mathics-expression"],
+  });
+  app.intent.capabilityRequest("ask-result-question", resultQa, {
+    sourceName: "askResultQuestion",
+    runtimeMethod: "askResultQuestion",
+    binding: "ask-result-question",
+    label: "Ask a contextual result question",
+    lane: "model-result-qa",
+    reads: ["result-context"],
+  });
+
+  app.layout.zones(["mode", "arithmetic", "graph", "mathics", "result-qa", "chat"]);
+  app.proof.semanticRuntimeProven();
 }
 
 function buildApplicationIr() {
-  const capabilityIntents = INTENT_DEFINITIONS.filter((intent) => intent.capability);
-  const surfaceNodes = INTENT_DEFINITIONS.map(surfaceNode);
-
-  return {
-    schema: "mcel.application-ir.v1",
-    application: {
-      id: `app:${APP_ID}`,
-      kind: "application",
-      appId: APP_ID,
-      semanticVersion: "1",
-      title: TITLE,
-      targetTruthStatus: TARGET_TRUTH_STATUS,
-      authoringStatus: "dsl-authoritative",
-    },
-    models: [],
-    states: STATE_FIELDS.map(stateRecord),
-    derivations: [],
-    intents: INTENT_DEFINITIONS.map(intentRecord),
-    capabilities: CAPABILITY_LANES.map(capabilityRecord),
-    effects: capabilityIntents.map(effectRecord),
-    surfaces: [
-      {
-        id: appRef("surface", "workspace"),
-        kind: "surface",
-        sourceName: "CalculatorSurface",
-        route: HOST_SURFACE.route,
-        root: HOST_SURFACE.root,
-        presentationAuthority: HOST_SURFACE.presentationAuthority,
-        nodes: surfaceNodes,
-      },
-    ],
-    layouts: [
-      {
-        id: appRef("layout", "workspace"),
-        kind: "layout",
-        surface: ref("surface", "workspace"),
-        zones: LAYOUT_ZONES,
-        orderedChildren: INTENT_DEFINITIONS.map((intent) => ref("surface-node", intent.name)),
-      },
-    ],
-    scenarios: INTENT_DEFINITIONS.map(scenarioRecord),
-    proof: {
-      invariants: [],
-      requiredAuthorities: ["visible-surface", "operation-receipt", "capability-response"],
-      targetTruthStatus: TARGET_TRUTH_STATUS,
-    },
-    migration: {
-      state: "dsl-authoritative",
-      sourceFamily: "official-vanilla-javascript-dsl",
-      knownGaps: [],
-    },
-    provenance: {
-      frontend: {id: "mcel.dsl.v1", version: "1", sourceFiles: []},
-      nodeBindings: [],
-    },
-  };
+  const app = createCalculatorApplication({
+    id: APP_ID,
+    title: TITLE,
+    semanticVersion: "1",
+    targetTruthStatus: TARGET_TRUTH_STATUS,
+  });
+  declareCalculator(app);
+  return app.toIr();
 }
 
 module.exports = mcel.defineApp(

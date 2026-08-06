@@ -78,6 +78,7 @@
     characterUnsubscribe: null,
     running: false,
     recoveryInProgress: false,
+    lastAutomaticRecovery: null,
     lastError: "",
     lastHardKickoff: null,
     recoveredCharacterRuntime: null,
@@ -715,7 +716,7 @@
         detail: protection
           ? "Six hostile boarders are spread across the bridge and aft breach. Eliminate every marked hostile."
           : stageStatus(view),
-        button: protection ? "Respawn visible encounter" : "Refresh Pax status"
+        button: protection ? "Respawn visible encounter" : "Restart boarding encounter"
       };
     }
     if (state.status === "resolved") {
@@ -750,6 +751,62 @@
       ui.hardStartButton.hidden = stringValue(view?.state?.status) === "resolved";
     }
     return presentation;
+  }
+
+  function resetPaxProtectionEncounter(reason = "pax-protection-reset", options = {}) {
+    const runtime = currentRuntime();
+    const clock = nowMs(options);
+    if (!runtime?.resetProtectionEncounter) {
+      return {
+        reset: false,
+        forced: false,
+        reason: "scenario-reset-unavailable"
+      };
+    }
+
+    /*
+     * Revive the characters while the scenario is still outside the protection
+     * stage. Character-runtime subscriptions may synchronously call
+     * syncProtection(); keeping the old stage until all boarders are alive
+     * prevents that callback from immediately completing the freshly reset
+     * encounter.
+     */
+    uiState.lastHardKickoff = null;
+    const forced = forcePaxCharacterStates(reason, {nowMs: clock});
+    if (!forced?.forced) {
+      return {
+        reset: false,
+        forced: false,
+        reason: "character-reset-failed",
+        forceResult: forced
+      };
+    }
+
+    const scenarioReset = runtime.resetProtectionEncounter(SCENARIO_ID, {
+      nowMs: clock,
+      source: stringValue(reason || "pax-protection-reset")
+    });
+    if (!scenarioReset?.reset) {
+      return {
+        reset: false,
+        forced: true,
+        reason: scenarioReset?.reason || "scenario-reset-failed",
+        forceResult: forced,
+        scenarioResult: scenarioReset
+      };
+    }
+
+    uiState.recoveredCharacterRuntime = currentCharacterRuntime();
+    revealArrivalPanel();
+    render();
+    return {
+      reset: true,
+      forced: true,
+      reason: stringValue(reason || "pax-protection-reset"),
+      forceResult: forced,
+      scenarioResult: scenarioReset,
+      view: scenarioReset.view
+    };
   }
 
   function startOrRecoverPax(reason = "pax-hard-kickoff", options = {}) {
@@ -787,6 +844,18 @@
         reason: "pax-not-visible"
       };
     }
+    if (before.state?.status === "active"
+        && before.state.stageId !== PROTECTION_STAGE_ID
+        && options.restartProtectionEncounter === true) {
+      const reset = resetPaxProtectionEncounter(reason, {nowMs: clock});
+      return {
+        handled: true,
+        started: false,
+        reused: false,
+        ...reset
+      };
+    }
+
     let result = {
       handled: true,
       started: false,
@@ -1046,63 +1115,211 @@
     }
   }
 
+  function classifyBoarderGroup(characterRuntime = currentCharacterRuntime()) {
+    if (!characterRuntime?.snapshot) {
+      return {
+        status: "unavailable",
+        total: BOARDER_IDS.length,
+        activeCount: 0,
+        defeatedCount: 0,
+        missingCount: BOARDER_IDS.length,
+        boarders: []
+      };
+    }
+
+    const snapshot = characterRuntime.snapshot() || {};
+    const characters = objectValue(snapshot.characters);
+    const boarders = BOARDER_IDS.map((characterId) => {
+      const character = characters[characterId] || null;
+      const active = Boolean(character
+        && character.status === "active"
+        && Number(character.health) > 0);
+      const defeated = Boolean(character
+        && (character.status === "down" || Number(character.health) <= 0));
+      return {
+        id: characterId,
+        character,
+        active,
+        defeated,
+        missing: !character
+      };
+    });
+    const activeCount = boarders.filter((entry) => entry.active).length;
+    const defeatedCount = boarders.filter((entry) => entry.defeated).length;
+    const missingCount = boarders.filter((entry) => entry.missing).length;
+
+    let status = "mixed";
+    if (missingCount === BOARDER_IDS.length) status = "missing";
+    else if (activeCount === BOARDER_IDS.length) status = "active";
+    else if (defeatedCount === BOARDER_IDS.length) status = "defeated";
+
+    return {
+      status,
+      total: BOARDER_IDS.length,
+      activeCount,
+      defeatedCount,
+      missingCount,
+      boarders
+    };
+  }
+
+  function classifyPaxProtectionState(options = {}) {
+    const scenarioRuntime = options.scenarioRuntime
+      || uiState.runtime
+      || global.MainComputerSystemScenarioRuntime?.current?.()
+      || null;
+    const characterRuntime = options.characterRuntime
+      || currentCharacterRuntime();
+    const view = scenarioRuntime?.view?.(SCENARIO_ID) || null;
+    const boarderGroup = classifyBoarderGroup(characterRuntime);
+
+    let status = "unavailable";
+    let recovery = "none";
+    if (!view?.visible || view.state?.status !== "active") {
+      status = "scenario-inactive";
+    } else if (boarderGroup.status === "unavailable") {
+      status = "character-runtime-unavailable";
+    } else if (view.state?.stageId === PROTECTION_STAGE_ID) {
+      if (boarderGroup.status === "active") status = "consistent-active";
+      else if (boarderGroup.status === "defeated") {
+        status = "recoverable-protection-defeated";
+        recovery = "revive-boarders";
+      } else {
+        status = "invalid-protection-boarders";
+      }
+    } else if (view.state?.stageId === "investigation") {
+      if (boarderGroup.status === "active") {
+        status = "recoverable-investigation-active";
+        recovery = "restart-encounter";
+      } else if (boarderGroup.status === "defeated") {
+        status = "recoverable-investigation-defeated";
+        recovery = "restart-encounter";
+      } else {
+        status = "invalid-investigation-boarders";
+      }
+    } else {
+      status = "outside-protection";
+    }
+
+    return {
+      status,
+      recovery,
+      scenarioRuntime,
+      characterRuntime,
+      view,
+      stageId: view?.state?.stageId || "",
+      boarderGroup
+    };
+  }
+
+  function reconcilePaxProtectionState(
+    reason = "automatic-inconsistent-encounter-recovery",
+    options = {}
+  ) {
+    if (uiState.recoveryInProgress) {
+      return {recovered: false, reason: "recovery-in-progress"};
+    }
+
+    const classification = classifyPaxProtectionState(options);
+    const recoverDefeated = options.recoverDefeated === true;
+    const shouldRecover = classification.recovery !== "none"
+      && (classification.boarderGroup.status === "active" || recoverDefeated);
+
+    if (!shouldRecover) {
+      return {
+        recovered: false,
+        reason: classification.status,
+        classification
+      };
+    }
+
+    uiState.recoveryInProgress = true;
+    try {
+      let result;
+      if (classification.recovery === "revive-boarders") {
+        uiState.lastHardKickoff = null;
+        result = forcePaxCharacterStates(reason, {nowMs: nowMs(options)});
+      } else {
+        result = resetPaxProtectionEncounter(reason, {nowMs: nowMs(options)});
+      }
+
+      const recovered = classification.recovery === "revive-boarders"
+        ? Boolean(result?.forced)
+        : Boolean(result?.reset);
+      uiState.lastAutomaticRecovery = {
+        reason: stringValue(reason),
+        recovered,
+        atMs: nowMs(options),
+        classification: classification.status,
+        result
+      };
+      if (recovered && options.markCharacterRuntime !== false) {
+        uiState.recoveredCharacterRuntime = classification.characterRuntime;
+      }
+      return {
+        recovered,
+        reason: recovered
+          ? classification.status
+          : result?.reason || "automatic-recovery-failed",
+        classification,
+        result
+      };
+    } finally {
+      uiState.recoveryInProgress = false;
+    }
+  }
+
+  function recoverActiveBoardersOutsideProtection(reason = "automatic-inconsistent-encounter-recovery") {
+    return reconcilePaxProtectionState(reason, {
+      recoverDefeated: false
+    });
+  }
+
   function setRuntime(runtime) {
     if (uiState.unsubscribe) uiState.unsubscribe();
     uiState.runtime = runtime || null;
-    uiState.unsubscribe = runtime?.subscribe?.(() => render()) || null;
+    uiState.unsubscribe = runtime?.subscribe?.(() => {
+      reconcilePaxProtectionState("scenario-state-inconsistent-recovery", {
+        recoverDefeated: false
+      });
+      render();
+    }) || null;
+    reconcilePaxProtectionState("scenario-runtime-attach-inconsistent-recovery", {
+      recoverDefeated: true
+    });
     render();
     return uiState.runtime;
-  }
-
-
-  function recoverDefeatedProtectionBoardersOnAttach(runtime) {
-    if (!runtime || uiState.recoveredCharacterRuntime === runtime) {
-      return {recovered: false, reason: "already-checked"};
-    }
-    uiState.recoveredCharacterRuntime = runtime;
-
-    const scenarioRuntime = uiState.runtime
-      || global.MainComputerSystemScenarioRuntime?.current?.()
-      || null;
-    const view = scenarioRuntime?.view?.(SCENARIO_ID) || null;
-    if (!view?.visible
-        || view.state?.status !== "active"
-        || view.state?.stageId !== PROTECTION_STAGE_ID) {
-      return {recovered: false, reason: "protection-not-active"};
-    }
-
-    const snapshot = runtime.snapshot?.() || {};
-    const characters = objectValue(snapshot.characters);
-    const boarders = BOARDER_IDS.map((characterId) => characters[characterId] || null);
-    const allPersistedDown = boarders.length === BOARDER_IDS.length
-      && boarders.every((character) => character
-        && (character.status === "down" || Number(character.health) <= 0));
-
-    if (!allPersistedDown) {
-      return {recovered: false, reason: "boarders-not-all-down"};
-    }
-
-    uiState.lastHardKickoff = null;
-    const result = forcePaxCharacterStates(
-      "character-runtime-attach-defeated-boarder-recovery",
-      {nowMs: nowMs({})}
-    );
-    return {
-      recovered: Boolean(result?.forced),
-      reason: result?.forced ? "persisted-defeated-boarders-reset" : "force-failed",
-      result
-    };
   }
 
   function setCharacterRuntime(runtime) {
     if (uiState.characterUnsubscribe) uiState.characterUnsubscribe();
     uiState.characterRuntime = runtime || null;
-    const recovery = recoverDefeatedProtectionBoardersOnAttach(runtime);
+
+    let recovery = {recovered: false, reason: "already-checked"};
+    if (runtime && uiState.recoveredCharacterRuntime !== runtime) {
+      recovery = reconcilePaxProtectionState(
+        "character-runtime-attach-encounter-reconciliation",
+        {
+          characterRuntime: runtime,
+          recoverDefeated: true
+        }
+      );
+      /*
+       * A failed reconciliation must not mark this character runtime as
+       * checked. The scenario runtime may not be attached yet, and a later
+       * scenario attach is allowed to recover defeated persisted boarders.
+       */
+    }
+
     uiState.characterUnsubscribe = runtime?.subscribe?.(() => {
       syncProtection();
+      reconcilePaxProtectionState("character-state-inconsistent-recovery", {
+        recoverDefeated: false
+      });
       render();
     }) || null;
     render();
+
     if (recovery.recovered && typeof global.CustomEvent === "function") {
       global.dispatchEvent?.(new global.CustomEvent("main-computer-pax-boarders-recovered", {
         detail: recovery
@@ -1117,10 +1334,18 @@
     if (!ui.root) return;
     uiState.bound = true;
     ui.briefingAck?.addEventListener("click", () => acknowledgeBriefing());
-    ui.hardStartButton?.addEventListener("click", () => startOrRecoverPax(
-      "player-hard-start-button",
-      {allowSystemChange: true}
-    ));
+    ui.hardStartButton?.addEventListener("click", () => {
+      const runtime = currentRuntime();
+      const view = runtime?.view?.(SCENARIO_ID) || null;
+      return startOrRecoverPax(
+        "player-hard-start-button",
+        {
+          allowSystemChange: true,
+          restartProtectionEncounter: view?.state?.status === "active"
+            && view.state.stageId !== PROTECTION_STAGE_ID
+        }
+      );
+    });
     ui.proceed?.addEventListener("click", () => runUi(() => (
       uiState.runtime.proceedToConference(SCENARIO_ID, {
         nowMs: performance.now()
@@ -1162,6 +1387,11 @@
     hardStartPresentation,
     setWorldSnapshot,
     forcePaxCharacterStates,
+    resetPaxProtectionEncounter,
+    classifyBoarderGroup,
+    classifyPaxProtectionState,
+    reconcilePaxProtectionState,
+    recoverActiveBoardersOutsideProtection,
     startOrRecoverPax,
     hardKickoffPositions: HARD_KICKOFF_POSITIONS,
     boarderIds: BOARDER_IDS,

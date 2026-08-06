@@ -95,23 +95,31 @@ def test_authoritative_package_is_published_only_as_host_bound_calculator_runtim
 def test_calculator_core_and_capability_bridge_include_precede_runtime_include_and_legacy_layers_are_removed() -> None:
     shell = (ROOT / "main_computer/web/applications.html").read_text(encoding="utf-8")
     core = "<!-- @include applications/scripts/calculator-core.js -->"
+    view_model = "<!-- @include applications/scripts/calculator-view-model.js -->"
     capabilities = "<!-- @include applications/scripts/calculator-capabilities.js -->"
     runtime = "<!-- @include applications/scripts/calculator.js -->"
     assert core in shell
+    assert view_model in shell
     assert capabilities in shell
     assert runtime in shell
-    assert shell.index(core) < shell.index(capabilities) < shell.index(runtime)
+    assert shell.index(core) < shell.index(view_model) < shell.index(capabilities) < shell.index(runtime)
     assert "calculator-semantic-adapter.js" not in shell
     assert "mcel-calculator-surface.js" not in shell
 
 
-def test_calculator_authoritative_dsl_source_is_structured_not_a_portable_ir_snapshot() -> None:
+def test_calculator_authoritative_dsl_source_reads_as_fluent_app_declaration() -> None:
     source = (PACKAGE / "application.js").read_text(encoding="utf-8")
 
     assert "const portableApplication =" not in source
     assert "Shadow Calculator authority" not in source
-    assert "STATE_FIELDS" in source
-    assert "CAPABILITY_LANES" in source
-    assert "INTENT_DEFINITIONS" in source
-    assert "buildApplicationIr()" in source
+    assert "STATE_FIELDS" not in source
+    assert "CAPABILITY_LANES" not in source
+    assert "INTENT_DEFINITIONS" not in source
+    assert "declareCalculator(app)" in source
+    assert "app.presentation.hostBound(" in source
+    assert "app.state.rendererLocal(" in source
+    assert "app.capability" in source
+    assert "app.intent.interaction(" in source
+    assert "app.intent.capabilityRequest(" in source
+    assert "app.proof.semanticRuntimeProven()" in source
     assert len(source.splitlines()) < 500
