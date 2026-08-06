@@ -316,6 +316,7 @@
           sourceHints: Object.freeze([
             "main_computer/web/applications/apps/calculator.html",
             "main_computer/web/applications/scripts/calculator-core.js",
+            "main_computer/web/applications/scripts/calculator-capabilities.js",
             "main_computer/web/applications/scripts/calculator.js",
             "main_computer/web/applications/styles/calculator.css"
           ]),

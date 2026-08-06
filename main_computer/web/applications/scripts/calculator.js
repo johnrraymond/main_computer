@@ -6,6 +6,14 @@
       return core;
     }
 
+    function requireCalculatorCapabilities() {
+      const capabilities = window.MainComputerCalculatorCapabilities;
+      if (!capabilities) {
+        throw new Error("Calculator capability bridge is unavailable; reload the Applications viewport");
+      }
+      return capabilities;
+    }
+
     function normalizeCalculatorExpression(value) {
       return requireCalculatorCore().normalizeCalculatorExpression(value);
     }
@@ -317,23 +325,7 @@
       calculatorAskModel.disabled = true;
       calculatorModelStatus.textContent = "asking model";
       try {
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            prompt: [
-              "Translate this calculator word problem into one plain expression.",
-              "For normal arithmetic, return only a basic arithmetic expression using digits, parentheses, decimal points, +, -, *, /, and %.",
-              "Only return a graph expression using x when the user clearly asks for a graph or f(x).",
-              "Do not solve or explain in prose.",
-              `Problem: ${problem}`
-            ].join("\n")
-          })
-        });
-        if (!response.ok) {
-          throw new Error(`model returned ${response.status}`);
-        }
-        const data = await response.json();
+        const data = await requireCalculatorCapabilities().askArithmeticModel(problem);
         const expression = extractCalculatorExpression(data.content || "");
         if (!expression) {
           throw new Error("no expression returned");
@@ -368,15 +360,7 @@
       calculatorMathicsAskModel.disabled = true;
       calculatorMathicsModelStatus.textContent = "asking model";
       try {
-        const response = await fetch("/api/applications/calculator/mathics/ask", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({prompt})
-        });
-        const data = await response.json();
-        if (!response.ok || data.ok === false) {
-          throw new Error(data.error || `model returned ${response.status}`);
-        }
+        const data = await requireCalculatorCapabilities().askMathicsModel(prompt);
         calculatorMathicsExpression.value = data.expression || "";
         calculatorMathicsModelStatus.textContent = `mathics expression: ${data.expression || ""}`;
         calculatorMathicsExpression.focus();
@@ -399,22 +383,13 @@
       calculatorMathicsEvaluationStatus.textContent = "evaluating Mathics expression";
       setCalculatorMathicsOutput("Evaluating...", "ready");
       try {
-        const response = await fetch("/api/applications/calculator/mathics/evaluate", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({expression})
-        });
-        const data = await response.json();
-        if (!response.ok || data.ok === false) {
-          const detail = data.detail ? ` ${data.detail}` : "";
-          throw new Error(`${data.error || `Mathics returned ${response.status}`}${detail}`);
-        }
+        const data = await requireCalculatorCapabilities().evaluateMathics(expression);
         calculatorMathicsEvaluationStatus.textContent = "Mathics result ready";
-        setCalculatorMathicsOutput(data.result_text || "(no result)", "ready");
+        setCalculatorMathicsOutput(data.output || "(no result)", "ready");
         return {
           ok: true,
           expression,
-          output: data.result_text || "(no result)",
+          output: data.output || "(no result)",
           statusText: "ready"
         };
       } catch (error) {
@@ -470,15 +445,7 @@
       calculatorQaStatus.textContent = "asking model about results";
       setCalculatorQaAnswer("Asking about the current calculator context...", "ready");
       try {
-        const response = await fetch("/api/applications/calculator/qa", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({question, context: calculatorQaContext()})
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.ok === false) {
-          throw new Error(data.error || `calculator Q&A returned ${response.status}`);
-        }
+        const data = await requireCalculatorCapabilities().askResultQuestion(question, calculatorQaContext());
         calculatorQaStatus.textContent = "result Q&A answered";
         setCalculatorQaAnswer(data.answer || "(no answer returned)", "ready");
         return {
@@ -831,24 +798,7 @@
       calculatorScientificAskModel.disabled = true;
       calculatorScientificModelStatus.textContent = "asking model";
       try {
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            prompt: [
-              "Translate this graphing calculator request into one plain f(x) expression.",
-              "Return only the expression, with no prose.",
-              "Allowed tokens are x, digits, parentheses, commas, decimal points, +, -, *, /, %, ^, pi, e, sin, cos, tan, asin, acos, atan, sqrt, abs, log, ln, exp, floor, ceil, round, min, and max.",
-              "Preserve x as the variable. Do not convert x to multiplication.",
-              "Strip prefixes such as f(x)= or y= from your final answer.",
-              `Request: ${problem}`
-            ].join()
-          })
-        });
-        if (!response.ok) {
-          throw new Error(`model returned ${response.status}`);
-        }
-        const data = await response.json();
+        const data = await requireCalculatorCapabilities().askGraphModel(problem);
         const expression = extractCalculatorGraphExpression(data.content || "");
         if (!expression) {
           throw new Error("no graph expression returned");

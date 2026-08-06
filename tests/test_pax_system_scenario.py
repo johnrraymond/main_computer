@@ -900,6 +900,15 @@ class PaxSystemScenarioTests(unittest.TestCase):
             occupancy.index("const {bounds, colliders} = this.movement;"),
         )
 
+    def test_mother_ship_scene_renders_active_phaser_beam_before_return(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
+        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", build_dynamic)
+        mother_ship_return = source.index("return builder.toFloat32Array();", mother_ship_guard)
+        branch = source[mother_ship_guard:mother_ship_return]
+        self.assertIn("this.phaserBeam && nowMs <= this.phaserBeam.expiresAtMs", branch)
+        self.assertIn("builder.beam(this.phaserBeam.start, this.phaserBeam.end", branch)
+
     def test_shuttle_scene_does_not_render_scenario_characters_over_legacy_aliens(self) -> None:
         source = SCENE_VIEWER.read_text(encoding="utf-8")
         build_dynamic = source.index("buildDynamicGeometry(nowMs)")
@@ -920,22 +929,28 @@ class PaxSystemScenarioTests(unittest.TestCase):
             source,
         )
 
-    def test_mother_ship_phaser_beam_is_safe_and_does_not_replace_boarder_geometry(self) -> None:
-        source = SCENE_VIEWER.read_text(encoding="utf-8")
-        helper_start = source.index("appendPhaserBeamGeometry(builder, nowMs)")
-        helper_end = source.index("buildDynamicGeometry(nowMs)", helper_start)
-        helper = source[helper_start:helper_end]
-        self.assertIn("start.every(Number.isFinite)", helper)
-        self.assertIn("end.every(Number.isFinite)", helper)
-        self.assertIn("length < 0.05", helper)
 
-        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
-        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", build_dynamic)
-        mother_ship_return = source.index("return builder.toFloat32Array();", mother_ship_guard)
-        branch = source[mother_ship_guard:mother_ship_return]
-        beam_call = branch.index("this.appendPhaserBeamGeometry(builder, nowMs);")
-        character_call = branch.index("this.appendCharacterAIGeometry(builder, nowMs);")
-        self.assertLess(beam_call, character_call)
+    def test_mother_ship_phaser_bypasses_only_legacy_boarding_pause(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        pause_start = source.index("isWeaponFirePaused()")
+        pause_end = source.index("dockingCutsceneSnapshot", pause_start)
+        pause_method = source[pause_start:pause_end]
+        self.assertIn('this.characterAIPhase?.() === "mother-ship"', pause_method)
+        self.assertIn("this.isDockingCutsceneActive()", pause_method)
+        self.assertIn("this.isWarpTravelActive()", pause_method)
+        self.assertIn("return this.isBoardingPaused();", pause_method)
+
+        fire_start = source.index("firePhaser(nowMs")
+        fire_end = source.index("const {forward, right, up}", fire_start)
+        fire_guard = source[fire_start:fire_end]
+        self.assertIn("this.isWeaponFirePaused()", fire_guard)
+        self.assertNotIn("this.isBoardingPaused()", fire_guard)
+
+        update_start = source.index("updateCombat(nowMs")
+        update_end = source.index("this.combatClockMs = nowMs;", update_start)
+        update_guard = source[update_start:update_end]
+        self.assertIn("this.isBoardingPaused()", update_guard)
+        self.assertNotIn("this.isWeaponFirePaused()", update_guard)
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CALCULATOR_JS = ROOT / "main_computer" / "web" / "applications" / "scripts" / "calculator.js"
+CAPABILITIES_JS = ROOT / "main_computer" / "web" / "applications" / "scripts" / "calculator-capabilities.js"
 CALCULATOR_HTML = ROOT / "main_computer" / "web" / "applications" / "apps" / "calculator.html"
 CALCULATOR_ROUTES = ROOT / "main_computer" / "viewport_routes_calculator.py"
 
@@ -118,6 +119,7 @@ def test_calculator_basic_evaluate_and_graph_are_local_only() -> None:
 
 def test_calculator_model_and_mathics_actions_have_non_mutating_boundaries() -> None:
     source = CALCULATOR_JS.read_text(encoding="utf-8")
+    capabilities = CAPABILITIES_JS.read_text(encoding="utf-8")
     html = CALCULATOR_HTML.read_text(encoding="utf-8")
     routes = CALCULATOR_ROUTES.read_text(encoding="utf-8")
 
@@ -125,9 +127,14 @@ def test_calculator_model_and_mathics_actions_have_non_mutating_boundaries() -> 
     ask_mathics = _javascript_function(source, "askCalculatorMathicsModel")
     evaluate_mathics = _javascript_function(source, "evaluateCalculatorMathics")
 
-    assert 'fetch("/api/chat"' in ask_model
-    assert 'fetch("/api/applications/calculator/mathics/ask"' in ask_mathics
-    assert 'fetch("/api/applications/calculator/mathics/evaluate"' in evaluate_mathics
+    assert "requireCalculatorCapabilities().askArithmeticModel" in ask_model
+    assert "requireCalculatorCapabilities().askMathicsModel" in ask_mathics
+    assert "requireCalculatorCapabilities().evaluateMathics" in evaluate_mathics
+    assert "/api/chat" in capabilities
+    assert "/api/applications/calculator/mathics/ask" in capabilities
+    assert "/api/applications/calculator/mathics/evaluate" in capabilities
+    assert "/api/applications/calculator/qa" in capabilities
+    assert "fetch(" not in source
 
     forbidden_frontend_tokens = (
         "/api/applications/files",
@@ -139,7 +146,7 @@ def test_calculator_model_and_mathics_actions_have_non_mutating_boundaries() -> 
         "revision",
         "/terminal",
     )
-    for body in (ask_model, ask_mathics, evaluate_mathics):
+    for body in (ask_model, ask_mathics, evaluate_mathics, capabilities):
         lowered = body.lower()
         for token in forbidden_frontend_tokens:
             assert token not in lowered

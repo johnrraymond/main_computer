@@ -417,6 +417,7 @@ def _calculator_observation_html(repo: Path) -> str:
         web / "scripts/dom-bindings/calculator.js",
         web / "scripts/mcel-semantic-adapter-toolkit.js",
         web / "scripts/calculator-core.js",
+        web / "scripts/calculator-capabilities.js",
         web / "scripts/calculator.js",
     ]
     scripts = "\n".join(

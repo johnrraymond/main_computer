@@ -6952,6 +6952,16 @@
           );
         }
 
+        isWeaponFirePaused() {
+          if (this.characterAIPhase?.() === "mother-ship") {
+            return Boolean(
+              this.isDockingCutsceneActive()
+              || this.isWarpTravelActive()
+            );
+          }
+          return this.isBoardingPaused();
+        }
+
         dockingCutsceneSnapshot(nowMs = this.lastFrameTime ?? performance.now()) {
           const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
           const flight = this.flight || this.createFlightState();
@@ -8284,35 +8294,6 @@
           builder.beam(add(muzzle, [forward, -0.04]), add(muzzle, [forward, 0.035]), 0.072, accent);
         }
 
-        appendPhaserBeamGeometry(builder, nowMs) {
-          const beam = this.phaserBeam;
-          if (!beam || nowMs > beam.expiresAtMs) return;
-          const start = Array.isArray(beam.start) ? beam.start.map(Number) : [];
-          const end = Array.isArray(beam.end) ? beam.end.map(Number) : [];
-          if (
-            start.length !== 3
-            || end.length !== 3
-            || !start.every(Number.isFinite)
-            || !end.every(Number.isFinite)
-          ) return;
-          const delta = shuttle3dSubtract(end, start);
-          const length = Math.hypot(delta[0], delta[1], delta[2]);
-          if (!Number.isFinite(length) || length < 0.05) return;
-          const direction = delta.map((value) => value / length);
-          // Begin just beyond the weapon model so the first-person phaser does not
-          // depth-occlude its own shot inside the mother-ship bridge.
-          const visibleStart = [
-            start[0] + direction[0] * 0.28,
-            start[1] + direction[1] * 0.28,
-            start[2] + direction[2] * 0.28
-          ];
-          const outer = builder.color("#f59e0b", true);
-          const core = builder.color("#fff7d6", true);
-          builder.beam(visibleStart, end, 0.038, outer);
-          builder.beam(visibleStart, end, 0.012, core);
-          builder.ellipsoid(visibleStart, [0.075, 0.075, 0.075], 8, 4, core);
-        }
-
         buildDynamicGeometry(nowMs) {
           const annotationTargets = [];
           const builder = new Shuttle3dGeometryWriter({
@@ -8338,8 +8319,11 @@
             // alternate-scene branch. The previous combined docking guard returned first,
             // leaving live boarders in runtime state without any rendered entity geometry.
             this.appendPhaserViewModel(builder);
-            this.appendPhaserBeamGeometry(builder, nowMs);
             this.appendCharacterAIGeometry(builder, nowMs);
+            if (this.phaserBeam && nowMs <= this.phaserBeam.expiresAtMs) {
+              builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.025, builder.color("#f59e0b", true));
+              builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.009, builder.color("#fff7d6", true));
+            }
             this.dynamicAnnotationPrimitiveTargets = annotationTargets;
             this.refreshAnnotationPrimitiveTargets?.();
             return builder.toFloat32Array();
@@ -8381,7 +8365,10 @@
             }
           });
 
-          this.appendPhaserBeamGeometry(builder, nowMs);
+          if (this.phaserBeam && nowMs <= this.phaserBeam.expiresAtMs) {
+            builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.025, builder.color("#f59e0b", true));
+            builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.009, builder.color("#fff7d6", true));
+          }
           this.dynamicAnnotationPrimitiveTargets = annotationTargets;
           this.refreshAnnotationPrimitiveTargets?.();
           return builder.toFloat32Array();
@@ -8515,7 +8502,7 @@
         }
 
         firePhaser(nowMs = performance.now()) {
-          if (this.isBoardingPaused() || !this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return false;
+          if (this.isWeaponFirePaused() || !this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return false;
           this.combatClockMs = Math.max(this.combatClockMs, nowMs);
           if (nowMs - this.lastPhaserShotAt < this.combat.phaser.cooldownMs) return false;
           this.lastPhaserShotAt = nowMs;

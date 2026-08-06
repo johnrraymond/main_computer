@@ -92,13 +92,15 @@ def test_authoritative_package_is_published_only_as_host_bound_calculator_runtim
     assert browser_records[0]["runtimeProjection"]["mountMode"] == "host-bound"
 
 
-def test_calculator_core_include_precedes_runtime_include_and_legacy_layers_are_removed() -> None:
+def test_calculator_core_and_capability_bridge_include_precede_runtime_include_and_legacy_layers_are_removed() -> None:
     shell = (ROOT / "main_computer/web/applications.html").read_text(encoding="utf-8")
     core = "<!-- @include applications/scripts/calculator-core.js -->"
+    capabilities = "<!-- @include applications/scripts/calculator-capabilities.js -->"
     runtime = "<!-- @include applications/scripts/calculator.js -->"
     assert core in shell
+    assert capabilities in shell
     assert runtime in shell
-    assert shell.index(core) < shell.index(runtime)
+    assert shell.index(core) < shell.index(capabilities) < shell.index(runtime)
     assert "calculator-semantic-adapter.js" not in shell
     assert "mcel-calculator-surface.js" not in shell
 

@@ -6,13 +6,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 
 
-def test_calculator_core_loads_before_runtime_in_viewport_source() -> None:
+def test_calculator_core_and_capability_bridge_load_before_runtime_in_viewport_source() -> None:
     shell = (REPO / "main_computer/web/applications.html").read_text(encoding="utf-8")
     core = "<!-- @include applications/scripts/calculator-core.js -->"
+    capabilities = "<!-- @include applications/scripts/calculator-capabilities.js -->"
     runtime = "<!-- @include applications/scripts/calculator.js -->"
     assert core in shell
+    assert capabilities in shell
     assert runtime in shell
-    assert shell.index(core) < shell.index(runtime)
+    assert shell.index(core) < shell.index(capabilities) < shell.index(runtime)
 
 
 def test_calculator_host_document_and_runtime_facade_remain_stable() -> None:
@@ -20,6 +22,8 @@ def test_calculator_host_document_and_runtime_facade_remain_stable() -> None:
     runtime = (REPO / "main_computer/web/applications/scripts/calculator.js").read_text(encoding="utf-8")
     assert 'id="calculator-app"' in html
     assert "window.MainComputerCalculatorRuntime" in runtime
+    assert "window.MainComputerCalculatorCapabilities" in runtime
+    assert "fetch(" not in runtime
 
 
 def test_calculator_host_bound_runtime_loads_after_virtual_catalog() -> None:
