@@ -13,6 +13,7 @@
 
   const ARITHMETIC_GRAMMAR = "calculator-arithmetic-expression-v1";
   const GRAPH_GRAMMAR = "calculator-graph-expression-v1";
+  const UNIT_GRAMMAR = "calculator-unit-expression-v1";
   const MAX_EXPRESSION_LENGTH = 4096;
   const MAX_TOKEN_COUNT = 1024;
   const MAX_PARSE_DEPTH = 64;
@@ -69,14 +70,407 @@
     max: Object.freeze({min: 1, max: Number.POSITIVE_INFINITY})
   });
 
+  const calculatorUnitDefinitions = Object.freeze({
+    mm: Object.freeze({dimension: "length", factor: 0.001, canonical: "m"}),
+    cm: Object.freeze({dimension: "length", factor: 0.01, canonical: "m"}),
+    m: Object.freeze({dimension: "length", factor: 1, canonical: "m"}),
+    km: Object.freeze({dimension: "length", factor: 1000, canonical: "m"}),
+    ms: Object.freeze({dimension: "time", factor: 0.001, canonical: "s"}),
+    s: Object.freeze({dimension: "time", factor: 1, canonical: "s"}),
+    min: Object.freeze({dimension: "time", factor: 60, canonical: "s"}),
+    h: Object.freeze({dimension: "time", factor: 3600, canonical: "s"})
+  });
+
+  const calculatorUnitPattern = Object.freeze(
+    Object.keys(calculatorUnitDefinitions).sort((left, right) => right.length - left.length)
+  );
+
   function expressionText(value) {
     return String(value == null ? "" : value);
   }
 
   function normalizeCalculatorExpression(value) {
-    return expressionText(value)
-      .replace(/[xX]/g, "*")
-      .replace(/[^\d+\-*/%.() ]/g, "");
+    const expression = expressionText(value).replace(/[xX]/g, "*");
+    if (calculatorUnitExpressionLooksUnitAware(expression)) {
+      return expression.replace(/[^\d+\-*/%.() A-Za-z]/g, "");
+    }
+    return expression.replace(/[^\d+\-*/%.() ]/g, "");
+  }
+
+  function normalizeCalculatorUnitSymbol(unit) {
+    return expressionText(unit).trim().toLowerCase();
+  }
+
+  function formatCalculatorNumber(value) {
+    if (!Number.isFinite(value)) return String(value);
+    const rounded = Math.round((value + Number.EPSILON) * 1e12) / 1e12;
+    return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, "");
+  }
+
+  function calculatorUnitExpressionLooksUnitAware(rawExpression) {
+    const expression = expressionText(rawExpression);
+    if (!/[A-Za-z]/.test(expression)) return false;
+    return new RegExp(`(^|[^A-Za-z])(?:${calculatorUnitPattern.join("|")})(?=$|[^A-Za-z])`, "i").test(expression);
+  }
+
+  function tokenizeCalculatorUnitExpression(rawExpression) {
+    const expression = expressionText(rawExpression).trim();
+    const tokens = [];
+    let index = 0;
+    while (index < expression.length) {
+      const char = expression[index];
+      if (/\s/.test(char)) {
+        index += 1;
+        continue;
+      }
+      const numeric = expression.slice(index).match(/^(?:\d+(?:\.\d*)?|\.\d+)/);
+      if (numeric) {
+        tokens.push(Object.freeze({
+          type: "number",
+          value: Number(numeric[0]),
+          raw: numeric[0],
+          position: index
+        }));
+        index += numeric[0].length;
+        continue;
+      }
+      const unit = expression.slice(index).match(/^[A-Za-z]+/);
+      if (unit) {
+        const symbol = normalizeCalculatorUnitSymbol(unit[0]);
+        const definition = calculatorUnitDefinitions[symbol];
+        if (!definition) {
+          throw new CalculatorExpressionError(
+            "unit-unsupported",
+            `unsupported unit: ${unit[0]}`,
+            index
+          );
+        }
+        tokens.push(Object.freeze({
+          type: "unit",
+          value: symbol,
+          raw: unit[0],
+          definition,
+          position: index
+        }));
+        index += unit[0].length;
+        continue;
+      }
+      if ("+-*/()".includes(char)) {
+        tokens.push(Object.freeze({type: char, value: char, raw: char, position: index}));
+        index += 1;
+        continue;
+      }
+      throw new CalculatorExpressionError("unit-token-invalid", `unsupported token: ${char}`, index);
+    }
+    return Object.freeze(tokens);
+  }
+
+  function calculatorUnitScalar(value) {
+    return Object.freeze({
+      kind: "scalar",
+      value,
+      displayValue: formatCalculatorNumber(value)
+    });
+  }
+
+  function calculatorUnitQuantity(canonicalValue, unit, dimension, factor, statusText = "unit quantity ready") {
+    const value = canonicalValue / factor;
+    const definition = calculatorUnitDefinitions[unit];
+    return Object.freeze({
+      kind: "unit",
+      dimension,
+      unit,
+      canonicalUnit: definition ? definition.canonical : unit,
+      canonicalValue,
+      factor,
+      value,
+      displayValue: `${formatCalculatorNumber(value)} ${unit}`,
+      statusText
+    });
+  }
+
+  function calculatorUnitQuantityFromToken(numberToken, unitToken) {
+    const numericValue = Number(numberToken.value);
+    const definition = unitToken.definition;
+    if (!Number.isFinite(numericValue)) {
+      throw new CalculatorExpressionError("unit-number-invalid", "unit quantity is not finite", numberToken.position);
+    }
+    return calculatorUnitQuantity(
+      numericValue * definition.factor,
+      unitToken.value,
+      definition.dimension,
+      definition.factor
+    );
+  }
+
+  function calculatorUnitOperatorPosition(operatorToken) {
+    return operatorToken && Number.isInteger(operatorToken.position) ? operatorToken.position : -1;
+  }
+
+  function calculatorUnitDimensionMismatch(left, right, operatorToken) {
+    throw new CalculatorExpressionError(
+      "unit-dimension-mismatch",
+      `cannot combine ${left.dimension || "scalar"} and ${right.dimension || "scalar"} units`,
+      calculatorUnitOperatorPosition(operatorToken)
+    );
+  }
+
+  function calculatorUnitScalarMismatch(operatorToken) {
+    throw new CalculatorExpressionError(
+      "unit-scalar-mismatch",
+      "cannot combine unit and scalar values",
+      calculatorUnitOperatorPosition(operatorToken)
+    );
+  }
+
+  function calculatorUnitAdd(left, right, operatorToken) {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      return calculatorUnitScalar(
+        operatorToken.type === "-" ? left.value - right.value : left.value + right.value
+      );
+    }
+    if (left.kind !== "unit" || right.kind !== "unit") {
+      calculatorUnitScalarMismatch(operatorToken);
+    }
+    if (left.dimension !== right.dimension) {
+      calculatorUnitDimensionMismatch(left, right, operatorToken);
+    }
+    const canonicalValue = operatorToken.type === "-"
+      ? left.canonicalValue - right.canonicalValue
+      : left.canonicalValue + right.canonicalValue;
+    const statusText = left.unit === right.unit ? "unit arithmetic complete" : "units normalized";
+    return calculatorUnitQuantity(canonicalValue, left.unit, left.dimension, left.factor, statusText);
+  }
+
+  function calculatorUnitMultiply(left, right, operatorToken) {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      return calculatorUnitScalar(left.value * right.value);
+    }
+    if (left.kind === "unit" && right.kind === "scalar") {
+      return calculatorUnitQuantity(
+        left.canonicalValue * right.value,
+        left.unit,
+        left.dimension,
+        left.factor,
+        "unit scalar arithmetic complete"
+      );
+    }
+    if (left.kind === "scalar" && right.kind === "unit") {
+      return calculatorUnitQuantity(
+        right.canonicalValue * left.value,
+        right.unit,
+        right.dimension,
+        right.factor,
+        "unit scalar arithmetic complete"
+      );
+    }
+    throw new CalculatorExpressionError(
+      "compound-unit-unsupported",
+      "compound unit multiplication is not supported",
+      calculatorUnitOperatorPosition(operatorToken)
+    );
+  }
+
+  function calculatorUnitDivide(left, right, operatorToken) {
+    const divisor = right.kind === "unit" ? right.canonicalValue : right.value;
+    if (divisor === 0) {
+      throw new CalculatorExpressionError("division-by-zero", "cannot divide by zero", calculatorUnitOperatorPosition(operatorToken));
+    }
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      return calculatorUnitScalar(left.value / right.value);
+    }
+    if (left.kind === "unit" && right.kind === "scalar") {
+      return calculatorUnitQuantity(
+        left.canonicalValue / right.value,
+        left.unit,
+        left.dimension,
+        left.factor,
+        "unit scalar arithmetic complete"
+      );
+    }
+    if (left.kind === "unit" && right.kind === "unit") {
+      if (left.dimension !== right.dimension) {
+        throw new CalculatorExpressionError(
+          "compound-unit-unsupported",
+          "compound unit division is not supported",
+          calculatorUnitOperatorPosition(operatorToken)
+        );
+      }
+      return Object.freeze(Object.assign({}, calculatorUnitScalar(left.canonicalValue / right.canonicalValue), {
+        statusText: "unit ratio complete"
+      }));
+    }
+    throw new CalculatorExpressionError(
+      "reciprocal-unit-unsupported",
+      "reciprocal units are not supported",
+      calculatorUnitOperatorPosition(operatorToken)
+    );
+  }
+
+  function parseCalculatorUnitValue(tokens) {
+    let cursor = 0;
+
+    function peek() {
+      return tokens[cursor] || null;
+    }
+
+    function consume(type = null) {
+      const token = peek();
+      if (!token || (type && token.type !== type)) return null;
+      cursor += 1;
+      return token;
+    }
+
+    function parsePrimary() {
+      const token = peek();
+      if (!token) {
+        throw new CalculatorExpressionError("unit-expression-incomplete", "unit expression is incomplete", -1);
+      }
+      if (consume("(")) {
+        const value = parseAdditive();
+        if (!consume(")")) {
+          throw new CalculatorExpressionError("unit-paren-unclosed", "missing closing parenthesis", token.position);
+        }
+        return value;
+      }
+      const numberToken = consume("number");
+      if (numberToken) {
+        const unitToken = consume("unit");
+        if (unitToken) {
+          return calculatorUnitQuantityFromToken(numberToken, unitToken);
+        }
+        return calculatorUnitScalar(numberToken.value);
+      }
+      if (token.type === "unit") {
+        throw new CalculatorExpressionError("unit-quantity-invalid", "expected a number before the unit", token.position);
+      }
+      throw new CalculatorExpressionError("unit-expression-invalid", "expected a number or grouped unit expression", token.position);
+    }
+
+    function parseUnary() {
+      const operator = peek();
+      if (operator && (operator.type === "+" || operator.type === "-")) {
+        consume(operator.type);
+        const value = parseUnary();
+        if (operator.type === "+") return value;
+        if (value.kind === "unit") {
+          return calculatorUnitQuantity(
+            -value.canonicalValue,
+            value.unit,
+            value.dimension,
+            value.factor,
+            value.statusText
+          );
+        }
+        return calculatorUnitScalar(-value.value);
+      }
+      return parsePrimary();
+    }
+
+    function parseMultiplicative() {
+      let value = parseUnary();
+      while (peek() && (peek().type === "*" || peek().type === "/")) {
+        const operator = consume(peek().type);
+        const right = parseUnary();
+        value = operator.type === "*"
+          ? calculatorUnitMultiply(value, right, operator)
+          : calculatorUnitDivide(value, right, operator);
+      }
+      return value;
+    }
+
+    function parseAdditive() {
+      let value = parseMultiplicative();
+      while (peek() && (peek().type === "+" || peek().type === "-")) {
+        const operator = consume(peek().type);
+        const right = parseMultiplicative();
+        value = calculatorUnitAdd(value, right, operator);
+      }
+      return value;
+    }
+
+    const value = parseAdditive();
+    if (cursor !== tokens.length) {
+      const token = peek();
+      throw new CalculatorExpressionError("unit-expression-invalid", "unexpected unit expression token", token.position);
+    }
+    return value;
+  }
+
+  function buildCalculatorUnitResult(expression, normalizedExpression, rawExpression, value, tokenCount) {
+    const base = {
+      ok: true,
+      expression,
+      normalizedExpression,
+      rawExpression,
+      grammar: UNIT_GRAMMAR,
+      parseStatus: "valid",
+      parserCode: "",
+      errorPosition: -1,
+      tokenCount,
+      resultKind: value.kind === "unit" ? "unit-quantity" : "unit-scalar",
+      value: value.kind === "unit" ? value.value : value.value,
+      displayValue: value.displayValue,
+      statusText: value.statusText || "unit arithmetic complete"
+    };
+    if (value.kind === "unit") {
+      return Object.freeze(Object.assign(base, {
+        dimension: value.dimension,
+        unit: value.unit,
+        canonicalUnit: value.canonicalUnit,
+        canonicalValue: value.canonicalValue
+      }));
+    }
+    return Object.freeze(base);
+  }
+
+  function invalidUnitEvaluation(error, rawExpression, fallbackMessage) {
+    const expression = expressionText(rawExpression).trim();
+    const known = error instanceof CalculatorExpressionError;
+    return Object.freeze({
+      ok: false,
+      expression,
+      normalizedExpression: expression.replace(/\s+/g, ""),
+      rawExpression: expression,
+      grammar: UNIT_GRAMMAR,
+      parseStatus: "invalid",
+      parserCode: known ? error.code : "unit-expression-invalid",
+      errorPosition: known ? error.position : -1,
+      error: known ? error.message : fallbackMessage
+    });
+  }
+
+  function evaluateCalculatorUnitExpression(rawExpression) {
+    try {
+      const expression = expressionText(rawExpression).trim();
+      if (!expression) {
+        throw new CalculatorExpressionError("expression-required", "enter an expression", -1);
+      }
+      const tokens = tokenizeCalculatorUnitExpression(expression);
+      if (!tokens.length) {
+        throw new CalculatorExpressionError("expression-required", "enter an expression", -1);
+      }
+      const value = parseCalculatorUnitValue(tokens);
+      if (value.kind !== "unit" && !tokens.some((token) => token.type === "unit")) {
+        throw new CalculatorExpressionError("unit-expression-invalid", "expected at least one unit", -1);
+      }
+      return buildCalculatorUnitResult(
+        expression,
+        tokens.map((token) => token.raw).join(""),
+        expression,
+        value,
+        tokens.length
+      );
+    } catch (error) {
+      return invalidUnitEvaluation(error, rawExpression, "check unit expression");
+    }
+  }
+
+  function evaluateCalculatorExpression(rawExpression) {
+    if (calculatorUnitExpressionLooksUnitAware(rawExpression)) {
+      return evaluateCalculatorUnitExpression(rawExpression);
+    }
+    return evaluateCalculatorArithmeticExpression(rawExpression);
   }
 
   function calculatorReadyState(expression, extras = {}) {
@@ -822,6 +1216,7 @@
     version: "calculator-core-v1",
     arithmeticGrammar: ARITHMETIC_GRAMMAR,
     graphGrammar: GRAPH_GRAMMAR,
+    unitGrammar: UNIT_GRAMMAR,
     limits: Object.freeze({
       maxExpressionLength: MAX_EXPRESSION_LENGTH,
       maxTokenCount: MAX_TOKEN_COUNT,
@@ -843,6 +1238,8 @@
     tokenizeCalculatorGraphExpression,
     parseCalculatorArithmeticExpression,
     parseCalculatorGraphExpression,
+    evaluateCalculatorUnitExpression,
+    evaluateCalculatorExpression,
     evaluateCalculatorArithmeticExpression,
     compileGraphExpression,
     evaluateGraphExpression,

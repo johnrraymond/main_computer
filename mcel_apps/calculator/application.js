@@ -41,6 +41,7 @@ function createCalculatorApplication(metadata) {
   const effects = [];
   const surfaceNodes = [];
   const scenarios = [];
+  const proofInvariants = [];
 
   function stateRecord(name, authority, schema, initial) {
     const record = {
@@ -110,9 +111,9 @@ function createCalculatorApplication(metadata) {
       risk: options.risk || (capability ? "external-read" : "read-only"),
       input: [],
       reads: (options.reads || []).map((stateName) => ref("state", stateName)),
-      writes: [],
+      writes: (options.writes || []).map((stateName) => ref("state", stateName)),
       refusals: [],
-      invariants: [],
+      invariants: (options.invariants || []).map((invariantName) => ref("invariant", invariantName)),
       effectRefs: effect ? [{ref: effect.id}] : [],
       outcomes: ["completed", "refused", "failed"],
     };
@@ -131,6 +132,34 @@ function createCalculatorApplication(metadata) {
       intent: ref("intent", name),
       steps: [receiptSuccessClaim()],
     });
+    return Object.freeze({id: record.id, name, record});
+  }
+
+  function scenarioRecord(name, options = {}) {
+    const record = {
+      id: appRef("scenario", name),
+      kind: "scenario",
+      sourceName: options.sourceName || camelCase(name),
+      label: options.label || name,
+      intent: options.intent ? ref("intent", options.intent) : undefined,
+      given: options.given || {},
+      expect: options.expect || {},
+      steps: options.steps || [],
+    };
+    scenarios.push(record);
+    return Object.freeze({id: record.id, name, record});
+  }
+
+  function invariantRecord(name, options = {}) {
+    const record = {
+      id: appRef("invariant", name),
+      kind: "invariant",
+      sourceName: options.sourceName || camelCase(name),
+      label: options.label || name,
+      description: options.description || "",
+      examples: options.examples || [],
+    };
+    proofInvariants.push(record);
     return Object.freeze({id: record.id, name, record});
   }
 
@@ -164,6 +193,12 @@ function createCalculatorApplication(metadata) {
         return intentRecord(name, options, capability);
       },
     },
+    scenario: {
+      example: scenarioRecord,
+    },
+    invariant: {
+      semantic: invariantRecord,
+    },
     layout: {
       zones(zoneNames) {
         zones = [...zoneNames];
@@ -172,7 +207,7 @@ function createCalculatorApplication(metadata) {
     proof: {
       semanticRuntimeProven(options = {}) {
         proof = {
-          invariants: [],
+          invariants: proofInvariants,
           requiredAuthorities: options.requiredAuthorities || [
             "visible-surface",
             "operation-receipt",
@@ -240,6 +275,10 @@ function declareCalculator(app) {
   app.state.rendererLocal("mode", field.string(), {initial: "basic"});
   app.state.rendererLocal("arithmetic-expression", field.string(), {initial: ""});
   app.state.derived("arithmetic-result", field.string(), {initial: ""});
+  app.state.rendererLocal("unit-mode", field.string(), {initial: "auto"});
+  app.state.derived("unit-result", field.record(), {
+    initial: {ok: false, dimension: "", unit: "", display: ""},
+  });
   app.state.rendererLocal("graph-expression", field.string(), {initial: "sin(x)"});
   app.state.rendererLocal("graph-range", field.record(), {
     initial: {xMin: -10, xMax: 10, yMin: -5, yMax: 5},
@@ -298,9 +337,10 @@ function declareCalculator(app) {
     sourceName: "evaluateExpression",
     runtimeMethod: "evaluateExpression",
     binding: "evaluate-expression",
-    label: "Evaluate a deterministic arithmetic expression",
+    label: "Evaluate a deterministic arithmetic or unit expression",
     lane: "local-arithmetic",
-    reads: ["arithmetic-expression"],
+    reads: ["arithmetic-expression", "unit-mode"],
+    invariants: ["compatible-units-normalize-before-result"],
   });
   app.intent.interaction("draw-graph", {
     sourceName: "drawGraph",
@@ -358,6 +398,43 @@ function declareCalculator(app) {
     label: "Ask a contextual result question",
     lane: "model-result-qa",
     reads: ["result-context"],
+  });
+
+  app.invariant.semantic("compatible-units-normalize-before-result", {
+    label: "Compatible units normalize before result",
+    description: "Compatible metric length and time quantities normalize deterministically before visible result shaping.",
+    examples: ["3 m + 40 cm = 3.4 m", "2 min + 30 s = 2.5 min", "3 m + 2 s is rejected"],
+  });
+
+  app.scenario.example("metric-length-addition", {
+    label: "Metric length addition",
+    intent: "evaluate-expression",
+    given: {unitMode: "auto", expression: "3 m + 40 cm"},
+    expect: {ok: true, result: "3.4 m", dimension: "length"},
+  });
+  app.scenario.example("incompatible-unit-addition", {
+    label: "Incompatible unit addition",
+    intent: "evaluate-expression",
+    given: {unitMode: "auto", expression: "3 m + 2 s"},
+    expect: {ok: false, code: "unit-dimension-mismatch"},
+  });
+  app.scenario.example("metric-length-scalar-arithmetic", {
+    label: "Metric length scalar arithmetic",
+    intent: "evaluate-expression",
+    given: {unitMode: "auto", expression: "2 * 3 m"},
+    expect: {ok: true, result: "6 m", dimension: "length"},
+  });
+  app.scenario.example("metric-time-normalization", {
+    label: "Metric time normalization",
+    intent: "evaluate-expression",
+    given: {unitMode: "auto", expression: "2 min + 30 s"},
+    expect: {ok: true, result: "2.5 min", dimension: "time"},
+  });
+  app.scenario.example("same-dimension-unit-ratio", {
+    label: "Same-dimension unit ratio",
+    intent: "evaluate-expression",
+    given: {unitMode: "auto", expression: "120 s / 2 min"},
+    expect: {ok: true, result: "1"},
   });
 
   app.layout.zones(["mode", "arithmetic", "graph", "mathics", "result-qa", "chat"]);

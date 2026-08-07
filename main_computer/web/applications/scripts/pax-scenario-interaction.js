@@ -5,9 +5,53 @@
   const PAX_SYSTEM_ID = "system.pax";
   const BRIEFING_ACK_PREFIX = "main-computer.pax-scenario.briefing-ack.v1";
   const PROTECTION_STAGE_ID = "protect-witness";
+  const INVESTIGATION_STAGE_ID = "investigation";
+  const PAX_PROTECTION_RECOVERY = Object.freeze({
+    none: "none",
+    reviveBoarders: "revive-boarders",
+    restartEncounter: "restart-encounter"
+  });
+  const PAX_BOARDER_GROUP_STATUS = Object.freeze({
+    unavailable: "unavailable",
+    missing: "missing",
+    active: "active",
+    defeated: "defeated",
+    mixed: "mixed"
+  });
+  const PAX_PROTECTION_STATE = Object.freeze({
+    unavailable: "unavailable",
+    scenarioInactive: "scenario-inactive",
+    characterRuntimeUnavailable: "character-runtime-unavailable",
+    consistentActive: "consistent-active",
+    recoverableProtectionDefeated: "recoverable-protection-defeated",
+    invalidProtectionBoarders: "invalid-protection-boarders",
+    recoverableInvestigationActive: "recoverable-investigation-active",
+    recoverableInvestigationDefeated: "recoverable-investigation-defeated",
+    invalidInvestigationBoarders: "invalid-investigation-boarders",
+    outsideProtection: "outside-protection"
+  });
+  const PAX_PROTECTION_STATE_LABELS = Object.freeze({
+    unavailable: PAX_PROTECTION_STATE.unavailable,
+    scenarioInactive: PAX_PROTECTION_STATE.scenarioInactive,
+    actorRuntimeUnavailable: PAX_PROTECTION_STATE.characterRuntimeUnavailable,
+    consistentActive: PAX_PROTECTION_STATE.consistentActive,
+    recoverableActiveDefeated: PAX_PROTECTION_STATE.recoverableProtectionDefeated,
+    invalidActiveActors: PAX_PROTECTION_STATE.invalidProtectionBoarders,
+    recoverableCompletedActive: PAX_PROTECTION_STATE.recoverableInvestigationActive,
+    recoverableCompletedDefeated: PAX_PROTECTION_STATE.recoverableInvestigationDefeated,
+    invalidCompletedActors: PAX_PROTECTION_STATE.invalidInvestigationBoarders,
+    outsideActiveStage: PAX_PROTECTION_STATE.outsideProtection
+  });
+  const PAX_PROTECTION_RECOVERY_LABELS = Object.freeze({
+    none: PAX_PROTECTION_RECOVERY.none,
+    reviveActors: PAX_PROTECTION_RECOVERY.reviveBoarders,
+    restartEncounter: PAX_PROTECTION_RECOVERY.restartEncounter
+  });
+  const EncounterState = global.MainComputerEncounterState
+    || (typeof require === "function" ? require("./encounter-state.js") : null);
   const HARD_KICKOFF_STAGE_IDS = Object.freeze([
-    "protect-witness",
-    "investigation",
+    PROTECTION_STAGE_ID,
+    INVESTIGATION_STAGE_ID,
     "conference"
   ]);
   const BOARDER_IDS = Object.freeze([
@@ -36,6 +80,17 @@
     HARD_KICKOFF_POSITIONS.boarder04,
     HARD_KICKOFF_POSITIONS.boarder05
   ]);
+
+  const PAX_PROTECTION_ENCOUNTER = EncounterState.createStageActorEncounterAdapter({
+    scenarioId: SCENARIO_ID,
+    systemId: PAX_SYSTEM_ID,
+    activeStageId: PROTECTION_STAGE_ID,
+    completedStageIds: [INVESTIGATION_STAGE_ID],
+    actorIds: BOARDER_IDS,
+    actorGroupStatusLabels: PAX_BOARDER_GROUP_STATUS,
+    stateLabels: PAX_PROTECTION_STATE_LABELS,
+    recoveryLabels: PAX_PROTECTION_RECOVERY_LABELS
+  });
 
   function objectValue(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -1116,50 +1171,10 @@
   }
 
   function classifyBoarderGroup(characterRuntime = currentCharacterRuntime()) {
-    if (!characterRuntime?.snapshot) {
-      return {
-        status: "unavailable",
-        total: BOARDER_IDS.length,
-        activeCount: 0,
-        defeatedCount: 0,
-        missingCount: BOARDER_IDS.length,
-        boarders: []
-      };
-    }
-
-    const snapshot = characterRuntime.snapshot() || {};
-    const characters = objectValue(snapshot.characters);
-    const boarders = BOARDER_IDS.map((characterId) => {
-      const character = characters[characterId] || null;
-      const active = Boolean(character
-        && character.status === "active"
-        && Number(character.health) > 0);
-      const defeated = Boolean(character
-        && (character.status === "down" || Number(character.health) <= 0));
-      return {
-        id: characterId,
-        character,
-        active,
-        defeated,
-        missing: !character
-      };
-    });
-    const activeCount = boarders.filter((entry) => entry.active).length;
-    const defeatedCount = boarders.filter((entry) => entry.defeated).length;
-    const missingCount = boarders.filter((entry) => entry.missing).length;
-
-    let status = "mixed";
-    if (missingCount === BOARDER_IDS.length) status = "missing";
-    else if (activeCount === BOARDER_IDS.length) status = "active";
-    else if (defeatedCount === BOARDER_IDS.length) status = "defeated";
-
+    const group = PAX_PROTECTION_ENCOUNTER.classifyActorGroup(characterRuntime);
     return {
-      status,
-      total: BOARDER_IDS.length,
-      activeCount,
-      defeatedCount,
-      missingCount,
-      boarders
+      ...group,
+      boarders: group.actors || []
     };
   }
 
@@ -1170,46 +1185,81 @@
       || null;
     const characterRuntime = options.characterRuntime
       || currentCharacterRuntime();
-    const view = scenarioRuntime?.view?.(SCENARIO_ID) || null;
-    const boarderGroup = classifyBoarderGroup(characterRuntime);
-
-    let status = "unavailable";
-    let recovery = "none";
-    if (!view?.visible || view.state?.status !== "active") {
-      status = "scenario-inactive";
-    } else if (boarderGroup.status === "unavailable") {
-      status = "character-runtime-unavailable";
-    } else if (view.state?.stageId === PROTECTION_STAGE_ID) {
-      if (boarderGroup.status === "active") status = "consistent-active";
-      else if (boarderGroup.status === "defeated") {
-        status = "recoverable-protection-defeated";
-        recovery = "revive-boarders";
-      } else {
-        status = "invalid-protection-boarders";
-      }
-    } else if (view.state?.stageId === "investigation") {
-      if (boarderGroup.status === "active") {
-        status = "recoverable-investigation-active";
-        recovery = "restart-encounter";
-      } else if (boarderGroup.status === "defeated") {
-        status = "recoverable-investigation-defeated";
-        recovery = "restart-encounter";
-      } else {
-        status = "invalid-investigation-boarders";
-      }
-    } else {
-      status = "outside-protection";
-    }
+    const classification = PAX_PROTECTION_ENCOUNTER.classify({
+      ...objectValue(options),
+      scenarioRuntime,
+      characterRuntime
+    });
+    const boarderGroup = classification.actorGroup;
 
     return {
-      status,
-      recovery,
+      ...classification,
       scenarioRuntime,
       characterRuntime,
-      view,
-      stageId: view?.state?.stageId || "",
       boarderGroup
     };
+  }
+
+  function paxProtectionReconciliationPlan(classification, options = {}) {
+    return PAX_PROTECTION_ENCOUNTER.recoveryPlan(
+      classification,
+      {
+        recoverDefeated: options.recoverDefeated === true
+      }
+    );
+  }
+
+  function performPaxProtectionRecovery(plan, reason, options = {}) {
+    if (plan.action === PAX_PROTECTION_RECOVERY.reviveBoarders) {
+      uiState.lastHardKickoff = null;
+      return forcePaxCharacterStates(reason, {nowMs: nowMs(options)});
+    }
+    if (plan.action === PAX_PROTECTION_RECOVERY.restartEncounter) {
+      return resetPaxProtectionEncounter(reason, {nowMs: nowMs(options)});
+    }
+    return {forced: false, reset: false, reason: "no-recovery-action"};
+  }
+
+  function paxProtectionRecoverySucceeded(plan, result) {
+    if (plan.action === PAX_PROTECTION_RECOVERY.reviveBoarders) {
+      return Boolean(result?.forced);
+    }
+    if (plan.action === PAX_PROTECTION_RECOVERY.restartEncounter) {
+      return Boolean(result?.reset);
+    }
+    return false;
+  }
+
+  function paxProtectionDiagnosticSnapshot(classification, plan = null) {
+    return PAX_PROTECTION_ENCOUNTER.diagnostic(
+      classification,
+      plan,
+      {
+        scenarioVisible: Boolean(classification?.view?.visible),
+        scenarioStatus: stringValue(classification?.view?.state?.status),
+        recoveryInProgress: Boolean(uiState.recoveryInProgress)
+      }
+    );
+  }
+
+  function diagnosePaxProtectionEncounter(options = {}) {
+    const classification = classifyPaxProtectionState(options);
+    const plan = paxProtectionReconciliationPlan(classification, options);
+    return paxProtectionDiagnosticSnapshot(classification, plan);
+  }
+
+  function reconcilePaxProtectionOnAttach(reason, options = {}) {
+    return reconcilePaxProtectionState(reason, {
+      ...objectValue(options),
+      recoverDefeated: true
+    });
+  }
+
+  function reconcilePaxProtectionOnLiveUpdate(reason, options = {}) {
+    return reconcilePaxProtectionState(reason, {
+      ...objectValue(options),
+      recoverDefeated: false
+    });
   }
 
   function reconcilePaxProtectionState(
@@ -1220,73 +1270,55 @@
       return {recovered: false, reason: "recovery-in-progress"};
     }
 
-    const classification = classifyPaxProtectionState(options);
-    const recoverDefeated = options.recoverDefeated === true;
-    const shouldRecover = classification.recovery !== "none"
-      && (classification.boarderGroup.status === "active" || recoverDefeated);
+    const outcome = PAX_PROTECTION_ENCOUNTER.reconcile({
+      ...objectValue(options),
+      reason: stringValue(reason),
+      classify: () => classifyPaxProtectionState(options),
+      plan: (classification) => paxProtectionReconciliationPlan(classification, options),
+      diagnostic: (classification, plan) => (
+        paxProtectionDiagnosticSnapshot(classification, plan)
+      ),
+      beforeRecovery: () => {
+        uiState.recoveryInProgress = true;
+        return null;
+      },
+      afterRecovery: () => {
+        uiState.recoveryInProgress = false;
+      },
+      performRecovery: (plan) => performPaxProtectionRecovery(plan, reason, options),
+      recoverySucceeded: paxProtectionRecoverySucceeded
+    });
 
-    if (!shouldRecover) {
-      return {
-        recovered: false,
-        reason: classification.status,
-        classification
-      };
-    }
-
-    uiState.recoveryInProgress = true;
-    try {
-      let result;
-      if (classification.recovery === "revive-boarders") {
-        uiState.lastHardKickoff = null;
-        result = forcePaxCharacterStates(reason, {nowMs: nowMs(options)});
-      } else {
-        result = resetPaxProtectionEncounter(reason, {nowMs: nowMs(options)});
-      }
-
-      const recovered = classification.recovery === "revive-boarders"
-        ? Boolean(result?.forced)
-        : Boolean(result?.reset);
+    if (outcome?.plan?.recover) {
       uiState.lastAutomaticRecovery = {
         reason: stringValue(reason),
-        recovered,
+        recovered: Boolean(outcome.recovered),
         atMs: nowMs(options),
-        classification: classification.status,
-        result
+        classification: outcome.classification?.status,
+        action: outcome.plan?.action,
+        diagnostic: outcome.diagnostic,
+        result: outcome.result
       };
-      if (recovered && options.markCharacterRuntime !== false) {
-        uiState.recoveredCharacterRuntime = classification.characterRuntime;
+      if (outcome.recovered && options.markCharacterRuntime !== false) {
+        uiState.recoveredCharacterRuntime = outcome.classification?.characterRuntime;
       }
-      return {
-        recovered,
-        reason: recovered
-          ? classification.status
-          : result?.reason || "automatic-recovery-failed",
-        classification,
-        result
-      };
-    } finally {
-      uiState.recoveryInProgress = false;
     }
+
+    return outcome;
   }
 
   function recoverActiveBoardersOutsideProtection(reason = "automatic-inconsistent-encounter-recovery") {
-    return reconcilePaxProtectionState(reason, {
-      recoverDefeated: false
-    });
+    return reconcilePaxProtectionOnLiveUpdate(reason);
   }
 
   function setRuntime(runtime) {
     if (uiState.unsubscribe) uiState.unsubscribe();
     uiState.runtime = runtime || null;
     uiState.unsubscribe = runtime?.subscribe?.(() => {
-      reconcilePaxProtectionState("scenario-state-inconsistent-recovery", {
-        recoverDefeated: false
-      });
+      reconcilePaxProtectionOnLiveUpdate("scenario-state-inconsistent-recovery");
       render();
     }) || null;
-    reconcilePaxProtectionState("scenario-runtime-attach-inconsistent-recovery", {
-      recoverDefeated: true
-    });
+    reconcilePaxProtectionOnAttach("scenario-runtime-attach-inconsistent-recovery");
     render();
     return uiState.runtime;
   }
@@ -1297,11 +1329,10 @@
 
     let recovery = {recovered: false, reason: "already-checked"};
     if (runtime && uiState.recoveredCharacterRuntime !== runtime) {
-      recovery = reconcilePaxProtectionState(
+      recovery = reconcilePaxProtectionOnAttach(
         "character-runtime-attach-encounter-reconciliation",
         {
-          characterRuntime: runtime,
-          recoverDefeated: true
+          characterRuntime: runtime
         }
       );
       /*
@@ -1313,9 +1344,7 @@
 
     uiState.characterUnsubscribe = runtime?.subscribe?.(() => {
       syncProtection();
-      reconcilePaxProtectionState("character-state-inconsistent-recovery", {
-        recoverDefeated: false
-      });
+      reconcilePaxProtectionOnLiveUpdate("character-state-inconsistent-recovery");
       render();
     }) || null;
     render();
@@ -1390,6 +1419,13 @@
     resetPaxProtectionEncounter,
     classifyBoarderGroup,
     classifyPaxProtectionState,
+    paxProtectionReconciliationPlan,
+    paxProtectionDiagnosticSnapshot,
+    diagnosePaxProtectionEncounter,
+    reconcilePaxProtectionOnAttach,
+    reconcilePaxProtectionOnLiveUpdate,
+    encounterState: EncounterState,
+    protectionEncounter: PAX_PROTECTION_ENCOUNTER,
     reconcilePaxProtectionState,
     recoverActiveBoardersOutsideProtection,
     startOrRecoverPax,

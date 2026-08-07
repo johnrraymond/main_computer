@@ -110,6 +110,8 @@ def test_calculator_static_markup_still_extracts_as_valid_surface_and_layout() -
     ]
     assert len(data["edgeIds"]) == 7
     assert len(data["controlIds"]) == 10
+    assert "calculator.control.unit-example-length" not in data["controlIds"]
+    assert "calculator.control.unit-example-mismatch" not in data["controlIds"]
 
 
 def test_calculator_generated_surface_contract_replaces_static_surface_module() -> None:

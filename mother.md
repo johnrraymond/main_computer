@@ -108,26 +108,48 @@ deployable services or network members.
 
 The validator-RPC canary funding path MUST treat the on-chain balance as the
 funding source of truth. A helper container is only an observation transport; its
-status is not itself the balance fact. The compiled helper command MUST use the
-supported `cast balance --rpc-url "$RPC" <address>` wei output form and MUST NOT
-invent a false-valued boolean option such as `--ether=false`.
+status is not itself the balance fact. The compiled helpers run inside the
+Foundry helper image and therefore MUST use Foundry-native `cast` commands, not
+an assumed Python runtime. Balance proof helpers MUST NOT use a false-valued
+boolean option such as `--ether=false`, and MUST compare large wei values as
+decimal strings rather than shell arithmetic.
+
+Every temporary helper boundary MUST emit a
+`MOTHER_VALIDATOR_RPC_CANARY_FUNDING_RESULT` runtime marker before Mother accepts
+that boundary as proof. The runtime marker is the proof; Coolify service health
+is only a transport/liveness signal. Mother MUST query every authorized Coolify
+runtime-log endpoint before deleting the helper, and the evidence MUST retain
+only the structured marker fields, not raw logs or private material. A missing
+marker is a failed proof even if Coolify briefly reports a healthy service. A
+valid success marker MAY prove the boundary even when the service-detail
+healthcheck lags or reports a terminal state after the marker was printed.
 
 A canary funding execution is complete only when the path has proved one of
 these bounded states:
 
-- the A-side canary balance is already the exact required amount, and C
-  independently verifies that exact balance; or
-- A proves the canary balance is zero, the exact capped transfer is executed
-  once, A independently proves the post-funding exact balance, and C
-  independently proves the exact balance and matching recent receipt.
+- A first proves that `cast` is available in the helper image, A private RPC can
+  answer `cast balance`, the A-side canary balance is already the exact required
+  amount, and C independently verifies that exact balance; or
+- A first proves that `cast` is available in the helper image, A private RPC can
+  answer `cast balance`, A proves the canary balance is zero, the exact capped
+  transfer is executed once, A records the transaction hash in a runtime marker,
+  A independently proves the post-funding exact balance, and C independently
+  verifies the same transaction hash receipt and the exact canary balance.
 
-If neither the zero-balance classifier nor the exact-balance classifier reaches
-a positive proof, Mother MUST fail closed before binding the captain key or
-starting the funder. Evidence MUST make clear that the chain remained
-`unchanged-before-funder-start`. Recovery MUST reconcile an already-funded exact
-balance without sending another transfer, and MUST NOT repeat a funding attempt
-after an indeterminate started-funder state unless the post-state is safely
-classified by the normal funding proof contract.
+If A cannot first prove `cast` availability, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CAST_UNAVAILABLE`. If A cannot prove
+private RPC reachability, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE` before any balance
+classification, captain-key binding, or funder start. If RPC is reachable but
+neither the zero-balance classifier nor the exact-balance classifier reaches a
+positive proof, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_UNEXPECTED_BALANCE` before binding
+the captain key or starting the funder, and SHOULD include the observed balance
+from the structured runtime marker when available. Evidence MUST make clear that
+the chain remained `unchanged-before-funder-start`. Recovery MUST reconcile an
+already-funded exact balance without sending another transfer, and MUST NOT
+repeat a funding attempt after an indeterminate started-funder state unless the
+post-state is safely classified by the normal funding proof contract.
 
 `add-node`, `remove-node`, `restore-service`, topology repair, and release rollout
 MUST preserve this complete-unit boundary. A partial service can exist only as a

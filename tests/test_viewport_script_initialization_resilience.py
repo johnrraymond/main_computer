@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "main_computer" / "web" / "applications" / "scripts"
+APPS = ROOT / "main_computer" / "web" / "applications" / "apps"
 SHELL = ROOT / "main_computer" / "web" / "applications.html"
 
 
@@ -21,8 +22,15 @@ def test_calculator_runtime_does_not_abort_viewport_when_core_is_temporarily_una
     assert "function requireCalculatorViewModel()" in runtime
     assert "const calculatorCore = window.MainComputerCalculatorCore" not in runtime
     assert 'throw new Error("Calculator core must load before Calculator runtime")' not in runtime
-    assert "requireCalculatorCore().evaluateCalculatorArithmeticExpression" in runtime
+    assert "requireCalculatorCore().evaluateCalculatorExpression" in runtime
     assert "requireCalculatorViewModel().buildCalculatorGraphRenderModel" in runtime
+    calculator_html = (APPS / "calculator.html").read_text(encoding="utf-8")
+    assert 'id="calculator-unit-affordance"' not in calculator_html
+    assert 'data-calc-unit-example' not in calculator_html
+    assert 'inputmode="text"' in calculator_html
+    assert 'aria-label="Calculator expression, including metric unit expressions"' in calculator_html
+    assert 'querySelectorAll("[data-calc-unit-example]")' not in runtime
+
 
 
 def test_application_routing_does_not_read_website_builder_lexical_state_before_initialization() -> None:

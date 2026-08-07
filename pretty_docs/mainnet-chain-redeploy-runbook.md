@@ -201,12 +201,32 @@ canary balance on A == exact required funding amount
 canary balance on C == exact required funding amount
 ```
 
-The helper scripts must use `cast balance --rpc-url "$RPC" <address>`, which
-returns wei by default, and must compare balances with Python integer checks
-rather than shell arithmetic. The scripts must not use `--ether=false`.
+The helper scripts run inside the Foundry helper image and therefore must use
+Foundry-native `cast` commands. They must not assume Python exists in that image,
+must not use `--ether=false`, and must compare large wei values as decimal
+strings instead of shell arithmetic.
 
-If the exact-balance and zero-balance classifiers both fail before the funder is
-started, no funding release should be repeated blindly. The evidence state
+Each helper must emit a
+`MOTHER_VALIDATOR_RPC_CANARY_FUNDING_RESULT` marker before Mother accepts the
+boundary as a proof. The marker is the proof; service health is only a
+transport/liveness signal. Mother reads all authorized Coolify runtime-log
+endpoints before deleting the helper and records only structured fields such as
+the step, classification, `balance_wei`, expected balance, RPC target, and
+funding transaction hash. A healthy service without the marker is not a valid
+proof. A valid success marker can prove the boundary even when Coolify service
+health lags or later reports the helper as exited.
+
+Before either classifier can authorize funding, the A-side cast probe must first
+prove that the helper image can run `cast`, and the A-side RPC probe must prove
+that private RPC can answer `cast balance`. If the cast probe fails, the correct
+failure is `MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CAST_UNAVAILABLE`. If the
+RPC probe fails, the correct failure is
+`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE`. If the probe
+succeeds but the exact-balance and zero-balance classifiers both fail before the
+funder is started, the correct failure is
+`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_UNEXPECTED_BALANCE`.
+
+In both cases, no funding release should be repeated blindly. The evidence state
 `unchanged-before-funder-start` means the captain key was not bound to a funder
 and no transfer was attempted. Fix the classifier/transport problem first, then
 restage a new funding transaction from the canary transaction.

@@ -27,7 +27,7 @@
     }
 
     function evaluateCalculatorArithmeticExpression(rawExpression) {
-      return requireCalculatorCore().evaluateCalculatorArithmeticExpression(rawExpression);
+      return requireCalculatorCore().evaluateCalculatorExpression(rawExpression);
     }
     function calculateExpression() {
       const viewModel = requireCalculatorViewModel().buildCalculatorVisibleResultModel(

@@ -99,7 +99,7 @@ def test_calculator_runtime_delegates_local_math_to_core_and_capabilities_to_bri
     assert "requireCalculatorCore().insertCalculatorGraphText" in runtime_source
     assert "requireCalculatorCore().clearCalculatorGraphExpression" in runtime_source
     assert "requireCalculatorCore().backspaceCalculatorGraphExpression" in runtime_source
-    assert "requireCalculatorCore().evaluateCalculatorArithmeticExpression" in runtime_source
+    assert "requireCalculatorCore().evaluateCalculatorExpression" in runtime_source
     assert "requireCalculatorViewModel().buildCalculatorVisibleResultModel" in runtime_source
     assert "requireCalculatorViewModel().buildCalculatorModeSwitchViewModel" in runtime_source
     assert "requireCalculatorViewModel().buildCalculatorSessionContextSnapshot" in runtime_source
@@ -125,6 +125,8 @@ def test_calculator_runtime_delegates_local_math_to_core_and_capabilities_to_bri
 
     assert "function extractCalculatorExpression" in core_source
     assert "function extractCalculatorGraphExpression" in core_source
+    assert "function evaluateCalculatorUnitExpression" in core_source
+    assert "function evaluateCalculatorExpression" in core_source
     assert "function buildCalculatorVisibleResultModel" in view_model_source
     assert "function buildCalculatorModeSwitchViewModel" in view_model_source
     assert "function buildCalculatorSessionContextSnapshot" in view_model_source
@@ -856,6 +858,109 @@ def test_arithmetic_parser_preserves_calculator_precedence_and_evidence() -> Non
 
     assert result["expressions"]["multiplyAlias"]["rawExpression"] == "2 x 3"
     assert result["expressions"]["multiplyAlias"]["normalizedExpression"] == "2*3"
+
+
+
+def test_unit_expression_slice_adds_deterministic_units_without_eval() -> None:
+    result = run_node_json(
+        """
+        const normalizedUnit = core.normalizeCalculatorExpression("3 m + 40 cm");
+        const normalizedArithmetic = core.normalizeCalculatorExpression("2 apples + 3");
+        const length = core.evaluateCalculatorExpression("3 m + 40 cm");
+        const subtraction = core.evaluateCalculatorExpression("1 km - 250 m");
+        const scalarLeft = core.evaluateCalculatorExpression("2 * 3 m");
+        const scalarRight = core.evaluateCalculatorExpression("3 m / 2");
+        const time = core.evaluateCalculatorExpression("2 min + 30 s");
+        const ratio = core.evaluateCalculatorExpression("120 s / 2 min");
+        const repeatable = core.evaluateCalculatorExpression("3.4 m");
+        const mismatch = core.evaluateCalculatorExpression("3 m + 2 s");
+        const unsupported = core.evaluateCalculatorExpression("3 furlong + 2 m");
+        const compound = core.evaluateCalculatorExpression("3 m * 2 s");
+        const arithmetic = core.evaluateCalculatorExpression("2+3*4");
+        const visibleLength = viewModel.buildCalculatorVisibleResultModel(length);
+        const visibleMismatch = viewModel.buildCalculatorVisibleResultModel(mismatch);
+        process.stdout.write(JSON.stringify({
+          unitGrammar: core.unitGrammar,
+          normalizedUnit,
+          normalizedArithmetic,
+          length,
+          subtraction,
+          scalarLeft,
+          scalarRight,
+          time,
+          ratio,
+          repeatable,
+          mismatch,
+          unsupported,
+          compound,
+          arithmetic,
+          visibleLength,
+          visibleMismatch
+        }));
+        """
+    )
+
+    assert result["unitGrammar"] == "calculator-unit-expression-v1"
+    assert result["normalizedUnit"] == "3 m + 40 cm"
+    assert result["normalizedArithmetic"] == "2  + 3"
+
+    assert result["length"]["ok"] is True
+    assert result["length"]["grammar"] == "calculator-unit-expression-v1"
+    assert result["length"]["resultKind"] == "unit-quantity"
+    assert result["length"]["dimension"] == "length"
+    assert result["length"]["unit"] == "m"
+    assert result["length"]["canonicalValue"] == 3.4
+    assert result["length"]["displayValue"] == "3.4 m"
+    assert result["length"]["statusText"] == "units normalized"
+
+    assert result["subtraction"]["ok"] is True
+    assert result["subtraction"]["displayValue"] == "0.75 km"
+    assert result["subtraction"]["canonicalValue"] == 750
+
+    assert result["scalarLeft"]["ok"] is True
+    assert result["scalarLeft"]["displayValue"] == "6 m"
+    assert result["scalarLeft"]["statusText"] == "unit scalar arithmetic complete"
+
+    assert result["scalarRight"]["ok"] is True
+    assert result["scalarRight"]["displayValue"] == "1.5 m"
+
+    assert result["time"]["ok"] is True
+    assert result["time"]["dimension"] == "time"
+    assert result["time"]["unit"] == "min"
+    assert result["time"]["displayValue"] == "2.5 min"
+    assert result["time"]["canonicalValue"] == 150
+
+    assert result["ratio"]["ok"] is True
+    assert result["ratio"]["resultKind"] == "unit-scalar"
+    assert result["ratio"]["displayValue"] == "1"
+    assert result["ratio"]["statusText"] == "unit ratio complete"
+
+    assert result["repeatable"]["ok"] is True
+    assert result["repeatable"]["displayValue"] == "3.4 m"
+
+    assert result["mismatch"]["ok"] is False
+    assert result["mismatch"]["grammar"] == "calculator-unit-expression-v1"
+    assert result["mismatch"]["parserCode"] == "unit-dimension-mismatch"
+    assert result["mismatch"]["error"] == "cannot combine length and time units"
+
+    assert result["unsupported"]["ok"] is False
+    assert result["unsupported"]["parserCode"] == "unit-unsupported"
+
+    assert result["compound"]["ok"] is False
+    assert result["compound"]["parserCode"] == "compound-unit-unsupported"
+
+    assert result["arithmetic"]["ok"] is True
+    assert result["arithmetic"]["grammar"] == "calculator-arithmetic-expression-v1"
+    assert result["arithmetic"]["value"] == 14
+
+    assert result["visibleLength"]["displayExpression"] == "3.4 m"
+    assert result["visibleLength"]["resultText"] == "3.4 m"
+    assert result["visibleLength"]["statusText"] == "units normalized"
+    assert result["visibleLength"]["runtimeResult"]["result"] == "3.4 m"
+    assert result["visibleMismatch"]["displayExpression"] == "3 m + 2 s"
+    assert result["visibleMismatch"]["resultText"] == "cannot combine length and time units"
+    assert result["visibleMismatch"]["statusText"] == "error"
+
 
 
 def test_arithmetic_parser_rejects_javascript_and_reports_bounded_failures() -> None:

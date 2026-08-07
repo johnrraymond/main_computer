@@ -118,8 +118,18 @@ def test_calculator_authoritative_dsl_source_reads_as_fluent_app_declaration() -
     assert "declareCalculator(app)" in source
     assert "app.presentation.hostBound(" in source
     assert "app.state.rendererLocal(" in source
+    assert "unit-mode" in source
+    assert "unit-result" in source
     assert "app.capability" in source
     assert "app.intent.interaction(" in source
+    assert "compatible-units-normalize-before-result" in source
+    assert "metric-length-scalar-arithmetic" in source
+    assert "metric-time-normalization" in source
+    assert "same-dimension-unit-ratio" in source
+    assert "visible-unit-affordance" not in source
+    assert "unit-affordance" not in source
+    assert "app.invariant.semantic(" in source
+    assert "app.scenario.example(" in source
     assert "app.intent.capabilityRequest(" in source
     assert "app.proof.semanticRuntimeProven()" in source
     assert len(source.splitlines()) < 500

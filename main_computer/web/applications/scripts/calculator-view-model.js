@@ -35,9 +35,12 @@
       });
     }
     if (result.ok) {
+      const visibleValue = Object.prototype.hasOwnProperty.call(result, "displayValue")
+        ? result.displayValue
+        : result.value;
       return Object.freeze(Object.assign({}, result, {
-        result: String(result.value),
-        statusText: "ready",
+        result: String(visibleValue),
+        statusText: result.statusText || "ready",
         code: ""
       }));
     }
@@ -60,7 +63,7 @@
     const result = normalizeCalculatorResult(evaluation);
     const expressionRequired = result.code === "expression-required";
     const displayExpression = result.ok
-      ? String(result.value)
+      ? String(Object.prototype.hasOwnProperty.call(result, "displayValue") ? result.displayValue : result.value)
       : (expressionRequired ? "0" : result.expression || "");
     return Object.freeze({
       ok: result.ok === true,
