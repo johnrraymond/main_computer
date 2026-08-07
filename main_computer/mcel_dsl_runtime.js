@@ -43,6 +43,41 @@ function ref(value) {
   return {ref: id};
 }
 
+function camelCase(value) {
+  assert(typeof value === "string" && value.length > 0, "MCEL_DSL_NAME_REQUIRED", "A semantic source name is required.");
+  return value.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function titleCaseIdentifier(value) {
+  return String(value || "")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join("");
+}
+
+function appScopedId(metadata, kind, name) {
+  return semanticId(kind, `${metadata.id}.${name}`);
+}
+
+function appScopedRef(metadata, kind, name) {
+  return {ref: appScopedId(metadata, kind, name)};
+}
+
+function normalizeSchema(schema, semanticPath) {
+  if (schema instanceof SchemaBuilder) return schema.toJSON();
+  assert(schema && typeof schema === "object" && !Array.isArray(schema), "MCEL_DSL_SCHEMA_REQUIRED", "A field schema is required.", semanticPath);
+  return deepClone(schema, semanticPath);
+}
+
+function receiptSuccessClaim() {
+  return {
+    kind: "claim.receipt-disposition",
+    authority: "operation-receipt",
+    expected: "completed",
+  };
+}
+
 function deepClone(value, semanticPath = "$") {
   if (value === null || ["string", "boolean", "number"].includes(typeof value)) {
     assert(!(typeof value === "number" && !Number.isFinite(value)), "MCEL_DSL_NONDETERMINISTIC_VALUE", "Non-finite numbers are forbidden.", semanticPath);
@@ -223,6 +258,261 @@ class ScenarioBuilder {
     return new ScenarioHandle(this.record);
   }
 }
+
+function createHostBoundApplicationBuilder(metadata) {
+  let presentation = null;
+  let proof = null;
+  let zones = [];
+  const states = [];
+  const capabilities = [];
+  const intents = [];
+  const effects = [];
+  const surfaceNodes = [];
+  const scenarios = [];
+  const proofInvariants = [];
+
+  function stateRecord(name, authority, schema, initial) {
+    const record = {
+      id: appScopedId(metadata, "state", name),
+      kind: "state",
+      sourceName: camelCase(name),
+      authority,
+      schema: normalizeSchema(schema, `state:${name}.schema`),
+      initial: deepClone(initial, `state:${name}.initial`),
+    };
+    states.push(record);
+    return Object.freeze({id: record.id, name, record});
+  }
+
+  function capabilityRecord(name, options = {}) {
+    const operations = [];
+    const record = {
+      id: appScopedId(metadata, "capability", name),
+      kind: "capability",
+      sourceName: options.sourceName || camelCase(name),
+      risk: options.risk || "external-read",
+      description: options.description || "",
+      operations,
+    };
+    capabilities.push(record);
+    const handle = {
+      id: record.id,
+      name,
+      record,
+      operation(operationName, runtimeMethod, operationOptions = {}) {
+        operations.push({
+          name: operationName,
+          runtimeMethod,
+          cancellable: Boolean(operationOptions.cancellable || false),
+        });
+        return handle;
+      },
+    };
+    return Object.freeze(handle);
+  }
+
+  function effectRecord(intent, capability) {
+    const record = {
+      id: appScopedId(metadata, "effect", `${intent.name}.request`),
+      kind: "effect",
+      effectKind: "capability-request",
+      owner: appScopedRef(metadata, "intent", intent.name),
+      risk: intent.risk,
+      target: appScopedRef(metadata, "capability", capability.name),
+      authority: appScopedRef(metadata, "capability", capability.name),
+      cardinality: {minimum: 0, maximum: 1},
+      allowedFinalDispositions: ["completed", "refused-before-attempt", "failed", "cancelled"],
+      requiredEvidence: ["operation-receipt", "capability-response", "visible-outcome"],
+      cleanupObligations: [],
+    };
+    effects.push(record);
+    return record;
+  }
+
+  function intentRecord(name, options, capability = null) {
+    assert(options && typeof options === "object", "MCEL_DSL_INTENT_OPTIONS_REQUIRED", `Intent '${name}' requires options.`);
+    const effect = capability ? effectRecord({name, risk: options.risk || "external-read"}, capability) : null;
+    const record = {
+      id: appScopedId(metadata, "intent", name),
+      kind: "intent",
+      sourceName: options.sourceName || camelCase(name),
+      label: options.label,
+      operationKind: capability ? "capability" : "interaction",
+      lane: options.lane,
+      runtimeMethod: options.runtimeMethod,
+      executionBinding: `${metadata.id}-runtime.${options.binding}`,
+      cancellable: Boolean(options.cancellable || false),
+      risk: options.risk || (capability ? "external-read" : "read-only"),
+      input: [],
+      reads: (options.reads || []).map((stateName) => appScopedRef(metadata, "state", stateName)),
+      writes: (options.writes || []).map((stateName) => appScopedRef(metadata, "state", stateName)),
+      refusals: [],
+      invariants: (options.invariants || []).map((invariantName) => appScopedRef(metadata, "invariant", invariantName)),
+      effectRefs: effect ? [{ref: effect.id}] : [],
+      outcomes: deepClone(options.outcomes || ["completed", "refused", "failed"]),
+    };
+    intents.push(record);
+    surfaceNodes.push({
+      id: appScopedId(metadata, "surface-node", name),
+      kind: "surface-node",
+      sourceName: record.sourceName,
+      label: record.label,
+      nodeKind: "control",
+      intent: appScopedRef(metadata, "intent", name),
+    });
+    scenarios.push({
+      id: appScopedId(metadata, "scenario", name),
+      kind: "scenario",
+      intent: appScopedRef(metadata, "intent", name),
+      steps: [receiptSuccessClaim()],
+    });
+    return Object.freeze({id: record.id, name, record});
+  }
+
+  function scenarioRecord(name, options = {}) {
+    const record = {
+      id: appScopedId(metadata, "scenario", name),
+      kind: "scenario",
+      sourceName: options.sourceName || camelCase(name),
+      label: options.label || name,
+      intent: options.intent ? appScopedRef(metadata, "intent", options.intent) : undefined,
+      given: deepClone(options.given || {}),
+      expect: deepClone(options.expect || {}),
+      steps: deepClone(options.steps || []),
+    };
+    scenarios.push(record);
+    return Object.freeze({id: record.id, name, record});
+  }
+
+  function invariantRecord(name, options = {}) {
+    const record = {
+      id: appScopedId(metadata, "invariant", name),
+      kind: "invariant",
+      sourceName: options.sourceName || camelCase(name),
+      label: options.label || name,
+      description: options.description || "",
+      examples: deepClone(options.examples || []),
+    };
+    proofInvariants.push(record);
+    return Object.freeze({id: record.id, name, record});
+  }
+
+  function build() {
+    assert(presentation, "MCEL_DSL_HOST_BOUND_PRESENTATION_REQUIRED", "Host-bound application presentation must be declared.");
+    assert(proof, "MCEL_DSL_HOST_BOUND_PROOF_REQUIRED", "Host-bound application proof contract must be declared.");
+
+    return {
+      __mcelNativeApplicationIr: true,
+      document: {
+        schema: "mcel.application-ir.v1",
+        application: {
+          id: semanticId("app", metadata.id),
+          kind: "application",
+          appId: metadata.id,
+          semanticVersion: String(metadata.semanticVersion || "1"),
+          title: metadata.title,
+          targetTruthStatus: metadata.targetTruthStatus || "semantic-runtime-proven",
+          authoringStatus: "dsl-authoritative",
+        },
+        models: [],
+        states,
+        derivations: [],
+        intents,
+        capabilities,
+        effects,
+        surfaces: [{...presentation, nodes: surfaceNodes}],
+        layouts: [
+          {
+            id: appScopedId(metadata, "layout", "workspace"),
+            kind: "layout",
+            surface: appScopedRef(metadata, "surface", "workspace"),
+            zones,
+            orderedChildren: surfaceNodes.map((node) => ({ref: node.id})),
+          },
+        ],
+        scenarios,
+        proof,
+        migration: {
+          state: "dsl-authoritative",
+          sourceFamily: "official-vanilla-javascript-dsl",
+          knownGaps: [],
+        },
+        provenance: {
+          frontend: {id: FRONTEND_ID, version: "1", sourceFiles: []},
+          nodeBindings: [],
+        },
+      },
+    };
+  }
+
+  return {
+    field: {
+      integer: () => new SchemaBuilder({kind: "integer"}),
+      text: () => new SchemaBuilder({kind: "string"}),
+      string: () => new SchemaBuilder({kind: "string"}),
+      boolean: () => new SchemaBuilder({kind: "boolean"}),
+      record: () => new SchemaBuilder({kind: "record"}),
+    },
+    presentation: {
+      hostBound(name, options) {
+        presentation = {
+          id: appScopedId(metadata, "surface", name),
+          kind: "surface",
+          sourceName: options.sourceName || `${titleCaseIdentifier(metadata.title)}Surface`,
+          route: options.route,
+          root: options.root,
+          presentationAuthority: options.presentationAuthority,
+        };
+      },
+    },
+    state: {
+      rendererLocal(name, schema, options = {}) {
+        return stateRecord(name, "renderer-local", schema, options.initial);
+      },
+      derived(name, schema, options = {}) {
+        return stateRecord(name, "derived", schema, options.initial);
+      },
+      canonical(name, schema, options = {}) {
+        return stateRecord(name, "canonical", schema, options.initial);
+      },
+    },
+    capability: {
+      external: capabilityRecord,
+    },
+    intent: {
+      interaction: intentRecord,
+      capabilityRequest(name, capability, options) {
+        return intentRecord(name, options, capability);
+      },
+    },
+    scenario: {
+      example: scenarioRecord,
+    },
+    invariant: {
+      semantic: invariantRecord,
+    },
+    layout: {
+      zones(zoneNames) {
+        zones = deepClone(zoneNames || []);
+      },
+    },
+    proof: {
+      semanticRuntimeProven(options = {}) {
+        proof = {
+          invariants: proofInvariants,
+          requiredAuthorities: deepClone(options.requiredAuthorities || [
+            "visible-surface",
+            "operation-receipt",
+            "capability-response",
+          ]),
+          targetTruthStatus: options.targetTruthStatus || metadata.targetTruthStatus || "semantic-runtime-proven",
+        };
+      },
+    },
+    build,
+  };
+}
+
 
 function createDsl(metadata, source) {
   const states = [];
@@ -468,8 +758,17 @@ function createDsl(metadata, source) {
     },
   };
 
+  const application = {
+    hostBound(declaration) {
+      assert(typeof declaration === "function", "MCEL_DSL_HOST_BOUND_DECLARATION_REQUIRED", "Host-bound application requires one declaration callback.");
+      const builder = createHostBoundApplicationBuilder(metadata);
+      declaration(builder);
+      return builder.build();
+    },
+  };
+
   return {
-    field, state, intent, invariant, surface, layout, prove, expr, ir, migration,
+    field, state, intent, invariant, surface, layout, prove, expr, ir, migration, application,
     __collections: {states, invariants, intents, effects, surfaces, layouts, scenarios},
   };
 }

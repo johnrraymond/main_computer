@@ -109,6 +109,55 @@ def test_cli_runs_under_python_without_site_packages(tmp_path: Path) -> None:
     assert EXPECTED_SEMANTIC in completed.stdout
 
 
+def test_generic_host_bound_application_builder_compiles(tmp_path: Path) -> None:
+    source = _write_source(
+        tmp_path,
+        """\"use strict\";
+const mcel = require(\"@mcel/app\");
+
+function declareDemo(app) {
+  app.presentation.hostBound(\"workspace\", {
+    route: \"/applications/demo\",
+    root: \"#demo-app\",
+    presentationAuthority: \"existing-host-html\"
+  });
+  app.state.rendererLocal(\"mode\", app.field.string(), {initial: \"ready\"});
+  app.intent.interaction(\"ping\", {
+    runtimeMethod: \"ping\",
+    binding: \"ping\",
+    label: \"Ping host runtime\",
+    lane: \"local-ui\",
+    reads: [\"mode\"]
+  });
+  app.scenario.example(\"ping-completes\", {
+    intent: \"ping\",
+    expect: {ok: true}
+  });
+  app.layout.zones([\"main\"]);
+  app.proof.semanticRuntimeProven();
+}
+
+module.exports = mcel.defineApp(
+  {id: \"host-demo\", title: \"Host Demo\", semanticVersion: \"1\"},
+  ({application}) => application.hostBound(declareDemo)
+);
+""",
+    )
+
+    report = compile_dsl_application(source)
+
+    assert report.valid is True
+    assert report.normalized_ir is not None
+    ir = report.normalized_ir
+    assert ir["application"]["appId"] == "host-demo"
+    assert ir["states"][0]["id"] == "state:host-demo.mode"
+    assert ir["surfaces"][0]["route"] == "/applications/demo"
+    assert ir["surfaces"][0]["root"] == "#demo-app"
+    assert ir["intents"][0]["executionBinding"] == "host-demo-runtime.ping"
+    assert ir["proof"]["targetTruthStatus"] == "semantic-runtime-proven"
+
+
+
 def test_forbidden_node_module_is_rejected(tmp_path: Path) -> None:
     source = _write_source(
         tmp_path,

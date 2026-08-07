@@ -420,6 +420,89 @@
   }
 
 
+  function createStageActorEncounterReconciler(adapterOrDescriptor = {}, hooks = {}) {
+    const adapter = adapterOrDescriptor?.reconcile
+      ? adapterOrDescriptor
+      : createStageActorEncounterAdapter(adapterOrDescriptor);
+    const strategy = objectValue(hooks);
+
+    function classify(options = {}) {
+      return typeof strategy.classify === "function"
+        ? strategy.classify(adapter, objectValue(options))
+        : adapter.classify(options);
+    }
+
+    function plan(classification, options = {}) {
+      return typeof strategy.plan === "function"
+        ? strategy.plan(classification, adapter, objectValue(options))
+        : adapter.recoveryPlan(classification, options);
+    }
+
+    function diagnostic(classification, planResult = null, options = {}) {
+      return typeof strategy.diagnostic === "function"
+        ? strategy.diagnostic(classification, planResult, adapter, objectValue(options))
+        : adapter.diagnostic(classification, planResult);
+    }
+
+    function reconcile(reason = "encounter-reconciliation", options = {}) {
+      const normalizedReason = String(reason || "encounter-reconciliation");
+      const normalizedOptions = objectValue(options);
+
+      return adapter.reconcile({
+        ...normalizedOptions,
+        reason: normalizedReason,
+        classify: () => classify(normalizedOptions),
+        plan: (classification) => plan(classification, normalizedOptions),
+        diagnostic: (classification, planResult) => (
+          diagnostic(classification, planResult, normalizedOptions)
+        ),
+        beforeRecovery: typeof strategy.beforeRecovery === "function"
+          ? (classification, planResult) => (
+            strategy.beforeRecovery(classification, planResult, normalizedOptions, adapter)
+          )
+          : undefined,
+        afterRecovery: typeof strategy.afterRecovery === "function"
+          ? (classification, planResult, result, recovered) => (
+            strategy.afterRecovery(
+              classification,
+              planResult,
+              result,
+              recovered,
+              normalizedOptions,
+              adapter
+            )
+          )
+          : undefined,
+        performRecovery: typeof strategy.performRecovery === "function"
+          ? (planResult) => strategy.performRecovery(
+            planResult,
+            normalizedReason,
+            normalizedOptions,
+            adapter
+          )
+          : undefined,
+        recoverySucceeded: typeof strategy.recoverySucceeded === "function"
+          ? (planResult, result) => strategy.recoverySucceeded(
+            planResult,
+            result,
+            normalizedOptions,
+            adapter
+          )
+          : undefined
+      });
+    }
+
+    return Object.freeze({
+      adapter,
+      descriptor: adapter.descriptor || adapter,
+      classify,
+      recoveryPlan: plan,
+      diagnostic,
+      reconcile
+    });
+  }
+
+
   const api = {
     ACTOR_GROUP_STATUS,
     ENCOUNTER_STATE,
@@ -429,6 +512,7 @@
     recoveryPlan,
     stageActorEncounterDescriptor,
     createStageActorEncounterAdapter,
+    createStageActorEncounterReconciler,
     reconcileStageActorEncounter,
     diagnosticSnapshot
   };

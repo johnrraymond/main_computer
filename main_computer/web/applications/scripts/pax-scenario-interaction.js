@@ -1170,22 +1170,14 @@
     }
   }
 
-  function classifyBoarderGroup(characterRuntime = currentCharacterRuntime()) {
-    const group = PAX_PROTECTION_ENCOUNTER.classifyActorGroup(characterRuntime);
-    return {
-      ...group,
-      boarders: group.actors || []
-    };
-  }
-
-  function classifyPaxProtectionState(options = {}) {
+  function classifyPaxProtectionStateForReconciler(adapter, options = {}) {
     const scenarioRuntime = options.scenarioRuntime
       || uiState.runtime
       || global.MainComputerSystemScenarioRuntime?.current?.()
       || null;
     const characterRuntime = options.characterRuntime
       || currentCharacterRuntime();
-    const classification = PAX_PROTECTION_ENCOUNTER.classify({
+    const classification = adapter.classify({
       ...objectValue(options),
       scenarioRuntime,
       characterRuntime
@@ -1200,13 +1192,38 @@
     };
   }
 
-  function paxProtectionReconciliationPlan(classification, options = {}) {
-    return PAX_PROTECTION_ENCOUNTER.recoveryPlan(
+  function paxProtectionPlanForReconciler(classification, adapter, options = {}) {
+    return adapter.recoveryPlan(
       classification,
       {
         recoverDefeated: options.recoverDefeated === true
       }
     );
+  }
+
+  function paxProtectionDiagnosticForReconciler(
+    classification,
+    plan = null,
+    adapter = PAX_PROTECTION_ENCOUNTER
+  ) {
+    return adapter.diagnostic(
+      classification,
+      plan,
+      {
+        scenarioVisible: Boolean(classification?.view?.visible),
+        scenarioStatus: stringValue(classification?.view?.state?.status),
+        recoveryInProgress: Boolean(uiState.recoveryInProgress)
+      }
+    );
+  }
+
+  function paxProtectionBeforeRecovery() {
+    uiState.recoveryInProgress = true;
+    return null;
+  }
+
+  function paxProtectionAfterRecovery() {
+    uiState.recoveryInProgress = false;
   }
 
   function performPaxProtectionRecovery(plan, reason, options = {}) {
@@ -1230,16 +1247,37 @@
     return false;
   }
 
+  const PAX_PROTECTION_RECONCILER = EncounterState.createStageActorEncounterReconciler(
+    PAX_PROTECTION_ENCOUNTER,
+    {
+      classify: classifyPaxProtectionStateForReconciler,
+      plan: paxProtectionPlanForReconciler,
+      diagnostic: paxProtectionDiagnosticForReconciler,
+      beforeRecovery: paxProtectionBeforeRecovery,
+      afterRecovery: paxProtectionAfterRecovery,
+      performRecovery: performPaxProtectionRecovery,
+      recoverySucceeded: paxProtectionRecoverySucceeded
+    }
+  );
+
+  function classifyBoarderGroup(characterRuntime = currentCharacterRuntime()) {
+    const group = PAX_PROTECTION_ENCOUNTER.classifyActorGroup(characterRuntime);
+    return {
+      ...group,
+      boarders: group.actors || []
+    };
+  }
+
+  function classifyPaxProtectionState(options = {}) {
+    return PAX_PROTECTION_RECONCILER.classify(options);
+  }
+
+  function paxProtectionReconciliationPlan(classification, options = {}) {
+    return PAX_PROTECTION_RECONCILER.recoveryPlan(classification, options);
+  }
+
   function paxProtectionDiagnosticSnapshot(classification, plan = null) {
-    return PAX_PROTECTION_ENCOUNTER.diagnostic(
-      classification,
-      plan,
-      {
-        scenarioVisible: Boolean(classification?.view?.visible),
-        scenarioStatus: stringValue(classification?.view?.state?.status),
-        recoveryInProgress: Boolean(uiState.recoveryInProgress)
-      }
-    );
+    return PAX_PROTECTION_RECONCILER.diagnostic(classification, plan);
   }
 
   function diagnosePaxProtectionEncounter(options = {}) {
@@ -1270,24 +1308,7 @@
       return {recovered: false, reason: "recovery-in-progress"};
     }
 
-    const outcome = PAX_PROTECTION_ENCOUNTER.reconcile({
-      ...objectValue(options),
-      reason: stringValue(reason),
-      classify: () => classifyPaxProtectionState(options),
-      plan: (classification) => paxProtectionReconciliationPlan(classification, options),
-      diagnostic: (classification, plan) => (
-        paxProtectionDiagnosticSnapshot(classification, plan)
-      ),
-      beforeRecovery: () => {
-        uiState.recoveryInProgress = true;
-        return null;
-      },
-      afterRecovery: () => {
-        uiState.recoveryInProgress = false;
-      },
-      performRecovery: (plan) => performPaxProtectionRecovery(plan, reason, options),
-      recoverySucceeded: paxProtectionRecoverySucceeded
-    });
+    const outcome = PAX_PROTECTION_RECONCILER.reconcile(reason, options);
 
     if (outcome?.plan?.recover) {
       uiState.lastAutomaticRecovery = {
@@ -1426,6 +1447,7 @@
     reconcilePaxProtectionOnLiveUpdate,
     encounterState: EncounterState,
     protectionEncounter: PAX_PROTECTION_ENCOUNTER,
+    protectionReconciler: PAX_PROTECTION_RECONCILER,
     reconcilePaxProtectionState,
     recoverActiveBoardersOutsideProtection,
     startOrRecoverPax,

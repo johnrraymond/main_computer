@@ -109,15 +109,27 @@ def test_calculator_core_and_capability_bridge_include_precede_runtime_include_a
 
 def test_calculator_authoritative_dsl_source_reads_as_fluent_app_declaration() -> None:
     source = (PACKAGE / "application.js").read_text(encoding="utf-8")
+    runtime = (ROOT / "main_computer/mcel_dsl_runtime.js").read_text(encoding="utf-8")
 
     assert "const portableApplication =" not in source
     assert "Shadow Calculator authority" not in source
     assert "STATE_FIELDS" not in source
     assert "CAPABILITY_LANES" not in source
     assert "INTENT_DEFINITIONS" not in source
+    assert "createCalculatorApplication" not in source
+    assert "function stateRecord(" not in source
+    assert "function intentRecord(" not in source
+    assert "function capabilityRecord(" not in source
+    assert "function effectRecord(" not in source
+    assert "function scenarioRecord(" not in source
+    assert "function invariantRecord(" not in source
+    assert "toIr()" not in source
+    assert "application.hostBound(declareCalculator)" in source
     assert "declareCalculator(app)" in source
     assert "app.presentation.hostBound(" in source
     assert "app.state.rendererLocal(" in source
+    assert "app.field.string()" in source
+    assert "app.field.record()" in source
     assert "unit-mode" in source
     assert "unit-result" in source
     assert "app.capability" in source
@@ -132,4 +144,6 @@ def test_calculator_authoritative_dsl_source_reads_as_fluent_app_declaration() -
     assert "app.scenario.example(" in source
     assert "app.intent.capabilityRequest(" in source
     assert "app.proof.semanticRuntimeProven()" in source
-    assert len(source.splitlines()) < 500
+    assert "function createHostBoundApplicationBuilder(" in runtime
+    assert "hostBound(declaration)" in runtime
+    assert len(source.splitlines()) < 250

@@ -843,6 +843,35 @@ class PaxSystemScenarioTests(unittest.TestCase):
                         recoveryEvents.push("after");
                       }
                     });
+                    const reconcilerEvents = [];
+                    const boundReconciler = encounter.createStageActorEncounterReconciler(
+                      adapter,
+                      {
+                        plan: (classification, adapter, options) => (
+                          adapter.recoveryPlan(classification, options)
+                        ),
+                        beforeRecovery: () => {
+                          reconcilerEvents.push("before");
+                          return null;
+                        },
+                        performRecovery: (plan, reason) => {
+                          reconcilerEvents.push(`${reason}:${plan.action}`);
+                          return {forced: true};
+                        },
+                        recoverySucceeded: (plan, result) => Boolean(result.forced),
+                        afterRecovery: () => {
+                          reconcilerEvents.push("after");
+                        }
+                      }
+                    );
+                    const boundReconciled = boundReconciler.reconcile(
+                      "bound-unit-test-reconcile",
+                      {
+                        view: {visible: true, state: {status: "active", stageId: "combat"}},
+                        characterRuntime: defeatedRuntime,
+                        recoverDefeated: true
+                      }
+                    );
                     console.log(JSON.stringify({
                       activeStatus: active.status,
                       defeatedStatus: defeated.status,
@@ -855,7 +884,9 @@ class PaxSystemScenarioTests(unittest.TestCase):
                       allowed,
                       diagnostic: encounter.diagnosticSnapshot(classification, allowed),
                       reconciled,
-                      recoveryEvents
+                      recoveryEvents,
+                      boundReconciled,
+                      reconcilerEvents
                     }));
                     """
                 ),
@@ -883,6 +914,11 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertEqual(
             payload["recoveryEvents"],
             ["before", "unit-test-reconcile:revive-actors", "after"],
+        )
+        self.assertTrue(payload["boundReconciled"]["recovered"])
+        self.assertEqual(
+            payload["reconcilerEvents"],
+            ["before", "bound-unit-test-reconcile:revive-actors", "after"],
         )
 
 
@@ -1082,12 +1118,14 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertIn("diagnosticSnapshot", encounter)
         self.assertIn("stageActorEncounterDescriptor", encounter)
         self.assertIn("createStageActorEncounterAdapter", encounter)
+        self.assertIn("createStageActorEncounterReconciler", encounter)
         self.assertIn("EncounterState.createStageActorEncounterAdapter", source)
         self.assertIn("PAX_PROTECTION_ENCOUNTER.classifyActorGroup", source)
         self.assertIn("PAX_PROTECTION_ENCOUNTER.classify", source)
-        self.assertIn("PAX_PROTECTION_ENCOUNTER.recoveryPlan", source)
-        self.assertIn("PAX_PROTECTION_ENCOUNTER.diagnostic", source)
-        self.assertIn("PAX_PROTECTION_ENCOUNTER.reconcile", source)
+        self.assertIn("adapter.recoveryPlan", source)
+        self.assertIn("adapter.diagnostic", source)
+        self.assertIn("EncounterState.createStageActorEncounterReconciler", source)
+        self.assertIn("PAX_PROTECTION_RECONCILER.reconcile", source)
         self.assertIn("function classifyBoarderGroup", source)
         self.assertIn("function classifyPaxProtectionState", source)
         self.assertIn("function paxProtectionReconciliationPlan", source)
