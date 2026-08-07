@@ -193,47 +193,66 @@ Get-Content .\runtime\deployments\mainnet\latest.json
 ## Validator-RPC canary funding proof
 
 When the Mother validator-RPC canary is used after steady-state deployment, the
-funding step is not complete merely because a temporary helper service starts or
-exits. Completion requires an observed on-chain postcondition:
+funding step is gated by the Mother-owned shared RPC route:
 
 ```text
-canary balance on A == exact required funding amount
-canary balance on C == exact required funding amount
+https://mainnet-rpc.greatlibrary.io
 ```
 
-The helper scripts run inside the Foundry helper image and therefore must use
-Foundry-native `cast` commands. They must not assume Python exists in that image,
-must not use `--ether=false`, and must compare large wei values as decimal
-strings instead of shell arithmetic.
+Do not infer per-node RPC names from Allfather examples. For the Mother mainnet
+path, `mainneta-rpc1.greatlibrary.io` and `mainnetc-rpc1.greatlibrary.io` are
+not the canonical live route unless a staged Mother route manifest explicitly
+declares them. The shared hostname can have multiple DNS records, and every
+active backend for that hostname must answer the mainnet RPC contract.
 
-Each helper must emit a
-`MOTHER_VALIDATOR_RPC_CANARY_FUNDING_RESULT` marker before Mother accepts the
-boundary as a proof. The marker is the proof; service health is only a
-transport/liveness signal. Mother reads all authorized Coolify runtime-log
-endpoints before deleting the helper and records only structured fields such as
-the step, classification, `balance_wei`, expected balance, RPC target, and
-funding transaction hash. A healthy service without the marker is not a valid
-proof. A valid success marker can prove the boundary even when Coolify service
-health lags or later reports the helper as exited.
+Before canary funding, verify the route:
 
-Before either classifier can authorize funding, the A-side cast probe must first
-prove that the helper image can run `cast`, and the A-side RPC probe must prove
-that private RPC can answer `cast balance`. If the cast probe fails, the correct
-failure is `MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CAST_UNAVAILABLE`. If the
-RPC probe fails, the correct failure is
-`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE`. If the probe
-succeeds but the exact-balance and zero-balance classifiers both fail before the
-funder is started, the correct failure is
-`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_UNEXPECTED_BALANCE`.
+```powershell
+curl.exe https://mainnet-rpc.greatlibrary.io `
+  -H 'Content-Type: application/json' `
+  --data-raw '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+```
 
-In both cases, no funding release should be repeated blindly. The evidence state
+Expected:
+
+```json
+{"jsonrpc":"2.0","id":1,"result":"0x28757b0"}
+```
+
+`0x28757b0` is chain ID `42424240`. If the response is `no available server`,
+the hostname reached the routing layer but no healthy Traefik/proxy backend was
+available. Fix Mother-owned route/backend registration before funding. If DNS
+fails, fix the shared hostname. If the JSON-RPC result is a different chain ID,
+the route is serving the wrong network.
+
+Completion requires an observed on-chain postcondition through the shared route:
+
+```text
+canary balance == exact required funding amount
+```
+
+The Mother route preflight must prove:
+
+```text
+eth_chainId == 42424240
+eth_getBalance(canary) succeeds
+```
+
+before any captain key is bound or any transfer is attempted. A temporary helper
+container is not required to prove the shared RPC route. The Mother mainnet
+canary path must not depend on the Foundry helper image, `cast`, or Coolify
+runtime-log scraping just to prove route availability.
+
+No funding release should be repeated blindly. The evidence state
 `unchanged-before-funder-start` means the captain key was not bound to a funder
-and no transfer was attempted. Fix the classifier/transport problem first, then
-restage a new funding transaction from the canary transaction.
+and no transfer was attempted. Fix the route, route backend, or balance
+classification problem first, then restage a new funding transaction from the
+canary transaction.
 
-A successful funding evidence document must show the A-side post-funding exact
-balance verifier and the C-side funded/reconciled verifier passing before any
-canary execution release is authorized.
+A successful funding evidence document must show the shared route chain-id
+preflight, balance precondition, transfer/reconciliation decision, and
+post-funding exact balance verification passing before any canary execution
+release is authorized.
 
 ## Post-deploy network hardening
 

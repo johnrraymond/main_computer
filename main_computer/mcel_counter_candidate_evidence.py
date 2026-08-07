@@ -1,67 +1,75 @@
-"""Independent evidence pipeline for the isolated DSL-generated Counter candidate.
-
-Wave 5 creates a disposable repository workspace under candidate runtime state,
-overlays the generated Counter package, and runs the existing package, runtime,
-acceptance, browser-observation, and application-proof authorities there.  It
-also produces a Counter-specific effect-accounting ledger from independent Node
-and Chromium probes.  The live package remains untouched and no evidence is
-reused or promoted.
-"""
+"""Counter evidence wrapper for the generic explicit-package candidate pipeline."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
 import subprocess
-import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
-from main_computer.mcel_application_ir import canonical_json_bytes
-from main_computer.mcel_application_packages import build_application_package_catalog
 from main_computer.mcel_counter_candidate_projection import project_counter_candidate
 from main_computer.mcel_counter_compatibility import DEFAULT_DSL_SOURCE, DEFAULT_FIXTURE_IR
-from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT, compile_dsl_application
-from main_computer.mcel_evidence_provenance import build_repository_provenance
+from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT
+from main_computer.mcel_explicit_package_candidate_evidence import (
+    DEFAULT_REPORT_ROOT,
+    ExplicitPackageCandidateEvidenceError,
+    ExplicitPackageCandidateEvidenceProfile,
+    ExplicitPackageCandidateEvidenceResult,
+    _diagnostic,
+    _display_path,
+    _load_json as _generic_load_json,
+    _prepare_workspace as _generic_prepare_workspace,
+    _run_candidate_authorities as _generic_run_candidate_authorities,
+    _run_command,
+    _sha256_path,
+    _tree_fingerprint,
+    _write_json,
+    run_explicit_package_candidate_evidence,
+)
 from main_computer.mcel_node_runtime import resolve_node_executable
 
+
+APP_ID = "contract-counter"
 REPORT_SCHEMA = "mcel.counter-candidate-evidence-report.v1"
 REPORT_VERSION = "mcel-counter-candidate-evidence-wave5"
 EFFECT_REPORT_SCHEMA = "mcel.counter-effect-accounting-report.v1"
 NODE_PROBE_SCHEMA = "mcel.counter-effect-probe.v1"
 BROWSER_PROBE_SCHEMA = "mcel.counter-browser-effect-probe.v1"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_REPORT_ROOT = Path("runtime/reports/mcel-compiler-candidates")
 
 
-class CounterCandidateEvidenceError(RuntimeError):
-    """Raised when isolated candidate evidence cannot be produced truthfully."""
+class CounterCandidateEvidenceError(ExplicitPackageCandidateEvidenceError):
+    """Raised when isolated Counter candidate evidence cannot be produced truthfully."""
 
 
-@dataclass(frozen=True)
-class CandidateEvidenceResult:
-    valid: bool
-    status: str
-    report: Mapping[str, Any]
-    diagnostics: tuple[Mapping[str, Any], ...]
-    output_directory: Path | None = None
+CandidateEvidenceResult = ExplicitPackageCandidateEvidenceResult
 
-    @property
-    def diagnostic_count(self) -> int:
-        return len(self.diagnostics)
 
-    def to_dict(self) -> dict[str, Any]:
-        value = dict(self.report)
-        value["diagnosticCount"] = self.diagnostic_count
-        value["diagnostics"] = [dict(item) for item in self.diagnostics]
-        if self.output_directory is not None:
-            value.setdefault("artifacts", {})["outputDirectory"] = _display_path(
-                self.output_directory, REPOSITORY_ROOT
-            )
-        return value
+def counter_explicit_package_candidate_evidence_profile() -> ExplicitPackageCandidateEvidenceProfile:
+    return ExplicitPackageCandidateEvidenceProfile(
+        app_id=APP_ID,
+        project_candidate=project_counter_candidate,
+        build_effect_accounting=_build_effect_accounting,
+        default_dsl_source=DEFAULT_DSL_SOURCE,
+        default_fixture_ir=DEFAULT_FIXTURE_IR,
+        default_candidate_root=DEFAULT_CANDIDATE_ROOT,
+        default_report_root=DEFAULT_REPORT_ROOT,
+        report_schema=REPORT_SCHEMA,
+        report_version=REPORT_VERSION,
+        report_title="MCEL Counter Candidate Evidence",
+        effect_accounting_filename="mcel-counter-effect-accounting-report.json",
+        node_probe_filename="mcel-counter-node-effect-probe.json",
+        browser_probe_filename="mcel-counter-browser-effect-probe.json",
+        invalid_dsl_message="DSL compilation did not produce valid Counter IR.",
+        invalid_projection_message="Candidate projection is not exact.",
+        evidence_failed_code="MCEL_COUNTER_CANDIDATE_EVIDENCE_FAILED",
+        source_invalid_code="MCEL_COUNTER_CANDIDATE_EVIDENCE_SOURCE_INVALID",
+        stage_failed_code="MCEL_COUNTER_CANDIDATE_STAGE_FAILED",
+        live_changed_code="MCEL_COUNTER_LIVE_PACKAGE_CHANGED",
+        live_changed_summary="The live Counter package changed during isolated candidate evidence execution.",
+    )
 
 
 def run_counter_candidate_evidence(
@@ -77,256 +85,23 @@ def run_counter_candidate_evidence(
     node_probe_runner: Callable[[Path], Mapping[str, Any]] | None = None,
     browser_probe_runner: Callable[[Path, bool], Mapping[str, Any]] | None = None,
 ) -> CandidateEvidenceResult:
-    repo = repo_root.resolve()
-    diagnostics: list[Mapping[str, Any]] = []
-    live_package = repo / "mcel_apps" / "contract-counter"
-    live_before = _tree_fingerprint(live_package)
-
-    dsl = compile_dsl_application(
-        dsl_source_path,
-        compare_ir_path=fixture_ir_path,
-        candidate_root=candidate_root,
-        write_candidate=True,
-    )
-    diagnostics.extend(dsl.diagnostics)
-    if not dsl.valid or dsl.normalized_ir is None or not dsl.source_binding_fingerprint:
-        return _failure("invalid-dsl", diagnostics, "DSL compilation did not produce valid Counter IR.")
-
-    projection = project_counter_candidate(
+    return run_explicit_package_candidate_evidence(
+        counter_explicit_package_candidate_evidence_profile(),
+        repo_root=repo_root,
         dsl_source_path=dsl_source_path,
         fixture_ir_path=fixture_ir_path,
-        live_package_root=live_package,
         candidate_root=candidate_root,
-        write_candidate=True,
+        report_root=report_root,
+        headed=headed,
+        write_report=write_report,
+        command_runner=command_runner,
+        node_probe_runner=node_probe_runner or (lambda workspace: _run_counter_effect_probe(workspace)),
+        browser_probe_runner=browser_probe_runner or (lambda workspace, is_headed: _run_browser_effect_probe(workspace, is_headed)),
     )
-    diagnostics.extend(projection.diagnostics)
-    if not projection.valid or projection.candidate_directory is None:
-        return _failure("invalid-projection", diagnostics, "Candidate projection is not exact.")
-
-    source_binding = dsl.source_binding_fingerprint.removeprefix("sha256:")
-    candidate_directory = projection.candidate_directory.resolve()
-    workspace = candidate_directory / "evidence-workspace"
-    candidate_package = candidate_directory / "package" / "mcel_apps" / "contract-counter"
-    candidate_ir_path = candidate_directory / "mcel.application.ir.json"
-    if not candidate_ir_path.is_file():
-        candidate_ir_path.parent.mkdir(parents=True, exist_ok=True)
-        candidate_ir_path.write_bytes(canonical_json_bytes(dsl.normalized_ir) + b"\n")
-    if not candidate_package.is_dir():
-        return _failure("missing-candidate-package", diagnostics, "Wave 4 candidate package is missing.")
-
-    output_root = report_root if report_root.is_absolute() else repo / report_root
-    output_directory = output_root / "contract-counter" / source_binding
-    if write_report and output_directory.exists():
-        shutil.rmtree(output_directory)
-
-    try:
-        _prepare_workspace(repo, workspace, candidate_package)
-        _run_candidate_authorities(
-            repo=repo,
-            workspace=workspace,
-            headed=headed,
-            command_runner=command_runner or _run_command,
-        )
-        acceptance = _load_json(
-            workspace / "runtime/reports/mcel-acceptance/apps/contract-counter/mcel-acceptance-report.json",
-            "candidate acceptance report",
-        )
-        observation = _load_json(
-            workspace / "runtime/reports/mcel-observation/apps/contract-counter/mcel-operation-observation-report.json",
-            "candidate observation report",
-        )
-        base_proof = _load_json(
-            workspace / "runtime/reports/mcel-app-proof/apps/contract-counter/mcel-app-proof-report.json",
-            "candidate application proof",
-        )
-        node_probe = dict((node_probe_runner or _run_counter_effect_probe)(workspace))
-        browser_probe = dict((browser_probe_runner or _run_browser_effect_probe)(workspace, headed))
-        effect_accounting = _build_effect_accounting(
-            ir=dsl.normalized_ir,
-            acceptance=acceptance,
-            observation=observation,
-            node_probe=node_probe,
-            browser_probe=browser_probe,
-        )
-    except CounterCandidateEvidenceError as exc:
-        diagnostics.append(_diagnostic("MCEL_COUNTER_CANDIDATE_EVIDENCE_FAILED", str(exc), "$candidateEvidence"))
-        failure_report: dict[str, Any] = {
-            "schema": REPORT_SCHEMA,
-            "version": REPORT_VERSION,
-            "appId": "contract-counter",
-            "status": "fail",
-            "valid": False,
-            "truthStatus": None,
-            "candidate": {
-                "directory": _display_path(candidate_directory, repo),
-                "workspace": _display_path(workspace, repo),
-                "semanticFingerprint": dsl.semantic_fingerprint,
-                "sourceBindingFingerprint": dsl.source_binding_fingerprint,
-                "irSha256": _sha256_path(candidate_ir_path),
-            },
-            "stages": {
-                "candidateProjection": {"status": "pass"},
-                "packageValidation": {"status": "not-completed"},
-                "runtimeProjection": {"status": "not-completed"},
-                "acceptance": {"status": "not-completed"},
-                "browserObservation": {"status": "fail" if "observation" in str(exc).lower() or "browser" in str(exc).lower() else "not-completed"},
-                "effectAccounting": {"status": "not-completed"},
-                "applicationProof": {"status": "not-completed"},
-                "repositoryBinding": {"status": "not-completed"},
-            },
-            "authority": {
-                "liveAuthority": "legacy-explicit-package",
-                "candidateAuthority": "none",
-                "liveApplicationChanged": False,
-                "contractsGeneratedInCandidate": True,
-                "evidenceReused": False,
-                "candidatePromoted": False,
-                "promotionEligible": False,
-            },
-            "error": str(exc),
-        }
-        if write_report:
-            output_directory.mkdir(parents=True, exist_ok=True)
-            _write_json(output_directory / "mcel-candidate-evidence-report.json", failure_report)
-            (output_directory / "mcel-candidate-evidence-report.md").write_text(
-                _render_markdown(failure_report), encoding="utf-8"
-            )
-        return _result(False, "fail", diagnostics, failure_report, output_directory if write_report else None)
-
-    workspace_catalog = build_application_package_catalog(workspace)
-    candidate_record = next(
-        (record for record in workspace_catalog.packages if record.app_id == "contract-counter"),
-        None,
-    )
-    workspace_provenance = build_repository_provenance(workspace)
-    projection_report = _load_json(candidate_directory / "projection-report.json", "candidate projection report")
-
-    stage_checks = {
-        "candidateProjection": projection_report.get("status") == "exact",
-        "packageValidation": bool(candidate_record and candidate_record.valid and candidate_record.fingerprint),
-        "runtimeProjection": (base_proof.get("stages") or {}).get("generatedArtifacts", {}).get("status") == "pass",
-        "acceptance": acceptance.get("status") == "pass" and acceptance.get("passed") is True,
-        "browserObservation": observation.get("status") == "pass" and observation.get("ok") is True,
-        "effectAccounting": effect_accounting.get("status") == "closed" and effect_accounting.get("valid") is True,
-        "applicationProof": base_proof.get("status") == "pass" and base_proof.get("truthStatus") == "semantic-runtime-proven",
-        "repositoryBinding": (base_proof.get("stages") or {}).get("repositoryBinding", {}).get("status") == "exact",
-    }
-    for stage, passed in stage_checks.items():
-        if not passed:
-            diagnostics.append(
-                _diagnostic(
-                    "MCEL_COUNTER_CANDIDATE_STAGE_FAILED",
-                    f"Candidate stage {stage} did not pass.",
-                    f"$stages.{stage}",
-                )
-            )
-
-    live_after = _tree_fingerprint(live_package)
-    live_unchanged = live_before == live_after
-    if not live_unchanged:
-        diagnostics.append(
-            _diagnostic(
-                "MCEL_COUNTER_LIVE_PACKAGE_CHANGED",
-                "The live Counter package changed during isolated candidate evidence execution.",
-                "$authority.liveApplicationChanged",
-            )
-        )
-
-    valid = all(stage_checks.values()) and live_unchanged and not any(
-        item.get("blocking", True) for item in diagnostics
-    )
-    status = "pass" if valid else "fail"
-    report: dict[str, Any] = {
-        "schema": REPORT_SCHEMA,
-        "version": REPORT_VERSION,
-        "appId": "contract-counter",
-        "status": status,
-        "valid": valid,
-        "truthStatus": base_proof.get("truthStatus"),
-        "candidate": {
-            "directory": _display_path(candidate_directory, repo),
-            "workspace": _display_path(workspace, repo),
-            "semanticFingerprint": dsl.semantic_fingerprint,
-            "sourceBindingFingerprint": dsl.source_binding_fingerprint,
-            "irSha256": _sha256_path(candidate_ir_path),
-            "packageFingerprint": candidate_record.fingerprint if candidate_record else None,
-            "catalogFingerprint": workspace_catalog.fingerprint,
-            "repositoryProvenance": workspace_provenance,
-        },
-        "stages": {
-            stage: {"status": "pass" if passed else "fail"}
-            for stage, passed in stage_checks.items()
-        },
-        "authority": {
-            "liveAuthority": "legacy-explicit-package",
-            "candidateAuthority": "none",
-            "liveApplicationChanged": not live_unchanged,
-            "contractsGeneratedInCandidate": True,
-            "evidenceReused": False,
-            "candidatePromoted": False,
-            "promotionEligible": False,
-        },
-        "effectAccounting": effect_accounting,
-        "baseApplicationProof": base_proof,
-        "evidence": {},
-    }
-
-    if write_report:
-        _publish_evidence(
-            workspace=workspace,
-            output_directory=output_directory,
-            report=report,
-            effect_accounting=effect_accounting,
-            node_probe=node_probe,
-            browser_probe=browser_probe,
-        )
-        report["evidence"] = _published_artifacts(output_directory, repo)
-        _write_json(output_directory / "mcel-candidate-evidence-report.json", report)
-        (output_directory / "mcel-candidate-evidence-report.md").write_text(
-            _render_markdown(report), encoding="utf-8"
-        )
-
-    return _result(valid, status, diagnostics, report, output_directory if write_report else None)
 
 
 def _prepare_workspace(repo: Path, workspace: Path, candidate_package: Path) -> None:
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True)
-    source_dirs = (
-        "main_computer",
-        "tools",
-        "mcel_apps",
-        "tests",
-        "pretty_docs",
-        "contracts",
-        "deploy",
-        "docker",
-        "scripts",
-        "game_projects",
-    )
-    for name in source_dirs:
-        source = repo / name
-        if source.is_dir():
-            shutil.copytree(source, workspace / name, ignore=_copy_ignore)
-    for path in repo.iterdir():
-        if not path.is_file() or path.suffix.lower() in {".zip", ".pyc", ".pyo"}:
-            continue
-        shutil.copy2(path, workspace / path.name)
-    target = workspace / "mcel_apps" / "contract-counter"
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(candidate_package, target, ignore=_copy_ignore)
-
-
-def _copy_ignore(_directory: str, names: Sequence[str]) -> set[str]:
-    ignored = {
-        name
-        for name in names
-        if name in {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules", ".git"}
-        or name.endswith((".pyc", ".pyo", ".zip"))
-    }
-    return ignored
+    _generic_prepare_workspace(repo, workspace, candidate_package, app_id=APP_ID)
 
 
 def _run_candidate_authorities(
@@ -336,59 +111,17 @@ def _run_candidate_authorities(
     headed: bool,
     command_runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> None:
-    commands = [
-        [sys.executable, str(repo / "tools/mcel_application_runtime_projection.py"), "--repo-root", str(workspace)],
-        [sys.executable, str(repo / "tools/mcel_application_package_browser_catalog.py"), "--repo-root", str(workspace)],
-        [
-            sys.executable,
-            str(repo / "main_computer/mcel_acceptance_runner.py"),
-            "--repo-root",
-            str(workspace),
-            "--app",
-            "contract-counter",
-            "--check",
-        ],
-        [
-            sys.executable,
-            str(repo / "main_computer/mcel_application_observation_runner.py"),
-            "--repo-root",
-            str(workspace),
-            "--app",
-            "contract-counter",
-            "--check",
-            *( ["--headed"] if headed else [] ),
-        ],
-        [
-            sys.executable,
-            str(repo / "main_computer/mcel_app_prove.py"),
-            "--repo-root",
-            str(workspace),
-            "--app",
-            "contract-counter",
-            "--reuse-evidence",
-            "--check",
-        ],
-    ]
-    for command in commands:
-        completed = command_runner(
-            command,
-            cwd=workspace,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=900,
-        )
-        if completed.returncode != 0:
-            raise CounterCandidateEvidenceError(
-                "Candidate authority failed: "
-                + " ".join(command)
-                + (f"\n{completed.stdout.strip()}" if completed.stdout else "")
-            )
+    _generic_run_candidate_authorities(
+        repo=repo,
+        workspace=workspace,
+        app_id=APP_ID,
+        headed=headed,
+        command_runner=command_runner,
+    )
 
 
-def _run_command(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(*args, **kwargs)
+def _load_json(path: Path, label: str) -> dict[str, Any]:
+    return _generic_load_json(path, label)
 
 
 def _run_counter_effect_probe(workspace: Path, operation_prefix: str = "candidate") -> Mapping[str, Any]:
@@ -722,149 +455,3 @@ def _build_effect_accounting(
             "browserEffectProbe": "pass" if set(browser_ops) == required_browser else "fail",
         },
     }
-
-
-def _publish_evidence(
-    *,
-    workspace: Path,
-    output_directory: Path,
-    report: Mapping[str, Any],
-    effect_accounting: Mapping[str, Any],
-    node_probe: Mapping[str, Any],
-    browser_probe: Mapping[str, Any],
-) -> None:
-    output_directory.mkdir(parents=True, exist_ok=True)
-    mappings = (
-        (
-            workspace / "runtime/reports/mcel-acceptance/apps/contract-counter",
-            output_directory / "acceptance",
-        ),
-        (
-            workspace / "runtime/reports/mcel-observation/apps/contract-counter",
-            output_directory / "observation",
-        ),
-        (
-            workspace / "runtime/reports/mcel-app-proof/apps/contract-counter",
-            output_directory / "proof",
-        ),
-    )
-    for source, target in mappings:
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(source, target)
-    effects = output_directory / "effects"
-    effects.mkdir(parents=True, exist_ok=True)
-    _write_json(effects / "mcel-counter-effect-accounting-report.json", effect_accounting)
-    _write_json(effects / "mcel-counter-node-effect-probe.json", node_probe)
-    _write_json(effects / "mcel-counter-browser-effect-probe.json", browser_probe)
-
-
-def _published_artifacts(output_directory: Path, repo: Path) -> dict[str, Any]:
-    paths = {
-        "acceptance": output_directory / "acceptance/mcel-acceptance-report.json",
-        "browserObservation": output_directory / "observation/mcel-operation-observation-report.json",
-        "effectAccounting": output_directory / "effects/mcel-counter-effect-accounting-report.json",
-        "applicationProof": output_directory / "proof/mcel-app-proof-report.json",
-    }
-    return {
-        name: {
-            "path": _display_path(path, repo),
-            "sha256": _sha256_path(path),
-        }
-        for name, path in paths.items()
-    }
-
-
-def _tree_fingerprint(root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink() or "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
-            continue
-        relative = path.relative_to(root).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return "sha256:" + digest.hexdigest()
-
-
-def _load_json(path: Path, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CounterCandidateEvidenceError(f"Could not load {label}: {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise CounterCandidateEvidenceError(f"{label} must be a JSON object: {path}")
-    return value
-
-
-def _write_json(path: Path, value: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _sha256_path(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _display_path(path: Path, repo: Path) -> str:
-    try:
-        return path.resolve().relative_to(repo.resolve()).as_posix()
-    except ValueError:
-        return path.resolve().as_posix()
-
-
-def _diagnostic(code: str, summary: str, semantic_path: str) -> dict[str, Any]:
-    return {
-        "schema": "mcel.compiler-diagnostic.v1",
-        "code": code,
-        "severity": "error",
-        "blocking": True,
-        "summary": summary,
-        "semanticPath": semantic_path,
-    }
-
-
-def _failure(status: str, diagnostics: list[Mapping[str, Any]], message: str) -> CandidateEvidenceResult:
-    diagnostics.append(_diagnostic("MCEL_COUNTER_CANDIDATE_EVIDENCE_SOURCE_INVALID", message, "$candidate"))
-    return _result(False, status, diagnostics, {})
-
-
-def _result(
-    valid: bool,
-    status: str,
-    diagnostics: list[Mapping[str, Any]],
-    report: Mapping[str, Any],
-    output_directory: Path | None = None,
-) -> CandidateEvidenceResult:
-    return CandidateEvidenceResult(valid, status, report, tuple(diagnostics), output_directory)
-
-
-def _render_markdown(report: Mapping[str, Any]) -> str:
-    lines = [
-        "# MCEL Counter Candidate Evidence",
-        "",
-        f"- Status: **{report.get('status')}**",
-        f"- Truth status: `{report.get('truthStatus')}`",
-        f"- Semantic fingerprint: `{(report.get('candidate') or {}).get('semanticFingerprint', '')}`",
-        f"- Source-binding fingerprint: `{(report.get('candidate') or {}).get('sourceBindingFingerprint', '')}`",
-        "",
-        "## Stages",
-        "",
-    ]
-    for stage, value in (report.get("stages") or {}).items():
-        lines.append(f"- {stage}: `{value.get('status')}`")
-    lines.extend(
-        [
-            "",
-            "## Authority",
-            "",
-            f"- Live authority: `{(report.get('authority') or {}).get('liveAuthority')}`",
-            f"- Candidate promoted: `{str((report.get('authority') or {}).get('candidatePromoted')).lower()}`",
-            f"- Evidence reused: `{str((report.get('authority') or {}).get('evidenceReused')).lower()}`",
-            f"- Promotion eligible: `{str((report.get('authority') or {}).get('promotionEligible')).lower()}`",
-            "",
-        ]
-    )
-    return "\n".join(lines)

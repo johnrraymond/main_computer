@@ -17,7 +17,9 @@ import json
 import re
 import time
 from typing import Any
+import urllib.error
 import urllib.parse
+import urllib.request
 
 import yaml
 
@@ -59,6 +61,8 @@ _MIN_RELEASE_SECONDS = 30
 _MAX_RELEASE_SECONDS = 900
 _A = "mainneta-super1"
 _C = "mainnetc-super1"
+_ALLFATHER_RPC_ROUTE_DOMAIN = "greatlibrary.io"
+_ALLFATHER_RPC_ROUTE_PREFIX_RE = re.compile(r"^(?P<prefix>[a-z0-9]+)-super(?P<ordinal>[1-9][0-9]*)$")
 _A_CONTROLLER = "coolify-a"
 _C_CONTROLLER = "coolify-c"
 _IMAGE = "ghcr.io/foundry-rs/foundry:latest"
@@ -152,6 +156,360 @@ def _captain(private_state: PrivateStateReadResult) -> dict[str, Any]:
         "genesis_allocated": True,
         "genesis_allocated_balance_wei": _GENESIS_CAPTAIN_BALANCE_WEI,
     }
+
+
+def _private_state_document(private_state: PrivateStateReadResult) -> dict[str, Any]:
+    try:
+        document = json.loads(private_state.canonical_object_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "Mother private state is not valid canonical JSON",
+        ) from exc
+    if not isinstance(document, dict):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "Mother private state root is not an object",
+        )
+    return document
+
+
+def _network_state(private_state: PrivateStateReadResult) -> Mapping[str, Any]:
+    networks = _private_state_document(private_state).get("networks")
+    mainnet = networks.get("mainnet") if isinstance(networks, Mapping) else None
+    if not isinstance(mainnet, Mapping):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "Mother private state does not contain networks.mainnet",
+        )
+    return mainnet
+
+
+def _target_controller_id(mainnet: Mapping[str, Any], node: str) -> str:
+    nodes = mainnet.get("nodes")
+    node_record = nodes.get(node) if isinstance(nodes, Mapping) else None
+    host = node_record.get("host") if isinstance(node_record, Mapping) else None
+    if isinstance(host, str) and host:
+        return host
+
+    deployment = mainnet.get("deployment")
+    targets = deployment.get("targets") if isinstance(deployment, Mapping) else None
+    target = targets.get(node) if isinstance(targets, Mapping) else None
+    controller_ref = target.get("controller_ref") if isinstance(target, Mapping) else None
+    if isinstance(controller_ref, str) and controller_ref:
+        controller_id = controller_ref.rsplit(".", 1)[-1]
+        if controller_id in {_A_CONTROLLER, _C_CONTROLLER}:
+            return controller_id
+
+    fallback = {_A: _A_CONTROLLER, _C: _C_CONTROLLER}.get(node)
+    if fallback is not None:
+        return fallback
+
+    raise _error(
+        "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+        f"cannot resolve Coolify controller for validator RPC node {node}",
+    )
+
+
+def _allfather_rpc_route_url(mainnet: Mapping[str, Any], node: str, controller_id: str) -> str:
+    nodes = mainnet.get("nodes")
+    node_record = nodes.get(node) if isinstance(nodes, Mapping) else None
+    for field in ("rpc_public_url", "public_rpc_url", "rpc_route_public_url"):
+        value = node_record.get(field) if isinstance(node_record, Mapping) else None
+        if isinstance(value, str) and re.fullmatch(r"https://[a-z0-9.-]+(?::[0-9]{1,5})?", value):
+            return value.rstrip("/")
+
+    match = _ALLFATHER_RPC_ROUTE_PREFIX_RE.fullmatch(node)
+    if match is None:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            f"validator RPC node {node} does not match the All Father super-node route naming contract",
+        )
+
+    prefix = match.group("prefix")
+    ordinal = int(match.group("ordinal"))
+    expected_prefix = "mainnet" + controller_id.rsplit("-", 1)[-1].replace("-", "")
+    if prefix != expected_prefix:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            f"validator RPC node {node} does not match controller {controller_id}'s All Father route prefix",
+        )
+
+    allfather = mainnet.get("allfather")
+    domain = allfather.get("public_domain") if isinstance(allfather, Mapping) else None
+    if not isinstance(domain, str) or not re.fullmatch(r"[a-z0-9.-]+", domain):
+        domain = _ALLFATHER_RPC_ROUTE_DOMAIN
+    return f"https://{prefix}-rpc{ordinal}.{domain}"
+
+
+def _allfather_rpc_route_contracts(private_state: PrivateStateReadResult) -> dict[str, dict[str, Any]]:
+    mainnet = _network_state(private_state)
+    chain_id = mainnet.get("chain_id")
+    if chain_id != 42424240:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "Mother private state does not bind mainnet chain_id 42424240",
+        )
+
+    contracts: dict[str, dict[str, Any]] = {}
+    for key, node in (("a", _A), ("c", _C)):
+        controller_id = _target_controller_id(mainnet, node)
+        rpc_url = _allfather_rpc_route_url(mainnet, node, controller_id)
+        contracts[key] = {
+            "node": node,
+            "controller_id": controller_id,
+            "rpc_url": rpc_url,
+            "route_source": "allfather-host-local-traefik-rpc-route",
+            "expected_chain_id": chain_id,
+            "required_methods": ["eth_chainId", "eth_getBalance"],
+        }
+    return contracts
+
+
+def _open_url(opener: Any, request: urllib.request.Request, timeout: float):
+    return opener.open(request, timeout=timeout) if hasattr(opener, "open") else opener(request, timeout=timeout)
+
+
+def _rpc_post(
+    *,
+    rpc_url: str,
+    method: str,
+    params: list[Any],
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    body = canonical_json({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    })
+    request = urllib.request.Request(
+        rpc_url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "main-computer-mother-validator-rpc-route-preflight/1",
+        },
+        method="POST",
+    )
+    started = time.monotonic()
+    try:
+        try:
+            response = _open_url(opener, request, float(timeout))
+            status = int(getattr(response, "status", response.getcode()))
+            raw = response.read(max_response_bytes + 1)
+            response.close()
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            raw = exc.read(max_response_bytes + 1)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return {
+            "method": method,
+            "rpc_url": rpc_url,
+            "ok": False,
+            "status": None,
+            "error": type(exc).__name__,
+            "message": str(exc)[:200],
+            "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+        }
+    if len(raw) > max_response_bytes:
+        return {
+            "method": method,
+            "rpc_url": rpc_url,
+            "ok": False,
+            "status": status,
+            "error": "response-too-large",
+            "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+        }
+    try:
+        payload: Any = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = raw.decode("utf-8", errors="replace")
+    record = {
+        "method": method,
+        "rpc_url": rpc_url,
+        "ok": 200 <= status < 300,
+        "status": status,
+        "response_sha256": hashlib.sha256(raw).hexdigest(),
+        "byte_length": len(raw),
+        "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+    }
+    if isinstance(payload, Mapping):
+        if "error" in payload:
+            record["json_rpc_error"] = payload.get("error")
+        if "result" in payload:
+            record["result"] = payload.get("result")
+    else:
+        record["payload_type"] = type(payload).__name__
+    return record
+
+
+def _hex_quantity_to_int(value: Any, *, field: str) -> int:
+    if not (type(value) is str and re.fullmatch(r"0x[0-9a-fA-F]+", value)):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_BALANCE_UNREADABLE",
+            f"{field} is not a JSON-RPC hex quantity",
+        )
+    return int(value, 16)
+
+
+def _probe_rpc_route(
+    route: Mapping[str, Any],
+    *,
+    canary_address: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    rpc_url = str(route["rpc_url"])
+    expected_chain_id = int(route["expected_chain_id"])
+    observations: list[dict[str, Any]] = []
+
+    chain = _rpc_post(
+        rpc_url=rpc_url,
+        method="eth_chainId",
+        params=[],
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    observations.append(chain)
+    if chain.get("ok") is not True:
+        return {
+            **dict(route),
+            "ok": False,
+            "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE",
+            "failure_message": f"All Father RPC route {rpc_url} did not answer eth_chainId",
+            "observations": observations,
+        }
+    try:
+        chain_id = _hex_quantity_to_int(chain.get("result"), field="eth_chainId.result")
+    except MotherDeploymentValidatorRpcCanaryFundingError:
+        return {
+            **dict(route),
+            "ok": False,
+            "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE",
+            "failure_message": f"All Father RPC route {rpc_url} returned an invalid eth_chainId result",
+            "observations": observations,
+        }
+    if chain_id != expected_chain_id:
+        return {
+            **dict(route),
+            "ok": False,
+            "chain_id": chain_id,
+            "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WRONG_CHAIN",
+            "failure_message": f"All Father RPC route {rpc_url} reported chain_id {chain_id}, not {expected_chain_id}",
+            "observations": observations,
+        }
+
+    balance = _rpc_post(
+        rpc_url=rpc_url,
+        method="eth_getBalance",
+        params=[canary_address, "latest"],
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    observations.append(balance)
+    if balance.get("ok") is not True:
+        return {
+            **dict(route),
+            "ok": False,
+            "chain_id": chain_id,
+            "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_BALANCE_UNREADABLE",
+            "failure_message": f"All Father RPC route {rpc_url} did not answer eth_getBalance",
+            "observations": observations,
+        }
+    try:
+        balance_wei = _hex_quantity_to_int(balance.get("result"), field="eth_getBalance.result")
+    except MotherDeploymentValidatorRpcCanaryFundingError:
+        return {
+            **dict(route),
+            "ok": False,
+            "chain_id": chain_id,
+            "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_BALANCE_UNREADABLE",
+            "failure_message": f"All Father RPC route {rpc_url} returned an invalid eth_getBalance result",
+            "observations": observations,
+        }
+    return {
+        **dict(route),
+        "ok": True,
+        "chain_id": chain_id,
+        "canary_balance_wei": balance_wei,
+        "observations": observations,
+    }
+
+
+def _preflight_allfather_rpc_routes(
+    private_state: PrivateStateReadResult,
+    *,
+    canary_address: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    try:
+        contracts = _allfather_rpc_route_contracts(private_state)
+    except MotherDeploymentValidatorRpcCanaryFundingError as exc:
+        return {
+            "mode": "allfather-rpc-route-direct-json-rpc",
+            "clean": False,
+            "routes": {},
+            "failure": {"code": exc.code, "message": str(exc)},
+            "summary": {
+                "clean": False,
+                "route_count": 0,
+                "successful_route_count": 0,
+            },
+        }
+
+    routes = {
+        key: _probe_rpc_route(
+            contract,
+            canary_address=canary_address,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        for key, contract in contracts.items()
+    }
+    failed = next((item for item in routes.values() if item.get("ok") is not True), None)
+    failure = (
+        {
+            "code": str(failed["failure_code"]),
+            "message": str(failed["failure_message"]),
+        }
+        if isinstance(failed, Mapping)
+        else None
+    )
+    clean = failure is None and set(routes) == {"a", "c"}
+    return {
+        "mode": "allfather-rpc-route-direct-json-rpc",
+        "clean": clean,
+        "routes": routes,
+        "failure": failure,
+        "summary": {
+            "clean": clean,
+            "route_count": len(routes),
+            "successful_route_count": sum(1 for item in routes.values() if item.get("ok") is True),
+            "routes": {
+                key: {
+                    "node": item.get("node"),
+                    "controller_id": item.get("controller_id"),
+                    "rpc_url": item.get("rpc_url"),
+                    "ok": item.get("ok") is True,
+                    "chain_id": item.get("chain_id"),
+                    "canary_balance_wei": item.get("canary_balance_wei"),
+                }
+                for key, item in routes.items()
+            },
+        },
+    }
+
+
 
 
 
@@ -2171,6 +2529,7 @@ def execute_validator_rpc_canary_funding_release(
     service_controller_ids: dict[str, str] = {}
     proofs: dict[str, Mapping[str, Any]] = {}
     runtime_results: dict[str, Mapping[str, str]] = {}
+    rpc_route_preflight: dict[str, Any] | None = None
     funding_mode: str | None = None
     funding_start_acknowledged = False
     a_funder_health_proven = False
@@ -2403,6 +2762,23 @@ def execute_validator_rpc_canary_funding_release(
                     )
 
     try:
+        rpc_route_preflight = _preflight_allfather_rpc_routes(
+            private_state,
+            canary_address=destination,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if rpc_route_preflight.get("clean") is not True:
+            preflight_failure = _mapping(
+                rpc_route_preflight.get("failure"),
+                "allfather_rpc_route_preflight.failure",
+            )
+            raise _error(
+                str(preflight_failure["code"]),
+                str(preflight_failure["message"]),
+            )
+
         cast_proof = run_service("a_cast_cli_probe")
         if cast_proof.get("healthy") is not True:
             raise _error(
@@ -2569,6 +2945,7 @@ def execute_validator_rpc_canary_funding_release(
             ),
         },
         "chain": dict(release["chain"]),
+        "allfather_rpc_route_preflight": rpc_route_preflight,
         "funding_source_address": release["funding_source"]["address"],
         "canary_address": destination,
         "transfer_value_wei": expected_amount,
@@ -2593,8 +2970,13 @@ def execute_validator_rpc_canary_funding_release(
             "canary_balance_verified_on_C": success,
             "exact_transfer_value_verified": success,
             "transaction_hash_recorded": funding_transaction_hash is not None,
-            "service_health_result_channel_used": True,
-            "runtime_log_result_channel_used": True,
+            "allfather_rpc_route_preflight_used": rpc_route_preflight is not None,
+            "allfather_rpc_route_preflight_complete": bool(
+                isinstance(rpc_route_preflight, Mapping)
+                and rpc_route_preflight.get("clean") is True
+            ),
+            "service_health_result_channel_used": bool(created_services),
+            "runtime_log_result_channel_used": bool(created_services),
             "runtime_result_marker_count": len(runtime_results),
             "deployment_uuid_required": False,
             "temporary_A_application_deleted": a_deleted,
@@ -2878,6 +3260,14 @@ def verify_validator_rpc_canary_funding_evidence(
             )
 
     c_result = document.get("cross_validator_verification")
+    rpc_route_preflight = _mapping(
+        document.get("allfather_rpc_route_preflight"),
+        "evidence.allfather_rpc_route_preflight",
+    )
+    rpc_route_summary = _mapping(
+        rpc_route_preflight.get("summary"),
+        "evidence.allfather_rpc_route_preflight.summary",
+    )
     summary = _mapping(document.get("summary"), "evidence.summary")
     common = (
         isinstance(c_result, Mapping)
@@ -2897,6 +3287,11 @@ def verify_validator_rpc_canary_funding_evidence(
         and summary.get("canary_balance_verified_on_C") is True
         and summary.get("exact_transfer_value_verified") is True
         and summary.get("transaction_hash_recorded") == (funding_mode == "funded")
+        and rpc_route_preflight.get("mode") == "allfather-rpc-route-direct-json-rpc"
+        and rpc_route_preflight.get("clean") is True
+        and rpc_route_summary.get("successful_route_count") == 2
+        and summary.get("allfather_rpc_route_preflight_used") is True
+        and summary.get("allfather_rpc_route_preflight_complete") is True
         and summary.get("service_health_result_channel_used") is True
         and summary.get("runtime_log_result_channel_used") is True
         and type(summary.get("runtime_result_marker_count")) is int

@@ -9,7 +9,7 @@
     mixed: "mixed"
   });
 
-  const ENCOUNTER_STATE = Object.freeze({
+  const ENCOUNTER_STATE_STATUS = Object.freeze({
     unavailable: "unavailable",
     scenarioInactive: "scenario-inactive",
     actorRuntimeUnavailable: "actor-runtime-unavailable",
@@ -19,7 +19,7 @@
     recoverableCompletedActive: "recoverable-completed-active",
     recoverableCompletedDefeated: "recoverable-completed-defeated",
     invalidCompletedActors: "invalid-completed-actors",
-    outsideActiveStage: "outside-active-stage"
+    outsideEncounter: "outside-encounter"
   });
 
   const RECOVERY_ACTION = Object.freeze({
@@ -28,198 +28,326 @@
     restartEncounter: "restart-encounter"
   });
 
+  function isPlainObject(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  }
+
   function objectValue(value) {
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return isPlainObject(value) ? value : {};
   }
 
   function arrayValue(value) {
     return Array.isArray(value) ? value : [];
   }
 
-  function normalizeIds(ids) {
-    return arrayValue(ids)
-      .map((id) => String(id || "").trim())
-      .filter(Boolean);
+  function stringValue(value) {
+    return typeof value === "string" ? value : "";
   }
 
-  function statusLabels(labels = {}) {
+  function numberValue(value, fallback = 0) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+  }
+
+  function uniqueStrings(values) {
+    const seen = new Set();
+    const result = [];
+    arrayValue(values).forEach((value) => {
+      const text = stringValue(value).trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      result.push(text);
+    });
+    return result;
+  }
+
+  function encounterIdentity(rawOptions = {}) {
+    const options = objectValue(rawOptions);
+    const view = objectValue(options.view);
+    const state = objectValue(view.state);
+    const definitionId = stringValue(
+      options.definitionId
+      || options.encounterDefinitionId
+      || options.encounterId
+      || options.id
+    );
+    const key = stringValue(options.key) || definitionId;
+    const instanceId = stringValue(
+      options.instanceId
+      || options.encounterInstanceId
+      || options.runId
+    );
     return {
-      unavailable: labels.unavailable || ACTOR_GROUP_STATUS.unavailable,
-      missing: labels.missing || ACTOR_GROUP_STATUS.missing,
-      active: labels.active || ACTOR_GROUP_STATUS.active,
-      defeated: labels.defeated || ACTOR_GROUP_STATUS.defeated,
-      mixed: labels.mixed || ACTOR_GROUP_STATUS.mixed
+      key,
+      definitionId,
+      instanceId: instanceId || null,
+      instanceKnown: Boolean(instanceId),
+      scenarioId: stringValue(options.scenarioId),
+      systemId: stringValue(options.systemId),
+      stageId: stringValue(options.stageId || state.stageId),
+      activeStageIds: uniqueStrings([
+        ...stageList(options.activeStageId, options.activeStageIds)
+      ]),
+      completedStageIds: uniqueStrings([
+        ...stageList(options.completedStageId, options.completedStageIds)
+      ]),
+      actorIds: uniqueStrings(options.actorIds)
     };
   }
 
-  function stateLabels(labels = {}) {
-    return {
-      unavailable: labels.unavailable || ENCOUNTER_STATE.unavailable,
-      scenarioInactive: labels.scenarioInactive || ENCOUNTER_STATE.scenarioInactive,
-      actorRuntimeUnavailable: labels.actorRuntimeUnavailable || ENCOUNTER_STATE.actorRuntimeUnavailable,
-      consistentActive: labels.consistentActive || ENCOUNTER_STATE.consistentActive,
-      recoverableActiveDefeated: labels.recoverableActiveDefeated || ENCOUNTER_STATE.recoverableActiveDefeated,
-      invalidActiveActors: labels.invalidActiveActors || ENCOUNTER_STATE.invalidActiveActors,
-      recoverableCompletedActive: labels.recoverableCompletedActive || ENCOUNTER_STATE.recoverableCompletedActive,
-      recoverableCompletedDefeated: labels.recoverableCompletedDefeated || ENCOUNTER_STATE.recoverableCompletedDefeated,
-      invalidCompletedActors: labels.invalidCompletedActors || ENCOUNTER_STATE.invalidCompletedActors,
-      outsideActiveStage: labels.outsideActiveStage || ENCOUNTER_STATE.outsideActiveStage
-    };
+  function defaultActorIsActive(actor) {
+    return Boolean(actor && actor.status === "active" && Number(actor.health) > 0);
   }
 
-  function recoveryLabels(labels = {}) {
-    return {
-      none: labels.none || RECOVERY_ACTION.none,
-      reviveActors: labels.reviveActors || RECOVERY_ACTION.reviveActors,
-      restartEncounter: labels.restartEncounter || RECOVERY_ACTION.restartEncounter
-    };
+  function defaultActorIsDefeated(actor) {
+    return Boolean(actor && (actor.status === "down" || Number(actor.health) <= 0));
   }
 
-  function defaultActiveActor(character) {
-    return Boolean(character
-      && character.status === "active"
-      && Number(character.health) > 0);
-  }
-
-  function defaultDefeatedActor(character) {
-    return Boolean(character
-      && (character.status === "down" || Number(character.health) <= 0));
-  }
-
-  function charactersFromRuntime(characterRuntime) {
-    if (!characterRuntime?.snapshot) return null;
-    const snapshot = characterRuntime.snapshot() || {};
-    return objectValue(snapshot.characters);
-  }
-
-  function classifyActorGroup(actorIds, characterRuntime, options = {}) {
-    const ids = normalizeIds(actorIds);
-    const labels = statusLabels(options.statusLabels);
-    const characters = options.characters
-      ? objectValue(options.characters)
-      : charactersFromRuntime(characterRuntime);
-
-    if (!characters) {
-      return {
-        status: labels.unavailable,
-        total: ids.length,
-        activeCount: 0,
-        defeatedCount: 0,
-        missingCount: ids.length,
-        actors: []
-      };
+  function actorSnapshot(actorRuntime, explicitSnapshot) {
+    if (isPlainObject(explicitSnapshot)) return explicitSnapshot;
+    if (actorRuntime && typeof actorRuntime.snapshot === "function") {
+      return objectValue(actorRuntime.snapshot());
     }
+    return null;
+  }
 
+  function actorCollection(snapshot, options) {
+    const actorCollectionKey = stringValue(options.actorCollectionKey);
+    if (isPlainObject(options.actorsById)) return options.actorsById;
+    if (!isPlainObject(snapshot)) return {};
+    if (actorCollectionKey) return objectValue(snapshot[actorCollectionKey]);
+    return objectValue(snapshot.characters || snapshot.actors);
+  }
+
+  function classifyActorGroup(rawOptions = {}) {
+    const options = objectValue(rawOptions);
+    const actorIds = uniqueStrings(options.actorIds);
+    const total = actorIds.length;
+    const actorRuntime = options.actorRuntime || options.runtime || null;
+    const snapshot = actorSnapshot(actorRuntime, options.snapshot);
+    const entriesKey = stringValue(options.entriesKey) || "actors";
+    const actorsById = actorCollection(snapshot, options);
     const isActiveActor = typeof options.isActiveActor === "function"
       ? options.isActiveActor
-      : defaultActiveActor;
+      : defaultActorIsActive;
     const isDefeatedActor = typeof options.isDefeatedActor === "function"
       ? options.isDefeatedActor
-      : defaultDefeatedActor;
+      : defaultActorIsDefeated;
 
-    const actors = ids.map((id) => {
-      const character = characters[id] || null;
-      const active = Boolean(character && isActiveActor(character, id));
-      const defeated = Boolean(character && isDefeatedActor(character, id));
+    if (!snapshot || !total) {
+      const empty = {
+        status: ACTOR_GROUP_STATUS.unavailable,
+        total,
+        activeCount: 0,
+        defeatedCount: 0,
+        missingCount: total,
+        actors: []
+      };
+      empty[entriesKey] = empty.actors;
+      return empty;
+    }
+
+    const actors = actorIds.map((actorId) => {
+      const actor = actorsById[actorId] || null;
+      const active = Boolean(actor && isActiveActor(actor, actorId));
+      const defeated = Boolean(actor && isDefeatedActor(actor, actorId));
       return {
-        id,
-        character,
+        id: actorId,
+        actor,
+        character: actor,
         active,
         defeated,
-        missing: !character
+        missing: !actor
       };
     });
     const activeCount = actors.filter((entry) => entry.active).length;
     const defeatedCount = actors.filter((entry) => entry.defeated).length;
     const missingCount = actors.filter((entry) => entry.missing).length;
 
-    let status = labels.mixed;
-    if (missingCount === ids.length) status = labels.missing;
-    else if (activeCount === ids.length) status = labels.active;
-    else if (defeatedCount === ids.length) status = labels.defeated;
+    let status = ACTOR_GROUP_STATUS.mixed;
+    if (missingCount === total) status = ACTOR_GROUP_STATUS.missing;
+    else if (activeCount === total) status = ACTOR_GROUP_STATUS.active;
+    else if (defeatedCount === total) status = ACTOR_GROUP_STATUS.defeated;
 
-    return {
+    const result = {
       status,
-      total: ids.length,
+      total,
       activeCount,
       defeatedCount,
       missingCount,
       actors
     };
+    result[entriesKey] = actors;
+    return result;
   }
 
-  function classifyStageActorEncounter(options = {}) {
-    const labels = stateLabels(options.stateLabels);
-    const groupLabels = statusLabels(options.actorGroupStatusLabels);
-    const recoveries = recoveryLabels(options.recoveryLabels);
-    const view = options.view || null;
-    const actorGroup = options.actorGroup || null;
-    const stageId = String(view?.state?.stageId || "");
-    const activeStageId = String(options.activeStageId || "");
-    const completedStageIds = new Set(normalizeIds(options.completedStageIds));
+  function actorDiagnosticRows(rawActorGroup, rawOptions = {}) {
+    const actorGroup = objectValue(rawActorGroup);
+    const options = objectValue(rawOptions);
+    const entriesKey = stringValue(options.entriesKey);
+    const entries = entriesKey
+      ? arrayValue(actorGroup[entriesKey])
+      : arrayValue(actorGroup.actors);
+    const actorEntries = entries.length ? entries : arrayValue(actorGroup.actors);
 
-    let status = labels.unavailable;
-    let recovery = recoveries.none;
+    return actorEntries.map((entry) => {
+      const row = objectValue(entry);
+      const actor = objectValue(row.actor || row.character);
+      return {
+        id: stringValue(row.id),
+        status: stringValue(actor.status || row.status),
+        health: numberValue(actor.health ?? row.health, 0),
+        active: Boolean(row.active),
+        defeated: Boolean(row.defeated),
+        missing: Boolean(row.missing)
+      };
+    });
+  }
+
+  function stageList(primary, values) {
+    return uniqueStrings([
+      ...(primary ? [primary] : []),
+      ...arrayValue(values)
+    ]);
+  }
+
+  function mappedStateLabels(labels = {}) {
+    return Object.assign({}, ENCOUNTER_STATE_STATUS, objectValue(labels));
+  }
+
+  function mappedRecoveryActions(actions = {}) {
+    return Object.assign({}, RECOVERY_ACTION, objectValue(actions));
+  }
+
+  function scenarioView(scenarioRuntime, scenarioId, explicitView) {
+    if (isPlainObject(explicitView)) return explicitView;
+    if (scenarioRuntime && typeof scenarioRuntime.view === "function") {
+      return scenarioRuntime.view(scenarioId) || null;
+    }
+    return null;
+  }
+
+  function classifyStagedEncounterState(rawOptions = {}) {
+    const options = objectValue(rawOptions);
+    const stateLabels = mappedStateLabels(options.stateLabels);
+    const recoveryActions = mappedRecoveryActions(options.recoveryActions);
+    const scenarioRuntime = options.scenarioRuntime || options.runtime || null;
+    const scenarioId = stringValue(options.scenarioId);
+    const view = scenarioView(scenarioRuntime, scenarioId, options.view);
+    const actorRuntime = options.actorRuntime || options.characterRuntime || null;
+    const actorGroup = objectValue(options.actorGroup).status
+      ? options.actorGroup
+      : classifyActorGroup({
+        actorIds: options.actorIds,
+        actorRuntime,
+        snapshot: options.actorSnapshot,
+        actorCollectionKey: options.actorCollectionKey,
+        entriesKey: options.entriesKey,
+        actorsById: options.actorsById,
+        isActiveActor: options.isActiveActor,
+        isDefeatedActor: options.isDefeatedActor
+      });
+    const activeStageIds = stageList(options.activeStageId, options.activeStageIds);
+    const completedStageIds = stageList(options.completedStageId, options.completedStageIds);
+    const stageId = stringValue(view?.state?.stageId);
+    const actorStatus = actorGroup?.status || ACTOR_GROUP_STATUS.unavailable;
+    const identityOptions = Object.assign({}, objectValue(options.identity), {
+      scenarioId,
+      systemId: options.systemId,
+      view,
+      stageId,
+      activeStageIds,
+      completedStageIds,
+      actorIds: options.actorIds
+    });
+    const definitionId = stringValue(
+      options.definitionId
+      || options.encounterDefinitionId
+      || options.encounterId
+    );
+    const key = stringValue(options.key);
+    const instanceId = stringValue(
+      options.instanceId
+      || options.encounterInstanceId
+      || options.runId
+    );
+    if (definitionId) identityOptions.definitionId = definitionId;
+    if (key) identityOptions.key = key;
+    if (instanceId) identityOptions.instanceId = instanceId;
+    const identity = encounterIdentity(identityOptions);
+
+    let status = stateLabels.unavailable;
+    let recovery = recoveryActions.none;
+    let stageClass = "unavailable";
 
     if (!view?.visible || view.state?.status !== "active") {
-      status = labels.scenarioInactive;
-    } else if (actorGroup?.status === groupLabels.unavailable || !actorGroup) {
-      status = labels.actorRuntimeUnavailable;
-    } else if (stageId === activeStageId) {
-      if (actorGroup.status === groupLabels.active) {
-        status = labels.consistentActive;
-      } else if (actorGroup.status === groupLabels.defeated) {
-        status = labels.recoverableActiveDefeated;
-        recovery = recoveries.reviveActors;
+      status = stateLabels.scenarioInactive;
+      stageClass = "inactive";
+    } else if (actorStatus === ACTOR_GROUP_STATUS.unavailable) {
+      status = stateLabels.actorRuntimeUnavailable;
+      stageClass = "actor-runtime-unavailable";
+    } else if (activeStageIds.includes(stageId)) {
+      stageClass = "active";
+      if (actorStatus === ACTOR_GROUP_STATUS.active) {
+        status = stateLabels.consistentActive;
+      } else if (actorStatus === ACTOR_GROUP_STATUS.defeated) {
+        status = stateLabels.recoverableActiveDefeated;
+        recovery = recoveryActions.reviveActors;
       } else {
-        status = labels.invalidActiveActors;
+        status = stateLabels.invalidActiveActors;
       }
-    } else if (completedStageIds.has(stageId)) {
-      if (actorGroup.status === groupLabels.active) {
-        status = labels.recoverableCompletedActive;
-        recovery = recoveries.restartEncounter;
-      } else if (actorGroup.status === groupLabels.defeated) {
-        status = labels.recoverableCompletedDefeated;
-        recovery = recoveries.restartEncounter;
+    } else if (completedStageIds.includes(stageId)) {
+      stageClass = "completed";
+      if (actorStatus === ACTOR_GROUP_STATUS.active) {
+        status = stateLabels.recoverableCompletedActive;
+        recovery = recoveryActions.restartEncounter;
+      } else if (actorStatus === ACTOR_GROUP_STATUS.defeated) {
+        status = stateLabels.recoverableCompletedDefeated;
+        recovery = recoveryActions.restartEncounter;
       } else {
-        status = labels.invalidCompletedActors;
+        status = stateLabels.invalidCompletedActors;
       }
     } else {
-      status = labels.outsideActiveStage;
+      status = stateLabels.outsideEncounter;
+      stageClass = "outside";
     }
 
     return {
       status,
       recovery,
+      scenarioRuntime,
+      actorRuntime,
       view,
       stageId,
+      stageClass,
+      identity,
       actorGroup
     };
   }
 
-  function recoveryPlan(classification, options = {}) {
-    const recoveries = recoveryLabels(options.recoveryLabels);
-    const groupLabels = statusLabels(options.actorGroupStatusLabels);
-    const recovery = classification?.recovery || recoveries.none;
-    const actorGroup = classification?.actorGroup || classification?.boarderGroup || null;
-    const actorStatus = actorGroup?.status || groupLabels.unavailable;
+  function reconciliationPlan(rawClassification, rawOptions = {}) {
+    const classification = objectValue(rawClassification);
+    const options = objectValue(rawOptions);
+    const recoveryActions = mappedRecoveryActions(options.recoveryActions);
+    const recovery = classification.recovery || recoveryActions.none;
+    const actorStatus = classification.actorGroup?.status || ACTOR_GROUP_STATUS.unavailable;
     const recoverDefeated = options.recoverDefeated === true;
 
-    if (recovery === recoveries.none) {
+    if (recovery === recoveryActions.none) {
       return {
         recover: false,
         action: recovery,
-        reason: classification?.status || ENCOUNTER_STATE.unavailable
+        reason: classification.status || ENCOUNTER_STATE_STATUS.unavailable
       };
     }
-    if (actorStatus === groupLabels.active) {
+    if (actorStatus === ACTOR_GROUP_STATUS.active) {
       return {
         recover: true,
         action: recovery,
         reason: classification.status
       };
     }
-    if (actorStatus === groupLabels.defeated && recoverDefeated) {
+    if (actorStatus === ACTOR_GROUP_STATUS.defeated && recoverDefeated) {
       return {
         recover: true,
         action: recovery,
@@ -233,287 +361,61 @@
     };
   }
 
-  function reconcileStageActorEncounter(options = {}) {
-    const reason = String(options.reason || "encounter-reconciliation");
-    const classification = typeof options.classify === "function"
-      ? options.classify(options)
-      : classifyStageActorEncounter(options);
-    const plan = typeof options.plan === "function"
-      ? options.plan(classification, options)
-      : recoveryPlan(classification, options);
-
-    if (!plan.recover) {
-      const diagnostic = typeof options.diagnostic === "function"
-        ? options.diagnostic(classification, plan, options)
-        : diagnosticSnapshot(classification, plan);
-      return {
-        recovered: false,
-        reason: plan.reason,
-        classification,
-        plan,
-        diagnostic
-      };
-    }
-
-    let result = null;
-    let recovered = false;
-    try {
-      if (typeof options.beforeRecovery === "function") {
-        const before = options.beforeRecovery(classification, plan, options);
-        if (before?.abort) {
-          const diagnostic = typeof options.diagnostic === "function"
-            ? options.diagnostic(classification, plan, options)
-            : diagnosticSnapshot(classification, plan);
-          return {
-            recovered: false,
-            reason: before.reason || plan.reason,
-            classification,
-            plan,
-            diagnostic,
-            result: before
-          };
-        }
-      }
-
-      result = typeof options.performRecovery === "function"
-        ? options.performRecovery(plan, reason, options)
-        : {forced: false, reset: false, reason: "recovery-performer-unavailable"};
-      recovered = typeof options.recoverySucceeded === "function"
-        ? Boolean(options.recoverySucceeded(plan, result, options))
-        : Boolean(result?.recovered);
-      const diagnostic = typeof options.diagnostic === "function"
-        ? options.diagnostic(classification, plan, options)
-        : diagnosticSnapshot(classification, plan);
-      return {
-        recovered,
-        reason: recovered
-          ? classification.status
-          : result?.reason || "automatic-recovery-failed",
-        classification,
-        plan,
-        diagnostic,
-        result
-      };
-    } finally {
-      if (typeof options.afterRecovery === "function") {
-        options.afterRecovery(classification, plan, result, recovered, options);
-      }
-    }
+  function recoverySucceeded(rawPlan, rawResult, rawOptions = {}) {
+    const plan = objectValue(rawPlan);
+    const result = objectValue(rawResult);
+    const options = objectValue(rawOptions);
+    const successKeys = objectValue(options.successKeys);
+    const key = successKeys[plan.action];
+    if (key) return Boolean(result[key]);
+    return Boolean(result.recovered || result.success || result.reset || result.forced);
   }
 
-  function diagnosticSnapshot(classification, plan = null) {
-    const actorGroup = classification?.actorGroup || classification?.boarderGroup || {};
-    return {
-      status: classification?.status || ENCOUNTER_STATE.unavailable,
-      recovery: classification?.recovery || RECOVERY_ACTION.none,
-      stageId: classification?.stageId || "",
-      plan: plan ? {
-        recover: Boolean(plan.recover),
-        action: plan.action || RECOVERY_ACTION.none,
-        reason: plan.reason || ""
-      } : null,
-      actors: {
-        status: actorGroup.status || ACTOR_GROUP_STATUS.unavailable,
-        total: Number(actorGroup.total || 0),
-        active: Number(actorGroup.activeCount || 0),
-        defeated: Number(actorGroup.defeatedCount || 0),
-        missing: Number(actorGroup.missingCount || 0)
+  function diagnosticSnapshot(rawClassification, rawPlan = null, rawOptions = {}) {
+    const classification = objectValue(rawClassification);
+    const plan = rawPlan ? objectValue(rawPlan) : null;
+    const options = objectValue(rawOptions);
+    const actorGroup = objectValue(classification.actorGroup);
+    const identity = encounterIdentity(Object.assign(
+      {},
+      objectValue(classification.identity),
+      objectValue(options.identity),
+      {
+        stageId: classification.stageId || options.stageId,
+        view: classification.view || options.view
       }
+    ));
+    return {
+      encounter: identity,
+      status: classification.status || ENCOUNTER_STATE_STATUS.unavailable,
+      recovery: classification.recovery || RECOVERY_ACTION.none,
+      stageId: classification.stageId || "",
+      stageClass: classification.stageClass || "unavailable",
+      actorStatus: actorGroup.status || ACTOR_GROUP_STATUS.unavailable,
+      total: numberValue(actorGroup.total, 0),
+      activeCount: numberValue(actorGroup.activeCount, 0),
+      defeatedCount: numberValue(actorGroup.defeatedCount, 0),
+      missingCount: numberValue(actorGroup.missingCount, 0),
+      plan: plan
+        ? {
+          recover: Boolean(plan.recover),
+          action: plan.action || RECOVERY_ACTION.none,
+          reason: plan.reason || ""
+        }
+        : null
     };
   }
 
-
-  function stageActorEncounterDescriptor(descriptor = {}) {
-    const actorGroupStatusLabels = statusLabels(descriptor.actorGroupStatusLabels);
-    const encounterStateLabels = stateLabels(descriptor.stateLabels);
-    const encounterRecoveryLabels = recoveryLabels(descriptor.recoveryLabels);
-    return Object.freeze({
-      scenarioId: String(descriptor.scenarioId || ""),
-      systemId: String(descriptor.systemId || ""),
-      activeStageId: String(descriptor.activeStageId || ""),
-      completedStageIds: Object.freeze(normalizeIds(descriptor.completedStageIds)),
-      actorIds: Object.freeze(normalizeIds(descriptor.actorIds)),
-      actorGroupStatusLabels: Object.freeze(actorGroupStatusLabels),
-      stateLabels: Object.freeze(encounterStateLabels),
-      recoveryLabels: Object.freeze(encounterRecoveryLabels)
-    });
-  }
-
-  function createStageActorEncounterAdapter(descriptor = {}) {
-    const resolved = stageActorEncounterDescriptor(descriptor);
-
-    function actorGroup(characterRuntime, options = {}) {
-      return classifyActorGroup(
-        resolved.actorIds,
-        characterRuntime,
-        {
-          ...objectValue(options),
-          statusLabels: resolved.actorGroupStatusLabels
-        }
-      );
-    }
-
-    function classify(options = {}) {
-      const scenarioRuntime = options.scenarioRuntime || null;
-      const characterRuntime = options.characterRuntime || null;
-      const view = options.view || scenarioRuntime?.view?.(resolved.scenarioId) || null;
-      const group = options.actorGroup || actorGroup(characterRuntime, options);
-      return classifyStageActorEncounter({
-        ...objectValue(options),
-        view,
-        actorGroup: group,
-        activeStageId: resolved.activeStageId,
-        completedStageIds: resolved.completedStageIds,
-        actorGroupStatusLabels: resolved.actorGroupStatusLabels,
-        stateLabels: resolved.stateLabels,
-        recoveryLabels: resolved.recoveryLabels
-      });
-    }
-
-    function plan(classification, options = {}) {
-      return recoveryPlan(
-        classification,
-        {
-          ...objectValue(options),
-          actorGroupStatusLabels: resolved.actorGroupStatusLabels,
-          recoveryLabels: resolved.recoveryLabels
-        }
-      );
-    }
-
-    function diagnostic(classification, planResult = null, extra = {}) {
-      return {
-        scenarioId: resolved.scenarioId,
-        systemId: resolved.systemId,
-        activeStageId: resolved.activeStageId,
-        completedStageIds: [...resolved.completedStageIds],
-        actorIds: [...resolved.actorIds],
-        ...objectValue(extra),
-        ...diagnosticSnapshot(classification, planResult)
-      };
-    }
-
-    function reconcile(options = {}) {
-      return reconcileStageActorEncounter({
-        ...objectValue(options),
-        classify: typeof options.classify === "function"
-          ? options.classify
-          : () => classify(options),
-        plan: typeof options.plan === "function"
-          ? options.plan
-          : (classification) => plan(classification, options),
-        diagnostic: typeof options.diagnostic === "function"
-          ? options.diagnostic
-          : (classification, planResult) => diagnostic(classification, planResult)
-      });
-    }
-
-    return Object.freeze({
-      ...resolved,
-      descriptor: resolved,
-      classifyActorGroup: actorGroup,
-      classify,
-      recoveryPlan: plan,
-      diagnostic,
-      reconcile
-    });
-  }
-
-
-  function createStageActorEncounterReconciler(adapterOrDescriptor = {}, hooks = {}) {
-    const adapter = adapterOrDescriptor?.reconcile
-      ? adapterOrDescriptor
-      : createStageActorEncounterAdapter(adapterOrDescriptor);
-    const strategy = objectValue(hooks);
-
-    function classify(options = {}) {
-      return typeof strategy.classify === "function"
-        ? strategy.classify(adapter, objectValue(options))
-        : adapter.classify(options);
-    }
-
-    function plan(classification, options = {}) {
-      return typeof strategy.plan === "function"
-        ? strategy.plan(classification, adapter, objectValue(options))
-        : adapter.recoveryPlan(classification, options);
-    }
-
-    function diagnostic(classification, planResult = null, options = {}) {
-      return typeof strategy.diagnostic === "function"
-        ? strategy.diagnostic(classification, planResult, adapter, objectValue(options))
-        : adapter.diagnostic(classification, planResult);
-    }
-
-    function reconcile(reason = "encounter-reconciliation", options = {}) {
-      const normalizedReason = String(reason || "encounter-reconciliation");
-      const normalizedOptions = objectValue(options);
-
-      return adapter.reconcile({
-        ...normalizedOptions,
-        reason: normalizedReason,
-        classify: () => classify(normalizedOptions),
-        plan: (classification) => plan(classification, normalizedOptions),
-        diagnostic: (classification, planResult) => (
-          diagnostic(classification, planResult, normalizedOptions)
-        ),
-        beforeRecovery: typeof strategy.beforeRecovery === "function"
-          ? (classification, planResult) => (
-            strategy.beforeRecovery(classification, planResult, normalizedOptions, adapter)
-          )
-          : undefined,
-        afterRecovery: typeof strategy.afterRecovery === "function"
-          ? (classification, planResult, result, recovered) => (
-            strategy.afterRecovery(
-              classification,
-              planResult,
-              result,
-              recovered,
-              normalizedOptions,
-              adapter
-            )
-          )
-          : undefined,
-        performRecovery: typeof strategy.performRecovery === "function"
-          ? (planResult) => strategy.performRecovery(
-            planResult,
-            normalizedReason,
-            normalizedOptions,
-            adapter
-          )
-          : undefined,
-        recoverySucceeded: typeof strategy.recoverySucceeded === "function"
-          ? (planResult, result) => strategy.recoverySucceeded(
-            planResult,
-            result,
-            normalizedOptions,
-            adapter
-          )
-          : undefined
-      });
-    }
-
-    return Object.freeze({
-      adapter,
-      descriptor: adapter.descriptor || adapter,
-      classify,
-      recoveryPlan: plan,
-      diagnostic,
-      reconcile
-    });
-  }
-
-
   const api = {
     ACTOR_GROUP_STATUS,
-    ENCOUNTER_STATE,
+    ENCOUNTER_STATE_STATUS,
     RECOVERY_ACTION,
+    encounterIdentity,
     classifyActorGroup,
-    classifyStageActorEncounter,
-    recoveryPlan,
-    stageActorEncounterDescriptor,
-    createStageActorEncounterAdapter,
-    createStageActorEncounterReconciler,
-    reconcileStageActorEncounter,
+    actorDiagnosticRows,
+    classifyStagedEncounterState,
+    reconciliationPlan,
+    recoverySucceeded,
     diagnosticSnapshot
   };
 

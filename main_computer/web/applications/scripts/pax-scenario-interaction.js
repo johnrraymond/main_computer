@@ -1,23 +1,25 @@
 (function (global) {
   "use strict";
 
+  const EncounterState = global.MainComputerEncounterState
+    || (typeof require === "function" ? require("./encounter-state.js") : null);
+  if (!EncounterState?.classifyActorGroup) {
+    throw new Error("MainComputerEncounterState must load before Pax scenario interaction.");
+  }
+
   const SCENARIO_ID = "scenario.pax.neutrality-under-fire";
   const PAX_SYSTEM_ID = "system.pax";
   const BRIEFING_ACK_PREFIX = "main-computer.pax-scenario.briefing-ack.v1";
   const PROTECTION_STAGE_ID = "protect-witness";
   const INVESTIGATION_STAGE_ID = "investigation";
+  const PAX_PROTECTION_ENCOUNTER_DEFINITION_ID = "encounter.pax.protection-boarding";
+  const PAX_PROTECTION_ENCOUNTER_KEY = `${SCENARIO_ID}:${PAX_PROTECTION_ENCOUNTER_DEFINITION_ID}`;
   const PAX_PROTECTION_RECOVERY = Object.freeze({
     none: "none",
     reviveBoarders: "revive-boarders",
     restartEncounter: "restart-encounter"
   });
-  const PAX_BOARDER_GROUP_STATUS = Object.freeze({
-    unavailable: "unavailable",
-    missing: "missing",
-    active: "active",
-    defeated: "defeated",
-    mixed: "mixed"
-  });
+  const PAX_BOARDER_GROUP_STATUS = EncounterState.ACTOR_GROUP_STATUS;
   const PAX_PROTECTION_STATE = Object.freeze({
     unavailable: "unavailable",
     scenarioInactive: "scenario-inactive",
@@ -30,25 +32,25 @@
     invalidInvestigationBoarders: "invalid-investigation-boarders",
     outsideProtection: "outside-protection"
   });
-  const PAX_PROTECTION_STATE_LABELS = Object.freeze({
-    unavailable: PAX_PROTECTION_STATE.unavailable,
-    scenarioInactive: PAX_PROTECTION_STATE.scenarioInactive,
-    actorRuntimeUnavailable: PAX_PROTECTION_STATE.characterRuntimeUnavailable,
-    consistentActive: PAX_PROTECTION_STATE.consistentActive,
-    recoverableActiveDefeated: PAX_PROTECTION_STATE.recoverableProtectionDefeated,
-    invalidActiveActors: PAX_PROTECTION_STATE.invalidProtectionBoarders,
-    recoverableCompletedActive: PAX_PROTECTION_STATE.recoverableInvestigationActive,
-    recoverableCompletedDefeated: PAX_PROTECTION_STATE.recoverableInvestigationDefeated,
-    invalidCompletedActors: PAX_PROTECTION_STATE.invalidInvestigationBoarders,
-    outsideActiveStage: PAX_PROTECTION_STATE.outsideProtection
+  const PAX_RECONCILIATION_MODE = Object.freeze({
+    passive: "passive",
+    startupAttach: "startup-attach"
   });
-  const PAX_PROTECTION_RECOVERY_LABELS = Object.freeze({
-    none: PAX_PROTECTION_RECOVERY.none,
-    reviveActors: PAX_PROTECTION_RECOVERY.reviveBoarders,
-    restartEncounter: PAX_PROTECTION_RECOVERY.restartEncounter
+  const PAX_RECONCILIATION_REASON = Object.freeze({
+    automatic: "automatic-inconsistent-encounter-recovery",
+    scenarioState: "scenario-state-inconsistent-recovery",
+    scenarioRuntimeAttach: "scenario-runtime-attach-inconsistent-recovery",
+    characterRuntimeAttach: "character-runtime-attach-encounter-reconciliation",
+    characterState: "character-state-inconsistent-recovery"
   });
-  const EncounterState = global.MainComputerEncounterState
-    || (typeof require === "function" ? require("./encounter-state.js") : null);
+  const PAX_RECONCILIATION_POLICY = Object.freeze({
+    [PAX_RECONCILIATION_MODE.passive]: Object.freeze({
+      recoverDefeated: false
+    }),
+    [PAX_RECONCILIATION_MODE.startupAttach]: Object.freeze({
+      recoverDefeated: true
+    })
+  });
   const HARD_KICKOFF_STAGE_IDS = Object.freeze([
     PROTECTION_STAGE_ID,
     INVESTIGATION_STAGE_ID,
@@ -80,17 +82,6 @@
     HARD_KICKOFF_POSITIONS.boarder04,
     HARD_KICKOFF_POSITIONS.boarder05
   ]);
-
-  const PAX_PROTECTION_ENCOUNTER = EncounterState.createStageActorEncounterAdapter({
-    scenarioId: SCENARIO_ID,
-    systemId: PAX_SYSTEM_ID,
-    activeStageId: PROTECTION_STAGE_ID,
-    completedStageIds: [INVESTIGATION_STAGE_ID],
-    actorIds: BOARDER_IDS,
-    actorGroupStatusLabels: PAX_BOARDER_GROUP_STATUS,
-    stateLabels: PAX_PROTECTION_STATE_LABELS,
-    recoveryLabels: PAX_PROTECTION_RECOVERY_LABELS
-  });
 
   function objectValue(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -1170,60 +1161,138 @@
     }
   }
 
-  function classifyPaxProtectionStateForReconciler(adapter, options = {}) {
+  function paxProtectionStateLabels() {
+    return {
+      unavailable: PAX_PROTECTION_STATE.unavailable,
+      scenarioInactive: PAX_PROTECTION_STATE.scenarioInactive,
+      actorRuntimeUnavailable: PAX_PROTECTION_STATE.characterRuntimeUnavailable,
+      consistentActive: PAX_PROTECTION_STATE.consistentActive,
+      recoverableActiveDefeated: PAX_PROTECTION_STATE.recoverableProtectionDefeated,
+      invalidActiveActors: PAX_PROTECTION_STATE.invalidProtectionBoarders,
+      recoverableCompletedActive: PAX_PROTECTION_STATE.recoverableInvestigationActive,
+      recoverableCompletedDefeated: PAX_PROTECTION_STATE.recoverableInvestigationDefeated,
+      invalidCompletedActors: PAX_PROTECTION_STATE.invalidInvestigationBoarders,
+      outsideEncounter: PAX_PROTECTION_STATE.outsideProtection
+    };
+  }
+
+  function paxProtectionRecoveryActions() {
+    return {
+      none: PAX_PROTECTION_RECOVERY.none,
+      reviveActors: PAX_PROTECTION_RECOVERY.reviveBoarders,
+      restartEncounter: PAX_PROTECTION_RECOVERY.restartEncounter
+    };
+  }
+
+  function paxProtectionEncounterIdentity(options = {}) {
+    const view = options.view || null;
+    return EncounterState.encounterIdentity({
+      key: PAX_PROTECTION_ENCOUNTER_KEY,
+      definitionId: PAX_PROTECTION_ENCOUNTER_DEFINITION_ID,
+      instanceId: options.instanceId || options.encounterInstanceId || options.runId,
+      scenarioId: SCENARIO_ID,
+      systemId: PAX_SYSTEM_ID,
+      view,
+      stageId: options.stageId || view?.state?.stageId,
+      activeStageIds: [PROTECTION_STAGE_ID],
+      completedStageIds: [INVESTIGATION_STAGE_ID],
+      actorIds: BOARDER_IDS
+    });
+  }
+
+  function classifyBoarderGroup(characterRuntime = currentCharacterRuntime()) {
+    return EncounterState.classifyActorGroup({
+      actorIds: BOARDER_IDS,
+      actorRuntime: characterRuntime,
+      actorCollectionKey: "characters",
+      entriesKey: "boarders"
+    });
+  }
+
+  function classifyPaxProtectionState(options = {}) {
     const scenarioRuntime = options.scenarioRuntime
       || uiState.runtime
       || global.MainComputerSystemScenarioRuntime?.current?.()
       || null;
     const characterRuntime = options.characterRuntime
       || currentCharacterRuntime();
-    const classification = adapter.classify({
-      ...objectValue(options),
+    const view = scenarioRuntime?.view?.(SCENARIO_ID) || null;
+    const boarderGroup = classifyBoarderGroup(characterRuntime);
+    const classification = EncounterState.classifyStagedEncounterState({
       scenarioRuntime,
-      characterRuntime
+      actorRuntime: characterRuntime,
+      view,
+      actorGroup: boarderGroup,
+      key: PAX_PROTECTION_ENCOUNTER_KEY,
+      definitionId: PAX_PROTECTION_ENCOUNTER_DEFINITION_ID,
+      scenarioId: SCENARIO_ID,
+      systemId: PAX_SYSTEM_ID,
+      actorIds: BOARDER_IDS,
+      activeStageIds: [PROTECTION_STAGE_ID],
+      completedStageIds: [INVESTIGATION_STAGE_ID],
+      stateLabels: paxProtectionStateLabels(),
+      recoveryActions: paxProtectionRecoveryActions()
     });
-    const boarderGroup = classification.actorGroup;
 
-    return {
-      ...classification,
+    return Object.assign({}, classification, {
       scenarioRuntime,
       characterRuntime,
-      boarderGroup
-    };
+      actorRuntime: characterRuntime,
+      view,
+      identity: classification.identity || paxProtectionEncounterIdentity({view}),
+      boarderGroup,
+      actorGroup: boarderGroup
+    });
   }
 
-  function paxProtectionPlanForReconciler(classification, adapter, options = {}) {
-    return adapter.recoveryPlan(
-      classification,
+  function paxProtectionReconciliationPlan(classification, options = {}) {
+    return EncounterState.reconciliationPlan(classification, Object.assign({}, options, {
+      recoveryActions: paxProtectionRecoveryActions()
+    }));
+  }
+
+  function paxProtectionReconciliationOptions(mode = PAX_RECONCILIATION_MODE.passive, overrides = {}) {
+    const selectedMode = stringValue(mode) || PAX_RECONCILIATION_MODE.passive;
+    const policy = PAX_RECONCILIATION_POLICY[selectedMode]
+      || PAX_RECONCILIATION_POLICY[PAX_RECONCILIATION_MODE.passive];
+    return Object.assign({}, policy, objectValue(overrides));
+  }
+
+  function diagnosePaxProtectionEncounter(options = {}) {
+    const reconciliationOptions = paxProtectionReconciliationOptions(
+      options.mode,
+      options
+    );
+    const classification = classifyPaxProtectionState(reconciliationOptions);
+    const plan = paxProtectionReconciliationPlan(classification, reconciliationOptions);
+    const identity = classification.identity || paxProtectionEncounterIdentity({
+      view: classification.view,
+      stageId: classification.stageId
+    });
+    return Object.assign(
+      EncounterState.diagnosticSnapshot(classification, plan, {identity}),
       {
-        recoverDefeated: options.recoverDefeated === true
+        encounter: identity,
+        encounterKey: identity.key,
+        encounterDefinitionId: identity.definitionId,
+        encounterInstanceId: identity.instanceId,
+        encounterInstanceKnown: identity.instanceKnown,
+        scenarioId: SCENARIO_ID,
+        systemId: PAX_SYSTEM_ID,
+        activeStageId: PROTECTION_STAGE_ID,
+        completedStageId: INVESTIGATION_STAGE_ID,
+        boarderIds: BOARDER_IDS.slice(),
+        boarders: EncounterState.actorDiagnosticRows(classification.boarderGroup, {
+          entriesKey: "boarders"
+        }),
+        runtimeAttached: Boolean(classification.scenarioRuntime),
+        characterRuntimeAttached: Boolean(classification.characterRuntime),
+        recoveryInProgress: Boolean(uiState.recoveryInProgress),
+        lastAutomaticRecovery: uiState.lastAutomaticRecovery
+          ? Object.assign({}, uiState.lastAutomaticRecovery)
+          : null
       }
     );
-  }
-
-  function paxProtectionDiagnosticForReconciler(
-    classification,
-    plan = null,
-    adapter = PAX_PROTECTION_ENCOUNTER
-  ) {
-    return adapter.diagnostic(
-      classification,
-      plan,
-      {
-        scenarioVisible: Boolean(classification?.view?.visible),
-        scenarioStatus: stringValue(classification?.view?.state?.status),
-        recoveryInProgress: Boolean(uiState.recoveryInProgress)
-      }
-    );
-  }
-
-  function paxProtectionBeforeRecovery() {
-    uiState.recoveryInProgress = true;
-    return null;
-  }
-
-  function paxProtectionAfterRecovery() {
-    uiState.recoveryInProgress = false;
   }
 
   function performPaxProtectionRecovery(plan, reason, options = {}) {
@@ -1238,108 +1307,97 @@
   }
 
   function paxProtectionRecoverySucceeded(plan, result) {
-    if (plan.action === PAX_PROTECTION_RECOVERY.reviveBoarders) {
-      return Boolean(result?.forced);
-    }
-    if (plan.action === PAX_PROTECTION_RECOVERY.restartEncounter) {
-      return Boolean(result?.reset);
-    }
-    return false;
-  }
-
-  const PAX_PROTECTION_RECONCILER = EncounterState.createStageActorEncounterReconciler(
-    PAX_PROTECTION_ENCOUNTER,
-    {
-      classify: classifyPaxProtectionStateForReconciler,
-      plan: paxProtectionPlanForReconciler,
-      diagnostic: paxProtectionDiagnosticForReconciler,
-      beforeRecovery: paxProtectionBeforeRecovery,
-      afterRecovery: paxProtectionAfterRecovery,
-      performRecovery: performPaxProtectionRecovery,
-      recoverySucceeded: paxProtectionRecoverySucceeded
-    }
-  );
-
-  function classifyBoarderGroup(characterRuntime = currentCharacterRuntime()) {
-    const group = PAX_PROTECTION_ENCOUNTER.classifyActorGroup(characterRuntime);
-    return {
-      ...group,
-      boarders: group.actors || []
-    };
-  }
-
-  function classifyPaxProtectionState(options = {}) {
-    return PAX_PROTECTION_RECONCILER.classify(options);
-  }
-
-  function paxProtectionReconciliationPlan(classification, options = {}) {
-    return PAX_PROTECTION_RECONCILER.recoveryPlan(classification, options);
-  }
-
-  function paxProtectionDiagnosticSnapshot(classification, plan = null) {
-    return PAX_PROTECTION_RECONCILER.diagnostic(classification, plan);
-  }
-
-  function diagnosePaxProtectionEncounter(options = {}) {
-    const classification = classifyPaxProtectionState(options);
-    const plan = paxProtectionReconciliationPlan(classification, options);
-    return paxProtectionDiagnosticSnapshot(classification, plan);
-  }
-
-  function reconcilePaxProtectionOnAttach(reason, options = {}) {
-    return reconcilePaxProtectionState(reason, {
-      ...objectValue(options),
-      recoverDefeated: true
-    });
-  }
-
-  function reconcilePaxProtectionOnLiveUpdate(reason, options = {}) {
-    return reconcilePaxProtectionState(reason, {
-      ...objectValue(options),
-      recoverDefeated: false
+    return EncounterState.recoverySucceeded(plan, result, {
+      successKeys: {
+        [PAX_PROTECTION_RECOVERY.reviveBoarders]: "forced",
+        [PAX_PROTECTION_RECOVERY.restartEncounter]: "reset"
+      }
     });
   }
 
   function reconcilePaxProtectionState(
-    reason = "automatic-inconsistent-encounter-recovery",
+    reason = PAX_RECONCILIATION_REASON.automatic,
     options = {}
   ) {
     if (uiState.recoveryInProgress) {
       return {recovered: false, reason: "recovery-in-progress"};
     }
 
-    const outcome = PAX_PROTECTION_RECONCILER.reconcile(reason, options);
+    const classification = classifyPaxProtectionState(options);
+    const plan = paxProtectionReconciliationPlan(classification, options);
 
-    if (outcome?.plan?.recover) {
-      uiState.lastAutomaticRecovery = {
-        reason: stringValue(reason),
-        recovered: Boolean(outcome.recovered),
-        atMs: nowMs(options),
-        classification: outcome.classification?.status,
-        action: outcome.plan?.action,
-        diagnostic: outcome.diagnostic,
-        result: outcome.result
+    if (!plan.recover) {
+      return {
+        recovered: false,
+        reason: plan.reason,
+        classification,
+        plan
       };
-      if (outcome.recovered && options.markCharacterRuntime !== false) {
-        uiState.recoveredCharacterRuntime = outcome.classification?.characterRuntime;
-      }
     }
 
-    return outcome;
+    uiState.recoveryInProgress = true;
+    try {
+      const result = performPaxProtectionRecovery(plan, reason, options);
+      const recovered = paxProtectionRecoverySucceeded(plan, result);
+      uiState.lastAutomaticRecovery = {
+        reason: stringValue(reason),
+        recovered,
+        atMs: nowMs(options),
+        classification: classification.status,
+        action: plan.action,
+        result
+      };
+      if (recovered && options.markCharacterRuntime !== false) {
+        uiState.recoveredCharacterRuntime = classification.characterRuntime;
+      }
+      return {
+        recovered,
+        reason: recovered
+          ? classification.status
+          : result?.reason || "automatic-recovery-failed",
+        classification,
+        plan,
+        result
+      };
+    } finally {
+      uiState.recoveryInProgress = false;
+    }
   }
 
-  function recoverActiveBoardersOutsideProtection(reason = "automatic-inconsistent-encounter-recovery") {
-    return reconcilePaxProtectionOnLiveUpdate(reason);
+  function requestPaxProtectionReconciliation(
+    reason = PAX_RECONCILIATION_REASON.automatic,
+    mode = PAX_RECONCILIATION_MODE.passive,
+    options = {}
+  ) {
+    return reconcilePaxProtectionState(
+      reason,
+      paxProtectionReconciliationOptions(mode, options)
+    );
+  }
+
+  function recoverActiveBoardersOutsideProtection(
+    reason = PAX_RECONCILIATION_REASON.automatic
+  ) {
+    return requestPaxProtectionReconciliation(
+      reason,
+      PAX_RECONCILIATION_MODE.passive
+    );
   }
 
   function setRuntime(runtime) {
     if (uiState.unsubscribe) uiState.unsubscribe();
     uiState.runtime = runtime || null;
     uiState.unsubscribe = runtime?.subscribe?.(() => {
-      reconcilePaxProtectionOnLiveUpdate("scenario-state-inconsistent-recovery");
+      requestPaxProtectionReconciliation(
+        PAX_RECONCILIATION_REASON.scenarioState,
+        PAX_RECONCILIATION_MODE.passive
+      );
       render();
     }) || null;
-    reconcilePaxProtectionOnAttach("scenario-runtime-attach-inconsistent-recovery");
+    requestPaxProtectionReconciliation(
+      PAX_RECONCILIATION_REASON.scenarioRuntimeAttach,
+      PAX_RECONCILIATION_MODE.startupAttach
+    );
     render();
     return uiState.runtime;
   }
@@ -1350,11 +1408,10 @@
 
     let recovery = {recovered: false, reason: "already-checked"};
     if (runtime && uiState.recoveredCharacterRuntime !== runtime) {
-      recovery = reconcilePaxProtectionOnAttach(
-        "character-runtime-attach-encounter-reconciliation",
-        {
-          characterRuntime: runtime
-        }
+      recovery = requestPaxProtectionReconciliation(
+        PAX_RECONCILIATION_REASON.characterRuntimeAttach,
+        PAX_RECONCILIATION_MODE.startupAttach,
+        {characterRuntime: runtime}
       );
       /*
        * A failed reconciliation must not mark this character runtime as
@@ -1365,7 +1422,10 @@
 
     uiState.characterUnsubscribe = runtime?.subscribe?.(() => {
       syncProtection();
-      reconcilePaxProtectionOnLiveUpdate("character-state-inconsistent-recovery");
+      requestPaxProtectionReconciliation(
+        PAX_RECONCILIATION_REASON.characterState,
+        PAX_RECONCILIATION_MODE.passive
+      );
       render();
     }) || null;
     render();
@@ -1419,6 +1479,9 @@
   const api = {
     SCENARIO_ID,
     PAX_SYSTEM_ID,
+    PAX_PROTECTION_ENCOUNTER_DEFINITION_ID,
+    PAX_PROTECTION_ENCOUNTER_KEY,
+    paxProtectionEncounterIdentity,
     setRuntime,
     setCharacterRuntime,
     handleNavigation,
@@ -1441,13 +1504,9 @@
     classifyBoarderGroup,
     classifyPaxProtectionState,
     paxProtectionReconciliationPlan,
-    paxProtectionDiagnosticSnapshot,
+    paxProtectionReconciliationOptions,
     diagnosePaxProtectionEncounter,
-    reconcilePaxProtectionOnAttach,
-    reconcilePaxProtectionOnLiveUpdate,
-    encounterState: EncounterState,
-    protectionEncounter: PAX_PROTECTION_ENCOUNTER,
-    protectionReconciler: PAX_PROTECTION_RECONCILER,
+    requestPaxProtectionReconciliation,
     reconcilePaxProtectionState,
     recoverActiveBoardersOutsideProtection,
     startOrRecoverPax,

@@ -9,6 +9,7 @@ from pathlib import Path
 from main_computer.mcel_package_test_support import logical_package_files
 from main_computer.mcel_counter_candidate_projection import (
     GENERATED_CONTRACTS,
+    counter_explicit_package_projection_profile,
     generate_counter_contracts,
     project_counter_candidate,
 )
@@ -20,7 +21,7 @@ FIXTURE = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counte
 LIVE = ROOT / "mcel_apps" / "contract-counter"
 EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
 EXPECTED_PACKAGE = "sha256:f3336d36d830a7d505b646961051a3f90822372365df640628b31a08dab5d130"
-EXPECTED_RUNTIME = "sha256:688c36817768e1f20eebe429fd7d151897e3c56095d29e16e987f8277ec1c476"
+EXPECTED_RUNTIME = "sha256:52c8d704f0a370860fa2a3efad429352dd7436d2ed2dce4865dee7e19c03d59c"
 
 
 def _live_hashes() -> dict[str, str]:
@@ -28,6 +29,15 @@ def _live_hashes() -> dict[str, str]:
         p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in LIVE.rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
     }
+
+
+
+def test_counter_projection_delegates_to_generic_explicit_package_profile() -> None:
+    profile = counter_explicit_package_projection_profile()
+    assert profile.app_id == "contract-counter"
+    assert profile.generated_contracts == GENERATED_CONTRACTS
+    assert profile.report_schema == "mcel.counter-candidate-projection-report.v1"
+    assert profile.projection_profile == "mcel.counter.explicit-projection.v1"
 
 
 def test_counter_projection_is_exact_and_roundtrips(tmp_path: Path) -> None:

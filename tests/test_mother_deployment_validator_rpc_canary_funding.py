@@ -103,6 +103,9 @@ class _StatusHealthFundingOpener:
         reject_first_create: bool = False,
         cast_probe_terminal_with_marker: bool = False,
         empty_application_logs: bool = False,
+        bad_rpc_route: bool = False,
+        wrong_rpc_chain: bool = False,
+        bad_rpc_balance: bool = False,
     ) -> None:
         self.already_funded = already_funded
         self.bad_c = bad_c
@@ -112,6 +115,9 @@ class _StatusHealthFundingOpener:
         self.reject_first_create = reject_first_create
         self.cast_probe_terminal_with_marker = cast_probe_terminal_with_marker
         self.empty_application_logs = empty_application_logs
+        self.bad_rpc_route = bad_rpc_route
+        self.wrong_rpc_chain = wrong_rpc_chain
+        self.bad_rpc_balance = bad_rpc_balance
         self.requests: list[tuple[str, str, str]] = []
         self.names_by_uuid: dict[str, str] = {}
         self.started: set[str] = set()
@@ -215,6 +221,26 @@ class _StatusHealthFundingOpener:
         path = parsed.path
         self.requests.append((host, method, path))
         assert timeout > 0
+
+        if host in {"mainneta-rpc1.greatlibrary.io", "mainnetc-rpc1.greatlibrary.io"}:
+            assert method == "POST"
+            assert request.headers.get("Authorization") is None
+            payload = json.loads(request.data.decode("utf-8"))
+            if self.bad_rpc_route:
+                return _AdmissionResponse({"error": {"code": -32000, "message": "route unavailable"}}, status=503)
+            if payload["method"] == "eth_chainId":
+                chain_id = 1 if self.wrong_rpc_chain else 42424240
+                return _AdmissionResponse({"jsonrpc": "2.0", "id": payload["id"], "result": hex(chain_id)})
+            if payload["method"] == "eth_getBalance":
+                if self.bad_rpc_balance:
+                    return _AdmissionResponse({"jsonrpc": "2.0", "id": payload["id"], "result": "not-a-hex-quantity"})
+                return _AdmissionResponse({
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": hex(self._balance_for_canary()),
+                })
+            raise AssertionError(payload["method"])
+
         expected_token = TOKEN_A if host == "coolify-a.invalid" else TOKEN_C
         assert request.headers.get("Authorization") == f"Bearer {expected_token}"
 
@@ -496,6 +522,8 @@ def test_funded_path_uses_positive_classifiers_and_cross_validator_health_proof(
     assert result["transaction_hash_recorded"] is True
     assert result["chain_state"] == "exact-cross-validator-verified"
     assert result["summary"]["funding_receipt_verified_on_C"] is True
+    assert result["summary"]["allfather_rpc_route_preflight_used"] is True
+    assert result["summary"]["allfather_rpc_route_preflight_complete"] is True
     assert result["summary"]["canary_balance_verified_on_A"] is True
     assert result["summary"]["canary_balance_verified_on_C"] is True
     assert result["summary"]["temporary_services_deleted"] is True
@@ -542,6 +570,52 @@ def test_funded_path_uses_positive_classifiers_and_cross_validator_health_proof(
         caught.value.code
         == "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RELEASE_ALREADY_CONSUMED"
     )
+
+
+def test_rpc_route_preflight_stops_before_temporary_services(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        _,
+        _,
+        release_path,
+        release_digest,
+    ) = _release_fixture(tmp_path, monkeypatch)
+    opener = _StatusHealthFundingOpener(bad_rpc_route=True)
+    result = execute_validator_rpc_canary_funding_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        opener=opener,
+        poll_interval_seconds=0,
+        max_wait_seconds=0,
+        operation=_operation("validator-rpc-canary-funding-route-failed"),
+    )
+    assert result["status"] == "manual-review-required"
+    assert result["chain_state"] == "unchanged-before-funder-start"
+    assert result["summary"]["funding_performed"] is False
+    assert result["summary"]["allfather_rpc_route_preflight_used"] is True
+    assert result["summary"]["allfather_rpc_route_preflight_complete"] is False
+    assert result["summary"]["temporary_service_count"] == 0
+    assert result["summary"]["application_mutation_count"] == 0
+    assert opener.secret_bound is False
+    assert opener.deleted == set()
+    assert not any("/api/v1/services" in path for _, _, path in opener.requests)
+
+    evidence = json.loads(Path(result["evidence"]["path"]).read_text())
+    assert evidence["failure"]["code"] == "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE"
+    preflight = evidence["allfather_rpc_route_preflight"]
+    assert preflight["mode"] == "allfather-rpc-route-direct-json-rpc"
+    assert preflight["routes"]["a"]["rpc_url"] == "https://mainneta-rpc1.greatlibrary.io"
+    assert preflight["routes"]["a"]["ok"] is False
+
+
 
 
 def test_exact_balance_reconciles_without_binding_captain_secret(

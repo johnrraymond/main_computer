@@ -175,14 +175,22 @@ The imported placement URLs are retained as `source_public_url` for traceability
 
 ## Primary public Traefik routes
 
-The two public HTTP surfaces that matter for each super-container are:
+Migration warning: this section describes the historical Allfather host-local
+route compiler. It is reference material for Mother, not the live Mother
+authority. Mother-owned mainnet RPC uses the shared aggregate hostname
+`mainnet-rpc.greatlibrary.io` unless an active Mother route manifest explicitly
+declares otherwise. Do not copy Allfather host-local RPC examples such as
+`mainneta-rpc1.greatlibrary.io` or `mainnetb-rpc1.greatlibrary.io` into Mother
+canary, funding, or route-preflight code.
+
+The two public HTTP surfaces that matter for each Allfather super-container are:
 
 ```text
 <host-prefix>-hubN.greatlibrary.io -> same super-container internal Hub port
 <host-prefix>-rpcN.greatlibrary.io -> same super-container internal validator-RPC port
 ```
 
-Examples:
+Examples from the Allfather host-local compiler:
 
 ```text
 mainneta-hub1.greatlibrary.io -> mainneta super node 1 Hub process
@@ -207,6 +215,12 @@ Hub and RPC ports remain visible in the port inventory, but they are no longer
 directly host-published by the all-father compose.  Traefik is responsible for
 public HTTP routing.  Guard remains private/operator-facing, while FoundationDB
 and Besu P2P remain raw TCP/VPN surfaces.
+
+For Mother-governed mainnet operations, the equivalent route invariant is not a
+per-node hostname. The shared hostname `mainnet-rpc.greatlibrary.io` must route
+to every active, healthy mainnet RPC backend that is meant to serve the aggregate
+route. A route-layer response such as `no available server` means the shared
+hostname exists but has no healthy backend registered at the proxy layer.
 
 ## Guard ports
 

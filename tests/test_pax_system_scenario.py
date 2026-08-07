@@ -36,6 +36,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
                 str(CHARACTER_RUNTIME),
                 str(PROJECT_PATH),
                 str(PAX_INTERACTION),
+                str(ENCOUNTER_STATE),
             ],
             cwd=ROOT,
             text=True,
@@ -777,151 +778,6 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertGreaterEqual(result["forceReceiptCount"], 4)
         self.assertEqual(result["kickoffReason"], "test-hard-kickoff")
 
-
-    def test_encounter_state_module_classifies_actor_groups_and_recovery_plans(self) -> None:
-        if not shutil.which("node"):
-            self.skipTest("node is required for encounter-state runtime tests")
-        result = subprocess.run(
-            [
-                "node",
-                "-e",
-                textwrap.dedent(
-                    r"""
-                    const encounter = require(process.argv[1]);
-                    const activeRuntime = {
-                      snapshot: () => ({
-                        characters: {
-                          a: {status: "active", health: 12},
-                          b: {status: "active", health: 7}
-                        }
-                      })
-                    };
-                    const defeatedRuntime = {
-                      snapshot: () => ({
-                        characters: {
-                          a: {status: "down", health: 0},
-                          b: {status: "down", health: 0}
-                        }
-                      })
-                    };
-                    const active = encounter.classifyActorGroup(["a", "b"], activeRuntime);
-                    const defeated = encounter.classifyActorGroup(["a", "b"], defeatedRuntime);
-                    const classification = encounter.classifyStageActorEncounter({
-                      view: {visible: true, state: {status: "active", stageId: "combat"}},
-                      actorGroup: defeated,
-                      activeStageId: "combat",
-                      completedStageIds: ["resolved"]
-                    });
-                    const adapter = encounter.createStageActorEncounterAdapter({
-                      scenarioId: "scenario.test",
-                      systemId: "system.test",
-                      activeStageId: "combat",
-                      completedStageIds: ["resolved"],
-                      actorIds: ["a", "b"]
-                    });
-                    const adapterClassification = adapter.classify({
-                      view: {visible: true, state: {status: "active", stageId: "combat"}},
-                      characterRuntime: defeatedRuntime
-                    });
-                    const blocked = encounter.recoveryPlan(classification, {recoverDefeated: false});
-                    const allowed = encounter.recoveryPlan(classification, {recoverDefeated: true});
-                    const recoveryEvents = [];
-                    const reconciled = encounter.reconcileStageActorEncounter({
-                      reason: "unit-test-reconcile",
-                      classify: () => classification,
-                      plan: () => allowed,
-                      beforeRecovery: () => {
-                        recoveryEvents.push("before");
-                        return null;
-                      },
-                      performRecovery: (plan, reason) => {
-                        recoveryEvents.push(`${reason}:${plan.action}`);
-                        return {forced: true};
-                      },
-                      recoverySucceeded: (plan, result) => Boolean(result.forced),
-                      afterRecovery: () => {
-                        recoveryEvents.push("after");
-                      }
-                    });
-                    const reconcilerEvents = [];
-                    const boundReconciler = encounter.createStageActorEncounterReconciler(
-                      adapter,
-                      {
-                        plan: (classification, adapter, options) => (
-                          adapter.recoveryPlan(classification, options)
-                        ),
-                        beforeRecovery: () => {
-                          reconcilerEvents.push("before");
-                          return null;
-                        },
-                        performRecovery: (plan, reason) => {
-                          reconcilerEvents.push(`${reason}:${plan.action}`);
-                          return {forced: true};
-                        },
-                        recoverySucceeded: (plan, result) => Boolean(result.forced),
-                        afterRecovery: () => {
-                          reconcilerEvents.push("after");
-                        }
-                      }
-                    );
-                    const boundReconciled = boundReconciler.reconcile(
-                      "bound-unit-test-reconcile",
-                      {
-                        view: {visible: true, state: {status: "active", stageId: "combat"}},
-                        characterRuntime: defeatedRuntime,
-                        recoverDefeated: true
-                      }
-                    );
-                    console.log(JSON.stringify({
-                      activeStatus: active.status,
-                      defeatedStatus: defeated.status,
-                      classificationStatus: classification.status,
-                      adapterScenarioId: adapter.scenarioId,
-                      adapterActorTotal: adapterClassification.actorGroup.total,
-                      adapterClassificationStatus: adapterClassification.status,
-                      recovery: classification.recovery,
-                      blocked,
-                      allowed,
-                      diagnostic: encounter.diagnosticSnapshot(classification, allowed),
-                      reconciled,
-                      recoveryEvents,
-                      boundReconciled,
-                      reconcilerEvents
-                    }));
-                    """
-                ),
-                str(ENCOUNTER_STATE),
-            ],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        payload = json.loads(result.stdout)
-        self.assertEqual(payload["activeStatus"], "active")
-        self.assertEqual(payload["defeatedStatus"], "defeated")
-        self.assertEqual(payload["classificationStatus"], "recoverable-active-defeated")
-        self.assertEqual(payload["adapterScenarioId"], "scenario.test")
-        self.assertEqual(payload["adapterActorTotal"], 2)
-        self.assertEqual(payload["adapterClassificationStatus"], "recoverable-active-defeated")
-        self.assertEqual(payload["recovery"], "revive-actors")
-        self.assertFalse(payload["blocked"]["recover"])
-        self.assertTrue(payload["allowed"]["recover"])
-        self.assertEqual(payload["diagnostic"]["actors"]["defeated"], 2)
-        self.assertTrue(payload["reconciled"]["recovered"])
-        self.assertEqual(payload["reconciled"]["reason"], "recoverable-active-defeated")
-        self.assertEqual(
-            payload["recoveryEvents"],
-            ["before", "unit-test-reconcile:revive-actors", "after"],
-        )
-        self.assertTrue(payload["boundReconciled"]["recovered"])
-        self.assertEqual(
-            payload["reconcilerEvents"],
-            ["before", "bound-unit-test-reconcile:revive-actors", "after"],
-        )
-
-
     def test_game_surface_exposes_pax_scenario_without_polling(self) -> None:
         applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
         webgl = WEBGL_HTML.read_text(encoding="utf-8")
@@ -936,16 +792,8 @@ class PaxSystemScenarioTests(unittest.TestCase):
             applications,
         )
         self.assertIn(
-            "<!-- @include applications/scripts/encounter-state.js -->",
-            applications,
-        )
-        self.assertIn(
             "<!-- @include applications/scripts/pax-scenario-interaction.js -->",
             applications,
-        )
-        self.assertLess(
-            applications.index("encounter-state.js"),
-            applications.index("pax-scenario-interaction.js"),
         )
         self.assertIn(
             "<!-- @include applications/styles/pax-scenario-interaction.css -->",
@@ -1107,28 +955,225 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertNotIn("this.isWeaponFirePaused()", update_guard)
 
 
+    def test_encounter_state_module_classifies_staged_recovery(self) -> None:
+        result = self.run_node(
+            r"""
+            const encounter = require(process.argv[5]);
+            const actorIds = ["enemy.one", "enemy.two"];
+            const snapshot = {
+              characters: {
+                "enemy.one": {status: "down", health: 0},
+                "enemy.two": {status: "down", health: 0}
+              }
+            };
+            const actorGroup = encounter.classifyActorGroup({
+              actorIds,
+              snapshot,
+              actorCollectionKey: "characters",
+              entriesKey: "boarders"
+            });
+            const classification = encounter.classifyStagedEncounterState({
+              view: {
+                visible: true,
+                state: {
+                  status: "active",
+                  stageId: "combat"
+                }
+              },
+              actorGroup,
+              activeStageIds: ["combat"],
+              completedStageIds: ["investigation"]
+            });
+            const blockedPlan = encounter.reconciliationPlan(classification, {
+              recoverDefeated: false
+            });
+            const allowedPlan = encounter.reconciliationPlan(classification, {
+              recoverDefeated: true
+            });
+            console.log(JSON.stringify({
+              actorStatus: actorGroup.status,
+              defeatedCount: actorGroup.defeatedCount,
+              boarderAliasCount: actorGroup.boarders.length,
+              status: classification.status,
+              recovery: classification.recovery,
+              blocked: blockedPlan.recover,
+              allowed: allowedPlan.recover,
+              succeeded: encounter.recoverySucceeded(
+                {action: "custom-restart"},
+                {reset: true},
+                {successKeys: {"custom-restart": "reset"}}
+              )
+            }));
+            """
+        )
+
+        self.assertEqual(result["actorStatus"], "defeated")
+        self.assertEqual(result["defeatedCount"], 2)
+        self.assertEqual(result["boarderAliasCount"], 2)
+        self.assertEqual(result["status"], "recoverable-active-defeated")
+        self.assertEqual(result["recovery"], "revive-actors")
+        self.assertFalse(result["blocked"])
+        self.assertTrue(result["allowed"])
+        self.assertTrue(result["succeeded"])
+
+
+    def test_pax_reconciliation_uses_neutral_encounter_state_module(self) -> None:
+        encounter_source = ENCOUNTER_STATE.read_text(encoding="utf-8")
+        pax_source = PAX_INTERACTION.read_text(encoding="utf-8")
+        html_source = APPLICATIONS_HTML.read_text(encoding="utf-8")
+
+        self.assertIn("global.MainComputerEncounterState = api", encounter_source)
+        self.assertIn("classifyActorGroup", encounter_source)
+        self.assertIn("classifyStagedEncounterState", encounter_source)
+        self.assertIn("reconciliationPlan", encounter_source)
+        self.assertIn("recoverySucceeded", encounter_source)
+        self.assertIn("actorDiagnosticRows", encounter_source)
+
+        self.assertIn("const EncounterState = global.MainComputerEncounterState", pax_source)
+        self.assertIn("EncounterState.classifyActorGroup", pax_source)
+        self.assertIn("EncounterState.classifyStagedEncounterState", pax_source)
+        self.assertIn("EncounterState.reconciliationPlan", pax_source)
+        self.assertIn("EncounterState.recoverySucceeded", pax_source)
+        self.assertIn("EncounterState.diagnosticSnapshot", pax_source)
+        self.assertIn("EncounterState.actorDiagnosticRows", pax_source)
+        self.assertNotIn("const boarders = BOARDER_IDS.map", pax_source)
+
+        self.assertLess(
+            html_source.index("applications/scripts/encounter-state.js"),
+            html_source.index("applications/scripts/pax-scenario-interaction.js"),
+        )
+
+
+    def test_pax_protection_diagnostic_snapshot_reports_canonical_state(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            interaction.setCharacterRuntime(characters);
+            interaction.startOrRecoverPax("test-diagnostic-start", {
+              allowSystemChange: true,
+              nowMs: 10
+            });
+
+            const passiveOptions =
+              interaction.paxProtectionReconciliationOptions("passive");
+            const startupOptions =
+              interaction.paxProtectionReconciliationOptions("startup-attach");
+            const diagnostic = interaction.diagnosePaxProtectionEncounter();
+
+            console.log(JSON.stringify({
+              passiveRecoverDefeated: passiveOptions.recoverDefeated,
+              startupRecoverDefeated: startupOptions.recoverDefeated,
+              status: diagnostic.status,
+              stageId: diagnostic.stageId,
+              stageClass: diagnostic.stageClass,
+              actorStatus: diagnostic.actorStatus,
+              total: diagnostic.total,
+              activeCount: diagnostic.activeCount,
+              defeatedCount: diagnostic.defeatedCount,
+              missingCount: diagnostic.missingCount,
+              planRecover: diagnostic.plan.recover,
+              planAction: diagnostic.plan.action,
+              scenarioId: diagnostic.scenarioId,
+              systemId: diagnostic.systemId,
+              activeStageId: diagnostic.activeStageId,
+              completedStageId: diagnostic.completedStageId,
+              encounter: diagnostic.encounter,
+              encounterKey: diagnostic.encounterKey,
+              encounterDefinitionId: diagnostic.encounterDefinitionId,
+              encounterInstanceId: diagnostic.encounterInstanceId,
+              encounterInstanceKnown: diagnostic.encounterInstanceKnown,
+              boarderIds: diagnostic.boarderIds,
+              boarders: diagnostic.boarders,
+              runtimeAttached: diagnostic.runtimeAttached,
+              characterRuntimeAttached: diagnostic.characterRuntimeAttached
+            }));
+            """
+        )
+
+        self.assertFalse(result["passiveRecoverDefeated"])
+        self.assertTrue(result["startupRecoverDefeated"])
+        self.assertEqual(result["status"], "consistent-active")
+        self.assertEqual(result["stageId"], "protect-witness")
+        self.assertEqual(result["stageClass"], "active")
+        self.assertEqual(result["actorStatus"], "active")
+        self.assertEqual(result["total"], 6)
+        self.assertEqual(result["activeCount"], 6)
+        self.assertEqual(result["defeatedCount"], 0)
+        self.assertEqual(result["missingCount"], 0)
+        self.assertFalse(result["planRecover"])
+        self.assertEqual(result["planAction"], "none")
+        self.assertEqual(
+            result["scenarioId"],
+            "scenario.pax.neutrality-under-fire",
+        )
+        self.assertEqual(result["systemId"], "system.pax")
+        self.assertEqual(result["activeStageId"], "protect-witness")
+        self.assertEqual(result["completedStageId"], "investigation")
+        self.assertEqual(
+            result["encounterKey"],
+            "scenario.pax.neutrality-under-fire:encounter.pax.protection-boarding",
+        )
+        self.assertEqual(
+            result["encounterDefinitionId"],
+            "encounter.pax.protection-boarding",
+        )
+        self.assertIsNone(result["encounterInstanceId"])
+        self.assertFalse(result["encounterInstanceKnown"])
+        self.assertEqual(result["encounter"]["stageId"], "protect-witness")
+        self.assertEqual(result["encounter"]["scenarioId"], result["scenarioId"])
+        self.assertEqual(result["encounter"]["systemId"], result["systemId"])
+        self.assertEqual(result["encounter"]["activeStageIds"], ["protect-witness"])
+        self.assertEqual(result["encounter"]["completedStageIds"], ["investigation"])
+        self.assertEqual(len(result["encounter"]["actorIds"]), 6)
+        self.assertEqual(len(result["boarderIds"]), 6)
+        self.assertEqual(len(result["boarders"]), 6)
+        self.assertTrue(all(row["active"] for row in result["boarders"]))
+        self.assertTrue(result["runtimeAttached"])
+        self.assertTrue(result["characterRuntimeAttached"])
+
+
     def test_persisted_defeated_pax_boarders_use_shared_reconciliation_on_attach(self) -> None:
         source = PAX_INTERACTION.read_text(encoding="utf-8")
-        encounter = ENCOUNTER_STATE.read_text(encoding="utf-8")
-        self.assertIn("MainComputerEncounterState", encounter)
-        self.assertIn("classifyActorGroup", encounter)
-        self.assertIn("classifyStageActorEncounter", encounter)
-        self.assertIn("recoveryPlan", encounter)
-        self.assertIn("reconcileStageActorEncounter", encounter)
-        self.assertIn("diagnosticSnapshot", encounter)
-        self.assertIn("stageActorEncounterDescriptor", encounter)
-        self.assertIn("createStageActorEncounterAdapter", encounter)
-        self.assertIn("createStageActorEncounterReconciler", encounter)
-        self.assertIn("EncounterState.createStageActorEncounterAdapter", source)
-        self.assertIn("PAX_PROTECTION_ENCOUNTER.classifyActorGroup", source)
-        self.assertIn("PAX_PROTECTION_ENCOUNTER.classify", source)
-        self.assertIn("adapter.recoveryPlan", source)
-        self.assertIn("adapter.diagnostic", source)
-        self.assertIn("EncounterState.createStageActorEncounterReconciler", source)
-        self.assertIn("PAX_PROTECTION_RECONCILER.reconcile", source)
         self.assertIn("function classifyBoarderGroup", source)
         self.assertIn("function classifyPaxProtectionState", source)
         self.assertIn("function paxProtectionReconciliationPlan", source)
+        self.assertIn("function paxProtectionReconciliationOptions", source)
+        self.assertIn("function diagnosePaxProtectionEncounter", source)
+        self.assertIn("function requestPaxProtectionReconciliation", source)
         self.assertIn("function performPaxProtectionRecovery", source)
         self.assertIn("function reconcilePaxProtectionState", source)
         self.assertIn('recoverableProtectionDefeated: "recoverable-protection-defeated"', source)
@@ -1513,69 +1558,6 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
         self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
         self.assertIn("protection-encounter-reset", result["receiptReasons"])
-
-    def test_pax_exposes_canonical_protection_diagnostic(self) -> None:
-        result = self.run_node(
-            r"""
-            const fs = require("fs");
-            const scenarioApi = require(process.argv[1]);
-            const characterApi = require(process.argv[2]);
-            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
-
-            const scenario = scenarioApi.create(
-              project.metadata.systemScenarios,
-              {
-                projectId: "webgl-demo",
-                storage: null,
-                restore: false,
-                activeSystemId: "system.pax"
-              }
-            );
-            const characters = characterApi.create(
-              project.metadata.characterAI,
-              {
-                projectId: "webgl-demo",
-                storage: null,
-                restore: false
-              }
-            );
-
-            global.MainComputerSystemScenarioRuntime = {
-              current: () => scenario
-            };
-            global.MainComputerCharacterAIRuntime = {
-              current: () => characters
-            };
-            global.document = {
-              querySelector: () => null
-            };
-
-            const interaction = require(process.argv[4]);
-            interaction.setRuntime(scenario);
-            interaction.setCharacterRuntime(characters);
-            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
-            interaction.forcePaxCharacterStates("diagnostic-test", {nowMs: 20});
-
-            console.log(JSON.stringify(
-              interaction.diagnosePaxProtectionEncounter()
-            ));
-            """
-        )
-
-        self.assertEqual(result["scenarioId"], "scenario.pax.neutrality-under-fire")
-        self.assertEqual(result["systemId"], "system.pax")
-        self.assertEqual(result["activeStageId"], "protect-witness")
-        self.assertEqual(result["completedStageIds"], ["investigation"])
-        self.assertEqual(result["stageId"], "protect-witness")
-        self.assertEqual(result["scenarioStatus"], "active")
-        self.assertTrue(result["scenarioVisible"])
-        self.assertEqual(result["status"], "consistent-active")
-        self.assertEqual(result["recovery"], "none")
-        self.assertFalse(result["plan"]["recover"])
-        self.assertEqual(result["actors"]["status"], "active")
-        self.assertEqual(result["actors"]["active"], 6)
-        self.assertEqual(len(result["actorIds"]), 6)
-
 
 
 if __name__ == "__main__":

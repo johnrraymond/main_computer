@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from main_computer.mcel_counter_candidate_evidence import (
+    counter_explicit_package_candidate_evidence_profile,
     _build_effect_accounting,
     _evaluate_browser_effect_probe,
     _prepare_workspace,
@@ -101,6 +102,15 @@ def _browser_probe() -> dict:
     }
 
 
+
+def test_counter_evidence_uses_generic_explicit_package_profile() -> None:
+    profile = counter_explicit_package_candidate_evidence_profile()
+
+    assert profile.app_id == "contract-counter"
+    assert profile.report_schema == "mcel.counter-candidate-evidence-report.v1"
+    assert profile.effect_accounting_filename == "mcel-counter-effect-accounting-report.json"
+
+
 def test_browser_effect_probe_passes_page_url_as_explicit_evaluate_argument() -> None:
     class FakePage:
         def evaluate(self, expression, argument):
@@ -166,12 +176,22 @@ def test_workspace_uses_candidate_package_without_changing_live_package(tmp_path
     assert projection.valid is True and projection.candidate_directory
     workspace = tmp_path / "workspace"
     candidate_package = projection.candidate_directory / "package/mcel_apps/contract-counter"
-    before = (LIVE / "contracts/domain.js").read_bytes()
+    before = {
+        path.relative_to(LIVE).as_posix(): path.read_bytes()
+        for path in LIVE.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+    candidate_domain = (candidate_package / "contracts/domain.js").read_bytes()
 
     _prepare_workspace(ROOT, workspace, candidate_package)
 
-    assert (workspace / "runtime/build/mcel/web/applications/mcel-packages/contract-counter/contracts/domain.js").read_bytes() == before
-    assert (LIVE / "contracts/domain.js").read_bytes() == before
+    assert (workspace / "mcel_apps/contract-counter/contracts/domain.js").read_bytes() == candidate_domain
+    after = {
+        path.relative_to(LIVE).as_posix(): path.read_bytes()
+        for path in LIVE.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+    assert after == before
     assert not (workspace / "runtime").exists()
 
 

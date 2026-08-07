@@ -147,3 +147,126 @@ def test_calculator_authoritative_dsl_source_reads_as_fluent_app_declaration() -
     assert "function createHostBoundApplicationBuilder(" in runtime
     assert "hostBound(declaration)" in runtime
     assert len(source.splitlines()) < 250
+
+
+def test_calculator_candidate_projection_delegates_to_shared_host_bound_projector() -> None:
+    calculator_projection = (ROOT / "main_computer/mcel_calculator_candidate_projection.py").read_text(encoding="utf-8")
+    profile = (ROOT / "main_computer/mcel_calculator_host_bound_profile.py").read_text(encoding="utf-8")
+    generic_projection = (ROOT / "main_computer/mcel_host_bound_candidate_projection.py").read_text(encoding="utf-8")
+
+    assert "build_calculator_projection_profile(" in calculator_projection
+    assert "project_host_bound_candidate(" in calculator_projection
+    assert "HostBoundProjectionProfile(" in profile
+    assert "def _write_shadow_package(" not in calculator_projection
+    assert "def _existing_drift(" not in calculator_projection
+    assert "def project_host_bound_candidate(" in generic_projection
+    assert "class HostBoundProjectionProfile" in generic_projection
+    assert "liveCalculatorChanged" not in generic_projection
+
+
+def test_calculator_browser_observation_delegates_to_shared_host_bound_observer() -> None:
+    calculator_observation = (ROOT / "main_computer/mcel_calculator_browser_observation.py").read_text(encoding="utf-8")
+    profile = (ROOT / "main_computer/mcel_calculator_host_bound_profile.py").read_text(encoding="utf-8")
+    generic_observation = (ROOT / "main_computer/mcel_host_bound_browser_observation.py").read_text(encoding="utf-8")
+
+    assert "build_calculator_browser_observation_profile(" in calculator_observation
+    assert "run_host_bound_browser_observation(" in calculator_observation
+    assert "HostBoundBrowserObservationProfile(" in profile
+    assert "BROWSER_OBSERVATION_SCRIPT" in profile
+    assert "def _run_playwright(" not in calculator_observation
+    assert "def _browser_injected_projection(" not in calculator_observation
+    assert "def _effect_accounting(" not in calculator_observation
+    assert "def run_host_bound_browser_observation(" in generic_observation
+    assert "class HostBoundBrowserObservationProfile" in generic_observation
+    assert "MainComputerCalculatorRuntime" not in generic_observation
+    assert "calculator-browser-observation-source-v1" not in generic_observation
+
+
+def test_calculator_candidate_evidence_delegates_to_shared_host_bound_collector() -> None:
+    calculator_evidence = (ROOT / "main_computer/mcel_calculator_candidate_evidence.py").read_text(encoding="utf-8")
+    profile = (ROOT / "main_computer/mcel_calculator_host_bound_profile.py").read_text(encoding="utf-8")
+    generic_evidence = (ROOT / "main_computer/mcel_host_bound_candidate_evidence.py").read_text(encoding="utf-8")
+
+    assert "build_calculator_candidate_evidence_profile(" in calculator_evidence
+    assert "run_host_bound_candidate_evidence(" in calculator_evidence
+    assert "HostBoundCandidateEvidenceProfile(" in profile
+    assert "def _tree_fingerprint(" not in calculator_evidence
+    assert "def _calculator_record(" not in calculator_evidence
+    assert "def _render_markdown(" not in calculator_evidence
+    assert "def run_host_bound_candidate_evidence(" in generic_evidence
+    assert "class HostBoundCandidateEvidenceProfile" in generic_evidence
+    assert "mcel.calculator-candidate-evidence-report.v1" not in generic_evidence
+    assert "existing-html-calculator-runtime" not in generic_evidence
+
+
+def test_calculator_promotion_rehearsal_delegates_to_shared_host_bound_promoter() -> None:
+    calculator_promotion = (ROOT / "main_computer/mcel_calculator_promotion_rehearsal.py").read_text(encoding="utf-8")
+    profile = (ROOT / "main_computer/mcel_calculator_host_bound_profile.py").read_text(encoding="utf-8")
+    generic_promotion = (ROOT / "main_computer/mcel_host_bound_promotion_rehearsal.py").read_text(encoding="utf-8")
+
+    assert "build_calculator_promotion_profile(" in calculator_promotion
+    assert "run_host_bound_promotion_rehearsal(" in calculator_promotion
+    assert "execute_host_bound_promotion(" in calculator_promotion
+    assert "rollback_host_bound_promotion(" in calculator_promotion
+    assert "HostBoundPromotionProfile(" in profile
+    assert "def _build_promotion_plan(" not in calculator_promotion
+    assert "def _rehearse_apply_and_rollback(" not in calculator_promotion
+    assert "def _validate_promoted_workspace(" not in calculator_promotion
+    assert "def _render_markdown(" not in calculator_promotion
+    assert "def run_host_bound_promotion_rehearsal(" in generic_promotion
+    assert "class HostBoundPromotionProfile" in generic_promotion
+    assert "mcel.calculator-promotion-rehearsal-report.v1" not in generic_promotion
+    assert "mcel.calculator.host-bound-projection.v1" not in generic_promotion
+
+
+def test_calculator_runtime_parity_delegates_to_shared_host_bound_parity() -> None:
+    calculator_parity = (ROOT / "main_computer/mcel_calculator_parity.py").read_text(encoding="utf-8")
+    profile = (ROOT / "main_computer/mcel_calculator_host_bound_profile.py").read_text(encoding="utf-8")
+    generic_parity = (ROOT / "main_computer/mcel_host_bound_runtime_parity.py").read_text(encoding="utf-8")
+
+    assert "build_calculator_runtime_parity_profile(" in calculator_parity
+    assert "run_host_bound_generated_adapter_parity(" in calculator_parity
+    assert "run_host_bound_browser_parity_probe(" in calculator_parity
+    assert "HostBoundRuntimeParityProfile(" in profile
+    assert "def _generated_bindings(" not in calculator_parity
+    assert "def _capability_accounting(" not in calculator_parity
+    assert "def _manifest(" not in calculator_parity
+    assert "def run_host_bound_generated_adapter_parity(" in generic_parity
+    assert "class HostBoundRuntimeParityProfile" in generic_parity
+    assert "MainComputerCalculatorRuntime" not in generic_parity
+    assert "mcel.calculator-generated-adapter-authority.v1" not in generic_parity
+
+
+def test_calculator_ir_native_proof_delegates_to_shared_host_bound_proof() -> None:
+    calculator_proof = (ROOT / "main_computer/mcel_calculator_ir_native_proof.py").read_text(encoding="utf-8")
+    profile = (ROOT / "main_computer/mcel_calculator_host_bound_profile.py").read_text(encoding="utf-8")
+    generic_proof = (ROOT / "main_computer/mcel_host_bound_ir_native_proof.py").read_text(encoding="utf-8")
+
+    assert "build_calculator_ir_native_proof_profile(" in calculator_proof
+    assert "run_host_bound_ir_native_intent_proof(" in calculator_proof
+    assert "HostBoundIrNativeProofProfile(" in profile
+    assert "def _scenario_count(" not in calculator_proof
+    assert "def _acceptance_status(" not in calculator_proof
+    assert "def _observation_status(" not in calculator_proof
+    assert "def run_host_bound_ir_native_intent_proof(" in generic_proof
+    assert "class HostBoundIrNativeProofProfile" in generic_proof
+    assert "mcel.calculator-ir-native-authoritative-proof.v1" not in generic_proof
+    assert "Calculator generated-adapter authority evidence did not pass" not in generic_proof
+
+
+def test_calculator_host_bound_profile_centralizes_app_specific_facts() -> None:
+    profile = (ROOT / "main_computer/mcel_calculator_host_bound_profile.py").read_text(encoding="utf-8")
+
+    assert 'APP_ID = "calculator"' in profile
+    assert 'ROUTE = "/applications/calculator"' in profile
+    assert 'ROOT_SELECTOR = "#calculator-app"' in profile
+    assert 'RUNTIME_FACADE = "MainComputerCalculatorRuntime"' in profile
+    assert "INTENT_PAYLOADS" in profile
+    assert "LOCAL_INTENTS" in profile
+    assert "RETIRED_ARTIFACTS" in profile
+    assert "build_calculator_projection_profile" in profile
+    assert "build_calculator_browser_observation_profile" in profile
+    assert "build_calculator_candidate_evidence_profile" in profile
+    assert "build_calculator_promotion_profile" in profile
+    assert "build_calculator_runtime_parity_profile" in profile
+    assert "build_calculator_ir_native_proof_profile" in profile

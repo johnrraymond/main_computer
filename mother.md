@@ -77,6 +77,14 @@ material for Coolify API access, private-state loading, guard/probe mechanics,
 existing network naming conventions, and the current super-node runtime model,
 but it is no longer the lifecycle authority. Mother starts from clean boundaries.
 
+Once a lifecycle path has moved to Mother, remediation MUST happen through
+Mother-owned staged, released, applied, and verified actions. Operators and
+agents MUST NOT repair a Mother deployment by running Allfather propagation,
+patching Allfather live-control paths, or borrowing an Allfather helper as the
+runtime authority. When an Allfather behavior remains the correct contract,
+Mother must carry that contract in Mother-owned code, evidence, and rollback
+state.
+
 The immediate purpose of Mother is to make network state observable, prepare an
 explicit operation, save that operation as the current operation for the affected
 scopes, perform the prepared operation exactly as written, and then finalize it
@@ -104,50 +112,87 @@ a second node type. Validator-RPC canary identities are bounded client wallets
 used to test the RPC surfaces of existing super-nodes and MUST NOT become
 deployable services or network members.
 
+### Canonical validator-RPC route contract
+
+The canonical public validator JSON-RPC route for a Mother-governed network is
+the shared aggregate hostname:
+
+```text
+https://<network>-rpc.greatlibrary.io
+```
+
+For `mainnet`, the route is:
+
+```text
+https://mainnet-rpc.greatlibrary.io
+```
+
+Mother MUST NOT synthesize per-node RPC hostnames such as
+`mainneta-rpc1.greatlibrary.io` or `mainnetc-rpc1.greatlibrary.io` for a live
+Mother operation unless a staged Mother route manifest explicitly declares those
+names as the active contract. Multiple DNS records MAY point the shared hostname
+at multiple controllers or edge/origin paths. Every active backend that receives
+`Host(<network>-rpc.greatlibrary.io)` for the network RPC route MUST answer
+JSON-RPC for the same configured chain.
+
+Besu P2P reachability over VPN, for example TCP `30303`, does not prove JSON-RPC
+reachability. JSON-RPC MUST be proved through the Mother-owned RPC route or
+through an explicitly staged Mother route manifest. A route-layer body such as
+`no available server` means the hostname was reached but no healthy Traefik or
+proxy backend was available; it is a route/backend wiring failure, not a canary
+funding failure. A DNS `getaddrinfo` failure means the hostname did not resolve
+from the caller. A JSON-RPC chain-id mismatch means the route is serving the
+wrong network.
+
 ### Validator-RPC canary funding proof contract
 
 The validator-RPC canary funding path MUST treat the on-chain balance as the
-funding source of truth. A helper container is only an observation transport; its
-status is not itself the balance fact. The compiled helpers run inside the
-Foundry helper image and therefore MUST use Foundry-native `cast` commands, not
-an assumed Python runtime. Balance proof helpers MUST NOT use a false-valued
-boolean option such as `--ether=false`, and MUST compare large wei values as
-decimal strings rather than shell arithmetic.
+funding source of truth. Route proof comes before funding proof. For `mainnet`,
+Mother first proves the shared route:
 
-Every temporary helper boundary MUST emit a
-`MOTHER_VALIDATOR_RPC_CANARY_FUNDING_RESULT` runtime marker before Mother accepts
-that boundary as proof. The runtime marker is the proof; Coolify service health
-is only a transport/liveness signal. Mother MUST query every authorized Coolify
-runtime-log endpoint before deleting the helper, and the evidence MUST retain
-only the structured marker fields, not raw logs or private material. A missing
-marker is a failed proof even if Coolify briefly reports a healthy service. A
-valid success marker MAY prove the boundary even when the service-detail
-healthcheck lags or reports a terminal state after the marker was printed.
+```text
+POST https://mainnet-rpc.greatlibrary.io
+eth_chainId == 42424240
+eth_getBalance(<canary-address>) succeeds
+```
+
+Mother MUST NOT begin canary funding while the shared RPC route has DNS failure,
+TLS failure, HTTP failure, JSON-RPC failure, wrong chain ID, unreadable balance,
+or a route-layer no-backend response such as `no available server`. Those
+conditions MUST fail before any captain-key binding, funder start, or transfer.
+
+A temporary helper container is not required for shared-route proof. The live
+Mother path MUST NOT depend on `ghcr.io/foundry-rs/foundry:latest`, `cast`, or
+Coolify runtime logs merely to prove the shared route. If a later boundary
+requires a helper container, that helper substrate and proof channel MUST be
+separately proven; health/file-state proof is preferred over Coolify log scraping
+for command-completion evidence.
 
 A canary funding execution is complete only when the path has proved one of
 these bounded states:
 
-- A first proves that `cast` is available in the helper image, A private RPC can
-  answer `cast balance`, the A-side canary balance is already the exact required
-  amount, and C independently verifies that exact balance; or
-- A first proves that `cast` is available in the helper image, A private RPC can
-  answer `cast balance`, A proves the canary balance is zero, the exact capped
-  transfer is executed once, A records the transaction hash in a runtime marker,
-  A independently proves the post-funding exact balance, and C independently
-  verifies the same transaction hash receipt and the exact canary balance.
+- the shared route proves the canary balance is already the exact required
+  amount before a transfer and the postcondition is still exact after the
+  idempotent reconciliation path; or
+- the shared route proves the canary balance is safely fundable, the exact capped
+  transfer is executed once, the transaction hash is recorded in evidence, and
+  the shared route proves the post-funding exact balance.
 
-If A cannot first prove `cast` availability, Mother MUST fail closed with
-`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CAST_UNAVAILABLE`. If A cannot prove
-private RPC reachability, Mother MUST fail closed with
-`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE` before any balance
-classification, captain-key binding, or funder start. If RPC is reachable but
-neither the zero-balance classifier nor the exact-balance classifier reaches a
-positive proof, Mother MUST fail closed with
-`MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_UNEXPECTED_BALANCE` before binding
-the captain key or starting the funder, and SHOULD include the observed balance
-from the structured runtime marker when available. Evidence MUST make clear that
-the chain remained `unchanged-before-funder-start`. Recovery MUST reconcile an
-already-funded exact balance without sending another transfer, and MUST NOT
+If the shared route is unresolved, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED`. If the route is reached but has
+no healthy backend, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_NO_BACKEND`. If the route cannot answer
+JSON-RPC, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE`. If the route answers the wrong
+chain ID, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WRONG_CHAIN`. If `eth_getBalance` cannot be
+read for the canary, Mother MUST fail closed with
+`MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_BALANCE_UNREADABLE`.
+
+Evidence MUST make clear that the chain remained
+`unchanged-before-funder-start` whenever route proof, balance classification, or
+source preconditions fail before the transfer boundary. Recovery MUST reconcile
+an already-funded exact balance without sending another transfer, and MUST NOT
 repeat a funding attempt after an indeterminate started-funder state unless the
 post-state is safely classified by the normal funding proof contract.
 
@@ -2320,7 +2365,11 @@ completed stack and follows the remediation contract in `MOTHER-DESIGN-016`.
 ### Typed RPC routing resource
 
 RPC routing is reconciled per affected Coolify host as a complete
-Mother-owned desired-state resource. The baseline local control surface is:
+Mother-owned desired-state resource. For network-level JSON-RPC, the canonical
+public hostname is the shared aggregate route
+`<network>-rpc.greatlibrary.io`; host-local or per-node names are reference
+material unless the active Mother route manifest declares them. The baseline
+local control surface is:
 
 ```text
 POST /guard/v1/prestate/capture
