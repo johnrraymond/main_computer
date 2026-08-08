@@ -13,7 +13,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from main_computer.mcel_counter_legacy_importer import DEFAULT_COUNTER_ROOT, import_counter_legacy_package
+from main_computer.mcel_counter_legacy_fixture import (
+    APP_ID,
+    DEFAULT_COUNTER_ROOT,
+    FIXTURE_ROLE,
+    LEGACY_PACKAGE_ROLE,
+)
+from main_computer.mcel_counter_legacy_importer import import_counter_legacy_package
 from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT
 from main_computer.mcel_explicit_package_compatibility import ExplicitPackageCompatibilityProfile
 from main_computer.mcel_explicit_package_candidate_evidence import (
@@ -34,8 +40,6 @@ from main_computer.mcel_explicit_package_promotion_rehearsal import (
 )
 
 
-APP_ID = "contract-counter"
-FIXTURE_ROLE = "mcel.reference-fixture.explicit-package.counter.v1"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE_IR = REPOSITORY_ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
 DEFAULT_DSL_SOURCE = REPOSITORY_ROOT / "mcel_apps" / "contract-counter" / "application.js"

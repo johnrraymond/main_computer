@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import subprocess
 import sys
@@ -13,6 +14,8 @@ from main_computer.mcel_counter_candidate_projection import (
     generate_counter_contracts,
     project_counter_candidate,
 )
+import main_computer.mcel_counter_candidate_projection as counter_projection
+import main_computer.mcel_counter_generated_contracts as counter_generated_contracts
 from main_computer.mcel_counter_reference_fixture_profile import (
     APP_ID,
     FIXTURE_ROLE,
@@ -24,8 +27,8 @@ DSL = ROOT / "mcel_apps" / "contract-counter" / "application.js"
 FIXTURE = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
 LIVE = ROOT / "mcel_apps" / "contract-counter"
 EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-EXPECTED_PACKAGE = "sha256:f3336d36d830a7d505b646961051a3f90822372365df640628b31a08dab5d130"
-EXPECTED_RUNTIME = "sha256:52c8d704f0a370860fa2a3efad429352dd7436d2ed2dce4865dee7e19c03d59c"
+EXPECTED_PACKAGE = "sha256:497c61d77701d30fe3ac26dcb915e7ebe87ff22aac36555aa7b69dafa46c9421"
+EXPECTED_RUNTIME = "sha256:f0f8abd38aa98a34b5bf15bf15ad763184b065b01abee40c723ab05250551e5b"
 
 
 def _live_hashes() -> dict[str, str]:
@@ -45,6 +48,16 @@ def test_counter_projection_delegates_to_generic_explicit_package_profile() -> N
     assert profile.report_schema == "mcel.counter-candidate-projection-report.v1"
     assert profile.projection_profile == "mcel.counter.explicit-projection.v1"
 
+
+
+def test_counter_projection_wrapper_stays_thin_and_generated_contracts_are_isolated() -> None:
+    projection_source = inspect.getsource(counter_projection)
+    generated_source = inspect.getsource(counter_generated_contracts)
+
+    assert "project_explicit_package_candidate" in projection_source
+    assert "ContractCounterDomain" not in projection_source
+    assert "ContractCounterDomain" in generated_source
+    assert counter_projection.generate_counter_contracts is counter_generated_contracts.generate_counter_contracts
 
 def test_counter_projection_is_exact_and_roundtrips(tmp_path: Path) -> None:
     report = project_counter_candidate(candidate_root=tmp_path, write_candidate=True)

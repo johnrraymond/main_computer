@@ -20,6 +20,8 @@
   }
 
   const {
+    arrayValue,
+    finiteNumber,
     objectValue,
     stringValue
   } = PaxValueUtils;
@@ -42,6 +44,15 @@
     const PAX_RECONCILIATION_MODE = config.recovery.reconciliationModes;
     const PAX_RECONCILIATION_POLICY = config.recovery.reconciliationPolicy;
     const BOARDER_IDS = config.actors.boarderIds;
+    const PAX_PROTECTION_COMPLETION_RECEIPT_REASON = "protection-completed";
+    const PAX_PROTECTION_RECEIPT_DIAGNOSTIC_KIND = "pax-protection-receipt-diagnostics";
+    const PAX_PROTECTION_RECEIPT_POLICY = Object.freeze({
+      diagnosticOnly: true,
+      usedForRecoveryPolicy: false,
+      trustedForEncounterCompletion: false,
+      recoveryPolicyAuthority: "diagnostic-only",
+      encounterCompletionAuthority: "diagnostic-only"
+    });
 
     function currentRuntime() {
       return options.currentRuntime?.()
@@ -197,6 +208,60 @@
       };
     }
 
+    function paxProtectionReceiptRow(receipt) {
+      const value = objectValue(receipt);
+      const reason = stringValue(value.reason);
+      return {
+        schema: stringValue(value.schema),
+        receiptId: stringValue(value.receiptId),
+        sequence: finiteNumber(value.sequence, 0, 0),
+        scenarioId: stringValue(value.scenarioId),
+        reason,
+        nowMs: finiteNumber(value.nowMs, 0, 0),
+        stageId: stringValue(value.stageId),
+        characterIds: arrayValue(value.characterIds).map(stringValue).filter(Boolean),
+        evidenceIds: arrayValue(value.evidenceIds).map(stringValue).filter(Boolean)
+      };
+    }
+
+    function paxProtectionReceiptPolicy() {
+      return Object.freeze(Object.assign({}, PAX_PROTECTION_RECEIPT_POLICY));
+    }
+
+    function paxProtectionCompletionReceiptSummary(receipts = []) {
+      const completionReceipts = arrayValue(receipts).filter((receipt) => (
+        receipt.reason === PAX_PROTECTION_COMPLETION_RECEIPT_REASON
+      ));
+      const latest = completionReceipts.length
+        ? completionReceipts[completionReceipts.length - 1]
+        : null;
+
+      return {
+        reason: PAX_PROTECTION_COMPLETION_RECEIPT_REASON,
+        count: completionReceipts.length,
+        latest,
+        receiptIds: completionReceipts.map((receipt) => receipt.receiptId).filter(Boolean),
+        receipts: completionReceipts
+      };
+    }
+
+    function paxProtectionReceiptDiagnostics(view = null) {
+      const rows = arrayValue(view?.state?.receipts).map(paxProtectionReceiptRow);
+      const policy = paxProtectionReceiptPolicy();
+      const completion = paxProtectionCompletionReceiptSummary(rows);
+
+      return {
+        snapshotKind: PAX_PROTECTION_RECEIPT_DIAGNOSTIC_KIND,
+        diagnosticOnly: policy.diagnosticOnly,
+        policy,
+        receipts: rows,
+        completion,
+        usedForRecoveryPolicy: policy.usedForRecoveryPolicy,
+        trustedForEncounterCompletion: policy.trustedForEncounterCompletion,
+        protectionCompleted: completion
+      };
+    }
+
     function buildPaxProtectionEncounterSnapshot(
       classification,
       plan,
@@ -219,6 +284,7 @@
         plan,
         {identity}
       );
+      const receiptDiagnostics = paxProtectionReceiptDiagnostics(classification.view);
       const diagnosticInstance = diagnostic.instance || instance;
       const boarders = EncounterState.actorDiagnosticRows(classification.boarderGroup, {
         entriesKey: "boarders"
@@ -258,6 +324,17 @@
           staleActorState: completion.staleActorState,
           completionIssueCodes: completion.issueCodes.slice(),
           restartableCompletionCorruption: completion.corruption,
+          completionReceipts: receiptDiagnostics,
+          completionReceiptDiagnostics: receiptDiagnostics,
+          completionReceiptPolicy: receiptDiagnostics.policy,
+          completionReceiptSummary: receiptDiagnostics.completion,
+          completionReceiptCount: receiptDiagnostics.completion.count,
+          completionReceiptLatest: receiptDiagnostics.completion.latest,
+          completionReceiptIds: receiptDiagnostics.completion.receiptIds.slice(),
+          completionReceiptUsedForRecoveryPolicy: receiptDiagnostics.policy.usedForRecoveryPolicy,
+          completionReceiptTrustedForEncounterCompletion: (
+            receiptDiagnostics.policy.trustedForEncounterCompletion
+          ),
           scenarioId: SCENARIO_ID,
           systemId: PAX_SYSTEM_ID,
           activeStageId: PROTECTION_STAGE_ID,
@@ -320,6 +397,9 @@
       classifyPaxProtectionState,
       paxProtectionReconciliationPlan,
       paxProtectionReconciliationOptions,
+      paxProtectionReceiptPolicy,
+      paxProtectionCompletionReceiptSummary,
+      paxProtectionReceiptDiagnostics,
       paxProtectionEncounterSnapshotData,
       buildPaxProtectionEncounterSnapshot,
       paxProtectionEncounterSnapshot,

@@ -1,5 +1,11 @@
 "use strict";
 
+// MCEL reference fixture, not the canonical app-authoring example.
+// contract-workbench exists to exercise profiled-package projection,
+// constrained-expression coverage, evidence, proof, and promotion flows.
+// New real MCEL apps should follow mcel_apps/calculator/application.js and the
+// shared mcel.defineApp host-bound authoring surface instead.
+
 const mcel = require("@mcel/app");
 
 // Wave 11 native Workbench candidate. Every former callback region is a

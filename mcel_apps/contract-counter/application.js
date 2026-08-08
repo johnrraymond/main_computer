@@ -1,5 +1,11 @@
 "use strict";
 
+// MCEL reference fixture, not the canonical app-authoring example.
+// contract-counter exists to exercise explicit-package compatibility,
+// legacy import, projection, evidence, proof, and promotion flows.
+// New real MCEL apps should follow mcel_apps/calculator/application.js and the
+// shared mcel.defineApp host-bound authoring surface instead.
+
 const mcel = require("@mcel/app");
 
 module.exports = mcel.defineApp(

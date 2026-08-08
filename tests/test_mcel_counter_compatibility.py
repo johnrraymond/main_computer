@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from main_computer.mcel_counter_compatibility import compare_counter_representations
+from main_computer.mcel_counter_legacy_fixture import legacy_fixture_metadata
 from main_computer.mcel_counter_legacy_importer import import_counter_legacy_package
 from main_computer.mcel_counter_reference_fixture_profile import build_counter_compatibility_profile
 from main_computer.mcel_explicit_package_compatibility import compare_explicit_package_representations
@@ -37,6 +38,16 @@ def test_counter_compatibility_uses_generic_explicit_package_profile() -> None:
     assert result.report["representations"]["live"]["importer"] == "mcel.counter.legacy-importer"
 
 
+def test_counter_legacy_fixture_metadata_declares_fixture_role() -> None:
+    metadata = legacy_fixture_metadata()
+
+    assert metadata["appId"] == "contract-counter"
+    assert metadata["fixtureRole"] == "mcel.reference-fixture.explicit-package.counter.v1"
+    assert metadata["legacyPackageRole"] == "mcel.reference-fixture.explicit-package.legacy-source.v1"
+    assert metadata["legacyImporterId"] == "mcel.counter.legacy-importer"
+    assert "contracts/domain.js" in metadata["sourceFiles"]
+
+
 def test_live_counter_import_is_repository_derived_and_semantically_exact() -> None:
     report = import_counter_legacy_package(COUNTER_ROOT)
 
@@ -44,6 +55,7 @@ def test_live_counter_import_is_repository_derived_and_semantically_exact() -> N
     assert report.status == "pass"
     assert report.diagnostics == ()
     assert report.semantic_fingerprint == EXPECTED_SEMANTIC
+    assert report.to_dict()["fixture"]["legacyPackageRole"] == "mcel.reference-fixture.explicit-package.legacy-source.v1"
     assert report.normalized_ir is not None
     assert report.normalized_ir["provenance"]["compiler"]["id"] == "mcel.dsl.compiler"
     assert report.normalized_ir["migration"]["state"] == "dual-authored"

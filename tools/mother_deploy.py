@@ -199,6 +199,12 @@ from tools.mother.common.deployment_coolify_service_lifecycle_probe import (
     inspect_coolify_service_lifecycle_probe,
     verify_coolify_service_lifecycle_probe_evidence,
 )
+from tools.mother.common.deployment_completed_helper_cleanup import (
+    MotherDeploymentCompletedHelperCleanupError,
+    execute_completed_mother_helper_cleanup,
+    inspect_completed_mother_helper_cleanup,
+    verify_completed_mother_helper_cleanup_evidence,
+)
 from tools.mother.common.deployment_validator_rpc_canary_funding import (
     MotherDeploymentValidatorRpcCanaryFundingError,
     build_validator_rpc_canary_funding_release,
@@ -1537,6 +1543,84 @@ def _parser() -> argparse.ArgumentParser:
     verify_validator_rpc_canary_funding_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     verify_validator_rpc_canary_funding_evidence_parser.add_argument("--canary-transaction-max-age-seconds", type=int, default=86400)
     verify_validator_rpc_canary_funding_evidence_parser.add_argument("--soak-max-age-seconds", type=int, default=86400)
+
+    cleanup_completed_helpers = subparsers.add_parser(
+        "cleanup-completed-mother-helpers",
+        help="inspect or delete completed one-shot Mother helper applications from a Coolify node stack",
+        allow_abbrev=False,
+    )
+    _common(cleanup_completed_helpers)
+    cleanup_completed_helpers.add_argument(
+        "--controller-id",
+        required=True,
+        choices=("coolify-a", "coolify-c"),
+    )
+    cleanup_completed_helpers.add_argument("--service-uuid", required=True)
+    cleanup_completed_helpers.add_argument(
+        "--node-name",
+        required=True,
+        help="required core Besu application name in the service stack, for example mainneta-super1",
+    )
+    cleanup_completed_helpers.add_argument(
+        "--required-component-name",
+        action="append",
+        default=[],
+        help="extra required core application name; defaults to Mother FDB and Hub when omitted",
+    )
+    cleanup_completed_helpers.add_argument("--timeout", type=float, default=30.0)
+    cleanup_completed_helpers.add_argument("--max-response-bytes", type=int, default=12 * 1024 * 1024)
+    cleanup_completed_helpers.add_argument("--execute", action="store_true")
+    cleanup_completed_helpers.add_argument(
+        "--allow-compose-rewrite",
+        action="store_true",
+        help="when service-application DELETE returns 404, rewrite the service compose without completed helpers",
+    )
+    cleanup_completed_helpers.add_argument(
+        "--instant-deploy-compose-rewrite",
+        action="store_true",
+        help="request an instant Coolify deploy with the rewritten service compose",
+    )
+    cleanup_completed_helpers.add_argument(
+        "--allow-nested-application-delete",
+        action="store_true",
+        help="when top-level application DELETE returns 404, try service-scoped nested application DELETE endpoints",
+    )
+    cleanup_completed_helpers.add_argument(
+        "--allow-compose-reconcile-refresh",
+        action="store_true",
+        help="when stale helper records remain but compose is already clean, PATCH the clean compose back to Coolify to refresh parsed service applications",
+    )
+    cleanup_completed_helpers.add_argument(
+        "--instant-deploy-compose-reconcile-refresh",
+        action="store_true",
+        help="request an instant Coolify deploy with the no-op compose reconcile refresh",
+    )
+    cleanup_completed_helpers.add_argument(
+        "--allow-service-redeploy-refresh",
+        action="store_true",
+        help="when stale helper records remain but compose is already clean, request a Coolify service redeploy refresh",
+    )
+    cleanup_completed_helpers.add_argument(
+        "--no-force-service-redeploy-refresh",
+        action="store_true",
+        help="request the service redeploy refresh with force=false instead of the default force=true",
+    )
+    cleanup_completed_helpers.add_argument("--max-wait-seconds", type=float, default=120.0)
+    cleanup_completed_helpers.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    cleanup_completed_helpers.add_argument(
+        "--acknowledge-service-uuid",
+        default="",
+        help="required only with --execute; must exactly match --service-uuid",
+    )
+
+    verify_completed_helpers_cleanup = subparsers.add_parser(
+        "verify-completed-mother-helper-cleanup-evidence",
+        help="verify persisted completed-helper cleanup evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_completed_helpers_cleanup)
+    verify_completed_helpers_cleanup.add_argument("--evidence", required=True)
+    verify_completed_helpers_cleanup.add_argument("--max-age-seconds", type=int, default=86400)
 
     coolify_service_lifecycle_probe = subparsers.add_parser(
         "probe-coolify-service-lifecycle",
@@ -3570,6 +3654,103 @@ def _cmd_verify_validator_rpc_canary_funding_evidence(
     return 0
 
 
+def _completed_helper_required_components(args: argparse.Namespace) -> tuple[str, ...]:
+    values = tuple(item.strip() for item in args.required_component_name if item and item.strip())
+    return values if values else ("mother-super-node-fdb", "mother-super-node-hub")
+
+
+def _cmd_cleanup_completed_mother_helpers(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "cleanup-completed-mother-helpers",
+        args.network,
+        args.operation_id,
+    )
+    if args.execute:
+        result = execute_completed_mother_helper_cleanup(
+            _paths(args),
+            private_state,
+            network=args.network,
+            controller_id=args.controller_id,
+            service_uuid=args.service_uuid,
+            node=args.node_name,
+            acknowledged_service_uuid=args.acknowledge_service_uuid,
+            required_component_names=_completed_helper_required_components(args),
+            max_wait_seconds=args.max_wait_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+            allow_compose_rewrite=args.allow_compose_rewrite,
+            instant_deploy_compose_rewrite=args.instant_deploy_compose_rewrite,
+            allow_nested_application_delete=args.allow_nested_application_delete,
+            allow_compose_reconcile_refresh=args.allow_compose_reconcile_refresh,
+            instant_deploy_compose_reconcile_refresh=args.instant_deploy_compose_reconcile_refresh,
+            allow_service_redeploy_refresh=args.allow_service_redeploy_refresh,
+            force_service_redeploy_refresh=not args.no_force_service_redeploy_refresh,
+            timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+            operation=operation,
+        )
+        output = {
+            "status": result["status"],
+            "network": result["network"],
+            "controller_id": result["controller_id"],
+            "service_uuid": result["service_uuid"],
+            "node": result["node"],
+            "summary": result["summary"],
+            "final_parent": result["final_parent"],
+            "initial_completed_helper_candidates": result["initial_completed_helper_candidates"],
+            "deleted_applications": result["deleted_applications"],
+            "nested_deleted_applications": result["nested_deleted_applications"],
+            "service_compose_rewrite": result["service_compose_rewrite"],
+            "service_compose_reconcile": result["service_compose_reconcile"],
+            "service_redeploy_refresh": result["service_redeploy_refresh"],
+            "evidence": result["evidence"],
+        }
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0 if result["status"] == "pass" else 1
+
+    result = inspect_completed_mother_helper_cleanup(
+        private_state,
+        network=args.network,
+        controller_id=args.controller_id,
+        service_uuid=args.service_uuid,
+        node=args.node_name,
+        required_component_names=_completed_helper_required_components(args),
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=operation,
+    )
+    output = {
+        "status": result["status"],
+        "network": result["network"],
+        "controller_id": result["controller_id"],
+        "service_uuid": result["service_uuid"],
+        "node": result["node"],
+        "summary": result["summary"],
+        "parent": result["parent"],
+        "required_components": result["required_components"],
+        "completed_helper_candidates": result["completed_helper_candidates"],
+        "unexpected_terminal_components": result["unexpected_terminal_components"],
+        "unclassified_unhealthy_components": result["unclassified_unhealthy_components"],
+    }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0 if result["status"] == "pass" else 1
+
+
+def _cmd_verify_completed_mother_helper_cleanup_evidence(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_completed_mother_helper_cleanup_evidence(
+        _paths(args),
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result["clean"] else 1
+
+
 def _cmd_probe_coolify_service_lifecycle(
     args: argparse.Namespace,
     private_state,
@@ -3800,6 +3981,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_apply_validator_rpc_canary_funding(args, private_state)
         if args.command == "verify-validator-rpc-canary-funding-evidence":
             return _cmd_verify_validator_rpc_canary_funding_evidence(args, private_state)
+        if args.command == "cleanup-completed-mother-helpers":
+            return _cmd_cleanup_completed_mother_helpers(args, private_state)
+        if args.command == "verify-completed-mother-helper-cleanup-evidence":
+            return _cmd_verify_completed_mother_helper_cleanup_evidence(args, private_state)
         if args.command == "probe-coolify-service-lifecycle":
             return _cmd_probe_coolify_service_lifecycle(args, private_state)
         if args.command == "verify-coolify-service-lifecycle-probe-evidence":
@@ -3809,6 +3994,7 @@ def main(argv: list[str] | None = None) -> int:
         CoolifyObservationError,
         MotherDeploymentExecutorError,
         MotherDeploymentCoolifyServiceLifecycleProbeError,
+        MotherDeploymentCompletedHelperCleanupError,
         MotherDeploymentExecutionError,
         MotherDeploymentGenesisBirthError,
         MotherDeploymentGenesisError,

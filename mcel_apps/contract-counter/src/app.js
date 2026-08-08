@@ -1,3 +1,8 @@
+// MCEL reference fixture runtime, not a canonical app-authoring example.
+// This package runtime exists for explicit-package compatibility/projection
+// tests. Use mcel_apps/calculator/application.js to understand modern MCEL app
+// authoring.
+
 const root = document.querySelector("#contract-counter-app");
 const status = root?.querySelector("[data-mcel-runtime-status]");
 

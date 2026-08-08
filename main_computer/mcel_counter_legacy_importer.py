@@ -18,26 +18,23 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from main_computer.mcel_application_ir import canonical_json_bytes, validate_application_ir
-
-COUNTER_LEGACY_IMPORT_REPORT_SCHEMA = "mcel.counter-legacy-import-report.v1"
-COUNTER_LEGACY_RUNTIME_RESULT_SCHEMA = "mcel.counter-legacy-runtime-result.v1"
-COUNTER_LEGACY_IMPORTER_VERSION = "mcel-counter-legacy-importer-wave3"
-COUNTER_FRONTEND_ID = "legacy.explicit-package.contract-counter"
-COUNTER_FRONTEND_VERSION = "mcel-explicit-package-v1"
-DEFAULT_TIMEOUT_MS = 1_000
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_COUNTER_ROOT = REPOSITORY_ROOT / "mcel_apps" / "contract-counter"
-NODE_RUNTIME = Path(__file__).resolve().with_name("mcel_counter_legacy_runtime.js")
-SOURCE_FILES = (
-    "contracts/acceptance.js",
-    "contracts/domain.js",
-    "contracts/intents.js",
-    "contracts/layout.js",
-    "contracts/observation.js",
-    "contracts/surface.js",
-    "requirements.md",
+from main_computer.mcel_counter_legacy_fixture import (
+    APP_ID,
+    COUNTER_FRONTEND_ID,
+    COUNTER_FRONTEND_VERSION,
+    COUNTER_LEGACY_IMPORT_REPORT_SCHEMA,
+    COUNTER_LEGACY_IMPORTER_VERSION,
+    COUNTER_LEGACY_RUNTIME_RESULT_SCHEMA,
+    DEFAULT_COUNTER_ROOT,
+    LEGACY_IMPORTER_ID,
+    LEGACY_PACKAGE_ROLE,
+    NODE_RUNTIME,
+    REPOSITORY_ROOT,
+    SOURCE_FILES,
+    legacy_fixture_metadata,
 )
+
+DEFAULT_TIMEOUT_MS = 1_000
 
 
 @dataclass(frozen=True)
@@ -61,10 +58,11 @@ class CounterLegacyImportReport:
     def to_dict(self, *, include_ir: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {
             "schema": COUNTER_LEGACY_IMPORT_REPORT_SCHEMA,
-            "importer": {"id": "mcel.counter.legacy-importer", "version": COUNTER_LEGACY_IMPORTER_VERSION},
+            "importer": {"id": LEGACY_IMPORTER_ID, "version": COUNTER_LEGACY_IMPORTER_VERSION},
             "valid": self.valid,
             "status": self.status,
             "appId": self.app_id,
+            "fixture": legacy_fixture_metadata(),
             "packageRoot": self.package_root,
             "diagnosticCount": self.diagnostic_count,
             "diagnostics": [dict(item) for item in self.diagnostics],
@@ -371,7 +369,7 @@ def _build_counter_ir(
         },
         "migration": {"state": "legacy-compiled", "sourceFamily": "scaffolded-explicit-package", "knownGaps": ["intent-complete-proof-remains-legacy-evidence"]},
         "provenance": {
-            "compiler": {"id": "mcel.counter.legacy-importer", "version": COUNTER_LEGACY_IMPORTER_VERSION},
+            "compiler": {"id": LEGACY_IMPORTER_ID, "version": COUNTER_LEGACY_IMPORTER_VERSION},
             "frontend": {"id": COUNTER_FRONTEND_ID, "version": COUNTER_FRONTEND_VERSION, "sourceFiles": source_files},
             "nodeBindings": _node_bindings(candidate_ids=_candidate_semantic_ids(state_records, intents, effects, surfaces, layouts, scenarios, invariant_records), package_root=package_root),
         },
@@ -549,7 +547,7 @@ def _diagnostic(code: str, summary: str, semantic_path: str, *, observed: Any = 
 
 
 def _failure(package_display: str, diagnostics: list[Mapping[str, Any]], *, source_files: list[Mapping[str, str]], node: str | None = None, node_version: str | None = None) -> CounterLegacyImportReport:
-    return CounterLegacyImportReport(False, "invalid-legacy-package", "contract-counter", package_display, tuple(diagnostics), None, None, None, tuple(source_files), node, node_version)
+    return CounterLegacyImportReport(False, "invalid-legacy-package", APP_ID, package_display, tuple(diagnostics), None, None, None, tuple(source_files), node, node_version)
 
 
 def _node_version(node: str) -> str | None:

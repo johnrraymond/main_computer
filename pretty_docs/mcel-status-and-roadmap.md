@@ -16,6 +16,53 @@ Requirements prose records product intent. Adapter registries record executable 
 
 For current MCEL DSL application authoring mechanics, use `pretty_docs/mcel-dsl-app-authoring-surface.md`. It names the durable app files, the `package-document` and `host-bound` presentation modes, virtual generated artifacts, and proof/promotion gates.
 
+
+## Reference app and fixture platform status
+
+The current MCEL reference set has three deliberately different roles:
+
+```text
+Calculator: real host-bound reference app
+Counter:    explicit-package reference fixture
+Workbench:  profiled-package / authoring reference fixture
+```
+
+The reusable mechanics for those roles now live in shared MCEL modules instead of
+large app-specific operational scripts.
+
+```text
+host-bound path:
+  mcel_host_bound_candidate_projection.py
+  mcel_host_bound_browser_observation.py
+  mcel_host_bound_candidate_evidence.py
+  mcel_host_bound_runtime_parity.py
+  mcel_host_bound_ir_native_proof.py
+  mcel_host_bound_promotion_rehearsal.py
+
+explicit-package path:
+  mcel_explicit_package_candidate_projection.py
+  mcel_explicit_package_candidate_evidence.py
+  mcel_explicit_package_compatibility.py
+  mcel_explicit_package_ir_native_proof.py
+  mcel_explicit_package_promotion_rehearsal.py
+  mcel_explicit_package_promotion.py
+
+profiled-package path:
+  mcel_profiled_package_candidate_projection.py
+  mcel_profiled_package_candidate_evidence.py
+  mcel_profiled_package_ir_native_proof.py
+  mcel_profiled_package_promotion_rehearsal.py
+  mcel_profiled_package_promotion.py
+```
+
+The app-specific `mcel_<app>_*` modules are compatibility entry points. They
+should stay thin, delegate to the shared mechanics above, and take app facts from
+their reference profiles. `pretty_docs/mcel-reference-app-and-fixture-roles.md`
+defines the three roles, and `pretty_docs/mcel-app-patching-lifecycle.md`
+defines how semantic feature patches and platform cleanup patches should move
+through those layers.
+
+
 ## Current generated baseline
 
 The current snapshot produces the following requirements-registry baseline:
@@ -408,3 +455,8 @@ Workbench semantic fingerprint: unchanged
 ```
 
 The centralized Workbench portable-projection snapshot remains a compatibility backend and is not claimed as eliminated by this wave.
+
+
+## Canonical app authoring source
+
+Calculator is the canonical real MCEL app in this repository. Counter and Workbench are retained reference fixtures for MCEL platform compatibility/projection/proof paths and should not be used as new-app authoring examples.

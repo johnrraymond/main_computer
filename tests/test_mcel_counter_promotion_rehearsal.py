@@ -23,7 +23,7 @@ LIVE = ROOT / "mcel_apps/contract-counter"
 DSL = ROOT / "mcel_apps/contract-counter/application.js"
 FIXTURE = ROOT / "tests/fixtures/mcel_application_ir/contract-counter.ir.json"
 SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-SOURCE = "sha256:4fecea5fc1242165a82ce2aaa16199807bcda9ca3d8ac4c506fcdb0eb59c595d"
+SOURCE = "sha256:1e7f19edbc47c2710286dcad0cfaafe64569e0bb5bde300686e95792a3e23e75"
 
 
 def _receipt(*, ok: bool, status: str, code: str) -> dict:

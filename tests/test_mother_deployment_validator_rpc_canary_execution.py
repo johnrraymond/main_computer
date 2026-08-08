@@ -466,6 +466,24 @@ def test_c_proxy_verifier_inlines_environment_and_avoids_conflicting_env_binds(m
     assert environment["MC_MOTHER_CANARY_SELF_TX_HASH"] == "0x" + "1" * 64
     assert environment["MC_MOTHER_CANARY_CONTRACT_ADDRESS"] == "0x" + "4" * 40
     assert "${MC_MOTHER_CANARY_SELF_TX_HASH}" not in compose
+    command = document["services"]["mainnet-canary1-execute-verify-c"]["command"]
+    assert isinstance(command, list)
+    assert len(command) == 1
+    command_text = command[0]
+    encoded_script = command_text.split("printf '%s' '", 1)[1].split("' | base64 -d", 1)[0]
+    verifier_script = base64.b64decode(encoded_script).decode("utf-8")
+    assert "expect_json=False" in verifier_script
+    assert "grep -Fq" in verifier_script
+    healthcheck = document["services"]["mainnet-canary1-execute-verify-c"]["healthcheck"]["test"]
+    assert "python /run/mother-canary/c_proxy_verifier.py" in command_text
+    assert "touch /run/mother-canary/verified" in command_text
+    assert "exec sleep 900" in command_text
+    assert "base64 -d > /run/mother-canary/c_proxy_verifier.py" in command_text
+    assert healthcheck == [
+        "CMD-SHELL",
+        'test "$(cat /proc/1/comm)" = "sleep" && test -f /run/mother-canary/verified',
+    ]
+    assert document["services"]["mainnet-canary1-execute-verify-c"]["healthcheck"]["timeout"] == "5s"
 
 
 def test_canary_execution_recovers_prior_A_result_without_resending_transactions(

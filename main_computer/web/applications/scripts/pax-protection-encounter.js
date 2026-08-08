@@ -1,131 +1,155 @@
 (function (global) {
   "use strict";
 
-  const SCENARIO_ID = "scenario.pax.neutrality-under-fire";
-  const PAX_SYSTEM_ID = "system.pax";
-  const PROTECTION_STAGE_ID = "protect-witness";
-  const INVESTIGATION_STAGE_ID = "investigation";
-  const CONFERENCE_STAGE_ID = "conference";
+  const EncounterState = global.MainComputerEncounterState
+    || (typeof require === "function" ? require("./encounter-state.js") : null);
+  const PaxScenarioConfig = global.MainComputerPaxScenarioConfig
+    || (typeof require === "function" ? require("./pax-scenario-config.js") : null);
 
-  const PAX_PROTECTION_RECOVERY = Object.freeze({
-    none: "none",
-    reviveBoarders: "revive-boarders",
-    restartEncounter: "restart-encounter"
-  });
+  const config = PaxScenarioConfig?.config || PaxScenarioConfig?.PAX_SCENARIO_CONFIG || null;
 
-  const PAX_BOARDER_GROUP_STATUS = Object.freeze({
-    unavailable: "unavailable",
-    missing: "missing",
-    active: "active",
-    defeated: "defeated",
-    mixed: "mixed"
-  });
-
-  const PAX_PROTECTION_STATE = Object.freeze({
-    unavailable: "unavailable",
-    scenarioInactive: "scenario-inactive",
-    characterRuntimeUnavailable: "character-runtime-unavailable",
-    consistentActive: "consistent-active",
-    recoverableProtectionDefeated: "recoverable-protection-defeated",
-    invalidProtectionBoarders: "invalid-protection-boarders",
-    recoverableInvestigationActive: "recoverable-investigation-active",
-    recoverableInvestigationDefeated: "recoverable-investigation-defeated",
-    invalidInvestigationBoarders: "invalid-investigation-boarders",
-    outsideProtection: "outside-protection"
-  });
-
-  const PAX_PROTECTION_STATE_LABELS = Object.freeze({
-    unavailable: PAX_PROTECTION_STATE.unavailable,
-    scenarioInactive: PAX_PROTECTION_STATE.scenarioInactive,
-    actorRuntimeUnavailable: PAX_PROTECTION_STATE.characterRuntimeUnavailable,
-    consistentActive: PAX_PROTECTION_STATE.consistentActive,
-    recoverableActiveDefeated: PAX_PROTECTION_STATE.recoverableProtectionDefeated,
-    invalidActiveActors: PAX_PROTECTION_STATE.invalidProtectionBoarders,
-    recoverableCompletedActive: PAX_PROTECTION_STATE.recoverableInvestigationActive,
-    recoverableCompletedDefeated: PAX_PROTECTION_STATE.recoverableInvestigationDefeated,
-    invalidCompletedActors: PAX_PROTECTION_STATE.invalidInvestigationBoarders,
-    outsideActiveStage: PAX_PROTECTION_STATE.outsideProtection
-  });
-
-  const PAX_PROTECTION_RECOVERY_LABELS = Object.freeze({
-    none: PAX_PROTECTION_RECOVERY.none,
-    reviveActors: PAX_PROTECTION_RECOVERY.reviveBoarders,
-    restartEncounter: PAX_PROTECTION_RECOVERY.restartEncounter
-  });
-
-  const HARD_KICKOFF_STAGE_IDS = Object.freeze([
-    PROTECTION_STAGE_ID,
-    INVESTIGATION_STAGE_ID,
-    CONFERENCE_STAGE_ID
-  ]);
-
-  const BOARDER_IDS = Object.freeze([
-    "enemy.pax.quiet-service-assassin-01",
-    "enemy.pax.boarder-01",
-    "enemy.pax.boarder-02",
-    "enemy.pax.boarder-03",
-    "enemy.pax.boarder-04",
-    "enemy.pax.boarder-05"
-  ]);
-
-  const HARD_KICKOFF_POSITIONS = Object.freeze({
-    assassin: Object.freeze([-0.35, -0.55, -37.65]),
-    boarder01: Object.freeze([-3.2, -0.55, -35.8]),
-    boarder02: Object.freeze([3.2, -0.55, -35.8]),
-    boarder03: Object.freeze([-2.4, -0.55, -39.0]),
-    boarder04: Object.freeze([2.4, -0.55, -39.0]),
-    boarder05: Object.freeze([0.0, -0.55, -40.5]),
-    witness: Object.freeze([-1.45, -0.55, -36.45]),
-    marshal: Object.freeze([1.45, -0.55, -36.35])
-  });
-
-  const BOARDER_POSITIONS = Object.freeze([
-    HARD_KICKOFF_POSITIONS.assassin,
-    HARD_KICKOFF_POSITIONS.boarder01,
-    HARD_KICKOFF_POSITIONS.boarder02,
-    HARD_KICKOFF_POSITIONS.boarder03,
-    HARD_KICKOFF_POSITIONS.boarder04,
-    HARD_KICKOFF_POSITIONS.boarder05
-  ]);
+  if (!config?.ids?.scenarioId) {
+    throw new Error("MainComputerPaxScenarioConfig must load before Pax protection encounter compatibility API.");
+  }
 
   function currentEncounterState(encounterState = null) {
     return encounterState
       || global.MainComputerEncounterState
-      || (typeof require === "function" ? require("./encounter-state.js") : null);
+      || EncounterState
+      || null;
+  }
+
+  function paxProtectionStateLabels() {
+    return Object.freeze({
+      unavailable: config.recovery.states.unavailable,
+      scenarioInactive: config.recovery.states.scenarioInactive,
+      actorRuntimeUnavailable: config.recovery.states.characterRuntimeUnavailable,
+      consistentActive: config.recovery.states.consistentActive,
+      recoverableActiveDefeated: config.recovery.states.recoverableProtectionDefeated,
+      invalidActiveActors: config.recovery.states.invalidProtectionBoarders,
+      recoverableCompletedActive: config.recovery.states.recoverableInvestigationActive,
+      recoverableCompletedDefeated: config.recovery.states.recoverableInvestigationDefeated,
+      invalidCompletedActors: config.recovery.states.invalidInvestigationBoarders,
+      outsideActiveStage: config.recovery.states.outsideProtection
+    });
+  }
+
+  function paxProtectionRecoveryLabels() {
+    return Object.freeze({
+      none: config.recovery.actions.none,
+      reviveActors: config.recovery.actions.reviveBoarders,
+      restartEncounter: config.recovery.actions.restartEncounter
+    });
   }
 
   function createEncounterAdapter(encounterState = null) {
     const runtime = currentEncounterState(encounterState);
-    if (!runtime?.createStageActorEncounterAdapter) {
+    if (!runtime?.classifyActorGroup || !runtime?.classifyStagedEncounterState) {
       throw new Error("MainComputerEncounterState is required before Pax protection encounter setup.");
     }
-    return runtime.createStageActorEncounterAdapter({
-      scenarioId: SCENARIO_ID,
-      systemId: PAX_SYSTEM_ID,
-      activeStageId: PROTECTION_STAGE_ID,
-      completedStageIds: [INVESTIGATION_STAGE_ID],
-      actorIds: BOARDER_IDS,
-      actorGroupStatusLabels: PAX_BOARDER_GROUP_STATUS,
-      stateLabels: PAX_PROTECTION_STATE_LABELS,
-      recoveryLabels: PAX_PROTECTION_RECOVERY_LABELS
+    const stateLabels = paxProtectionStateLabels();
+    const recoveryLabels = paxProtectionRecoveryLabels();
+
+    function classifyActorGroup(options = {}) {
+      return runtime.classifyActorGroup(Object.assign({}, options, {
+        actorIds: options.actorIds || config.actors.boarderIds,
+        entriesKey: options.entriesKey || "boarders"
+      }));
+    }
+
+    function classifyStagedEncounterState(options = {}) {
+      return runtime.classifyStagedEncounterState(Object.assign({}, options, {
+        scenarioId: options.scenarioId || config.ids.scenarioId,
+        systemId: options.systemId || config.ids.systemId,
+        actorIds: options.actorIds || config.actors.boarderIds,
+        activeStageIds: options.activeStageIds || config.encounter.activeStageIds,
+        completedStageIds: options.completedStageIds || config.encounter.completedStageIds,
+        entriesKey: options.entriesKey || "boarders",
+        stateLabels,
+        recoveryActions: recoveryLabels
+      }));
+    }
+
+    function reconciliationPlan(classification, options = {}) {
+      return runtime.reconciliationPlan(classification, Object.assign({}, options, {
+        recoveryActions: recoveryLabels
+      }));
+    }
+
+    function recoverySucceeded(plan, result, options = {}) {
+      return runtime.recoverySucceeded(plan, result, Object.assign({}, options, {
+        successKeys: Object.assign(
+          {
+            [recoveryLabels.reviveActors]: "forced",
+            [recoveryLabels.restartEncounter]: "reset"
+          },
+          options.successKeys || {}
+        )
+      }));
+    }
+
+    function diagnosticSnapshot(classification, plan = null, options = {}) {
+      return runtime.diagnosticSnapshot(classification, plan, Object.assign({}, options, {
+        identity: Object.assign(
+          {
+            key: config.encounter.key,
+            definitionId: config.encounter.definitionId,
+            scenarioId: config.ids.scenarioId,
+            systemId: config.ids.systemId,
+            activeStageIds: config.encounter.activeStageIds,
+            completedStageIds: config.encounter.completedStageIds,
+            actorIds: config.actors.boarderIds
+          },
+          options.identity || {}
+        ),
+        proposedInstanceKey: options.proposedInstanceKey || [
+          config.encounter.key,
+          "instance",
+          config.stages.protection,
+          "pending"
+        ].join(":"),
+        instanceSource: options.instanceSource || config.encounter.diagnosticInstanceSource
+      }));
+    }
+
+    return Object.freeze({
+      scenarioId: config.ids.scenarioId,
+      systemId: config.ids.systemId,
+      activeStageId: config.stages.protection,
+      completedStageIds: config.encounter.completedStageIds,
+      actorIds: config.actors.boarderIds,
+      actorGroupStatusLabels: config.recovery.actorGroupStatus,
+      stateLabels,
+      recoveryLabels,
+      classifyActorGroup,
+      classifyStagedEncounterState,
+      reconciliationPlan,
+      recoverySucceeded,
+      diagnosticSnapshot
     });
   }
 
+  /*
+   * Compatibility shim for older tests/tools that import
+   * MainComputerPaxProtectionEncounter directly. Browser gameplay now uses the
+   * split config/model/commands/reconciliation modules instead of this file.
+   */
   const api = Object.freeze({
-    SCENARIO_ID,
-    PAX_SYSTEM_ID,
-    PROTECTION_STAGE_ID,
-    INVESTIGATION_STAGE_ID,
-    CONFERENCE_STAGE_ID,
-    PAX_PROTECTION_RECOVERY,
-    PAX_BOARDER_GROUP_STATUS,
-    PAX_PROTECTION_STATE,
-    PAX_PROTECTION_STATE_LABELS,
-    PAX_PROTECTION_RECOVERY_LABELS,
-    HARD_KICKOFF_STAGE_IDS,
-    BOARDER_IDS,
-    HARD_KICKOFF_POSITIONS,
-    BOARDER_POSITIONS,
+    SCENARIO_ID: config.ids.scenarioId,
+    PAX_SYSTEM_ID: config.ids.systemId,
+    PROTECTION_STAGE_ID: config.stages.protection,
+    INVESTIGATION_STAGE_ID: config.stages.investigation,
+    CONFERENCE_STAGE_ID: config.stages.conference,
+    PAX_PROTECTION_RECOVERY: config.recovery.actions,
+    PAX_BOARDER_GROUP_STATUS: config.recovery.actorGroupStatus,
+    PAX_PROTECTION_STATE: config.recovery.states,
+    PAX_PROTECTION_STATE_LABELS: paxProtectionStateLabels(),
+    PAX_PROTECTION_RECOVERY_LABELS: paxProtectionRecoveryLabels(),
+    HARD_KICKOFF_STAGE_IDS: config.stages.hardKickoff,
+    BOARDER_IDS: config.actors.boarderIds,
+    HARD_KICKOFF_POSITIONS: config.actors.hardKickoffPositions,
+    BOARDER_POSITIONS: config.actors.boarderPositions,
+    config,
     createEncounterAdapter
   });
 

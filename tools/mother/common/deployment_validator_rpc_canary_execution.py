@@ -511,13 +511,15 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         super().__init__("localhost"); self.socket_path = socket_path
     def connect(self):
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); sock.connect(self.socket_path); self.sock = sock
-def docker(method: str, path: str, body=None):
+def docker(method: str, path: str, body=None, *, expect_json: bool = True):
     payload = None; headers = {}
     if body is not None:
         payload = json.dumps(body).encode("utf-8"); headers["Content-Type"] = "application/json"
     conn = UnixHTTPConnection("/var/run/docker.sock"); conn.request(method, path, body=payload, headers=headers)
     resp = conn.getresponse(); raw = resp.read(); status = int(resp.status); text = raw.decode("utf-8", "replace") if raw else ""
     if status >= 400: raise SystemExit(f"docker-api-{method}-{path}-status-{status}:{text[:300]}")
+    if not expect_json:
+        return text
     return json.loads(text) if text else None
 def find_proxy_id() -> str:
     payload = docker("GET", "/containers/json?all=1")
@@ -533,7 +535,7 @@ def find_proxy_id() -> str:
 def docker_exec(container_id: str, script: str) -> int:
     payload = docker("POST", f"/containers/{urllib.parse.quote(container_id, safe='')}/exec", {"AttachStdout": True, "AttachStderr": True, "Cmd": ["sh", "-lc", script]})
     if not isinstance(payload, dict) or not payload.get("Id"): raise SystemExit("docker-exec-create-no-id")
-    exec_id = str(payload["Id"]); docker("POST", f"/exec/{urllib.parse.quote(exec_id, safe='')}/start", {"Detach": False, "Tty": False})
+    exec_id = str(payload["Id"]); docker("POST", f"/exec/{urllib.parse.quote(exec_id, safe='')}/start", {"Detach": False, "Tty": False}, expect_json=False)
     detail = docker("GET", f"/exec/{urllib.parse.quote(exec_id, safe='')}/json")
     if not isinstance(detail, dict): raise SystemExit("docker-exec-inspect-not-object")
     code = detail.get("ExitCode"); return int(code) if code is not None else 999
@@ -554,8 +556,8 @@ checks = []
 checks.append("chain=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data=" + q(payload("eth_chainId", [])) + " " + q(backend_url) + " 2>/dev/null || true); printf '%s' \"$chain\" | grep -Eq '\"result\"[[:space:]]*:[[:space:]]*\"0x28757b0\"'")
 for tx in (SELF_TX, DEPLOY_TX, WRITE_TX):
     checks.append("ok=0; deadline=$(( $(date +%s) + 120 )); while [ \"$(date +%s)\" -le \"$deadline\" ]; do out=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data=" + q(receipt_payload(tx)) + " " + q(backend_url) + " 2>/dev/null || true); if printf '%s' \"$out\" | grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"0x1\"'; then ok=1; break; fi; sleep 3; done; test \"$ok\" = \"1\"")
-checks.append("code=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data=" + q(payload("eth_getCode", [CONTRACT, "latest"])) + " " + q(backend_url) + " 2>/dev/null || true); printf '%s' \"$code\" | grep -F '\"" + RUNTIME + "\"'")
-checks.append("slot=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data=" + q(payload("eth_call", [{"to": CONTRACT, "data": "0x"}, "latest"])) + " " + q(backend_url) + " 2>/dev/null || true); printf '%s' \"$slot\" | grep -F '\"" + VALUE + "\"'")
+checks.append("code=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data=" + q(payload("eth_getCode", [CONTRACT, "latest"])) + " " + q(backend_url) + " 2>/dev/null || true); printf '%s' \"$code\" | grep -Fq '\"" + RUNTIME + "\"'")
+checks.append("slot=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data=" + q(payload("eth_call", [{"to": CONTRACT, "data": "0x"}, "latest"])) + " " + q(backend_url) + " 2>/dev/null || true); printf '%s' \"$slot\" | grep -Fq '\"" + VALUE + "\"'")
 script = "set -eu\n" + "\n".join(checks)
 code = docker_exec(proxy_id, script)
 if code != 0:
@@ -578,25 +580,69 @@ def _c_verifier_compose(service_name: str, env: Mapping[str, str]) -> str:
     missing = sorted(required.difference(env))
     if missing:
         raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_C_VERIFIER_ENV_INVALID", "C verifier compose is missing committed execution values")
-    command = "cat > /run/mother-canary/c_proxy_verifier.py <<'PY'\n" + _C_PROXY_VERIFIER_PY + "\nPY\npython /run/mother-canary/c_proxy_verifier.py\ntouch /run/mother-canary/verified\nexec sleep 900\n"
-    document = {
-        "name": service_name,
-        "services": {
-            service_name: {
-                "image": "python:3.12-alpine",
-                "restart": "no",
-                "read_only": True,
-                "tmpfs": ["/run/mother-canary"],
-                "volumes": ["/var/run/docker.sock:/var/run/docker.sock"],
-                "environment": {key: str(env[key]) for key in sorted(required)},
-                "entrypoint": ["/bin/sh", "-ec"],
-                "command": command,
-                "healthcheck": {"test": ["CMD-SHELL", "test -f /run/mother-canary/verified"], "interval": "5s", "timeout": "3s", "retries": 30, "start_period": "5s"},
-                "labels": {"main_computer.mother.stage": "validator-rpc-canary-execution-c-proxy-verifier", "main_computer.mother.role": "c-proxy-verifier"},
-            }
-        },
-    }
-    return yaml.safe_dump(document, sort_keys=False, default_flow_style=False, width=4096)
+    encoded_script = base64.b64encode(_C_PROXY_VERIFIER_PY.encode("utf-8")).decode("ascii")
+    command = f"""mkdir -p /run/mother-canary
+printf '%s' '{encoded_script}' | base64 -d > /run/mother-canary/c_proxy_verifier.py
+chmod 0700 /run/mother-canary/c_proxy_verifier.py
+python /run/mother-canary/c_proxy_verifier.py > /run/mother-canary/c_proxy_verifier.out 2>&1
+touch /run/mother-canary/verified
+exec sleep 900
+"""
+    healthcheck = 'test "$(cat /proc/1/comm)" = "sleep" && test -f /run/mother-canary/verified'
+    text = (
+        f"name: {service_name}\n\n"
+        "services:\n"
+        f"  {service_name}:\n"
+        "    image: python:3.12-alpine\n"
+        '    restart: "no"\n'
+        "    read_only: true\n"
+        "    tmpfs:\n"
+        "      - /run/mother-canary:size=512k,mode=0700\n"
+        "    volumes:\n"
+        "      - /var/run/docker.sock:/var/run/docker.sock\n"
+        "    environment:\n"
+        + "".join(f"      {key}: {json.dumps(str(env[key]))}\n" for key in sorted(required))
+        + "    entrypoint:\n"
+        "      - /bin/sh\n"
+        "      - -ec\n"
+        "    command:\n"
+        "      - |\n"
+        + "\n".join(f"        {line}" for line in command.splitlines())
+        + "\n"
+        "    healthcheck:\n"
+        "      test:\n"
+        "        - CMD-SHELL\n"
+        f"        - {healthcheck}\n"
+        "      interval: 2s\n"
+        "      timeout: 5s\n"
+        "      retries: 20\n"
+        "      start_period: 2s\n"
+        "    labels:\n"
+        "      main_computer.mother.stage: validator-rpc-canary-execution-c-proxy-verifier\n"
+        "      main_computer.mother.role: c-proxy-verifier\n"
+        f"      main_computer.mother.canary: {service_name}\n"
+    )
+    parsed = yaml.safe_load(text)
+    services = parsed.get("services") if isinstance(parsed, Mapping) else None
+    service = services.get(service_name) if isinstance(services, Mapping) else None
+    if not (
+        isinstance(service, Mapping)
+        and list(services) == [service_name]
+        and service.get("image") == "python:3.12-alpine"
+        and service.get("entrypoint") == ["/bin/sh", "-ec"]
+        and service.get("volumes") == ["/var/run/docker.sock:/var/run/docker.sock"]
+        and type(service.get("command")) is list
+        and len(service["command"]) == 1
+        and "python /run/mother-canary/c_proxy_verifier.py" in str(service["command"][0])
+        and "exec sleep 900" in str(service["command"][0])
+        and isinstance(service.get("healthcheck"), Mapping)
+        and service["healthcheck"].get("test") == ["CMD-SHELL", healthcheck]
+    ):
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_INVALID", "compiled C verifier Compose does not provide the exact status-health result channel")
+    forbidden = ("ports:", "secrets:", "traefik.", "0.0.0.0:")
+    if any(item in text for item in forbidden):
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_INVALID", "compiled C verifier Compose attempts a forbidden capability")
+    return text
 
 
 def _service_body(controller: Mapping[str, Any], name: str, compose: str) -> dict[str, Any]:

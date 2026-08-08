@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import the live explicit Contract Counter package into canonical MCEL IR."""
+"""Import the Contract Counter legacy fixture package into canonical MCEL IR."""
 
 from __future__ import annotations
 

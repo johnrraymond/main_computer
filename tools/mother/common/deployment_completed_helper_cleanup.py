@@ -1,0 +1,1338 @@
+"""Clean up completed one-shot Mother helper applications from a Coolify node stack."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import base64
+import binascii
+import hashlib
+import json
+from pathlib import Path
+import re
+import time
+from typing import Any, Mapping
+import urllib.error
+import urllib.parse
+import urllib.request
+
+import yaml
+
+from . import atomic_files
+from .canonical import canonical_json
+from .coolify_state import CoolifyController, resolve_coolify_controller
+from .models import OperationIdentity
+from .private_state import PrivateStateReadResult
+
+
+_KIND = "main_computer.mother.completed_helper_cleanup.v1"
+_EVIDENCE_SUBDIR = "completed-mother-helper-cleanup"
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_UUID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
+
+COMPLETED_HELPER_NAMES = frozenset(
+    {
+        "mother-genesis-init",
+        "mother-genesis-proof-guardian",
+        "mother-superseded-service-cleanup",
+        "mother-validator-admission-guardian",
+    }
+)
+
+DEFAULT_REQUIRED_COMPONENT_NAMES = (
+    "mother-super-node-fdb",
+    "mother-super-node-hub",
+)
+
+PRESERVED_HELPER_NAMES = frozenset(
+    {
+        "mother-validator-quorum-recovery-initial-guardian",
+    }
+)
+
+
+class MotherDeploymentCompletedHelperCleanupError(RuntimeError):
+    """Completed-helper cleanup failed before a trustworthy result could be produced."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _identifier(value: object, field: str) -> str:
+    if type(value) is not str or not value.strip() or not _IDENTIFIER_RE.fullmatch(value.strip()):
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            f"invalid {field}",
+        )
+    return value.strip()
+
+
+def _uuid(value: object, field: str) -> str:
+    if type(value) is not str or not value.strip() or not _UUID_RE.fullmatch(value.strip()):
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            f"invalid {field}",
+        )
+    return value.strip()
+
+
+def _positive(value: float | int, field: str) -> float:
+    if type(value) not in {int, float} or value <= 0:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            f"{field} must be positive",
+        )
+    return float(value)
+
+
+def _nonnegative(value: float | int, field: str) -> float:
+    if type(value) not in {int, float} or value < 0:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            f"{field} must be non-negative",
+        )
+    return float(value)
+
+
+def _operation(value: OperationIdentity) -> OperationIdentity:
+    if not isinstance(value, OperationIdentity):
+        raise TypeError("operation must be an OperationIdentity")
+    return value
+
+
+def _open(opener: Any, request: urllib.request.Request, timeout: float):
+    if hasattr(opener, "open"):
+        return opener.open(request, timeout=timeout)
+    if callable(opener):
+        return opener(request, timeout=timeout)
+    raise TypeError("opener must be callable or provide open(request, timeout=...)")
+
+
+def _http(
+    controller: CoolifyController,
+    method: str,
+    endpoint: str,
+    *,
+    body: Mapping[str, Any] | None,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    parsed = urllib.parse.urlsplit(endpoint)
+    if (
+        not endpoint.startswith("/api/v1/")
+        or parsed.scheme
+        or parsed.netloc
+        or parsed.fragment
+        or "\\" in endpoint
+        or "\x00" in endpoint
+        or any(part in {"..", "."} for part in Path(parsed.path).parts)
+    ):
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_UNSAFE_ENDPOINT",
+            "Coolify endpoint is unsafe",
+        )
+    payload = canonical_json(dict(body)) if body is not None else None
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {controller.api_token}",
+        "User-Agent": "main-computer-mother-completed-helper-cleanup/1",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        controller.base_url + endpoint,
+        data=payload,
+        headers=headers,
+        method=method.upper(),
+    )
+    started = time.monotonic()
+    try:
+        try:
+            response = _open(opener, request, float(timeout))
+            status = int(getattr(response, "status", response.getcode()))
+            raw = response.read(max_response_bytes + 1)
+            response.close()
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            raw = exc.read(max_response_bytes + 1)
+    except (urllib.error.URLError, OSError) as exc:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_REQUEST_FAILED",
+            "Coolify request failed",
+        ) from exc
+    if len(raw) > max_response_bytes:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_RESPONSE_TOO_LARGE",
+            "Coolify response is too large",
+        )
+    try:
+        payload_out: Any = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload_out = raw.decode("utf-8", errors="replace")
+    return {
+        "status": status,
+        "ok": 200 <= status < 300,
+        "payload": payload_out,
+        "response_sha256": hashlib.sha256(raw).hexdigest(),
+        "byte_length": len(raw),
+        "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+    }
+
+
+def _status(value: object) -> str:
+    return value.strip().lower() if type(value) is str else ""
+
+
+def _healthy(status: str) -> bool:
+    normalized = status.strip().lower()
+    return normalized.startswith("running:healthy") and "unhealthy" not in normalized
+
+
+def _terminal_completed(status: str) -> bool:
+    normalized = status.strip().lower()
+    return normalized in {"exited", "stopped"} or normalized.startswith("exited:") or normalized.startswith("stopped:")
+
+
+def _parent_degraded(status: str) -> bool:
+    normalized = status.strip().lower()
+    return "degraded" in normalized or "unhealthy" in normalized
+
+
+def _safe_scalar(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, bool)):
+        return str(value)[:240]
+    return ""
+
+
+def _application_records(payload: Any) -> list[dict[str, str]]:
+    if not isinstance(payload, Mapping):
+        return []
+    raw_items = payload.get("applications")
+    if type(raw_items) is not list:
+        return []
+    records: list[dict[str, str]] = []
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        name = _safe_scalar(item.get("name")).strip()
+        uuid = _safe_scalar(item.get("uuid")).strip()
+        status = _safe_scalar(item.get("status")).strip()
+        image = _safe_scalar(item.get("image")).strip()
+        if not name and not uuid:
+            continue
+        records.append(
+            {
+                "name": name,
+                "uuid": uuid,
+                "status": status,
+                "image": image,
+            }
+        )
+    return records
+
+
+def _component_summary(
+    *,
+    payload: Any,
+    node: str,
+    required_component_names: tuple[str, ...],
+) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_BAD_RESPONSE",
+            "Coolify service detail payload is not an object",
+        )
+
+    parent = {
+        "name": _safe_scalar(payload.get("name")),
+        "uuid": _safe_scalar(payload.get("uuid")),
+        "status": _safe_scalar(payload.get("status")),
+        "description": _safe_scalar(payload.get("description")),
+    }
+    applications = _application_records(payload)
+    by_name = {item["name"]: item for item in applications if item["name"]}
+
+    required_names = tuple(dict.fromkeys((node, *required_component_names)))
+    required_components = []
+    missing_required: list[str] = []
+    unhealthy_required: list[dict[str, str]] = []
+    for name in required_names:
+        record = by_name.get(name)
+        if record is None:
+            missing_required.append(name)
+            required_components.append({"name": name, "uuid": "", "status": "missing", "image": ""})
+            continue
+        required_components.append(record)
+        if not _healthy(_status(record.get("status"))):
+            unhealthy_required.append(record)
+
+    completed_helpers = [
+        item
+        for item in applications
+        if item.get("name") in COMPLETED_HELPER_NAMES and _terminal_completed(_status(item.get("status")))
+    ]
+    running_or_nonterminal_completed_helpers = [
+        item
+        for item in applications
+        if item.get("name") in COMPLETED_HELPER_NAMES and not _terminal_completed(_status(item.get("status")))
+    ]
+    preserved_helpers = [item for item in applications if item.get("name") in PRESERVED_HELPER_NAMES]
+    unexpected_terminal = [
+        item
+        for item in applications
+        if _terminal_completed(_status(item.get("status")))
+        and item.get("name") not in COMPLETED_HELPER_NAMES
+    ]
+    unclassified_unhealthy = [
+        item
+        for item in applications
+        if "unhealthy" in _status(item.get("status"))
+        and item.get("name") not in {name for name in required_names}
+        and item.get("name") not in COMPLETED_HELPER_NAMES
+    ]
+
+    parent_status = _status(parent.get("status"))
+    clean = (
+        not completed_helpers
+        and not missing_required
+        and not unhealthy_required
+        and not unexpected_terminal
+        and not unclassified_unhealthy
+        and not _parent_degraded(parent_status)
+    )
+    core_healthy = not missing_required and not unhealthy_required
+
+    return {
+        "parent": parent,
+        "applications": applications,
+        "required_components": required_components,
+        "completed_helper_candidates": completed_helpers,
+        "running_or_nonterminal_completed_helpers": running_or_nonterminal_completed_helpers,
+        "preserved_helpers": preserved_helpers,
+        "unexpected_terminal_components": unexpected_terminal,
+        "unclassified_unhealthy_components": unclassified_unhealthy,
+        "summary": {
+            "clean": clean,
+            "parent_status_clean": not _parent_degraded(parent_status),
+            "core_required_components_healthy": core_healthy,
+            "required_component_count": len(required_components),
+            "completed_helper_candidate_count": len(completed_helpers),
+            "running_or_nonterminal_completed_helper_count": len(running_or_nonterminal_completed_helpers),
+            "preserved_helper_count": len(preserved_helpers),
+            "unexpected_terminal_component_count": len(unexpected_terminal),
+            "unclassified_unhealthy_component_count": len(unclassified_unhealthy),
+        },
+    }
+
+
+def _service_detail(
+    controller: CoolifyController,
+    service_uuid: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    quoted = urllib.parse.quote(service_uuid, safe="")
+    response = _http(
+        controller,
+        "GET",
+        f"/api/v1/services/{quoted}",
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if not response["ok"]:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_SERVICE_DETAIL_FAILED",
+            f"Coolify service detail request failed with HTTP {response['status']}",
+        )
+    return response
+
+
+
+def _decode_compose_value(value: object) -> tuple[str, str]:
+    if type(value) is not str or not value.strip():
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_MISSING",
+            "Coolify service detail does not include docker compose content",
+        )
+    text = value.strip()
+    try:
+        decoded = base64.b64decode(text.encode("ascii"), validate=True)
+        decoded_text = decoded.decode("utf-8")
+        if "services:" in decoded_text or decoded_text.lstrip().startswith(("version:", "name:")):
+            return decoded_text, "base64"
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        pass
+    return value, "plain"
+
+
+def _compose_text_candidates_from_service_payload(payload: Any) -> tuple[tuple[str, str, str], ...]:
+    if not isinstance(payload, Mapping):
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_BAD_RESPONSE",
+            "Coolify service detail payload is not an object",
+        )
+
+    candidates: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for key in ("docker_compose", "docker_compose_raw"):
+        value = payload.get(key)
+        if type(value) is str and value.strip():
+            text, encoding = _decode_compose_value(value)
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if digest not in seen:
+                seen.add(digest)
+                candidates.append((text, key, encoding))
+
+    if not candidates:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_MISSING",
+            "Coolify service detail does not include docker compose content",
+        )
+    return tuple(candidates)
+
+
+def _compose_text_from_service_payload(payload: Any) -> tuple[str, str, str]:
+    return _compose_text_candidates_from_service_payload(payload)[0]
+
+
+
+def _label_values(labels: object) -> tuple[str, ...]:
+    if isinstance(labels, Mapping):
+        return tuple(str(item) for pair in labels.items() for item in pair)
+    if isinstance(labels, list):
+        return tuple(str(item) for item in labels)
+    if isinstance(labels, str):
+        return (labels,)
+    return ()
+
+
+def _service_helper_match(service_name: str, definition: object, helper_names: tuple[str, ...]) -> str | None:
+    haystack: list[str] = [service_name]
+    if isinstance(definition, Mapping):
+        for key in ("container_name", "hostname", "name"):
+            value = definition.get(key)
+            if isinstance(value, str):
+                haystack.append(value)
+        haystack.extend(_label_values(definition.get("labels")))
+        environment = definition.get("environment")
+        if isinstance(environment, Mapping):
+            for key, value in environment.items():
+                if str(key).upper() in {"SERVICE_NAME", "COOLIFY_SERVICE_NAME", "MOTHER_HELPER_NAME"}:
+                    haystack.append(str(value))
+        elif isinstance(environment, list):
+            for item in environment:
+                item_text = str(item)
+                if item_text.startswith(("SERVICE_NAME=", "COOLIFY_SERVICE_NAME=", "MOTHER_HELPER_NAME=")):
+                    haystack.append(item_text)
+
+    for helper_name in helper_names:
+        for value in haystack:
+            if value == helper_name or helper_name in value:
+                return helper_name
+    return None
+
+
+def _remove_completed_helpers_from_compose(
+    compose_text: str,
+    helper_names: tuple[str, ...],
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    try:
+        parsed = yaml.safe_load(compose_text)
+    except yaml.YAMLError as exc:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_INVALID",
+            "Coolify docker compose content is not valid YAML",
+        ) from exc
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("services"), dict):
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_INVALID",
+            "Coolify docker compose content does not contain a services mapping",
+        )
+
+    services = parsed["services"]
+    removed_service_names: list[str] = []
+    removed_helper_names: list[str] = []
+    for service_name, definition in list(services.items()):
+        if not isinstance(service_name, str):
+            continue
+        matched_helper = _service_helper_match(service_name, definition, helper_names)
+        if matched_helper is None:
+            continue
+        del services[service_name]
+        removed_service_names.append(service_name)
+        if matched_helper not in removed_helper_names:
+            removed_helper_names.append(matched_helper)
+
+    if not removed_service_names:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_NO_MATCH",
+            "no completed helper service names were present in the compose content",
+        )
+
+    cleaned = yaml.safe_dump(parsed, sort_keys=False)
+    return cleaned, tuple(removed_service_names), tuple(removed_helper_names)
+
+
+
+def _patch_service_compose(
+    controller: CoolifyController,
+    service_uuid: str,
+    compose_text: str,
+    *,
+    instant_deploy: bool,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "service_uuid")
+    endpoint = f"/api/v1/services/{urllib.parse.quote(service, safe='')}"
+    encoded = base64.b64encode(compose_text.encode("utf-8")).decode("ascii")
+    body = {
+        "docker_compose_raw": encoded,
+        "instant_deploy": bool(instant_deploy),
+    }
+    response = _http(
+        controller,
+        "PATCH",
+        endpoint,
+        body=body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    return {
+        "method": "PATCH",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "service_uuid": service,
+        "docker_compose_raw_sha256": hashlib.sha256(encoded.encode("ascii")).hexdigest(),
+        "instant_deploy": bool(instant_deploy),
+    }
+
+
+
+
+
+def _patch_service_compose_reconcile(
+    controller: CoolifyController,
+    service_uuid: str,
+    payload: Any,
+    helper_names: tuple[str, ...],
+    *,
+    instant_deploy: bool,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "service_uuid")
+    attempts: list[dict[str, Any]] = []
+    for compose_text, source_field, source_encoding in _compose_text_candidates_from_service_payload(payload):
+        source_digest = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
+        try:
+            _remove_completed_helpers_from_compose(compose_text, helper_names)
+        except MotherDeploymentCompletedHelperCleanupError as exc:
+            if exc.code != "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_NO_MATCH":
+                attempts.append(
+                    {
+                        "source_field": source_field,
+                        "source_encoding": source_encoding,
+                        "source_sha256": source_digest,
+                        "ok": False,
+                        "error_code": exc.code,
+                    }
+                )
+                continue
+            patch_receipt = _patch_service_compose(
+                controller,
+                service,
+                compose_text,
+                instant_deploy=instant_deploy,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            return {
+                **patch_receipt,
+                "refresh_scope": "compose-reconcile",
+                "source_field": source_field,
+                "source_encoding": source_encoding,
+                "source_sha256": source_digest,
+                "compose_source_attempts": [
+                    *attempts,
+                    {
+                        "source_field": source_field,
+                        "source_encoding": source_encoding,
+                        "source_sha256": source_digest,
+                        "ok": True,
+                        "removed_service_count": 0,
+                        "removed_helper_count": 0,
+                        "compose_already_clean": True,
+                    },
+                ],
+                "removed_service_names": [],
+                "removed_helper_names": [],
+                "removed_service_count": 0,
+                "removed_helper_count": 0,
+            }
+
+        attempts.append(
+            {
+                "source_field": source_field,
+                "source_encoding": source_encoding,
+                "source_sha256": source_digest,
+                "ok": False,
+                "error_code": "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_STILL_HAS_HELPERS",
+            }
+        )
+
+    return {
+        "method": "PATCH",
+        "endpoint": f"/api/v1/services/{service}",
+        "status": None,
+        "ok": False,
+        "service_uuid": service,
+        "instant_deploy": bool(instant_deploy),
+        "refresh_scope": "compose-reconcile",
+        "error_code": "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_RECONCILE_NO_CLEAN_SOURCE",
+        "error_message": "no helper-free Coolify compose source was available for reconcile refresh",
+        "compose_source_attempts": attempts,
+        "removed_service_names": [],
+        "removed_helper_names": [],
+        "removed_service_count": 0,
+        "removed_helper_count": 0,
+    }
+
+
+def _request_service_redeploy_refresh(
+    controller: CoolifyController,
+    service_uuid: str,
+    *,
+    force: bool,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "service_uuid")
+    endpoint = (
+        f"/api/v1/deploy?uuid={urllib.parse.quote(service, safe='')}"
+        f"&force={'true' if force else 'false'}"
+    )
+    response = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    return {
+        "method": "GET",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "service_uuid": service,
+        "force": bool(force),
+        "refresh_scope": "service-redeploy",
+    }
+
+def inspect_completed_mother_helper_cleanup(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+    service_uuid: str,
+    node: str,
+    required_component_names: tuple[str, ...] = DEFAULT_REQUIRED_COMPONENT_NAMES,
+    timeout: float = 30.0,
+    max_response_bytes: int = 12 * 1024 * 1024,
+    opener: Any = urllib.request.urlopen,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    op = _operation(operation)
+    network_id = _identifier(network, "network")
+    controller_name = _identifier(controller_id, "controller_id")
+    service = _uuid(service_uuid, "service_uuid")
+    node_name = _identifier(node, "node")
+    required = tuple(_identifier(name, "required_component_name") for name in required_component_names)
+    request_timeout = _positive(timeout, "timeout")
+    response_limit = int(max_response_bytes)
+    if response_limit <= 0:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            "max_response_bytes must be positive",
+        )
+
+    controller = resolve_coolify_controller(
+        private_state,
+        network_id,
+        controller_name,
+        require_enabled=True,
+        require_token=True,
+    )
+    detail = _service_detail(
+        controller,
+        service,
+        timeout=request_timeout,
+        max_response_bytes=response_limit,
+        opener=opener,
+    )
+    components = _component_summary(
+        payload=detail["payload"],
+        node=node_name,
+        required_component_names=required,
+    )
+    summary = {
+        **components["summary"],
+        "live_mutation_performed": False,
+        "application_delete_count": 0,
+        "service_detail_http_status": detail["status"],
+    }
+    status = "pass" if summary["clean"] else "manual-review-required"
+    return {
+        "kind": _KIND,
+        "schema_version": 1,
+        "status": status,
+        "network": network_id,
+        "controller_id": controller_name,
+        "service_uuid": service,
+        "node": node_name,
+        "operation_id": op.operation_id,
+        "observed_at": _utc_now(),
+        "mode": "inspect",
+        "http_observations": [
+            {
+                "method": "GET",
+                "endpoint": f"/api/v1/services/{service}",
+                "status": detail["status"],
+                "ok": detail["ok"],
+                "response_sha256": detail["response_sha256"],
+                "byte_length": detail["byte_length"],
+                "elapsed_ms": detail["elapsed_ms"],
+            }
+        ],
+        "parent": components["parent"],
+        "required_components": components["required_components"],
+        "completed_helper_candidates": components["completed_helper_candidates"],
+        "running_or_nonterminal_completed_helpers": components["running_or_nonterminal_completed_helpers"],
+        "preserved_helpers": components["preserved_helpers"],
+        "unexpected_terminal_components": components["unexpected_terminal_components"],
+        "unclassified_unhealthy_components": components["unclassified_unhealthy_components"],
+        "summary": summary,
+    }
+
+
+def _delete_application(
+    controller: CoolifyController,
+    application_uuid: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    app_uuid = _uuid(application_uuid, "application_uuid")
+    endpoint = f"/api/v1/applications/{urllib.parse.quote(app_uuid, safe='')}"
+    response = _http(
+        controller,
+        "DELETE",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    return {
+        "method": "DELETE",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "application_uuid": app_uuid,
+        "delete_scope": "application",
+    }
+
+
+def _delete_service_application(
+    controller: CoolifyController,
+    service_uuid: str,
+    application_uuid: str,
+    *,
+    endpoint_style: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "service_uuid")
+    app_uuid = _uuid(application_uuid, "application_uuid")
+    if endpoint_style == "plural":
+        endpoint = (
+            f"/api/v1/services/{urllib.parse.quote(service, safe='')}"
+            f"/applications/{urllib.parse.quote(app_uuid, safe='')}"
+        )
+    elif endpoint_style == "singular":
+        endpoint = (
+            f"/api/v1/services/{urllib.parse.quote(service, safe='')}"
+            f"/application/{urllib.parse.quote(app_uuid, safe='')}"
+        )
+    else:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            "invalid nested application delete endpoint style",
+        )
+    response = _http(
+        controller,
+        "DELETE",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    return {
+        "method": "DELETE",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "service_uuid": service,
+        "application_uuid": app_uuid,
+        "endpoint_style": endpoint_style,
+        "delete_scope": "service-application",
+    }
+
+
+def _delete_service_application_with_fallbacks(
+    controller: CoolifyController,
+    service_uuid: str,
+    application_uuid: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    for endpoint_style in ("plural", "singular"):
+        receipt = _delete_service_application(
+            controller,
+            service_uuid,
+            application_uuid,
+            endpoint_style=endpoint_style,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        attempts.append(receipt)
+        if receipt["ok"]:
+            return {
+                **receipt,
+                "attempts": attempts,
+            }
+    return {
+        **attempts[-1],
+        "attempts": attempts,
+    }
+
+
+def execute_completed_mother_helper_cleanup(
+    paths: Any,
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+    service_uuid: str,
+    node: str,
+    acknowledged_service_uuid: str,
+    required_component_names: tuple[str, ...] = DEFAULT_REQUIRED_COMPONENT_NAMES,
+    max_wait_seconds: float = 120.0,
+    poll_interval_seconds: float = 5.0,
+    allow_compose_rewrite: bool = False,
+    instant_deploy_compose_rewrite: bool = False,
+    allow_nested_application_delete: bool = False,
+    allow_compose_reconcile_refresh: bool = False,
+    instant_deploy_compose_reconcile_refresh: bool = False,
+    allow_service_redeploy_refresh: bool = False,
+    force_service_redeploy_refresh: bool = True,
+    timeout: float = 30.0,
+    max_response_bytes: int = 12 * 1024 * 1024,
+    opener: Any = urllib.request.urlopen,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    op = _operation(operation)
+    network_id = _identifier(network, "network")
+    controller_name = _identifier(controller_id, "controller_id")
+    service = _uuid(service_uuid, "service_uuid")
+    node_name = _identifier(node, "node")
+    if _uuid(acknowledged_service_uuid, "acknowledged_service_uuid") != service:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_ACK_REQUIRED",
+            "acknowledged service UUID must match the target service UUID",
+        )
+    required = tuple(_identifier(name, "required_component_name") for name in required_component_names)
+    request_timeout = _positive(timeout, "timeout")
+    response_limit = int(max_response_bytes)
+    if response_limit <= 0:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            "max_response_bytes must be positive",
+        )
+    wait_limit = _nonnegative(max_wait_seconds, "max_wait_seconds")
+    poll_interval = _nonnegative(poll_interval_seconds, "poll_interval_seconds")
+
+    controller = resolve_coolify_controller(
+        private_state,
+        network_id,
+        controller_name,
+        require_enabled=True,
+        require_token=True,
+    )
+
+    observations: list[dict[str, Any]] = []
+    initial_detail = _service_detail(
+        controller,
+        service,
+        timeout=request_timeout,
+        max_response_bytes=response_limit,
+        opener=opener,
+    )
+    observations.append(
+        {
+            "method": "GET",
+            "endpoint": f"/api/v1/services/{service}",
+            "status": initial_detail["status"],
+            "ok": initial_detail["ok"],
+            "response_sha256": initial_detail["response_sha256"],
+            "byte_length": initial_detail["byte_length"],
+            "elapsed_ms": initial_detail["elapsed_ms"],
+        }
+    )
+    initial = _component_summary(
+        payload=initial_detail["payload"],
+        node=node_name,
+        required_component_names=required,
+    )
+
+    delete_receipts: list[dict[str, Any]] = []
+    for candidate in initial["completed_helper_candidates"]:
+        app_uuid = candidate.get("uuid", "")
+        receipt = _delete_application(
+            controller,
+            app_uuid,
+            timeout=request_timeout,
+            max_response_bytes=response_limit,
+            opener=opener,
+        )
+        receipt["application_name"] = candidate.get("name", "")
+        delete_receipts.append(receipt)
+        observations.append({key: receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+
+    nested_delete_receipts: list[dict[str, Any]] = []
+    delete_ok = all(item["ok"] for item in delete_receipts)
+    if delete_receipts and not delete_ok and allow_nested_application_delete:
+        by_uuid = {
+            candidate.get("uuid", ""): candidate
+            for candidate in initial["completed_helper_candidates"]
+            if type(candidate.get("uuid")) is str and candidate.get("uuid")
+        }
+        for receipt in delete_receipts:
+            if receipt["ok"]:
+                continue
+            app_uuid = receipt.get("application_uuid", "")
+            candidate = by_uuid.get(app_uuid, {})
+            nested_receipt = _delete_service_application_with_fallbacks(
+                controller,
+                service,
+                app_uuid,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                opener=opener,
+            )
+            nested_receipt["application_name"] = candidate.get("name", "")
+            nested_delete_receipts.append(nested_receipt)
+            for attempt in nested_receipt.get("attempts", []):
+                observations.append({key: attempt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+
+    nested_delete_ok = bool(nested_delete_receipts) and all(item["ok"] for item in nested_delete_receipts)
+
+    compose_rewrite: dict[str, Any] | None = None
+    if delete_receipts and not (delete_ok or nested_delete_ok) and allow_compose_rewrite:
+        helper_names = tuple(
+            item.get("name", "")
+            for item in initial["completed_helper_candidates"]
+            if type(item.get("name")) is str and item.get("name")
+        )
+        compose_attempts: list[dict[str, Any]] = []
+        best_candidate: tuple[str, str, str, tuple[str, ...], tuple[str, ...]] | None = None
+        for compose_text, compose_source_field, compose_source_encoding in _compose_text_candidates_from_service_payload(initial_detail["payload"]):
+            source_digest = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
+            try:
+                cleaned_compose, removed_services, removed_helpers = _remove_completed_helpers_from_compose(
+                    compose_text,
+                    helper_names,
+                )
+            except MotherDeploymentCompletedHelperCleanupError as exc:
+                compose_attempts.append(
+                    {
+                        "source_field": compose_source_field,
+                        "source_encoding": compose_source_encoding,
+                        "source_sha256": source_digest,
+                        "ok": False,
+                        "error_code": exc.code,
+                        "removed_service_count": 0,
+                        "removed_helper_count": 0,
+                    }
+                )
+                continue
+
+            compose_attempts.append(
+                {
+                    "source_field": compose_source_field,
+                    "source_encoding": compose_source_encoding,
+                    "source_sha256": source_digest,
+                    "ok": True,
+                    "removed_service_names": list(removed_services),
+                    "removed_helper_names": list(removed_helpers),
+                    "removed_service_count": len(removed_services),
+                    "removed_helper_count": len(removed_helpers),
+                }
+            )
+            if best_candidate is None or len(removed_helpers) > len(best_candidate[4]):
+                best_candidate = (
+                    cleaned_compose,
+                    compose_source_field,
+                    compose_source_encoding,
+                    removed_services,
+                    removed_helpers,
+                )
+
+        if best_candidate is None:
+            compose_rewrite = {
+                "method": "PATCH",
+                "endpoint": f"/api/v1/services/{service}",
+                "status": None,
+                "ok": False,
+                "service_uuid": service,
+                "instant_deploy": bool(instant_deploy_compose_rewrite),
+                "error_code": "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_NO_MATCH",
+                "error_message": "no completed helper service names were present in any Coolify compose field",
+                "compose_source_attempts": compose_attempts,
+                "removed_service_names": [],
+                "removed_helper_names": [],
+                "removed_service_count": 0,
+                "removed_helper_count": 0,
+            }
+        else:
+            cleaned_compose, compose_source_field, compose_source_encoding, removed_services, removed_helpers = best_candidate
+            patch_receipt = _patch_service_compose(
+                controller,
+                service,
+                cleaned_compose,
+                instant_deploy=instant_deploy_compose_rewrite,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                opener=opener,
+            )
+            observations.append({key: patch_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+            compose_rewrite = {
+                **patch_receipt,
+                "source_field": compose_source_field,
+                "source_encoding": compose_source_encoding,
+                "compose_source_attempts": compose_attempts,
+                "removed_service_names": list(removed_services),
+                "removed_helper_names": list(removed_helpers),
+                "removed_service_count": len(removed_services),
+                "removed_helper_count": len(removed_helpers),
+            }
+
+    service_compose_reconcile: dict[str, Any] | None = None
+    if (
+        delete_receipts
+        and not (delete_ok or nested_delete_ok)
+        and not (compose_rewrite is not None and compose_rewrite.get("ok") is True)
+        and allow_compose_reconcile_refresh
+    ):
+        helper_names = tuple(
+            item.get("name", "")
+            for item in initial["completed_helper_candidates"]
+            if type(item.get("name")) is str and item.get("name")
+        )
+        service_compose_reconcile = _patch_service_compose_reconcile(
+            controller,
+            service,
+            initial_detail["payload"],
+            helper_names,
+            instant_deploy=instant_deploy_compose_reconcile_refresh,
+            timeout=request_timeout,
+            max_response_bytes=response_limit,
+            opener=opener,
+        )
+        if service_compose_reconcile.get("status") is not None:
+            observations.append(
+                {
+                    key: service_compose_reconcile[key]
+                    for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+                }
+            )
+
+    service_redeploy_refresh: dict[str, Any] | None = None
+    if (
+        delete_receipts
+        and not (delete_ok or nested_delete_ok)
+        and not (compose_rewrite is not None and compose_rewrite.get("ok") is True)
+        and not (service_compose_reconcile is not None and service_compose_reconcile.get("ok") is True)
+        and allow_service_redeploy_refresh
+    ):
+        service_redeploy_refresh = _request_service_redeploy_refresh(
+            controller,
+            service,
+            force=bool(force_service_redeploy_refresh),
+            timeout=request_timeout,
+            max_response_bytes=response_limit,
+            opener=opener,
+        )
+        observations.append(
+            {
+                key: service_redeploy_refresh[key]
+                for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+            }
+        )
+
+    final_detail = initial_detail
+    final = initial
+    started = time.monotonic()
+    while True:
+        final_detail = _service_detail(
+            controller,
+            service,
+            timeout=request_timeout,
+            max_response_bytes=response_limit,
+            opener=opener,
+        )
+        observations.append(
+            {
+                "method": "GET",
+                "endpoint": f"/api/v1/services/{service}",
+                "status": final_detail["status"],
+                "ok": final_detail["ok"],
+                "response_sha256": final_detail["response_sha256"],
+                "byte_length": final_detail["byte_length"],
+                "elapsed_ms": final_detail["elapsed_ms"],
+            }
+        )
+        final = _component_summary(
+            payload=final_detail["payload"],
+            node=node_name,
+            required_component_names=required,
+        )
+        if final["summary"]["clean"]:
+            break
+        if time.monotonic() - started >= wait_limit:
+            break
+        if poll_interval > 0:
+            time.sleep(min(poll_interval, max(0.0, wait_limit - (time.monotonic() - started))))
+        else:
+            break
+
+    compose_rewrite_ok = compose_rewrite is not None and compose_rewrite.get("ok") is True
+    service_compose_reconcile_ok = service_compose_reconcile is not None and service_compose_reconcile.get("ok") is True
+    service_redeploy_refresh_ok = service_redeploy_refresh is not None and service_redeploy_refresh.get("ok") is True
+    mutation_ok = (
+        (delete_ok if delete_receipts else True)
+        or nested_delete_ok
+        or compose_rewrite_ok
+        or service_compose_reconcile_ok
+        or service_redeploy_refresh_ok
+    )
+    summary = {
+        **final["summary"],
+        "initial_parent_status_clean": initial["summary"]["parent_status_clean"],
+        "initial_completed_helper_candidate_count": initial["summary"]["completed_helper_candidate_count"],
+        "application_delete_count": len(delete_receipts),
+        "application_delete_success_count": sum(1 for item in delete_receipts if item["ok"]),
+        "all_delete_requests_succeeded": delete_ok,
+        "nested_application_delete_count": len(nested_delete_receipts),
+        "nested_application_delete_success_count": sum(1 for item in nested_delete_receipts if item["ok"]),
+        "all_nested_application_delete_requests_succeeded": nested_delete_ok,
+        "nested_application_delete_enabled": bool(allow_nested_application_delete),
+        "service_compose_rewrite_count": 1 if compose_rewrite is not None else 0,
+        "service_compose_rewrite_succeeded": compose_rewrite_ok,
+        "service_compose_rewrite_instant_deploy": bool(
+            compose_rewrite is not None and compose_rewrite.get("instant_deploy") is True
+        ),
+        "service_compose_reconcile_count": 1 if service_compose_reconcile is not None else 0,
+        "service_compose_reconcile_succeeded": bool(
+            service_compose_reconcile is not None and service_compose_reconcile.get("ok") is True
+        ),
+        "service_compose_reconcile_instant_deploy": bool(
+            service_compose_reconcile is not None and service_compose_reconcile.get("instant_deploy") is True
+        ),
+        "service_compose_reconcile_enabled": bool(allow_compose_reconcile_refresh),
+        "service_redeploy_requested": bool(
+            (compose_rewrite is not None and compose_rewrite.get("instant_deploy") is True)
+            or (service_compose_reconcile is not None and service_compose_reconcile.get("instant_deploy") is True)
+            or service_redeploy_refresh is not None
+        ),
+        "service_redeploy_refresh_count": 1 if service_redeploy_refresh is not None else 0,
+        "service_redeploy_refresh_succeeded": service_redeploy_refresh_ok,
+        "service_redeploy_refresh_force": bool(
+            service_redeploy_refresh is not None and service_redeploy_refresh.get("force") is True
+        ),
+        "service_redeploy_refresh_enabled": bool(allow_service_redeploy_refresh),
+        "cleanup_mutation_succeeded": mutation_ok,
+        "live_mutation_performed": bool(
+            delete_receipts
+            or nested_delete_receipts
+            or compose_rewrite is not None
+            or service_compose_reconcile is not None
+        ),
+        "validator_mutation_count": 0,
+        "validator_restart_count": 0,
+        "validator_vote_performed": False,
+        "service_detail_http_status": final_detail["status"],
+    }
+    status = "pass" if summary["clean"] and mutation_ok else "manual-review-required"
+    document = {
+        "kind": _KIND,
+        "schema_version": 1,
+        "status": status,
+        "network": network_id,
+        "controller_id": controller_name,
+        "service_uuid": service,
+        "node": node_name,
+        "operation_id": op.operation_id,
+        "observed_at": _utc_now(),
+        "mode": "execute",
+        "initial_parent": initial["parent"],
+        "final_parent": final["parent"],
+        "initial_completed_helper_candidates": initial["completed_helper_candidates"],
+        "deleted_applications": delete_receipts,
+        "nested_deleted_applications": nested_delete_receipts,
+        "service_compose_rewrite": compose_rewrite,
+        "service_compose_reconcile": service_compose_reconcile,
+        "service_redeploy_refresh": service_redeploy_refresh,
+        "final_required_components": final["required_components"],
+        "final_completed_helper_candidates": final["completed_helper_candidates"],
+        "final_preserved_helpers": final["preserved_helpers"],
+        "final_unexpected_terminal_components": final["unexpected_terminal_components"],
+        "final_unclassified_unhealthy_components": final["unclassified_unhealthy_components"],
+        "http_observations": observations,
+        "summary": summary,
+    }
+    path, digest = write_completed_mother_helper_cleanup_evidence(
+        paths,
+        document,
+        operation=op,
+    )
+    return {
+        **document,
+        "evidence": {
+            "path": str(path),
+            "sha256": digest,
+        },
+    }
+
+
+def write_completed_mother_helper_cleanup_evidence(
+    paths: Any,
+    document: Mapping[str, Any],
+    *,
+    operation: OperationIdentity,
+) -> tuple[Path, str]:
+    op = _operation(operation)
+    payload = canonical_json(dict(document))
+    digest = hashlib.sha256(payload).hexdigest()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target = Path(paths.root) / "evidence" / _EVIDENCE_SUBDIR / f"{stamp}-{digest[:16]}.json"
+    atomic_files.durable_create(target, payload, operation=op)
+    return target, digest
+
+
+def verify_completed_mother_helper_cleanup_evidence(
+    paths: Any,
+    evidence_path: Path,
+    *,
+    max_age_seconds: int = 86400,
+) -> dict[str, Any]:
+    path = Path(evidence_path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_EVIDENCE_READ_FAILED",
+            "failed to read cleanup evidence",
+        ) from exc
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_EVIDENCE_INVALID",
+            "cleanup evidence is not JSON",
+        ) from exc
+    if not isinstance(document, Mapping) or document.get("kind") != _KIND:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_EVIDENCE_INVALID",
+            "cleanup evidence kind is invalid",
+        )
+    digest = hashlib.sha256(canonical_json(dict(document))).hexdigest()
+    if digest != hashlib.sha256(raw).hexdigest():
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_EVIDENCE_INVALID",
+            "cleanup evidence is not canonical",
+        )
+    observed = document.get("observed_at")
+    if type(observed) is str and observed.endswith("Z"):
+        try:
+            dt = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise MotherDeploymentCompletedHelperCleanupError(
+                "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_EVIDENCE_INVALID",
+                "cleanup evidence timestamp is invalid",
+            ) from exc
+        age = (datetime.now(timezone.utc) - dt).total_seconds()
+        if age > max_age_seconds:
+            raise MotherDeploymentCompletedHelperCleanupError(
+                "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_EVIDENCE_EXPIRED",
+                "cleanup evidence is expired",
+            )
+    summary = document.get("summary")
+    clean = isinstance(summary, Mapping) and summary.get("clean") is True
+    return {
+        "clean": clean,
+        "status": document.get("status"),
+        "evidence_sha256": digest,
+        "service_uuid": document.get("service_uuid"),
+        "node": document.get("node"),
+        "summary": dict(summary) if isinstance(summary, Mapping) else {},
+    }
+
+
+__all__ = [
+    "COMPLETED_HELPER_NAMES",
+    "DEFAULT_REQUIRED_COMPONENT_NAMES",
+    "MotherDeploymentCompletedHelperCleanupError",
+    "execute_completed_mother_helper_cleanup",
+    "inspect_completed_mother_helper_cleanup",
+    "verify_completed_mother_helper_cleanup_evidence",
+    "write_completed_mother_helper_cleanup_evidence",
+]

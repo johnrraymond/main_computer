@@ -1,5 +1,11 @@
 "use strict";
 
+// Canonical MCEL app-authoring example.
+// Calculator is the repo's real host-bound MCEL app. Use this file to learn
+// the current mcel.defineApp authoring surface; Counter and Workbench are
+// retained fixtures for compatibility/projection/proof paths, not canonical
+// new-app examples.
+
 const mcel = require("@mcel/app");
 
 const APP_ID = "calculator";
