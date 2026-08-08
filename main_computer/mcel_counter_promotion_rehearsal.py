@@ -8,10 +8,12 @@ from typing import Any, Callable, Mapping
 
 from main_computer.mcel_counter_candidate_evidence import (
     DEFAULT_REPORT_ROOT as DEFAULT_EVIDENCE_REPORT_ROOT,
+    run_counter_candidate_evidence,
+)
+from main_computer.mcel_counter_effect_probe import (
     _build_effect_accounting,
     _run_browser_effect_probe,
     _run_counter_effect_probe,
-    run_counter_candidate_evidence,
 )
 from main_computer.mcel_counter_candidate_projection import project_counter_candidate
 from main_computer.mcel_counter_compatibility import (

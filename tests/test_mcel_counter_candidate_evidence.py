@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ from main_computer.mcel_counter_candidate_evidence import (
     _prepare_workspace,
     run_counter_candidate_evidence,
 )
+import main_computer.mcel_counter_candidate_evidence as counter_evidence
+import main_computer.mcel_counter_effect_probe as counter_effect_probe
 from main_computer.mcel_counter_candidate_projection import project_counter_candidate
 from main_computer.mcel_counter_reference_fixture_profile import APP_ID, FIXTURE_ROLE
 
@@ -294,3 +297,15 @@ def test_candidate_evidence_failure_does_not_write_to_live_package(tmp_path: Pat
         if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
     }
     assert after == before
+
+
+def test_counter_evidence_wrapper_delegates_effect_probe_to_fixture_module() -> None:
+    evidence_source = inspect.getsource(counter_evidence)
+    probe_source = inspect.getsource(counter_effect_probe)
+
+    assert "def _run_counter_effect_probe(" not in evidence_source
+    assert "def _run_browser_effect_probe(" not in evidence_source
+    assert "def _build_effect_accounting(" not in evidence_source
+    assert "def _run_counter_effect_probe(" in probe_source
+    assert "def _run_browser_effect_probe(" in probe_source
+    assert "def _build_effect_accounting(" in probe_source

@@ -19,9 +19,12 @@ from main_computer.mcel_application_definition_ir import (
 )
 from main_computer.mcel_application_ir import validate_application_ir
 from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT
+from main_computer.mcel_workbench_expression_profile import count_native_calls, count_opaque_callbacks
 from main_computer.mcel_profiled_package_candidate_evidence import ProfiledPackageCandidateEvidenceProfile
 from main_computer.mcel_profiled_package_candidate_projection import ProfiledPackageProjectionProfile
 from main_computer.mcel_profiled_package_ir_native_proof import ProfiledPackageIrNativeProofProfile
+from main_computer.mcel_profiled_package_promotion_rehearsal import ProfiledPackagePromotionRehearsalProfile
+from main_computer.mcel_profiled_package_promotion import ProfiledPackagePromotionProfile
 from main_computer.mcel_projection_profiles.contract_workbench_v1 import (
     GENERATED_PATHS,
     PROFILE_ID,
@@ -43,6 +46,13 @@ PROJECTION_VERSION = "mcel-workbench-candidate-projection-wave11"
 EVIDENCE_REPORT_SCHEMA = "mcel.workbench-candidate-evidence-report.v1"
 EVIDENCE_VERSION = "mcel-workbench-candidate-evidence-wave11"
 DEFAULT_REPORT_ROOT = Path("runtime/reports/mcel-compiler-candidates")
+
+EXPECTED_INTENT_COUNT = 7
+EXPECTED_SCENARIO_COUNT = 14
+EXPECTED_EFFECT_COUNT = 18
+EXPECTED_OBSERVATION_COVERAGE_COUNT = 7
+EXPECTED_CAPABILITY_COUNT = 1
+EXPECTED_CAPABILITY_INTENT_COUNT = 2
 
 
 def build_workbench_projection_profile() -> ProfiledPackageProjectionProfile:
@@ -100,8 +110,8 @@ def build_workbench_candidate_evidence_profile() -> ProfiledPackageCandidateEvid
         report_schema=EVIDENCE_REPORT_SCHEMA,
         report_version=EVIDENCE_VERSION,
         report_title="Contract Workbench Candidate Evidence",
-        expected_intent_count=7,
-        expected_scenario_count=14,
+        expected_intent_count=EXPECTED_INTENT_COUNT,
+        expected_scenario_count=EXPECTED_SCENARIO_COUNT,
         evidence_failed_code="MCEL_WORKBENCH_CANDIDATE_EVIDENCE_FAILED",
         source_invalid_code="MCEL_WORKBENCH_CANDIDATE_EVIDENCE_SOURCE_INVALID",
         stage_failed_code="MCEL_WORKBENCH_CANDIDATE_STAGE_FAILED",
@@ -125,12 +135,12 @@ def build_workbench_ir_native_proof_profile() -> ProfiledPackageIrNativeProofPro
         report_schema="mcel.workbench-ir-native-intent-complete-proof.v1",
         effect_accounting_schema="mcel.workbench-ir-native-effect-accounting.v1",
         capability_accounting_schema="mcel.workbench-ir-native-capability-accounting.v1",
-        expected_intent_count=7,
-        expected_scenario_count=14,
-        expected_effect_count=18,
-        expected_observation_coverage_count=7,
-        expected_capability_count=1,
-        expected_capability_intent_count=2,
+        expected_intent_count=EXPECTED_INTENT_COUNT,
+        expected_scenario_count=EXPECTED_SCENARIO_COUNT,
+        expected_effect_count=EXPECTED_EFFECT_COUNT,
+        expected_observation_coverage_count=EXPECTED_OBSERVATION_COVERAGE_COUNT,
+        expected_capability_count=EXPECTED_CAPABILITY_COUNT,
+        expected_capability_intent_count=EXPECTED_CAPABILITY_INTENT_COUNT,
         not_dsl_authoritative_message="Workbench package is not DSL-authoritative.",
         compile_conflict_message=(
             "Authoritative Workbench DSL does not compile to the canonical IR exactly."
@@ -146,6 +156,114 @@ def build_workbench_ir_native_proof_profile() -> ProfiledPackageIrNativeProofPro
     )
 
 
+def build_workbench_promotion_rehearsal_profile() -> ProfiledPackagePromotionRehearsalProfile:
+    """Build the Workbench profile for generic profiled-package promotion rehearsal."""
+
+    from main_computer.mcel_workbench_candidate_evidence import run_workbench_candidate_evidence
+    from main_computer.mcel_workbench_candidate_projection import project_workbench_candidate
+
+    return ProfiledPackagePromotionRehearsalProfile(
+        app_id=APP_ID,
+        project_candidate=project_workbench_candidate,
+        run_candidate_evidence=run_workbench_candidate_evidence,
+        generated_paths=tuple(GENERATED_PATHS),
+        projection_profile=PROJECTION_PROFILE,
+        default_dsl_source=DEFAULT_DSL_SOURCE,
+        default_fixture_ir=DEFAULT_FIXTURE_IR,
+        default_package_root=DEFAULT_PACKAGE_ROOT,
+        default_candidate_root=DEFAULT_CANDIDATE_ROOT,
+        default_evidence_report_root=DEFAULT_REPORT_ROOT,
+        default_report_root=DEFAULT_REPORT_ROOT,
+        report_schema="mcel.app-promotion-rehearsal-report.v1",
+        report_version="mcel-app-promotion-rehearsal-wave12",
+        report_filename="mcel-app-promotion-rehearsal-report.json",
+        report_markdown_filename="mcel-app-promotion-rehearsal-report.md",
+        report_title="Contract Workbench Promotion Rehearsal",
+        live_authority="legacy-explicit-package",
+        rehearsed_authority="mcel.dsl.v1",
+        generated_authority=PROJECTION_PROFILE,
+        expected_intent_count=EXPECTED_INTENT_COUNT,
+        expected_scenario_count=EXPECTED_SCENARIO_COUNT,
+        expected_effect_count=EXPECTED_EFFECT_COUNT,
+        expected_capability_count=EXPECTED_CAPABILITY_COUNT,
+        source_invalid_code="MCEL_WORKBENCH_PROMOTION_REHEARSAL_SOURCE_INVALID",
+        evidence_invalid_code="MCEL_WORKBENCH_PROMOTION_EVIDENCE_INVALID",
+        evidence_binding_conflict_code="MCEL_WORKBENCH_PROMOTION_EVIDENCE_BINDING_CONFLICT",
+        rehearsal_failed_code="MCEL_WORKBENCH_PROMOTION_REHEARSAL_FAILED",
+        mutated_live_repo_code="MCEL_WORKBENCH_PROMOTION_REHEARSAL_MUTATED_LIVE_REPOSITORY",
+    )
+
+
+
+def build_workbench_promotion_profile() -> ProfiledPackagePromotionProfile:
+    """Build the Workbench profile for generic profiled-package promotion execution."""
+
+    from main_computer.mcel_workbench_promotion_rehearsal import rehearse_workbench_promotion
+
+    return ProfiledPackagePromotionProfile(
+        app_id=APP_ID,
+        rehearsal_profile=build_workbench_promotion_rehearsal_profile(),
+        run_rehearsal=rehearse_workbench_promotion,
+        default_package_root=DEFAULT_PACKAGE_ROOT,
+        default_fixture_ir=DEFAULT_FIXTURE_IR,
+        projection_profile=PROJECTION_PROFILE,
+        default_transaction_root=Path("runtime/state/mcel/application-promotions/contract-workbench"),
+        default_report_root=Path("runtime/reports/mcel-application-promotions/contract-workbench"),
+        default_rehearsal_report_root=DEFAULT_REPORT_ROOT,
+        default_lock_path=Path("runtime/state/mcel/application-promotion.contract-workbench.lock"),
+        report_schema="mcel.application-promotion-execution-report.v1",
+        report_version="mcel-workbench-promotion-wave13",
+        transaction_schema="mcel.application-promotion-transaction.v1",
+        rollback_schema="mcel.application-promotion-rollback-result.v1",
+        report_filename="mcel-workbench-promotion-report",
+        rollback_report_filename="mcel-workbench-promotion-rollback-report",
+        report_title="Contract Workbench Authority Promotion",
+        rollback_report_title="Contract Workbench Authority Rollback",
+        live_authority_before="legacy-explicit-package",
+        target_source_authority="mcel.dsl.v1",
+        derived_artifact_authority=PROJECTION_PROFILE,
+        legacy_package_authority="retired",
+        truth_status="semantic-runtime-proven",
+        promoted_idempotent_status="already-promoted",
+        promotion_failed_code="MCEL_WORKBENCH_PROMOTION_FAILED",
+        rollback_failed_code="MCEL_WORKBENCH_PROMOTION_ROLLBACK_FAILED",
+        lock_schema="mcel.application-promotion-lock.v1",
+        lock_held_message="Another Workbench promotion operation holds the lock",
+        already_promoted_summary=(
+            "Contract Workbench already declares mcel.dsl.v1 authority; no second promotion was executed."
+        ),
+        unsupported_authority_message="Unsupported Workbench source authority before promotion",
+        invalid_plan_schema_message="Fresh rehearsal returned an unknown promotion-plan schema.",
+        invalid_plan_app_message="Fresh rehearsal returned a plan for another application.",
+        invalid_plan_start_message=(
+            "Workbench promotion plan does not begin at legacy explicit-package authority."
+        ),
+        invalid_plan_end_message="Workbench promotion plan does not establish mcel.dsl.v1 authority.",
+        invalid_plan_generated_authority_message=(
+            "Workbench promotion plan does not establish the portable IR projection authority."
+        ),
+        invalid_plan_evidence_message=(
+            "Workbench promotion plan is not bound to fresh semantic-runtime-proven candidate evidence."
+        ),
+        empty_plan_message="Workbench promotion plan contains no file transitions.",
+        promoted_dsl_failed_message="Promoted authoritative Workbench DSL failed exact compilation.",
+        authority_failed_message="Post-promotion Workbench authority checks failed",
+        automatic_rollback_failed_message=(
+            "Automatic rollback did not restore the protected Workbench source boundary exactly."
+        ),
+        committed_only_rollback_message=(
+            "Only a committed Workbench promotion transaction can be rolled back."
+        ),
+        rollback_drift_message="Protected MCEL source drift blocks Workbench rollback",
+        rollback_not_exact_message="Workbench rollback restoration is not exact",
+        rollback_package_message="Workbench package rollback restoration is not exact",
+        rollback_fingerprint_message="Workbench rollback fingerprint restoration is not exact",
+        no_transaction_message="No committed Workbench promotion transaction exists.",
+        invalid_transaction_message="Invalid Workbench promotion transaction identifier.",
+        transaction_not_found_message="Workbench promotion transaction not found",
+    )
+
+
 def _project_ir(application_ir: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, bytes]]:
     projection = project_workbench_ir(application_ir)
     return projection.profile, dict(projection.files)
@@ -153,8 +271,8 @@ def _project_ir(application_ir: Mapping[str, Any]) -> tuple[Mapping[str, Any], M
 
 def _source_metrics(application_ir: Mapping[str, Any]) -> Mapping[str, Any]:
     return {
-        "nativeDomainCallCount": _count_kind(application_ir, "domain.call"),
-        "opaqueCallbackDebt": _count_active_opaque(application_ir),
+        "nativeDomainCallCount": count_native_calls(application_ir),
+        "opaqueCallbackDebt": count_opaque_callbacks(application_ir),
     }
 
 
@@ -208,25 +326,6 @@ def _import_shadow_definition(
     diagnostics.extend(item.to_dict() for item in validation.diagnostics)
     return validation.normalized if validation.valid else None, diagnostics
 
-
-def _count_active_opaque(value: Any) -> int:
-    if isinstance(value, Mapping):
-        return (1 if value.get("kind") == "legacy.opaque-function" else 0) + sum(
-            _count_active_opaque(child)
-            for key, child in value.items()
-            if str(key) != "compatibility"
-        )
-    if isinstance(value, list):
-        return sum(_count_active_opaque(child) for child in value)
-    return 0
-
-
-def _count_kind(value: Any, kind: str) -> int:
-    if isinstance(value, Mapping):
-        return (1 if value.get("kind") == kind else 0) + sum(_count_kind(child, kind) for child in value.values())
-    if isinstance(value, list):
-        return sum(_count_kind(child, kind) for child in value)
-    return 0
 
 
 def _diagnostic(

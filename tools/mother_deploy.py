@@ -184,6 +184,15 @@ from tools.mother.common.deployment_validator_rpc_canary import (
     verify_validator_rpc_canary_transaction,
     write_validator_rpc_canary_transaction,
 )
+from tools.mother.common.deployment_validator_rpc_canary_execution import (
+    MotherDeploymentValidatorRpcCanaryExecutionError,
+    build_validator_rpc_canary_release,
+    execute_validator_rpc_canary_release,
+    inspect_validator_rpc_canary_release,
+    verify_validator_rpc_canary_evidence,
+    verify_validator_rpc_canary_release,
+    write_validator_rpc_canary_release,
+)
 from tools.mother.common.deployment_coolify_service_lifecycle_probe import (
     MotherDeploymentCoolifyServiceLifecycleProbeError,
     execute_coolify_service_lifecycle_probe,
@@ -1363,6 +1372,75 @@ def _parser() -> argparse.ArgumentParser:
     verify_validator_rpc_canary.add_argument("--transaction", required=True)
     verify_validator_rpc_canary.add_argument("--max-age-seconds", type=int, default=86400)
     verify_validator_rpc_canary.add_argument("--soak-max-age-seconds", type=int, default=86400)
+
+    release_validator_rpc_canary = subparsers.add_parser(
+        "release-validator-rpc-canary",
+        help="issue an expiring one-use release for the funded validator-RPC canary execution",
+        allow_abbrev=False,
+    )
+    _common(release_validator_rpc_canary)
+    release_validator_rpc_canary.add_argument("--transaction", required=True)
+    release_validator_rpc_canary.add_argument("--funding-evidence", required=True)
+    release_validator_rpc_canary.add_argument(
+        "--acknowledge-validator-rpc-canary-transaction-sha256",
+        required=True,
+    )
+    release_validator_rpc_canary.add_argument("--expires-in-seconds", type=int, default=300)
+    release_validator_rpc_canary.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_validator_rpc_canary.add_argument("--funding-evidence-max-age-seconds", type=int, default=86400)
+    release_validator_rpc_canary.add_argument("--funding-transaction-max-age-seconds", type=int, default=86400)
+    release_validator_rpc_canary.add_argument("--soak-max-age-seconds", type=int, default=86400)
+    release_validator_rpc_canary.add_argument("--write-release", action="store_true")
+    release_validator_rpc_canary.add_argument("--full-output", action="store_true")
+
+    verify_validator_rpc_canary_release_parser = subparsers.add_parser(
+        "verify-validator-rpc-canary-release",
+        help="verify a funded validator-RPC canary execution release",
+        allow_abbrev=False,
+    )
+    _common(verify_validator_rpc_canary_release_parser)
+    verify_validator_rpc_canary_release_parser.add_argument("--release", required=True)
+    verify_validator_rpc_canary_release_parser.add_argument("--max-age-seconds", type=int, default=300)
+    verify_validator_rpc_canary_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_release_parser.add_argument("--funding-evidence-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_release_parser.add_argument("--funding-transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_release_parser.add_argument("--soak-max-age-seconds", type=int, default=86400)
+
+    apply_validator_rpc_canary = subparsers.add_parser(
+        "apply-validator-rpc-canary",
+        help="inspect or execute a funded validator-RPC canary release",
+        allow_abbrev=False,
+    )
+    _common(apply_validator_rpc_canary)
+    apply_validator_rpc_canary.add_argument("--release", required=True)
+    apply_validator_rpc_canary.add_argument("--acknowledge-release-sha256", required=True)
+    apply_validator_rpc_canary.add_argument("--execute", action="store_true")
+    apply_validator_rpc_canary.add_argument("--max-age-seconds", type=int, default=300)
+    apply_validator_rpc_canary.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary.add_argument("--funding-evidence-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary.add_argument("--funding-transaction-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary.add_argument("--soak-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary.add_argument("--recovery-evidence")
+    apply_validator_rpc_canary.add_argument("--recovery-evidence-max-age-seconds", type=int, default=86400)
+    apply_validator_rpc_canary.add_argument("--timeout", type=float, default=30.0)
+    apply_validator_rpc_canary.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_validator_rpc_canary.add_argument("--max-wait-seconds", type=float, default=300.0)
+    apply_validator_rpc_canary.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_validator_rpc_canary.add_argument("--full-output", action="store_true")
+
+    verify_validator_rpc_canary_evidence_parser = subparsers.add_parser(
+        "verify-validator-rpc-canary-evidence",
+        help="verify canonical validator-RPC canary execution evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_validator_rpc_canary_evidence_parser)
+    verify_validator_rpc_canary_evidence_parser.add_argument("--evidence", required=True)
+    verify_validator_rpc_canary_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_evidence_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_evidence_parser.add_argument("--funding-evidence-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_evidence_parser.add_argument("--funding-transaction-max-age-seconds", type=int, default=86400)
+    verify_validator_rpc_canary_evidence_parser.add_argument("--soak-max-age-seconds", type=int, default=86400)
 
     stage_validator_rpc_canary_funding = subparsers.add_parser(
         "stage-validator-rpc-canary-funding-transaction",
@@ -3095,6 +3173,169 @@ def _cmd_verify_validator_rpc_canary_transaction(
     return 0
 
 
+def _cmd_release_validator_rpc_canary(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "release-validator-rpc-canary",
+        args.network,
+        args.operation_id,
+    )
+    release = build_validator_rpc_canary_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        Path(args.funding_evidence),
+        acknowledged_transaction_sha256=(
+            args.acknowledge_validator_rpc_canary_transaction_sha256
+        ),
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        funding_evidence_max_age_seconds=args.funding_evidence_max_age_seconds,
+        funding_transaction_max_age_seconds=args.funding_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        operation=operation,
+    )
+    result = dict(release)
+    if args.write_release:
+        path, digest = write_validator_rpc_canary_release(
+            _paths(args),
+            release,
+            operation=operation,
+        )
+        result["release_artifact"] = {"path": str(path), "sha256": digest}
+    if args.full_output:
+        output = result
+    else:
+        output = {
+            "status": "pass",
+            "network": result["network"],
+            "expires_at": result["expires_at"],
+            "chain": result["chain"],
+            "identity": result["identity"],
+            "funding_evidence": result["funding_evidence"],
+            "execution": result["execution"],
+            "authority": result["authority"],
+            "policy": result["policy"],
+            "release_sha256": result["validator_rpc_canary_release_sha256"],
+            **(
+                {"release_artifact": result["release_artifact"]}
+                if "release_artifact" in result
+                else {}
+            ),
+        }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_rpc_canary_release(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_validator_rpc_canary_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        funding_evidence_max_age_seconds=args.funding_evidence_max_age_seconds,
+        funding_transaction_max_age_seconds=args.funding_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=_operation(
+            "verify-validator-rpc-canary-release",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_validator_rpc_canary(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    operation = _operation(
+        "apply-validator-rpc-canary",
+        args.network,
+        args.operation_id,
+    )
+    if args.execute:
+        result = execute_validator_rpc_canary_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            acknowledged_release_sha256=args.acknowledge_release_sha256,
+            selected_nodes=_selected_nodes(args.node),
+            max_age_seconds=args.max_age_seconds,
+            transaction_max_age_seconds=args.transaction_max_age_seconds,
+            funding_evidence_max_age_seconds=args.funding_evidence_max_age_seconds,
+            funding_transaction_max_age_seconds=args.funding_transaction_max_age_seconds,
+            soak_max_age_seconds=args.soak_max_age_seconds,
+            recovery_evidence_path=Path(args.recovery_evidence) if args.recovery_evidence else None,
+            recovery_evidence_max_age_seconds=args.recovery_evidence_max_age_seconds,
+            timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+            max_wait_seconds=args.max_wait_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+            operation=operation,
+        )
+        output = result if args.full_output else {
+            "status": result["status"],
+            "network": result["network"],
+            "chain_id": result["chain_id"],
+            "canary_address": result["canary_address"],
+            "chain_state": result["chain_state"],
+            "summary": result["summary"],
+            "evidence": result["evidence"],
+        }
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0 if result["status"] == "pass" else 1
+    result = inspect_validator_rpc_canary_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        funding_evidence_max_age_seconds=args.funding_evidence_max_age_seconds,
+        funding_transaction_max_age_seconds=args.funding_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=operation,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_validator_rpc_canary_evidence(
+    args: argparse.Namespace,
+    private_state,
+) -> int:
+    result = verify_validator_rpc_canary_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        funding_evidence_max_age_seconds=args.funding_evidence_max_age_seconds,
+        funding_transaction_max_age_seconds=args.funding_transaction_max_age_seconds,
+        soak_max_age_seconds=args.soak_max_age_seconds,
+        operation=_operation(
+            "verify-validator-rpc-canary-evidence",
+            args.network,
+            args.operation_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_stage_validator_rpc_canary_funding_transaction(
     args: argparse.Namespace,
     private_state,
@@ -3539,6 +3780,14 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_stage_validator_rpc_canary_transaction(args, private_state)
         if args.command == "verify-validator-rpc-canary-transaction":
             return _cmd_verify_validator_rpc_canary_transaction(args, private_state)
+        if args.command == "release-validator-rpc-canary":
+            return _cmd_release_validator_rpc_canary(args, private_state)
+        if args.command == "verify-validator-rpc-canary-release":
+            return _cmd_verify_validator_rpc_canary_release(args, private_state)
+        if args.command == "apply-validator-rpc-canary":
+            return _cmd_apply_validator_rpc_canary(args, private_state)
+        if args.command == "verify-validator-rpc-canary-evidence":
+            return _cmd_verify_validator_rpc_canary_evidence(args, private_state)
         if args.command == "stage-validator-rpc-canary-funding-transaction":
             return _cmd_stage_validator_rpc_canary_funding_transaction(args, private_state)
         if args.command == "verify-validator-rpc-canary-funding-transaction":
@@ -3585,6 +3834,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentPostAdmissionSteadyStateContinuationError,
         MotherDeploymentMainnetSoakError,
         MotherDeploymentValidatorRpcCanaryError,
+        MotherDeploymentValidatorRpcCanaryExecutionError,
         MotherDeploymentValidatorRpcCanaryFundingError,
         MotherDeploymentPostAdmissionSteadyStateError,
         MotherDeploymentStandbyError,

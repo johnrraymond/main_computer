@@ -22,13 +22,21 @@ from main_computer.mcel_workbench_expression_profile import (
 from main_computer.mcel_profiled_package_candidate_evidence import ProfiledPackageCandidateEvidenceProfile
 from main_computer.mcel_profiled_package_candidate_projection import ProfiledPackageProjectionProfile
 from main_computer.mcel_profiled_package_ir_native_proof import ProfiledPackageIrNativeProofProfile
+from main_computer.mcel_profiled_package_promotion_rehearsal import ProfiledPackagePromotionRehearsalProfile
 from main_computer.mcel_workbench_candidate_projection import project_workbench_candidate
 from main_computer.mcel_workbench_reference_fixture_profile import (
     APP_ID,
+    EXPECTED_CAPABILITY_COUNT,
+    EXPECTED_CAPABILITY_INTENT_COUNT,
+    EXPECTED_EFFECT_COUNT,
+    EXPECTED_INTENT_COUNT,
+    EXPECTED_OBSERVATION_COVERAGE_COUNT,
+    EXPECTED_SCENARIO_COUNT,
     FIXTURE_ROLE,
     build_workbench_candidate_evidence_profile,
     build_workbench_ir_native_proof_profile,
     build_workbench_projection_profile,
+    build_workbench_promotion_rehearsal_profile,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,8 +60,8 @@ def test_workbench_reference_fixture_profile_feeds_generic_evidence() -> None:
     profile = build_workbench_candidate_evidence_profile()
     assert isinstance(profile, ProfiledPackageCandidateEvidenceProfile)
     assert profile.app_id == APP_ID
-    assert profile.expected_intent_count == 7
-    assert profile.expected_scenario_count == 14
+    assert profile.expected_intent_count == EXPECTED_INTENT_COUNT
+    assert profile.expected_scenario_count == EXPECTED_SCENARIO_COUNT
     assert profile.report_schema == "mcel.workbench-candidate-evidence-report.v1"
     assert profile.live_authority == "legacy-explicit-package"
 
@@ -64,11 +72,39 @@ def test_workbench_reference_fixture_profile_feeds_generic_ir_native_proof() -> 
     assert isinstance(profile, ProfiledPackageIrNativeProofProfile)
     assert profile.app_id == APP_ID
     assert profile.report_schema == "mcel.workbench-ir-native-intent-complete-proof.v1"
-    assert profile.expected_intent_count == 7
-    assert profile.expected_scenario_count == 14
-    assert profile.expected_effect_count == 18
-    assert profile.expected_observation_coverage_count == 7
+    assert profile.expected_intent_count == EXPECTED_INTENT_COUNT
+    assert profile.expected_scenario_count == EXPECTED_SCENARIO_COUNT
+    assert profile.expected_effect_count == EXPECTED_EFFECT_COUNT
+    assert profile.expected_observation_coverage_count == EXPECTED_OBSERVATION_COVERAGE_COUNT
+    assert profile.expected_capability_count == EXPECTED_CAPABILITY_COUNT
+    assert profile.expected_capability_intent_count == EXPECTED_CAPABILITY_INTENT_COUNT
     assert profile.projection_profile == "mcel.workbench.portable-ir-projection.v1"
+
+def test_workbench_reference_fixture_profile_feeds_generic_promotion_rehearsal() -> None:
+    profile = build_workbench_promotion_rehearsal_profile()
+    assert isinstance(profile, ProfiledPackagePromotionRehearsalProfile)
+    assert profile.app_id == APP_ID
+    assert profile.projection_profile == "mcel.workbench.portable-ir-projection.v1"
+    assert profile.expected_intent_count == EXPECTED_INTENT_COUNT
+    assert profile.expected_scenario_count == EXPECTED_SCENARIO_COUNT
+    assert profile.report_schema == "mcel.app-promotion-rehearsal-report.v1"
+
+
+def test_workbench_reference_fixture_profile_centralizes_fixture_counts() -> None:
+    evidence = build_workbench_candidate_evidence_profile()
+    proof = build_workbench_ir_native_proof_profile()
+    rehearsal = build_workbench_promotion_rehearsal_profile()
+
+    assert {evidence.expected_intent_count, proof.expected_intent_count, rehearsal.expected_intent_count} == {
+        EXPECTED_INTENT_COUNT
+    }
+    assert {evidence.expected_scenario_count, proof.expected_scenario_count, rehearsal.expected_scenario_count} == {
+        EXPECTED_SCENARIO_COUNT
+    }
+    assert proof.expected_effect_count == EXPECTED_EFFECT_COUNT
+    assert proof.expected_capability_count == EXPECTED_CAPABILITY_COUNT
+    assert proof.expected_capability_intent_count == EXPECTED_CAPABILITY_INTENT_COUNT
+
 
 
 def test_workbench_definition_imports_to_valid_application_ir() -> None:
@@ -77,9 +113,9 @@ def test_workbench_definition_imports_to_valid_application_ir() -> None:
     assert result.semantic_fingerprint == SEMANTIC
     assert result.normalized_ir is not None
     assert len(result.normalized_ir["states"]) == 12
-    assert len(result.normalized_ir["intents"]) == 7
-    assert len(result.normalized_ir["scenarios"]) == 14
-    assert len(result.normalized_ir["effects"]) == 18
+    assert len(result.normalized_ir["intents"]) == EXPECTED_INTENT_COUNT
+    assert len(result.normalized_ir["scenarios"]) == EXPECTED_SCENARIO_COUNT
+    assert len(result.normalized_ir["effects"]) == EXPECTED_EFFECT_COUNT
     assert result.diagnostics == ()
     assert count_native_calls(result.normalized_ir) == 26
     assert count_opaque_callbacks(result.normalized_ir) == 0

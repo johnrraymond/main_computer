@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from main_computer.mcel_counter_candidate_evidence import (
+from main_computer.mcel_counter_effect_probe import (
     _build_effect_accounting,
     _run_browser_effect_probe,
     _run_counter_effect_probe,

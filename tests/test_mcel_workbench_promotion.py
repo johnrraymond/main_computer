@@ -40,6 +40,15 @@ def _copy_repo(target: Path) -> Path:
     return target
 
 
+def _mark_workbench_legacy(repo: Path) -> None:
+    """Restore the fixture pre-promotion authority marker for transaction tests."""
+
+    manifest_path = repo / "mcel_apps/contract-workbench/mcel.app.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("authoring", {})["status"] = "semantic-runtime-proven"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 class _RehearsalResult:
     valid = True
 
@@ -163,10 +172,22 @@ def _execute(repo: Path, **kwargs):
     )
 
 
+def test_execute_workbench_promotion_is_idempotent_for_promoted_fixture(tmp_path: Path) -> None:
+    repo = _copy_repo(tmp_path / "repo")
+    result = _execute(repo)
+    payload = result.to_dict()
+    assert result.valid is True
+    assert result.status == "already-promoted"
+    assert payload["promotionExecuted"] is False
+    assert payload["alreadyPromoted"] is True
+    assert payload["sourceAuthority"] == "mcel.dsl.v1"
+    assert payload["rollbackAvailable"] is False
+
+
 def test_execute_workbench_promotion_commits_and_exactly_rolls_back(tmp_path: Path) -> None:
     repo = _copy_repo(tmp_path / "repo")
     before = _tree_snapshot(repo / "mcel_apps/contract-workbench")
-    result = _execute(repo)
+    result = _execute(repo, force_repromotion=True)
     payload = result.to_dict()
     assert result.valid is True
     assert payload["promotionExecuted"] is True
@@ -201,18 +222,18 @@ def test_workbench_post_apply_failure_automatically_restores_legacy_package(tmp_
         if stage == "applied":
             raise RuntimeError("injected post-apply failure")
 
-    result = _execute(repo, failure_injector=fail)
+    result = _execute(repo, failure_injector=fail, force_repromotion=True)
     assert result.valid is False
     assert _tree_snapshot(repo / "mcel_apps/contract-workbench") == before
     manifest = json.loads(
         (repo / "mcel_apps/contract-workbench/mcel.app.json").read_text(encoding="utf-8")
     )
-    assert manifest["authoring"]["status"] == "semantic-runtime-proven"
+    assert manifest["authoring"]["status"] == "dsl-authoritative"
 
 
 def test_workbench_rollback_refuses_later_protected_mcel_drift(tmp_path: Path) -> None:
     repo = _copy_repo(tmp_path / "repo")
-    result = _execute(repo)
+    result = _execute(repo, force_repromotion=True)
     assert result.valid is True
     protected = repo / "main_computer/mcel_application_ir.py"
     protected.write_text(protected.read_text(encoding="utf-8") + "\n# later work\n", encoding="utf-8")
@@ -241,6 +262,7 @@ def test_generic_dispatch_executes_and_rolls_back_workbench(tmp_path: Path) -> N
         rehearsal_report_root=repo / "runtime/reports/rehearsal",
         rehearsal_runner=_rehearsal_runner,
         command_runner=_fake_command_runner,
+        force_repromotion=True,
     )
     assert result.valid is True
     raw = result.to_dict()["result"]

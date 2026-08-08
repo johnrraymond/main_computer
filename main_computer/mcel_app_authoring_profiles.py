@@ -41,11 +41,11 @@ class AppAuthoringProfileError(RuntimeError):
 
 
 def _counter_profile() -> AppAuthoringProfile:
-    from main_computer.mcel_counter_candidate_evidence import (
+    from main_computer.mcel_counter_candidate_evidence import run_counter_candidate_evidence
+    from main_computer.mcel_counter_effect_probe import (
         _build_effect_accounting,
         _run_browser_effect_probe,
         _run_counter_effect_probe,
-        run_counter_candidate_evidence,
     )
     from main_computer.mcel_counter_candidate_projection import project_counter_candidate
     from main_computer.mcel_counter_compatibility import DEFAULT_DSL_SOURCE, DEFAULT_FIXTURE_IR
