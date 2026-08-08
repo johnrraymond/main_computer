@@ -307,9 +307,10 @@ class PaxSystemScenarioTests(unittest.TestCase):
               sequence: 3
             });
             const legacyView = legacy.view(scenarioId);
-            const legacyObjective = interaction.objectivePresentation(
+            const legacyPresentation = interaction.presentation.viewModel(
               legacyView
             );
+            const legacyObjective = legacyPresentation.objective;
             const cueUi = {
               briefing: {hidden: true, dataset: {}},
               objective: {hidden: true, dataset: {}},
@@ -317,7 +318,10 @@ class PaxSystemScenarioTests(unittest.TestCase):
               objectiveTitle: {textContent: ""},
               objectiveDetail: {textContent: ""}
             };
-            const cues = interaction.renderMissionCues(cueUi, legacyView);
+            const cues = interaction.presentation.renderMissionCues(
+              cueUi,
+              legacyPresentation
+            );
 
             process.stdout.write(JSON.stringify({
               ignoredHandled: ignored.handled,
@@ -345,10 +349,33 @@ class PaxSystemScenarioTests(unittest.TestCase):
               legacyObjectiveVisible: legacyObjective.visible,
               legacyObjectiveUrgent: legacyObjective.urgent,
               legacyObjectiveTitle: legacyObjective.title,
+              presentationKind: legacyPresentation.snapshotKind,
+              presentationReadOnly: legacyPresentation.readOnly,
+              presentationStatus: legacyPresentation.scenario.status,
+              presentationStage: legacyPresentation.scenario.stageId,
+              presentationBriefingVisible:
+                legacyPresentation.missionCues.briefing.visible,
+              presentationHardVisible: legacyPresentation.hardStart.visible,
+              presentationProceedVisible: legacyPresentation.proceed.visible,
               briefingVisible: !cueUi.briefing.hidden,
               objectiveVisible: !cueUi.objective.hidden,
               renderedObjectiveTitle: cueUi.objectiveTitle.textContent,
-              cueKey: cues.cueKey
+              cueKey: cues.cueKey,
+              presentationModelViewModel:
+                typeof interaction.presentation.model.viewModel,
+              presentationModelEvidence:
+                typeof interaction.presentation.model.evidence,
+              presentationModelResolutions:
+                typeof interaction.presentation.model.resolutions,
+              presentationModelOutcome:
+                typeof interaction.presentation.model.outcome,
+              presentationDomRenderMissionCues:
+                typeof interaction.presentation.dom.renderMissionCues,
+              presentationDomRenderEvidence:
+                typeof interaction.presentation.dom.renderEvidence,
+              presentationLegacyRenderMissionCues:
+                interaction.presentation.renderMissionCues
+                  === interaction.presentation.dom.renderMissionCues
             }));
             """
         )
@@ -383,6 +410,13 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertTrue(result["legacyObjectiveVisible"])
         self.assertTrue(result["legacyObjectiveUrgent"])
         self.assertEqual(result["legacyObjectiveTitle"], "REPEL THE BOARDERS")
+        self.assertEqual(result["presentationKind"], "pax-protection-presentation")
+        self.assertTrue(result["presentationReadOnly"])
+        self.assertEqual(result["presentationStatus"], "active")
+        self.assertEqual(result["presentationStage"], "protect-witness")
+        self.assertTrue(result["presentationBriefingVisible"])
+        self.assertTrue(result["presentationHardVisible"])
+        self.assertFalse(result["presentationProceedVisible"])
         self.assertTrue(result["briefingVisible"])
         self.assertTrue(result["objectiveVisible"])
         self.assertEqual(
@@ -390,6 +424,13 @@ class PaxSystemScenarioTests(unittest.TestCase):
             "REPEL THE BOARDERS",
         )
         self.assertTrue(result["cueKey"])
+        self.assertEqual(result["presentationModelViewModel"], "function")
+        self.assertEqual(result["presentationModelEvidence"], "function")
+        self.assertEqual(result["presentationModelResolutions"], "function")
+        self.assertEqual(result["presentationModelOutcome"], "function")
+        self.assertEqual(result["presentationDomRenderMissionCues"], "function")
+        self.assertEqual(result["presentationDomRenderEvidence"], "function")
+        self.assertTrue(result["presentationLegacyRenderMissionCues"])
 
     def test_pax_local_rule_distinguishes_defense_from_intimidation(self) -> None:
         result = self.run_node(
@@ -687,7 +728,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
               {nowMs: 100, source: "test-stale-state"}
             );
 
-            const started = interaction.startOrRecoverPax(
+            const started = interaction.commands.startOrRecover(
               "test-hard-kickoff",
               {nowMs: 250, allowSystemChange: false}
             );
@@ -706,8 +747,6 @@ class PaxSystemScenarioTests(unittest.TestCase):
             const assassin = characterRuntime.character(assassinId);
             const witness = characterRuntime.character(witnessId);
             const marshal = characterRuntime.character(marshalId);
-            const hardPresentation = interaction.hardStartPresentation(view);
-            const objective = interaction.objectivePresentation(view);
             interaction.setWorldSnapshot({
               player: {position: [-2.85, -0.55, -36.7]},
               activeThreatCount: 1,
@@ -717,7 +756,10 @@ class PaxSystemScenarioTests(unittest.TestCase):
                 characterRuntime.character(witnessId)
               ]
             });
-            const threat = interaction.threatPresentation(view);
+            const presentation = interaction.presentation.viewModel(view);
+            const hardPresentation = presentation.hardStart;
+            const objective = presentation.objective;
+            const threat = presentation.threat;
             const receiptReasons = characterRuntime
               .snapshot()
               .receipts
@@ -735,9 +777,14 @@ class PaxSystemScenarioTests(unittest.TestCase):
               assassinAction: assassin.currentActionId,
               witnessPosition: witness.position,
               marshalPosition: marshal.position,
+              presentationKind: presentation.snapshotKind,
+              presentationReadOnly: presentation.readOnly,
+              presentationStage: presentation.scenario.stageId,
+              presentationCharacterCount: presentation.characters.rows.length,
               hardVisible: hardPresentation.visible,
               hardTitle: hardPresentation.title,
               hardButton: hardPresentation.button,
+              hardButtonDisabled: hardPresentation.buttonDisabled,
               objectiveVisible: objective.visible,
               objectiveDetail: objective.detail,
               threatVisible: threat.visible,
@@ -747,7 +794,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
               forceReceiptCount: receiptReasons.filter(
                 (reason) => reason === "character-state-forced"
               ).length,
-              kickoffReason: interaction.state.lastHardKickoff.reason
+              kickoffReason: interaction.diagnostics.state().lastHardKickoff.reason
             }));
             """
         )
@@ -765,9 +812,14 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertEqual(result["assassinAction"], "call_support")
         self.assertEqual(result["witnessPosition"], [-1.45, -0.55, -36.45])
         self.assertEqual(result["marshalPosition"], [1.45, -0.55, -36.35])
+        self.assertEqual(result["presentationKind"], "pax-protection-presentation")
+        self.assertTrue(result["presentationReadOnly"])
+        self.assertEqual(result["presentationStage"], "protect-witness")
+        self.assertGreaterEqual(result["presentationCharacterCount"], 6)
         self.assertTrue(result["hardVisible"])
         self.assertEqual(result["hardTitle"], "PAX MISSION LIVE")
         self.assertEqual(result["hardButton"], "Respawn visible encounter")
+        self.assertFalse(result["hardButtonDisabled"])
         self.assertTrue(result["objectiveVisible"])
         self.assertIn("SIX HOSTILES ABOARD", result["objectiveDetail"])
         self.assertTrue(result["threatVisible"])
@@ -831,8 +883,10 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertIn('"arrival-committed"', interaction)
         self.assertIn("navigation-current-system-recovery", interaction)
         self.assertIn("rendermissioncues", interaction)
-        self.assertIn("startorrecoverpax", interaction)
-        self.assertIn("forcepaxcharacterstates", interaction)
+        self.assertIn("startorrecoverprotectionencounter", interaction)
+        self.assertIn("forceprotectionencountercharacters", interaction)
+        self.assertNotIn("startorrecoverpax", interaction)
+        self.assertNotIn("forcepaxcharacterstates", interaction)
         self.assertIn("objectivepresentation", interaction)
         self.assertIn("threatpresentation", interaction)
         self.assertIn("setworldsnapshot", interaction)
@@ -1083,20 +1137,108 @@ class PaxSystemScenarioTests(unittest.TestCase):
             const interaction = require(process.argv[4]);
             interaction.setRuntime(scenario);
             interaction.setCharacterRuntime(characters);
-            interaction.startOrRecoverPax("test-diagnostic-start", {
+            interaction.commands.startOrRecover("test-diagnostic-start", {
               allowSystemChange: true,
               nowMs: 10
             });
 
-            const passiveOptions =
-              interaction.paxProtectionReconciliationOptions("passive");
-            const startupOptions =
-              interaction.paxProtectionReconciliationOptions("startup-attach");
+            const passiveSnapshot = interaction.paxProtectionEncounterSnapshot({
+              mode: "passive"
+            });
+            const startupSnapshot = interaction.paxProtectionEncounterSnapshot({
+              mode: "startup-attach"
+            });
             const diagnostic = interaction.diagnosePaxProtectionEncounter();
 
             console.log(JSON.stringify({
-              passiveRecoverDefeated: passiveOptions.recoverDefeated,
-              startupRecoverDefeated: startupOptions.recoverDefeated,
+              passiveRecoverDefeated: passiveSnapshot.reconciliation.recoverDefeated,
+              startupRecoverDefeated: startupSnapshot.reconciliation.recoverDefeated,
+              snapshotVersion: diagnostic.snapshotVersion,
+              snapshotKind: diagnostic.snapshotKind,
+              readOnly: diagnostic.readOnly,
+              mode: diagnostic.mode,
+              actors: diagnostic.actors,
+              runtimes: diagnostic.runtimes,
+              reconciliation: diagnostic.reconciliation,
+              hasSnapshotExport: typeof interaction.paxProtectionEncounterSnapshot === "function",
+              hasOptionsExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "paxProtectionReconciliationOptions"
+              ),
+              hasClassifierExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "classifyPaxProtectionState"
+              ),
+              hasBoarderGroupExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "classifyBoarderGroup"
+              ),
+              hasPlannerExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "paxProtectionReconciliationPlan"
+              ),
+              hasRawReconcileExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "reconcilePaxProtectionState"
+              ),
+              hasCommandsApi: typeof interaction.commands === "object",
+              hasDiagnosticsApi: typeof interaction.diagnostics === "object",
+              hasPresentationApi: typeof interaction.presentation === "object",
+              hasRuntimeApi: typeof interaction.runtime === "object",
+              hasTopLevelConfig: typeof interaction.config === "object",
+              constantsConfigSame: interaction.constants.config === interaction.config,
+              configuredScenarioId: interaction.config.ids.scenarioId,
+              configuredSystemId: interaction.config.ids.systemId,
+              configuredStages: interaction.config.stages,
+              configuredEncounter: interaction.config.encounter,
+              configuredBoarderIds: interaction.config.actors.boarderIds,
+              configuredRecoveryActions: interaction.config.recovery.actions,
+              configuredReconciliationModes: interaction.config.recovery.reconciliationModes,
+              configuredPositionFrozen: Object.isFrozen(
+                interaction.config.actors.hardKickoffPositions.assassin
+              ),
+              hasTopLevelStateExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "state"
+              ),
+              hasTopLevelStartExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "startOrRecoverPax"
+              ),
+              hasTopLevelForceExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "forcePaxCharacterStates"
+              ),
+              hasTopLevelResetExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "resetPaxProtectionEncounter"
+              ),
+              hasTopLevelRequestExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "requestPaxProtectionReconciliation"
+              ),
+              hasCommandStart: typeof interaction.commands.startOrRecover === "function",
+              hasCommandForce: typeof interaction.commands.forceCharacterStates === "function",
+              hasCommandReset: typeof interaction.commands.resetProtectionEncounter === "function",
+              hasCommandRequestReconciliation: typeof interaction.commands.requestReconciliation === "function",
+              hasCommandLegacyStart: Object.prototype.hasOwnProperty.call(
+                interaction.commands,
+                "startOrRecoverPax"
+              ),
+              hasCommandLegacyRecoverActiveBoarders: Object.prototype.hasOwnProperty.call(
+                interaction.commands,
+                "recoverActiveBoardersOutsideProtection"
+              ),
+              hasDiagnosticState: typeof interaction.diagnostics.state === "function",
+              hasPresentationObjective: typeof interaction.presentation.objective === "function",
+              hasPresentationViewModel: typeof interaction.presentation.viewModel === "function",
+              hasPresentationAlias:
+                interaction.presentation.presentationViewModel === interaction.presentation.viewModel,
+              hasPresentationRenderThreatExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "renderThreatTracker"
+              ),
+              debugState: interaction.diagnostics.state(),
               status: diagnostic.status,
               stageId: diagnostic.stageId,
               stageClass: diagnostic.stageClass,
@@ -1116,6 +1258,18 @@ class PaxSystemScenarioTests(unittest.TestCase):
               encounterDefinitionId: diagnostic.encounterDefinitionId,
               encounterInstanceId: diagnostic.encounterInstanceId,
               encounterInstanceKnown: diagnostic.encounterInstanceKnown,
+              encounterInstance: diagnostic.encounterInstance,
+              encounterProposedInstanceId: diagnostic.encounterProposedInstanceId,
+              encounterProposedInstanceKey: diagnostic.encounterProposedInstanceKey,
+              encounterInstancePlaceholder: diagnostic.encounterInstancePlaceholder,
+              encounterInstanceDurableCommitted: diagnostic.encounterInstanceDurableCommitted,
+              completionStatus: diagnostic.completionStatus,
+              completionTrusted: diagnostic.completionTrusted,
+              completionReason: diagnostic.completionReason,
+              staleActorState: diagnostic.staleActorState,
+              restartableCompletionCorruption: diagnostic.restartableCompletionCorruption,
+              completionIssueCodes: diagnostic.completionIssueCodes,
+              completion: diagnostic.completion,
               boarderIds: diagnostic.boarderIds,
               boarders: diagnostic.boarders,
               runtimeAttached: diagnostic.runtimeAttached,
@@ -1126,6 +1280,88 @@ class PaxSystemScenarioTests(unittest.TestCase):
 
         self.assertFalse(result["passiveRecoverDefeated"])
         self.assertTrue(result["startupRecoverDefeated"])
+        self.assertEqual(
+            result["snapshotVersion"],
+            "pax-protection-encounter-snapshot.v1",
+        )
+        self.assertEqual(result["snapshotKind"], "pax-protection-encounter")
+        self.assertTrue(result["readOnly"])
+        self.assertEqual(result["mode"], "passive")
+        self.assertTrue(result["hasSnapshotExport"])
+        self.assertFalse(result["hasOptionsExport"])
+        self.assertFalse(result["hasClassifierExport"])
+        self.assertFalse(result["hasBoarderGroupExport"])
+        self.assertFalse(result["hasPlannerExport"])
+        self.assertFalse(result["hasRawReconcileExport"])
+        self.assertTrue(result["hasCommandsApi"])
+        self.assertTrue(result["hasDiagnosticsApi"])
+        self.assertTrue(result["hasPresentationApi"])
+        self.assertTrue(result["hasRuntimeApi"])
+        self.assertTrue(result["hasTopLevelConfig"])
+        self.assertTrue(result["constantsConfigSame"])
+        self.assertEqual(
+            result["configuredScenarioId"],
+            "scenario.pax.neutrality-under-fire",
+        )
+        self.assertEqual(result["configuredSystemId"], "system.pax")
+        self.assertEqual(result["configuredStages"]["protection"], "protect-witness")
+        self.assertEqual(result["configuredStages"]["investigation"], "investigation")
+        self.assertEqual(result["configuredStages"]["conference"], "conference")
+        self.assertEqual(
+            result["configuredStages"]["hardKickoff"],
+            ["protect-witness", "investigation", "conference"],
+        )
+        self.assertEqual(
+            result["configuredEncounter"]["definitionId"],
+            "encounter.pax.protection-boarding",
+        )
+        self.assertEqual(
+            result["configuredEncounter"]["activeStageIds"],
+            ["protect-witness"],
+        )
+        self.assertEqual(
+            result["configuredEncounter"]["completedStageIds"],
+            ["investigation"],
+        )
+        self.assertEqual(len(result["configuredBoarderIds"]), 6)
+        self.assertEqual(result["configuredRecoveryActions"]["none"], "none")
+        self.assertEqual(
+            result["configuredRecoveryActions"]["restartEncounter"],
+            "restart-encounter",
+        )
+        self.assertEqual(
+            result["configuredReconciliationModes"]["startupAttach"],
+            "startup-attach",
+        )
+        self.assertTrue(result["configuredPositionFrozen"])
+        self.assertFalse(result["hasTopLevelStateExport"])
+        self.assertFalse(result["hasTopLevelStartExport"])
+        self.assertFalse(result["hasTopLevelForceExport"])
+        self.assertFalse(result["hasTopLevelResetExport"])
+        self.assertFalse(result["hasTopLevelRequestExport"])
+        self.assertTrue(result["hasCommandStart"])
+        self.assertTrue(result["hasCommandForce"])
+        self.assertTrue(result["hasCommandReset"])
+        self.assertTrue(result["hasCommandRequestReconciliation"])
+        self.assertFalse(result["hasCommandLegacyStart"])
+        self.assertFalse(result["hasCommandLegacyRecoverActiveBoarders"])
+        self.assertTrue(result["hasDiagnosticState"])
+        self.assertTrue(result["hasPresentationObjective"])
+        self.assertTrue(result["hasPresentationViewModel"])
+        self.assertTrue(result["hasPresentationAlias"])
+        self.assertFalse(result["hasPresentationRenderThreatExport"])
+        self.assertTrue(result["debugState"]["runtimeAttached"])
+        self.assertTrue(result["debugState"]["characterRuntimeAttached"])
+        self.assertFalse(result["debugState"]["recoveryInProgress"])
+        self.assertEqual(result["actors"]["status"], "active")
+        self.assertEqual(result["actors"]["total"], 6)
+        self.assertEqual(len(result["actors"]["rows"]), 6)
+        self.assertTrue(result["runtimes"]["scenarioAttached"])
+        self.assertTrue(result["runtimes"]["characterAttached"])
+        self.assertEqual(result["reconciliation"]["mode"], "passive")
+        self.assertFalse(result["reconciliation"]["recoverDefeated"])
+        self.assertFalse(result["reconciliation"]["inProgress"])
+        self.assertFalse(result["reconciliation"]["plan"]["recover"])
         self.assertEqual(result["status"], "consistent-active")
         self.assertEqual(result["stageId"], "protect-witness")
         self.assertEqual(result["stageClass"], "active")
@@ -1153,6 +1389,34 @@ class PaxSystemScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(result["encounterInstanceId"])
         self.assertFalse(result["encounterInstanceKnown"])
+        expected_instance_key = (
+            "scenario.pax.neutrality-under-fire:"
+            "encounter.pax.protection-boarding:"
+            "instance:protect-witness:pending"
+        )
+        self.assertEqual(result["encounterProposedInstanceId"], expected_instance_key)
+        self.assertEqual(result["encounterProposedInstanceKey"], expected_instance_key)
+        self.assertTrue(result["encounterInstancePlaceholder"])
+        self.assertFalse(result["encounterInstanceDurableCommitted"])
+        self.assertEqual(
+            result["encounterInstance"]["status"],
+            "placeholder",
+        )
+        self.assertEqual(
+            result["encounterInstance"]["source"],
+            "pax-diagnostic-placeholder",
+        )
+        self.assertEqual(
+            result["encounterInstance"]["proposedInstanceId"],
+            expected_instance_key,
+        )
+        self.assertEqual(result["completionStatus"], "not-completed")
+        self.assertFalse(result["completionTrusted"])
+        self.assertEqual(result["completionReason"], "not-completed")
+        self.assertEqual(result["staleActorState"], "none")
+        self.assertEqual(result["restartableCompletionCorruption"], "none")
+        self.assertEqual(result["completionIssueCodes"], [])
+        self.assertFalse(result["completion"]["completed"])
         self.assertEqual(result["encounter"]["stageId"], "protect-witness")
         self.assertEqual(result["encounter"]["scenarioId"], result["scenarioId"])
         self.assertEqual(result["encounter"]["systemId"], result["systemId"])
@@ -1166,16 +1430,145 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertTrue(result["characterRuntimeAttached"])
 
 
+    def test_pax_completed_without_durable_instance_reports_stale_state_diagnostic(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const diagnostic = interaction.diagnosePaxProtectionEncounter({
+              mode: "startup-attach"
+            });
+
+            console.log(JSON.stringify({
+              status: diagnostic.status,
+              stageId: diagnostic.stageId,
+              stageClass: diagnostic.stageClass,
+              actorStatus: diagnostic.actorStatus,
+              completionStatus: diagnostic.completionStatus,
+              completionTrusted: diagnostic.completionTrusted,
+              completionReason: diagnostic.completionReason,
+              staleActorState: diagnostic.staleActorState,
+              restartableCompletionCorruption: diagnostic.restartableCompletionCorruption,
+              completionIssueCodes: diagnostic.completionIssueCodes,
+              planRecover: diagnostic.plan.recover,
+              planAction: diagnostic.plan.action
+            }));
+            """
+        )
+
+        self.assertEqual(result["status"], "recoverable-investigation-defeated")
+        self.assertEqual(result["stageId"], "investigation")
+        self.assertEqual(result["stageClass"], "completed")
+        self.assertEqual(result["actorStatus"], "defeated")
+        self.assertEqual(result["completionStatus"], "completed-but-untrusted")
+        self.assertFalse(result["completionTrusted"])
+        self.assertEqual(result["completionReason"], "durable-instance-missing")
+        self.assertEqual(result["staleActorState"], "stale-defeated-actors")
+        self.assertEqual(
+            result["restartableCompletionCorruption"],
+            "restartable-corruption",
+        )
+        self.assertEqual(
+            result["completionIssueCodes"],
+            [
+                "durable-instance-missing",
+                "stale-defeated-actors",
+                "restartable-corruption",
+            ],
+        )
+        self.assertTrue(result["planRecover"])
+        self.assertEqual(result["planAction"], "restart-encounter")
+
+
     def test_persisted_defeated_pax_boarders_use_shared_reconciliation_on_attach(self) -> None:
         source = PAX_INTERACTION.read_text(encoding="utf-8")
+        self.assertIn("const PAX_SCENARIO_CONFIG", source)
+        self.assertIn("const SCENARIO_ID = PAX_SCENARIO_CONFIG.ids.scenarioId", source)
+        self.assertIn("const BOARDER_IDS = PAX_SCENARIO_CONFIG.actors.boarderIds", source)
+        self.assertIn("activeStageIds: PAX_PROTECTION_ACTIVE_STAGE_IDS", source)
+        self.assertIn("completedStageIds: PAX_PROTECTION_COMPLETED_STAGE_IDS", source)
+        self.assertNotIn('state.stageId === "protect-witness"', source)
+        self.assertNotIn('state.stageId === "investigation"', source)
+        self.assertNotIn('state.stageId === "conference"', source)
         self.assertIn("function classifyBoarderGroup", source)
         self.assertIn("function classifyPaxProtectionState", source)
         self.assertIn("function paxProtectionReconciliationPlan", source)
+        self.assertIn("function paxProtectionEncounterInstanceDescriptor", source)
+        self.assertIn("function paxProtectionEncounterSnapshotData", source)
+        self.assertIn("function buildPaxProtectionEncounterSnapshot", source)
+        self.assertIn("function paxProtectionEncounterSnapshot", source)
         self.assertIn("function paxProtectionReconciliationOptions", source)
         self.assertIn("function diagnosePaxProtectionEncounter", source)
-        self.assertIn("function requestPaxProtectionReconciliation", source)
+        self.assertIn("function startOrRecoverProtectionEncounter", source)
+        self.assertIn("function forceProtectionEncounterCharacters", source)
+        self.assertIn("function resetProtectionEncounter", source)
+        self.assertIn("function requestProtectionEncounterReconciliation", source)
         self.assertIn("function performPaxProtectionRecovery", source)
         self.assertIn("function reconcilePaxProtectionState", source)
+        self.assertIn("Pure Pax presentation model helpers", source)
+        self.assertIn("Pax DOM presentation renderers", source)
+        self.assertLess(
+            source.index("Pure Pax presentation model helpers"),
+            source.index("Pax DOM presentation renderers"),
+        )
+        self.assertLess(
+            source.index("function paxProtectionPresentationViewModel"),
+            source.index("function renderCharacters"),
+        )
+        self.assertIn("const paxPresentationModel = Object.freeze", source)
+        self.assertIn("const paxPresentationDom = Object.freeze", source)
+        self.assertIn("model: paxPresentationModel", source)
+        self.assertIn("dom: paxPresentationDom", source)
+        self.assertIn("const presentation = toPaxPresentationViewModel(viewOrPresentation)", source)
+        self.assertIn("arrayValue(presentation.evidence?.items)", source)
+        self.assertIn("arrayValue(presentation.resolutions?.items)", source)
+        self.assertIn("objectValue(presentation.outcome?.consequences)", source)
         self.assertIn('recoverableProtectionDefeated: "recoverable-protection-defeated"', source)
         self.assertIn('recoverableInvestigationDefeated: "recoverable-investigation-defeated"', source)
         self.assertIn('restartEncounter: "restart-encounter"', source)
@@ -1187,6 +1580,11 @@ class PaxSystemScenarioTests(unittest.TestCase):
         self.assertIn("recoverDefeated: true", source)
         self.assertIn('"scenario-runtime-attach-inconsistent-recovery"', source)
         self.assertNotIn("recoverDefeatedProtectionBoardersOnAttach", source)
+        self.assertNotIn("startOrRecoverPax", source)
+        self.assertNotIn("forcePaxCharacterStates", source)
+        self.assertNotIn("resetPaxProtectionEncounter", source)
+        self.assertNotIn("requestPaxProtectionReconciliation", source)
+        self.assertNotIn("recoverActiveBoardersOutsideProtection", source)
 
 
     def test_pax_restart_resets_stage_before_replaying_boarding_encounter(self) -> None:
@@ -1244,7 +1642,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
             );
 
             const before = scenario.view(interaction.SCENARIO_ID);
-            const reset = interaction.startOrRecoverPax(
+            const reset = interaction.commands.startOrRecover(
               "test-restart",
               {
                 nowMs: 50,
@@ -1294,7 +1692,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
     def test_pax_restart_button_requests_atomic_protection_reset(self) -> None:
         source = PAX_INTERACTION.read_text(encoding="utf-8")
         runtime = SCENARIO_RUNTIME.read_text(encoding="utf-8")
-        self.assertIn("resetPaxProtectionEncounter", source)
+        self.assertIn("function resetProtectionEncounter", source)
         self.assertIn("restartProtectionEncounter", source)
         self.assertIn("Restart boarding encounter", source)
         self.assertIn("resetProtectionEncounter(scenarioId", runtime)
@@ -1355,7 +1753,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
               {nowMs: 40}
             );
 
-            interaction.forcePaxCharacterStates(
+            interaction.commands.forceCharacterStates(
               "test-create-inconsistent-active-boarders",
               {nowMs: 50}
             );
@@ -1513,7 +1911,7 @@ class PaxSystemScenarioTests(unittest.TestCase):
              */
             interaction.setCharacterRuntime(characters);
             const markedAfterEarlyAttach =
-              interaction.state.recoveredCharacterRuntime === characters;
+              interaction.diagnostics.state().recoveredCharacterRuntimeAttached;
 
             currentScenario = scenario;
             scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});

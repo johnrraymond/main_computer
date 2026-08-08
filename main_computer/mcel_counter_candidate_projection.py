@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from main_computer.mcel_counter_compatibility import DEFAULT_DSL_SOURCE, DEFAULT_FIXTURE_IR
-from main_computer.mcel_counter_legacy_importer import DEFAULT_COUNTER_ROOT, import_counter_legacy_package
+from main_computer.mcel_counter_legacy_importer import DEFAULT_COUNTER_ROOT
+from main_computer.mcel_counter_reference_fixture_profile import (
+    GENERATED_CONTRACTS,
+    build_counter_projection_profile,
+)
 from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT
 from main_computer.mcel_explicit_package_candidate_projection import (
     ExplicitPackageCandidateProjectionReport,
@@ -20,46 +24,11 @@ from main_computer.mcel_explicit_package_candidate_projection import (
 )
 
 
-REPORT_SCHEMA = "mcel.counter-candidate-projection-report.v1"
-VERSION = "mcel-counter-candidate-projection-wave4"
-PROJECTION_PROFILE = "mcel.counter.explicit-projection.v1"
-GENERATED_CONTRACTS = (
-    "contracts/domain.js",
-    "contracts/intents.js",
-    "contracts/adapter.js",
-    "contracts/surface.js",
-    "contracts/layout.js",
-    "contracts/acceptance.js",
-    "contracts/observation.js",
-)
-
 CounterCandidateProjectionReport = ExplicitPackageCandidateProjectionReport
 
 
 def counter_explicit_package_projection_profile() -> ExplicitPackageProjectionProfile:
-    return ExplicitPackageProjectionProfile(
-        app_id="contract-counter",
-        projection_profile=PROJECTION_PROFILE,
-        generate_contracts=generate_counter_contracts,
-        import_package=import_counter_legacy_package,
-        generated_contracts=GENERATED_CONTRACTS,
-        default_dsl_source=DEFAULT_DSL_SOURCE,
-        default_fixture_ir=DEFAULT_FIXTURE_IR,
-        default_live_package_root=DEFAULT_COUNTER_ROOT,
-        default_candidate_root=DEFAULT_CANDIDATE_ROOT,
-        report_schema=REPORT_SCHEMA,
-        version=VERSION,
-        source_conflict_code="MCEL_COUNTER_PROJECTION_SOURCE_CONFLICT",
-        unsupported_ir_code="MCEL_COUNTER_PROJECTION_UNSUPPORTED_IR",
-        invalid_live_package_code="MCEL_COUNTER_LIVE_PACKAGE_RECORD_INVALID",
-        file_conflict_code="MCEL_COUNTER_PROJECTION_FILE_CONFLICT",
-        package_fingerprint_conflict_code="MCEL_COUNTER_CANDIDATE_PACKAGE_FINGERPRINT_CONFLICT",
-        runtime_fingerprint_conflict_code="MCEL_COUNTER_CANDIDATE_RUNTIME_FINGERPRINT_CONFLICT",
-        drift_code="MCEL_COUNTER_CANDIDATE_GENERATED_DRIFT",
-        roundtrip_conflict_code="MCEL_COUNTER_CANDIDATE_ROUNDTRIP_CONFLICT",
-        source_conflict_summary="DSL and live Counter semantics must be exact before projection.",
-        roundtrip_conflict_summary="Generated candidate package does not import back to the canonical Counter semantics.",
-    )
+    return build_counter_projection_profile(generate_contracts=generate_counter_contracts)
 
 
 def project_counter_candidate(

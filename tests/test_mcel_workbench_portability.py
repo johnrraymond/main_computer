@@ -19,12 +19,56 @@ from main_computer.mcel_workbench_expression_profile import (
     count_native_calls,
     count_opaque_callbacks,
 )
+from main_computer.mcel_profiled_package_candidate_evidence import ProfiledPackageCandidateEvidenceProfile
+from main_computer.mcel_profiled_package_candidate_projection import ProfiledPackageProjectionProfile
+from main_computer.mcel_profiled_package_ir_native_proof import ProfiledPackageIrNativeProofProfile
 from main_computer.mcel_workbench_candidate_projection import project_workbench_candidate
+from main_computer.mcel_workbench_reference_fixture_profile import (
+    APP_ID,
+    FIXTURE_ROLE,
+    build_workbench_candidate_evidence_profile,
+    build_workbench_ir_native_proof_profile,
+    build_workbench_projection_profile,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 DSL = REPO / "mcel_apps/contract-workbench/application.js"
 IR = REPO / "tests/fixtures/mcel_application_ir/contract-workbench.ir.json"
 SEMANTIC = "sha256:3450eddcd5b67687fc09ff7589221fff5ef176efcc2d54231a9b43e2268ca78e"
+
+
+def test_workbench_reference_fixture_profile_feeds_generic_projection() -> None:
+    profile = build_workbench_projection_profile()
+    assert APP_ID == "contract-workbench"
+    assert FIXTURE_ROLE == "mcel.reference-fixture.profiled-package.workbench.v1"
+    assert isinstance(profile, ProfiledPackageProjectionProfile)
+    assert profile.app_id == APP_ID
+    assert profile.projection_profile == "mcel.workbench.portable-ir-projection.v1"
+    assert profile.top_level_flags["counterSpecificExecutionPathRequired"] is False
+    assert profile.limitations["portableIrProjectionComplete"] is True
+
+
+def test_workbench_reference_fixture_profile_feeds_generic_evidence() -> None:
+    profile = build_workbench_candidate_evidence_profile()
+    assert isinstance(profile, ProfiledPackageCandidateEvidenceProfile)
+    assert profile.app_id == APP_ID
+    assert profile.expected_intent_count == 7
+    assert profile.expected_scenario_count == 14
+    assert profile.report_schema == "mcel.workbench-candidate-evidence-report.v1"
+    assert profile.live_authority == "legacy-explicit-package"
+
+
+
+def test_workbench_reference_fixture_profile_feeds_generic_ir_native_proof() -> None:
+    profile = build_workbench_ir_native_proof_profile()
+    assert isinstance(profile, ProfiledPackageIrNativeProofProfile)
+    assert profile.app_id == APP_ID
+    assert profile.report_schema == "mcel.workbench-ir-native-intent-complete-proof.v1"
+    assert profile.expected_intent_count == 7
+    assert profile.expected_scenario_count == 14
+    assert profile.expected_effect_count == 18
+    assert profile.expected_observation_coverage_count == 7
+    assert profile.projection_profile == "mcel.workbench.portable-ir-projection.v1"
 
 
 def test_workbench_definition_imports_to_valid_application_ir() -> None:

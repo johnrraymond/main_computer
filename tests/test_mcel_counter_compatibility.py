@@ -8,6 +8,8 @@ from pathlib import Path
 
 from main_computer.mcel_counter_compatibility import compare_counter_representations
 from main_computer.mcel_counter_legacy_importer import import_counter_legacy_package
+from main_computer.mcel_counter_reference_fixture_profile import build_counter_compatibility_profile
+from main_computer.mcel_explicit_package_compatibility import compare_explicit_package_representations
 
 ROOT = Path(__file__).resolve().parents[1]
 COUNTER_ROOT = ROOT / "mcel_apps" / "contract-counter"
@@ -22,6 +24,17 @@ def _copy_counter(tmp_path: Path) -> Path:
     destination = tmp_path / "contract-counter"
     shutil.copytree(COUNTER_ROOT, destination)
     return destination
+
+
+def test_counter_compatibility_uses_generic_explicit_package_profile() -> None:
+    profile = build_counter_compatibility_profile()
+
+    result = compare_explicit_package_representations(profile)
+
+    assert result.valid is True
+    assert result.report["appId"] == "contract-counter"
+    assert result.report["schema"] == "mcel.application-compatibility-report.v1"
+    assert result.report["representations"]["live"]["importer"] == "mcel.counter.legacy-importer"
 
 
 def test_live_counter_import_is_repository_derived_and_semantically_exact() -> None:

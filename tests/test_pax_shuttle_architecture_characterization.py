@@ -175,7 +175,7 @@ class PaxShuttleArchitectureCharacterizationTests(unittest.TestCase):
             );
 
             const before = scenario.view(interaction.SCENARIO_ID);
-            const reset = interaction.resetPaxProtectionEncounter(
+            const reset = interaction.commands.resetProtectionEncounter(
               "architecture-characterization",
               {nowMs: 50}
             );

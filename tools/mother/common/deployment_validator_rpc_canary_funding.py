@@ -48,8 +48,8 @@ from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
 
-_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_transaction.v10"
-_SCHEMA_VERSION = 10
+_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_transaction.v15"
+_SCHEMA_VERSION = 15
 _DIRECTORY = ("actions", "deployment-validator-rpc-canary-funding-transactions")
 _RELEASE_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_release.v2"
 _CLAIM_KIND = "main_computer.mother.deployment_validator_rpc_canary_funding_execution_claim.v1"
@@ -61,11 +61,16 @@ _MIN_RELEASE_SECONDS = 30
 _MAX_RELEASE_SECONDS = 900
 _A = "mainneta-super1"
 _C = "mainnetc-super1"
-_ALLFATHER_RPC_ROUTE_DOMAIN = "greatlibrary.io"
-_ALLFATHER_RPC_ROUTE_PREFIX_RE = re.compile(r"^(?P<prefix>[a-z0-9]+)-super(?P<ordinal>[1-9][0-9]*)$")
+_SHARED_RPC_ROUTE_DOMAIN = "greatlibrary.io"
+_SHARED_RPC_ROUTE_HOST = "mainnet-rpc.greatlibrary.io"
+_SHARED_RPC_ROUTE_URL = f"https://{_SHARED_RPC_ROUTE_HOST}"
 _A_CONTROLLER = "coolify-a"
 _C_CONTROLLER = "coolify-c"
-_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
+_SHARED_RPC_ROUTE_TARGETS = {
+    "a": ("mainneta-super1", _A_CONTROLLER),
+    "c": ("mainnetc-super1", _C_CONTROLLER),
+}
+_IMAGE = "python:3.12-alpine"
 _CAPTAIN_SECRET_ENV = "MC_MOTHER_CAPTAIN_PRIVATE_KEY"
 _TX_HASH_ENV = "MC_MOTHER_CANARY_FUNDING_TX_HASH"
 _RESULT_MARKER = "MOTHER_VALIDATOR_RPC_CANARY_FUNDING_RESULT"
@@ -211,38 +216,30 @@ def _target_controller_id(mainnet: Mapping[str, Any], node: str) -> str:
     )
 
 
-def _allfather_rpc_route_url(mainnet: Mapping[str, Any], node: str, controller_id: str) -> str:
-    nodes = mainnet.get("nodes")
-    node_record = nodes.get(node) if isinstance(nodes, Mapping) else None
-    for field in ("rpc_public_url", "public_rpc_url", "rpc_route_public_url"):
-        value = node_record.get(field) if isinstance(node_record, Mapping) else None
-        if isinstance(value, str) and re.fullmatch(r"https://[a-z0-9.-]+(?::[0-9]{1,5})?", value):
-            return value.rstrip("/")
 
-    match = _ALLFATHER_RPC_ROUTE_PREFIX_RE.fullmatch(node)
-    if match is None:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
-            f"validator RPC node {node} does not match the All Father super-node route naming contract",
-        )
+def _shared_rpc_route_host(mainnet: Mapping[str, Any]) -> str:
+    """Return the Mother-owned aggregate validator-RPC hostname.
 
-    prefix = match.group("prefix")
-    ordinal = int(match.group("ordinal"))
-    expected_prefix = "mainnet" + controller_id.rsplit("-", 1)[-1].replace("-", "")
-    if prefix != expected_prefix:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
-            f"validator RPC node {node} does not match controller {controller_id}'s All Father route prefix",
-        )
-
+    Mother owns the post-All-Father route.  All Father's per-node route names are
+    reference-only and must not be synthesized for live Mother canary funding.
+    """
+    rpc = mainnet.get("rpc_route") if isinstance(mainnet.get("rpc_route"), Mapping) else None
+    for field in ("host", "hostname", "public_host"):
+        value = rpc.get(field) if isinstance(rpc, Mapping) else None
+        if isinstance(value, str) and re.fullmatch(r"[a-z0-9.-]+", value):
+            return value
     allfather = mainnet.get("allfather")
     domain = allfather.get("public_domain") if isinstance(allfather, Mapping) else None
     if not isinstance(domain, str) or not re.fullmatch(r"[a-z0-9.-]+", domain):
-        domain = _ALLFATHER_RPC_ROUTE_DOMAIN
-    return f"https://{prefix}-rpc{ordinal}.{domain}"
+        domain = _SHARED_RPC_ROUTE_DOMAIN
+    return f"mainnet-rpc.{domain}"
 
 
-def _allfather_rpc_route_contracts(private_state: PrivateStateReadResult) -> dict[str, dict[str, Any]]:
+def _shared_rpc_route_url(mainnet: Mapping[str, Any]) -> str:
+    return f"https://{_shared_rpc_route_host(mainnet)}"
+
+
+def _shared_rpc_route_contracts(private_state: PrivateStateReadResult) -> dict[str, dict[str, Any]]:
     mainnet = _network_state(private_state)
     chain_id = mainnet.get("chain_id")
     if chain_id != 42424240:
@@ -251,19 +248,45 @@ def _allfather_rpc_route_contracts(private_state: PrivateStateReadResult) -> dic
             "Mother private state does not bind mainnet chain_id 42424240",
         )
 
-    contracts: dict[str, dict[str, Any]] = {}
-    for key, node in (("a", _A), ("c", _C)):
-        controller_id = _target_controller_id(mainnet, node)
-        rpc_url = _allfather_rpc_route_url(mainnet, node, controller_id)
-        contracts[key] = {
-            "node": node,
-            "controller_id": controller_id,
+    rpc_url = _shared_rpc_route_url(mainnet)
+    return {
+        "shared": {
+            "node": "mainnet-shared-rpc",
+            "controller_id": "aggregate",
             "rpc_url": rpc_url,
-            "route_source": "allfather-host-local-traefik-rpc-route",
+            "route_source": "mother-owned-shared-network-rpc-route",
             "expected_chain_id": chain_id,
             "required_methods": ["eth_chainId", "eth_getBalance"],
         }
-    return contracts
+    }
+
+
+def _shared_rpc_route_targets(private_state: PrivateStateReadResult) -> dict[str, dict[str, Any]]:
+    mainnet = _network_state(private_state)
+    chain_id = mainnet.get("chain_id")
+    if chain_id != 42424240:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "Mother private state does not bind mainnet chain_id 42424240",
+        )
+    host = _shared_rpc_route_host(mainnet)
+    result: dict[str, dict[str, Any]] = {}
+    for key, (node, fallback_controller_id) in _SHARED_RPC_ROUTE_TARGETS.items():
+        controller_id = _target_controller_id(mainnet, node)
+        if controller_id not in {_A_CONTROLLER, _C_CONTROLLER}:
+            controller_id = fallback_controller_id
+        result[key] = {
+            "key": key,
+            "node": node,
+            "controller_id": controller_id,
+            "route_host": host,
+            "target_host": node,
+            "target_port": 8545,
+            "target_url": f"http://{node}:8545",
+            "expected_chain_id": chain_id,
+            "dynamic_file": f"mother-mainnet-rpc-route-{controller_id}.yml",
+        }
+    return result
 
 
 def _open_url(opener: Any, request: urllib.request.Request, timeout: float):
@@ -343,7 +366,12 @@ def _rpc_post(
         if "result" in payload:
             record["result"] = payload.get("result")
     else:
+        text = raw.decode("utf-8", errors="replace")
         record["payload_type"] = type(payload).__name__
+        record["body_preview"] = text[:200]
+        if "no available server" in text.lower():
+            record["ok"] = False
+            record["route_no_backend"] = True
     return record
 
 
@@ -378,11 +406,20 @@ def _probe_rpc_route(
     )
     observations.append(chain)
     if chain.get("ok") is not True:
+        no_backend = chain.get("route_no_backend") is True
         return {
             **dict(route),
             "ok": False,
-            "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE",
-            "failure_message": f"All Father RPC route {rpc_url} did not answer eth_chainId",
+            "failure_code": (
+                "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_NO_BACKEND"
+                if no_backend
+                else "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE"
+            ),
+            "failure_message": (
+                f"Mother shared RPC route {rpc_url} reached Traefik but no healthy backend was available"
+                if no_backend
+                else f"Mother shared RPC route {rpc_url} did not answer eth_chainId"
+            ),
             "observations": observations,
         }
     try:
@@ -392,7 +429,7 @@ def _probe_rpc_route(
             **dict(route),
             "ok": False,
             "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE",
-            "failure_message": f"All Father RPC route {rpc_url} returned an invalid eth_chainId result",
+            "failure_message": f"Mother shared RPC route {rpc_url} returned an invalid eth_chainId result",
             "observations": observations,
         }
     if chain_id != expected_chain_id:
@@ -401,7 +438,7 @@ def _probe_rpc_route(
             "ok": False,
             "chain_id": chain_id,
             "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WRONG_CHAIN",
-            "failure_message": f"All Father RPC route {rpc_url} reported chain_id {chain_id}, not {expected_chain_id}",
+            "failure_message": f"Mother shared RPC route {rpc_url} reported chain_id {chain_id}, not {expected_chain_id}",
             "observations": observations,
         }
 
@@ -420,7 +457,7 @@ def _probe_rpc_route(
             "ok": False,
             "chain_id": chain_id,
             "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_BALANCE_UNREADABLE",
-            "failure_message": f"All Father RPC route {rpc_url} did not answer eth_getBalance",
+            "failure_message": f"Mother shared RPC route {rpc_url} did not answer eth_getBalance",
             "observations": observations,
         }
     try:
@@ -431,7 +468,7 @@ def _probe_rpc_route(
             "ok": False,
             "chain_id": chain_id,
             "failure_code": "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_BALANCE_UNREADABLE",
-            "failure_message": f"All Father RPC route {rpc_url} returned an invalid eth_getBalance result",
+            "failure_message": f"Mother shared RPC route {rpc_url} returned an invalid eth_getBalance result",
             "observations": observations,
         }
     return {
@@ -443,6 +480,497 @@ def _probe_rpc_route(
     }
 
 
+
+
+def _funding_quantity_to_int(value: Any, *, field: str, code: str) -> int:
+    if not (type(value) is str and re.fullmatch(r"0x[0-9a-fA-F]+", value)):
+        raise _error(code, f"{field} is not a JSON-RPC hex quantity")
+    return int(value, 16)
+
+
+def _rpc_required_result(
+    *,
+    rpc_url: str,
+    method: str,
+    params: list[Any],
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    code: str,
+    message: str,
+    observations: list[dict[str, Any]],
+) -> Any:
+    record = _rpc_post(
+        rpc_url=rpc_url,
+        method=method,
+        params=params,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    observations.append(record)
+    if (
+        record.get("ok") is not True
+        or "json_rpc_error" in record
+        or "result" not in record
+    ):
+        raise _error(code, message)
+    return record.get("result")
+
+
+def _normalize_tx_hash(value: Any, *, code: str, message: str) -> str:
+    if type(value) is str and re.fullmatch(r"0x[0-9a-fA-F]{64}", value):
+        return value.lower()
+    raise _error(code, message)
+
+
+def _raw_transaction_hex(raw: Any) -> str:
+    if isinstance(raw, (bytes, bytearray)):
+        return "0x" + bytes(raw).hex()
+    if type(raw) is str and re.fullmatch(r"0x[0-9a-fA-F]+", raw):
+        return raw
+    hex_method = getattr(raw, "hex", None)
+    if callable(hex_method):
+        value = str(hex_method())
+        return value if value.startswith("0x") else f"0x{value}"
+    raise _error(
+        "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SIGNING_FAILED",
+        "eth_account returned an unsupported raw transaction type",
+    )
+
+
+def _redacted_exception_summary(exc: BaseException) -> str:
+    text = str(exc).replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"0x[0-9a-fA-F]{64}", "0x<redacted-64-hex>", text)
+    if len(text) > 180:
+        text = text[:177] + "..."
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _transaction_address(value: str) -> str:
+    try:
+        from eth_utils import to_checksum_address  # type: ignore
+    except Exception:
+        return value
+    try:
+        return str(to_checksum_address(value))
+    except Exception:
+        return value
+
+
+def _transaction_hash_hex(value: Any, *, transaction_type: str) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        tx_hash_hex = "0x" + bytes(value).hex()
+    elif type(value) is str:
+        tx_hash_hex = value
+    else:
+        hex_method = getattr(value, "hex", None)
+        if callable(hex_method):
+            tx_hash_hex = str(hex_method())
+        else:
+            tx_hash_hex = str(value)
+
+    tx_hash_hex = tx_hash_hex.lower()
+    if re.fullmatch(r"[0-9a-f]{64}", tx_hash_hex):
+        tx_hash_hex = f"0x{tx_hash_hex}"
+    if not re.fullmatch(r"0x[0-9a-f]{64}", tx_hash_hex):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SIGNING_FAILED",
+            f"eth_account did not return a valid transaction hash for {transaction_type}",
+        )
+    return tx_hash_hex
+
+
+def _signed_transaction_parts(signed: Any, *, transaction_type: str) -> tuple[str, str, str]:
+    raw = getattr(signed, "raw_transaction", None)
+    if raw is None:
+        raw = getattr(signed, "rawTransaction", None)
+    return _raw_transaction_hex(raw), _transaction_hash_hex(
+        getattr(signed, "hash", None),
+        transaction_type=transaction_type,
+    ), transaction_type
+
+
+def _sign_capped_transfer(
+    *,
+    private_key: str,
+    expected_source: str,
+    chain_id: int,
+    nonce: int,
+    destination: str,
+    amount: int,
+    gas_limit: int,
+    max_fee_per_gas_wei: int,
+    max_priority_fee_per_gas_wei: int,
+) -> tuple[str, str, str]:
+    try:
+        from eth_account import Account  # type: ignore
+    except Exception as exc:  # pragma: no cover - depends on operator venv
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SIGNER_UNAVAILABLE",
+            "Python eth_account is unavailable in the Mother runtime",
+        ) from exc
+
+    account = Account.from_key(private_key)
+    source = str(account.address).lower()
+    if source != expected_source.lower():
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SOURCE_INVALID",
+            "captain private key does not derive the expected funding source address",
+        )
+
+    destination_for_tx = _transaction_address(destination)
+    dynamic_fee_base = {
+        "chainId": chain_id,
+        "nonce": nonce,
+        "to": destination_for_tx,
+        "value": amount,
+        "gas": gas_limit,
+        "maxFeePerGas": max_fee_per_gas_wei,
+        "maxPriorityFeePerGas": max_priority_fee_per_gas_wei,
+        "accessList": [],
+        "data": "0x",
+    }
+    legacy = {
+        "chainId": chain_id,
+        "nonce": nonce,
+        "to": destination_for_tx,
+        "value": amount,
+        "gas": gas_limit,
+        "gasPrice": max_fee_per_gas_wei,
+        "data": "0x",
+    }
+    variants: list[tuple[str, dict[str, Any]]] = [
+        ("eip1559-type-0x2", {"type": "0x2", **dynamic_fee_base}),
+        ("eip1559-type-2", {"type": 2, **dynamic_fee_base}),
+        ("eip1559-inferred", dict(dynamic_fee_base)),
+        ("legacy-capped-gas-price", legacy),
+    ]
+    failures: list[str] = []
+    for transaction_type, transaction in variants:
+        try:
+            signed = Account.sign_transaction(transaction, private_key)
+            return _signed_transaction_parts(signed, transaction_type=transaction_type)
+        except MotherDeploymentValidatorRpcCanaryFundingError:
+            raise
+        except Exception as exc:
+            failures.append(f"{transaction_type}={_redacted_exception_summary(exc)}")
+
+    raise _error(
+        "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SIGNING_FAILED",
+        "eth_account could not sign any capped funding transaction variant; "
+        + "; ".join(failures[:4]),
+    )
+
+
+
+def _execute_local_python_funding(
+    *,
+    private_key: str,
+    source: str,
+    destination: str,
+    amount: int,
+    chain_id: int,
+    rpc_url: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    on_transaction_sent: Any,
+) -> dict[str, Any]:
+    observations: list[dict[str, Any]] = []
+
+    destination_balance_before = _funding_quantity_to_int(
+        _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_getBalance",
+            params=[destination, "latest"],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE",
+            message="shared RPC did not return the destination balance before funding",
+            observations=observations,
+        ),
+        field="eth_getBalance(destination).result",
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BALANCE_UNREADABLE",
+    )
+    if destination_balance_before != 0:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_UNEXPECTED_BALANCE",
+            f"destination balance before local funding is not zero observed_balance_wei={destination_balance_before}",
+        )
+
+    latest_block = _rpc_required_result(
+        rpc_url=rpc_url,
+        method="eth_getBlockByNumber",
+        params=["latest", False],
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE",
+        message="shared RPC did not return the latest block before funding",
+        observations=observations,
+    )
+    if not isinstance(latest_block, Mapping):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BASE_FEE_UNAVAILABLE",
+            "latest block result is not an object",
+        )
+    base_fee = _funding_quantity_to_int(
+        latest_block.get("baseFeePerGas"),
+        field="eth_getBlockByNumber.latest.baseFeePerGas",
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BASE_FEE_UNAVAILABLE",
+    )
+    if base_fee > _MAX_FEE_PER_GAS_WEI:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BASE_FEE_EXCEEDS_CAP",
+            "latest base fee exceeds the capped funding maxFeePerGas",
+        )
+
+    source_balance = _funding_quantity_to_int(
+        _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_getBalance",
+            params=[source, "latest"],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SOURCE_BALANCE_UNREADABLE",
+            message="shared RPC did not return the source balance before funding",
+            observations=observations,
+        ),
+        field="eth_getBalance(source).result",
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SOURCE_BALANCE_UNREADABLE",
+    )
+    source_minimum = amount + _FUNDING_TX_MAX_FEE_WEI
+    if source_balance < source_minimum:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SOURCE_BALANCE_TOO_LOW",
+            "captain source balance is below the capped transfer plus maximum fee",
+        )
+
+    nonce = _funding_quantity_to_int(
+        _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_getTransactionCount",
+            params=[source, "pending"],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_NONCE_UNAVAILABLE",
+            message="shared RPC did not return the funding source nonce",
+            observations=observations,
+        ),
+        field="eth_getTransactionCount.result",
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_NONCE_UNAVAILABLE",
+    )
+
+    raw_transaction, expected_tx_hash, transaction_type = _sign_capped_transfer(
+        private_key=private_key,
+        expected_source=source,
+        chain_id=chain_id,
+        nonce=nonce,
+        destination=destination,
+        amount=amount,
+        gas_limit=_FUNDING_GAS_LIMIT,
+        max_fee_per_gas_wei=_MAX_FEE_PER_GAS_WEI,
+        max_priority_fee_per_gas_wei=_MAX_PRIORITY_FEE_PER_GAS_WEI,
+    )
+
+    sent_hash = _normalize_tx_hash(
+        _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_sendRawTransaction",
+            params=[raw_transaction],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_SEND_FAILED",
+            message="shared RPC rejected the locally signed funding transaction",
+            observations=observations,
+        ),
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_TRANSACTION_HASH_UNAVAILABLE",
+        message="shared RPC did not return a valid funding transaction hash",
+    )
+    on_transaction_sent()
+    if sent_hash != expected_tx_hash:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_TRANSACTION_HASH_MISMATCH",
+            "shared RPC returned a funding transaction hash that does not match the local signature",
+        )
+
+    receipt: Mapping[str, Any] | None = None
+    receipt_poll_count = 0
+    deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
+    while True:
+        receipt_poll_count += 1
+        candidate = _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_getTransactionReceipt",
+            params=[sent_hash],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECEIPT_UNAVAILABLE",
+            message="shared RPC did not answer eth_getTransactionReceipt for the funding transaction",
+            observations=observations,
+        )
+        if isinstance(candidate, Mapping):
+            receipt = candidate
+            break
+        if candidate is not None:
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECEIPT_INVALID",
+                "funding transaction receipt result is neither null nor an object",
+            )
+        if time.monotonic() >= deadline:
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECEIPT_TIMEOUT",
+                "funding transaction receipt did not appear before the wait deadline",
+            )
+        time.sleep(max(0.0, float(poll_interval_seconds)))
+
+    receipt_status = receipt.get("status") if isinstance(receipt, Mapping) else None
+    if receipt_status not in {"0x1", "0X1", 1, "1"}:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECEIPT_FAILED",
+            "funding transaction receipt did not report success",
+        )
+
+    destination_balance_after = _funding_quantity_to_int(
+        _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_getBalance",
+            params=[destination, "latest"],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BALANCE_UNREADABLE",
+            message="shared RPC did not return the destination balance after funding",
+            observations=observations,
+        ),
+        field="eth_getBalance(destination after funding).result",
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BALANCE_UNREADABLE",
+    )
+    if destination_balance_after != amount:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_A_BALANCE_NOT_VERIFIED",
+            "destination balance after funding does not equal the exact transfer amount",
+        )
+
+    return {
+        "phase": "a_funder-local-json-rpc-result",
+        "healthy": True,
+        "classification": "funded",
+        "result_channel": "local-json-rpc-eth-account",
+        "rpc_url": rpc_url,
+        "from_address": source,
+        "destination": destination,
+        "tx_hash": sent_hash,
+        "nonce": nonce,
+        "gas_limit": _FUNDING_GAS_LIMIT,
+        "transaction_type": transaction_type,
+        "base_fee_per_gas_wei": base_fee,
+        "max_fee_per_gas_wei": _MAX_FEE_PER_GAS_WEI,
+        "max_priority_fee_per_gas_wei": _MAX_PRIORITY_FEE_PER_GAS_WEI,
+        "source_balance_before_wei": source_balance,
+        "source_minimum_required_wei": source_minimum,
+        "destination_balance_before_wei": destination_balance_before,
+        "destination_balance_after_wei": destination_balance_after,
+        "receipt_status": str(receipt_status),
+        "receipt_poll_count": receipt_poll_count,
+        "observation_count": len(observations),
+        "observations": observations,
+        "proof": "Mother signed and sent the exact capped canary funding transfer through the shared RPC route using local eth_account",
+    }
+
+
+
+def _local_shared_balance_proof(
+    *,
+    spec_key: str,
+    rpc_url: str,
+    destination: str,
+    expected_balance: int | None,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    """Classify canary balance from the already-proven shared RPC route.
+
+    This replaces stale temporary-service direct-private-RPC probes. The direct
+    helper network is not equivalent to the proven coolify-proxy backend network.
+    """
+    observations: list[dict[str, Any]] = []
+    block_number = _funding_quantity_to_int(
+        _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_blockNumber",
+            params=[],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE",
+            message="shared RPC did not return a block number for canary balance classification",
+            observations=observations,
+        ),
+        field="eth_blockNumber.result",
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE",
+    )
+    balance_wei = _funding_quantity_to_int(
+        _rpc_required_result(
+            rpc_url=rpc_url,
+            method="eth_getBalance",
+            params=[destination, "latest"],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE",
+            message="shared RPC did not return the destination balance for canary balance classification",
+            observations=observations,
+        ),
+        field="eth_getBalance(destination).result",
+        code="MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_BALANCE_UNREADABLE",
+    )
+    classification = "rpc-ok" if expected_balance is None else (
+        "match" if balance_wei == expected_balance else "nonmatch"
+    )
+    healthy = expected_balance is None or balance_wei == expected_balance
+    proof: dict[str, Any] = {
+        "phase": f"{spec_key}-local-shared-rpc-result",
+        "healthy": healthy,
+        "classification": classification,
+        "result_channel": "local-json-rpc-shared-route",
+        "rpc_url": rpc_url,
+        "destination": destination,
+        "block_number": block_number,
+        "balance_wei": balance_wei,
+        "observation_count": len(observations),
+        "observations": observations,
+        "proof": "Mother classified the canary balance through the proven shared RPC route instead of a stale direct private-RPC helper network",
+    }
+    if expected_balance is not None:
+        proof["expected_balance_wei"] = expected_balance
+    if not healthy:
+        proof["reason"] = "balance-nonmatch"
+    return proof
+
+
+def _runtime_result_from_balance_proof(spec_key: str, proof: Mapping[str, Any]) -> dict[str, str]:
+    result = {
+        "step": spec_key,
+        "classification": str(proof.get("classification")),
+        "rpc_url": str(proof.get("rpc_url")),
+        "block_number": str(proof.get("block_number")),
+        "balance_wei": str(proof.get("balance_wei")),
+    }
+    if "expected_balance_wei" in proof:
+        result["expected_balance_wei"] = str(proof.get("expected_balance_wei"))
+    return result
+
+
 def _preflight_allfather_rpc_routes(
     private_state: PrivateStateReadResult,
     *,
@@ -452,10 +980,10 @@ def _preflight_allfather_rpc_routes(
     opener: Any,
 ) -> dict[str, Any]:
     try:
-        contracts = _allfather_rpc_route_contracts(private_state)
+        contracts = _shared_rpc_route_contracts(private_state)
     except MotherDeploymentValidatorRpcCanaryFundingError as exc:
         return {
-            "mode": "allfather-rpc-route-direct-json-rpc",
+            "mode": "mother-shared-rpc-route-direct-json-rpc",
             "clean": False,
             "routes": {},
             "failure": {"code": exc.code, "message": str(exc)},
@@ -485,9 +1013,9 @@ def _preflight_allfather_rpc_routes(
         if isinstance(failed, Mapping)
         else None
     )
-    clean = failure is None and set(routes) == {"a", "c"}
+    clean = failure is None and set(routes) == {"shared"}
     return {
-        "mode": "allfather-rpc-route-direct-json-rpc",
+        "mode": "mother-shared-rpc-route-direct-json-rpc",
         "clean": clean,
         "routes": routes,
         "failure": failure,
@@ -510,6 +1038,510 @@ def _preflight_allfather_rpc_routes(
     }
 
 
+
+
+
+
+def _yaml_string(value: str) -> str:
+    return json.dumps(str(value))
+
+
+def _traefik_resource_id(*parts: str) -> str:
+    raw = "-".join(str(part) for part in parts if str(part))
+    clean = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,100}", clean):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            f"unsafe Traefik resource id from {raw!r}",
+        )
+    return clean
+
+
+def _render_shared_rpc_traefik_dynamic_config(target: Mapping[str, Any]) -> str:
+    route_host = str(target["route_host"])
+    target_url = str(target["target_url"])
+    controller_id = str(target["controller_id"])
+    router_base = _traefik_resource_id("mother", "mainnet", "rpc", controller_id)
+    service_id = _traefik_resource_id("mother", "mainnet", "rpc", "svc", controller_id)
+    lines = [
+        "# Generated by Mother validator-RPC route wiring.",
+        "# Source of truth: Mother-owned shared network RPC route.",
+        "http:",
+        "  routers:",
+    ]
+    for entrypoint in ("http", "https"):
+        router_id = f"{router_base}-{entrypoint}"
+        lines.extend(
+            [
+                f"    {router_id}:",
+                "      entryPoints:",
+                f"        - {entrypoint}",
+                f"      rule: \"Host(`{route_host}`)\"",
+                f"      service: {service_id}",
+            ]
+        )
+        if entrypoint == "https":
+            lines.extend(["      tls:", "        certResolver: letsencrypt"])
+    lines.extend(
+        [
+            "  services:",
+            f"    {service_id}:",
+            "      loadBalancer:",
+            "        passHostHeader: false",
+            "        servers:",
+            f"          - url: {_yaml_string(target_url)}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+_ROUTE_WRITER_PY = r"""
+from __future__ import annotations
+
+import http.client
+import json
+import socket
+import urllib.parse
+
+TARGET_HOST = __TARGET_HOST__
+TARGET_PORT = __TARGET_PORT__
+EXPECTED_CHAIN_ID_HEX = __EXPECTED_CHAIN_ID_HEX__
+DYNAMIC_CONFIG_B64 = __DYNAMIC_CONFIG_B64__
+TARGET_PATH = __TARGET_PATH__
+
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path: str):
+        super().__init__("localhost")
+        self.socket_path = socket_path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(self.socket_path)
+        self.sock = sock
+
+def docker(method: str, path: str, body=None):
+    payload = None
+    headers = {}
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    conn = UnixHTTPConnection("/var/run/docker.sock")
+    conn.request(method, path, body=payload, headers=headers)
+    resp = conn.getresponse()
+    raw = resp.read()
+    status = int(resp.status)
+    text = raw.decode("utf-8", "replace") if raw else ""
+    if status >= 400:
+        raise SystemExit(f"docker-api-{method}-{path}-status-{status}:{text[:300]}")
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+def find_proxy_id() -> str:
+    payload = docker("GET", "/containers/json?all=1")
+    if not isinstance(payload, list):
+        raise SystemExit("docker-containers-json-not-list")
+    candidates = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("Id") or "")
+        names = [str(name or "").lstrip("/") for name in item.get("Names") or []]
+        state = str(item.get("State") or "")
+        if any(name == "coolify-proxy" or name.endswith("_coolify-proxy") or "coolify-proxy" in name for name in names):
+            candidates.append({"id": cid, "state": state})
+    if not candidates:
+        raise SystemExit("coolify-proxy-not-found")
+    running = [item for item in candidates if item["state"] == "running"]
+    return str((running[0] if running else candidates[0])["id"])
+
+def docker_exec(container_id: str, script: str) -> int:
+    payload = docker(
+        "POST",
+        f"/containers/{urllib.parse.quote(container_id, safe='')}/exec",
+        {
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Cmd": ["sh", "-lc", script],
+        },
+    )
+    if not isinstance(payload, dict) or not payload.get("Id"):
+        raise SystemExit("docker-exec-create-no-id")
+    exec_id = str(payload["Id"])
+    docker(
+        "POST",
+        f"/exec/{urllib.parse.quote(exec_id, safe='')}/start",
+        {
+            "Detach": False,
+            "Tty": False,
+        },
+    )
+    detail = docker("GET", f"/exec/{urllib.parse.quote(exec_id, safe='')}/json")
+    if not isinstance(detail, dict):
+        raise SystemExit("docker-exec-inspect-not-object")
+    code = detail.get("ExitCode")
+    return int(code) if code is not None else 999
+
+proxy_id = find_proxy_id()
+rpc_payload = '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
+backend_url = f"http://{TARGET_HOST}:{int(TARGET_PORT)}"
+script = (
+    "set -eu\n"
+    "test -d /traefik/dynamic && test -w /traefik/dynamic\n"
+    f"out=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data='{rpc_payload}' '{backend_url}' 2>/dev/null || true)\n"
+    "printf '%s' \"$out\" | grep -q '\"result\"[[:space:]]*:[[:space:]]*\""
+    + EXPECTED_CHAIN_ID_HEX
+    + "\"'\n"
+    f"printf '%s' '{DYNAMIC_CONFIG_B64}' | base64 -d > '{TARGET_PATH}.tmp'\n"
+    f"mv '{TARGET_PATH}.tmp' '{TARGET_PATH}'\n"
+    f"chmod 0644 '{TARGET_PATH}'\n"
+    f"test -s '{TARGET_PATH}'\n"
+)
+code = docker_exec(proxy_id, script)
+if code != 0:
+    raise SystemExit(f"mother-rpc-route-write-failed-exit-{code}")
+raise SystemExit(0)
+"""
+
+
+def _route_writer_script(target: Mapping[str, Any]) -> str:
+    dynamic_config = _render_shared_rpc_traefik_dynamic_config(target)
+    dynamic_config_b64 = base64.b64encode(dynamic_config.encode("utf-8")).decode("ascii")
+    target_path = f"/traefik/dynamic/{target['dynamic_file']}"
+    return (
+        _ROUTE_WRITER_PY
+        .replace("__TARGET_HOST__", repr(str(target["target_host"])))
+        .replace("__TARGET_PORT__", repr(int(target["target_port"])))
+        .replace("__EXPECTED_CHAIN_ID_HEX__", repr(hex(int(target["expected_chain_id"]))))
+        .replace("__DYNAMIC_CONFIG_B64__", repr(dynamic_config_b64))
+        .replace("__TARGET_PATH__", repr(target_path))
+    )
+
+
+def _route_writer_compose(name: str, target: Mapping[str, Any]) -> str:
+    script = _route_writer_script(target)
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    command = f"""mkdir -p /run/mother-helper
+printf '%s' '{encoded}' | base64 -d > /run/mother-helper/route_writer.py
+chmod 0700 /run/mother-helper/route_writer.py
+sleep 900
+"""
+    healthcheck = "python /run/mother-helper/route_writer.py"
+    text = (
+        f"name: {name}\n\n"
+        "services:\n"
+        f"  {name}:\n"
+        "    image: python:3.12-alpine\n"
+        '    restart: "no"\n'
+        "    read_only: true\n"
+        "    tmpfs:\n"
+        "      - /run/mother-helper:size=256k,mode=0700\n"
+        "    volumes:\n"
+        "      - /var/run/docker.sock:/var/run/docker.sock\n"
+        "    entrypoint:\n"
+        "      - /bin/sh\n"
+        "      - -ec\n"
+        "    command:\n"
+        "      - |\n"
+        + "\n".join(f"        {line}" for line in command.splitlines())
+        + "\n"
+        "    healthcheck:\n"
+        "      test:\n"
+        "        - CMD-SHELL\n"
+        f"        - {healthcheck}\n"
+        "      interval: 3s\n"
+        "      timeout: 12s\n"
+        "      retries: 20\n"
+        "      start_period: 4s\n"
+        "    labels:\n"
+        "      main_computer.mother.stage: shared-rpc-route-wiring\n"
+        f"      main_computer.mother.route_host: {target['route_host']}\n"
+    )
+    parsed = yaml.safe_load(text)
+    services = parsed.get("services") if isinstance(parsed, Mapping) else None
+    service = services.get(name) if isinstance(services, Mapping) else None
+    if not (
+        isinstance(service, Mapping)
+        and list(services) == [name]
+        and service.get("image") == "python:3.12-alpine"
+        and service.get("entrypoint") == ["/bin/sh", "-ec"]
+        and service.get("healthcheck", {}).get("test") == ["CMD-SHELL", healthcheck]
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "compiled route writer Compose is malformed",
+        )
+    if "ports:" in text or "ghcr.io/foundry-rs/foundry" in text:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "compiled route writer Compose attempts a forbidden capability",
+        )
+    return text
+
+
+def _route_writer_application_body(controller: Mapping[str, Any], name: str, compose: str) -> dict[str, Any]:
+    return {
+        "project_uuid": controller["project_uuid"],
+        "server_uuid": controller["server_uuid"],
+        "environment_name": "mainnet",
+        "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "name": name,
+        "description": "Ephemeral Mother shared validator-RPC Traefik route writer",
+        "instant_deploy": False,
+    }
+
+
+
+_PROXY_RPC_VERIFIER_PY = r"""
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import re
+import shlex
+import socket
+import time
+import urllib.parse
+
+MARKER = __MARKER__
+STEP = __STEP__
+MODE = __MODE__
+TARGET_HOST = __TARGET_HOST__
+TARGET_PORT = __TARGET_PORT__
+DESTINATION = __DESTINATION__
+AMOUNT = __AMOUNT__
+TX_HASH_ENV = __TX_HASH_ENV__
+
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path: str):
+        super().__init__("localhost")
+        self.socket_path = socket_path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(self.socket_path)
+        self.sock = sock
+
+def docker(method: str, path: str, body=None):
+    payload = None
+    headers = {}
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    conn = UnixHTTPConnection("/var/run/docker.sock")
+    conn.request(method, path, body=payload, headers=headers)
+    resp = conn.getresponse()
+    raw = resp.read()
+    status = int(resp.status)
+    text = raw.decode("utf-8", "replace") if raw else ""
+    if status >= 400:
+        raise SystemExit(f"docker-api-{method}-{path}-status-{status}:{text[:300]}")
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+def find_proxy_id() -> str:
+    payload = docker("GET", "/containers/json?all=1")
+    if not isinstance(payload, list):
+        raise SystemExit("docker-containers-json-not-list")
+    candidates = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("Id") or "")
+        names = [str(name or "").lstrip("/") for name in item.get("Names") or []]
+        state = str(item.get("State") or "")
+        if any(name == "coolify-proxy" or name.endswith("_coolify-proxy") or "coolify-proxy" in name for name in names):
+            candidates.append({"id": cid, "state": state})
+    if not candidates:
+        raise SystemExit("coolify-proxy-not-found")
+    running = [item for item in candidates if item["state"] == "running"]
+    return str((running[0] if running else candidates[0])["id"])
+
+def docker_exec(container_id: str, script: str) -> int:
+    payload = docker(
+        "POST",
+        f"/containers/{urllib.parse.quote(container_id, safe='')}/exec",
+        {
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Cmd": ["sh", "-lc", script],
+        },
+    )
+    if not isinstance(payload, dict) or not payload.get("Id"):
+        raise SystemExit("docker-exec-create-no-id")
+    exec_id = str(payload["Id"])
+    docker(
+        "POST",
+        f"/exec/{urllib.parse.quote(exec_id, safe='')}/start",
+        {
+            "Detach": False,
+            "Tty": False,
+        },
+    )
+    detail = docker("GET", f"/exec/{urllib.parse.quote(exec_id, safe='')}/json")
+    if not isinstance(detail, dict):
+        raise SystemExit("docker-exec-inspect-not-object")
+    code = detail.get("ExitCode")
+    return int(code) if code is not None else 999
+
+def q(value: str) -> str:
+    return shlex.quote(value)
+
+def marker(classification: str, **fields: object) -> None:
+    parts = [MARKER, f"step={STEP}", f"classification={classification}"]
+    for key, value in fields.items():
+        text = str(value)
+        if re.fullmatch(r"[A-Za-z0-9_.:/-]{0,256}", text):
+            parts.append(f"{key}={text}")
+    print(" ".join(parts), flush=True)
+
+def balance_payload() -> str:
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_getBalance", "params": [DESTINATION, "latest"]})
+
+def receipt_payload(tx_hash: str) -> str:
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionReceipt", "params": [tx_hash]})
+
+proxy_id = find_proxy_id()
+backend_url = f"http://{TARGET_HOST}:{int(TARGET_PORT)}"
+expected_balance_hex = hex(int(AMOUNT))
+
+tx_hash = os.environ.get(TX_HASH_ENV, "").lower()
+if MODE == "funded" and not re.fullmatch(r"0x[0-9a-f]{64}", tx_hash):
+    marker("bad-tx-hash", rpc_url=backend_url)
+    raise SystemExit(70)
+
+receipt_check = ""
+if MODE == "funded":
+    receipt = q(receipt_payload(tx_hash))
+    receipt_check = f'''
+receipt_ok=0
+deadline=$(( $(date +%s) + 120 ))
+while [ "$(date +%s)" -le "$deadline" ]; do
+  out=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data={receipt} {q(backend_url)} 2>/dev/null || true)
+  if printf '%s' "$out" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"0x1"'; then
+    receipt_ok=1
+    break
+  fi
+  sleep 3
+done
+test "$receipt_ok" = "1"
+'''
+
+balance = q(balance_payload())
+script = f'''
+set -eu
+{receipt_check}
+out=$(wget -q -T 8 -O- --header='Content-Type: application/json' --post-data={balance} {q(backend_url)} 2>/dev/null || true)
+printf '%s' "$out" | grep -Eq '"result"[[:space:]]*:[[:space:]]*"{expected_balance_hex}"'
+'''
+code = docker_exec(proxy_id, script)
+if code != 0:
+    marker("proxy-rpc-error", rpc_url=backend_url, exit_code=code)
+    raise SystemExit(code)
+
+if MODE == "funded":
+    marker("verified", rpc_url=backend_url, tx_hash=tx_hash, balance_wei=AMOUNT, expected_balance_wei=AMOUNT)
+else:
+    marker("match", rpc_url=backend_url, balance_wei=AMOUNT, expected_balance_wei=AMOUNT)
+raise SystemExit(0)
+"""
+
+
+def _proxy_rpc_verifier_command(
+    *,
+    step: str,
+    mode: str,
+    target_host: str,
+    target_port: int,
+    destination: str,
+    amount: int,
+) -> str:
+    script = (
+        _PROXY_RPC_VERIFIER_PY
+        .replace("__MARKER__", repr(_RESULT_MARKER))
+        .replace("__STEP__", repr(step))
+        .replace("__MODE__", repr(mode))
+        .replace("__TARGET_HOST__", repr(target_host))
+        .replace("__TARGET_PORT__", repr(int(target_port)))
+        .replace("__DESTINATION__", repr(destination))
+        .replace("__AMOUNT__", repr(int(amount)))
+        .replace("__TX_HASH_ENV__", repr(_TX_HASH_ENV))
+    )
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    return f"""mkdir -p /run/mother-helper
+printf '%s' '{encoded}' | base64 -d > /run/mother-helper/proxy_rpc_verifier.py
+chmod 0700 /run/mother-helper/proxy_rpc_verifier.py
+python /run/mother-helper/proxy_rpc_verifier.py
+exec sleep 900
+"""
+
+
+def _proxy_verifier_compose(name: str, command: str) -> str:
+    healthcheck = 'test "$(cat /proc/1/comm)" = "sleep"'
+    text = (
+        f"name: {name}\n\n"
+        "services:\n"
+        f"  {name}:\n"
+        "    image: python:3.12-alpine\n"
+        '    restart: "no"\n'
+        "    read_only: true\n"
+        "    tmpfs:\n"
+        "      - /run/mother-helper:size=256k,mode=0700\n"
+        "    volumes:\n"
+        "      - /var/run/docker.sock:/var/run/docker.sock\n"
+        "    entrypoint:\n"
+        "      - /bin/sh\n"
+        "      - -ec\n"
+        "    command:\n"
+        "      - |\n"
+        + "\n".join(f"        {line}" for line in command.splitlines())
+        + "\n"
+        "    healthcheck:\n"
+        "      test:\n"
+        "        - CMD-SHELL\n"
+        f"        - {healthcheck}\n"
+        "      interval: 2s\n"
+        "      timeout: 5s\n"
+        "      retries: 20\n"
+        "      start_period: 2s\n"
+        "    labels:\n"
+        "      main_computer.mother.stage: validator-rpc-canary-funding-proxy-verifier\n"
+        f"      main_computer.mother.canary: {name}\n"
+    )
+    parsed = yaml.safe_load(text)
+    services = parsed.get("services") if isinstance(parsed, Mapping) else None
+    service = services.get(name) if isinstance(services, Mapping) else None
+    if not (
+        isinstance(service, Mapping)
+        and list(services) == [name]
+        and service.get("image") == "python:3.12-alpine"
+        and service.get("entrypoint") == ["/bin/sh", "-ec"]
+        and service.get("volumes") == ["/var/run/docker.sock:/var/run/docker.sock"]
+        and type(service.get("command")) is list
+        and len(service["command"]) == 1
+        and "exec sleep " in str(service["command"][0])
+        and isinstance(service.get("healthcheck"), Mapping)
+        and service["healthcheck"].get("test") == ["CMD-SHELL", healthcheck]
+    ):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
+            "compiled proxy verifier Compose does not provide the exact status-health result channel",
+        )
+    forbidden = ("ports:", "secrets:", "traefik.", "0.0.0.0:")
+    if any(item in text for item in forbidden):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_INVALID",
+            "compiled proxy verifier Compose attempts a forbidden capability",
+        )
+    return text
 
 
 
@@ -596,18 +1628,8 @@ def _marker_line(step: str, classification: str, **fields: object) -> str:
     return " ".join(parts)
 
 
-def _cast_cli_probe_script() -> str:
-    return f"""set -eu
-if cast --version >/dev/null 2>&1; then
-  printf '%s\n' "{_marker_line("a_cast_cli_probe", "cast-ok")}"
-  exec sleep 900
-fi
-printf '%s\n' "{_marker_line("a_cast_cli_probe", "cast-unavailable")}"
-exit 40
-"""
 
-
-def _cast_balance_script(
+def _python_rpc_balance_script(
     *,
     step: str,
     host: str,
@@ -615,54 +1637,62 @@ def _cast_balance_script(
     expected_balance: int | None,
 ) -> str:
     rpc = f"http://{host}:8545"
-    expected = "" if expected_balance is None else str(expected_balance)
-    match_block = (
-        """
-if [ "$BALANCE_WEI" = "$EXPECTED_BALANCE" ]; then
-  printf '%s step=%s classification=match rpc_url=%s block_number=%s balance_wei=%s expected_balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$BLOCK_NUMBER" "$BALANCE_WEI" "$EXPECTED_BALANCE"
-  exec sleep 900
-fi
-printf '%s step=%s classification=nonmatch rpc_url=%s block_number=%s balance_wei=%s expected_balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$BLOCK_NUMBER" "$BALANCE_WEI" "$EXPECTED_BALANCE"
-exit 45
-"""
-        if expected_balance is not None
-        else """
-printf '%s step=%s classification=rpc-ok rpc_url=%s block_number=%s balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$BLOCK_NUMBER" "$BALANCE_WEI"
+    expected = "None" if expected_balance is None else str(expected_balance)
+    return f"""set -eu
+python - <<'PY'
+import json
+import sys
+import urllib.request
+
+MARKER = {json.dumps(_RESULT_MARKER)}
+STEP = {json.dumps(step)}
+RPC = {json.dumps(rpc)}
+DESTINATION = {json.dumps(destination)}
+EXPECTED_BALANCE = {expected}
+
+def rpc(method, params):
+    body = json.dumps({{"jsonrpc": "2.0", "id": 1, "method": method, "params": params}}).encode("utf-8")
+    request = urllib.request.Request(
+        RPC,
+        data=body,
+        headers={{"Content-Type": "application/json", "Accept": "application/json"}},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if "error" in payload:
+        raise RuntimeError(str(payload["error"]))
+    return payload.get("result")
+
+def quantity(value):
+    if not isinstance(value, str) or not value.startswith("0x"):
+        raise ValueError("not a hex quantity")
+    return int(value, 16)
+
+try:
+    block_number = quantity(rpc("eth_blockNumber", []))
+    balance_wei = quantity(rpc("eth_getBalance", [DESTINATION, "latest"]))
+except Exception:
+    print("%s step=%s classification=rpc-error rpc_url=%s" % (MARKER, STEP, RPC), flush=True)
+    raise SystemExit(41)
+
+if EXPECTED_BALANCE is None:
+    print("%s step=%s classification=rpc-ok rpc_url=%s block_number=%s balance_wei=%s" % (MARKER, STEP, RPC, block_number, balance_wei), flush=True)
+    raise SystemExit(0)
+
+if balance_wei == EXPECTED_BALANCE:
+    print("%s step=%s classification=match rpc_url=%s block_number=%s balance_wei=%s expected_balance_wei=%s" % (MARKER, STEP, RPC, block_number, balance_wei, EXPECTED_BALANCE), flush=True)
+    raise SystemExit(0)
+
+print("%s step=%s classification=nonmatch rpc_url=%s block_number=%s balance_wei=%s expected_balance_wei=%s" % (MARKER, STEP, RPC, block_number, balance_wei, EXPECTED_BALANCE), flush=True)
+raise SystemExit(45)
+PY
 exec sleep 900
 """
-    )
-    return f"""set -eu
-MARKER="{_RESULT_MARKER}"
-STEP="{step}"
-RPC="{rpc}"
-DESTINATION="{destination}"
-EXPECTED_BALANCE="{expected}"
-
-if ! cast --version >/dev/null 2>&1; then
-  printf '%s step=%s classification=cast-unavailable rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"
-  exit 40
-fi
-if ! BLOCK_NUMBER="$(cast block-number --rpc-url "$RPC" 2>&1)"; then
-  printf '%s step=%s classification=rpc-error command=block-number rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"
-  exit 41
-fi
-BLOCK_NUMBER="$(printf '%s' "$BLOCK_NUMBER" | tr -d '\\r\\n')"
-case "$BLOCK_NUMBER" in
-  ''|*[!0-9]*) printf '%s step=%s classification=bad-block-number rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"; exit 42 ;;
-esac
-if ! BALANCE_WEI="$(cast balance "$DESTINATION" --rpc-url "$RPC" 2>&1)"; then
-  printf '%s step=%s classification=rpc-error command=balance rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"
-  exit 43
-fi
-BALANCE_WEI="$(printf '%s' "$BALANCE_WEI" | tr -d '\\r\\n')"
-case "$BALANCE_WEI" in
-  ''|*[!0-9]*) printf '%s step=%s classification=bad-balance rpc_url=%s block_number=%s\\n' "$MARKER" "$STEP" "$RPC" "$BLOCK_NUMBER"; exit 44 ;;
-esac
-{match_block}"""
 
 
 def _rpc_balance_probe_script(host: str, destination: str) -> str:
-    return _cast_balance_script(
+    return _python_rpc_balance_script(
         step="a_balance_rpc_probe",
         host=host,
         destination=destination,
@@ -671,7 +1701,7 @@ def _rpc_balance_probe_script(host: str, destination: str) -> str:
 
 
 def _rpc_balance_equals_script(host: str, destination: str, expected_balance: int) -> str:
-    return _cast_balance_script(
+    return _python_rpc_balance_script(
         step=(
             "a_zero_balance_classifier"
             if expected_balance == 0
@@ -687,84 +1717,29 @@ def _balance_classifier_script(host: str, destination: str, expected_balance: in
     return _rpc_balance_equals_script(host, destination, expected_balance)
 
 
-def _decimal_ge_function() -> str:
-    return """decimal_ge() {
-  a="$(printf '%s' "$1" | sed 's/^0*//')"
-  b="$(printf '%s' "$2" | sed 's/^0*//')"
-  [ -n "$a" ] || a=0
-  [ -n "$b" ] || b=0
-  if [ "${#a}" -gt "${#b}" ]; then return 0; fi
-  if [ "${#a}" -lt "${#b}" ]; then return 1; fi
-  [ "$a" = "$b" ] || [ "$a" \\> "$b" ]
-}"""
-
-
-def _funder_script(source: str, destination: str, amount: int) -> str:
-    tx_hash_pattern = "0x" + ("?" * 64)
-    return f"""set -eu
-{_decimal_ge_function()}
-MARKER="{_RESULT_MARKER}"
-STEP="a_funder"
-RPC="http://{_A}:8545"
-SOURCE="{source}"
-DESTINATION="{destination}"
-AMOUNT="{amount}"
-MAX_FEE_PER_GAS_WEI="{_MAX_FEE_PER_GAS_WEI}"
-MAX_PRIORITY_FEE_PER_GAS_WEI="{_MAX_PRIORITY_FEE_PER_GAS_WEI}"
-SOURCE_MINIMUM_WEI="{amount + _FUNDING_TX_MAX_FEE_WEI}"
-KEY="${{{_CAPTAIN_SECRET_ENV}:?missing {_CAPTAIN_SECRET_ENV}}}"
-
-FROM="$(cast wallet address "$KEY" | tr '[:upper:]' '[:lower:]')"
-test "$FROM" = "$SOURCE"
-DESTINATION_BALANCE_WEI="$(cast balance "$DESTINATION" --rpc-url "$RPC" | tr -d '\\r\\n')"
-case "$DESTINATION_BALANCE_WEI" in ''|*[!0-9]*) printf '%s step=%s classification=bad-destination-balance rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"; exit 50 ;; esac
-if [ "$DESTINATION_BALANCE_WEI" != "0" ]; then
-  printf '%s step=%s classification=destination-not-zero rpc_url=%s balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$DESTINATION_BALANCE_WEI"
-  exit 51
-fi
-LATEST_BLOCK="$(cast rpc eth_getBlockByNumber latest false --rpc-url "$RPC")"
-case "$LATEST_BLOCK" in *baseFeePerGas*) ;; *) printf '%s step=%s classification=missing-base-fee rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"; exit 52 ;; esac
-BASE_FEE_WEI="$(cast base-fee latest --rpc-url "$RPC" | tr -d '\\r\\n')"
-case "$BASE_FEE_WEI" in ''|*[!0-9]*) printf '%s step=%s classification=bad-base-fee rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"; exit 53 ;; esac
-decimal_ge "$MAX_FEE_PER_GAS_WEI" "$BASE_FEE_WEI" || {{ printf '%s step=%s classification=base-fee-exceeds-cap rpc_url=%s base_fee_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$BASE_FEE_WEI"; exit 54; }}
-SOURCE_BALANCE_WEI="$(cast balance "$SOURCE" --rpc-url "$RPC" | tr -d '\\r\\n')"
-case "$SOURCE_BALANCE_WEI" in ''|*[!0-9]*) printf '%s step=%s classification=bad-source-balance rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"; exit 55 ;; esac
-decimal_ge "$SOURCE_BALANCE_WEI" "$SOURCE_MINIMUM_WEI" || {{ printf '%s step=%s classification=source-balance-too-low rpc_url=%s source_balance_wei=%s required_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$SOURCE_BALANCE_WEI" "$SOURCE_MINIMUM_WEI"; exit 56; }}
-TX_HASH="$(cast send "$DESTINATION" --value "$AMOUNT" --gas-limit {_FUNDING_GAS_LIMIT} --gas-price "$MAX_FEE_PER_GAS_WEI" --priority-gas-price "$MAX_PRIORITY_FEE_PER_GAS_WEI" --private-key "$KEY" --rpc-url "$RPC" --async | tr -d '\\r\\n')"
-case "$TX_HASH" in {tx_hash_pattern}) ;; *) printf '%s step=%s classification=bad-tx-hash rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"; exit 57 ;; esac
-STATUS="$(cast receipt "$TX_HASH" status --rpc-url "$RPC" | tr -d '\\r\\n')"
-test "$STATUS" = "1" || test "$STATUS" = "0x1" || {{ printf '%s step=%s classification=receipt-failed rpc_url=%s tx_hash=%s status=%s\\n' "$MARKER" "$STEP" "$RPC" "$TX_HASH" "$STATUS"; exit 58; }}
-POST_BALANCE_WEI="$(cast balance "$DESTINATION" --rpc-url "$RPC" | tr -d '\\r\\n')"
-test "$POST_BALANCE_WEI" = "$AMOUNT" || {{ printf '%s step=%s classification=post-balance-not-exact rpc_url=%s tx_hash=%s balance_wei=%s expected_balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$TX_HASH" "$POST_BALANCE_WEI" "$AMOUNT"; exit 59; }}
-printf '%s step=%s classification=funded rpc_url=%s tx_hash=%s balance_wei=%s expected_balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$TX_HASH" "$POST_BALANCE_WEI" "$AMOUNT"
-exec sleep 900
-"""
-
-
 def _funded_verifier_script(source: str, destination: str, amount: int) -> str:
-    tx_hash_pattern = "0x" + ("?" * 64)
-    return f"""set -eu
-MARKER="{_RESULT_MARKER}"
-STEP="c_funded_verifier"
-RPC="http://{_C}:8545"
-SOURCE="{source}"
-DESTINATION="{destination}"
-AMOUNT="{amount}"
-TX_HASH="${{{_TX_HASH_ENV}:?missing {_TX_HASH_ENV}}}"
-
-case "$TX_HASH" in {tx_hash_pattern}) ;; *) printf '%s step=%s classification=bad-tx-hash rpc_url=%s\\n' "$MARKER" "$STEP" "$RPC"; exit 70 ;; esac
-STATUS="$(cast receipt "$TX_HASH" status --rpc-url "$RPC" | tr -d '\\r\\n')"
-test "$STATUS" = "1" || test "$STATUS" = "0x1" || {{ printf '%s step=%s classification=receipt-failed rpc_url=%s tx_hash=%s status=%s\\n' "$MARKER" "$STEP" "$RPC" "$TX_HASH" "$STATUS"; exit 71; }}
-BALANCE_WEI="$(cast balance "$DESTINATION" --rpc-url "$RPC" | tr -d '\\r\\n')"
-case "$BALANCE_WEI" in ''|*[!0-9]*) printf '%s step=%s classification=bad-balance rpc_url=%s tx_hash=%s\\n' "$MARKER" "$STEP" "$RPC" "$TX_HASH"; exit 72 ;; esac
-test "$BALANCE_WEI" = "$AMOUNT" || {{ printf '%s step=%s classification=balance-not-exact rpc_url=%s tx_hash=%s balance_wei=%s expected_balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$TX_HASH" "$BALANCE_WEI" "$AMOUNT"; exit 73; }}
-printf '%s step=%s classification=verified rpc_url=%s tx_hash=%s balance_wei=%s expected_balance_wei=%s\\n' "$MARKER" "$STEP" "$RPC" "$TX_HASH" "$BALANCE_WEI" "$AMOUNT"
-exec sleep 900
-"""
+    del source  # source is bound in the release; C proof only needs receipt + exact balance.
+    return _proxy_rpc_verifier_command(
+        step="c_funded_verifier",
+        mode="funded",
+        target_host=_C,
+        target_port=8545,
+        destination=destination,
+        amount=amount,
+    )
 
 
 def _exact_balance_verifier_script(host: str, destination: str, amount: int) -> str:
-    return _cast_balance_script(
+    if host == _C:
+        return _proxy_rpc_verifier_command(
+            step="c_reconciled_verifier",
+            mode="reconciled",
+            target_host=_C,
+            target_port=8545,
+            destination=destination,
+            amount=amount,
+        )
+    return _python_rpc_balance_script(
         step=(
             "a_post_funding_verifier"
             if host == _A
@@ -779,6 +1754,7 @@ def _exact_balance_verifier_script(host: str, destination: str, amount: int) -> 
 def _verifier_script(destination: str, amount: int) -> str:
     """Exact-balance reconciliation proof used when no transfer was required."""
     return _exact_balance_verifier_script(_C, destination, amount)
+
 
 
 def _compose_record(text: str) -> dict[str, Any]:
@@ -922,8 +1898,9 @@ def build_validator_rpc_canary_funding_transaction(
         command: str,
         proof: str,
         secret_binding: bool = False,
+        proxy_verifier: bool = False,
     ) -> tuple[str, dict[str, Any]]:
-        compose = _compose(name, command)
+        compose = _proxy_verifier_compose(name, command) if proxy_verifier else _compose(name, command)
         controller = controllers[controller_id]
         body = _application_body(controller, name, compose)
         return key, {
@@ -944,23 +1921,13 @@ def build_validator_rpc_canary_funding_transaction(
 
     applications = dict([
         spec(
-            "a_cast_cli_probe",
-            controller_id=_A_CONTROLLER,
-            name=f"{canary_name}-probe-cast-cli-a",
-            command=_cast_cli_probe_script(),
-            proof=(
-                "the Foundry helper image can execute cast before any RPC or funding "
-                "boundary is evaluated"
-            ),
-        ),
-        spec(
             "a_balance_rpc_probe",
             controller_id=_A_CONTROLLER,
             name=f"{canary_name}-probe-balance-rpc-a",
             command=_rpc_balance_probe_script(_A, destination),
             proof=(
-                "A private RPC answers cast balance with a parseable decimal quantity "
-                "before any balance classification or funding service is started"
+                "A private RPC answers a Python JSON-RPC balance probe with a parseable quantity "
+                "before any balance classification or local funding is started"
             ),
         ),
         spec(
@@ -978,17 +1945,6 @@ def build_validator_rpc_canary_funding_transaction(
             proof="A private RPC reports a zero destination balance immediately before funding",
         ),
         spec(
-            "a_funder",
-            controller_id=_A_CONTROLLER,
-            name=f"{canary_name}-fund-a",
-            command=_funder_script(captain["address"], destination, amount),
-            proof=(
-                "the exact capped transfer receipt succeeded on A and the destination "
-                "balance became exact before PID 1 transitioned to sleep"
-            ),
-            secret_binding=True,
-        ),
-        spec(
             "a_post_funding_verifier",
             controller_id=_A_CONTROLLER,
             name=f"{canary_name}-verify-funded-a",
@@ -1004,27 +1960,30 @@ def build_validator_rpc_canary_funding_transaction(
             name=f"{canary_name}-verify-funded-c",
             command=_funded_verifier_script(captain["address"], destination, amount),
             proof=(
-                "C independently finds exactly one recent matching captain transfer, "
-                "verifies its successful receipt, and verifies the exact destination balance"
+                "C independently verifies the funding receipt and exact destination balance "
+                "through coolify-proxy against the local C Besu RPC backend"
             ),
+            proxy_verifier=True,
         ),
         spec(
             "c_reconciled_verifier",
             controller_id=_C_CONTROLLER,
             name=f"{canary_name}-verify-reconciled-c",
             command=_verifier_script(destination, amount),
-            proof="C independently verifies the exact pre-existing destination balance",
+            proof=(
+                "C independently verifies the exact pre-existing destination balance "
+                "through coolify-proxy against the local C Besu RPC backend"
+            ),
+            proxy_verifier=True,
         ),
     ])
 
     future_mutations: list[dict[str, Any]] = []
     ordinal = 0
     for key in (
-        "a_cast_cli_probe",
         "a_balance_rpc_probe",
         "a_exact_balance_classifier",
         "a_zero_balance_classifier",
-        "a_funder",
         "a_post_funding_verifier",
         "c_funded_verifier",
         "c_reconciled_verifier",
@@ -1044,20 +2003,6 @@ def build_validator_rpc_canary_funding_transaction(
             "success_statuses": [200, 201, 202],
             "bind_result": "service_uuid",
         })
-        if key == "a_funder":
-            ordinal += 1
-            future_mutations.append({
-                "ordinal": ordinal,
-                "conditional_service": key,
-                "mutation_id": f"{name}.bind-captain-secret",
-                "controller_id": app["controller_id"],
-                "method": "POST",
-                "endpoint_template": "/api/v1/services/${result.service_uuid}/envs",
-                "secret_source_field": captain["private_state_field"],
-                "environment_key": _CAPTAIN_SECRET_ENV,
-                "value_in_transaction": False,
-                "success_statuses": [200, 201, 202],
-            })
         if key == "c_funded_verifier":
             ordinal += 1
             future_mutations.append({
@@ -1100,7 +2045,7 @@ def build_validator_rpc_canary_funding_transaction(
         "created_at": _timestamp(created_at),
         "network": "mainnet",
         "mother_binding": _binding(private_state),
-        "staged_scope": "offline-exact-capped-validator-rpc-canary-funding-runtime-marker-first-v4",
+        "staged_scope": "offline-exact-capped-validator-rpc-canary-funding-local-python-v7",
         "coolify_transport": {
             "resource_api": "services",
             "create_endpoint": "/api/v1/services",
@@ -1141,7 +2086,7 @@ def build_validator_rpc_canary_funding_transaction(
             "allowed_pre_execution_balances_wei": [0, amount],
         },
         "funding_policy": {
-            "transaction_type": "eip1559",
+            "transaction_type": "capped-local-python-signing",
             "transfer_value_wei": amount,
             "transfer_value_cap_wei": amount,
             "base_fee_per_gas_required": True,
@@ -1160,17 +2105,30 @@ def build_validator_rpc_canary_funding_transaction(
             "failed_started_funder_without_health_proof_is_chain_state_unknown": True,
         },
         "applications": applications,
+        "rpc_route": {
+            "mode": "mother-owned-shared-network-rpc-route",
+            "hostname": _shared_rpc_route_host(_network_state(private_state)),
+            "https_url": _shared_rpc_route_url(_network_state(private_state)),
+            "controller_local_backends": _shared_rpc_route_targets(private_state),
+            "route_wiring_authorized": True,
+            "proof_required_before_funding": True,
+        },
         "future_execution_plan": {
+            "route_wiring": [
+                "write the Mother-owned shared RPC route on A through coolify-proxy",
+                "write the Mother-owned shared RPC route on C through coolify-proxy",
+                "prove the shared public RPC route answers before any funding helper starts",
+            ],
             "classification": [
                 "prove exact balance on A through one healthy classifier",
                 "otherwise prove zero balance on A through one healthy classifier",
                 "fail closed if neither classifier becomes healthy",
             ],
             "funded_path": [
-                "start the exact capped A funder only after zero classification",
-                "accept A funder completion only from the committed healthy service state",
-                "require a separate A exact-balance verifier after the funder completes",
-                "accept C completion only after independent transfer discovery, receipt verification, and exact balance verification",
+                "locally sign and send the exact capped EIP-1559 transfer only after zero classification",
+                "accept local funder completion only after sendRawTransaction, receipt success, and exact shared-route balance proof",
+                "require a separate A exact-balance verifier after the local funder completes",
+                "accept C completion only after independent receipt and exact balance verification",
             ],
             "reconciled_path": [
                 "do not bind the captain key or start the funder",
@@ -1188,7 +2146,7 @@ def build_validator_rpc_canary_funding_transaction(
                 "source_field": captain["private_state_field"],
                 "expected_address": captain["address"],
                 "value_in_transaction": False,
-                "bound_only_after_zero_balance_health_proof": True,
+                "used_only_after_zero_balance_health_proof": True,
             }
         ],
         "authority": {
@@ -1202,7 +2160,8 @@ def build_validator_rpc_canary_funding_transaction(
             "validator_vote_authorized": False,
             "validator_mutation_authorized": False,
             "validator_restart_authorized": False,
-            "public_endpoint_authorized": False,
+            "public_endpoint_authorized": True,
+            "public_endpoint_scope": "mainnet-rpc.greatlibrary.io Traefik backend wiring only",
             "ssh_authorized": False,
         },
         "summary": {
@@ -1218,11 +2177,11 @@ def build_validator_rpc_canary_funding_transaction(
             "transfer_value_wei": amount,
             "funding_value_cap_wei": amount,
             "source_maximum_total_debit_wei": amount + _FUNDING_TX_MAX_FEE_WEI,
-            "maximum_service_mutation_count": 23,
-            "minimum_service_mutation_count": 3,
+            "maximum_service_mutation_count": 10,
+            "minimum_service_mutation_count": 9,
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
-            "public_endpoint_count": 0,
+            "public_endpoint_count": 1,
             "host_port_count": 0,
             "network_access_performed": False,
             "live_mutation_performed": False,
@@ -1336,11 +2295,9 @@ def verify_validator_rpc_canary_funding_transaction(
     if not (
         set(applications)
         == {
-            "a_cast_cli_probe",
             "a_balance_rpc_probe",
             "a_exact_balance_classifier",
             "a_zero_balance_classifier",
-            "a_funder",
             "a_post_funding_verifier",
             "c_funded_verifier",
             "c_reconciled_verifier",
@@ -1381,11 +2338,11 @@ def verify_validator_rpc_canary_funding_transaction(
         "deployment_uuid_required": False,
         "deployment_inventory_resolution_required": False,
         "generic_deploy_endpoint_authorized": False,
-        "minimum_service_mutation_count": 3,
-        "maximum_service_mutation_count": 23,
+        "minimum_service_mutation_count": 9,
+        "maximum_service_mutation_count": 10,
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
-        "public_endpoint_count": 0,
+        "public_endpoint_count": 1,
         "network_access_performed": False,
         "live_mutation_performed": False,
         "validator_vote_performed": False,
@@ -1434,7 +2391,7 @@ def _safe_retry_evidence(
         and summary.get("canary_execution_performed") is False
         and summary.get("validator_mutation_count") == 0
         and summary.get("validator_restart_count") == 0
-        and summary.get("public_endpoint_count") == 0
+        and summary.get("public_endpoint_count") in {0, 1}
         and document.get("chain_state") in {
             "unchanged-before-funder-start",
             "potentially-unknown-after-funder-start",
@@ -1445,6 +2402,15 @@ def _safe_retry_evidence(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECOVERY_INVALID",
             "recovery evidence is not a canonical cleaned-up status-health failure",
         )
+    funding_transaction_hash = document.get("funding_transaction_hash")
+    if funding_transaction_hash is not None:
+        if type(funding_transaction_hash) is not str or re.fullmatch(r"0x[0-9a-f]{64}", funding_transaction_hash.lower()) is None:
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECOVERY_INVALID",
+                "recovery evidence contains an invalid funding transaction hash",
+            )
+        funding_transaction_hash = funding_transaction_hash.lower()
+
     return {
         "mode": "idempotent-status-health-reclassification",
         "locator": _relative(
@@ -1461,6 +2427,9 @@ def _safe_retry_evidence(
         "canary_address": document.get("canary_address"),
         "transfer_value_wei": document.get("transfer_value_wei"),
         "chain": document.get("chain"),
+        "funding_mode": document.get("funding_mode"),
+        "funding_transaction_hash": funding_transaction_hash,
+        "transaction_hash_recorded": funding_transaction_hash is not None,
     }
 
 
@@ -1538,6 +2507,7 @@ def build_validator_rpc_canary_funding_release(
         "destination": dict(transaction["destination"]),
         "funding_policy": dict(transaction["funding_policy"]),
         "applications": dict(transaction["applications"]),
+        "rpc_route": dict(transaction["rpc_route"]),
         "execution_plan": dict(transaction["future_execution_plan"]),
         "recovery": recovery,
         "authority": {
@@ -1549,7 +2519,8 @@ def build_validator_rpc_canary_funding_release(
             "validator_vote_authorized": False,
             "validator_mutation_authorized": False,
             "validator_restart_authorized": False,
-            "public_endpoint_authorized": False,
+            "public_endpoint_authorized": True,
+            "public_endpoint_scope": "mainnet-rpc.greatlibrary.io Traefik backend wiring only",
             "ssh_authorized": False,
         },
         "policy": {
@@ -1567,7 +2538,7 @@ def build_validator_rpc_canary_funding_release(
             "canary_execution_authorized": False,
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
-            "public_endpoint_count": 0,
+            "public_endpoint_count": 1,
         },
     }
     release["validator_rpc_canary_funding_release_sha256"] = _digest_without(
@@ -1704,6 +2675,7 @@ def verify_validator_rpc_canary_funding_release(
         and document.get("destination") == transaction.get("destination")
         and document.get("funding_policy") == transaction.get("funding_policy")
         and document.get("applications") == transaction.get("applications")
+        and document.get("rpc_route") == transaction.get("rpc_route")
         and document.get("execution_plan") == transaction.get("future_execution_plan")
         and recovery_valid
         and authority.get("requested_use_limit") == 1
@@ -1713,7 +2685,8 @@ def verify_validator_rpc_canary_funding_release(
         and authority.get("validator_mutation_authorized") is False
         and authority.get("validator_restart_authorized") is False
         and authority.get("validator_vote_authorized") is False
-        and authority.get("public_endpoint_authorized") is False
+        and authority.get("public_endpoint_authorized") is True
+        and authority.get("public_endpoint_scope") == "mainnet-rpc.greatlibrary.io Traefik backend wiring only"
         and policy.get("canary_execution_authorized") is False
         and policy.get("destination_zero_or_exact_balance_precondition_required") is True
         and policy.get("idempotent_exact_balance_reconciliation_supported") is True
@@ -1739,11 +2712,11 @@ def verify_validator_rpc_canary_funding_release(
         "canary_address": document["destination"]["address"],
         "transfer_value_wei": document["funding_policy"]["transfer_value_wei"],
         "funding_value_cap_wei": document["funding_policy"]["transfer_value_cap_wei"],
-        "minimum_service_mutation_count": 3,
-        "maximum_service_mutation_count": 23,
+        "minimum_service_mutation_count": 9,
+        "maximum_service_mutation_count": 10,
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
-        "public_endpoint_count": 0,
+        "public_endpoint_count": 1,
         "funding_authorized": True,
         "canary_execution_authorized": False,
         "live_execution_authorized": True,
@@ -2136,7 +3109,6 @@ def _runtime_marker_proves_success(spec_key: str, marker: Mapping[str, str] | No
         return False
     classification = marker.get("classification")
     expected = {
-        "a_cast_cli_probe": {"cast-ok"},
         "a_balance_rpc_probe": {"rpc-ok"},
         "a_exact_balance_classifier": {"match"},
         "a_zero_balance_classifier": {"match"},
@@ -2320,8 +3292,9 @@ def _wait_for_service_health(
     endpoint = f"/api/v1/services/{service_uuid}"
     started = time.monotonic()
     last_status = ""
+    first_status = ""
+    observed_statuses: list[str] = []
     observation_count = 0
-    consecutive_terminal = 0
     while True:
         response = _http(
             controller,
@@ -2338,7 +3311,12 @@ def _wait_for_service_health(
             else ""
         )
         observation_count += 1
+        if status and not first_status:
+            first_status = status
+        if status:
+            observed_statuses.append(status)
         last_status = status or last_status
+        elapsed = time.monotonic() - started
         record = {
             "phase": phase,
             "controller_id": controller_id,
@@ -2359,41 +3337,50 @@ def _wait_for_service_health(
             return {
                 "healthy": True,
                 "service_status": status,
+                "first_status": first_status or None,
+                "final_status": status or None,
+                "observed_statuses": observed_statuses,
                 "service_uuid": service_uuid,
                 "service_name": service_name,
                 "phase": phase,
                 "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
             }
 
-        base_status = status.split(":", 1)[0] if status else ""
-        if base_status in {"exited", "stopped", "dead", "error", "failed"}:
-            consecutive_terminal += 1
-        else:
-            consecutive_terminal = 0
-
-        elapsed = time.monotonic() - started
-        terminal_grace = min(10.0, max_wait_seconds)
-        if consecutive_terminal >= 2 and elapsed >= terminal_grace:
-            return {
-                "healthy": False,
-                "service_status": status,
-                "service_uuid": service_uuid,
-                "service_name": service_name,
-                "phase": phase,
-                "observation_count": observation_count,
-                "reason": "terminal-nonhealthy",
-            }
         if elapsed >= max_wait_seconds:
             return {
                 "healthy": False,
                 "service_status": last_status or None,
+                "first_status": first_status or None,
+                "final_status": last_status or None,
+                "observed_statuses": observed_statuses,
                 "service_uuid": service_uuid,
                 "service_name": service_name,
                 "phase": phase,
                 "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
                 "reason": "health-timeout",
             }
         time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
+
+
+def _recovered_funding_transaction_hash(release: Mapping[str, Any]) -> str | None:
+    recovery = release.get("recovery")
+    if not isinstance(recovery, Mapping):
+        return None
+    tx_hash = recovery.get("funding_transaction_hash")
+    if type(tx_hash) is not str:
+        return None
+    tx_hash = tx_hash.lower()
+    if re.fullmatch(r"0x[0-9a-f]{64}", tx_hash) is None:
+        return None
+    if recovery.get("prior_chain_state") != "exact-on-A-not-yet-verified-on-C":
+        return None
+    if recovery.get("prior_failure_code") != "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_INVALID":
+        return None
+    return tx_hash
 
 
 def _write_funding_evidence(
@@ -2530,6 +3517,7 @@ def execute_validator_rpc_canary_funding_release(
     proofs: dict[str, Mapping[str, Any]] = {}
     runtime_results: dict[str, Mapping[str, str]] = {}
     rpc_route_preflight: dict[str, Any] | None = None
+    rpc_route_wiring: dict[str, Any] | None = None
     funding_mode: str | None = None
     funding_start_acknowledged = False
     a_funder_health_proven = False
@@ -2540,6 +3528,7 @@ def execute_validator_rpc_canary_funding_release(
     started_at = _timestamp()
     expected_amount = int(release["funding_policy"]["transfer_value_wei"])
     destination = str(release["destination"]["address"]).lower()
+    recovered_funding_transaction_hash = _recovered_funding_transaction_hash(release)
 
     def run_service(
         spec_key: str,
@@ -2707,6 +3696,8 @@ def execute_validator_rpc_canary_funding_release(
                 runtime_results[spec_key] = marker
             marker_success = _runtime_marker_proves_success(spec_key, marker)
             proof = dict(proof)
+            if proof.get("healthy") is True and not require_runtime_marker:
+                proof.setdefault("result_channel", "service-detail-health")
             proof["runtime_result_marker_observed"] = bool(markers)
             proof["runtime_result"] = runtime_results.get(spec_key)
             proof["runtime_result_classification"] = (
@@ -2761,7 +3752,153 @@ def execute_validator_rpc_canary_funding_release(
                         f"temporary service cleanup failed for {service_name}",
                     )
 
+    def run_route_writer(route_key: str, target: Mapping[str, Any]) -> Mapping[str, Any]:
+        controller_id = str(target["controller_id"])
+        controller = controllers[controller_id]
+        service_name = f"mother-mainnet-rpc-route-{route_key}"
+        service_uuid: str | None = None
+        service_controller_ids[service_name] = controller_id
+        compose = _route_writer_compose(service_name, target)
+        proof: Mapping[str, Any] | None = None
+        try:
+            if controller_id not in environment_uuids:
+                environment_uuids[controller_id] = _resolve_environment_uuid(
+                    controller=controller,
+                    controller_id=controller_id,
+                    endpoint=f"/api/v1/projects/{_controller(private_state, controller_id)['project_uuid']}/environments",
+                    expected_name="mainnet",
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                    observations=observations,
+                    phase=f"{route_key}_shared_rpc_route_writer-mainnet-environment-resolution",
+                )
+            create_body = _route_writer_application_body(
+                _controller(private_state, controller_id),
+                service_name,
+                compose,
+            )
+            create_body["environment_uuid"] = environment_uuids[controller_id]
+            create_response = _request_mutation(
+                controller=controller,
+                mutation_id=f"{service_name}.create-service",
+                controller_id=controller_id,
+                method="POST",
+                endpoint="/api/v1/services",
+                body=create_body,
+                success_statuses=(200, 201, 202),
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                receipts=receipts,
+            )
+            service_uuid = _application_uuid(create_response["payload"])
+            created_services[service_name] = service_uuid
+            receipts[-1].update({
+                "application_uuid": service_uuid,
+                "service_name": service_name,
+                "request_body_sha256": hashlib.sha256(canonical_json(create_body)).hexdigest(),
+            })
+            _request_mutation(
+                controller=controller,
+                mutation_id=f"{service_name}.start",
+                controller_id=controller_id,
+                method="POST",
+                endpoint=f"/api/v1/services/{service_uuid}/start",
+                body=None,
+                success_statuses=(200, 201, 202),
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                receipts=receipts,
+                application_uuid=service_uuid,
+            )
+            receipts[-1]["service_name"] = service_name
+            proof = _wait_for_service_health(
+                controller=controller,
+                controller_id=controller_id,
+                service_uuid=service_uuid,
+                service_name=service_name,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                opener=opener,
+                observations=observations,
+                phase=f"{route_key}_shared_rpc_route_writer-status-health-result",
+            )
+            proof = {
+                **dict(proof),
+                "route_host": target.get("route_host"),
+                "target_host": target.get("target_host"),
+                "target_port": target.get("target_port"),
+                "dynamic_file": target.get("dynamic_file"),
+                "result_channel": "coolify-service-detail-health",
+                "proof": "coolify-proxy wrote Mother-owned shared RPC dynamic route after proving local Besu eth_chainId",
+            }
+            proofs[f"{route_key}_shared_rpc_route_writer"] = proof
+            if proof.get("healthy") is not True:
+                raise _error(
+                    "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WIRING_FAILED",
+                    f"{controller_id} did not prove shared RPC route wiring for {target.get('target_host')}:{target.get('target_port')}",
+                )
+            return proof
+        finally:
+            if service_uuid is not None:
+                response = _http(
+                    controller,
+                    "DELETE",
+                    f"/api/v1/services/{service_uuid}",
+                    body=None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                deleted = int(response.get("status", 0)) in {200, 204, 404}
+                receipt = _receipt(
+                    mutation_id=f"{service_name}.delete",
+                    controller_id=controller_id,
+                    method="DELETE",
+                    endpoint=f"/api/v1/services/{service_uuid}",
+                    response=response,
+                    succeeded=deleted,
+                    application_uuid=service_uuid,
+                )
+                receipt["service_name"] = service_name
+                receipt["cleanup_absent"] = response.get("status") == 404
+                receipts.append(receipt)
+                deleted_services[service_name] = deleted
+                if not deleted:
+                    raise _error(
+                        "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CLEANUP_FAILED",
+                        f"temporary service cleanup failed for {service_name}",
+                    )
+
     try:
+        route_targets = _mapping(
+            _mapping(release.get("rpc_route"), "release.rpc_route").get("controller_local_backends"),
+            "release.rpc_route.controller_local_backends",
+        )
+        route_wiring_results = {
+            key: run_route_writer(key, _mapping(route_targets.get(key), f"release.rpc_route.controller_local_backends.{key}"))
+            for key in ("a", "c")
+        }
+        rpc_route_wiring = {
+            "mode": "mother-owned-shared-rpc-route-wiring",
+            "route_host": _mapping(release.get("rpc_route"), "release.rpc_route").get("hostname"),
+            "clean": all(item.get("healthy") is True for item in route_wiring_results.values()),
+            "results": route_wiring_results,
+            "summary": {
+                "clean": all(item.get("healthy") is True for item in route_wiring_results.values()),
+                "controller_count": len(route_wiring_results),
+                "successful_controller_count": sum(1 for item in route_wiring_results.values() if item.get("healthy") is True),
+            },
+        }
+        if rpc_route_wiring.get("clean") is not True:
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WIRING_FAILED",
+                "Mother did not prove shared RPC route wiring on every controller",
+            )
         rpc_route_preflight = _preflight_allfather_rpc_routes(
             private_state,
             canary_address=destination,
@@ -2779,24 +3916,61 @@ def execute_validator_rpc_canary_funding_release(
                 str(preflight_failure["message"]),
             )
 
-        cast_proof = run_service("a_cast_cli_probe")
-        if cast_proof.get("healthy") is not True:
-            raise _error(
-                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CAST_UNAVAILABLE",
-                "A helper image did not prove that cast is available before RPC probing",
-            )
-        probe_proof = run_service("a_balance_rpc_probe")
+        shared_rpc_url = _shared_rpc_route_url(_network_state(private_state))
+        probe_proof = _local_shared_balance_proof(
+            spec_key="a_balance_rpc_probe",
+            rpc_url=shared_rpc_url,
+            destination=destination,
+            expected_balance=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        proofs["a_balance_rpc_probe"] = probe_proof
+        runtime_results["a_balance_rpc_probe"] = _runtime_result_from_balance_proof(
+            "a_balance_rpc_probe",
+            probe_proof,
+        )
         if probe_proof.get("healthy") is not True:
             raise _error(
                 "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE",
-                "A did not prove that private RPC can answer cast balance before funding",
+                "shared RPC did not answer a local Python JSON-RPC balance probe before funding",
             )
-        exact_proof = run_service("a_exact_balance_classifier")
+
+        exact_proof = _local_shared_balance_proof(
+            spec_key="a_exact_balance_classifier",
+            rpc_url=shared_rpc_url,
+            destination=destination,
+            expected_balance=expected_amount,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        proofs["a_exact_balance_classifier"] = exact_proof
+        runtime_results["a_exact_balance_classifier"] = _runtime_result_from_balance_proof(
+            "a_exact_balance_classifier",
+            exact_proof,
+        )
         if exact_proof.get("healthy") is True:
             funding_mode = "already-funded"
+            if recovered_funding_transaction_hash is not None:
+                funding_transaction_hash = recovered_funding_transaction_hash
             chain_state = "exact-on-A-not-yet-verified-on-C"
         else:
-            zero_proof = run_service("a_zero_balance_classifier")
+            zero_proof = _local_shared_balance_proof(
+                spec_key="a_zero_balance_classifier",
+                rpc_url=shared_rpc_url,
+                destination=destination,
+                expected_balance=0,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            proofs["a_zero_balance_classifier"] = zero_proof
+            runtime_results["a_zero_balance_classifier"] = _runtime_result_from_balance_proof(
+                "a_zero_balance_classifier",
+                zero_proof,
+            )
             if zero_proof.get("healthy") is not True:
                 observed = runtime_results.get("a_zero_balance_classifier") or runtime_results.get("a_exact_balance_classifier") or {}
                 observed_balance = observed.get("balance_wei") if isinstance(observed, Mapping) else None
@@ -2807,49 +3981,73 @@ def execute_validator_rpc_canary_funding_release(
                 )
                 raise _error(
                     "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_UNEXPECTED_BALANCE",
-                    "A RPC is reachable, but the destination balance is neither zero nor the exact funded amount" + suffix,
+                    "shared RPC is reachable, but the destination balance is neither zero nor the exact funded amount" + suffix,
                 )
             funding_mode = "funded"
-            funder_proof = run_service(
-                "a_funder",
-                bind_captain_secret=True,
+
+            def _mark_local_funding_sent() -> None:
+                nonlocal funding_start_acknowledged
+                funding_start_acknowledged = True
+
+            funder_proof = _execute_local_python_funding(
+                private_key=captain["private_key"],
+                source=str(release["funding_source"]["address"]).lower(),
+                destination=destination,
+                amount=expected_amount,
+                chain_id=int(release["chain"]["chain_id"]),
+                rpc_url=_shared_rpc_route_url(_network_state(private_state)),
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                opener=opener,
+                on_transaction_sent=_mark_local_funding_sent,
             )
-            if funder_proof.get("healthy") is not True:
-                raise _error(
-                    "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_UNAVAILABLE",
-                    "A funder did not reach its committed healthy completion state",
-                )
-            funder_result = runtime_results.get("a_funder", {})
-            candidate_hash = (
-                funder_result.get("tx_hash")
-                if isinstance(funder_result, Mapping)
-                else None
+            proofs["a_funder"] = funder_proof
+            runtime_results["a_funder"] = {
+                "step": "a_funder",
+                "classification": "funded",
+                "rpc_url": str(funder_proof["rpc_url"]),
+                "tx_hash": str(funder_proof["tx_hash"]),
+                "balance_wei": str(funder_proof["destination_balance_after_wei"]),
+                "expected_balance_wei": str(expected_amount),
+            }
+            a_funder_health_proven = True
+            funding_transaction_hash = str(funder_proof["tx_hash"]).lower()
+
+            a_post_funding_proof = _local_shared_balance_proof(
+                spec_key="a_post_funding_verifier",
+                rpc_url=shared_rpc_url,
+                destination=destination,
+                expected_balance=expected_amount,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
             )
-            if not (type(candidate_hash) is str and re.fullmatch(r"0x[0-9a-fA-F]{64}", candidate_hash)):
-                raise _error(
-                    "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_TRANSACTION_HASH_UNAVAILABLE",
-                    "A funder completed without a structured funding transaction hash",
-                )
-            funding_transaction_hash = candidate_hash.lower()
-            a_post_funding_proof = run_service("a_post_funding_verifier")
+            proofs["a_post_funding_verifier"] = a_post_funding_proof
+            runtime_results["a_post_funding_verifier"] = _runtime_result_from_balance_proof(
+                "a_post_funding_verifier",
+                a_post_funding_proof,
+            )
             if a_post_funding_proof.get("healthy") is not True:
                 raise _error(
                     "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_A_BALANCE_NOT_VERIFIED",
-                    "A did not independently prove the exact destination balance after funding",
+                    "shared RPC did not prove the exact destination balance after local funding",
                 )
+            a_post_funding_balance_proven = True
             chain_state = "exact-on-A-not-yet-verified-on-C"
 
         c_key = (
             "c_funded_verifier"
-            if funding_mode == "funded"
+            if funding_transaction_hash is not None
             else "c_reconciled_verifier"
         )
         c_extra_env = (
             {_TX_HASH_ENV: funding_transaction_hash}
-            if funding_mode == "funded" and funding_transaction_hash is not None
+            if funding_transaction_hash is not None
             else None
         )
-        c_proof = run_service(c_key, extra_env=c_extra_env)
+        c_proof = run_service(c_key, extra_env=c_extra_env, require_runtime_marker=False)
         if c_proof.get("healthy") is not True:
             raise _error(
                 "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RESULT_INVALID",
@@ -2861,15 +4059,16 @@ def execute_validator_rpc_canary_funding_release(
             "service_name": c_proof["service_name"],
             "service_uuid": c_proof["service_uuid"],
             "service_status": c_proof["service_status"],
-            "result_channel": "service-detail-health+runtime-result-marker",
+            "result_channel": str(c_proof.get("result_channel") or "service-detail-health"),
             "runtime_result": runtime_results.get(c_key),
+            "runtime_result_marker_observed": c_proof.get("runtime_result_marker_observed") is True,
             "balance_verified": True,
-            "receipt_verified": funding_mode == "funded",
-            "transaction_hash_recorded": funding_mode == "funded",
-            "funding_transaction_hash": funding_transaction_hash if funding_mode == "funded" else None,
+            "receipt_verified": funding_transaction_hash is not None,
+            "transaction_hash_recorded": funding_transaction_hash is not None,
+            "funding_transaction_hash": funding_transaction_hash,
             "proof": (
                 "tx-hash-bound-cross-validator-receipt-and-balance"
-                if funding_mode == "funded"
+                if funding_transaction_hash is not None
                 else "exact-balance-reconciliation"
             ),
         }
@@ -2917,7 +4116,6 @@ def execute_validator_rpc_canary_funding_release(
     funding_reconciled = success and funding_mode == "already-funded"
     receipt_verified = bool(
         success
-        and funding_mode == "funded"
         and cross_validator_proof
         and cross_validator_proof.get("receipt_verified") is True
     )
@@ -2945,6 +4143,7 @@ def execute_validator_rpc_canary_funding_release(
             ),
         },
         "chain": dict(release["chain"]),
+        "allfather_rpc_route_wiring": rpc_route_wiring,
         "allfather_rpc_route_preflight": rpc_route_preflight,
         "funding_source_address": release["funding_source"]["address"],
         "canary_address": destination,
@@ -2970,6 +4169,11 @@ def execute_validator_rpc_canary_funding_release(
             "canary_balance_verified_on_C": success,
             "exact_transfer_value_verified": success,
             "transaction_hash_recorded": funding_transaction_hash is not None,
+            "allfather_rpc_route_wiring_used": rpc_route_wiring is not None,
+            "allfather_rpc_route_wiring_complete": bool(
+                isinstance(rpc_route_wiring, Mapping)
+                and rpc_route_wiring.get("clean") is True
+            ),
             "allfather_rpc_route_preflight_used": rpc_route_preflight is not None,
             "allfather_rpc_route_preflight_complete": bool(
                 isinstance(rpc_route_preflight, Mapping)
@@ -2986,7 +4190,7 @@ def execute_validator_rpc_canary_funding_release(
             "application_mutation_count": len(receipts),
             "validator_mutation_count": 0,
             "validator_restart_count": 0,
-            "public_endpoint_count": 0,
+            "public_endpoint_count": 1,
             "validator_vote_performed": False,
             "canary_execution_performed": False,
             "next_phase": (
@@ -3133,37 +4337,52 @@ def verify_validator_rpc_canary_funding_evidence(
     observations = document.get("service_observations")
     applications = _mapping(release.get("applications"), "release.applications")
     funding_mode = document.get("funding_mode")
+    recorded_tx_hash = document.get("funding_transaction_hash")
+    recorded_tx_hash_valid = (
+        type(recorded_tx_hash) is str
+        and re.fullmatch(r"0x[0-9a-fA-F]{64}", recorded_tx_hash) is not None
+    )
     if funding_mode == "funded":
         spec_keys = [
-            "a_cast_cli_probe",
             "a_balance_rpc_probe",
             "a_exact_balance_classifier",
             "a_zero_balance_classifier",
-            "a_funder",
             "a_post_funding_verifier",
             "c_funded_verifier",
         ]
+        runtime_result_keys = [
+            "a_balance_rpc_probe",
+            "a_exact_balance_classifier",
+            "a_zero_balance_classifier",
+            "a_post_funding_verifier",
+            "a_funder",
+        ]
         required_healthy = {
-            "a_cast_cli_probe",
             "a_balance_rpc_probe",
             "a_zero_balance_classifier",
-            "a_funder",
             "a_post_funding_verifier",
             "c_funded_verifier",
         }
         required_nonhealthy = {"a_exact_balance_classifier"}
     elif funding_mode == "already-funded":
+        c_reconciliation_key = (
+            "c_funded_verifier"
+            if recorded_tx_hash_valid
+            else "c_reconciled_verifier"
+        )
         spec_keys = [
-            "a_cast_cli_probe",
             "a_balance_rpc_probe",
             "a_exact_balance_classifier",
-            "c_reconciled_verifier",
+            c_reconciliation_key,
+        ]
+        runtime_result_keys = [
+            "a_balance_rpc_probe",
+            "a_exact_balance_classifier",
         ]
         required_healthy = {
-            "a_cast_cli_probe",
             "a_balance_rpc_probe",
             "a_exact_balance_classifier",
-            "c_reconciled_verifier",
+            c_reconciliation_key,
         }
         required_nonhealthy = set()
     else:
@@ -3172,9 +4391,23 @@ def verify_validator_rpc_canary_funding_evidence(
             "funding evidence mode is invalid",
         )
 
+    service_spec_keys = [key for key in spec_keys if key.startswith("c_")]
+    service_required_healthy = {key for key in required_healthy if key.startswith("c_")}
+    service_required_nonhealthy = {key for key in required_nonhealthy if key.startswith("c_")}
+    local_required_healthy = set(required_healthy) - service_required_healthy
+    local_required_nonhealthy = set(required_nonhealthy) - service_required_nonhealthy
+
     expected_ids: list[str] = []
     expected_methods: list[str] = []
-    for key in spec_keys:
+    for route_key in ("a", "c"):
+        route_name = f"mother-mainnet-rpc-route-{route_key}"
+        expected_ids.extend([
+            f"{route_name}.create-service",
+            f"{route_name}.start",
+            f"{route_name}.delete",
+        ])
+        expected_methods.extend(["POST", "POST", "DELETE"])
+    for key in service_spec_keys:
         spec = _mapping(applications.get(key), f"release.applications.{key}")
         name = str(spec["application_name"])
         expected_ids.append(f"{name}.create-service")
@@ -3220,7 +4453,7 @@ def verify_validator_rpc_canary_funding_evidence(
             if isinstance(item, Mapping) and item.get("phase") == phase
         ]
 
-    for key in required_healthy:
+    for key in service_required_healthy:
         found = phase_observations(key)
         if not (
             found
@@ -3235,7 +4468,7 @@ def verify_validator_rpc_canary_funding_evidence(
                 "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
                 f"{key} lacks its committed healthy service proof",
             )
-    for key in required_nonhealthy:
+    for key in service_required_nonhealthy:
         found = phase_observations(key)
         if not (
             found
@@ -3246,8 +4479,41 @@ def verify_validator_rpc_canary_funding_evidence(
                 f"{key} unexpectedly contains a healthy proof",
             )
 
+    runtime_proofs = _mapping(document.get("runtime_proofs"), "evidence.runtime_proofs")
+    for key in local_required_healthy:
+        proof = _mapping(runtime_proofs.get(key), f"evidence.runtime_proofs.{key}")
+        if not (
+            proof.get("healthy") is True
+            and str(proof.get("result_channel")).startswith("local-json-rpc-")
+        ):
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
+                f"{key} lacks its committed local shared-route proof",
+            )
+    for key in local_required_nonhealthy:
+        proof = _mapping(runtime_proofs.get(key), f"evidence.runtime_proofs.{key}")
+        if proof.get("healthy") is not False:
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
+                f"{key} unexpectedly contains a healthy local proof",
+            )
+
+    if funding_mode == "funded":
+        local_funder = _mapping(runtime_proofs.get("a_funder"), "evidence.runtime_proofs.a_funder")
+        if not (
+            local_funder.get("healthy") is True
+            and local_funder.get("result_channel") == "local-json-rpc-eth-account"
+            and type(local_funder.get("tx_hash")) is str
+            and re.fullmatch(r"0x[0-9a-fA-F]{64}", local_funder["tx_hash"])
+            and local_funder.get("destination_balance_after_wei") == document.get("transfer_value_wei")
+        ):
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
+                "local a_funder proof is missing or contradictory",
+            )
+
     runtime_results = _mapping(document.get("runtime_results"), "evidence.runtime_results")
-    for key in spec_keys:
+    for key in runtime_result_keys:
         result = _mapping(runtime_results.get(key), f"evidence.runtime_results.{key}")
         if not (
             result.get("step") == key
@@ -3273,10 +4539,10 @@ def verify_validator_rpc_canary_funding_evidence(
         isinstance(c_result, Mapping)
         and c_result.get("mode") == funding_mode
         and c_result.get("controller_id") == _C_CONTROLLER
-        and c_result.get("result_channel") == "service-detail-health+runtime-result-marker"
+        and c_result.get("result_channel") in {"service-detail-health", "runtime-result-marker", "service-detail-health+runtime-result-marker"}
         and _healthy_service_status(c_result.get("service_status"))
         and c_result.get("balance_verified") is True
-        and document.get("transaction_hash_recorded") == (funding_mode == "funded")
+        and document.get("transaction_hash_recorded") == recorded_tx_hash_valid
         and document.get("chain_state") == "exact-cross-validator-verified"
         and document["transfer_value_wei"] == release["funding_policy"]["transfer_value_wei"]
         and document["canary_address"] == release["destination"]["address"]
@@ -3286,25 +4552,27 @@ def verify_validator_rpc_canary_funding_evidence(
         and summary.get("canary_balance_verified_on_A") is True
         and summary.get("canary_balance_verified_on_C") is True
         and summary.get("exact_transfer_value_verified") is True
-        and summary.get("transaction_hash_recorded") == (funding_mode == "funded")
-        and rpc_route_preflight.get("mode") == "allfather-rpc-route-direct-json-rpc"
+        and summary.get("transaction_hash_recorded") == recorded_tx_hash_valid
+        and rpc_route_preflight.get("mode") == "mother-shared-rpc-route-direct-json-rpc"
         and rpc_route_preflight.get("clean") is True
-        and rpc_route_summary.get("successful_route_count") == 2
+        and rpc_route_summary.get("successful_route_count") == 1
+        and summary.get("allfather_rpc_route_wiring_used") is True
+        and summary.get("allfather_rpc_route_wiring_complete") is True
         and summary.get("allfather_rpc_route_preflight_used") is True
         and summary.get("allfather_rpc_route_preflight_complete") is True
         and summary.get("service_health_result_channel_used") is True
         and summary.get("runtime_log_result_channel_used") is True
         and type(summary.get("runtime_result_marker_count")) is int
-        and summary.get("runtime_result_marker_count") >= len(spec_keys)
+        and summary.get("runtime_result_marker_count") >= len(runtime_result_keys)
         and summary.get("deployment_uuid_required") is False
         and summary.get("temporary_A_application_deleted") is True
         and summary.get("temporary_C_application_deleted") is True
         and summary.get("temporary_services_deleted") is True
-        and summary.get("temporary_service_count") == len(spec_keys)
+        and summary.get("temporary_service_count") == len(service_spec_keys) + 2
         and summary.get("application_mutation_count") == len(expected_ids)
         and summary.get("validator_mutation_count") == 0
         and summary.get("validator_restart_count") == 0
-        and summary.get("public_endpoint_count") == 0
+        and summary.get("public_endpoint_count") == 1
         and summary.get("validator_vote_performed") is False
         and summary.get("canary_execution_performed") is False
     )
@@ -3321,7 +4589,7 @@ def verify_validator_rpc_canary_funding_evidence(
         and summary.get("funding_reconciled_from_prior_execution") is False
         and summary.get("funding_receipt_verified_on_C") is True
     )
-    reconciled = (
+    reconciled_balance_only = (
         funding_mode == "already-funded"
         and c_result.get("receipt_verified") is False
         and c_result.get("proof") == "exact-balance-reconciliation"
@@ -3331,6 +4599,19 @@ def verify_validator_rpc_canary_funding_evidence(
         and summary.get("funding_reconciled_from_prior_execution") is True
         and summary.get("funding_receipt_verified_on_C") is False
     )
+    reconciled_with_recovered_tx = (
+        funding_mode == "already-funded"
+        and c_result.get("receipt_verified") is True
+        and c_result.get("proof") == "tx-hash-bound-cross-validator-receipt-and-balance"
+        and c_result.get("transaction_hash_recorded") is True
+        and c_result.get("funding_transaction_hash") == document.get("funding_transaction_hash")
+        and recorded_tx_hash_valid
+        and summary.get("funding_performed") is False
+        and summary.get("funding_reconciled_from_prior_execution") is True
+        and summary.get("funding_receipt_verified_on_C") is True
+    )
+    reconciled = reconciled_balance_only or reconciled_with_recovered_tx
+    receipt_verified = funded or reconciled_with_recovered_tx
     if not (common and (funded or reconciled)):
         raise _error(
             "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_EVIDENCE_INVALID",
@@ -3351,7 +4632,7 @@ def verify_validator_rpc_canary_funding_evidence(
         "funding_source_address": document["funding_source_address"],
         "canary_address": document["canary_address"],
         "transfer_value_wei": document["transfer_value_wei"],
-        "funding_receipt_verified_on_C": funded,
+        "funding_receipt_verified_on_C": receipt_verified,
         "canary_balance_verified_on_A": True,
         "canary_balance_verified_on_C": True,
         "funding_reconciled_from_prior_execution": reconciled,

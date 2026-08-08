@@ -11,6 +11,13 @@ from typing import Any, Callable, Mapping
 
 from main_computer.mcel_counter_candidate_projection import project_counter_candidate
 from main_computer.mcel_counter_compatibility import DEFAULT_DSL_SOURCE, DEFAULT_FIXTURE_IR
+from main_computer.mcel_counter_reference_fixture_profile import (
+    APP_ID,
+    BROWSER_PROBE_SCHEMA,
+    EFFECT_REPORT_SCHEMA,
+    NODE_PROBE_SCHEMA,
+    build_counter_candidate_evidence_profile,
+)
 from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT
 from main_computer.mcel_explicit_package_candidate_evidence import (
     DEFAULT_REPORT_ROOT,
@@ -31,12 +38,6 @@ from main_computer.mcel_explicit_package_candidate_evidence import (
 from main_computer.mcel_node_runtime import resolve_node_executable
 
 
-APP_ID = "contract-counter"
-REPORT_SCHEMA = "mcel.counter-candidate-evidence-report.v1"
-REPORT_VERSION = "mcel-counter-candidate-evidence-wave5"
-EFFECT_REPORT_SCHEMA = "mcel.counter-effect-accounting-report.v1"
-NODE_PROBE_SCHEMA = "mcel.counter-effect-probe.v1"
-BROWSER_PROBE_SCHEMA = "mcel.counter-browser-effect-probe.v1"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,27 +49,9 @@ CandidateEvidenceResult = ExplicitPackageCandidateEvidenceResult
 
 
 def counter_explicit_package_candidate_evidence_profile() -> ExplicitPackageCandidateEvidenceProfile:
-    return ExplicitPackageCandidateEvidenceProfile(
-        app_id=APP_ID,
+    return build_counter_candidate_evidence_profile(
         project_candidate=project_counter_candidate,
         build_effect_accounting=_build_effect_accounting,
-        default_dsl_source=DEFAULT_DSL_SOURCE,
-        default_fixture_ir=DEFAULT_FIXTURE_IR,
-        default_candidate_root=DEFAULT_CANDIDATE_ROOT,
-        default_report_root=DEFAULT_REPORT_ROOT,
-        report_schema=REPORT_SCHEMA,
-        report_version=REPORT_VERSION,
-        report_title="MCEL Counter Candidate Evidence",
-        effect_accounting_filename="mcel-counter-effect-accounting-report.json",
-        node_probe_filename="mcel-counter-node-effect-probe.json",
-        browser_probe_filename="mcel-counter-browser-effect-probe.json",
-        invalid_dsl_message="DSL compilation did not produce valid Counter IR.",
-        invalid_projection_message="Candidate projection is not exact.",
-        evidence_failed_code="MCEL_COUNTER_CANDIDATE_EVIDENCE_FAILED",
-        source_invalid_code="MCEL_COUNTER_CANDIDATE_EVIDENCE_SOURCE_INVALID",
-        stage_failed_code="MCEL_COUNTER_CANDIDATE_STAGE_FAILED",
-        live_changed_code="MCEL_COUNTER_LIVE_PACKAGE_CHANGED",
-        live_changed_summary="The live Counter package changed during isolated candidate evidence execution.",
     )
 
 

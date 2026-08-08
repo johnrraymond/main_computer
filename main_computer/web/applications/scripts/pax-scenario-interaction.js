@@ -7,81 +7,143 @@
     throw new Error("MainComputerEncounterState must load before Pax scenario interaction.");
   }
 
-  const SCENARIO_ID = "scenario.pax.neutrality-under-fire";
-  const PAX_SYSTEM_ID = "system.pax";
-  const BRIEFING_ACK_PREFIX = "main-computer.pax-scenario.briefing-ack.v1";
-  const PROTECTION_STAGE_ID = "protect-witness";
-  const INVESTIGATION_STAGE_ID = "investigation";
-  const PAX_PROTECTION_ENCOUNTER_DEFINITION_ID = "encounter.pax.protection-boarding";
-  const PAX_PROTECTION_ENCOUNTER_KEY = `${SCENARIO_ID}:${PAX_PROTECTION_ENCOUNTER_DEFINITION_ID}`;
-  const PAX_PROTECTION_RECOVERY = Object.freeze({
-    none: "none",
-    reviveBoarders: "revive-boarders",
-    restartEncounter: "restart-encounter"
-  });
-  const PAX_BOARDER_GROUP_STATUS = EncounterState.ACTOR_GROUP_STATUS;
-  const PAX_PROTECTION_STATE = Object.freeze({
-    unavailable: "unavailable",
-    scenarioInactive: "scenario-inactive",
-    characterRuntimeUnavailable: "character-runtime-unavailable",
-    consistentActive: "consistent-active",
-    recoverableProtectionDefeated: "recoverable-protection-defeated",
-    invalidProtectionBoarders: "invalid-protection-boarders",
-    recoverableInvestigationActive: "recoverable-investigation-active",
-    recoverableInvestigationDefeated: "recoverable-investigation-defeated",
-    invalidInvestigationBoarders: "invalid-investigation-boarders",
-    outsideProtection: "outside-protection"
-  });
-  const PAX_RECONCILIATION_MODE = Object.freeze({
-    passive: "passive",
-    startupAttach: "startup-attach"
-  });
-  const PAX_RECONCILIATION_REASON = Object.freeze({
-    automatic: "automatic-inconsistent-encounter-recovery",
-    scenarioState: "scenario-state-inconsistent-recovery",
-    scenarioRuntimeAttach: "scenario-runtime-attach-inconsistent-recovery",
-    characterRuntimeAttach: "character-runtime-attach-encounter-reconciliation",
-    characterState: "character-state-inconsistent-recovery"
-  });
-  const PAX_RECONCILIATION_POLICY = Object.freeze({
-    [PAX_RECONCILIATION_MODE.passive]: Object.freeze({
-      recoverDefeated: false
-    }),
-    [PAX_RECONCILIATION_MODE.startupAttach]: Object.freeze({
-      recoverDefeated: true
-    })
-  });
-  const HARD_KICKOFF_STAGE_IDS = Object.freeze([
-    PROTECTION_STAGE_ID,
-    INVESTIGATION_STAGE_ID,
-    "conference"
-  ]);
-  const BOARDER_IDS = Object.freeze([
-    "enemy.pax.quiet-service-assassin-01",
-    "enemy.pax.boarder-01",
-    "enemy.pax.boarder-02",
-    "enemy.pax.boarder-03",
-    "enemy.pax.boarder-04",
-    "enemy.pax.boarder-05"
-  ]);
-  const HARD_KICKOFF_POSITIONS = Object.freeze({
-    assassin: Object.freeze([-0.35, -0.55, -37.65]),
-    boarder01: Object.freeze([-3.2, -0.55, -35.8]),
-    boarder02: Object.freeze([3.2, -0.55, -35.8]),
-    boarder03: Object.freeze([-2.4, -0.55, -39.0]),
-    boarder04: Object.freeze([2.4, -0.55, -39.0]),
-    boarder05: Object.freeze([0.0, -0.55, -40.5]),
-    witness: Object.freeze([-1.45, -0.55, -36.45]),
-    marshal: Object.freeze([1.45, -0.55, -36.35])
-  });
-  const BOARDER_POSITIONS = Object.freeze([
-    HARD_KICKOFF_POSITIONS.assassin,
-    HARD_KICKOFF_POSITIONS.boarder01,
-    HARD_KICKOFF_POSITIONS.boarder02,
-    HARD_KICKOFF_POSITIONS.boarder03,
-    HARD_KICKOFF_POSITIONS.boarder04,
-    HARD_KICKOFF_POSITIONS.boarder05
-  ]);
+  function freezeVector3(values) {
+    return Object.freeze([
+      Number(values?.[0] || 0),
+      Number(values?.[1] || 0),
+      Number(values?.[2] || 0)
+    ]);
+  }
+
+  const PAX_SCENARIO_CONFIG = (() => {
+    const ids = Object.freeze({
+      scenarioId: "scenario.pax.neutrality-under-fire",
+      systemId: "system.pax"
+    });
+    const stages = Object.freeze({
+      protection: "protect-witness",
+      investigation: "investigation",
+      conference: "conference",
+      hardKickoff: Object.freeze([
+        "protect-witness",
+        "investigation",
+        "conference"
+      ])
+    });
+    const encounterDefinitionId = "encounter.pax.protection-boarding";
+    const encounter = Object.freeze({
+      definitionId: encounterDefinitionId,
+      key: `${ids.scenarioId}:${encounterDefinitionId}`,
+      snapshotVersion: "pax-protection-encounter-snapshot.v1",
+      activeStageIds: Object.freeze([stages.protection]),
+      completedStageIds: Object.freeze([stages.investigation]),
+      diagnosticInstanceSource: "pax-diagnostic-placeholder"
+    });
+    const positions = Object.freeze({
+      assassin: freezeVector3([-0.35, -0.55, -37.65]),
+      boarder01: freezeVector3([-3.2, -0.55, -35.8]),
+      boarder02: freezeVector3([3.2, -0.55, -35.8]),
+      boarder03: freezeVector3([-2.4, -0.55, -39.0]),
+      boarder04: freezeVector3([2.4, -0.55, -39.0]),
+      boarder05: freezeVector3([0.0, -0.55, -40.5]),
+      witness: freezeVector3([-1.45, -0.55, -36.45]),
+      marshal: freezeVector3([1.45, -0.55, -36.35])
+    });
+    const recoveryActions = Object.freeze({
+      none: "none",
+      reviveBoarders: "revive-boarders",
+      restartEncounter: "restart-encounter"
+    });
+    const reconciliationModes = Object.freeze({
+      passive: "passive",
+      startupAttach: "startup-attach"
+    });
+    const reconciliationReasons = Object.freeze({
+      automatic: "automatic-inconsistent-encounter-recovery",
+      scenarioState: "scenario-state-inconsistent-recovery",
+      scenarioRuntimeAttach: "scenario-runtime-attach-inconsistent-recovery",
+      characterRuntimeAttach: "character-runtime-attach-encounter-reconciliation",
+      characterState: "character-state-inconsistent-recovery"
+    });
+
+    return Object.freeze({
+      ids,
+      storage: Object.freeze({
+        briefingAckPrefix: "main-computer.pax-scenario.briefing-ack.v1"
+      }),
+      stages,
+      encounter,
+      actors: Object.freeze({
+        boarderIds: Object.freeze([
+          "enemy.pax.quiet-service-assassin-01",
+          "enemy.pax.boarder-01",
+          "enemy.pax.boarder-02",
+          "enemy.pax.boarder-03",
+          "enemy.pax.boarder-04",
+          "enemy.pax.boarder-05"
+        ]),
+        hardKickoffPositions: positions,
+        boarderPositions: Object.freeze([
+          positions.assassin,
+          positions.boarder01,
+          positions.boarder02,
+          positions.boarder03,
+          positions.boarder04,
+          positions.boarder05
+        ])
+      }),
+      recovery: Object.freeze({
+        actions: recoveryActions,
+        actorGroupStatus: EncounterState.ACTOR_GROUP_STATUS,
+        states: Object.freeze({
+          unavailable: "unavailable",
+          scenarioInactive: "scenario-inactive",
+          characterRuntimeUnavailable: "character-runtime-unavailable",
+          consistentActive: "consistent-active",
+          recoverableProtectionDefeated: "recoverable-protection-defeated",
+          invalidProtectionBoarders: "invalid-protection-boarders",
+          recoverableInvestigationActive: "recoverable-investigation-active",
+          recoverableInvestigationDefeated: "recoverable-investigation-defeated",
+          invalidInvestigationBoarders: "invalid-investigation-boarders",
+          outsideProtection: "outside-protection"
+        }),
+        reconciliationModes,
+        reconciliationReasons,
+        reconciliationPolicy: Object.freeze({
+          [reconciliationModes.passive]: Object.freeze({
+            recoverDefeated: false
+          }),
+          [reconciliationModes.startupAttach]: Object.freeze({
+            recoverDefeated: true
+          })
+        })
+      })
+    });
+  })();
+
+  const SCENARIO_ID = PAX_SCENARIO_CONFIG.ids.scenarioId;
+  const PAX_SYSTEM_ID = PAX_SCENARIO_CONFIG.ids.systemId;
+  const BRIEFING_ACK_PREFIX = PAX_SCENARIO_CONFIG.storage.briefingAckPrefix;
+  const PROTECTION_STAGE_ID = PAX_SCENARIO_CONFIG.stages.protection;
+  const INVESTIGATION_STAGE_ID = PAX_SCENARIO_CONFIG.stages.investigation;
+  const CONFERENCE_STAGE_ID = PAX_SCENARIO_CONFIG.stages.conference;
+  const PAX_PROTECTION_ENCOUNTER_DEFINITION_ID = PAX_SCENARIO_CONFIG.encounter.definitionId;
+  const PAX_PROTECTION_ENCOUNTER_KEY = PAX_SCENARIO_CONFIG.encounter.key;
+  const PAX_PROTECTION_ENCOUNTER_SNAPSHOT_VERSION = PAX_SCENARIO_CONFIG.encounter.snapshotVersion;
+  const PAX_PROTECTION_ENCOUNTER_INSTANCE_SOURCE =
+    PAX_SCENARIO_CONFIG.encounter.diagnosticInstanceSource;
+  const PAX_PROTECTION_ACTIVE_STAGE_IDS = PAX_SCENARIO_CONFIG.encounter.activeStageIds;
+  const PAX_PROTECTION_COMPLETED_STAGE_IDS = PAX_SCENARIO_CONFIG.encounter.completedStageIds;
+  const PAX_PROTECTION_RECOVERY = PAX_SCENARIO_CONFIG.recovery.actions;
+  const PAX_BOARDER_GROUP_STATUS = PAX_SCENARIO_CONFIG.recovery.actorGroupStatus;
+  const PAX_PROTECTION_STATE = PAX_SCENARIO_CONFIG.recovery.states;
+  const PAX_RECONCILIATION_MODE = PAX_SCENARIO_CONFIG.recovery.reconciliationModes;
+  const PAX_RECONCILIATION_REASON = PAX_SCENARIO_CONFIG.recovery.reconciliationReasons;
+  const PAX_RECONCILIATION_POLICY = PAX_SCENARIO_CONFIG.recovery.reconciliationPolicy;
+  const HARD_KICKOFF_STAGE_IDS = PAX_SCENARIO_CONFIG.stages.hardKickoff;
+  const BOARDER_IDS = PAX_SCENARIO_CONFIG.actors.boarderIds;
+  const HARD_KICKOFF_POSITIONS = PAX_SCENARIO_CONFIG.actors.hardKickoffPositions;
+  const BOARDER_POSITIONS = PAX_SCENARIO_CONFIG.actors.boarderPositions;
 
   function objectValue(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -164,6 +226,11 @@
     };
   }
 
+  /*
+   * Pure Pax presentation model helpers. These return stable data
+   * snapshots and do not mutate the DOM.
+   */
+
   function characterRows(view) {
     const ids = arrayValue(view?.definition?.characterIds);
     const runtime = uiState.characterRuntime
@@ -184,55 +251,6 @@
     });
   }
 
-  function renderCharacters(container, view) {
-    if (!container) return;
-    container.replaceChildren();
-    const rows = characterRows(view);
-    rows.forEach((row) => {
-      const item = document.createElement("article");
-      item.className = "pax-scenario-character";
-      item.dataset.characterId = row.id;
-      item.dataset.characterStatus = row.status;
-      const heading = document.createElement("div");
-      const name = document.createElement("strong");
-      name.textContent = row.label;
-      const badge = document.createElement("span");
-      badge.textContent = row.kind === "enemy" ? "HOSTILE" : "PROTECTED PERSON";
-      heading.append(name, badge);
-      const detail = document.createElement("small");
-      const health = Math.max(0, Math.round(row.health));
-      const maxHealth = Math.max(1, Math.round(row.maxHealth));
-      const action = row.actionId.replace(/_/g, " ");
-      detail.textContent = `${health}/${maxHealth} health • ${row.status} • ${action}`;
-      if (row.protectedByPlayer) detail.textContent += " • protected by player";
-      item.append(heading, detail);
-      container.append(item);
-    });
-  }
-
-  function renderEvidence(container, view) {
-    if (!container) return;
-    container.replaceChildren();
-    arrayValue(view?.evidence).forEach((evidence) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "pax-scenario-evidence-button";
-      button.dataset.evidenceId = evidence.id;
-      button.disabled = uiState.running || evidence.collected;
-      const title = document.createElement("strong");
-      title.textContent = evidence.collected ? `✓ ${evidence.label}` : evidence.label;
-      const description = document.createElement("span");
-      description.textContent = evidence.description;
-      button.append(title, description);
-      button.addEventListener("click", () => runUi(() => (
-        uiState.runtime.recordEvidence(SCENARIO_ID, evidence.id, {
-          nowMs: performance.now()
-        })
-      )));
-      container.append(button);
-    });
-  }
-
   function requirementText(resolution) {
     const missing = arrayValue(resolution.missingEvidenceIds);
     if (resolution.available) return "Available";
@@ -249,46 +267,6 @@
     return parts.join(" • ") || "Locked";
   }
 
-  function renderResolutions(container, view) {
-    if (!container) return;
-    container.replaceChildren();
-    arrayValue(view?.resolutions).forEach((resolution) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "pax-scenario-resolution-button";
-      button.dataset.resolutionId = resolution.id;
-      button.disabled = uiState.running || !resolution.available;
-      const title = document.createElement("strong");
-      title.textContent = resolution.label;
-      const description = document.createElement("span");
-      description.textContent = resolution.description;
-      const requirement = document.createElement("small");
-      requirement.textContent = requirementText(resolution);
-      button.append(title, description, requirement);
-      button.addEventListener("click", () => runUi(() => (
-        uiState.runtime.resolveScenario(SCENARIO_ID, resolution.id, {
-          nowMs: performance.now()
-        })
-      )));
-      container.append(button);
-    });
-  }
-
-  function renderOutcome(container, view) {
-    if (!container) return;
-    container.replaceChildren();
-    const consequences = objectValue(view?.state?.consequences);
-    Object.entries(consequences).forEach(([key, value]) => {
-      const item = document.createElement("li");
-      const label = document.createElement("span");
-      label.textContent = consequenceLabel(key);
-      const result = document.createElement("strong");
-      result.textContent = stringValue(value).replace(/-/g, " ");
-      item.append(label, result);
-      container.append(item);
-    });
-  }
-
   function stageStatus(view) {
     const state = objectValue(view?.state);
     const stage = objectValue(view?.stage);
@@ -299,13 +277,13 @@
     if (state.status === "available") {
       return "Pax arrival trigger armed. The emergency protection detail begins when system arrival commits.";
     }
-    if (state.stageId === "protect-witness") {
+    if (state.stageId === PROTECTION_STAGE_ID) {
       return "HOSTILE BOARDING DETECTED. Six Quiet Service boarders are aboard. Repel every attacker.";
     }
-    if (state.stageId === "investigation") {
+    if (state.stageId === INVESTIGATION_STAGE_ID) {
       return "Boarding party eliminated. Their command data and weapon records were recovered automatically.";
     }
-    if (state.stageId === "conference") {
+    if (state.stageId === CONFERENCE_STAGE_ID) {
       return "The emergency conference is open. Choose a settlement supported by the evidence.";
     }
     return stage.label || "Pax scenario active.";
@@ -406,7 +384,7 @@
     const state = objectValue(view?.state);
     const evidenceCount = arrayValue(state.evidenceIds).length;
     const evidenceTotal = arrayValue(view?.evidence).length;
-    if (state.status === "active" && state.stageId === "protect-witness") {
+    if (state.status === "active" && state.stageId === PROTECTION_STAGE_ID) {
       return {
         visible: true,
         kicker: "PAX PRIORITY ONE",
@@ -415,7 +393,7 @@
         urgent: true
       };
     }
-    if (state.status === "active" && state.stageId === "investigation") {
+    if (state.status === "active" && state.stageId === INVESTIGATION_STAGE_ID) {
       return {
         visible: true,
         kicker: "BOARDING PARTY ELIMINATED",
@@ -424,7 +402,7 @@
         urgent: false
       };
     }
-    if (state.status === "active" && state.stageId === "conference") {
+    if (state.status === "active" && state.stageId === CONFERENCE_STAGE_ID) {
       return {
         visible: true,
         kicker: "PAX EMERGENCY CONFERENCE",
@@ -528,44 +506,6 @@
     };
   }
 
-  function renderThreatTracker(ui, view) {
-    const threat = threatPresentation(view);
-    if (ui.threatTracker) {
-      ui.threatTracker.hidden = !threat.visible;
-      ui.threatTracker.dataset.scenarioStage = stringValue(view?.state?.stageId);
-      ui.threatTracker.dataset.threatVisible = threat.visible ? "true" : "false";
-      ui.threatTracker.dataset.threatHealth = String(threat.health);
-    }
-    if (ui.threatName) ui.threatName.textContent = threat.name;
-    if (ui.threatDetail) ui.threatDetail.textContent = threat.detail;
-    if (ui.threatAction) ui.threatAction.textContent = threat.action;
-    return threat;
-  }
-
-  function renderMissionCues(ui, view) {
-    const state = objectValue(view?.state);
-    const cueKey = briefingCueKey(view);
-    const showBriefing = state.status === "active"
-      && state.stageId === "protect-witness"
-      && !briefingAcknowledged(cueKey);
-    if (ui.briefing) {
-      ui.briefing.hidden = !showBriefing;
-      ui.briefing.dataset.cueKey = cueKey;
-      ui.briefing.dataset.scenarioStage = stringValue(state.stageId);
-    }
-
-    const objective = objectivePresentation(view);
-    if (ui.objective) {
-      ui.objective.hidden = !objective.visible;
-      ui.objective.dataset.scenarioStage = stringValue(state.stageId);
-      ui.objective.dataset.urgent = objective.urgent ? "true" : "false";
-    }
-    if (ui.objectiveKicker) ui.objectiveKicker.textContent = objective.kicker;
-    if (ui.objectiveTitle) ui.objectiveTitle.textContent = objective.title;
-    if (ui.objectiveDetail) ui.objectiveDetail.textContent = objective.detail;
-    return {showBriefing, cueKey, objective};
-  }
-
   function arrivalActivationKey(navigation = {}) {
     const routeId = stringValue(navigation.lastCompletedRouteId || "unknown-route");
     const arrivalAtMs = Number(navigation.lastArrivalAtMs);
@@ -653,7 +593,7 @@
     ]);
   }
 
-  function forcePaxCharacterStates(reason = "pax-hard-kickoff", options = {}) {
+  function forceProtectionEncounterCharacters(reason = "pax-hard-kickoff", options = {}) {
     const runtime = currentCharacterRuntime();
     const clock = nowMs(options);
     if (!runtime?.forceCharacterState) {
@@ -781,25 +721,305 @@
     };
   }
 
-  function renderHardStart(ui, view) {
-    const presentation = hardStartPresentation(view);
+  function isPaxPresentationViewModel(value) {
+    return stringValue(value?.snapshotKind) === "pax-protection-presentation";
+  }
+
+  function toPaxPresentationViewModel(viewOrPresentation, options = {}) {
+    return isPaxPresentationViewModel(viewOrPresentation)
+      ? viewOrPresentation
+      : paxProtectionPresentationViewModel(viewOrPresentation, options);
+  }
+
+  function missionCuesPresentation(view, context = {}) {
+    const status = stringValue(context.status);
+    const stageId = stringValue(context.stageId);
+    const cueKey = briefingCueKey(view);
+    return {
+      briefing: {
+        visible: status === "active"
+          && stageId === PROTECTION_STAGE_ID
+          && !briefingAcknowledged(cueKey),
+        cueKey,
+        scenarioStage: stageId
+      },
+      objective: context.objective || objectivePresentation(view)
+    };
+  }
+
+  function evidencePresentation(view, context = {}) {
+    const status = stringValue(context.status);
+    const stageId = stringValue(context.stageId);
+    return {
+      visible: status === "active"
+        && [INVESTIGATION_STAGE_ID, CONFERENCE_STAGE_ID].includes(stageId),
+      items: arrayValue(view?.evidence)
+    };
+  }
+
+  function proceedPresentation(view, context = {}) {
+    const state = objectValue(view?.state);
+    const stageId = stringValue(context.stageId || state.stageId);
+    return {
+      visible: stageId === INVESTIGATION_STAGE_ID,
+      disabled: uiState.running || arrayValue(state.evidenceIds).length < 2
+    };
+  }
+
+  function resolutionsPresentation(view, context = {}) {
+    const status = stringValue(context.status);
+    const stageId = stringValue(context.stageId);
+    return {
+      visible: status === "active" && stageId === CONFERENCE_STAGE_ID,
+      items: arrayValue(view?.resolutions)
+    };
+  }
+
+  function outcomePresentation(view, context = {}) {
+    const status = stringValue(context.status || view?.state?.status);
+    return {
+      visible: status === "resolved",
+      consequences: objectValue(view?.state?.consequences)
+    };
+  }
+
+  function charactersPresentation(view) {
+    return {
+      rows: characterRows(view)
+    };
+  }
+
+  function paxProtectionPresentationViewModel(view, options = {}) {
+    const state = objectValue(view?.state);
+    const stage = objectValue(view?.stage);
+    const status = stringValue(state.status);
+    const stageId = stringValue(state.stageId);
+    const metrics = objectValue(state.metrics);
+    const discharges = Number(metrics.weaponDischarges || 0);
+    const intimidation = Number(metrics.intimidationDischarges || 0);
+    const conduct = discharges
+      ? ` • ${discharges} weapon discharges, ${intimidation} classed as intimidation`
+      : "";
+    const objective = objectivePresentation(view);
+    const hardStart = hardStartPresentation(view);
+    const threat = threatPresentation(
+      view,
+      Object.prototype.hasOwnProperty.call(options, "worldSnapshot")
+        ? options.worldSnapshot
+        : uiState.worldSnapshot
+    );
+    const missionCues = missionCuesPresentation(view, {status, stageId, objective});
+    const evidence = evidencePresentation(view, {status, stageId});
+    const proceed = proceedPresentation(view, {stageId});
+    const resolutions = resolutionsPresentation(view, {status, stageId});
+    const outcome = outcomePresentation(view, {status});
+    const characters = charactersPresentation(view);
+    const visible = Boolean(view?.visible);
+    const statusText = stageStatus(view);
+
+    return {
+      snapshotVersion: "pax-protection-presentation-view-model.v1",
+      snapshotKind: "pax-protection-presentation",
+      readOnly: true,
+      visible,
+      scenario: {
+        id: SCENARIO_ID,
+        systemId: PAX_SYSTEM_ID,
+        status,
+        stageId,
+        stageLabel: stringValue(stage.label || stageId),
+        stageDescription: stringValue(stage.description || "")
+      },
+      status: {
+        text: statusText
+      },
+      stage: {
+        title: stringValue(stage.label || stageId),
+        description: stringValue(stage.description || "")
+      },
+      localRule: {
+        text: view?.definition?.localRule
+          ? `Local rule: ${view.definition.localRule}${conduct}`
+          : "",
+        weaponDischarges: discharges,
+        intimidationDischarges: intimidation
+      },
+      vessel: {
+        text: `Enemy ship: ${view?.vesselStatus || "status unknown"}`
+      },
+      missionCues,
+      objective,
+      threat,
+      hardStart: Object.assign({}, hardStart, {
+        buttonDisabled: uiState.running || status === "resolved",
+        buttonHidden: status === "resolved"
+      }),
+      characters,
+      evidence,
+      proceed,
+      resolutions,
+      outcome
+    };
+  }
+
+  /*
+   * Pax DOM presentation renderers. These are the only presentation
+   * helpers in this file that mutate DOM nodes or attach DOM events.
+   */
+
+  function renderCharacters(container, viewOrPresentation) {
+    if (!container) return;
+    container.replaceChildren();
+    const presentation = toPaxPresentationViewModel(viewOrPresentation);
+    const rows = arrayValue(presentation.characters?.rows);
+    rows.forEach((row) => {
+      const item = document.createElement("article");
+      item.className = "pax-scenario-character";
+      item.dataset.characterId = row.id;
+      item.dataset.characterStatus = row.status;
+      const heading = document.createElement("div");
+      const name = document.createElement("strong");
+      name.textContent = row.label;
+      const badge = document.createElement("span");
+      badge.textContent = row.kind === "enemy" ? "HOSTILE" : "PROTECTED PERSON";
+      heading.append(name, badge);
+      const detail = document.createElement("small");
+      const health = Math.max(0, Math.round(row.health));
+      const maxHealth = Math.max(1, Math.round(row.maxHealth));
+      const action = row.actionId.replace(/_/g, " ");
+      detail.textContent = `${health}/${maxHealth} health • ${row.status} • ${action}`;
+      if (row.protectedByPlayer) detail.textContent += " • protected by player";
+      item.append(heading, detail);
+      container.append(item);
+    });
+  }
+
+  function renderEvidence(container, viewOrPresentation) {
+    if (!container) return;
+    container.replaceChildren();
+    const presentation = toPaxPresentationViewModel(viewOrPresentation);
+    arrayValue(presentation.evidence?.items).forEach((evidence) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "pax-scenario-evidence-button";
+      button.dataset.evidenceId = evidence.id;
+      button.disabled = uiState.running || evidence.collected;
+      const title = document.createElement("strong");
+      title.textContent = evidence.collected ? `✓ ${evidence.label}` : evidence.label;
+      const description = document.createElement("span");
+      description.textContent = evidence.description;
+      button.append(title, description);
+      button.addEventListener("click", () => runUi(() => (
+        uiState.runtime.recordEvidence(SCENARIO_ID, evidence.id, {
+          nowMs: performance.now()
+        })
+      )));
+      container.append(button);
+    });
+  }
+
+  function renderResolutions(container, viewOrPresentation) {
+    if (!container) return;
+    container.replaceChildren();
+    const presentation = toPaxPresentationViewModel(viewOrPresentation);
+    arrayValue(presentation.resolutions?.items).forEach((resolution) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "pax-scenario-resolution-button";
+      button.dataset.resolutionId = resolution.id;
+      button.disabled = uiState.running || !resolution.available;
+      const title = document.createElement("strong");
+      title.textContent = resolution.label;
+      const description = document.createElement("span");
+      description.textContent = resolution.description;
+      const requirement = document.createElement("small");
+      requirement.textContent = requirementText(resolution);
+      button.append(title, description, requirement);
+      button.addEventListener("click", () => runUi(() => (
+        uiState.runtime.resolveScenario(SCENARIO_ID, resolution.id, {
+          nowMs: performance.now()
+        })
+      )));
+      container.append(button);
+    });
+  }
+
+  function renderOutcome(container, viewOrPresentation) {
+    if (!container) return;
+    container.replaceChildren();
+    const presentation = toPaxPresentationViewModel(viewOrPresentation);
+    const consequences = objectValue(presentation.outcome?.consequences);
+    Object.entries(consequences).forEach(([key, value]) => {
+      const item = document.createElement("li");
+      const label = document.createElement("span");
+      label.textContent = consequenceLabel(key);
+      const result = document.createElement("strong");
+      result.textContent = stringValue(value).replace(/-/g, " ");
+      item.append(label, result);
+      container.append(item);
+    });
+  }
+
+  function renderThreatTracker(ui, viewOrPresentation) {
+    const presentation = toPaxPresentationViewModel(viewOrPresentation);
+    const threat = presentation.threat;
+    if (ui.threatTracker) {
+      ui.threatTracker.hidden = !threat.visible;
+      ui.threatTracker.dataset.scenarioStage = presentation.scenario.stageId;
+      ui.threatTracker.dataset.threatVisible = threat.visible ? "true" : "false";
+      ui.threatTracker.dataset.threatHealth = String(threat.health);
+    }
+    if (ui.threatName) ui.threatName.textContent = threat.name;
+    if (ui.threatDetail) ui.threatDetail.textContent = threat.detail;
+    if (ui.threatAction) ui.threatAction.textContent = threat.action;
+    return threat;
+  }
+
+  function renderMissionCues(ui, viewOrPresentation) {
+    const presentation = toPaxPresentationViewModel(viewOrPresentation);
+    const briefing = presentation.missionCues.briefing;
+    const objective = presentation.missionCues.objective;
+    if (ui.briefing) {
+      ui.briefing.hidden = !briefing.visible;
+      ui.briefing.dataset.cueKey = briefing.cueKey;
+      ui.briefing.dataset.scenarioStage = presentation.scenario.stageId;
+    }
+
+    if (ui.objective) {
+      ui.objective.hidden = !objective.visible;
+      ui.objective.dataset.scenarioStage = presentation.scenario.stageId;
+      ui.objective.dataset.urgent = objective.urgent ? "true" : "false";
+    }
+    if (ui.objectiveKicker) ui.objectiveKicker.textContent = objective.kicker;
+    if (ui.objectiveTitle) ui.objectiveTitle.textContent = objective.title;
+    if (ui.objectiveDetail) ui.objectiveDetail.textContent = objective.detail;
+    return {
+      showBriefing: briefing.visible,
+      cueKey: briefing.cueKey,
+      objective
+    };
+  }
+
+  function renderHardStart(ui, viewOrPresentation) {
+    const viewModel = toPaxPresentationViewModel(viewOrPresentation);
+    const presentation = viewModel.hardStart;
     if (ui.hardStart) {
       ui.hardStart.hidden = !presentation.visible;
-      ui.hardStart.dataset.scenarioStatus = stringValue(view?.state?.status);
-      ui.hardStart.dataset.scenarioStage = stringValue(view?.state?.stageId);
+      ui.hardStart.dataset.scenarioStatus = viewModel.scenario.status;
+      ui.hardStart.dataset.scenarioStage = viewModel.scenario.stageId;
     }
     if (ui.hardStartTitle) ui.hardStartTitle.textContent = presentation.title;
     if (ui.hardStartDetail) ui.hardStartDetail.textContent = presentation.detail;
     if (ui.hardStartButton) {
       ui.hardStartButton.textContent = presentation.button;
-      ui.hardStartButton.disabled = uiState.running
-        || stringValue(view?.state?.status) === "resolved";
-      ui.hardStartButton.hidden = stringValue(view?.state?.status) === "resolved";
+      ui.hardStartButton.disabled = presentation.buttonDisabled;
+      ui.hardStartButton.hidden = presentation.buttonHidden;
     }
     return presentation;
   }
 
-  function resetPaxProtectionEncounter(reason = "pax-protection-reset", options = {}) {
+
+  function resetProtectionEncounter(reason = "pax-protection-reset", options = {}) {
     const runtime = currentRuntime();
     const clock = nowMs(options);
     if (!runtime?.resetProtectionEncounter) {
@@ -818,7 +1038,7 @@
      * encounter.
      */
     uiState.lastHardKickoff = null;
-    const forced = forcePaxCharacterStates(reason, {nowMs: clock});
+    const forced = forceProtectionEncounterCharacters(reason, {nowMs: clock});
     if (!forced?.forced) {
       return {
         reset: false,
@@ -855,7 +1075,7 @@
     };
   }
 
-  function startOrRecoverPax(reason = "pax-hard-kickoff", options = {}) {
+  function startOrRecoverProtectionEncounter(reason = "pax-hard-kickoff", options = {}) {
     const runtime = currentRuntime();
     const clock = nowMs(options);
     if (!runtime?.view) {
@@ -893,7 +1113,7 @@
     if (before.state?.status === "active"
         && before.state.stageId !== PROTECTION_STAGE_ID
         && options.restartProtectionEncounter === true) {
-      const reset = resetPaxProtectionEncounter(reason, {nowMs: clock});
+      const reset = resetProtectionEncounter(reason, {nowMs: clock});
       return {
         handled: true,
         started: false,
@@ -925,7 +1145,7 @@
     const after = runtime.view(SCENARIO_ID);
     let forced = {forced: false, reason: "not-protection-stage"};
     if (after?.state?.status === "active" && after.state.stageId === PROTECTION_STAGE_ID) {
-      forced = forcePaxCharacterStates(reason, {nowMs: clock});
+      forced = forceProtectionEncounterCharacters(reason, {nowMs: clock});
     }
     revealArrivalPanel();
     render();
@@ -986,7 +1206,7 @@
     if (before.state?.status !== "available") {
       let forced = {forced: false, reason: "not-protection-stage"};
       if (before.state?.status === "active" && before.state.stageId === PROTECTION_STAGE_ID) {
-        forced = forcePaxCharacterStates("navigation-recovered-protection", {
+        forced = forceProtectionEncounterCharacters("navigation-recovered-protection", {
           nowMs: Number(navigation.lastArrivalAtMs) || 0
         });
       }
@@ -1014,7 +1234,7 @@
       routeId: stringValue(navigation.lastCompletedRouteId),
       navigationSequence: Number(navigation.sequence) || 0
     });
-    const forced = forcePaxCharacterStates("navigation-arrival-hard-kickoff", {
+    const forced = forceProtectionEncounterCharacters("navigation-arrival-hard-kickoff", {
       nowMs: Number(navigation.lastArrivalAtMs) || 0
     });
     revealArrivalPanel();
@@ -1060,7 +1280,7 @@
     if (view.visible && state.status === "available" && !uiState.recoveryInProgress) {
       uiState.recoveryInProgress = true;
       try {
-        const recovered = startOrRecoverPax(
+        const recovered = startOrRecoverProtectionEncounter(
           "visible-pax-current-system-hard-kickoff",
           {nowMs: nowMs({}), allowSystemChange: false}
         );
@@ -1076,51 +1296,42 @@
         && state.stageId === PROTECTION_STAGE_ID
         && !uiState.lastHardKickoff
         && !uiState.recoveryInProgress) {
-      forcePaxCharacterStates("visible-protection-hard-kickoff", {nowMs: nowMs({})});
+      forceProtectionEncounterCharacters("visible-protection-hard-kickoff", {nowMs: nowMs({})});
     }
 
-    ui.root.hidden = !view.visible;
-    renderHardStart(ui, view);
-    if (!view.visible) return view;
+    const presentation = paxProtectionPresentationViewModel(view);
+    ui.root.hidden = !presentation.visible;
+    renderHardStart(ui, presentation);
+    if (!presentation.visible) return view;
     state = objectValue(view.state);
-    const stage = objectValue(view.stage);
-    ui.root.dataset.scenarioStatus = state.status;
-    ui.root.dataset.scenarioStage = state.stageId;
-    renderMissionCues(ui, view);
-    renderThreatTracker(ui, view);
+    ui.root.dataset.scenarioStatus = presentation.scenario.status;
+    ui.root.dataset.scenarioStage = presentation.scenario.stageId;
+    renderMissionCues(ui, presentation);
+    renderThreatTracker(ui, presentation);
 
-    if (ui.status) ui.status.textContent = stageStatus(view);
-    if (ui.stageTitle) ui.stageTitle.textContent = stage.label || state.stageId;
-    if (ui.stageDescription) ui.stageDescription.textContent = stage.description || "";
-    if (ui.localRule) {
-      const metrics = objectValue(state.metrics);
-      const discharges = Number(metrics.weaponDischarges || 0);
-      const intimidation = Number(metrics.intimidationDischarges || 0);
-      const conduct = discharges
-        ? ` • ${discharges} weapon discharges, ${intimidation} classed as intimidation`
-        : "";
-      ui.localRule.textContent = `Local rule: ${view.definition.localRule}${conduct}`;
-    }
-    if (ui.vessel) ui.vessel.textContent = `Enemy ship: ${view.vesselStatus || "status unknown"}`;
+    if (ui.status) ui.status.textContent = presentation.status.text;
+    if (ui.stageTitle) ui.stageTitle.textContent = presentation.stage.title;
+    if (ui.stageDescription) ui.stageDescription.textContent = presentation.stage.description;
+    if (ui.localRule) ui.localRule.textContent = presentation.localRule.text;
+    if (ui.vessel) ui.vessel.textContent = presentation.vessel.text;
 
-    renderCharacters(ui.characters, view);
+    renderCharacters(ui.characters, presentation);
 
-    const evidenceVisible = state.status === "active"
-      && ["investigation", "conference"].includes(state.stageId);
+    const evidenceVisible = presentation.evidence.visible;
     if (ui.evidence) ui.evidence.hidden = !evidenceVisible;
-    if (evidenceVisible) renderEvidence(ui.evidenceList, view);
+    if (evidenceVisible) renderEvidence(ui.evidenceList, presentation);
     if (ui.proceed) {
-      ui.proceed.hidden = state.stageId !== "investigation";
-      ui.proceed.disabled = uiState.running || state.evidenceIds.length < 2;
+      ui.proceed.hidden = !presentation.proceed.visible;
+      ui.proceed.disabled = presentation.proceed.disabled;
     }
 
-    const resolutionVisible = state.status === "active" && state.stageId === "conference";
+    const resolutionVisible = presentation.resolutions.visible;
     if (ui.resolutions) ui.resolutions.hidden = !resolutionVisible;
-    if (resolutionVisible) renderResolutions(ui.resolutionList, view);
+    if (resolutionVisible) renderResolutions(ui.resolutionList, presentation);
 
     if (ui.outcome) {
-      ui.outcome.hidden = state.status !== "resolved";
-      if (state.status === "resolved") renderOutcome(ui.outcome, view);
+      ui.outcome.hidden = !presentation.outcome.visible;
+      if (presentation.outcome.visible) renderOutcome(ui.outcome, presentation);
       else ui.outcome.replaceChildren();
     }
     return view;
@@ -1194,9 +1405,20 @@
       systemId: PAX_SYSTEM_ID,
       view,
       stageId: options.stageId || view?.state?.stageId,
-      activeStageIds: [PROTECTION_STAGE_ID],
-      completedStageIds: [INVESTIGATION_STAGE_ID],
+      activeStageIds: PAX_PROTECTION_ACTIVE_STAGE_IDS,
+      completedStageIds: PAX_PROTECTION_COMPLETED_STAGE_IDS,
       actorIds: BOARDER_IDS
+    });
+  }
+
+  function paxProtectionEncounterInstanceDescriptor(options = {}) {
+    const identity = options.identity || paxProtectionEncounterIdentity(options);
+    return EncounterState.encounterInstanceDescriptor({
+      identity,
+      instanceId: options.instanceId || options.encounterInstanceId || options.runId,
+      proposedInstanceId: options.proposedInstanceId,
+      proposedInstanceKey: options.proposedInstanceKey,
+      source: options.instanceSource || PAX_PROTECTION_ENCOUNTER_INSTANCE_SOURCE
     });
   }
 
@@ -1228,8 +1450,9 @@
       scenarioId: SCENARIO_ID,
       systemId: PAX_SYSTEM_ID,
       actorIds: BOARDER_IDS,
-      activeStageIds: [PROTECTION_STAGE_ID],
-      completedStageIds: [INVESTIGATION_STAGE_ID],
+      instanceSource: PAX_PROTECTION_ENCOUNTER_INSTANCE_SOURCE,
+      activeStageIds: PAX_PROTECTION_ACTIVE_STAGE_IDS,
+      completedStageIds: PAX_PROTECTION_COMPLETED_STAGE_IDS,
       stateLabels: paxProtectionStateLabels(),
       recoveryActions: paxProtectionRecoveryActions()
     });
@@ -1240,6 +1463,9 @@
       actorRuntime: characterRuntime,
       view,
       identity: classification.identity || paxProtectionEncounterIdentity({view}),
+      instance: classification.instance || paxProtectionEncounterInstanceDescriptor({
+        identity: classification.identity || paxProtectionEncounterIdentity({view})
+      }),
       boarderGroup,
       actorGroup: boarderGroup
     });
@@ -1255,53 +1481,142 @@
     const selectedMode = stringValue(mode) || PAX_RECONCILIATION_MODE.passive;
     const policy = PAX_RECONCILIATION_POLICY[selectedMode]
       || PAX_RECONCILIATION_POLICY[PAX_RECONCILIATION_MODE.passive];
-    return Object.assign({}, policy, objectValue(overrides));
+    return Object.assign({}, policy, objectValue(overrides), {
+      mode: selectedMode
+    });
   }
 
-  function diagnosePaxProtectionEncounter(options = {}) {
+  function paxProtectionEncounterSnapshotData(options = {}) {
+    const snapshotOptions = objectValue(options);
     const reconciliationOptions = paxProtectionReconciliationOptions(
-      options.mode,
-      options
+      snapshotOptions.mode,
+      snapshotOptions
     );
     const classification = classifyPaxProtectionState(reconciliationOptions);
     const plan = paxProtectionReconciliationPlan(classification, reconciliationOptions);
+    const snapshot = buildPaxProtectionEncounterSnapshot(
+      classification,
+      plan,
+      reconciliationOptions
+    );
+    return {
+      classification,
+      plan,
+      reconciliationOptions,
+      snapshot
+    };
+  }
+
+  function buildPaxProtectionEncounterSnapshot(
+    classification,
+    plan,
+    reconciliationOptions = {}
+  ) {
     const identity = classification.identity || paxProtectionEncounterIdentity({
       view: classification.view,
       stageId: classification.stageId
     });
+    const instance = classification.instance || paxProtectionEncounterInstanceDescriptor({
+      identity
+    });
+    const diagnostic = EncounterState.diagnosticSnapshot(classification, plan, {
+      identity,
+      instance,
+      instanceSource: PAX_PROTECTION_ENCOUNTER_INSTANCE_SOURCE
+    });
+    const completion = diagnostic.completion || EncounterState.completionDiagnostic(
+      classification,
+      plan,
+      {identity}
+    );
+    const diagnosticInstance = diagnostic.instance || instance;
+    const boarders = EncounterState.actorDiagnosticRows(classification.boarderGroup, {
+      entriesKey: "boarders"
+    });
+    const boarderIds = BOARDER_IDS.slice();
+    const lastAutomaticRecovery = uiState.lastAutomaticRecovery
+      ? Object.assign({}, uiState.lastAutomaticRecovery)
+      : null;
+    const runtimeAttached = Boolean(classification.scenarioRuntime);
+    const characterRuntimeAttached = Boolean(classification.characterRuntime);
+    const recoveryInProgress = Boolean(uiState.recoveryInProgress);
+    const mode = stringValue(reconciliationOptions.mode)
+      || PAX_RECONCILIATION_MODE.passive;
+
     return Object.assign(
-      EncounterState.diagnosticSnapshot(classification, plan, {identity}),
+      diagnostic,
       {
+        snapshotVersion: PAX_PROTECTION_ENCOUNTER_SNAPSHOT_VERSION,
+        snapshotKind: "pax-protection-encounter",
+        readOnly: true,
+        source: "pax-scenario-interaction",
+        mode,
         encounter: identity,
+        encounterInstance: diagnosticInstance,
         encounterKey: identity.key,
         encounterDefinitionId: identity.definitionId,
         encounterInstanceId: identity.instanceId,
         encounterInstanceKnown: identity.instanceKnown,
+        encounterProposedInstanceId: diagnosticInstance.proposedInstanceId,
+        encounterProposedInstanceKey: diagnosticInstance.proposedInstanceKey,
+        encounterInstancePlaceholder: diagnosticInstance.placeholder,
+        encounterInstanceDurableCommitted: diagnosticInstance.durableCommitted,
+        completion,
+        completionStatus: completion.status,
+        completionTrusted: completion.trusted,
+        completionReason: completion.reason,
+        staleActorState: completion.staleActorState,
+        completionIssueCodes: completion.issueCodes.slice(),
+        restartableCompletionCorruption: completion.corruption,
         scenarioId: SCENARIO_ID,
         systemId: PAX_SYSTEM_ID,
         activeStageId: PROTECTION_STAGE_ID,
         completedStageId: INVESTIGATION_STAGE_ID,
-        boarderIds: BOARDER_IDS.slice(),
-        boarders: EncounterState.actorDiagnosticRows(classification.boarderGroup, {
-          entriesKey: "boarders"
-        }),
-        runtimeAttached: Boolean(classification.scenarioRuntime),
-        characterRuntimeAttached: Boolean(classification.characterRuntime),
-        recoveryInProgress: Boolean(uiState.recoveryInProgress),
-        lastAutomaticRecovery: uiState.lastAutomaticRecovery
-          ? Object.assign({}, uiState.lastAutomaticRecovery)
-          : null
+        boarderIds,
+        boarders,
+        actors: {
+          ids: boarderIds,
+          status: diagnostic.actorStatus,
+          total: diagnostic.total,
+          activeCount: diagnostic.activeCount,
+          defeatedCount: diagnostic.defeatedCount,
+          missingCount: diagnostic.missingCount,
+          rows: boarders
+        },
+        runtimes: {
+          scenarioAttached: runtimeAttached,
+          characterAttached: characterRuntimeAttached
+        },
+        reconciliation: {
+          mode,
+          recoverDefeated: Boolean(reconciliationOptions.recoverDefeated),
+          inProgress: recoveryInProgress,
+          plan: diagnostic.plan,
+          lastAutomaticRecovery
+        },
+        runtimeAttached,
+        characterRuntimeAttached,
+        recoveryInProgress,
+        lastAutomaticRecovery
       }
     );
+  }
+
+  function paxProtectionEncounterSnapshot(options = {}) {
+    return paxProtectionEncounterSnapshotData(options).snapshot;
+  }
+
+  function diagnosePaxProtectionEncounter(options = {}) {
+    return paxProtectionEncounterSnapshot(options);
   }
 
   function performPaxProtectionRecovery(plan, reason, options = {}) {
     if (plan.action === PAX_PROTECTION_RECOVERY.reviveBoarders) {
       uiState.lastHardKickoff = null;
-      return forcePaxCharacterStates(reason, {nowMs: nowMs(options)});
+      return forceProtectionEncounterCharacters(reason, {nowMs: nowMs(options)});
     }
     if (plan.action === PAX_PROTECTION_RECOVERY.restartEncounter) {
-      return resetPaxProtectionEncounter(reason, {nowMs: nowMs(options)});
+      return resetProtectionEncounter(reason, {nowMs: nowMs(options)});
     }
     return {forced: false, reset: false, reason: "no-recovery-action"};
   }
@@ -1323,15 +1638,18 @@
       return {recovered: false, reason: "recovery-in-progress"};
     }
 
-    const classification = classifyPaxProtectionState(options);
-    const plan = paxProtectionReconciliationPlan(classification, options);
+    const snapshotData = paxProtectionEncounterSnapshotData(options);
+    const classification = snapshotData.classification;
+    const plan = snapshotData.plan;
+    const snapshot = snapshotData.snapshot;
 
     if (!plan.recover) {
       return {
         recovered: false,
         reason: plan.reason,
         classification,
-        plan
+        plan,
+        snapshot
       };
     }
 
@@ -1357,30 +1675,22 @@
           : result?.reason || "automatic-recovery-failed",
         classification,
         plan,
-        result
+        result,
+        snapshot
       };
     } finally {
       uiState.recoveryInProgress = false;
     }
   }
 
-  function requestPaxProtectionReconciliation(
+  function requestProtectionEncounterReconciliation(
     reason = PAX_RECONCILIATION_REASON.automatic,
     mode = PAX_RECONCILIATION_MODE.passive,
     options = {}
   ) {
     return reconcilePaxProtectionState(
       reason,
-      paxProtectionReconciliationOptions(mode, options)
-    );
-  }
-
-  function recoverActiveBoardersOutsideProtection(
-    reason = PAX_RECONCILIATION_REASON.automatic
-  ) {
-    return requestPaxProtectionReconciliation(
-      reason,
-      PAX_RECONCILIATION_MODE.passive
+      paxProtectionReconciliationOptions(mode, Object.assign({reason}, objectValue(options)))
     );
   }
 
@@ -1388,13 +1698,13 @@
     if (uiState.unsubscribe) uiState.unsubscribe();
     uiState.runtime = runtime || null;
     uiState.unsubscribe = runtime?.subscribe?.(() => {
-      requestPaxProtectionReconciliation(
+      requestProtectionEncounterReconciliation(
         PAX_RECONCILIATION_REASON.scenarioState,
         PAX_RECONCILIATION_MODE.passive
       );
       render();
     }) || null;
-    requestPaxProtectionReconciliation(
+    requestProtectionEncounterReconciliation(
       PAX_RECONCILIATION_REASON.scenarioRuntimeAttach,
       PAX_RECONCILIATION_MODE.startupAttach
     );
@@ -1408,7 +1718,7 @@
 
     let recovery = {recovered: false, reason: "already-checked"};
     if (runtime && uiState.recoveredCharacterRuntime !== runtime) {
-      recovery = requestPaxProtectionReconciliation(
+      recovery = requestProtectionEncounterReconciliation(
         PAX_RECONCILIATION_REASON.characterRuntimeAttach,
         PAX_RECONCILIATION_MODE.startupAttach,
         {characterRuntime: runtime}
@@ -1422,7 +1732,7 @@
 
     uiState.characterUnsubscribe = runtime?.subscribe?.(() => {
       syncProtection();
-      requestPaxProtectionReconciliation(
+      requestProtectionEncounterReconciliation(
         PAX_RECONCILIATION_REASON.characterState,
         PAX_RECONCILIATION_MODE.passive
       );
@@ -1447,7 +1757,7 @@
     ui.hardStartButton?.addEventListener("click", () => {
       const runtime = currentRuntime();
       const view = runtime?.view?.(SCENARIO_ID) || null;
-      return startOrRecoverPax(
+      return startOrRecoverProtectionEncounter(
         "player-hard-start-button",
         {
           allowSystemChange: true,
@@ -1476,48 +1786,157 @@
     render();
   }
 
+  function paxProtectionDebugState() {
+    return {
+      bound: Boolean(uiState.bound),
+      runtimeAttached: Boolean(uiState.runtime),
+      characterRuntimeAttached: Boolean(uiState.characterRuntime),
+      recoveredCharacterRuntimeAttached: Boolean(uiState.recoveredCharacterRuntime),
+      recoveredCharacterRuntimeMatchesCurrent:
+        Boolean(uiState.recoveredCharacterRuntime)
+        && uiState.recoveredCharacterRuntime === uiState.characterRuntime,
+      recoveryInProgress: Boolean(uiState.recoveryInProgress),
+      lastHardKickoff: uiState.lastHardKickoff
+        ? Object.assign({}, uiState.lastHardKickoff)
+        : null,
+      lastAutomaticRecovery: uiState.lastAutomaticRecovery
+        ? Object.assign({}, uiState.lastAutomaticRecovery)
+        : null,
+      hasWorldSnapshot: Boolean(uiState.worldSnapshot)
+    };
+  }
+
+  /*
+   * Public surface rule: top-level exports are constants, runtime attachment,
+   * and read-only diagnostics. Mutation-capable helpers stay behind
+   * api.commands so UI/debug callers have one explicit command boundary.
+   */
+  const paxConstants = Object.freeze({
+    config: PAX_SCENARIO_CONFIG,
+    scenarioId: SCENARIO_ID,
+    systemId: PAX_SYSTEM_ID,
+    protectionStageId: PROTECTION_STAGE_ID,
+    investigationStageId: INVESTIGATION_STAGE_ID,
+    conferenceStageId: CONFERENCE_STAGE_ID,
+    hardKickoffStageIds: HARD_KICKOFF_STAGE_IDS,
+    encounterDefinitionId: PAX_PROTECTION_ENCOUNTER_DEFINITION_ID,
+    encounterKey: PAX_PROTECTION_ENCOUNTER_KEY,
+    encounterSnapshotVersion: PAX_PROTECTION_ENCOUNTER_SNAPSHOT_VERSION,
+    encounterInstanceSource: PAX_PROTECTION_ENCOUNTER_INSTANCE_SOURCE,
+    activeStageIds: PAX_PROTECTION_ACTIVE_STAGE_IDS,
+    completedStageIds: PAX_PROTECTION_COMPLETED_STAGE_IDS,
+    reconciliationModes: PAX_RECONCILIATION_MODE,
+    reconciliationReasons: PAX_RECONCILIATION_REASON,
+    reconciliationPolicy: PAX_RECONCILIATION_POLICY,
+    recoveryActions: PAX_PROTECTION_RECOVERY,
+    protectionStates: PAX_PROTECTION_STATE,
+    boarderGroupStatus: PAX_BOARDER_GROUP_STATUS,
+    boarderIds: Object.freeze(BOARDER_IDS.slice()),
+    hardKickoffPositions: HARD_KICKOFF_POSITIONS,
+    boarderPositions: BOARDER_POSITIONS
+  });
+
+  const paxDiagnostics = Object.freeze({
+    snapshot: paxProtectionEncounterSnapshot,
+    diagnose: diagnosePaxProtectionEncounter,
+    state: paxProtectionDebugState,
+    characterRows,
+    encounterIdentity: paxProtectionEncounterIdentity,
+    encounterInstanceDescriptor: paxProtectionEncounterInstanceDescriptor
+  });
+
+  const paxCommands = Object.freeze({
+    startOrRecover: startOrRecoverProtectionEncounter,
+    requestReconciliation: requestProtectionEncounterReconciliation,
+    resetProtectionEncounter,
+    forceCharacterStates: forceProtectionEncounterCharacters
+  });
+
+  const paxPresentationModel = Object.freeze({
+    viewModel: paxProtectionPresentationViewModel,
+    presentationViewModel: paxProtectionPresentationViewModel,
+    toViewModel: toPaxPresentationViewModel,
+    isViewModel: isPaxPresentationViewModel,
+    stageStatus,
+    objective: objectivePresentation,
+    objectivePresentation,
+    threat: threatPresentation,
+    threatPresentation,
+    hardStart: hardStartPresentation,
+    hardStartPresentation,
+    missionCues: missionCuesPresentation,
+    missionCuesPresentation,
+    evidence: evidencePresentation,
+    evidencePresentation,
+    proceed: proceedPresentation,
+    proceedPresentation,
+    resolutions: resolutionsPresentation,
+    resolutionsPresentation,
+    outcome: outcomePresentation,
+    outcomePresentation,
+    characters: charactersPresentation,
+    charactersPresentation,
+    characterRows,
+    requirementText
+  });
+
+  const paxPresentationDom = Object.freeze({
+    renderCharacters,
+    renderEvidence,
+    renderResolutions,
+    renderOutcome,
+    renderMissionCues,
+    renderThreatTracker,
+    renderHardStart
+  });
+
+  const paxPresentation = Object.freeze({
+    model: paxPresentationModel,
+    dom: paxPresentationDom,
+    viewModel: paxProtectionPresentationViewModel,
+    presentationViewModel: paxProtectionPresentationViewModel,
+    objective: objectivePresentation,
+    objectivePresentation,
+    threat: threatPresentation,
+    threatPresentation,
+    hardStart: hardStartPresentation,
+    hardStartPresentation,
+    requirementText,
+    renderMissionCues,
+    renderThreatTracker,
+    renderHardStart
+  });
+
+  const paxRuntime = Object.freeze({
+    setRuntime,
+    setCharacterRuntime,
+    handleNavigation,
+    setWorldSnapshot,
+    bind,
+    render
+  });
+
   const api = {
     SCENARIO_ID,
     PAX_SYSTEM_ID,
     PAX_PROTECTION_ENCOUNTER_DEFINITION_ID,
     PAX_PROTECTION_ENCOUNTER_KEY,
-    paxProtectionEncounterIdentity,
+    PAX_PROTECTION_ENCOUNTER_SNAPSHOT_VERSION,
+    constants: paxConstants,
+    config: PAX_SCENARIO_CONFIG,
+    diagnostics: paxDiagnostics,
+    commands: paxCommands,
+    presentation: paxPresentation,
+    runtime: paxRuntime,
+    paxProtectionEncounterSnapshot,
+    diagnosePaxProtectionEncounter,
     setRuntime,
     setCharacterRuntime,
     handleNavigation,
-    arrivalActivationKey,
-    isDurableCommittedArrival,
-    isLegacyPaxOccupancy,
-    legacyActivationKey,
-    briefingCueKey,
-    briefingAcknowledged,
-    acknowledgeBriefing,
-    objectivePresentation,
-    renderMissionCues,
-    renderThreatTracker,
-    threatPresentation,
-    renderHardStart,
-    hardStartPresentation,
     setWorldSnapshot,
-    forcePaxCharacterStates,
-    resetPaxProtectionEncounter,
-    classifyBoarderGroup,
-    classifyPaxProtectionState,
-    paxProtectionReconciliationPlan,
-    paxProtectionReconciliationOptions,
-    diagnosePaxProtectionEncounter,
-    requestPaxProtectionReconciliation,
-    reconcilePaxProtectionState,
-    recoverActiveBoardersOutsideProtection,
-    startOrRecoverPax,
-    hardKickoffPositions: HARD_KICKOFF_POSITIONS,
-    boarderIds: BOARDER_IDS,
-    syncProtection,
-    characterRows,
-    requirementText,
-    render,
     bind,
-    state: uiState
+    hardKickoffPositions: HARD_KICKOFF_POSITIONS,
+    boarderIds: Object.freeze(BOARDER_IDS.slice())
   };
 
   global.MainComputerPaxScenarioInteraction = api;

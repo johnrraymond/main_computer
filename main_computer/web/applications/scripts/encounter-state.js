@@ -28,6 +28,29 @@
     restartEncounter: "restart-encounter"
   });
 
+  const COMPLETION_STATUS = Object.freeze({
+    notCompleted: "not-completed",
+    completedTrusted: "completed-trusted",
+    completedButUntrusted: "completed-but-untrusted"
+  });
+
+  const STALE_STATE_REASON = Object.freeze({
+    none: "none",
+    notCompleted: "not-completed",
+    durableInstanceMissing: "durable-instance-missing",
+    actorRuntimeUnavailable: "actor-runtime-unavailable",
+    staleActiveActors: "stale-active-actors",
+    staleDefeatedActors: "stale-defeated-actors",
+    staleMixedActors: "stale-mixed-actors",
+    staleMissingActors: "stale-missing-actors",
+    restartableCorruption: "restartable-corruption"
+  });
+
+  const ENCOUNTER_INSTANCE_STATUS = Object.freeze({
+    known: "known",
+    placeholder: "placeholder"
+  });
+
   function isPlainObject(value) {
     return Boolean(value && typeof value === "object" && !Array.isArray(value));
   }
@@ -92,6 +115,76 @@
         ...stageList(options.completedStageId, options.completedStageIds)
       ]),
       actorIds: uniqueStrings(options.actorIds)
+    };
+  }
+
+  function stableKeyPart(value, fallback) {
+    const text = stringValue(value).trim();
+    if (!text) return fallback;
+    const cleaned = text
+      .replace(/[^A-Za-z0-9._:-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return cleaned || fallback;
+  }
+
+  function proposedEncounterInstanceId(identity, options = {}) {
+    const explicit = stringValue(
+      options.proposedInstanceId
+      || options.proposedInstanceKey
+      || options.pendingInstanceId
+      || options.pendingInstanceKey
+    );
+    if (explicit) return explicit;
+    const encounterKey = stableKeyPart(
+      identity.key || identity.definitionId,
+      "encounter.unknown"
+    );
+    const lifecycleStage = stableKeyPart(
+      identity.activeStageIds?.[0] || identity.stageId,
+      "stage.unknown"
+    );
+    return `${encounterKey}:instance:${lifecycleStage}:pending`;
+  }
+
+  function encounterInstanceDescriptor(rawOptions = {}) {
+    const options = objectValue(rawOptions);
+    const identity = encounterIdentity(Object.assign(
+      {},
+      objectValue(options.identity),
+      options
+    ));
+    const instanceId = stringValue(
+      identity.instanceId
+      || options.instanceId
+      || options.encounterInstanceId
+      || options.runId
+    );
+    const instanceKnown = Boolean(instanceId);
+    const proposedInstanceId = instanceKnown
+      ? instanceId
+      : proposedEncounterInstanceId(identity, options);
+    return {
+      status: instanceKnown
+        ? ENCOUNTER_INSTANCE_STATUS.known
+        : ENCOUNTER_INSTANCE_STATUS.placeholder,
+      key: identity.key,
+      definitionId: identity.definitionId,
+      instanceId: instanceId || null,
+      instanceKnown,
+      proposedInstanceId,
+      proposedInstanceKey: proposedInstanceId,
+      placeholder: !instanceKnown,
+      durable: instanceKnown,
+      durableCommitted: instanceKnown,
+      source: instanceKnown
+        ? "durable-instance"
+        : stringValue(options.source) || "diagnostic-placeholder",
+      scenarioId: identity.scenarioId,
+      systemId: identity.systemId,
+      stageId: identity.stageId,
+      activeStageIds: identity.activeStageIds.slice(),
+      completedStageIds: identity.completedStageIds.slice(),
+      actorIds: identity.actorIds.slice()
     };
   }
 
@@ -275,6 +368,16 @@
     if (key) identityOptions.key = key;
     if (instanceId) identityOptions.instanceId = instanceId;
     const identity = encounterIdentity(identityOptions);
+    const instance = encounterInstanceDescriptor(Object.assign(
+      {},
+      objectValue(options.instance),
+      {
+        identity,
+        proposedInstanceId: options.proposedInstanceId,
+        proposedInstanceKey: options.proposedInstanceKey,
+        source: options.instanceSource
+      }
+    ));
 
     let status = stateLabels.unavailable;
     let recovery = recoveryActions.none;
@@ -321,6 +424,7 @@
       stageId,
       stageClass,
       identity,
+      instance,
       actorGroup
     };
   }
@@ -371,6 +475,94 @@
     return Boolean(result.recovered || result.success || result.reset || result.forced);
   }
 
+  function staleActorReason(actorStatus, instanceKnown) {
+    if (instanceKnown) return STALE_STATE_REASON.none;
+    if (actorStatus === ACTOR_GROUP_STATUS.active) {
+      return STALE_STATE_REASON.staleActiveActors;
+    }
+    if (actorStatus === ACTOR_GROUP_STATUS.defeated) {
+      return STALE_STATE_REASON.staleDefeatedActors;
+    }
+    if (actorStatus === ACTOR_GROUP_STATUS.mixed) {
+      return STALE_STATE_REASON.staleMixedActors;
+    }
+    if (actorStatus === ACTOR_GROUP_STATUS.missing) {
+      return STALE_STATE_REASON.staleMissingActors;
+    }
+    if (actorStatus === ACTOR_GROUP_STATUS.unavailable) {
+      return STALE_STATE_REASON.actorRuntimeUnavailable;
+    }
+    return STALE_STATE_REASON.none;
+  }
+
+  function completionDiagnostic(rawClassification, rawPlan = null, rawOptions = {}) {
+    const classification = objectValue(rawClassification);
+    const plan = rawPlan ? objectValue(rawPlan) : null;
+    const options = objectValue(rawOptions);
+    const actorGroup = objectValue(classification.actorGroup);
+    const actorStatus = actorGroup.status || ACTOR_GROUP_STATUS.unavailable;
+    const stageClass = stringValue(classification.stageClass || options.stageClass);
+    const identity = encounterIdentity(Object.assign(
+      {},
+      objectValue(classification.identity),
+      objectValue(options.identity),
+      {
+        stageId: classification.stageId || options.stageId,
+        view: classification.view || options.view
+      }
+    ));
+    const completed = stageClass === "completed";
+    const issueCodes = [];
+
+    if (!completed) {
+      return {
+        status: COMPLETION_STATUS.notCompleted,
+        completed: false,
+        trusted: false,
+        reason: STALE_STATE_REASON.notCompleted,
+        staleActorState: STALE_STATE_REASON.none,
+        restartable: false,
+        corruption: STALE_STATE_REASON.none,
+        issueCodes
+      };
+    }
+
+    const trusted = Boolean(identity.instanceKnown);
+    const reason = trusted
+      ? STALE_STATE_REASON.none
+      : STALE_STATE_REASON.durableInstanceMissing;
+    const staleActorState = staleActorReason(actorStatus, trusted);
+    const restartable = Boolean(
+      classification.recovery
+      && classification.recovery !== RECOVERY_ACTION.none
+      && (
+        !plan
+        || plan.action === classification.recovery
+        || plan.action === RECOVERY_ACTION.restartEncounter
+      )
+    );
+    const corruption = !trusted && restartable
+      ? STALE_STATE_REASON.restartableCorruption
+      : STALE_STATE_REASON.none;
+
+    if (reason !== STALE_STATE_REASON.none) issueCodes.push(reason);
+    if (staleActorState !== STALE_STATE_REASON.none) issueCodes.push(staleActorState);
+    if (corruption !== STALE_STATE_REASON.none) issueCodes.push(corruption);
+
+    return {
+      status: trusted
+        ? COMPLETION_STATUS.completedTrusted
+        : COMPLETION_STATUS.completedButUntrusted,
+      completed: true,
+      trusted,
+      reason,
+      staleActorState,
+      restartable,
+      corruption,
+      issueCodes
+    };
+  }
+
   function diagnosticSnapshot(rawClassification, rawPlan = null, rawOptions = {}) {
     const classification = objectValue(rawClassification);
     const plan = rawPlan ? objectValue(rawPlan) : null;
@@ -385,8 +577,21 @@
         view: classification.view || options.view
       }
     ));
+    const instance = encounterInstanceDescriptor(Object.assign(
+      {},
+      objectValue(classification.instance),
+      objectValue(options.instance),
+      {
+        identity,
+        proposedInstanceId: options.proposedInstanceId,
+        proposedInstanceKey: options.proposedInstanceKey,
+        source: options.instanceSource
+      }
+    ));
+    const completion = completionDiagnostic(classification, plan, {identity});
     return {
       encounter: identity,
+      instance,
       status: classification.status || ENCOUNTER_STATE_STATUS.unavailable,
       recovery: classification.recovery || RECOVERY_ACTION.none,
       stageId: classification.stageId || "",
@@ -396,6 +601,7 @@
       activeCount: numberValue(actorGroup.activeCount, 0),
       defeatedCount: numberValue(actorGroup.defeatedCount, 0),
       missingCount: numberValue(actorGroup.missingCount, 0),
+      completion,
       plan: plan
         ? {
           recover: Boolean(plan.recover),
@@ -410,12 +616,17 @@
     ACTOR_GROUP_STATUS,
     ENCOUNTER_STATE_STATUS,
     RECOVERY_ACTION,
+    COMPLETION_STATUS,
+    STALE_STATE_REASON,
+    ENCOUNTER_INSTANCE_STATUS,
     encounterIdentity,
+    encounterInstanceDescriptor,
     classifyActorGroup,
     actorDiagnosticRows,
     classifyStagedEncounterState,
     reconciliationPlan,
     recoverySucceeded,
+    completionDiagnostic,
     diagnosticSnapshot
   };
 

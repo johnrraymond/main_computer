@@ -13,6 +13,7 @@ from main_computer.mcel_counter_candidate_evidence import (
     run_counter_candidate_evidence,
 )
 from main_computer.mcel_counter_candidate_projection import project_counter_candidate
+from main_computer.mcel_counter_reference_fixture_profile import APP_ID, FIXTURE_ROLE
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/mcel_application_ir/contract-counter.ir.json"
@@ -101,6 +102,14 @@ def _browser_probe() -> dict:
         ],
     }
 
+
+def test_counter_evidence_uses_reference_fixture_profile() -> None:
+    profile = counter_explicit_package_candidate_evidence_profile()
+    assert APP_ID == "contract-counter"
+    assert FIXTURE_ROLE == "mcel.reference-fixture.explicit-package.counter.v1"
+    assert profile.app_id == APP_ID
+    assert profile.report_title == "MCEL Counter Reference Fixture Candidate Evidence"
+    assert profile.invalid_dsl_message == "DSL compilation did not produce valid Counter fixture IR."
 
 
 def test_counter_evidence_uses_generic_explicit_package_profile() -> None:

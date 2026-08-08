@@ -291,6 +291,84 @@ class EncounterStateModuleTests(unittest.TestCase):
         self.assertTrue(explicit["instanceKnown"])
 
 
+    def test_encounter_instance_descriptor_provides_stable_placeholder_without_persistence(self) -> None:
+        result = self.run_node(
+            r"""
+            const encounter = require(process.argv[1]);
+
+            const classification = encounter.classifyStagedEncounterState({
+              key: "scenario.alpha:encounter.boarding-defense",
+              definitionId: "encounter.boarding-defense",
+              scenarioId: "scenario.alpha",
+              systemId: "system.alpha",
+              view: {visible: true, state: {status: "active", stageId: "combat"}},
+              actorGroup: {
+                status: encounter.ACTOR_GROUP_STATUS.active,
+                total: 2,
+                activeCount: 2,
+                defeatedCount: 0,
+                missingCount: 0,
+                actors: []
+              },
+              actorIds: ["enemy.one", "enemy.two"],
+              activeStageIds: ["combat"],
+              completedStageIds: ["investigation"],
+              instanceSource: "test-diagnostic-placeholder"
+            });
+            const diagnostic = encounter.diagnosticSnapshot(
+              classification,
+              encounter.reconciliationPlan(classification),
+              {instanceSource: "test-diagnostic-placeholder"}
+            );
+            const directPlaceholder = encounter.encounterInstanceDescriptor({
+              identity: classification.identity,
+              source: "test-diagnostic-placeholder"
+            });
+            const known = encounter.encounterInstanceDescriptor({
+              identity: classification.identity,
+              instanceId: "encounter-run-7"
+            });
+
+            console.log(JSON.stringify({
+              classificationInstance: classification.instance,
+              diagnosticInstance: diagnostic.instance,
+              directPlaceholder,
+              known,
+              exportedStatus: encounter.ENCOUNTER_INSTANCE_STATUS
+            }));
+            """
+        )
+
+        expected_key = (
+            "scenario.alpha:encounter.boarding-defense"
+            ":instance:combat:pending"
+        )
+        classification_instance = result["classificationInstance"]
+        diagnostic_instance = result["diagnosticInstance"]
+        direct_placeholder = result["directPlaceholder"]
+        known = result["known"]
+
+        self.assertEqual(result["exportedStatus"]["placeholder"], "placeholder")
+        self.assertEqual(result["exportedStatus"]["known"], "known")
+        self.assertEqual(classification_instance["status"], "placeholder")
+        self.assertEqual(classification_instance["proposedInstanceId"], expected_key)
+        self.assertEqual(classification_instance["proposedInstanceKey"], expected_key)
+        self.assertTrue(classification_instance["placeholder"])
+        self.assertFalse(classification_instance["durable"])
+        self.assertFalse(classification_instance["durableCommitted"])
+        self.assertEqual(
+            classification_instance["source"],
+            "test-diagnostic-placeholder",
+        )
+        self.assertEqual(diagnostic_instance, classification_instance)
+        self.assertEqual(direct_placeholder, classification_instance)
+        self.assertEqual(known["status"], "known")
+        self.assertEqual(known["instanceId"], "encounter-run-7")
+        self.assertEqual(known["proposedInstanceId"], "encounter-run-7")
+        self.assertFalse(known["placeholder"])
+        self.assertTrue(known["durableCommitted"])
+
+
     def test_actor_diagnostic_rows_are_generic_and_entries_key_aware(self) -> None:
         result = self.run_node(
             r"""
@@ -329,6 +407,63 @@ class EncounterStateModuleTests(unittest.TestCase):
         self.assertEqual(result["second"]["status"], "down")
         self.assertTrue(result["second"]["defeated"])
         self.assertTrue(result["third"]["missing"])
+
+
+    def test_completion_diagnostic_names_untrusted_stale_completed_state(self) -> None:
+        result = self.run_node(
+            r"""
+            const encounter = require(process.argv[1]);
+
+            const classification = encounter.classifyStagedEncounterState({
+              key: "scenario.alpha:encounter.boarding-defense",
+              definitionId: "encounter.boarding-defense",
+              scenarioId: "scenario.alpha",
+              view: {visible: true, state: {status: "active", stageId: "investigation"}},
+              actorGroup: {
+                status: encounter.ACTOR_GROUP_STATUS.defeated,
+                total: 2,
+                activeCount: 0,
+                defeatedCount: 2,
+                missingCount: 0,
+                actors: []
+              },
+              activeStageId: "combat",
+              completedStageId: "investigation"
+            });
+            const plan = encounter.reconciliationPlan(classification, {
+              recoverDefeated: true
+            });
+            const diagnostic = encounter.diagnosticSnapshot(classification, plan);
+
+            console.log(JSON.stringify({
+              status: diagnostic.status,
+              recovery: diagnostic.recovery,
+              completion: diagnostic.completion,
+              direct: encounter.completionDiagnostic(classification, plan)
+            }));
+            """
+        )
+
+        self.assertEqual(result["status"], "recoverable-completed-defeated")
+        self.assertEqual(result["recovery"], "restart-encounter")
+        completion = result["completion"]
+        self.assertEqual(completion, result["direct"])
+        self.assertEqual(completion["status"], "completed-but-untrusted")
+        self.assertTrue(completion["completed"])
+        self.assertFalse(completion["trusted"])
+        self.assertEqual(completion["reason"], "durable-instance-missing")
+        self.assertEqual(completion["staleActorState"], "stale-defeated-actors")
+        self.assertTrue(completion["restartable"])
+        self.assertEqual(completion["corruption"], "restartable-corruption")
+        self.assertEqual(
+            completion["issueCodes"],
+            [
+                "durable-instance-missing",
+                "stale-defeated-actors",
+                "restartable-corruption",
+            ],
+        )
+
 
 
 if __name__ == "__main__":

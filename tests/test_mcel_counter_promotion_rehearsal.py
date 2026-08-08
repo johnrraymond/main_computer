@@ -216,3 +216,13 @@ def test_repository_guard_detects_counter_or_shared_mcel_changes(tmp_path: Path)
     assert _snapshot_changes(before, after) == [
         "main_computer/mcel_counter_promotion_rehearsal.py",
     ]
+
+
+def test_counter_promotion_rehearsal_uses_generic_explicit_package_tooling() -> None:
+    import inspect
+    import main_computer.mcel_counter_promotion_rehearsal as counter_rehearsal
+    import main_computer.mcel_explicit_package_promotion_rehearsal as generic_rehearsal
+
+    assert hasattr(generic_rehearsal, "run_explicit_package_promotion_rehearsal")
+    assert "run_explicit_package_promotion_rehearsal" in inspect.getsource(counter_rehearsal.rehearse_counter_promotion)
+    assert "contract-counter" not in inspect.getsource(generic_rehearsal.run_explicit_package_promotion_rehearsal)

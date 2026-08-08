@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 from pathlib import Path
+import types
 from urllib.parse import urlsplit
 
 import pytest
 
 from tools import mother_deploy
+from tools.mother.common import deployment_validator_rpc_canary_funding as funding_module
 from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_validator_rpc_canary_funding import (
     MotherDeploymentValidatorRpcCanaryFundingError,
@@ -80,13 +83,59 @@ def _release_fixture(tmp_path: Path, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _patch_local_python_funder(monkeypatch):
+    def fake_local_python_funding(**kwargs):
+        opener = kwargs["opener"]
+        kwargs["on_transaction_sent"]()
+        if getattr(opener, "bad_funder", False):
+            raise MotherDeploymentValidatorRpcCanaryFundingError(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RECEIPT_FAILED",
+                "synthetic local funding receipt failure",
+            )
+        tx_hash = getattr(opener, "tx_hash", "0x" + ("1" * 64))
+        amount = int(kwargs["amount"])
+        opener.already_funded = True
+        return {
+            "phase": "a_funder-local-json-rpc-result",
+            "healthy": True,
+            "classification": "funded",
+            "result_channel": "local-json-rpc-eth-account",
+            "rpc_url": kwargs["rpc_url"],
+            "from_address": kwargs["source"],
+            "destination": kwargs["destination"],
+            "tx_hash": tx_hash,
+            "nonce": 0,
+            "gas_limit": 21_000,
+            "transaction_type": "eip1559",
+            "base_fee_per_gas_wei": 1,
+            "max_fee_per_gas_wei": 2_000_000_000,
+            "max_priority_fee_per_gas_wei": 0,
+            "source_balance_before_wei": amount + 42_000_000_000_000,
+            "source_minimum_required_wei": amount + 42_000_000_000_000,
+            "destination_balance_before_wei": 0,
+            "destination_balance_after_wei": amount,
+            "receipt_status": "0x1",
+            "receipt_poll_count": 1,
+            "observation_count": 1,
+            "observations": [],
+            "proof": "synthetic local eth_account funding proof",
+        }
+
+    monkeypatch.setattr(
+        funding_module,
+        "_execute_local_python_funding",
+        fake_local_python_funding,
+    )
+
+
 class _StatusHealthFundingOpener:
     UUIDS = {
-        "mainnet-canary1-probe-cast-cli-a": "probe-cast-cli-a-uuid",
+        "mother-mainnet-rpc-route-a": "mother-mainnet-rpc-route-a-uuid",
+        "mother-mainnet-rpc-route-c": "mother-mainnet-rpc-route-c-uuid",
         "mainnet-canary1-probe-balance-rpc-a": "probe-balance-rpc-a-uuid",
         "mainnet-canary1-classify-exact-a": "classify-exact-a-uuid",
         "mainnet-canary1-classify-zero-a": "classify-zero-a-uuid",
-        "mainnet-canary1-fund-a": "fund-a-service-uuid",
         "mainnet-canary1-verify-funded-a": "verify-funded-a-uuid",
         "mainnet-canary1-verify-funded-c": "verify-funded-c-uuid",
         "mainnet-canary1-verify-reconciled-c": "verify-reconciled-c-uuid",
@@ -103,9 +152,11 @@ class _StatusHealthFundingOpener:
         reject_first_create: bool = False,
         cast_probe_terminal_with_marker: bool = False,
         empty_application_logs: bool = False,
+        c_runtime_marker_missing: bool = False,
         bad_rpc_route: bool = False,
         wrong_rpc_chain: bool = False,
         bad_rpc_balance: bool = False,
+        delayed_route_writer_health_polls: int = 0,
     ) -> None:
         self.already_funded = already_funded
         self.bad_c = bad_c
@@ -115,9 +166,12 @@ class _StatusHealthFundingOpener:
         self.reject_first_create = reject_first_create
         self.cast_probe_terminal_with_marker = cast_probe_terminal_with_marker
         self.empty_application_logs = empty_application_logs
+        self.c_runtime_marker_missing = c_runtime_marker_missing
         self.bad_rpc_route = bad_rpc_route
         self.wrong_rpc_chain = wrong_rpc_chain
         self.bad_rpc_balance = bad_rpc_balance
+        self.delayed_route_writer_health_polls = delayed_route_writer_health_polls
+        self.status_poll_counts: dict[str, int] = {}
         self.requests: list[tuple[str, str, str]] = []
         self.names_by_uuid: dict[str, str] = {}
         self.started: set[str] = set()
@@ -129,9 +183,14 @@ class _StatusHealthFundingOpener:
     def _status(self, name: str) -> str:
         if name not in self.started:
             return "exited"
-        if name.endswith("probe-cast-cli-a"):
-            return "exited" if self.cast_probe_terminal_with_marker else "running:healthy:excluded"
+        if name.startswith("mother-mainnet-rpc-route-"):
+            self.status_poll_counts[name] = self.status_poll_counts.get(name, 0) + 1
+            if self.status_poll_counts[name] <= self.delayed_route_writer_health_polls:
+                return "exited"
+            return "running:healthy:excluded"
         if name.endswith("probe-balance-rpc-a"):
+            if self.cast_probe_terminal_with_marker:
+                return "exited"
             return "exited" if self.bad_probe else "running:healthy:excluded"
         if name.endswith("classify-exact-a"):
             return "running:healthy:excluded" if self.already_funded else "exited"
@@ -141,8 +200,6 @@ class _StatusHealthFundingOpener:
                 if not self.already_funded and not self.unexpected_balance
                 else "exited"
             )
-        if name.endswith("fund-a"):
-            return "running:unhealthy" if self.bad_funder else "running:healthy"
         if name.endswith("verify-funded-a"):
             return "running:healthy:excluded"
         if name.endswith("verify-funded-c") or name.endswith("verify-reconciled-c"):
@@ -160,8 +217,6 @@ class _StatusHealthFundingOpener:
     def _runtime_logs(self, name: str) -> str:
         marker = "MOTHER_VALIDATOR_RPC_CANARY_FUNDING_RESULT"
         balance = self._balance_for_canary()
-        if name.endswith("probe-cast-cli-a"):
-            return f"{marker} step=a_cast_cli_probe classification=cast-ok\n"
         if name.endswith("probe-balance-rpc-a"):
             classification = "rpc-error" if self.bad_probe else "rpc-ok"
             return (
@@ -186,13 +241,6 @@ class _StatusHealthFundingOpener:
                 f"rpc_url=http://mainneta-super1:8545 block_number=100 "
                 f"balance_wei={balance} expected_balance_wei=0\n"
             )
-        if name.endswith("fund-a"):
-            classification = "funder-error" if self.bad_funder else "funded"
-            return (
-                f"{marker} step=a_funder classification={classification} "
-                f"rpc_url=http://mainneta-super1:8545 tx_hash={self.tx_hash} "
-                "balance_wei=742000000000000 expected_balance_wei=742000000000000\n"
-            )
         if name.endswith("verify-funded-a"):
             return (
                 f"{marker} step=a_post_funding_verifier classification=match "
@@ -200,6 +248,8 @@ class _StatusHealthFundingOpener:
                 "balance_wei=742000000000000 expected_balance_wei=742000000000000\n"
             )
         if name.endswith("verify-funded-c"):
+            if self.c_runtime_marker_missing:
+                return ""
             classification = "verifier-error" if self.bad_c else "verified"
             return (
                 f"{marker} step=c_funded_verifier classification={classification} "
@@ -207,6 +257,8 @@ class _StatusHealthFundingOpener:
                 "balance_wei=742000000000000 expected_balance_wei=742000000000000\n"
             )
         if name.endswith("verify-reconciled-c"):
+            if self.c_runtime_marker_missing:
+                return ""
             return (
                 f"{marker} step=c_reconciled_verifier classification=match "
                 "rpc_url=http://mainnetc-super1:8545 block_number=101 "
@@ -222,15 +274,19 @@ class _StatusHealthFundingOpener:
         self.requests.append((host, method, path))
         assert timeout > 0
 
-        if host in {"mainneta-rpc1.greatlibrary.io", "mainnetc-rpc1.greatlibrary.io"}:
+        if host == "mainnet-rpc.greatlibrary.io":
             assert method == "POST"
             assert request.headers.get("Authorization") is None
             payload = json.loads(request.data.decode("utf-8"))
             if self.bad_rpc_route:
-                return _AdmissionResponse({"error": {"code": -32000, "message": "route unavailable"}}, status=503)
+                return _AdmissionResponse("no available server", status=503)
             if payload["method"] == "eth_chainId":
                 chain_id = 1 if self.wrong_rpc_chain else 42424240
                 return _AdmissionResponse({"jsonrpc": "2.0", "id": payload["id"], "result": hex(chain_id)})
+            if payload["method"] == "eth_blockNumber":
+                if self.bad_probe:
+                    return _AdmissionResponse({"jsonrpc": "2.0", "id": payload["id"], "error": {"code": -32000, "message": "synthetic probe failure"}})
+                return _AdmissionResponse({"jsonrpc": "2.0", "id": payload["id"], "result": hex(100)})
             if payload["method"] == "eth_getBalance":
                 if self.bad_rpc_balance:
                     return _AdmissionResponse({"jsonrpc": "2.0", "id": payload["id"], "result": "not-a-hex-quantity"})
@@ -262,10 +318,17 @@ class _StatusHealthFundingOpener:
             assert "entrypoint:" in compose
             assert "- /bin/sh" in compose
             assert "healthcheck:" in compose
-            assert 'test "$(cat /proc/1/comm)" = "sleep"' in compose
-            assert "exec sleep 900" in compose
-            assert "/logs" not in compose
-            assert "/deployments" not in compose
+            if name.startswith("mother-mainnet-rpc-route-"):
+                assert "python:3.12-alpine" in compose
+                assert "/var/run/docker.sock:/var/run/docker.sock" in compose
+                assert "mainnet-rpc.greatlibrary.io" in compose
+                assert "mother-mainnet-rpc-route-" in compose
+                assert "ghcr.io/foundry-rs/foundry" not in compose
+            else:
+                assert 'test "$(cat /proc/1/comm)" = "sleep"' in compose
+                assert "exec sleep 900" in compose
+                assert "/logs" not in compose
+                assert "/deployments" not in compose
             assert "ports:" not in compose
             assert body["instant_deploy"] is False
             assert body["environment_name"] == "mainnet"
@@ -276,12 +339,6 @@ class _StatusHealthFundingOpener:
 
         if method == "POST" and path.endswith("/envs"):
             body = json.loads(request.data.decode("utf-8"))
-            if path == "/api/v1/services/fund-a-service-uuid/envs":
-                assert body["key"] == "MC_MOTHER_CAPTAIN_PRIVATE_KEY"
-                assert isinstance(body["value"], str) and body["value"].startswith("0x")
-                assert body["is_shown_once"] is True
-                self.secret_bound = True
-                return _AdmissionResponse({"uuid": "env-a-uuid"}, status=201)
             if path == "/api/v1/services/verify-funded-c-uuid/envs":
                 assert body["key"] == "MC_MOTHER_CANARY_FUNDING_TX_HASH"
                 assert body["value"] == self.tx_hash
@@ -317,15 +374,16 @@ class _StatusHealthFundingOpener:
         if method == "GET" and path.startswith("/api/v1/services/"):
             service_uuid = path.rsplit("/", 1)[-1]
             name = self.names_by_uuid[service_uuid]
+            status = self._status(name)
             return _AdmissionResponse({
                 "uuid": service_uuid,
                 "name": name,
-                "status": self._status(name),
+                "status": status,
                 "applications": [
                     {
                         "uuid": f"{service_uuid}-application",
                         "name": name,
-                        "status": self._status(name),
+                        "status": status,
                     }
                 ],
                 "databases": [],
@@ -345,8 +403,8 @@ def test_funding_compiler_binds_status_health_result_channel(
     monkeypatch,
 ) -> None:
     _, _, _, funding, _, _ = _funding_fixture(tmp_path, monkeypatch)
-    assert funding["schema_version"] == 10
-    assert funding["kind"].endswith(".v10")
+    assert funding["schema_version"] == 15
+    assert funding["kind"].endswith(".v15")
     assert funding["funding_source"]["role"] == "captain"
     assert funding["funding_source"]["private_key_material_in_transaction"] is False
     assert funding["destination"]["allowed_pre_execution_balances_wei"] == [
@@ -364,11 +422,9 @@ def test_funding_compiler_binds_status_health_result_channel(
         "/api/v1/services/{service_uuid}/start"
     )
     assert set(funding["applications"]) == {
-        "a_cast_cli_probe",
         "a_balance_rpc_probe",
         "a_exact_balance_classifier",
         "a_zero_balance_classifier",
-        "a_funder",
         "a_post_funding_verifier",
         "c_funded_verifier",
         "c_reconciled_verifier",
@@ -381,14 +437,11 @@ def test_funding_compiler_binds_status_health_result_channel(
         assert "ports:" not in compose
         assert "traefik." not in compose
         assert "--ether=false" not in compose
-    assert "cast --version" in funding["applications"]["a_cast_cli_probe"]["compose"]["canonical_text"]
-    assert "cast balance" in funding["applications"]["a_balance_rpc_probe"]["compose"]["canonical_text"]
-    assert "cast balance" in funding["applications"]["a_zero_balance_classifier"]["compose"]["canonical_text"]
-    assert "source-balance-too-low" in funding["applications"]["a_funder"]["compose"]["canonical_text"]
-    assert (
-        funding["applications"]["a_funder"]["captain_secret_binding_required"]
-        is True
-    )
+    assert "python:3.12-alpine" in funding["applications"]["a_balance_rpc_probe"]["compose"]["canonical_text"]
+    assert b"cast " not in canonical_json(funding["applications"])
+    assert "eth_getBalance" in funding["applications"]["a_balance_rpc_probe"]["compose"]["canonical_text"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in funding["applications"]["c_funded_verifier"]["compose"]["canonical_text"]
+    assert "proxy_rpc_verifier.py" in funding["applications"]["c_funded_verifier"]["compose"]["canonical_text"]
     assert (
         funding["applications"]["c_funded_verifier"]["captain_secret_binding_required"]
         is False
@@ -396,8 +449,8 @@ def test_funding_compiler_binds_status_health_result_channel(
     assert funding["summary"]["service_health_result_channel_compiled"] is True
     assert funding["summary"]["runtime_log_result_channel_authorized"] is True
     assert funding["summary"]["deployment_uuid_required"] is False
-    assert funding["summary"]["maximum_service_mutation_count"] == 23
-    assert funding["summary"]["minimum_service_mutation_count"] == 3
+    assert funding["summary"]["maximum_service_mutation_count"] == 10
+    assert funding["summary"]["minimum_service_mutation_count"] == 9
 
 
 def test_funding_transaction_persists_and_rebuild_verifies(
@@ -420,7 +473,7 @@ def test_funding_transaction_persists_and_rebuild_verifies(
     assert verified["runtime_log_result_channel_authorized"] is True
     assert verified["deployment_uuid_required"] is False
     assert verified["deployment_inventory_resolution_required"] is False
-    assert verified["maximum_service_mutation_count"] == 23
+    assert verified["maximum_service_mutation_count"] == 10
 
 
 def test_funding_verifier_rejects_tampered_cap(tmp_path: Path, monkeypatch) -> None:
@@ -527,16 +580,12 @@ def test_funded_path_uses_positive_classifiers_and_cross_validator_health_proof(
     assert result["summary"]["canary_balance_verified_on_A"] is True
     assert result["summary"]["canary_balance_verified_on_C"] is True
     assert result["summary"]["temporary_services_deleted"] is True
-    assert result["summary"]["temporary_service_count"] == 7
-    assert result["summary"]["application_mutation_count"] == 23
-    assert opener.secret_bound is True
+    assert result["summary"]["temporary_service_count"] == 3
+    assert result["summary"]["application_mutation_count"] == 10
+    assert opener.secret_bound is False
     assert opener.deleted == {
-        "mainnet-canary1-probe-cast-cli-a",
-        "mainnet-canary1-probe-balance-rpc-a",
-        "mainnet-canary1-classify-exact-a",
-        "mainnet-canary1-classify-zero-a",
-        "mainnet-canary1-fund-a",
-        "mainnet-canary1-verify-funded-a",
+        "mother-mainnet-rpc-route-a",
+        "mother-mainnet-rpc-route-c",
         "mainnet-canary1-verify-funded-c",
     }
     assert any("/logs" in path for _, _, path in opener.requests)
@@ -572,6 +621,48 @@ def test_funded_path_uses_positive_classifiers_and_cross_validator_health_proof(
     )
 
 
+def test_route_writer_waits_through_early_exited_statuses(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        _,
+        _,
+        release_path,
+        release_digest,
+    ) = _release_fixture(tmp_path, monkeypatch)
+    opener = _StatusHealthFundingOpener(delayed_route_writer_health_polls=4)
+
+    result = execute_validator_rpc_canary_funding_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        opener=opener,
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        operation=_operation("validator-rpc-canary-funding-delayed-route-writer"),
+    )
+
+    assert result["status"] == "pass"
+    evidence = json.loads(Path(result["evidence"]["path"]).read_text())
+    route_wiring = evidence["allfather_rpc_route_wiring"]
+    assert route_wiring["clean"] is True
+
+    for route_key in ("a", "c"):
+        proof = route_wiring["results"][route_key]
+        assert proof["healthy"] is True
+        assert proof["first_status"] == "exited"
+        assert proof["final_status"] == "running:healthy:excluded"
+        assert proof["observed_statuses"][:4] == ["exited"] * 4
+        assert proof["observed_statuses"][-1] == "running:healthy:excluded"
+        assert proof["observation_count"] == 5
+
+
 def test_rpc_route_preflight_stops_before_temporary_services(
     tmp_path: Path,
     monkeypatch,
@@ -602,18 +693,18 @@ def test_rpc_route_preflight_stops_before_temporary_services(
     assert result["summary"]["funding_performed"] is False
     assert result["summary"]["allfather_rpc_route_preflight_used"] is True
     assert result["summary"]["allfather_rpc_route_preflight_complete"] is False
-    assert result["summary"]["temporary_service_count"] == 0
-    assert result["summary"]["application_mutation_count"] == 0
+    assert result["summary"]["temporary_service_count"] == 2
+    assert result["summary"]["application_mutation_count"] == 6
     assert opener.secret_bound is False
-    assert opener.deleted == set()
-    assert not any("/api/v1/services" in path for _, _, path in opener.requests)
+    assert opener.deleted == {"mother-mainnet-rpc-route-a", "mother-mainnet-rpc-route-c"}
+    assert any("/api/v1/services" in path for _, _, path in opener.requests)
 
     evidence = json.loads(Path(result["evidence"]["path"]).read_text())
-    assert evidence["failure"]["code"] == "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNAVAILABLE"
+    assert evidence["failure"]["code"] == "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_NO_BACKEND"
     preflight = evidence["allfather_rpc_route_preflight"]
-    assert preflight["mode"] == "allfather-rpc-route-direct-json-rpc"
-    assert preflight["routes"]["a"]["rpc_url"] == "https://mainneta-rpc1.greatlibrary.io"
-    assert preflight["routes"]["a"]["ok"] is False
+    assert preflight["mode"] == "mother-shared-rpc-route-direct-json-rpc"
+    assert preflight["routes"]["shared"]["rpc_url"] == "https://mainnet-rpc.greatlibrary.io"
+    assert preflight["routes"]["shared"]["ok"] is False
 
 
 
@@ -648,13 +739,12 @@ def test_exact_balance_reconciles_without_binding_captain_secret(
     assert result["summary"]["funding_performed"] is False
     assert result["summary"]["funding_reconciled_from_prior_execution"] is True
     assert result["summary"]["funding_receipt_verified_on_C"] is False
-    assert result["summary"]["temporary_service_count"] == 4
-    assert result["summary"]["application_mutation_count"] == 12
+    assert result["summary"]["temporary_service_count"] == 3
+    assert result["summary"]["application_mutation_count"] == 9
     assert opener.secret_bound is False
     assert opener.deleted == {
-        "mainnet-canary1-probe-cast-cli-a",
-        "mainnet-canary1-probe-balance-rpc-a",
-        "mainnet-canary1-classify-exact-a",
+        "mother-mainnet-rpc-route-a",
+        "mother-mainnet-rpc-route-c",
         "mainnet-canary1-verify-reconciled-c",
     }
     verified = verify_validator_rpc_canary_funding_evidence(
@@ -664,6 +754,45 @@ def test_exact_balance_reconciles_without_binding_captain_secret(
         operation=_operation("validator-rpc-canary-funding-reconcile-verify"),
     )
     assert verified["funding_reconciled_from_prior_execution"] is True
+
+
+def test_reconciled_c_verifier_accepts_service_health_without_runtime_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (
+        paths,
+        private_state,
+        _,
+        _,
+        _,
+        _,
+        release_path,
+        release_digest,
+    ) = _release_fixture(tmp_path, monkeypatch)
+    opener = _StatusHealthFundingOpener(already_funded=True, c_runtime_marker_missing=True)
+    result = execute_validator_rpc_canary_funding_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_digest,
+        opener=opener,
+        poll_interval_seconds=0,
+        max_wait_seconds=0,
+        operation=_operation("validator-rpc-canary-funding-reconcile-health-only"),
+    )
+    assert result["status"] == "pass"
+    assert result["funding_mode"] == "already-funded"
+    assert result["summary"]["funding_reconciled_from_prior_execution"] is True
+
+    evidence = json.loads(Path(result["evidence"]["path"]).read_text())
+    c_proof = evidence["runtime_proofs"]["c_reconciled_verifier"]
+    assert c_proof["healthy"] is True
+    assert c_proof["service_status"] == "running:healthy:excluded"
+    assert c_proof["runtime_result_marker_observed"] is False
+    assert c_proof["result_channel"] == "service-detail-health"
+    assert evidence["cross_validator_verification"]["balance_verified"] is True
+    assert evidence["cross_validator_verification"]["runtime_result_marker_observed"] is False
 
 
 def test_failed_started_funder_marks_chain_unknown_and_cleans_every_service(
@@ -696,11 +825,8 @@ def test_failed_started_funder_marks_chain_unknown_and_cleans_every_service(
     assert result["summary"]["temporary_services_deleted"] is True
     assert result["summary"]["canary_execution_performed"] is False
     assert opener.deleted == {
-        "mainnet-canary1-probe-cast-cli-a",
-        "mainnet-canary1-probe-balance-rpc-a",
-        "mainnet-canary1-classify-exact-a",
-        "mainnet-canary1-classify-zero-a",
-        "mainnet-canary1-fund-a",
+        "mother-mainnet-rpc-route-a",
+        "mother-mainnet-rpc-route-c",
     }
     with pytest.raises(MotherDeploymentValidatorRpcCanaryFundingError):
         verify_validator_rpc_canary_funding_evidence(
@@ -826,14 +952,12 @@ def test_reachable_rpc_with_unexpected_balance_stops_before_funder(
     assert result["chain_state"] == "unchanged-before-funder-start"
     assert result["summary"]["funding_performed"] is False
     assert result["summary"]["temporary_services_deleted"] is True
-    assert result["summary"]["temporary_service_count"] == 4
-    assert result["summary"]["application_mutation_count"] == 12
+    assert result["summary"]["temporary_service_count"] == 2
+    assert result["summary"]["application_mutation_count"] == 6
     assert opener.secret_bound is False
     assert opener.deleted == {
-        "mainnet-canary1-probe-cast-cli-a",
-        "mainnet-canary1-probe-balance-rpc-a",
-        "mainnet-canary1-classify-exact-a",
-        "mainnet-canary1-classify-zero-a",
+        "mother-mainnet-rpc-route-a",
+        "mother-mainnet-rpc-route-c",
     }
     evidence = json.loads(Path(result["evidence"]["path"]).read_text())
     assert evidence["failure"]["code"] == (
@@ -873,7 +997,10 @@ def test_rpc_probe_failure_stops_before_balance_classification(
     assert result["summary"]["temporary_service_count"] == 2
     assert result["summary"]["application_mutation_count"] == 6
     assert opener.secret_bound is False
-    assert opener.deleted == {"mainnet-canary1-probe-cast-cli-a", "mainnet-canary1-probe-balance-rpc-a"}
+    assert opener.deleted == {
+        "mother-mainnet-rpc-route-a",
+        "mother-mainnet-rpc-route-c",
+    }
     evidence = json.loads(Path(result["evidence"]["path"]).read_text())
     assert evidence["failure"]["code"] == (
         "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_RPC_UNAVAILABLE"
@@ -908,11 +1035,10 @@ def test_runtime_marker_can_prove_success_when_healthcheck_does_not(
     )
     assert result["status"] == "pass"
     evidence = json.loads(Path(result["evidence"]["path"]).read_text())
-    cast_proof = evidence["runtime_proofs"]["a_cast_cli_probe"]
-    assert cast_proof["runtime_result_marker_observed"] is True
-    assert cast_proof["runtime_result_proves_success"] is True
-    assert cast_proof["reason"] == "runtime-result-marker-proved-success"
-    assert cast_proof["result_channel"] == "runtime-result-marker"
+    balance_proof = evidence["runtime_proofs"]["a_balance_rpc_probe"]
+    assert balance_proof["healthy"] is True
+    assert balance_proof["result_channel"] == "local-json-rpc-shared-route"
+    assert evidence["runtime_results"]["a_balance_rpc_probe"]["classification"] == "rpc-ok"
 
 
 def test_runtime_log_fetch_tries_fallback_endpoints_when_first_logs_are_empty(
@@ -942,18 +1068,18 @@ def test_runtime_log_fetch_tries_fallback_endpoints_when_first_logs_are_empty(
     )
     assert result["status"] == "pass"
     evidence = json.loads(Path(result["evidence"]["path"]).read_text())
-    first_log_observation = next(
+    c_log_observation = next(
         item
         for item in evidence["service_observations"]
-        if item.get("phase") == "a_cast_cli_probe-runtime-result-marker"
+        if item.get("phase") == "c_funded_verifier-runtime-result-marker"
     )
-    assert first_log_observation["runtime_result_marker_observed"] is True
-    assert first_log_observation["endpoint_kind"] in {
+    assert c_log_observation["runtime_result_marker_observed"] is True
+    assert c_log_observation["endpoint_kind"] in {
         "application-resource",
         "parent-service-fallback",
     }
-    assert first_log_observation["attempts"][0]["http_status"] == 200
-    assert first_log_observation["attempts"][0]["runtime_result_marker_count"] == 0
+    assert c_log_observation["attempts"][0]["http_status"] == 200
+    assert c_log_observation["attempts"][0]["runtime_result_marker_count"] == 0
 
 
 
@@ -970,3 +1096,96 @@ def test_funding_cli_exposes_stage_release_apply_and_verification(capsys) -> Non
             mother_deploy.main([command, "--help"])
         assert caught.value.code == 0
         assert expected in capsys.readouterr().out
+
+
+def test_sign_capped_transfer_falls_back_to_legacy_when_dynamic_fee_signing_is_unsupported(monkeypatch):
+    calls = []
+
+    class _FakeHash:
+        def hex(self):
+            return "0x" + ("2" * 64)
+
+    class _FakeSigned:
+        raw_transaction = b"\x12\x34"
+        hash = _FakeHash()
+
+    class _FakeAccount:
+        address = "0x8333950bb66ab7e8b3bb4a56f8641b66849ecd05"
+
+        @staticmethod
+        def from_key(private_key):
+            return _FakeAccount()
+
+        @staticmethod
+        def sign_transaction(transaction, private_key):
+            calls.append(dict(transaction))
+            if "maxFeePerGas" in transaction:
+                raise TypeError("dynamic fee transaction type unsupported")
+            return _FakeSigned()
+
+    monkeypatch.setitem(sys.modules, "eth_account", types.SimpleNamespace(Account=_FakeAccount))
+    monkeypatch.setitem(
+        sys.modules,
+        "eth_utils",
+        types.SimpleNamespace(to_checksum_address=lambda value: value),
+    )
+
+    raw_transaction, tx_hash, transaction_type = funding_module._sign_capped_transfer(
+        private_key="0x" + ("1" * 64),
+        expected_source="0x8333950bb66ab7e8b3bb4a56f8641b66849ecd05",
+        chain_id=42_424_240,
+        nonce=7,
+        destination="0xd0c503abb1e598ce155cd9c3c659f4733a6915a0",
+        amount=742_000_000_000_000,
+        gas_limit=21_000,
+        max_fee_per_gas_wei=2_000_000_000,
+        max_priority_fee_per_gas_wei=0,
+    )
+
+    assert raw_transaction == "0x1234"
+    assert tx_hash == "0x" + ("2" * 64)
+    assert transaction_type == "legacy-capped-gas-price"
+    assert any(call.get("type") == "0x2" for call in calls)
+    assert calls[-1]["gasPrice"] == 2_000_000_000
+    assert "maxFeePerGas" not in calls[-1]
+
+
+
+def test_sign_capped_transfer_accepts_bytes_transaction_hash_without_0x(monkeypatch):
+    class _FakeSigned:
+        raw_transaction = b"\x12\x34"
+        hash = bytes.fromhex("3" * 64)
+
+    class _FakeAccount:
+        address = "0x8333950bb66ab7e8b3bb4a56f8641b66849ecd05"
+
+        @staticmethod
+        def from_key(private_key):
+            return _FakeAccount()
+
+        @staticmethod
+        def sign_transaction(transaction, private_key):
+            return _FakeSigned()
+
+    monkeypatch.setitem(sys.modules, "eth_account", types.SimpleNamespace(Account=_FakeAccount))
+    monkeypatch.setitem(
+        sys.modules,
+        "eth_utils",
+        types.SimpleNamespace(to_checksum_address=lambda value: value),
+    )
+
+    raw_transaction, tx_hash, transaction_type = funding_module._sign_capped_transfer(
+        private_key="0x" + ("1" * 64),
+        expected_source="0x8333950bb66ab7e8b3bb4a56f8641b66849ecd05",
+        chain_id=42_424_240,
+        nonce=7,
+        destination="0xd0c503abb1e598ce155cd9c3c659f4733a6915a0",
+        amount=742_000_000_000_000,
+        gas_limit=21_000,
+        max_fee_per_gas_wei=2_000_000_000,
+        max_priority_fee_per_gas_wei=0,
+    )
+
+    assert raw_transaction == "0x1234"
+    assert tx_hash == "0x" + ("3" * 64)
+    assert transaction_type == "eip1559-type-0x2"

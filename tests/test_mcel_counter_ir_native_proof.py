@@ -15,6 +15,8 @@ from main_computer.mcel_counter_ir_native_proof import (
     _verify_generated_ownership,
     run_counter_ir_native_intent_proof,
 )
+from main_computer.mcel_counter_reference_fixture_profile import build_counter_ir_native_proof_profile
+from main_computer.mcel_explicit_package_ir_native_proof import ExplicitPackageIrNativeProofProfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "mcel_apps/contract-counter"
@@ -90,6 +92,20 @@ def _browser_probe(_repo: Path, _headed: bool, prefix: str) -> dict:
             {"operationId": f"{prefix}-browser-reset", "before": {"count": 1, "revision": 1}, "result": _receipt(ok=True, status="committed", code="APPLICATION_OPERATION_COMMITTED"), "after": {"count": 0, "revision": 2}, "visible": "0", "observation": observed},
         ],
     }
+
+
+def test_counter_ir_native_proof_uses_generic_explicit_package_profile() -> None:
+    profile = build_counter_ir_native_proof_profile(
+        run_node_probe=_node_probe,
+        run_browser_probe=_browser_probe,
+        build_effect_accounting=lambda **_kwargs: {"status": "closed", "valid": True},
+    )
+
+    assert isinstance(profile, ExplicitPackageIrNativeProofProfile)
+    assert profile.app_id == "contract-counter"
+    assert profile.generated_file_generator == "mcel.counter.explicit-projection.v1"
+    assert profile.report_schema == "mcel.ir-native-intent-complete-proof.v1"
+    assert profile.runtime_code_for("REVISION_STALE") == "SCM_STALE_REVISION"
 
 
 def test_promoted_counter_earns_ir_native_intent_complete_proof() -> None:

@@ -13,6 +13,10 @@ from main_computer.mcel_counter_candidate_projection import (
     generate_counter_contracts,
     project_counter_candidate,
 )
+from main_computer.mcel_counter_reference_fixture_profile import (
+    APP_ID,
+    FIXTURE_ROLE,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "mcel_counter_candidate_projection.py"
@@ -34,7 +38,9 @@ def _live_hashes() -> dict[str, str]:
 
 def test_counter_projection_delegates_to_generic_explicit_package_profile() -> None:
     profile = counter_explicit_package_projection_profile()
-    assert profile.app_id == "contract-counter"
+    assert APP_ID == "contract-counter"
+    assert FIXTURE_ROLE == "mcel.reference-fixture.explicit-package.counter.v1"
+    assert profile.app_id == APP_ID
     assert profile.generated_contracts == GENERATED_CONTRACTS
     assert profile.report_schema == "mcel.counter-candidate-projection-report.v1"
     assert profile.projection_profile == "mcel.counter.explicit-projection.v1"
