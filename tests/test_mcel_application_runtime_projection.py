@@ -31,9 +31,10 @@ def _copy_package(target_root: Path) -> None:
 
 def test_runtime_projection_contains_only_browser_execution_files() -> None:
     projection_set = build_runtime_projection_set(ROOT)
-    assert projection_set.package_count == 3
+    assert projection_set.package_count == 4
     assert {item.app_id for item in projection_set.projections} == {
         "calculator",
+        "code-editor",
         "contract-counter",
         "contract-workbench",
     }
@@ -93,6 +94,39 @@ def test_calculator_runtime_projection_is_host_bound_and_contains_no_copied_pres
     assert not any(path.startswith("src/") for path in projection.files)
 
 
+def test_code_editor_runtime_projection_is_host_bound_and_contains_no_copied_presentation() -> None:
+    projection_set = build_runtime_projection_set(ROOT)
+    projection = next(item for item in projection_set.projections if item.app_id == "code-editor")
+
+    assert projection.mount_mode == "host-bound"
+    assert projection.host_route == "/applications/code-editor"
+    assert projection.root_selector == "#code-editor-app"
+    assert projection.runtime_facade == "MainComputerCodeEditorRuntime"
+    assert projection.document_url is None
+    assert projection.script_url is None
+    assert projection.style_url is None
+    assert set(projection.files) == {
+        RUNTIME_MANIFEST_NAME,
+        "contracts/domain.js",
+        "contracts/intents.js",
+        "contracts/adapter.js",
+        "contracts/surface.js",
+        "contracts/layout.js",
+        "contracts/acceptance.js",
+        "contracts/observation.js",
+    }
+    assert projection.manifest["runtime"] == {
+        "mode": "host-bound",
+        "route": "/applications/code-editor",
+        "rootSelector": "#code-editor-app",
+        "facade": "MainComputerCodeEditorRuntime",
+    }
+    adapter = projection.files["contracts/adapter.js"].decode("utf-8")
+    assert "globalThis.MainComputerCodeEditorRuntime" in adapter
+    assert "MainComputerCodeStudio" not in adapter
+    assert not any(path.startswith("src/") for path in projection.files)
+
+
 def test_runtime_projection_is_location_independent_and_deterministic(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "nested" / "second"
@@ -112,7 +146,7 @@ def test_checked_in_runtime_projection_is_fresh() -> None:
 
     assert fresh is True
     assert destination == PROJECTION_ROOT
-    assert projection_set.package_count == 3
+    assert projection_set.package_count == 4
 
 
 def test_projection_check_detects_changed_and_extra_files(tmp_path: Path) -> None:
@@ -142,7 +176,7 @@ def test_runtime_projection_cli_check_and_json() -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     payload = json.loads(completed.stdout)
     assert payload["resultCode"] == "runtime_projection_fresh"
-    assert payload["packageCount"] == 3
+    assert payload["packageCount"] == 4
     assert payload["changed"] is False
 
 

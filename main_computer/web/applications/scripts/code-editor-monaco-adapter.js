@@ -1,12 +1,38 @@
 (() => {
   const GLOBAL_NAME = "MainComputerMonacoAdapter";
-  const LOCAL_VS_BASE = "applications/vendor/monaco-editor/min/vs";
+  const LOCAL_VS_BASE = "/applications/vendor/monaco-editor/min/vs";
   const CDN_VS_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs";
   const EDITOR_URI_SCHEME = "inmemory://code-studio-runtime/";
   const BLOCKED_MOBILE_RE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
 
   let loadPromise = null;
   let activeSession = null;
+
+  function scheduleLayout(editor) {
+    if (!editor) return;
+    try {
+      editor.layout();
+    } catch (error) {
+      // Keep Monaco mounted; a later frame can usually recover from a transient layout race.
+    }
+    const raf = typeof window?.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame.bind(window)
+      : (callback) => setTimeout(callback, 0);
+    raf(() => {
+      try {
+        editor.layout();
+      } catch (error) {
+        // Best-effort layout pass.
+      }
+      raf(() => {
+        try {
+          editor.layout();
+        } catch (error) {
+          // Final best-effort layout pass.
+        }
+      });
+    });
+  }
 
   function now() {
     return new Date().toISOString();
@@ -292,6 +318,7 @@
           model,
           automaticLayout: true,
           minimap: {enabled: false},
+          readOnly: options.readOnly === true,
           scrollBeyondLastLine: false,
           theme: "vs-dark",
           wordWrap: "on"
@@ -308,6 +335,7 @@
           model,
           path,
           language,
+          readOnly: options.readOnly === true,
           subscriptions
         };
         host.dataset.monacoOutcome = "pass";
@@ -320,9 +348,12 @@
           externalOutcome: "layout-observed",
           path,
           language,
-          nextAction: "edit draft"
+          readOnly: options.readOnly === true,
+          nextAction: options.readOnly === true ? "open source file" : "edit draft"
         });
-        editor.layout();
+        window.__CE_MONACO_EDITOR__ = editor;
+        window.__CE_MONACO_MODEL__ = model;
+        scheduleLayout(editor);
 
         return emitReceipt(onReceipt, {
           effect: "editor.monaco.mount",
@@ -332,8 +363,9 @@
           source: loaded.source,
           path,
           language,
+          readOnly: options.readOnly === true,
           layoutReceipt,
-          nextAction: "edit draft"
+          nextAction: options.readOnly === true ? "open source file" : "edit draft"
         });
       } catch (error) {
         host.dataset.monacoOutcome = "exception";
@@ -366,15 +398,19 @@
     if (!model) model = window.monaco.editor.createModel(value, language, uri);
     if (model.getValue() !== value) model.setValue(value);
     activeSession.editor.setModel(model);
+    activeSession.editor.updateOptions({readOnly: options.readOnly === true});
+    scheduleLayout(activeSession.editor);
     activeSession.model = model;
     activeSession.path = path;
     activeSession.language = language;
+    activeSession.readOnly = options.readOnly === true;
     return {
       ok: true,
       actionOutcome: "pass",
       externalOutcome: "model-updated",
       path,
-      language
+      language,
+      readOnly: options.readOnly === true
     };
   }
 
@@ -392,7 +428,7 @@
       };
     }
     try {
-      activeSession.editor.layout();
+      scheduleLayout(activeSession.editor);
       return {
         ok: true,
         actionOutcome: "pass",
@@ -410,6 +446,35 @@
     }
   }
 
+  function inspect() {
+    if (!activeSession) {
+      return {
+        mounted: false,
+        path: "",
+        language: "",
+        readOnly: false,
+        hostRect: null,
+        editorRect: null,
+        modelLines: 0,
+        modelValuePreview: ""
+      };
+    }
+    const host = activeSession.editor?.getDomNode?.() || null;
+    const rect = host && typeof host.getBoundingClientRect === "function"
+      ? host.getBoundingClientRect()
+      : null;
+    return {
+      mounted: true,
+      path: activeSession.path,
+      language: activeSession.language,
+      readOnly: activeSession.readOnly,
+      hostRect: rect ? {x: rect.x, y: rect.y, width: rect.width, height: rect.height} : null,
+      editorRect: rect ? {x: rect.x, y: rect.y, width: rect.width, height: rect.height} : null,
+      modelLines: typeof activeSession.model?.getLineCount === "function" ? activeSession.model.getLineCount() : 0,
+      modelValuePreview: typeof activeSession.model?.getValue === "function" ? activeSession.model.getValue().slice(0, 120) : ""
+    };
+  }
+
   function dispose(reason = "manual") {
     return disposeActive(reason);
   }
@@ -423,6 +488,7 @@
     setModel,
     getValue,
     layout,
+    inspect,
     dispose,
     normalizeLanguage
   });

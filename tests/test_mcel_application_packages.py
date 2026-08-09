@@ -41,8 +41,8 @@ def test_repository_catalog_discovers_checked_in_contract_counter() -> None:
     catalog = build_application_package_catalog(ROOT)
 
     assert catalog.ok is True
-    assert catalog.package_count == 3
-    assert catalog.valid_count == 3
+    assert catalog.package_count == 4
+    assert catalog.valid_count == 4
     assert catalog.invalid_count == 0
 
     record = next(item for item in catalog.packages if item.app_id == "contract-counter")
@@ -77,6 +77,25 @@ def test_repository_catalog_materializes_calculator_authoritative_contracts_in_m
     assert record.files["mcel.generated.json"]
     assert not (ROOT / "mcel_apps/calculator/contracts").exists()
     assert not (ROOT / "mcel_apps/calculator/generated").exists()
+
+
+def test_repository_catalog_materializes_code_editor_authoritative_contracts_in_memory() -> None:
+    catalog = build_application_package_catalog(ROOT)
+    record = next(item for item in catalog.packages if item.app_id == "code-editor")
+
+    assert record.valid is True
+    assert record.conformance["currentMode"] == "semantic-runtime-proven"
+    assert record.conformance["shadow"] is False
+    assert record.runtime == {}
+    assert record.files["contracts/domain.js"]
+    assert record.files["contracts/adapter.js"]
+    assert record.files["generated/mcel.application.normalized.json"]
+    assert record.files["mcel.generated.json"]
+    adapter = record.files["contracts/adapter.js"].decode("utf-8")
+    assert "globalThis.MainComputerCodeEditorRuntime" in adapter
+    assert "MainComputerCodeStudio" not in adapter
+    assert not (ROOT / "mcel_apps/code-editor/contracts").exists()
+    assert not (ROOT / "mcel_apps/code-editor/generated").exists()
 
 
 def test_repository_catalog_is_deterministic_and_location_independent(tmp_path: Path) -> None:
@@ -240,8 +259,8 @@ def test_repository_catalog_cli_json_is_machine_readable() -> None:
     assert payload["schema"] == CATALOG_SCHEMA
     assert payload["format"] == "mcel-application-packages-v1"
     assert payload["ok"] is True
-    assert payload["packageCount"] == 3
-    assert {item["appId"] for item in payload["packages"]} == {"calculator", "contract-counter", "contract-workbench"}
+    assert payload["packageCount"] == 4
+    assert {item["appId"] for item in payload["packages"]} == {"calculator", "code-editor", "contract-counter", "contract-workbench"}
 
 
 def test_repository_catalog_cli_returns_invalid_catalog_exit_class(tmp_path: Path) -> None:
@@ -277,8 +296,9 @@ def test_repository_catalog_human_report_has_fast_readout() -> None:
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.startswith("mcel-application-packages-v1\n")
-    assert "packages: 3" in completed.stdout
+    assert "packages: 4" in completed.stdout
     assert "calculator" in completed.stdout
+    assert "code-editor" in completed.stdout
     assert "contract-counter" in completed.stdout
     assert "contract-workbench" in completed.stdout
     assert "package: valid" in completed.stdout

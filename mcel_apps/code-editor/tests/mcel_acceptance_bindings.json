@@ -1,0 +1,19 @@
+{
+  "appId": "code-editor",
+  "bindings": [
+    {
+      "acceptanceContractId": "code-editor.acceptance.dsl-authority",
+      "id": "code-editor.binding.dsl-authority",
+      "notes": "Compiles and projects the Code Editor DSL authority without claiming the runtime rewrite is complete.",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py",
+        "tests/test_operations.py",
+        "tests/test_surface.py",
+        "tests/test_browser.py",
+        "tests/test_truth.py"
+      ]
+    }
+  ],
+  "schema": "mcel.package-acceptance-bindings.v1"
+}

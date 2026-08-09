@@ -322,8 +322,9 @@ def test_code_editor_requirements_are_registered_and_machine_readable() -> None:
     assert _mcel_doc_field(app_block, "id") == "code-editor"
     assert _mcel_doc_field(app_block, "status") == "specified"
     assert _mcel_doc_field(app_block, "current_runtime_status")
-    assert _mcel_doc_field(app_block, "target_runtime_status") == "fullApplicationSemanticReady"
-    assert "main_computer/web/applications/scripts/code-editor-semantic-adapter.js" in app_block
+    assert _mcel_doc_field(app_block, "target_runtime_status") == "semantic-runtime-proven"
+    assert "main_computer/web/applications/scripts/code-editor.js" in app_block
+    assert "retired legacy marker" in app_block
 
     blocks = _mcel_doc_blocks(text)
     assert len(blocks) >= 20

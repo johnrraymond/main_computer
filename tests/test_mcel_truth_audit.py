@@ -487,7 +487,7 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     adapter_paths = [
         item["path"] for item in report["sourceInventory"]["domainAdapters"]
     ]
-    assert "main_computer/web/applications/scripts/code-editor-semantic-adapter.js" in adapter_paths
+    assert "main_computer/web/applications/scripts/code-editor-semantic-adapter.js" not in adapter_paths
     assert "main_computer/web/applications/scripts/git-tools-semantic-adapter.js" in adapter_paths
 
 

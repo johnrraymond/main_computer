@@ -625,3 +625,198 @@ def test_completed_helper_cleanup_reconciles_clean_compose_when_stale_records_su
     assert result["service_compose_reconcile"]["refresh_scope"] == "compose-reconcile"
     assert result["service_compose_reconcile"]["removed_helper_count"] == 0
     assert ("PATCH", f"/api/v1/services/{SERVICE_UUID}") in opener.requests
+
+
+
+class _DockerOrphanCleanupOpener(_ComposeReconcileRefreshCleanupOpener):
+    def __init__(self) -> None:
+        super().__init__()
+        self.orphan_cleanup_created = False
+        self.orphan_cleanup_started = False
+        self.orphan_cleanup_deleted = False
+        self.orphan_cleanup_body: dict | None = None
+
+    def _payload(self) -> dict:
+        payload = _StaleNestedApplicationCleanupOpener._payload(self)
+        if self.orphan_cleanup_started:
+            payload["applications"] = [
+                item
+                for item in payload["applications"]
+                if item["name"] not in self.helper_uuids
+            ]
+            payload["status"] = "running:healthy"
+        return payload
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append((method, path))
+        if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
+            return _Response(self._payload())
+        if method == "DELETE" and path.startswith("/api/v1/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "DELETE" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "DELETE" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/application/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "PATCH" and path == f"/api/v1/services/{SERVICE_UUID}":
+            self.reconcile_body = json.loads(request.data.decode("utf-8"))
+            self.compose_reconciled = True
+            return _Response({"message": "Service updated."})
+        if method == "GET" and path == "/api/v1/deploy":
+            self.deploy_requested = True
+            return _Response({"deployments": [{"resource_uuid": SERVICE_UUID, "deployment_uuid": "dep-refresh-1"}]})
+        if method == "GET" and path.startswith("/api/v1/projects/") and path.endswith("/environments"):
+            return _Response({"environments": [{"name": "mainnet", "uuid": "env-mainnet-1"}]})
+        if method == "POST" and path == "/api/v1/services":
+            self.orphan_cleanup_body = json.loads(request.data.decode("utf-8"))
+            decoded = base64.b64decode(self.orphan_cleanup_body["docker_compose_raw"]).decode("utf-8")
+            assert "/var/run/docker.sock:/var/run/docker.sock" in decoded
+            assert f"project='{SERVICE_UUID}'" in decoded
+            assert "docker rm -f" in decoded
+            assert "mother-validator-admission-guardian" in decoded
+            assert "mother-genesis-proof-guardian" in decoded
+            assert "mother-genesis-init" in decoded
+            assert "mother-superseded-service-cleanup" in decoded
+            assert self.orphan_cleanup_body["environment_uuid"] == "env-mainnet-1"
+            self.orphan_cleanup_created = True
+            return _Response({"uuid": "tmpcleanup123"})
+        if method == "POST" and path == "/api/v1/services/tmpcleanup123/start":
+            assert self.orphan_cleanup_created
+            self.orphan_cleanup_started = True
+            return _Response({"message": "started"})
+        if method == "GET" and path == "/api/v1/services/tmpcleanup123":
+            status = "running:healthy" if self.orphan_cleanup_started else "exited"
+            return _Response({"uuid": "tmpcleanup123", "name": f"mother-helper-orphan-cleanup-{SERVICE_UUID[:8]}", "status": status})
+        if method == "DELETE" and path == "/api/v1/services/tmpcleanup123":
+            self.orphan_cleanup_deleted = True
+            return _Response({"message": "deleted"})
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_completed_helper_cleanup_removes_docker_orphan_containers_after_api_and_compose_refresh_fail(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _DockerOrphanCleanupOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainneta-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_nested_application_delete=True,
+        allow_compose_rewrite=True,
+        instant_deploy_compose_rewrite=True,
+        allow_compose_reconcile_refresh=True,
+        instant_deploy_compose_reconcile_refresh=True,
+        allow_service_redeploy_refresh=True,
+        allow_docker_orphan_container_cleanup=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-docker-orphans"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["final_parent"]["status"] == "running:healthy"
+    assert result["summary"]["docker_orphan_container_cleanup_count"] == 1
+    assert result["summary"]["docker_orphan_container_cleanup_succeeded"] is True
+    assert result["summary"]["docker_orphan_container_cleanup_enabled"] is True
+    assert result["docker_orphan_container_cleanup"]["ok"] is True
+    assert result["docker_orphan_container_cleanup"]["health"]["healthy"] is True
+    assert result["docker_orphan_container_cleanup"]["health"]["temporary_service_delete"]["ok"] is True
+    assert opener.orphan_cleanup_created is True
+    assert opener.orphan_cleanup_started is True
+    assert opener.orphan_cleanup_deleted is True
+    decoded_compose = base64.b64decode(opener.orphan_cleanup_body["docker_compose_raw"]).decode("utf-8")
+    assert "restart: \"no\"" in decoded_compose
+    assert "DOCKER_CONFIG: /proof/.docker" in decoded_compose
+    assert "TMPDIR: /tmp" in decoded_compose
+    assert 'healthy="$$proof_dir/healthy"' in decoded_compose
+    assert 'proof="$$proof_dir/completed-helper-orphan-cleanup.json"' in decoded_compose
+    assert 'failure="$$proof_dir/completed-helper-orphan-cleanup-failed.json"' in decoded_compose
+    assert 'log="$$proof_dir/completed-helper-orphan-cleanup.log"' in decoded_compose
+    assert 'mkdir -p "$$proof_dir" "$$proof_dir/.docker"' in decoded_compose
+    assert 'case "$${1:-}" in' in decoded_compose
+    assert 'candidate_count=$$((candidate_count + 1))' in decoded_compose
+    assert "$" not in decoded_compose.replace("$$", "")
+    assert "healthy='$proof_dir/healthy'" not in decoded_compose
+    assert "mkdir -p '$proof_dir' '$proof_dir/.docker'" not in decoded_compose
+    assert "normalize_label()" in decoded_compose
+    assert "''|'<no value>'|'<nil>'|'null')" in decoded_compose
+    assert "*mother-genesis-init*)" in decoded_compose
+    assert "exec tail -f /dev/null" in decoded_compose
+    assert "test -f /proof/healthy && test -f /proof/completed-helper-orphan-cleanup.json" in decoded_compose
+    assert "ps -o comm= -p 1" not in decoded_compose
+    assert "$${1:-}" in decoded_compose
+    assert "$$(docker ps -aq" in decoded_compose
+    assert ("POST", "/api/v1/services") in opener.requests
+    assert ("POST", "/api/v1/services/tmpcleanup123/start") in opener.requests
+    assert ("DELETE", "/api/v1/services/tmpcleanup123") in opener.requests
+
+class _StaleTemporaryStatusDockerOrphanCleanupOpener(_DockerOrphanCleanupOpener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        if method == "GET" and path == "/api/v1/services/tmpcleanup123":
+            self.requests.append((method, path))
+            return _Response(
+                {
+                    "uuid": "tmpcleanup123",
+                    "name": f"mother-helper-orphan-cleanup-{SERVICE_UUID[:8]}",
+                    "status": "exited",
+                }
+            )
+        return super().open(request, timeout)
+
+
+def test_completed_helper_cleanup_credits_docker_cleanup_from_clean_parent_when_temporary_status_is_stale(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _StaleTemporaryStatusDockerOrphanCleanupOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainneta-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_nested_application_delete=True,
+        allow_compose_rewrite=True,
+        instant_deploy_compose_rewrite=True,
+        allow_compose_reconcile_refresh=True,
+        instant_deploy_compose_reconcile_refresh=True,
+        allow_service_redeploy_refresh=True,
+        allow_docker_orphan_container_cleanup=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-docker-orphans-stale-temp-status"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["final_parent"]["status"] == "running:healthy"
+    assert result["summary"]["docker_orphan_container_cleanup_succeeded"] is True
+    cleanup_result = result["docker_orphan_container_cleanup"]
+    assert cleanup_result["ok"] is True
+    assert cleanup_result["health"]["healthy"] is False
+    assert cleanup_result["health"]["final_status"] == "exited"
+    assert cleanup_result["verification"] == {
+        "source": "final-parent-service-recheck",
+        "parent_status": "running:healthy",
+        "clean": True,
+        "temporary_service_status_advisory": True,
+    }
+    assert cleanup_result["health"]["temporary_service_delete"]["ok"] is True
+

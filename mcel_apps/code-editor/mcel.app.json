@@ -1,0 +1,58 @@
+{
+  "appId": "code-editor",
+  "authoring": {
+    "normalizedDefinition": "generated/mcel.application.normalized.json",
+    "ownership": "mcel.generated.json",
+    "schema": "mcel.application-authoring.v1",
+    "source": "application.js",
+    "status": "dsl-authoritative"
+  },
+  "blueprint": "blueprint.json",
+  "conformance": {
+    "currentMode": "semantic-runtime-proven",
+    "missingBridges": [],
+    "promotionRehearsalSupported": true,
+    "shadow": false,
+    "targetMode": "semantic-runtime-proven",
+    "legacySemanticAdapterRetired": false
+  },
+  "contracts": {
+    "acceptance": "contracts/acceptance.js",
+    "adapter": "contracts/adapter.js",
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "surface": "contracts/surface.js"
+  },
+  "evidence": {
+    "authorityDeclaration": "mcel.code-editor-dsl-authority.v1"
+  },
+  "projection": {
+    "generatedArtifactsAreDerived": true,
+    "hostBoundRuntimeActive": false,
+    "liveRuntimeChanged": false,
+    "mountMode": "host-bound",
+    "presentationAuthority": "existing-host-html",
+    "profile": "mcel.code-editor.host-bound-projection.v1",
+    "legacySemanticAdapterRetired": false
+  },
+  "requirements": "requirements.md",
+  "schema": "mcel.application-package.v1",
+  "template": {
+    "id": "mcel.host-bound-authoritative-application",
+    "version": "0.1.0"
+  },
+  "tests": {
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json",
+    "root": "tests"
+  },
+  "title": "Code Editor",
+  "promotion": {
+    "promotionEligible": false,
+    "promotionExecuted": false,
+    "promotionPlan": "dsl-authority-package-enrollment",
+    "rollbackRehearsal": "not-applicable",
+    "truthStatus": "semantic-runtime-proven"
+  }
+}

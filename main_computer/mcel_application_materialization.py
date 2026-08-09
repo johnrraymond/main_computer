@@ -16,6 +16,7 @@ from typing import Any, Mapping
 from main_computer.mcel_counter_candidate_projection import generate_counter_contracts
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_projection_profiles.calculator_shadow_v1 import project_calculator_ir
+from main_computer.mcel_projection_profiles.code_editor_host_bound_v1 import project_code_editor_ir
 from main_computer.mcel_projection_profiles.contract_workbench_v1 import project_workbench_ir
 
 GENERATED_DIRECTORY_NAMES = frozenset({"contracts", "generated"})
@@ -97,6 +98,19 @@ def materialize_generated_package_files(
                 if authoring_status == "dsl-authoritative"
                 else "mcel-calculator-host-bound-projection-v1"
             ),
+        )
+        return generated
+
+    if app_id == "code-editor":
+        projection = project_code_editor_ir(compiled.normalized_ir)
+        generated = dict(projection.files)
+        generated["mcel.generated.json"] = _ownership_bytes(
+            app_id=app_id,
+            generator=projection.profile_id,
+            semantic_fingerprint=str(compiled.semantic_fingerprint),
+            source_binding_fingerprint=str(compiled.source_binding_fingerprint),
+            generated=generated,
+            version="mcel-code-editor-host-bound-projection-v1",
         )
         return generated
 

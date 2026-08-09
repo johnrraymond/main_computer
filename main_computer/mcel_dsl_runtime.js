@@ -463,6 +463,9 @@ function createHostBoundApplicationBuilder(metadata) {
           root: options.root,
           presentationAuthority: options.presentationAuthority,
         };
+        if (typeof options.runtimeFacade === "string" && options.runtimeFacade.trim()) {
+          presentation.runtimeFacade = options.runtimeFacade.trim();
+        }
       },
     },
     state: {
@@ -806,13 +809,16 @@ function bindImportedSource(document, metadata, source, sourceHash, sourcePath, 
   if (imported.proof && Array.isArray(imported.proof.invariants)) {
     for (const invariant of imported.proof.invariants) collect(invariant);
   }
-  imported.application.authoringStatus = "dual-authored";
+  const nativeAuthoritative = native && imported.application.authoringStatus === "dsl-authoritative";
+  imported.application.authoringStatus = nativeAuthoritative ? "dsl-authoritative" : "dual-authored";
   const inheritedGaps = [...(imported.migration?.knownGaps || [])].filter((value) => value !== "migration-ir-bridge-not-final-authoring-surface" && value !== "opaque-callbacks-require-constrained-expression-replacement");
   imported.migration = {
     ...(imported.migration || {}),
-    state: "dual-authored",
+    state: nativeAuthoritative ? (imported.migration?.state || "dsl-authoritative") : "dual-authored",
     sourceFamily: native ? "official-vanilla-javascript-dsl" : "official-vanilla-javascript-dsl-migration-bridge",
-    knownGaps: [...new Set([...inheritedGaps, ...(native ? [] : ["migration-ir-bridge-not-final-authoring-surface"]), "candidate-not-promoted", "legacy-package-remains-live"])].sort(),
+    knownGaps: nativeAuthoritative
+      ? inheritedGaps
+      : [...new Set([...inheritedGaps, ...(native ? [] : ["migration-ir-bridge-not-final-authoring-surface"]), "candidate-not-promoted", "legacy-package-remains-live"])].sort(),
   };
   imported.provenance = {
     ...(imported.provenance || {}),

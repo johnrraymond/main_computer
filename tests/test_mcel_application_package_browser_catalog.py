@@ -39,9 +39,10 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
 
     assert payload["schema"] == BROWSER_CATALOG_SCHEMA
     assert payload["format"] == BROWSER_CATALOG_FORMAT
-    assert payload["packageCount"] == 3
+    assert payload["packageCount"] == 4
     assert {item["appId"] for item in payload["packages"]} == {
         "calculator",
+        "code-editor",
         "contract-counter",
         "contract-workbench",
     }
@@ -63,6 +64,16 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
     assert calculator["runtimeProjection"]["documentUrl"] is None
     assert calculator["runtimeProjection"]["scriptUrl"] is None
     assert calculator["runtimeProjection"]["styleUrl"] is None
+
+    code_editor = next(item for item in payload["packages"] if item["appId"] == "code-editor")
+    assert code_editor["runtime"] == {}
+    assert code_editor["runtimeProjection"]["mountMode"] == "host-bound"
+    assert code_editor["runtimeProjection"]["hostRoute"] == "/applications/code-editor"
+    assert code_editor["runtimeProjection"]["rootSelector"] == "#code-editor-app"
+    assert code_editor["runtimeProjection"]["runtimeFacade"] == "MainComputerCodeEditorRuntime"
+    assert code_editor["runtimeProjection"]["documentUrl"] is None
+    assert code_editor["runtimeProjection"]["scriptUrl"] is None
+    assert code_editor["runtimeProjection"]["styleUrl"] is None
 
     assert set(package) == {
         "appId",
@@ -143,7 +154,7 @@ def test_browser_catalog_cli_check_and_json_output() -> None:
     payload = json.loads(completed.stdout)
     assert payload["schema"] == "mcel.application-package-browser-catalog-result.v1"
     assert payload["resultCode"] == "browser_catalog_fresh"
-    assert payload["packageCount"] == 3
+    assert payload["packageCount"] == 4
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
 
 
@@ -213,7 +224,7 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
     assert payload == {
         "schema": BROWSER_CATALOG_SCHEMA,
         "format": BROWSER_CATALOG_FORMAT,
-        "packageCount": 3,
+        "packageCount": 4,
         "hasCounter": True,
         "missing": None,
         "title": "Contract Counter",

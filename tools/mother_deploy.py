@@ -1605,6 +1605,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="request the service redeploy refresh with force=false instead of the default force=true",
     )
+    cleanup_completed_helpers.add_argument(
+        "--allow-docker-orphan-container-cleanup",
+        action="store_true",
+        help="last-resort cleanup: create a temporary Docker CLI service to remove exited helper orphan containers for this exact service stack",
+    )
     cleanup_completed_helpers.add_argument("--max-wait-seconds", type=float, default=120.0)
     cleanup_completed_helpers.add_argument("--poll-interval-seconds", type=float, default=5.0)
     cleanup_completed_helpers.add_argument(
@@ -3687,6 +3692,7 @@ def _cmd_cleanup_completed_mother_helpers(
             instant_deploy_compose_reconcile_refresh=args.instant_deploy_compose_reconcile_refresh,
             allow_service_redeploy_refresh=args.allow_service_redeploy_refresh,
             force_service_redeploy_refresh=not args.no_force_service_redeploy_refresh,
+            allow_docker_orphan_container_cleanup=args.allow_docker_orphan_container_cleanup,
             timeout=args.timeout,
             max_response_bytes=args.max_response_bytes,
             operation=operation,
@@ -3705,6 +3711,7 @@ def _cmd_cleanup_completed_mother_helpers(
             "service_compose_rewrite": result["service_compose_rewrite"],
             "service_compose_reconcile": result["service_compose_reconcile"],
             "service_redeploy_refresh": result["service_redeploy_refresh"],
+            "docker_orphan_container_cleanup": result["docker_orphan_container_cleanup"],
             "evidence": result["evidence"],
         }
         print(json.dumps(output, indent=2, sort_keys=True))

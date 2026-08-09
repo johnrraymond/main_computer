@@ -1,0 +1,53 @@
+{
+  "appId": "code-editor",
+  "aspects": [
+    "overview",
+    "form",
+    "objects",
+    "workflows",
+    "layout",
+    "actions",
+    "capabilities",
+    "evidence",
+    "source",
+    "tests"
+  ],
+  "dominantObject": "Repository source workspace and reviewed source edits",
+  "label": "Code Editor",
+  "layoutZones": [
+    "workspace",
+    "file-tree",
+    "editor",
+    "draft-controls",
+    "aider",
+    "review",
+    "receipts",
+    "status"
+  ],
+  "presentationAuthority": {
+    "document": "main_computer/web/applications/apps/code-editor.html",
+    "hostBoundRuntimeActive": false,
+    "kind": "existing-host-html",
+    "runtimeFacade": "MainComputerCodeEditorRuntime",
+    "style": "main_computer/web/applications/styles/code-editor.css"
+  },
+  "purpose": "Declare the Code Editor as a DSL-authoritative host-bound MCEL application without copying its large presentation source.",
+  "rootSelector": "#code-editor-app",
+  "route": "/applications/code-editor",
+  "schema": "mcel.application-blueprint.v1",
+  "sourceHints": [
+    "application.js",
+    "requirements.md",
+    "main_computer/web/applications/apps/code-editor.html",
+    "main_computer/web/applications/styles/code-editor.css",
+    "main_computer/web/applications/scripts/code-editor.js"
+  ],
+  "testHints": [
+    "tests/mcel_acceptance_bindings.json",
+    "tests/test_acceptance.py",
+    "tests/test_operations.py",
+    "tests/test_surface.py",
+    "tests/test_browser.py",
+    "tests/test_truth.py"
+  ]
+}

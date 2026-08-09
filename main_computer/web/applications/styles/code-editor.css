@@ -4345,9 +4345,7 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
 }
 
 #code-editor-app[data-code-editor-mode="authoring"] .code-studio-monaco-host,
-#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-monaco"],
-#code-editor-app[data-code-editor-mode="authoring"] .monaco-editor,
-#code-editor-app[data-code-editor-mode="authoring"] .overflow-guard {
+#code-editor-app[data-code-editor-mode="authoring"] [data-mcel-layout-node="runtime-monaco"] {
   grid-column: 1 !important;
   grid-row: 1 !important;
   display: block !important;
@@ -5319,3 +5317,760 @@ body[data-active-app="code-editor"] #code-editor-app .code-studio-shell {
   inset: 4px !important;
 }
 
+
+
+/* Patch 4: DSL-native Code Editor runtime-owned surface */
+#code-editor-app[data-code-editor-runtime="dsl-native"] {
+  height: min(900px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
+  min-height: 680px;
+  overflow: hidden;
+  background: #111;
+  color: #e8e8e8;
+}
+
+#code-editor-app .mcel-code-editor-shell {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr) 24px;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  color: #e8e8e8;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#code-editor-app .mcel-code-editor-titlebar,
+#code-editor-app .mcel-code-editor-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 12px;
+  background: #181818;
+  border-bottom: 1px solid #333;
+  font-size: 12px;
+}
+
+#code-editor-app .mcel-code-editor-statusbar {
+  border-top: 1px solid #333;
+  border-bottom: 0;
+  background: #0875c9;
+  color: #fff;
+}
+
+#code-editor-app .mcel-code-editor-statusbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app .mcel-code-editor-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#code-editor-app .mcel-code-editor-brand strong {
+  white-space: nowrap;
+}
+
+#code-editor-app #code-editor-active-path {
+  color: #8fd7ff;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app .mcel-code-editor-status-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#code-editor-app .mcel-code-editor-status-chips button {
+  min-height: 20px;
+  border: 1px solid #444;
+  border-radius: 999px;
+  background: #222;
+  color: #eee;
+  font: 700 10px/1 Consolas, "Lucida Console", monospace;
+  padding: 3px 8px;
+}
+
+#code-editor-app .mcel-code-editor-workbench {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(420px, 1fr) minmax(280px, 360px);
+  grid-template-areas: "sidebar editor assistant";
+  overflow: hidden;
+}
+
+#code-editor-app .mcel-code-editor-sidebar,
+#code-editor-app .mcel-code-editor-editor,
+#code-editor-app .mcel-code-editor-assistant {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#code-editor-app .mcel-code-editor-sidebar {
+  grid-area: sidebar;
+  display: grid;
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr) minmax(72px, 0.16fr);
+  gap: 8px;
+  padding: 10px;
+  border-right: 1px solid #333;
+  background: #171717;
+}
+
+#code-editor-app .mcel-code-editor-editor {
+  grid-area: editor;
+  display: grid;
+  grid-template-rows: 42px minmax(0, 1fr) 38px;
+  background: #1e1e1e;
+}
+
+#code-editor-app .mcel-code-editor-assistant {
+  grid-area: assistant;
+  display: grid;
+  grid-template-rows: minmax(240px, auto) minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border-left: 1px solid #333;
+  background: #151515;
+}
+
+#code-editor-app .mcel-code-editor-field {
+  display: grid;
+  gap: 4px;
+  color: #d0d0d0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#code-editor-app .mcel-code-editor-field input,
+#code-editor-app .mcel-code-editor-field textarea,
+#code-editor-app #file-map-search,
+#code-editor-app #aider-files {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background: #101010;
+  color: #e8e8e8;
+  padding: 7px 8px;
+}
+
+#code-editor-app .mcel-code-editor-search-row,
+#code-editor-app .mcel-code-editor-editor-actions,
+#code-editor-app .mcel-code-editor-patch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#code-editor-app .mcel-code-editor-search-row input {
+  flex: 1 1 auto;
+}
+
+#code-editor-app .mcel-code-editor-search-row button,
+#code-editor-app .mcel-code-editor-editor-actions button,
+#code-editor-app .mcel-code-editor-patch-actions button,
+#code-editor-app #file-map-apply {
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #2c2c2c;
+  color: #f0f0f0;
+  font-weight: 700;
+  padding: 7px 10px;
+}
+
+#code-editor-app .mcel-code-editor-search-row button:hover,
+#code-editor-app .mcel-code-editor-editor-actions button:hover,
+#code-editor-app .mcel-code-editor-patch-actions button:hover,
+#code-editor-app #file-map-apply:hover {
+  background: #393939;
+}
+
+#code-editor-app button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#code-editor-app .mcel-code-editor-muted {
+  color: #a8a8a8;
+  font-size: 12px;
+}
+
+#code-editor-app .mcel-code-editor-file-list {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #303030;
+  border-radius: 6px;
+  background: #101010;
+  padding: 6px;
+}
+
+#code-editor-app .mcel-code-editor-file-list .file-map-item,
+#code-editor-app .mcel-code-editor-file-list .file-map-empty {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 26px;
+  border-radius: 4px;
+  color: #dcdcdc;
+  font: 600 12px/1.3 Consolas, "Lucida Console", monospace;
+  padding: 3px 4px;
+}
+
+#code-editor-app .mcel-code-editor-file-list .file-map-item:hover {
+  background: #242424;
+}
+
+#code-editor-app .mcel-code-editor-selected-files {
+  min-height: 72px;
+  resize: none;
+  font: 600 11px/1.4 Consolas, "Lucida Console", monospace;
+}
+
+#code-editor-app .mcel-code-editor-editor-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid #333;
+  background: #181818;
+}
+
+#code-editor-app #code-editor-active-title,
+#code-editor-app #code-editor-draft-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app #code-editor-draft-status {
+  color: #bdbdbd;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#code-editor-app .mcel-code-editor-authoring-host {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  background: #1e1e1e;
+}
+
+#code-editor-app #code-studio-runtime-draft {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: #1e1e1e;
+  color: #e8e8e8;
+  padding: 16px;
+  font: 14px/1.5 Consolas, "Lucida Console", monospace;
+  tab-size: 2;
+}
+
+#code-editor-app #code-studio-runtime-draft:disabled {
+  color: #888;
+}
+
+#code-editor-app .mcel-code-editor-editor-actions {
+  justify-content: flex-end;
+  padding: 0 10px;
+  border-top: 1px solid #333;
+  background: #181818;
+}
+
+#code-editor-app .mcel-code-editor-card {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #303030;
+  border-radius: 6px;
+  background: #101010;
+  padding: 10px;
+}
+
+#code-editor-app .mcel-code-editor-card h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+#code-editor-app #aider-instruction {
+  min-height: 88px;
+  resize: vertical;
+}
+
+#code-editor-app .mcel-code-editor-review-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0;
+  color: #dcdcdc;
+  font-size: 12px;
+}
+
+#code-editor-app .mcel-code-editor-output,
+#code-editor-app #code-editor-runtime-receipt {
+  display: block;
+  white-space: pre-wrap;
+  border: 1px solid #303030;
+  border-radius: 4px;
+  background: #060606;
+  color: #9ee67f;
+  padding: 8px;
+  margin-top: 10px;
+  font: 600 12px/1.4 Consolas, "Lucida Console", monospace;
+}
+
+#code-editor-app .mcel-code-editor-runtime-summary {
+  display: grid;
+  gap: 8px;
+}
+
+#code-editor-app .mcel-code-editor-runtime-line {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 12px;
+}
+
+#code-editor-app .mcel-code-editor-runtime-line span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #d0d0d0;
+}
+
+#code-editor-app .mcel-code-editor-receipts {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  font: 600 11px/1.4 Consolas, "Lucida Console", monospace;
+}
+
+#code-editor-app .mcel-code-editor-receipts li[data-code-editor-receipt-ok="false"] {
+  color: #ffb4b4;
+}
+
+#code-editor-app .mcel-code-editor-receipts code,
+#code-editor-app .mcel-code-editor-handle {
+  color: #8fd7ff;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1100px) {
+  #code-editor-app .mcel-code-editor-workbench {
+    grid-template-columns: minmax(210px, 260px) minmax(360px, 1fr);
+    grid-template-areas:
+      "sidebar editor"
+      "assistant assistant";
+    grid-template-rows: minmax(0, 1fr) minmax(260px, 0.42fr);
+  }
+
+  #code-editor-app .mcel-code-editor-assistant {
+    border-left: 0;
+    border-top: 1px solid #333;
+    grid-template-columns: minmax(280px, 0.55fr) minmax(260px, 0.45fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+
+/* Patch 5: Monaco-backed canonical Code Editor surface */
+#code-editor-app .mcel-code-editor-monaco-host {
+  display: none;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+#code-editor-app .mcel-code-editor-authoring-host[data-monaco-state="loading"] .mcel-code-editor-monaco-host,
+#code-editor-app .mcel-code-editor-authoring-host[data-monaco-state="mounted"] .mcel-code-editor-monaco-host {
+  display: block;
+}
+
+#code-editor-app .mcel-code-editor-authoring-host[data-monaco-state="loading"] .mcel-code-editor-monaco-host {
+  color: #cfcfcf;
+  font: 13px/1.4 Consolas, "Lucida Console", monospace;
+  padding: 16px;
+}
+
+#code-editor-app .mcel-code-editor-authoring-host[data-monaco-state="loading"] #code-studio-runtime-draft,
+#code-editor-app .mcel-code-editor-authoring-host[data-monaco-state="mounted"] #code-studio-runtime-draft {
+  display: none;
+}
+
+#code-editor-app .mcel-code-editor-authoring-host[data-monaco-state="fallback"] #code-studio-runtime-draft,
+#code-editor-app .mcel-code-editor-authoring-host[data-monaco-state="idle"] #code-studio-runtime-draft {
+  display: block;
+}
+
+#code-editor-app #code-editor-monaco-status {
+  min-height: 20px;
+  padding: 2px 10px;
+  border-top: 1px solid #252525;
+  background: #151515;
+  color: #cfcfcf;
+  font: 12px/1.4 Inter, system-ui, sans-serif;
+}
+
+#code-editor-app .mcel-code-editor-monaco-host .monaco-editor,
+#code-editor-app .mcel-code-editor-monaco-host .monaco-editor-background,
+#code-editor-app .mcel-code-editor-monaco-host .overflow-guard {
+  min-width: 0;
+  min-height: 0;
+}
+
+
+/* Patch 6: permanent Monaco center-pane host for the DSL-native Code Editor */
+#code-editor-app[data-code-editor-runtime="dsl-native"] .mcel-code-editor-editor.code-studio-editor-group {
+  grid-area: editor !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: 42px minmax(0, 1fr) 22px 38px !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] .mcel-code-editor-editor-toolbar.code-studio-pane-toolbar {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: flex !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco.mcel-code-editor-authoring-host {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-monaco-host.mcel-code-editor-monaco-host {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="fallback"] #code-studio-monaco-host {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="fallback"] #code-studio-runtime-draft,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="idle"] #code-studio-runtime-draft {
+  display: block !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="loading"] #code-studio-runtime-draft,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="mounted"] #code-studio-runtime-draft {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-editor-monaco-status {
+  grid-column: 1 !important;
+  grid-row: 3 !important;
+  display: block !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] .mcel-code-editor-editor-actions {
+  grid-column: 1 !important;
+  grid-row: 4 !important;
+  display: flex !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] .mcel-code-editor-monaco-host .monaco-editor,
+#code-editor-app[data-code-editor-runtime="dsl-native"] .mcel-code-editor-monaco-host .monaco-editor-background,
+#code-editor-app[data-code-editor-runtime="dsl-native"] .mcel-code-editor-monaco-host .overflow-guard {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+/* Patch 7: direct Monaco pane contract and Monaco CSS isolation.
+   Monaco is a generated editor subtree. App-level layout and global box sizing
+   must stop at the host boundary so Monaco can measure and paint its own layers. */
+#code-editor-app[data-code-editor-runtime="dsl-native"] .mcel-code-editor-editor.code-studio-editor-group {
+  grid-template-rows: 42px minmax(0, 1fr) 22px 38px !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco.code-studio-monaco-host.mcel-code-editor-authoring-host {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  display: block !important;
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+  color: #d4d4d4 !important;
+  font: 12px/1.4 Consolas, "Lucida Console", monospace;
+  align-content: initial !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="loading"] {
+  padding: 16px !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="mounted"] {
+  padding: 0 !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="fallback"] ~ #code-studio-runtime-draft,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="idle"] ~ #code-studio-runtime-draft {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  display: block !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="loading"] ~ #code-studio-runtime-draft,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco[data-monaco-state="mounted"] ~ #code-studio-runtime-draft {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-editor,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-editor * ,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-editor *::before,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-editor *::after {
+  box-sizing: content-box !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-editor,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .overflow-guard {
+  grid-column: auto !important;
+  grid-row: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .view-lines,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .view-line,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .margin,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-scrollable-element,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .editor-scrollable {
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-editor .view-line span {
+  box-sizing: content-box !important;
+}
+
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .monaco-editor-background,
+#code-editor-app[data-code-editor-runtime="dsl-native"] #code-studio-runtime-monaco .margin {
+  background: #1e1e1e !important;
+}
+
+
+
+/* Patch 8: legacy-fidelity Code Editor surface.
+   The DSL runtime now preserves the authored VS Code-style host chrome instead of
+   replacing it with the temporary simplified three-pane shell. */
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell[data-code-editor-runtime-surface-mode="legacy-fidelity"] {
+  display: grid !important;
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "proof"
+    "statusbar" !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body {
+  display: grid !important;
+  grid-template-columns: 50px minmax(230px, 320px) minmax(430px, 1fr) minmax(300px, 360px) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-activitybar {
+  display: grid !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-sidebar,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-inspector {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-inspector {
+  display: block !important;
+  padding: 14px !important;
+  border-left: 1px solid #2d2d30 !important;
+  background: #252526 !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-group {
+  display: grid !important;
+  grid-template-rows: 36px minmax(0, 1fr) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-pane.active {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-preview[data-code-editor-runtime-primary-host="true"] {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .mcel-code-editor-primary-authoring-surface {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: auto minmax(0, 1fr) auto auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco.code-studio-monaco-host.mcel-code-editor-authoring-host {
+  grid-row: 2 !important;
+  display: block !important;
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+  align-content: initial !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco[data-monaco-state="loading"] {
+  padding: 16px !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-draft {
+  grid-row: 2 !important;
+  display: none;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  resize: none;
+  border: 0;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font: 13px/1.45 Consolas, "Lucida Console", monospace;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco[data-monaco-state="fallback"] ~ #code-studio-runtime-draft,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco[data-monaco-state="idle"] ~ #code-studio-runtime-draft {
+  display: block !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco[data-monaco-state="loading"] ~ #code-studio-runtime-draft,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco[data-monaco-state="mounted"] ~ #code-studio-runtime-draft {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-editor-monaco-status,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-editor-runtime-receipt {
+  display: block !important;
+  min-width: 0 !important;
+  min-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-top: 1px solid #252525;
+  background: #151515;
+  color: #9ee67f;
+  padding: 2px 8px;
+  font: 11px/1.3 Consolas, "Lucida Console", monospace;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco .monaco-editor,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco .monaco-editor *,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco .monaco-editor *::before,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco .monaco-editor *::after {
+  box-sizing: content-box !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco .monaco-editor,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco .overflow-guard {
+  width: 100% !important;
+  height: 100% !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}

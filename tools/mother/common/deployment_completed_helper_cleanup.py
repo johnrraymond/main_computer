@@ -19,6 +19,7 @@ import yaml
 
 from . import atomic_files
 from .canonical import canonical_json
+from .deployment_coolify_context import load_controller_config
 from .coolify_state import CoolifyController, resolve_coolify_controller
 from .models import OperationIdentity
 from .private_state import PrivateStateReadResult
@@ -654,6 +655,653 @@ def _request_service_redeploy_refresh(
         "refresh_scope": "service-redeploy",
     }
 
+
+def _controller_config(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+) -> dict[str, Any]:
+    return load_controller_config(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+        allowed_controllers={controller_id},
+        error_factory=MotherDeploymentCompletedHelperCleanupError,
+        rejected_code="MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_CONTROLLER_REJECTED",
+        invalid_code="MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_PRIVATE_STATE_INVALID",
+        placement_description="completed helper cleanup placement",
+    )
+
+
+def _application_uuid(payload: Any) -> str:
+    found: set[str] = set()
+
+    def walk(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, value in item.items():
+                if str(key) in {"uuid", "service_uuid", "application_uuid"} and type(value) is str:
+                    clean = value.strip()
+                    if _UUID_RE.fullmatch(clean):
+                        found.add(clean)
+                elif isinstance(value, (Mapping, list)):
+                    walk(value)
+        elif type(item) is list:
+            for value in item:
+                walk(value)
+
+    walk(payload)
+    if len(found) != 1:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_SERVICE_UUID_MISSING",
+            "Coolify mutation response did not contain exactly one service uuid",
+        )
+    return next(iter(found))
+
+
+def _environment_uuid(payload: Any, expected_name: str) -> str:
+    expected = _identifier(expected_name, "environment_name")
+    matches: list[str] = []
+
+    def walk(item: Any) -> None:
+        if isinstance(item, Mapping):
+            name = item.get("name")
+            uuid = item.get("uuid")
+            if name == expected and type(uuid) is str and _UUID_RE.fullmatch(uuid):
+                matches.append(uuid)
+            for value in item.values():
+                if isinstance(value, (Mapping, list)):
+                    walk(value)
+        elif type(item) is list:
+            for value in item:
+                walk(value)
+
+    walk(payload)
+    if len(set(matches)) != 1:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_ENVIRONMENT_INVALID",
+            f"expected exactly one Coolify environment named {expected}",
+        )
+    return next(iter(set(matches)))
+
+
+def _resolve_environment_uuid(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    endpoint: str,
+    expected_name: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> str:
+    response = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    observations.append(
+        {
+            "method": "GET",
+            "endpoint": endpoint,
+            "status": response["status"],
+            "ok": response["ok"],
+            "response_sha256": response["response_sha256"],
+            "byte_length": response["byte_length"],
+            "elapsed_ms": response["elapsed_ms"],
+            "controller_id": controller_id,
+            "phase": "completed-helper-docker-orphan-cleanup-environment-resolution",
+        }
+    )
+    if response.get("ok") is not True:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_ENVIRONMENT_INVALID",
+            f"{controller_id} environment inventory failed with HTTP {response.get('status')}",
+        )
+    return _environment_uuid(response.get("payload"), expected_name)
+
+
+def _healthy_status(value: object) -> bool:
+    return type(value) is str and value.startswith("running:healthy")
+
+
+def _service_detail_status(payload: Any, service_uuid: str, service_name: str) -> str:
+    target_uuid = _uuid(service_uuid, "temporary_service_uuid")
+    target_name = _identifier(service_name, "temporary_service_name")
+    candidates: list[str] = []
+
+    def walk(item: Any) -> None:
+        if isinstance(item, Mapping):
+            uuid = item.get("uuid")
+            name = item.get("name")
+            status = item.get("status")
+            if type(status) is str and (uuid == target_uuid or name == target_name):
+                candidates.append(status)
+            for value in item.values():
+                if isinstance(value, (Mapping, list)):
+                    walk(value)
+        elif type(item) is list:
+            for value in item:
+                walk(value)
+
+    walk(payload)
+    for status in candidates:
+        if _healthy_status(status):
+            return status
+    return candidates[-1] if candidates else ""
+
+
+def _wait_for_temporary_service_health(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    service_uuid: str,
+    service_name: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    started = time.monotonic()
+    first_status = ""
+    last_status = ""
+    observed_statuses: list[str] = []
+    observation_count = 0
+    endpoint = f"/api/v1/services/{urllib.parse.quote(_uuid(service_uuid, 'temporary_service_uuid'), safe='')}"
+    while True:
+        response = _http(
+            controller,
+            "GET",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        status = _service_detail_status(response.get("payload"), service_uuid, service_name) if response.get("ok") else ""
+        observation_count += 1
+        if status and not first_status:
+            first_status = status
+        if status:
+            observed_statuses.append(status)
+            last_status = status
+        elapsed = time.monotonic() - started
+        observations.append(
+            {
+                "method": "GET",
+                "endpoint": endpoint,
+                "status": response["status"],
+                "ok": response["ok"],
+                "response_sha256": response["response_sha256"],
+                "byte_length": response["byte_length"],
+                "elapsed_ms": response["elapsed_ms"],
+                "controller_id": controller_id,
+                "phase": "completed-helper-docker-orphan-cleanup-status-health-result",
+                "service_uuid": service_uuid,
+                "service_name": service_name,
+                "service_status": status or None,
+                "healthy": _healthy_status(status),
+            }
+        )
+        if _healthy_status(status):
+            return {
+                "healthy": True,
+                "service_status": status,
+                "first_status": first_status or None,
+                "final_status": status or None,
+                "observed_statuses": observed_statuses,
+                "service_uuid": service_uuid,
+                "service_name": service_name,
+                "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
+            }
+        if elapsed >= max_wait_seconds:
+            return {
+                "healthy": False,
+                "service_status": last_status or None,
+                "first_status": first_status or None,
+                "final_status": last_status or None,
+                "observed_statuses": observed_statuses,
+                "service_uuid": service_uuid,
+                "service_name": service_name,
+                "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
+                "reason": "health-timeout",
+            }
+        if poll_interval_seconds > 0:
+            time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
+        else:
+            break
+    return {
+        "healthy": False,
+        "service_status": last_status or None,
+        "first_status": first_status or None,
+        "final_status": last_status or None,
+        "observed_statuses": observed_statuses,
+        "service_uuid": service_uuid,
+        "service_name": service_name,
+        "observation_count": observation_count,
+        "wait_seconds": int(time.monotonic() - started),
+        "wait_milliseconds": int(round((time.monotonic() - started) * 1000)),
+        "reason": "health-timeout",
+    }
+
+
+def _docker_orphan_cleanup_script(
+    *,
+    parent_service_uuid: str,
+    node: str,
+    helper_names: tuple[str, ...],
+) -> str:
+    project = _uuid(parent_service_uuid, "service_uuid")
+    node_name = _identifier(node, "node")
+    helpers = tuple(_identifier(name, "completed_helper_name") for name in helper_names)
+    if not helpers:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            "docker orphan cleanup requires at least one helper name",
+        )
+    helper_exact_lines = "\n".join(f"    {name}) printf '%s' '{name}'; return 0 ;;" for name in helpers)
+    helper_name_lines = "\n".join(f"    *{name}*) printf '%s' '{name}'; return 0 ;;" for name in helpers)
+    return "\n".join(
+        [
+            "set -u",
+            f"project='{project}'",
+            f"node='{node_name}'",
+            "proof_dir='/proof'",
+            "healthy=\"$proof_dir/healthy\"",
+            "proof=\"$proof_dir/completed-helper-orphan-cleanup.json\"",
+            "failure=\"$proof_dir/completed-helper-orphan-cleanup-failed.json\"",
+            "log=\"$proof_dir/completed-helper-orphan-cleanup.log\"",
+            "mkdir -p \"$proof_dir\" \"$proof_dir/.docker\"",
+            "normalize_label() {",
+            "  case \"${1:-}\" in",
+            "    ''|'<no value>'|'<nil>'|'null') printf '' ;;",
+            "    *) printf '%s' \"$1\" ;;",
+            "  esac",
+            "}",
+            "match_helper() {",
+            "  case \"${1:-}\" in",
+            helper_exact_lines,
+            "  esac",
+            "  case \"${1:-}\" in",
+            helper_name_lines,
+            "  esac",
+            "  return 1",
+            "}",
+            "json_escape() { printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'; }",
+            "run_cleanup() {",
+            "  set -e",
+            "  ids=\"$(docker ps -aq --filter \"label=com.docker.compose.project=$project\")\"",
+            "  candidate_count=0",
+            "  removed_count=0",
+            "  removed_names=''",
+            "  skipped_names=''",
+            "  for id in $ids; do",
+            "    service=\"$(normalize_label \"$(docker inspect --format '{{ index .Config.Labels \"com.docker.compose.service\" }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    coolify_service=\"$(normalize_label \"$(docker inspect --format '{{ index .Config.Labels \"coolify.serviceName\" }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    mother_node=\"$(normalize_label \"$(docker inspect --format '{{ index .Config.Labels \"main_computer.mother.node\" }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    status=\"$(normalize_label \"$(docker inspect --format '{{ .State.Status }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    name=\"$(docker inspect --format '{{ .Name }}' \"$id\" 2>/dev/null | sed 's#^/##' || true)\"",
+            "    matched=\"$(match_helper \"$service\" || true)\"",
+            "    if [ -z \"$matched\" ]; then matched=\"$(match_helper \"$coolify_service\" || true)\"; fi",
+            "    if [ -z \"$matched\" ]; then matched=\"$(match_helper \"$name\" || true)\"; fi",
+            "    if [ -z \"$matched\" ]; then",
+            "      if [ -n \"$skipped_names\" ]; then skipped_names=\"$skipped_names,$name\"; else skipped_names=\"$name\"; fi",
+            "      continue",
+            "    fi",
+            "    candidate_count=$((candidate_count + 1))",
+            "    if [ -n \"$mother_node\" ] && [ \"$mother_node\" != \"$node\" ]; then",
+            "      echo \"refusing helper container outside acknowledged node: id=$id name=$name helper=$matched mother_node=$mother_node expected=$node\" >&2",
+            "      exit 1",
+            "    fi",
+            "    case \"$status\" in",
+            "      exited|dead|created) ;;",
+            "      *) echo \"refusing to remove non-terminal helper container: id=$id name=$name helper=$matched status=$status\" >&2; exit 1 ;;",
+            "    esac",
+            "  done",
+            "  for id in $ids; do",
+            "    service=\"$(normalize_label \"$(docker inspect --format '{{ index .Config.Labels \"com.docker.compose.service\" }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    coolify_service=\"$(normalize_label \"$(docker inspect --format '{{ index .Config.Labels \"coolify.serviceName\" }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    name=\"$(docker inspect --format '{{ .Name }}' \"$id\" 2>/dev/null | sed 's#^/##' || true)\"",
+            "    matched=\"$(match_helper \"$service\" || true)\"",
+            "    if [ -z \"$matched\" ]; then matched=\"$(match_helper \"$coolify_service\" || true)\"; fi",
+            "    if [ -z \"$matched\" ]; then matched=\"$(match_helper \"$name\" || true)\"; fi",
+            "    if [ -z \"$matched\" ]; then continue; fi",
+            "    docker rm -f \"$id\" >/dev/null",
+            "    removed_count=$((removed_count + 1))",
+            "    if [ -n \"$removed_names\" ]; then removed_names=\"$removed_names,$name\"; else removed_names=\"$name\"; fi",
+            "  done",
+            "  remaining=''",
+            "  for id in $(docker ps -aq --filter \"label=com.docker.compose.project=$project\"); do",
+            "    service=\"$(normalize_label \"$(docker inspect --format '{{ index .Config.Labels \"com.docker.compose.service\" }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    coolify_service=\"$(normalize_label \"$(docker inspect --format '{{ index .Config.Labels \"coolify.serviceName\" }}' \"$id\" 2>/dev/null || true)\")\"",
+            "    name=\"$(docker inspect --format '{{ .Name }}' \"$id\" 2>/dev/null | sed 's#^/##' || true)\"",
+            "    if match_helper \"$service\" >/dev/null || match_helper \"$coolify_service\" >/dev/null || match_helper \"$name\" >/dev/null; then",
+            "      if [ -n \"$remaining\" ]; then remaining=\"$remaining,$name\"; else remaining=\"$name\"; fi",
+            "    fi",
+            "  done",
+            "  if [ -n \"$remaining\" ]; then",
+            "    echo \"completed helper orphan containers remain after docker cleanup: $remaining\" >&2",
+            "    exit 1",
+            "  fi",
+            "  cat > \"$proof.tmp\" <<EOF",
+            "{",
+            "  \"completed\": true,",
+            "  \"candidate_count\": $candidate_count,",
+            "  \"removed_container_count\": $removed_count,",
+            "  \"removed_container_names\": \"$(json_escape \"$removed_names\")\",",
+            "  \"skipped_container_names\": \"$(json_escape \"$skipped_names\")\",",
+            f"  \"node\": \"{node_name}\",",
+            f"  \"project_uuid\": \"{project}\"",
+            "}",
+            "EOF",
+            "  mv \"$proof.tmp\" \"$proof\"",
+            "}",
+            "if run_cleanup > \"$log.tmp\" 2>&1; then",
+            "  mv \"$log.tmp\" \"$log\"",
+            "  rm -f \"$failure\"",
+            "  date +%s > \"$healthy\"",
+            "  cat \"$log\" || true",
+            "  echo \"completed-helper orphan cleanup completed: project=$project\"",
+            "else",
+            "  code=$?",
+            "  mv \"$log.tmp\" \"$log\" 2>/dev/null || true",
+            "  rm -f \"$healthy\"",
+            "  cat > \"$failure.tmp\" <<EOF",
+            "{",
+            "  \"completed\": false,",
+            "  \"exit_code\": $code,",
+            f"  \"node\": \"{node_name}\",",
+            f"  \"project_uuid\": \"{project}\",",
+            "  \"log_path\": \"/proof/completed-helper-orphan-cleanup.log\"",
+            "}",
+            "EOF",
+            "  mv \"$failure.tmp\" \"$failure\"",
+            "  cat \"$log\" >&2 || true",
+            "  echo \"completed-helper orphan cleanup failed: project=$project exit_code=$code\" >&2",
+            "fi",
+            "exec tail -f /dev/null",
+        ]
+    )
+
+def _docker_orphan_cleanup_compose(
+    *,
+    service_name: str,
+    parent_service_uuid: str,
+    node: str,
+    helper_names: tuple[str, ...],
+) -> str:
+    name = _identifier(service_name, "temporary_service_name")
+    script = _docker_orphan_cleanup_script(
+        parent_service_uuid=parent_service_uuid,
+        node=node,
+        helper_names=helper_names,
+    )
+    # Docker Compose interpolates $VAR and ${...} before the command reaches
+    # the container. Escape every shell dollar so the generated Compose carries
+    # the cleanup script through interpolation unchanged.
+    escaped_script = script.replace("$", "$$")
+    indented = "\n".join("        " + line for line in escaped_script.splitlines())
+    compose = "\n".join(
+        [
+            "services:",
+            f"  {name}:",
+            "    image: docker:27-cli",
+            "    restart: \"no\"",
+            "    read_only: true",
+            "    network_mode: none",
+            "    environment:",
+            "      DOCKER_CONFIG: /proof/.docker",
+            "      HOME: /proof",
+            "      TMPDIR: /tmp",
+            "    tmpfs:",
+            "      - /tmp",
+            "    command:",
+            "      - sh",
+            "      - -ec",
+            "      - |",
+            indented,
+            "    healthcheck:",
+            "      test:",
+            "        - CMD",
+            "        - sh",
+            "        - -ec",
+            "        - test -f /proof/healthy && test -f /proof/completed-helper-orphan-cleanup.json",
+            "      interval: 5s",
+            "      timeout: 5s",
+            "      retries: 24",
+            "      start_period: 10s",
+            "    volumes:",
+            "      - /var/run/docker.sock:/var/run/docker.sock",
+            "      - cleanup-proof:/proof",
+            "    labels:",
+            f"      main_computer.mother.node: {node}",
+            "      main_computer.mother.component: completed-helper-orphan-container-cleanup",
+            f"      main_computer.mother.target-service-uuid: {parent_service_uuid}",
+            "volumes:",
+            "  cleanup-proof:",
+            "",
+        ]
+    )
+    parsed = yaml.safe_load(compose)
+    if not isinstance(parsed, Mapping) or "services" not in parsed or name not in parsed["services"]:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_DOCKER_COMPOSE_INVALID",
+            "compiled Docker orphan cleanup Compose is invalid",
+        )
+    if "$" in compose.replace("$$", ""):
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_DOCKER_COMPOSE_INVALID",
+            "Docker orphan cleanup Compose contains an unescaped dollar interpolation",
+        )
+    if "/var/run/docker.sock:/var/run/docker.sock" not in compose:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_DOCKER_COMPOSE_INVALID",
+            "Docker orphan cleanup Compose does not mount the Docker socket",
+        )
+    for helper in helper_names:
+        if helper not in compose:
+            raise MotherDeploymentCompletedHelperCleanupError(
+                "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_DOCKER_COMPOSE_INVALID",
+                "Docker orphan cleanup Compose is missing a helper allowlist entry",
+            )
+    return compose
+
+
+def _temporary_service_body(controller_config: Mapping[str, Any], name: str, compose: str) -> dict[str, Any]:
+    return {
+        "project_uuid": controller_config["project_uuid"],
+        "server_uuid": controller_config["server_uuid"],
+        "environment_name": "mainnet",
+        "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "name": name,
+        "description": "Ephemeral Mother cleanup of completed helper orphan containers",
+        "instant_deploy": False,
+    }
+
+
+def _run_docker_orphan_container_cleanup(
+    *,
+    private_state: PrivateStateReadResult,
+    network: str,
+    controller: CoolifyController,
+    controller_id: str,
+    parent_service_uuid: str,
+    node: str,
+    helper_names: tuple[str, ...],
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    controller_config = _controller_config(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+    )
+    service_name = f"mother-helper-orphan-cleanup-{_uuid(parent_service_uuid, 'service_uuid')[:8]}"
+    service_uuid: str | None = None
+    create_receipt: dict[str, Any] | None = None
+    start_receipt: dict[str, Any] | None = None
+    health_result: dict[str, Any] | None = None
+    delete_receipt: dict[str, Any] | None = None
+    try:
+        environment_uuid = _resolve_environment_uuid(
+            controller=controller,
+            controller_id=controller_id,
+            endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
+            expected_name="mainnet",
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observations=observations,
+        )
+        compose = _docker_orphan_cleanup_compose(
+            service_name=service_name,
+            parent_service_uuid=parent_service_uuid,
+            node=node,
+            helper_names=helper_names,
+        )
+        body = _temporary_service_body(controller_config, service_name, compose)
+        body["environment_uuid"] = environment_uuid
+        create_response = _http(
+            controller,
+            "POST",
+            "/api/v1/services",
+            body=body,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        create_receipt = {
+            "method": "POST",
+            "endpoint": "/api/v1/services",
+            "status": create_response["status"],
+            "ok": create_response["ok"],
+            "response_sha256": create_response["response_sha256"],
+            "byte_length": create_response["byte_length"],
+            "elapsed_ms": create_response["elapsed_ms"],
+            "service_name": service_name,
+            "request_body_sha256": hashlib.sha256(canonical_json(body)).hexdigest(),
+            "cleanup_scope": "docker-orphan-containers",
+        }
+        observations.append({key: create_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+        if not create_response["ok"]:
+            return {
+                "ok": False,
+                "service_name": service_name,
+                "create": create_receipt,
+                "start": None,
+                "health": None,
+                "delete": None,
+                "reason": "create-failed",
+            }
+        service_uuid = _application_uuid(create_response.get("payload"))
+        create_receipt["service_uuid"] = service_uuid
+        start_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"
+        start_response = _http(
+            controller,
+            "POST",
+            start_endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        start_receipt = {
+            "method": "POST",
+            "endpoint": start_endpoint,
+            "status": start_response["status"],
+            "ok": start_response["ok"],
+            "response_sha256": start_response["response_sha256"],
+            "byte_length": start_response["byte_length"],
+            "elapsed_ms": start_response["elapsed_ms"],
+            "service_uuid": service_uuid,
+            "service_name": service_name,
+            "cleanup_scope": "docker-orphan-containers",
+        }
+        observations.append({key: start_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+        if not start_response["ok"]:
+            return {
+                "ok": False,
+                "service_name": service_name,
+                "service_uuid": service_uuid,
+                "create": create_receipt,
+                "start": start_receipt,
+                "health": None,
+                "delete": None,
+                "reason": "start-failed",
+            }
+        health_result = _wait_for_temporary_service_health(
+            controller=controller,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            service_name=service_name,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            # Coolify service-detail status can lag or misclassify this
+            # Docker-socket helper even after the container is healthy. Treat
+            # this poll as advisory and cap it; the authoritative success gate
+            # is the final parent-service recheck below.
+            max_wait_seconds=min(max_wait_seconds, 30.0),
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            observations=observations,
+        )
+        return {
+            "ok": health_result.get("healthy") is True,
+            "service_name": service_name,
+            "service_uuid": service_uuid,
+            "create": create_receipt,
+            "start": start_receipt,
+            "health": health_result,
+            "delete": None,
+            "cleanup_scope": "docker-orphan-containers",
+            "reason": None if health_result.get("healthy") is True else health_result.get("reason", "health-failed"),
+        }
+    finally:
+        if service_uuid is not None:
+            endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+            response = _http(
+                controller,
+                "DELETE",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            delete_receipt = {
+                "method": "DELETE",
+                "endpoint": endpoint,
+                "status": response["status"],
+                "ok": response["ok"] or response["status"] in {404},
+                "response_sha256": response["response_sha256"],
+                "byte_length": response["byte_length"],
+                "elapsed_ms": response["elapsed_ms"],
+                "service_uuid": service_uuid,
+                "service_name": service_name,
+                "cleanup_scope": "temporary-cleanup-service-delete",
+            }
+            observations.append({key: delete_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+            # A failed temporary service delete is surfaced in the returned payload by
+            # mutating the in-flight health result; callers must not call the whole
+            # cleanup clean unless the final parent status also verifies clean.
+            if health_result is not None:
+                health_result["temporary_service_delete"] = delete_receipt
+
 def inspect_completed_mother_helper_cleanup(
     private_state: PrivateStateReadResult,
     *,
@@ -874,6 +1522,7 @@ def execute_completed_mother_helper_cleanup(
     instant_deploy_compose_reconcile_refresh: bool = False,
     allow_service_redeploy_refresh: bool = False,
     force_service_redeploy_refresh: bool = True,
+    allow_docker_orphan_container_cleanup: bool = False,
     timeout: float = 30.0,
     max_response_bytes: int = 12 * 1024 * 1024,
     opener: Any = urllib.request.urlopen,
@@ -1118,6 +1767,29 @@ def execute_completed_mother_helper_cleanup(
             }
         )
 
+    docker_orphan_container_cleanup: dict[str, Any] | None = None
+    if delete_receipts and allow_docker_orphan_container_cleanup:
+        helper_names = tuple(
+            item.get("name", "")
+            for item in initial["completed_helper_candidates"]
+            if type(item.get("name")) is str and item.get("name")
+        )
+        docker_orphan_container_cleanup = _run_docker_orphan_container_cleanup(
+            private_state=private_state,
+            network=network_id,
+            controller=controller,
+            controller_id=controller_name,
+            parent_service_uuid=service,
+            node=node_name,
+            helper_names=helper_names,
+            timeout=request_timeout,
+            max_response_bytes=response_limit,
+            max_wait_seconds=wait_limit,
+            poll_interval_seconds=poll_interval,
+            opener=opener,
+            observations=observations,
+        )
+
     final_detail = initial_detail
     final = initial
     started = time.monotonic()
@@ -1154,15 +1826,40 @@ def execute_completed_mother_helper_cleanup(
         else:
             break
 
+    # The temporary Coolify service status is advisory only. We observed
+    # Coolify reporting the helper as exited/starting:unhealthy while the
+    # underlying Docker container was running:healthy and had completed its
+    # proof. Credit the Docker orphan cleanup only when the authoritative
+    # parent recheck is clean after the helper was successfully started.
+    if (
+        docker_orphan_container_cleanup is not None
+        and docker_orphan_container_cleanup.get("ok") is not True
+        and isinstance(docker_orphan_container_cleanup.get("start"), Mapping)
+        and docker_orphan_container_cleanup["start"].get("ok") is True
+        and final["summary"]["clean"] is True
+    ):
+        docker_orphan_container_cleanup["ok"] = True
+        docker_orphan_container_cleanup["reason"] = None
+        docker_orphan_container_cleanup["verification"] = {
+            "source": "final-parent-service-recheck",
+            "parent_status": final["parent"].get("status"),
+            "clean": True,
+            "temporary_service_status_advisory": True,
+        }
+
     compose_rewrite_ok = compose_rewrite is not None and compose_rewrite.get("ok") is True
     service_compose_reconcile_ok = service_compose_reconcile is not None and service_compose_reconcile.get("ok") is True
     service_redeploy_refresh_ok = service_redeploy_refresh is not None and service_redeploy_refresh.get("ok") is True
+    docker_orphan_container_cleanup_ok = (
+        docker_orphan_container_cleanup is not None and docker_orphan_container_cleanup.get("ok") is True
+    )
     mutation_ok = (
         (delete_ok if delete_receipts else True)
         or nested_delete_ok
         or compose_rewrite_ok
         or service_compose_reconcile_ok
         or service_redeploy_refresh_ok
+        or docker_orphan_container_cleanup_ok
     )
     summary = {
         **final["summary"],
@@ -1199,12 +1896,17 @@ def execute_completed_mother_helper_cleanup(
             service_redeploy_refresh is not None and service_redeploy_refresh.get("force") is True
         ),
         "service_redeploy_refresh_enabled": bool(allow_service_redeploy_refresh),
+        "docker_orphan_container_cleanup_count": 1 if docker_orphan_container_cleanup is not None else 0,
+        "docker_orphan_container_cleanup_succeeded": docker_orphan_container_cleanup_ok,
+        "docker_orphan_container_cleanup_enabled": bool(allow_docker_orphan_container_cleanup),
         "cleanup_mutation_succeeded": mutation_ok,
         "live_mutation_performed": bool(
             delete_receipts
             or nested_delete_receipts
             or compose_rewrite is not None
             or service_compose_reconcile is not None
+            or service_redeploy_refresh is not None
+            or docker_orphan_container_cleanup is not None
         ),
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
@@ -1231,6 +1933,7 @@ def execute_completed_mother_helper_cleanup(
         "service_compose_rewrite": compose_rewrite,
         "service_compose_reconcile": service_compose_reconcile,
         "service_redeploy_refresh": service_redeploy_refresh,
+        "docker_orphan_container_cleanup": docker_orphan_container_cleanup,
         "final_required_components": final["required_components"],
         "final_completed_helper_candidates": final["completed_helper_candidates"],
         "final_preserved_helpers": final["preserved_helpers"],

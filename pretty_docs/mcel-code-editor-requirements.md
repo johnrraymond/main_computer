@@ -4,12 +4,18 @@
 
 This is the documentation-first requirements contract for the Code Editor / MCEL Code Studio app.
 
-The current implementation has a live MCEL-style workbench, authored layout hints, source/runtime/serialization boundaries, Aider controls, SCM evidence panels, local workspace persistence, Monaco runtime mounting, layout-contract tests, and a registered Code Editor semantic adapter. The adapter registry currently reports `fullApplicationSemanticReady` for the bounded source-safe authoring scope. Repository-bound runtime and acceptance evidence remain separate proof inputs.
+The current implementation has a DSL-authored MCEL package, a canonical
+`MainComputerCodeEditorRuntime`, authored layout hints, source/runtime/
+serialization boundaries, Aider controls, SCM evidence panels, local workspace
+persistence, Monaco runtime mounting, layout-contract tests, and direct runtime
+receipts for explicit saves plus reviewed patch apply. The former Code Editor
+semantic adapter is retired as a host-loaded authority; repository-bound runtime
+and acceptance evidence remain separate proof inputs.
 
 So this document must be read as:
 
 ```text
-current: source-safe Code Editor semantic runtime + registered full-readiness adapter for its bounded authoring scope
+current: DSL-authoritative source-safe Code Editor runtime with reviewed patch receipts
 planned: separately governed command-execution semantics and broader static authored-surface parity
 ```
 
@@ -19,8 +25,8 @@ The requirements registry parses this document. MCEL Lab and the repository trut
 id: code-editor
 title: Code Editor / MCEL Code Studio
 status: specified
-current_runtime_status: fullApplicationSemanticReady
-target_runtime_status: fullApplicationSemanticReady
+current_runtime_status: semantic-runtime-proven
+target_runtime_status: semantic-runtime-proven
 dominant_object: SourceWorkspace
 primary_user_goal: >
   Inspect, edit, preview, and safely change project source with AI assistance
@@ -37,8 +43,10 @@ current_sources:
   - main_computer/web/applications/scripts/code-editor-file-map.js
   - main_computer/web/applications/scripts/code-editor-documentation-viewport.js
   - main_computer/web/applications/scripts/code-editor-scm-manifest.js
-current_adapter:
-  - main_computer/web/applications/scripts/code-editor-semantic-adapter.js
+current_runtime_authority:
+  - main_computer/web/applications/scripts/code-editor.js
+retired_adapter:
+  - main_computer/web/applications/scripts/code-editor-semantic-adapter.js (retired legacy marker, not host-loaded)
 verification:
   - tests/test_mcel_code_studio_app.py
   - tests/test_mcel_documentation.py
@@ -1113,3 +1121,13 @@ Do not promote Code Editor to full semantic runtime before adapter coverage is p
 Code Editor remains a high-value documentation-first MCEL contract because it has real product risk: file writes, patch application, command execution, AI-generated changes, runtime editor chrome, serialization boundaries, and evidence needs.
 
 The current app demonstrates those MCEL workbench ideas. This document supplies stable requirements that the registry, MCEL Lab, and repository truth audit can inspect without treating the requirements themselves as proof.
+
+
+## Patch 3 DSL runtime migration note
+
+The Code Editor reviewed patch lane is now owned by `MainComputerCodeEditorRuntime`.
+`previewAiderPlan` prepares a server-issued transaction handle without writing
+source files. `applyReviewedPatch` requires reviewed and approved evidence for
+that handle before it can call the project transaction apply endpoint. The
+legacy `code-editor-semantic-adapter.js` file is retained only as a retired
+marker for overlays that cannot express deletion.
