@@ -43,6 +43,8 @@ def test_code_editor_runtime_is_direct_canonical_facade_not_old_studio_shim() ->
     assert "hostIsDirectPane" in runtime
     assert "monacoMounted" in runtime
     assert "preserveExistingCodeStudioSurface" in runtime
+    assert "activateLegacyRuntimePane" in runtime
+    assert 'runtimePane.dataset.codeEditorRuntimePrimaryPane = "true"' in runtime
     assert "legacy-fidelity" in runtime
     assert "runtimePreviewIsPrimaryEditorHost" in runtime
     assert "monacoDocumentFor(active)" in runtime
@@ -51,6 +53,8 @@ def test_code_editor_runtime_is_direct_canonical_facade_not_old_studio_shim() ->
     assert "dispose(\"close-file\")" not in runtime
     assert 'const LOCAL_VS_BASE = "/applications/vendor/monaco-editor/min/vs";' in monaco_adapter
     assert "readOnly: options.readOnly === true" in monaco_adapter
+    assert "window.__CE_MONACO_MODEL__ = model" in monaco_adapter
+    assert "activeSession.host" in monaco_adapter
     assert "MainComputerCodeStudio" not in runtime
     assert "MainComputerCodeStudio" not in core
     assert "MainComputerCodeStudio" not in capabilities
@@ -352,10 +356,42 @@ def test_code_editor_runtime_preserves_authored_code_studio_chrome_for_ui_fideli
 
     assert "preserveExistingCodeStudioSurface(rootNode)" in runtime
     assert 'rootNode.dataset.codeEditorRuntimeSurfaceMode = "legacy-fidelity"' in runtime
+    assert 'rootNode.dataset.codeEditorMode = "legacy-fidelity"' in runtime
     assert 'existingShell.dataset.codeEditorRuntimeSurfaceMode = "legacy-fidelity"' in runtime
     assert "renderPrimaryEditorPreview(active, patch, receipts)" in runtime
     assert "code-studio-monaco-authoring-surface mcel-code-editor-primary-authoring-surface" in runtime
     assert 'runtimePreview.dataset.codeEditorRuntimePrimaryHost = "true"' in runtime
+    assert "activateLegacyRuntimePane();" in runtime
+    assert "bindLegacyFidelityResizeStability();" in runtime
+    assert "enforceLegacyFidelityResizeStability();" in runtime
+    assert 'runtimePane.dataset.codeEditorRuntimeOwnedPane = "true"' in runtime
+    assert 'tab.getAttribute("data-code-studio-tab") === "runtime"' in runtime
     assert "#code-editor-app[data-code-editor-runtime-surface-mode=\"legacy-fidelity\"] .code-studio-body" in styles
+    assert "Patch 11: legacy-fidelity grid-area repair" in styles
+    assert "Patch 12: legacy-fidelity mode separates" in styles
+    assert "Patch 13: legacy-fidelity resize stability" in styles
+    assert '#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body' in styles
+    assert 'grid-template-areas: "activitybar sidebar editor inspector" !important;' in styles
+    assert 'grid-template-areas: "activitybar sidebar editor" !important;' in styles
+    assert 'grid-template-columns: 50px 300px minmax(990px, 1fr) 380px !important;' in styles
+    assert "grid-column: 3 !important;" in styles
     assert "#code-editor-app[data-code-editor-runtime-surface-mode=\"legacy-fidelity\"] .code-studio-inspector" in styles
     assert "#code-editor-app[data-code-editor-runtime-surface-mode=\"legacy-fidelity\"] .mcel-code-editor-primary-authoring-surface" in styles
+
+
+def test_code_editor_legacy_fidelity_source_workspace_opens_without_old_studio_gate() -> None:
+    runtime = (SCRIPTS / "code-editor.js").read_text(encoding="utf-8")
+
+    assert "sourceWorkspaceEditor" in runtime
+    assert "#code-studio-source-editor is the authored source workspace, not a draft mirror." in runtime
+    assert "function parseAuthoredSourceWorkspace()" in runtime
+    assert "openFileFromAuthoredSource(path)" in runtime
+    assert "function bindLegacySourceFileClicks()" in runtime
+    assert 'ev.stopImmediatePropagation' in runtime
+    assert 'ev.target.closest("[data-code-studio-file]")' in runtime
+    assert 'source: "authored-source-workspace"' in runtime
+    assert "dom.legacySourceMirror" not in runtime
+    assert 'dom.sourceWorkspaceEditor.value = active.open ? active.text : ""' not in runtime
+    assert "authoredSourceWorkspaceFiles" in runtime
+    assert "runtimePaneActive" in runtime
+    assert "activePane" in runtime

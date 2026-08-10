@@ -76,7 +76,7 @@
     const dom = {
       root: options.root || null,
       sourceEditor: null,
-      legacySourceMirror: null,
+      sourceWorkspaceEditor: null,
       runtimePreview: null,
       fileMapList: null,
       fileMapStatus: null,
@@ -108,6 +108,9 @@
     let monacoMounting = null;
     let monacoSignature = "";
     let monacoLastReceipt = null;
+    let legacySourceFileClickBound = false;
+    let resizeStabilityBound = false;
+    let resizeStabilityTimer = 0;
 
     function currentState() {
       return state;
@@ -185,26 +188,146 @@
       }, extra));
     }
 
+    function sourceWorkspaceText() {
+      const editor = dom.sourceWorkspaceEditor || (dom.root && dom.root.querySelector
+        ? dom.root.querySelector("#code-studio-source-editor")
+        : null);
+      if (!editor) return "";
+      return text(Object.prototype.hasOwnProperty.call(editor, "value") ? editor.value : editor.textContent);
+    }
+
+    function parseAuthoredSourceWorkspace() {
+      const source = sourceWorkspaceText();
+      const parserCtor = root && root.DOMParser;
+      if (!source.trim() || typeof parserCtor !== "function") {
+        return null;
+      }
+      let doc = null;
+      try {
+        doc = new parserCtor().parseFromString(source, "text/html");
+      } catch (error) {
+        return null;
+      }
+      const workspace = doc && doc.querySelector
+        ? doc.querySelector('[data-mc-component="code-workspace"]')
+        : null;
+      if (!workspace) return null;
+      const files = [];
+      const byPath = {};
+      Array.from(workspace.querySelectorAll('[data-mc-component="code-file"]')).forEach((node, index) => {
+        const rawPath = node.getAttribute("data-mc-file-path") || `untitled-${index + 1}.txt`;
+        let path = "";
+        try {
+          path = core.normalizeProjectPath(rawPath);
+        } catch (error) {
+          return;
+        }
+        const language = text(node.getAttribute("data-mc-language") || core.inferLanguage(path) || "plaintext");
+        const content = text(node.textContent).replace(/^\n+|\s+$/g, "");
+        const entry = {
+          path,
+          name: path.split("/").pop(),
+          kind: "file",
+          bytes: content.length,
+          depth: Math.max(0, path.split("/").length - 1),
+          language,
+          source: "authored-source-workspace"
+        };
+        files.push(entry);
+        byPath[path] = {
+          repoDir: ".",
+          path,
+          content,
+          language,
+          sourceHash: "",
+          source: "authored-source-workspace"
+        };
+      });
+      return files.length ? {repoDir: ".", files, byPath} : null;
+    }
+
+    async function openFileFromAuthoredSource(path) {
+      const snapshot = parseAuthoredSourceWorkspace();
+      if (!snapshot || !snapshot.byPath[path]) return null;
+      const file = snapshot.byPath[path];
+      const sourceHash = typeof capabilities.sha256Text === "function"
+        ? await capabilities.sha256Text(file.content)
+        : "";
+      return Object.assign({}, file, {sourceHash});
+    }
+
+    function hydrateWorkspaceFromAuthoredSource() {
+      if (state.workspace && Array.isArray(state.workspace.files) && state.workspace.files.length > 0) {
+        return;
+      }
+      const snapshot = parseAuthoredSourceWorkspace();
+      if (!snapshot) return;
+      state = core.applyWorkspaceInspection(state, {
+        repoDir: snapshot.repoDir,
+        path: "",
+        files: snapshot.files,
+        inspectedAt: new Date().toISOString()
+      });
+    }
+
     async function inspectWorkspace(input = {}) {
       try {
         const repoDir = input.repoDir || input.repo_dir || (dom.repoInput && dom.repoInput.value) || state.repoDir;
         const query = Object.prototype.hasOwnProperty.call(input, "query")
           ? input.query
           : (dom.fileMapSearch && dom.fileMapSearch.value) || "";
+        const sourceSnapshot = parseAuthoredSourceWorkspace();
+        if (sourceSnapshot && (repoDir === "." || input.source === "authored-source-workspace")) {
+          const filteredFiles = query
+            ? sourceSnapshot.files.filter((file) => file.path.toLowerCase().includes(text(query).toLowerCase()))
+            : sourceSnapshot.files;
+          return replaceState(core.applyWorkspaceInspection(state, {
+            repoDir: sourceSnapshot.repoDir,
+            path: "",
+            files: filteredFiles,
+            inspectedAt: new Date().toISOString()
+          }));
+        }
         const result = await capabilities.inspectWorkspace(Object.assign({}, input, {repoDir, query}));
         return replaceState(core.applyWorkspaceInspection(state, result));
       } catch (error) {
+        const sourceSnapshot = parseAuthoredSourceWorkspace();
+        if (sourceSnapshot) {
+          return replaceState(core.applyWorkspaceInspection(state, {
+            repoDir: sourceSnapshot.repoDir,
+            path: "",
+            files: sourceSnapshot.files,
+            inspectedAt: new Date().toISOString()
+          }));
+        }
         return replaceState(core.recordFailure(state, "inspectWorkspace", error));
       }
     }
 
     async function openFile(input = {}) {
+      let path = "";
       try {
-        const path = core.normalizeProjectPath(input.path || input.filePath || input.selectedPath || selectedDomPath());
+        path = core.normalizeProjectPath(input.path || input.filePath || input.selectedPath || selectedDomPath());
+        const authoredFile = await openFileFromAuthoredSource(path);
+        if (authoredFile) {
+          hydrateWorkspaceFromAuthoredSource();
+          return replaceState(core.applyOpenedFile(state, authoredFile));
+        }
         const repoDir = input.repoDir || input.repo_dir || (dom.repoInput && dom.repoInput.value) || state.repoDir;
         const result = await capabilities.openFile(Object.assign({}, input, {path, repoDir}));
         return replaceState(core.applyOpenedFile(state, result));
       } catch (error) {
+        if (path) {
+          try {
+            const authoredFile = await openFileFromAuthoredSource(path);
+            if (authoredFile) {
+              hydrateWorkspaceFromAuthoredSource();
+              return replaceState(core.applyOpenedFile(state, authoredFile));
+            }
+          } catch (fallbackError) {
+            // Preserve the original failure; it is the one closest to the requested intent.
+          }
+        }
         return replaceState(core.recordFailure(state, "openFile", error));
       }
     }
@@ -295,13 +418,16 @@
       dom.root = rootNode || dom.root;
       if (!dom.root) return runtimeResult({mounted: false});
       ensureCanonicalSurface(dom.root);
+      activateLegacyRuntimePane();
+      enforceLegacyFidelityResizeStability();
+      bindLegacyFidelityResizeStability();
       dom.root.dataset.codeEditorRuntime = "dsl-native";
       dom.root.dataset.codeEditorRuntimeFacade = "MainComputerCodeEditorRuntime";
       dom.authoringHost = dom.root.querySelector("#code-studio-runtime-monaco");
       dom.monacoHost = dom.authoringHost;
       dom.monacoStatus = dom.root.querySelector("#code-editor-monaco-status");
       dom.sourceEditor = dom.root.querySelector("#code-studio-runtime-draft");
-      dom.legacySourceMirror = dom.root.querySelector("#code-studio-source-editor");
+      dom.sourceWorkspaceEditor = dom.root.querySelector("#code-studio-source-editor");
       dom.runtimePreview = dom.root.querySelector("#code-studio-runtime-preview");
       dom.fileMapList = dom.root.querySelector("#file-map-list");
       dom.fileMapStatus = dom.root.querySelector("#file-map-status");
@@ -344,8 +470,33 @@
         if (state.activeFile) editDraft({path: state.activeFile.path, text: dom.sourceEditor.value});
       });
       bindInput(dom.reviewedToggle, () => render());
+      bindLegacySourceFileClicks();
+      hydrateWorkspaceFromAuthoredSource();
       render();
       return runtimeResult({mounted: true});
+    }
+
+    function bindLegacySourceFileClicks() {
+      if (!dom.root || legacySourceFileClickBound) return;
+      legacySourceFileClickBound = true;
+      dom.root.addEventListener("click", (ev) => {
+        const target = ev.target && ev.target.closest
+          ? ev.target.closest("[data-code-studio-file]")
+          : null;
+        if (!target || !dom.root.contains(target)) return;
+        const path = target.getAttribute("data-code-studio-file") || "";
+        if (!path) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+        dom.root.querySelectorAll("[data-code-studio-file]").forEach((node) => {
+          node.classList.toggle("active", node === target);
+          if (node === target) node.setAttribute("aria-current", "true");
+          else node.removeAttribute("aria-current");
+        });
+        if (dom.selectedFiles) dom.selectedFiles.value = path;
+        openFile({path, source: "authored-source-workspace"});
+      }, true);
     }
 
     function bindButton(selector, handler) {
@@ -380,6 +531,80 @@
 
     function isLegacyFidelitySurface() {
       return !!(dom.root && dom.root.dataset && dom.root.dataset.codeEditorRuntimeSurfaceMode === "legacy-fidelity");
+    }
+
+    function enforceLegacyFidelityResizeStability() {
+      if (!dom.root || !isLegacyFidelitySurface()) return;
+      dom.root.dataset.codeEditorResizeStability = "locked";
+      if (dom.root.dataset.codeEditorMode !== "mcel") {
+        dom.root.dataset.codeEditorMode = "legacy-fidelity";
+      }
+      const shell = dom.root.querySelector(".code-studio-shell");
+      if (shell) {
+        shell.dataset.codeEditorRuntimeSurfaceMode = "legacy-fidelity";
+        shell.dataset.codeEditorResizeStability = "locked";
+      }
+      const body = dom.root.querySelector(".code-studio-body");
+      if (body) {
+        body.dataset.codeEditorResizeStability = "locked";
+      }
+      const editor = dom.root.querySelector(".code-studio-editor-group");
+      if (editor) {
+        editor.dataset.codeEditorResizeStability = "locked";
+      }
+    }
+
+    function bindLegacyFidelityResizeStability() {
+      if (resizeStabilityBound || !root || !dom.root || !isLegacyFidelitySurface()) return;
+      resizeStabilityBound = true;
+      const schedule = () => {
+        if (!root || typeof root.setTimeout !== "function") {
+          enforceLegacyFidelityResizeStability();
+          requestMonacoLayout(monacoRuntime());
+          return;
+        }
+        if (resizeStabilityTimer) root.clearTimeout(resizeStabilityTimer);
+        resizeStabilityTimer = root.setTimeout(() => {
+          resizeStabilityTimer = 0;
+          enforceLegacyFidelityResizeStability();
+          requestMonacoLayout(monacoRuntime());
+        }, 40);
+      };
+      root.addEventListener?.("resize", schedule);
+      root.visualViewport?.addEventListener?.("resize", schedule);
+      if (typeof root.MutationObserver === "function") {
+        const observer = new root.MutationObserver((records) => {
+          if (records.some((record) => record.attributeName === "data-code-editor-mode" || record.attributeName === "data-code-editor-runtime-surface-mode")) {
+            schedule();
+          }
+        });
+        observer.observe(dom.root, {
+          attributes: true,
+          attributeFilter: ["data-code-editor-mode", "data-code-editor-runtime-surface-mode"]
+        });
+      }
+      schedule();
+    }
+
+    function activateLegacyRuntimePane() {
+      if (!dom.root || !isLegacyFidelitySurface()) return;
+      const runtimePane = dom.root.querySelector('[data-code-studio-pane="runtime"]');
+      if (!runtimePane) return;
+      dom.root.querySelectorAll("[data-code-studio-pane]").forEach((pane) => {
+        const active = pane === runtimePane;
+        pane.classList.toggle("active", active);
+        pane.setAttribute("aria-hidden", active ? "false" : "true");
+      });
+      dom.root.querySelectorAll("[data-code-studio-tab]").forEach((tab) => {
+        const active = tab.getAttribute("data-code-studio-tab") === "runtime";
+        tab.classList.toggle("active", active);
+        tab.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      runtimePane.dataset.codeEditorRuntimeOwnedPane = "true";
+      runtimePane.dataset.codeEditorRuntimePrimaryPane = "true";
+      if (dom.root.dataset.codeEditorMode !== "mcel") {
+        dom.root.dataset.codeEditorMode = "legacy-fidelity";
+      }
     }
 
     function refreshRuntimeEditorRefs() {
@@ -454,6 +679,7 @@
       if (!dom.root) return;
       dom.root.dataset.codeEditorRuntime = "dsl-native";
       dom.root.dataset.codeEditorRuntimeFacade = "MainComputerCodeEditorRuntime";
+      activateLegacyRuntimePane();
       const vm = currentViewModel();
       const active = vm.activeFile;
       const patch = vm.patch;
@@ -493,6 +719,14 @@
       if (dom.draftStatus) {
         dom.draftStatus.textContent = active.statusText;
       }
+      if (dom.root && dom.root.querySelectorAll) {
+        dom.root.querySelectorAll("[data-code-studio-file]").forEach((node) => {
+          const isActive = !!(active.path && node.getAttribute("data-code-studio-file") === active.path);
+          node.classList.toggle("active", isActive);
+          if (isActive) node.setAttribute("aria-current", "true");
+          else node.removeAttribute("aria-current");
+        });
+      }
       if (dom.sourceEditor) {
         const nextText = active.open ? active.text : "";
         if (dom.sourceEditor.value !== nextText) {
@@ -503,9 +737,8 @@
           ? "Edit the active source file."
           : "Load a workspace and open a source file.";
       }
-      if (dom.legacySourceMirror && dom.legacySourceMirror !== dom.sourceEditor) {
-        dom.legacySourceMirror.value = active.open ? active.text : "";
-      }
+      // #code-studio-source-editor is the authored source workspace, not a draft mirror.
+      // Keeping it intact preserves the original Code Studio file model for legacy-fidelity clicks.
       if (dom.runtimePreview) {
         if (runtimePreviewIsPrimaryEditorHost()) {
           renderPrimaryEditorPreview(active, patch, receipts);
@@ -540,6 +773,7 @@
       dom.root.dataset.codeEditorRuntime = "dsl-native";
       dom.root.dataset.codeEditorRuntimeFacade = "MainComputerCodeEditorRuntime";
       dom.root.dataset.codeEditorDraftStatus = active.status;
+      enforceLegacyFidelityResizeStability();
     }
 
     function updateButtonStates(vm) {
@@ -728,7 +962,12 @@
         signature: monacoSignature,
         receipt: monacoLastReceipt,
         hostPresent: !!dom.monacoHost,
-        hostIsDirectPane: dom.monacoHost === dom.authoringHost
+        hostIsDirectPane: dom.monacoHost === dom.authoringHost,
+        runtimePaneActive: !!(dom.root && dom.root.querySelector('[data-code-studio-pane="runtime"].active')),
+        activePane: dom.root && dom.root.querySelector('[data-code-studio-pane].active')
+          ? dom.root.querySelector('[data-code-studio-pane].active').getAttribute("data-code-studio-pane")
+          : "",
+        authoredSourceWorkspaceFiles: (parseAuthoredSourceWorkspace() || {files: []}).files.length
       })
     });
   }
@@ -739,6 +978,7 @@
     const runtimePreview = rootNode.querySelector("#code-studio-runtime-preview");
     if (!existingShell || !runtimePreview) return false;
     rootNode.dataset.codeEditorRuntimeSurfaceMode = "legacy-fidelity";
+    rootNode.dataset.codeEditorMode = "legacy-fidelity";
     existingShell.dataset.codeEditorRuntimeSurface = "dsl-native";
     existingShell.dataset.codeEditorRuntimeSurfaceMode = "legacy-fidelity";
     existingShell.dataset.codeEditorRuntimeOwner = "MainComputerCodeEditorRuntime";

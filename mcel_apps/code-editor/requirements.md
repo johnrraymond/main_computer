@@ -29,7 +29,10 @@ reviewed/approved evidence before any source mutation. Patch 4 introduced a
 runtime-owned UI. Patches 5-7 made Monaco available and restored the direct
 Monaco host contract. Patch 8 preserves the authored VS Code-style host chrome
 while letting `MainComputerCodeEditorRuntime` own the selected-file Monaco
-authoring surface and reviewed mutation receipts.
+authoring surface and reviewed mutation receipts. Patch 10 fixes the hidden-pane
+regression by forcing the legacy runtime pane to be the active center workbench
+surface before Monaco mounts or swaps file models, and by keeping adapter debug
+globals aligned with the active Monaco model.
 
 ```mcel-app
 id: code-editor
@@ -169,3 +172,18 @@ wrapper around a second nested host. The runtime also isolates Monaco's generate
 DOM from app-wide layout and `box-sizing` rules so the mounted editor can paint
 inside the center pane.
 
+
+
+## Legacy-fidelity source workspace opening
+
+The DSL-native runtime must preserve the authored `#code-studio-source-editor` source workspace as immutable input for the preserved Code Studio chrome. Runtime draft rendering must not overwrite that source textarea. Clicking legacy `data-code-studio-file` entries must be captured by `MainComputerCodeEditorRuntime`, opened from the authored source workspace when available, and must not fall through to the retired Code Studio mount gate.
+
+## Legacy-fidelity editor track sizing
+
+When the DSL runtime preserves the old Code Studio chrome, the selected-file Monaco editor must occupy a visible center workbench track. The runtime may keep `data-code-editor-mode="authoring"` for older proof tooling, but the legacy-fidelity surface must provide matching four-column grid areas (`activitybar sidebar editor inspector`) so the `code-studio-editor-group` cannot be auto-placed into a zero-width implicit grid track. The runtime pane and `#code-studio-runtime-monaco` host must remain nonzero-sized after selecting `src/app.js`.
+
+
+- Legacy-fidelity runtime mode must not inherit the old simplified `data-code-editor-mode="authoring"` workbench grid; the preserved Code Studio shell owns activity, explorer, editor, and inspector tracks directly, with the inspector hidden on narrow viewports so Monaco keeps the primary lane.
+
+
+- Legacy-fidelity resize/zoom behavior must preserve a stable workbench canvas. If the browser viewport or zoom level cannot fit the full four-pane Code Studio chrome, the page must scroll horizontally instead of re-solving the shell into overlapping or cramped tracks. The preserved surface locks activity, explorer, primary Monaco editor, and inspector widths so the primary editor does not collapse below its authored minimum.

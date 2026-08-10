@@ -384,23 +384,26 @@ def _compose_text_candidates_from_service_payload(payload: Any) -> tuple[tuple[s
             "Coolify service detail payload is not an object",
         )
 
-    candidates: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
-    for key in ("docker_compose", "docker_compose_raw"):
-        value = payload.get(key)
-        if type(value) is str and value.strip():
-            text, encoding = _decode_compose_value(value)
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            if digest not in seen:
-                seen.add(digest)
-                candidates.append((text, key, encoding))
+    # Any compose text written back through docker_compose_raw must originate
+    # from the raw/source compose when Coolify provides it.  docker_compose is
+    # Coolify's rendered form and may contain generated container names,
+    # injected environment, networks, and resource-prefixed volume names.
+    # Round-tripping that rendered form into docker_compose_raw recursively
+    # materializes those generated values and corrupts compose lineage.
+    raw = payload.get("docker_compose_raw")
+    if type(raw) is str and raw.strip():
+        text, encoding = _decode_compose_value(raw)
+        return ((text, "docker_compose_raw", encoding),)
 
-    if not candidates:
-        raise MotherDeploymentCompletedHelperCleanupError(
-            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_MISSING",
-            "Coolify service detail does not include docker compose content",
-        )
-    return tuple(candidates)
+    rendered = payload.get("docker_compose")
+    if type(rendered) is str and rendered.strip():
+        text, encoding = _decode_compose_value(rendered)
+        return ((text, "docker_compose", encoding),)
+
+    raise MotherDeploymentCompletedHelperCleanupError(
+        "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_MISSING",
+        "Coolify service detail does not include docker compose content",
+    )
 
 
 def _compose_text_from_service_payload(payload: Any) -> tuple[str, str, str]:

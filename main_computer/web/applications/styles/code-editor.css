@@ -6074,3 +6074,401 @@ body[data-active-app="code-editor"] #code-editor-app .code-studio-shell {
   visibility: visible !important;
   opacity: 1 !important;
 }
+
+/* Patch 11: legacy-fidelity grid-area repair.
+   The DSL runtime sets data-code-editor-mode="authoring" so the old authoring-mode
+   stylesheet still supplies grid-area: editor/sidebar. Patch 8 restored a
+   four-column workbench but did not restore matching grid-template-areas, which
+   could auto-place the editor group into a zero-width implicit track. Keep the
+   old workbench chrome, but give every legacy column an explicit named area and
+   fixed visible track. */
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body {
+  display: grid !important;
+  grid-template-columns: 50px minmax(230px, 320px) minmax(520px, 1fr) minmax(300px, 360px) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  grid-template-areas: "activitybar sidebar editor inspector" !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-activitybar {
+  grid-area: activitybar !important;
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-sidebar {
+  grid-area: sidebar !important;
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  width: auto !important;
+  min-width: 230px !important;
+  max-width: 320px !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-group {
+  grid-area: editor !important;
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: 36px minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-inspector {
+  grid-area: inspector !important;
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  display: block !important;
+  width: auto !important;
+  min-width: 300px !important;
+  max-width: 360px !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-editor-layout-center-tabs {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] [data-code-studio-pane="runtime"][data-code-editor-runtime-primary-pane="true"],
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] [data-code-studio-pane="runtime"].active {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] [data-code-studio-pane="runtime"].active > .code-studio-pane-toolbar {
+  display: none !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-preview[data-code-editor-runtime-primary-host="true"] {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+
+/* Patch 12: legacy-fidelity mode separates the preserved Code Studio chrome from
+   the old data-code-editor-mode="authoring" stylesheet. The authoring stylesheet
+   was built for a simplified two/three-column view and was auto-placing the old
+   activity rail, explorer, editor, and assistant into overlapping/narrow tracks
+   such as 219px 0px 224px 360px. In legacy-fidelity mode the preserved chrome has
+   one explicit workbench grid, and the assistant collapses at narrow viewport
+   widths so Monaco keeps the center lane. */
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: 42px minmax(0, 1fr) 22px !important;
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "statusbar" !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-titlebar {
+  grid-area: titlebar !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-statusbar {
+  grid-area: statusbar !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body {
+  grid-area: workbench !important;
+  display: grid !important;
+  grid-template-columns:
+    50px
+    clamp(220px, 18vw, 300px)
+    minmax(0, 1fr)
+    clamp(300px, 24vw, 380px) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  grid-template-areas: "activitybar sidebar editor inspector" !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  align-items: stretch !important;
+  justify-items: stretch !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-activitybar {
+  grid-area: activitybar !important;
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-sidebar {
+  grid-area: sidebar !important;
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-group {
+  grid-area: editor !important;
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: 36px minmax(0, 1fr) !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-inspector {
+  grid-area: inspector !important;
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-aider-control,
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-aider-control-shell {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-aider-control-scroll {
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] [data-code-studio-pane="runtime"][data-code-editor-runtime-primary-pane="true"],
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] [data-code-studio-pane="runtime"].active,
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-preview[data-code-editor-runtime-primary-host="true"],
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .mcel-code-editor-primary-authoring-surface {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+@media (max-width: 1180px) {
+  #code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body {
+    grid-template-columns:
+      50px
+      clamp(180px, 28vw, 240px)
+      minmax(0, 1fr) !important;
+    grid-template-areas: "activitybar sidebar editor" !important;
+  }
+
+  #code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-inspector {
+    display: none !important;
+  }
+}
+
+@media (max-width: 760px) {
+  #code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body {
+    grid-template-columns: 44px minmax(0, 1fr) !important;
+    grid-template-areas: "activitybar editor" !important;
+  }
+
+  #code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-sidebar {
+    display: none !important;
+  }
+}
+
+
+
+/* Patch 13: legacy-fidelity resize stability.
+   The preserved Code Studio workbench must not re-solve into a cramped fitted
+   surface when browser resize/zoom changes the available inline size. Below the
+   authored four-pane minimum, the page scrolls horizontally instead of collapsing
+   the center Monaco editor or overlapping the inspector/sidebar. */
+html:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
+body:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]) {
+  min-width: 1720px !important;
+  min-inline-size: 1720px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+.viewport:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
+main:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
+.mc-app-host:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
+.applications-workspace:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]) {
+  width: max(100%, 1720px) !important;
+  min-width: 1720px !important;
+  min-inline-size: 1720px !important;
+  max-width: none !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"],
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] {
+  --mcel-code-editor-activity-inline: 50px !important;
+  --mcel-code-editor-explorer-inline: 300px !important;
+  --mcel-code-editor-inspector-inline: 380px !important;
+  --mcel-code-editor-proof-block: 0px !important;
+  --mcel-code-editor-status-block: 22px !important;
+  --mcel-code-editor-title-block: 42px !important;
+  width: max(100%, 1720px) !important;
+  min-width: 1720px !important;
+  min-inline-size: 1720px !important;
+  max-width: none !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-shell {
+  width: 100% !important;
+  min-width: 1720px !important;
+  min-inline-size: 1720px !important;
+  max-width: none !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: 42px minmax(0, 1fr) 22px !important;
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "statusbar" !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-body,
+#code-editor-app[data-mcel-layout-live="true"][data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  width: 100% !important;
+  min-width: 1720px !important;
+  min-inline-size: 1720px !important;
+  max-width: none !important;
+  grid-template-columns: 50px 300px minmax(990px, 1fr) 380px !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  grid-template-areas: "activitybar sidebar editor inspector" !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-activitybar,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-activitybar {
+  grid-area: activitybar !important;
+  grid-column: 1 !important;
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-sidebar,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-sidebar {
+  grid-area: sidebar !important;
+  grid-column: 2 !important;
+  width: 300px !important;
+  min-width: 300px !important;
+  max-width: 300px !important;
+  overflow: auto !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-group,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-editor-group {
+  grid-area: editor !important;
+  grid-column: 3 !important;
+  width: 100% !important;
+  min-width: 990px !important;
+  min-inline-size: 990px !important;
+  max-width: none !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-inspector,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-inspector,
+#code-editor-app[data-mcel-layout-live="true"][data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] [data-code-studio-workbench-region="scm-ai-inspector"] {
+  grid-area: inspector !important;
+  grid-column: 4 !important;
+  display: grid !important;
+  width: 380px !important;
+  min-width: 380px !important;
+  max-width: 380px !important;
+  overflow: hidden !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-editor-pane.active,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] #code-studio-runtime-preview,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-monaco-authoring-surface,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .mcel-code-editor-primary-authoring-surface,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] #code-studio-runtime-monaco {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] #code-studio-runtime-monaco .monaco-editor {
+  width: 100% !important;
+  height: 100% !important;
+}

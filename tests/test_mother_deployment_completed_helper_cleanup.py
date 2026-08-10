@@ -323,7 +323,7 @@ class _SplitComposeCleanupOpener(_ComposeRewriteCleanupOpener):
         return payload
 
 
-def test_completed_helper_cleanup_uses_rendered_compose_when_raw_contains_only_one_helper(
+def test_completed_helper_cleanup_never_round_trips_rendered_compose_when_raw_exists(
     tmp_path: Path,
 ) -> None:
     paths, private_state = _install(tmp_path)
@@ -347,13 +347,14 @@ def test_completed_helper_cleanup_uses_rendered_compose_when_raw_contains_only_o
 
     assert result["status"] == "pass"
     assert result["summary"]["clean"] is True
-    assert result["service_compose_rewrite"]["source_field"] == "docker_compose"
-    assert result["service_compose_rewrite"]["removed_service_count"] == 4
-    assert set(result["service_compose_rewrite"]["removed_helper_names"]) == set(opener.helper_uuids)
+    assert result["service_compose_rewrite"]["source_field"] == "docker_compose_raw"
+    assert result["service_compose_rewrite"]["removed_service_count"] == 1
+    assert result["service_compose_rewrite"]["removed_helper_names"] == [
+        "mother-superseded-service-cleanup"
+    ]
     attempts = result["service_compose_rewrite"]["compose_source_attempts"]
-    assert [attempt["source_field"] for attempt in attempts] == ["docker_compose", "docker_compose_raw"]
-    assert attempts[0]["removed_service_count"] == 4
-    assert attempts[1]["removed_service_count"] == 1
+    assert [attempt["source_field"] for attempt in attempts] == ["docker_compose_raw"]
+    assert attempts[0]["removed_service_count"] == 1
 
 
 class _StaleNestedApplicationCleanupOpener(_CleanupOpener):

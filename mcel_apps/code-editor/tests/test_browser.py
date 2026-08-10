@@ -41,8 +41,24 @@ def test_code_editor_monaco_host_is_permanent_center_pane_surface() -> None:
     assert "does not flip" in runtime
     assert "#code-editor-app[data-code-editor-runtime=\"dsl-native\"] #code-studio-runtime-monaco.code-studio-monaco-host.mcel-code-editor-authoring-host" in styles
     assert "#code-editor-app[data-code-editor-runtime-surface-mode=\"legacy-fidelity\"] .code-studio-body" in styles
+    assert "Patch 11: legacy-fidelity grid-area repair" in styles
+    assert "Patch 12: legacy-fidelity mode separates" in styles
+    assert "Patch 13: legacy-fidelity resize stability" in styles
+    assert 'grid-template-areas: "activitybar sidebar editor inspector" !important;' in styles
+    assert 'grid-template-areas: "activitybar sidebar editor" !important;' in styles
+    assert 'min-width: 1720px !important;' in styles
+    assert 'grid-template-columns: 50px 300px minmax(990px, 1fr) 380px !important;' in styles
     assert "preserveExistingCodeStudioSurface(rootNode)" in runtime
+    assert "activateLegacyRuntimePane" in runtime
+    assert 'runtimePane.dataset.codeEditorRuntimePrimaryPane = "true"' in runtime
     assert "renderPrimaryEditorPreview(active, patch, receipts)" in runtime
+    assert "parseAuthoredSourceWorkspace()" in runtime
+    assert "bindLegacySourceFileClicks()" in runtime
+    assert "bindLegacyFidelityResizeStability()" in runtime
+    assert 'dom.root.dataset.codeEditorResizeStability = "locked"' in runtime
+    assert "#code-studio-source-editor is the authored source workspace, not a draft mirror." in runtime
     assert "box-sizing: content-box !important" in styles
     assert 'const LOCAL_VS_BASE = "/applications/vendor/monaco-editor/min/vs";' in adapter
+    assert "activeSession.host" in adapter
+    assert "window.__CE_MONACO_MODEL__ = model" in adapter
     assert "inspect," in adapter

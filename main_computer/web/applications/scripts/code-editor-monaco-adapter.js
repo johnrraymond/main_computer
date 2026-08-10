@@ -333,6 +333,7 @@
         activeSession = {
           editor,
           model,
+          host,
           path,
           language,
           readOnly: options.readOnly === true,
@@ -404,6 +405,8 @@
     activeSession.path = path;
     activeSession.language = language;
     activeSession.readOnly = options.readOnly === true;
+    window.__CE_MONACO_EDITOR__ = activeSession.editor;
+    window.__CE_MONACO_MODEL__ = model;
     return {
       ok: true,
       actionOutcome: "pass",
@@ -459,9 +462,13 @@
         modelValuePreview: ""
       };
     }
-    const host = activeSession.editor?.getDomNode?.() || null;
+    const host = activeSession.host || activeSession.editor?.getDomNode?.() || null;
+    const editorNode = activeSession.editor?.getDomNode?.() || null;
     const rect = host && typeof host.getBoundingClientRect === "function"
       ? host.getBoundingClientRect()
+      : null;
+    const editorRect = editorNode && typeof editorNode.getBoundingClientRect === "function"
+      ? editorNode.getBoundingClientRect()
       : null;
     return {
       mounted: true,
@@ -469,7 +476,7 @@
       language: activeSession.language,
       readOnly: activeSession.readOnly,
       hostRect: rect ? {x: rect.x, y: rect.y, width: rect.width, height: rect.height} : null,
-      editorRect: rect ? {x: rect.x, y: rect.y, width: rect.width, height: rect.height} : null,
+      editorRect: editorRect ? {x: editorRect.x, y: editorRect.y, width: editorRect.width, height: editorRect.height} : null,
       modelLines: typeof activeSession.model?.getLineCount === "function" ? activeSession.model.getLineCount() : 0,
       modelValuePreview: typeof activeSession.model?.getValue === "function" ? activeSession.model.getValue().slice(0, 120) : ""
     };
