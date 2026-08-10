@@ -12,6 +12,11 @@ PRETTY_DOCS_INDEX = ROOT / "pretty_docs" / "index.json"
 README = ROOT / "README.md"
 TODO = ROOT / "TODO.md"
 CODE_EDITOR_REQUIREMENTS = ROOT / "pretty_docs" / "mcel-code-editor-requirements.md"
+DSL_AUTHORING_SURFACE = ROOT / "pretty_docs" / "mcel-dsl-app-authoring-surface.md"
+CANONICAL_APP_AUTHORING = ROOT / "pretty_docs" / "mcel-canonical-app-authoring.md"
+APPLICATION_AUTHORING = ROOT / "pretty_docs" / "mcel-application-authoring.md"
+APPLICATION_SCAFFOLDING = ROOT / "pretty_docs" / "mcel-application-scaffolding.md"
+APP_SURFACE_REGISTRY = ROOT / "pretty_docs" / "mcel-app-surface-registry.md"
 GIT_TOOLS_REQUIREMENTS = ROOT / "pretty_docs" / "mcel-git-tools-requirements.md"
 CODE_EDITOR_ADAPTER_TESTS = ROOT / "tests" / "test_mcel_code_editor_semantic_adapter.py"
 GIT_TOOLS_ADAPTER_TESTS = ROOT / "tests" / "test_mcel_git_tools_semantic_adapter.py"
@@ -102,31 +107,39 @@ def test_status_document_is_the_only_authority_for_upcoming_mcel_code_work() -> 
     assert authority_documents == ["pretty_docs/mcel-status-and-roadmap.md"]
 
     status_text = corpus[STATUS_DOC]
+    normalized_status = re.sub(r"\s+", " ", status_text)
     assert len(AUTHORIZED_NEXT_HEADING.findall(status_text)) == 1
+    assert "No next MCEL code candidate is authorized in this snapshot." in status_text
     assert (
-        "The next authorized MCEL code candidate is MCEL Lab semantic-form provenance "
-        "and conformance closure."
-        in status_text
+        "MCEL Lab semantic-form provenance and conformance closure, is complete "
+        "as an implemented read-only inspector baseline."
+        in normalized_status
     )
+    assert "Future code candidates must be separately specified" in normalized_status
     assert "all 40 registered form primitives retain exact" in status_text
     assert "MCEL Lab renders 9 primitive cards in 8 ordered groups" in status_text
-    assert "the unambiguous label `Contract status`" in status_text
-    assert "no primitive-level runtime-observable binding currently exists" in status_text
-    assert "does not authorize per-primitive `observed`, `missing`, or `unknown`" in status_text
-    assert "no declared application maturity is changed" in status_text.casefold()
-    assert "does not authorize source mutation" in status_text
+    assert "contract-status label and documentation source" in normalized_status
+    assert "without claiming implementation proof" in status_text
+    assert "per-primitive `observed`, `missing`, or `unknown`" not in status_text
+    assert "new semantic-form feature, implementation-status inference system" in normalized_status
+    assert "source mutation path, repair applicator" in normalized_status
+    assert "active browser explorer, browser mutation workflow" in normalized_status
+    assert "no declared application maturity is changed" in normalized_status
     assert "`mcel-evidence-scope-v1`" in status_text
     assert "`--overwrite-canonical`" in status_text
     assert "mcel-browser-observation-producer.js" in status_text
-    assert "proves that the locator resolves uniquely to the supplied attached root" in status_text
+    assert (
+        "proves that the locator resolves uniquely to the supplied attached root"
+        in normalized_status
+    )
     assert "mcel.browser-observation.capture-limits.v1" in status_text
     assert "mcel.redaction-policy.stub.v1" in status_text
-    assert "It performs no masking and provides no sensitive-data protection." in status_text
-    assert "The producer continues to emit no verifying claims." in status_text
+    assert "It performs no masking and provides no sensitive-data protection." in normalized_status
+    assert "The producer continues to emit no verifying claims." in normalized_status
     assert (
         "Layout, visual, source, transition, ridge, and general live-browser collection "
         "by the observation producer remain deferred."
-        in status_text
+        in normalized_status
     )
 
 
@@ -171,18 +184,65 @@ def test_stale_mcel_planning_language_does_not_return() -> None:
         assert stale_phrase not in corpus
 
 
+
+def test_app_authoring_docs_make_static_surface_bundle_a_no_backfill_gate() -> None:
+    dsl_authoring = DSL_AUTHORING_SURFACE.read_text(encoding="utf-8")
+    canonical_authoring = CANONICAL_APP_AUTHORING.read_text(encoding="utf-8")
+    application_authoring = APPLICATION_AUTHORING.read_text(encoding="utf-8")
+    scaffolding = APPLICATION_SCAFFOLDING.read_text(encoding="utf-8")
+    registry = APP_SURFACE_REGISTRY.read_text(encoding="utf-8")
+
+    assert "A semantic-runtime app must not rely on a later central backfill" in dsl_authoring
+    assert "app.presentation.semanticSurface" in dsl_authoring
+    assert "app.layout.grammar" in dsl_authoring
+    assert "`mcel.application-surface-bundle.v1`" in dsl_authoring
+    assert "contracts/surface-bundle.json" in dsl_authoring
+    assert "only then may the surface registry require those layers" in dsl_authoring
+    assert (
+        "package-local tests prove surface bundle declarations, selector grounding, "
+        "intent mapping, primary surface, default-hidden regions, and layout constraints"
+        in dsl_authoring
+    )
+
+    assert "Use `mcel_apps/code-editor/application.js`" in canonical_authoring
+    assert "Code Editor's DSL surface declarations" in canonical_authoring
+    assert "host-bound static semanticSurface/layoutGrammar bundle declaration example" in canonical_authoring
+
+    normalized_application_authoring = re.sub(r"\s+", " ", application_authoring)
+    assert "not optional follow-up work" in normalized_application_authoring
+    assert "must come from the app source" in normalized_application_authoring
+
+    assert "Static surface bundle requirement" in scaffolding
+    assert "This is a no-backfill invariant." in scaffolding
+    assert (
+        "generated DSL source includes semanticSurface and layoutGrammar declarations "
+        "before semantic-runtime registry promotion"
+        in scaffolding
+    )
+
+    normalized_registry = re.sub(r"\s+", " ", registry)
+    assert "Enrollment rule for new or ported apps" in registry
+    assert "A registry promotion must follow source truth." in registry
+    assert "prevents the Code Editor-style late backfill from becoming normal process" in normalized_registry
+
+
 def test_deprecated_findings_remain_linked_to_executable_adapter_proof_tests() -> None:
     proof_contracts = (
         {
             "finding_id": "code-editor.finding.docs-to-implementation-gap",
             "requirements_doc": CODE_EDITOR_REQUIREMENTS,
             "proof_test_path": CODE_EDITOR_ADAPTER_TESTS,
-            "proof_test_name": "test_code_editor_adapter_proves_source_safe_semantic_runtime_scope",
-            "documented_checks": (),
+            "proof_test_name": "test_code_editor_retired_adapter_exports_only_a_legacy_marker",
+            "documented_checks": (
+                "tests/test_mcel_code_editor_semantic_adapter.py",
+                "tests/test_mcel_app_surface_registry.py",
+                "tests/test_mcel_code_editor_browser_smoke.py",
+            ),
             "proof_assertions": (
-                'assert readiness["fullApplicationSemanticReady"] is True',
-                'assert readiness["declaredOnlyIntentCount"] == 0',
-                'assert result["coverage"]["verification"]["passed"] is True',
+                'assert payload == {',
+                '"retired": True',
+                '"authority": "MainComputerCodeEditorRuntime"',
+                '"runtimeFacade": "MainComputerCodeEditorRuntime"',
             ),
         },
         {

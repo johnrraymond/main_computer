@@ -1,0 +1,497 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "game.gameplayPluginManifest.v1",
+  "title": "Main Computer gameplay plugin manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifestVersion",
+    "id",
+    "title",
+    "kind",
+    "origin",
+    "scope",
+    "content",
+    "requires",
+    "permissions",
+    "validation",
+    "rollback"
+  ],
+  "properties": {
+    "schema": {
+      "const": "game.gameplayPluginManifest.v1"
+    },
+    "manifestVersion": {
+      "const": "gameplay-plugin.manifest.v1"
+    },
+    "id": {
+      "$ref": "#/$defs/pluginId"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "kind": {
+      "enum": [
+        "gameplay-plugin",
+        "generated-gameplay-plugin"
+      ]
+    },
+    "origin": {
+      "$ref": "#/$defs/origin"
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "content": {
+      "$ref": "#/$defs/content"
+    },
+    "requires": {
+      "$ref": "#/$defs/requirements"
+    },
+    "permissions": {
+      "$ref": "#/$defs/permissions"
+    },
+    "validation": {
+      "$ref": "#/$defs/validation"
+    },
+    "rollback": {
+      "$ref": "#/$defs/rollback"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z0-9][a-z0-9-]*)+$"
+    },
+    "pluginId": {
+      "type": "string",
+      "pattern": "^plugin\\.[a-z0-9][a-z0-9._-]*$"
+    },
+    "filePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "idArray": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "human-authored",
+            "local-ai",
+            "tool-generated"
+          ]
+        },
+        "modelProfile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "seed": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "promptSummary": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canAdd",
+        "canModify",
+        "cannotModify"
+      ],
+      "properties": {
+        "canAdd": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "scenario",
+              "encounter",
+              "dialogue",
+              "evidence",
+              "consequence",
+              "objective",
+              "receipt",
+              "actor-instance",
+              "generated-asset-reference"
+            ]
+          }
+        },
+        "canModify": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "generated-content-only"
+            ]
+          }
+        },
+        "cannotModify": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "engine-code",
+              "renderer-code",
+              "runtime-code",
+              "save-schema",
+              "runtime-state",
+              "base-project-content",
+              "base-scenarios",
+              "executable-code"
+            ]
+          }
+        },
+        "allowedSystems": {
+          "$ref": "#/$defs/idArray"
+        },
+        "allowedDestinations": {
+          "$ref": "#/$defs/idArray"
+        }
+      }
+    },
+    "contentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "path": {
+          "$ref": "#/$defs/filePath"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      }
+    },
+    "scenarioRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "path": {
+          "$ref": "#/$defs/filePath"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "encounterIds": {
+          "$ref": "#/$defs/idArray"
+        },
+        "receiptIds": {
+          "$ref": "#/$defs/idArray"
+        }
+      }
+    },
+    "encounterRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "template"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "path": {
+          "$ref": "#/$defs/filePath"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "template": {
+          "$ref": "#/$defs/id"
+        },
+        "actorArchetypeIds": {
+          "$ref": "#/$defs/idArray"
+        },
+        "objectiveTypeIds": {
+          "$ref": "#/$defs/idArray"
+        }
+      }
+    },
+    "contentFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "scenario",
+            "encounter",
+            "dialogue",
+            "evidence",
+            "consequence",
+            "receipt",
+            "asset-reference",
+            "manifest-support"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/filePath"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryPoints",
+        "scenarios",
+        "encounters"
+      ],
+      "properties": {
+        "entryPoints": {
+          "$ref": "#/$defs/idArray"
+        },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scenarioRef"
+          },
+          "default": []
+        },
+        "encounters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/encounterRef"
+          },
+          "default": []
+        },
+        "dialogue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contentRef"
+          },
+          "default": []
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contentRef"
+          },
+          "default": []
+        },
+        "consequences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contentRef"
+          },
+          "default": []
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contentRef"
+          },
+          "default": []
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contentFile"
+          },
+          "default": []
+        }
+      }
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "encounterTemplates",
+        "actorArchetypes",
+        "objectiveTypes",
+        "consequenceTypes"
+      ],
+      "properties": {
+        "encounterTemplates": {
+          "$ref": "#/$defs/idArray"
+        },
+        "actorArchetypes": {
+          "$ref": "#/$defs/idArray"
+        },
+        "objectiveTypes": {
+          "$ref": "#/$defs/idArray"
+        },
+        "consequenceTypes": {
+          "$ref": "#/$defs/idArray"
+        },
+        "systems": {
+          "$ref": "#/$defs/idArray"
+        },
+        "destinations": {
+          "$ref": "#/$defs/idArray"
+        },
+        "factions": {
+          "$ref": "#/$defs/idArray"
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowExecutableCode",
+        "allowRuntimeStateMutation",
+        "allowEngineFileMutation",
+        "allowBaseContentMutation"
+      ],
+      "properties": {
+        "allowExecutableCode": {
+          "const": false
+        },
+        "allowRuntimeStateMutation": {
+          "const": false
+        },
+        "allowEngineFileMutation": {
+          "const": false
+        },
+        "allowBaseContentMutation": {
+          "const": false
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mustPassSchema",
+        "mustPassReferenceCheck",
+        "mustPassSimulation",
+        "mustRejectExecutableCode",
+        "mustSupportRollback"
+      ],
+      "properties": {
+        "mustPassSchema": {
+          "const": true
+        },
+        "mustPassReferenceCheck": {
+          "const": true
+        },
+        "mustPassSimulation": {
+          "const": true
+        },
+        "mustRejectExecutableCode": {
+          "const": true
+        },
+        "mustSupportRollback": {
+          "const": true
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supported",
+        "mode"
+      ],
+      "properties": {
+        "supported": {
+          "const": true
+        },
+        "mode": {
+          "enum": [
+            "disable-plugin"
+          ]
+        },
+        "disableReceipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "sourceSnapshotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "generatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "validationReportPath": {
+          "$ref": "#/$defs/filePath"
+        },
+        "simulationReportPath": {
+          "$ref": "#/$defs/filePath"
+        }
+      }
+    }
+  }
+}

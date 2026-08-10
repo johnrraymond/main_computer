@@ -217,6 +217,8 @@ def test_build_scenarios_uses_app_surface_registry_required_policies(flog):
     assert by_id["document.default-load"].route == "/applications/document"
     assert by_id["code-editor.default-load"].maturity == "semantic-runtime"
     assert by_id["code-editor.default-load"].required_layer_ids == (
+        "semantic-surface",
+        "layout-grammar",
         "runtime-ownership",
         "runtime-visual-fit",
         "diagnostic-no-throw",

@@ -1,0 +1,54 @@
+{
+  "completionStages": [
+    "extracted"
+  ],
+  "description": "A non-activated plugin fixture for validating declarative cave-escape scenario content.",
+  "encounterIds": [
+    "encounter.plugin.vela-cave-extension.escape-route"
+  ],
+  "entry": {
+    "destinationId": "destination.vela-gate.subsurface-cavern",
+    "systemId": "system.vela-gate"
+  },
+  "entryStage": "route-opens",
+  "id": "scenario.plugin.vela-cave-extension.followup",
+  "kind": "scenario",
+  "receiptIds": [
+    "receipt.plugin.vela-cave-extension.extracted"
+  ],
+  "schema": "game.gameplayPluginContent.v1",
+  "stages": [
+    {
+      "id": "route-opens",
+      "kind": "briefing",
+      "nextStage": "escape-route",
+      "objective": "Follow the newly charted Vela subsurface passage.",
+      "title": "A second cave route opens"
+    },
+    {
+      "encounterId": "encounter.plugin.vela-cave-extension.escape-route",
+      "id": "escape-route",
+      "kind": "encounter",
+      "objective": "Recover your weapon, clear the cave guards, and reach extraction.",
+      "onComplete": "extracted",
+      "onFail": "route-lost",
+      "title": "Clear the escape route"
+    },
+    {
+      "id": "extracted",
+      "kind": "resolution",
+      "objective": "The Vela route is charted for later scenario use.",
+      "receiptIds": [
+        "receipt.plugin.vela-cave-extension.extracted"
+      ],
+      "title": "Extraction confirmed"
+    },
+    {
+      "id": "route-lost",
+      "kind": "failure",
+      "objective": "The cave route collapses before extraction.",
+      "title": "Route lost"
+    }
+  ],
+  "title": "Vela Cave Extension Followup"
+}

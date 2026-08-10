@@ -296,6 +296,112 @@
       null;
   }
 
+  function getApplicationPackageCatalog() {
+    return globalThis.McelApplicationPackages ||
+      globalThis.window?.McelApplicationPackages ||
+      globalThis.window?.MCEL?.applicationPackages ||
+      null;
+  }
+
+  function getApplicationPackageRecord(appId) {
+    const catalog = getApplicationPackageCatalog();
+    if (!catalog || typeof catalog.getPackage !== "function") return null;
+    try {
+      const record = catalog.getPackage(appId);
+      return record && typeof record === "object" ? record : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getApplicationSurfaceBundle(appId) {
+    const catalog = getApplicationPackageCatalog();
+    if (!catalog || typeof catalog.getSurfaceBundle !== "function") return null;
+    try {
+      const bundle = catalog.getSurfaceBundle(appId);
+      return bundle && typeof bundle === "object" ? bundle : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function isDslAuthoredSemanticRuntimePackage(record) {
+    if (!record || typeof record !== "object") return false;
+    const authoring = record.authoring || {};
+    const conformance = record.conformance || {};
+    const source = String(authoring.source || "").trim();
+    const currentMode = String(conformance.currentMode || conformance.current_mode || "");
+    const targetMode = String(conformance.targetMode || conformance.target_mode || "");
+    return Boolean(
+      source &&
+      source.endsWith("/application.js") &&
+      (currentMode === "semantic-runtime-proven" || targetMode === "semantic-runtime-proven")
+    );
+  }
+
+  function hasDeclaredSemanticSurface(bundle) {
+    return Boolean(bundle && typeof bundle === "object" && bundle.semanticSurface && typeof bundle.semanticSurface === "object");
+  }
+
+  function hasDeclaredLayoutGrammar(bundle) {
+    return Boolean(bundle && typeof bundle === "object" && bundle.layoutGrammar && typeof bundle.layoutGrammar === "object");
+  }
+
+  function dslAuthoringDeclarationFindings(appId) {
+    const record = getApplicationPackageRecord(appId);
+    if (!isDslAuthoredSemanticRuntimePackage(record)) return [];
+    const bundle = getApplicationSurfaceBundle(appId);
+    const authoring = record.authoring || {};
+    const conformance = record.conformance || {};
+    const evidence = {
+      appId: String(appId || ""),
+      packageRoot: String(record.packageRoot || ""),
+      authoringSource: String(authoring.source || ""),
+      currentMode: String(conformance.currentMode || conformance.current_mode || ""),
+      targetMode: String(conformance.targetMode || conformance.target_mode || ""),
+      surfaceBundleAvailable: Boolean(bundle)
+    };
+    const findings = [];
+    if (!hasDeclaredSemanticSurface(bundle)) {
+      findings.push({
+        severity: "warning",
+        code: "dsl-semantic-surface-missing",
+        finding: "DSL app does not declare app.presentation.semanticSurface(...); semantic intent is inferred or supplied by fallback evidence.",
+        evidence,
+        recommendedNextProbe: "dsl.authoring.semanticSurface"
+      });
+    }
+    if (!hasDeclaredLayoutGrammar(bundle)) {
+      findings.push({
+        severity: "warning",
+        code: "dsl-layout-grammar-missing",
+        finding: "DSL app does not declare app.layout.grammar(...); layout contract is inferred or supplied by fallback evidence.",
+        evidence,
+        recommendedNextProbe: "dsl.authoring.layoutGrammar"
+      });
+    }
+    return findings;
+  }
+
+  function attachDslAuthoringDeclarationFindings(report) {
+    if (!report || typeof report !== "object") return report;
+    const findings = Array.isArray(report.findings) ? report.findings.slice() : [];
+    const existingCodes = new Set(findings.map((finding) => String(finding?.code || "")));
+    for (const finding of dslAuthoringDeclarationFindings(report.appId)) {
+      if (!existingCodes.has(finding.code)) {
+        findings.push(finding);
+        existingCodes.add(finding.code);
+      }
+    }
+    report.findings = findings;
+    report.summary = {
+      ...(report.summary || {}),
+      ...severityCounts(findings)
+    };
+    if (findings.some((finding) => finding.severity === "critical")) report.verdict = "fail";
+    return report;
+  }
+
   function getAppSurfaceRegistryPolicy(appId) {
     const safeAppId = String(appId || "");
     const conformance = getAppSurfaceConformance();
@@ -2220,6 +2326,7 @@
     report = applyOverlayFindings(report, snapshot);
     report = attachMcelSurfacePathway(report, snapshot, options);
     report = attachAppSurfaceConformance(report, snapshot, options);
+    report = attachDslAuthoringDeclarationFindings(report);
     report.buckets = buildReportBuckets(report);
 
     lastReport = report;
@@ -2330,6 +2437,11 @@
         visibleAndUseful,
         surfaceOwnershipProbe,
         getCodeEditorSurfaceDiagnostics,
+        getApplicationPackageCatalog,
+        getApplicationPackageRecord,
+        getApplicationSurfaceBundle,
+        dslAuthoringDeclarationFindings,
+        attachDslAuthoringDeclarationFindings,
         attachMcelSurfacePathway,
         attachAppSurfaceConformance,
         buildReportBuckets,

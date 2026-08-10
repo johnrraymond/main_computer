@@ -159,37 +159,56 @@ The detailed contract and limitations are documented in `pretty_docs/mcel-projec
 
 ## Authorized next code candidate
 
-The next authorized MCEL code candidate is MCEL Lab semantic-form provenance and conformance closure.
+No next MCEL code candidate is authorized in this snapshot.
 
-This is a closure candidate for an existing read-only inspector, not a new semantic-form feature or an implementation-status inference system. Its bounded implementation may:
+The previous authorized candidate, MCEL Lab semantic-form provenance and
+conformance closure, is complete as an implemented read-only inspector baseline.
+Its proof remains bounded to requirements provenance, viewer consistency,
+stale-finding cleanup, and read-only Form-aspect conformance. It did not create a
+new semantic-form feature, implementation-status inference system, source
+mutation path, repair applicator, active browser explorer, browser mutation
+workflow, or application maturity promotion.
 
-- preserve exact requirements-document source file and line ranges on compact `form_primitives` payload entries;
-- display primitive provenance and the unambiguous label `Contract status` in the existing semantic-form viewer;
-- make the static shell's aspect selector include the already supported Form aspect;
-- retire the stale finding that claims parsed form primitives are not rendered;
-- extend the existing read-only MCEL Lab deployed-route fixture to select the Form aspect and verify primitive counts, kind grouping, provenance binding, clipping, and overlap at the authorized viewports;
-- update only directly coupled registry plumbing, generated browser payload, viewer markup or styling, tests, and documentation.
+Completion evidence:
 
-Completion requires all of the following:
-
-- all 40 registered form primitives retain exact `source.file`, `source.start_line`, and `source.end_line` provenance in the Lab payload;
-- MCEL Lab renders 9 primitive cards in 8 ordered groups, including 2 context cards;
-- every rendered primitive card exposes a contract-status label and documentation source without claiming implementation proof;
+- all 40 registered form primitives retain exact `source.file`,
+  `source.start_line`, and `source.end_line` provenance in the Lab payload;
+- MCEL Lab renders 9 primitive cards in 8 ordered groups, including 2 context
+  cards;
+- every rendered primitive card exposes a contract-status label and
+  documentation source without claiming implementation proof;
 - an app with no parsed form primitives retains a truthful empty state;
-- the Form aspect has no internally clipped primitive cards or sibling overlaps at 1280×720, 1440×900, and the 900×900 stacked layout;
-- the stale `mcel-lab.finding.form-primitives-not-yet-first-class-ui` finding is deprecated and linked to executable proof;
-- the requirements registry remains at 304 blocks with 0 errors, 0 warnings, and `strict_schema_ready: True`;
-- canonical runtime and acceptance evidence remain exact, and no declared application maturity is changed.
+- the Form aspect has no internally clipped primitive cards or sibling overlaps
+  at 1280×720, 1440×900, and the 900×900 stacked layout;
+- the stale `mcel-lab.finding.form-primitives-not-yet-first-class-ui` finding is
+  deprecated and linked to executable proof;
+- the requirements registry remains at 304 blocks with 0 errors, 0 warnings, and
+  `strict_schema_ready: True`;
+- canonical runtime and acceptance evidence remain exact, and no declared
+  application maturity is changed.
 
-Authorization ends at provenance, viewer consistency, stale-finding cleanup, and read-only conformance proof. It does not authorize per-primitive `observed`, `missing`, or `unknown` implementation badges, because no primitive-level runtime-observable binding currently exists. It also does not authorize source mutation, repair application, active browser exploration, browser mutation, or application maturity promotion.
+The completed evidence-workflow hardening remains authoritative: unfiltered runs
+write canonical evidence, filtered runs default to deterministic scoped
+directories, reports declare `mcel-evidence-scope-v1`, and partial evidence
+cannot replace canonical reports without `--overwrite-canonical`.
 
-The completed evidence-workflow hardening remains authoritative: unfiltered runs write canonical evidence, filtered runs default to deterministic scoped directories, reports declare `mcel-evidence-scope-v1`, and partial evidence cannot replace canonical reports without `--overwrite-canonical`.
+The read-only browser producer in `mcel-browser-observation-producer.js` still
+requires a matching app, route, surface, and locator descriptor; proves that the
+locator resolves uniquely to the supplied attached root; and records the binding
+result in provenance. Capture continues to use the versioned
+`mcel.browser-observation.capture-limits.v1` policy with default limits and hard
+ceilings for elements, tree depth, facts, attributes, text payload, and state
+markers. Limit-driven omissions remain explicit, deterministic, and recorded as
+partial capture rather than silently presented as complete.
 
-The read-only browser producer in `mcel-browser-observation-producer.js` still requires a matching app, route, surface, and locator descriptor; proves that the locator resolves uniquely to the supplied attached root; and records the binding result in provenance. Capture continues to use the versioned `mcel.browser-observation.capture-limits.v1` policy with default limits and hard ceilings for elements, tree depth, facts, attributes, text payload, and state markers. Limit-driven omissions remain explicit, deterministic, and recorded as partial capture rather than silently presented as complete.
+Redaction remains a non-functional contract stub: `mcel.redaction-policy.stub.v1`
+reports `not-implemented` and `redactedFactCount: 0`. It performs no masking and
+provides no sensitive-data protection. The producer continues to emit no
+verifying claims.
 
-Redaction remains a non-functional contract stub: `mcel.redaction-policy.stub.v1` reports `not-implemented` and `redactedFactCount: 0`. It performs no masking and provides no sensitive-data protection. The producer continues to emit no verifying claims.
-
-Layout, visual, source, transition, ridge, and general live-browser collection by the observation producer remain deferred. The authorized semantic-form closure may alter only requirements provenance, existing viewer consistency, read-only Form-aspect conformance evidence, and directly coupled tests or documentation.
+Layout, visual, source, transition, ridge, and general live-browser collection by
+the observation producer remain deferred. Future code candidates must be
+separately specified, policy-gated, and tested before implementation.
 
 
 ## Not authorized

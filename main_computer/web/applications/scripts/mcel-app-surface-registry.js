@@ -89,8 +89,8 @@ var McelAppSurfaceRegistry = (() => {
       maturity: "semantic-runtime",
       surfaceId: "code-editor.surface.monaco-selected-file-editor",
       contractId: "code-editor.contract.authoring.monaco-golden-path",
-      requiredLayerIds: RUNTIME_LAYER_IDS,
-      notes: "Source-safe Code Editor semantic runtime is proven through the domain adapter and acceptance evidence; static authored-surface parity remains separately reported."
+      requiredLayerIds: BASELINE_LAYER_IDS,
+      notes: "Source-safe Code Editor semantic runtime now requires the declared static semantic surface and layout grammar bundle alongside runtime ownership, visual fit, and diagnostic no-throw checks."
     },
     calculator: {
       appId: "calculator",

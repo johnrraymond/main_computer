@@ -39,6 +39,10 @@ def test_code_editor_browser_smoke_script_is_part_of_browser_bundle() -> None:
     assert "shell-single-column-grid" in smoke
     assert "monaco-primary-surface-usable" in smoke
     assert "proof-dock-hidden-by-default" in smoke
+    assert "surface-bundle-available" in smoke
+    assert "semantic-surface-declared" in smoke
+    assert "layout-grammar-declared" in smoke
+    assert "diagnostics-required-layers-pass" in smoke
     assert "diagnostics-raw-verdict-pass" in smoke
 
 
@@ -104,7 +108,7 @@ def test_code_editor_browser_smoke_passes_healthy_legacy_fidelity_fixture_and_fa
           }}
         }}
 
-        function buildWindow(broken = false) {{
+        function buildWindow(broken = false, includeSurfaceBundle = true) {{
           const doc = {{
             map: new Map(),
             all: [],
@@ -219,11 +223,94 @@ def test_code_editor_browser_smoke_passes_healthy_legacy_fidelity_fixture_and_fa
             style: {{display: "none", width: "0px", height: "0px"}}
           }});
 
+          const surfaceBundle = {{
+            schema: "mcel.application-surface-bundle.v1",
+            appId: "code-editor",
+            surfaceId: "code-editor.surface.monaco-selected-file-editor",
+            presentationAuthority: "existing-host-html",
+            semanticSurface: {{
+              surfaceId: "code-editor.surface.monaco-selected-file-editor",
+              regions: [
+                {{id: "root", selector: "#code-editor-app"}},
+                {{id: "shell", selector: ".code-studio-shell"}},
+                {{id: "activitybar", selector: ".code-studio-activitybar"}},
+                {{id: "explorer", selector: ".code-studio-sidebar"}},
+                {{id: "editor-group", selector: ".code-studio-editor-group"}},
+                {{id: "primary-editor", selector: "#code-studio-runtime-preview", runtimeHostSelector: "#code-studio-runtime-monaco", primary: true}},
+                {{id: "assistant", selector: ".code-studio-inspector"}},
+                {{id: "proof-dock", selector: "#code-studio-bottom-panel", defaultVisible: false}}
+              ],
+              controls: [
+                {{id: "open-source-file", intent: "openFile", selector: "[data-code-studio-file]"}}
+              ],
+              forbiddenDefaultRegions: [
+                {{id: "source-pane", selector: "[data-code-studio-pane='source']", defaultVisible: false}},
+                {{id: "serialized-pane", selector: "[data-code-studio-pane='serialized']", defaultVisible: false}},
+                {{id: "contract-pane", selector: "[data-code-studio-pane='contract']", defaultVisible: false}},
+                {{id: "proof-dock", selector: "#code-studio-bottom-panel", defaultVisible: false}}
+              ]
+            }},
+            layoutGrammar: {{
+              rootSelector: ".code-studio-shell",
+              regions: [
+                {{id: "shell", selector: ".code-studio-shell"}},
+                {{id: "workbench", selector: ".code-studio-body"}},
+                {{id: "activitybar", selector: ".code-studio-activitybar"}},
+                {{id: "explorer", selector: ".code-studio-sidebar"}},
+                {{id: "editor-group", selector: ".code-studio-editor-group"}},
+                {{id: "primary-editor", selector: "#code-studio-runtime-preview", runtimeHostSelector: "#code-studio-runtime-monaco"}},
+                {{id: "assistant", selector: ".code-studio-inspector"}}
+              ],
+              constraints: [
+                {{id: "shell-single-column", selector: ".code-studio-shell"}},
+                {{id: "workbench-nonzero-tracks", selector: ".code-studio-body"}},
+                {{id: "primary-editor-nonzero", selector: "#code-studio-runtime-preview", runtimeHostSelector: "#code-studio-runtime-monaco"}},
+                {{id: "proof-dock-hidden-by-default", selector: "#code-studio-bottom-panel"}}
+              ]
+            }}
+          }};
+
+          const appSurfaceConformance = {{
+            status: "pass",
+            valid: true,
+            requiredLayerIds: [
+              "semantic-surface",
+              "layout-grammar",
+              "runtime-ownership",
+              "runtime-visual-fit",
+              "diagnostic-no-throw"
+            ],
+            policyFailedLayerIds: [],
+            policyUnavailableLayerIds: [],
+            layers: [
+              {{id: "semantic-surface", status: "pass"}},
+              {{id: "layout-grammar", status: "pass"}},
+              {{id: "runtime-ownership", status: "pass"}},
+              {{id: "runtime-visual-fit", status: "pass"}},
+              {{id: "diagnostic-no-throw", status: "pass"}}
+            ]
+          }};
+
           return {{
             document: doc,
             getComputedStyle: (el) => el.style,
+            McelApplicationPackages: {{
+              surfaceBundleCount: includeSurfaceBundle ? 1 : 0,
+              getSurfaceBundle: (appId) => includeSurfaceBundle && appId === "code-editor" ? surfaceBundle : null,
+              hasSurfaceBundle: (appId) => includeSurfaceBundle && appId === "code-editor"
+            }},
             McelSelfDiagnosis: {{
-              diagnose: () => ({{verdict: "pass", findings: [], summary: {{errors: 0, warnings: 0, ok: 1}}}})
+              diagnose: () => ({{
+                verdict: "pass",
+                findings: [],
+                appSurfaceConformance,
+                summary: {{
+                  errors: 0,
+                  warnings: 0,
+                  ok: 1,
+                  appSurfaceConformance
+                }}
+              }})
             }},
             MainComputerCodeEditorRuntime: {{
               state: () => ({{activeFile: {{path: "src/app.js"}}}}),
@@ -234,15 +321,30 @@ def test_code_editor_browser_smoke_passes_healthy_legacy_fidelity_fixture_and_fa
 
         const healthy = smoke.run({{global: buildWindow(false), requireDiagnosis: true}});
         const broken = smoke.run({{global: buildWindow(true), requireDiagnosis: true}});
+        const missingBundle = smoke.run({{global: buildWindow(false, false), requireDiagnosis: true}});
         console.log(JSON.stringify({{
           healthyVerdict: healthy.verdict,
+          healthyStaticSurface: healthy.staticSurface,
+          healthyCodes: healthy.checks.filter((check) => check.ok).map((check) => check.code),
           brokenVerdict: broken.verdict,
-          brokenCodes: broken.checks.filter((check) => !check.ok).map((check) => check.code)
+          brokenCodes: broken.checks.filter((check) => !check.ok).map((check) => check.code),
+          missingBundleVerdict: missingBundle.verdict,
+          missingBundleCodes: missingBundle.checks.filter((check) => !check.ok).map((check) => check.code)
         }}));
         """))
 
     assert result["healthyVerdict"] == "pass"
+    assert result["healthyStaticSurface"]["schema"] == "mcel.application-surface-bundle.v1"
+    assert result["healthyStaticSurface"]["surfaceId"] == "code-editor.surface.monaco-selected-file-editor"
+    assert "surface-bundle-available" in result["healthyCodes"]
+    assert "semantic-surface-declared" in result["healthyCodes"]
+    assert "layout-grammar-declared" in result["healthyCodes"]
+    assert "diagnostics-required-layers-pass" in result["healthyCodes"]
     assert result["brokenVerdict"] == "fail"
     assert "shell-single-column-grid" in result["brokenCodes"]
     assert "workbench-grid-nonzero-tracks" in result["brokenCodes"]
     assert "monaco-primary-surface-usable" in result["brokenCodes"]
+    assert result["missingBundleVerdict"] == "fail"
+    assert "surface-bundle-available" in result["missingBundleCodes"]
+    assert "semantic-surface-declared" in result["missingBundleCodes"]
+    assert "layout-grammar-declared" in result["missingBundleCodes"]

@@ -1101,6 +1101,9 @@ required_checks:
   - Parse all mcel-* blocks in this document.
   - Map block IDs to app regions, intents, tests, and source candidates.
   - Prevent planned requirements from being reported as verified.
+  - Verify retired adapter authority in tests/test_mcel_code_editor_semantic_adapter.py.
+  - Verify Code Editor registry promotion in tests/test_mcel_app_surface_registry.py.
+  - Verify static/runtime browser smoke in tests/test_mcel_code_editor_browser_smoke.py.
 ```
 
 ## Non-goals

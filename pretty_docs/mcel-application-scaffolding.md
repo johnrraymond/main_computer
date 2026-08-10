@@ -256,6 +256,23 @@ mcel_apps/
 
 The live generator writes packages under the repository-root `mcel_apps/` directory by default. This keeps contracts, requirements, tests, and development metadata outside the public application-serving tree. The package-local responsibility map is normative: creating a new app must not require the author to discover and hand-edit unrelated central registries.
 
+### Static surface bundle requirement
+
+The DSL-v1 scaffold must produce the source needed for the semantic/layout
+diagnostic layers at app birth. For a semantic-runtime target, the generated
+`application.js` must emit `app.presentation.semanticSurface(...)` and
+`app.layout.grammar(...)` declarations with stable IDs, selectors, controls,
+intent mappings, primary surface ownership, default-hidden/forbidden regions,
+and layout constraints. The generated package projection then materializes
+`mcel.application-surface-bundle.v1` as the logical
+`contracts/surface-bundle.json` output.
+
+This is a no-backfill invariant. A newly authored app or a ported app should not
+need a later central patch merely to make the `semantic-surface` and
+`layout-grammar` diagnostics available. If the scaffold or migration path cannot
+prove those declarations yet, it must leave the app at `legacy` or
+`runtime-baseline` instead of promoting registry policy ahead of source truth.
+
 ### Package manifest
 
 `mcel.app.json` is the package join point. It identifies the application and references existing authorities; it is not a second requirements language.
@@ -593,6 +610,8 @@ The generator test suite must also prove:
 - generated JSON is canonical and stable;
 - generated imports and referenced paths resolve;
 - generated requirements parse cleanly;
+- generated DSL source includes semanticSurface and layoutGrammar declarations before semantic-runtime registry promotion;
+- generated tests prove the materialized surface bundle, selector grounding, intent mapping, primary surface, hidden/default-forbidden regions, and layout constraints;
 - generated tests collect through the currently supported compatibility path;
 - output does not contain hidden Contract Counter-only integration outside substituted identifiers and fixture behavior;
 - no timestamp, random UUID, hostname, or absolute path makes output nondeterministic;

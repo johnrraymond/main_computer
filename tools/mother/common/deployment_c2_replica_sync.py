@@ -274,6 +274,60 @@ def _http(
     }
 
 
+_SENSITIVE_KEY_RE = re.compile(r"(private|secret|token|password|passwd|authorization|api[_-]?key)", re.IGNORECASE)
+
+
+def _safe_preview_value(value: Any, *, max_text: int = 512) -> Any:
+    """Return a short, secret-redacted value that can be embedded in evidence.
+
+    Coolify deploy/start responses are usually small acknowledgement payloads, but
+    evidence must not depend on that remaining true.  The preview keeps only enough
+    text to distinguish empty/generic/queued responses while redacting
+    sensitive-looking keys recursively.
+    """
+
+    if isinstance(value, Mapping):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _SENSITIVE_KEY_RE.search(key_text):
+                out[key_text] = "<redacted>"
+            else:
+                out[key_text] = _safe_preview_value(item, max_text=max_text)
+        return out
+    if isinstance(value, list):
+        return [_safe_preview_value(item, max_text=max_text) for item in value[:20]]
+    if isinstance(value, str):
+        text = value[:max_text]
+        if len(value) > max_text:
+            text += "...<truncated>"
+        return text
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:max_text]
+
+
+def _safe_payload_text(payload: Any, *, limit: int = 512) -> str:
+    safe = _safe_preview_value(payload, max_text=limit)
+    try:
+        text = json.dumps(safe, sort_keys=True, separators=(",", ":"), default=str)
+    except TypeError:
+        text = str(safe)
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+    return text
+
+
+def _response_receipt(response: Mapping[str, Any], *, include_safe_text: bool = False) -> dict[str, Any]:
+    receipt = {key: response[key] for key in ("status", "response_sha256", "byte_length", "elapsed_ms")}
+    if include_safe_text:
+        receipt["safe_text"] = _safe_payload_text(response.get("payload"), limit=512)
+        receipt["safe_payload"] = _safe_preview_value(response.get("payload"), max_text=512)
+        receipt["safe_text_available"] = True
+    return receipt
+
+
+
 def _raw_items(payload: Any) -> list[Mapping[str, Any]]:
     if type(payload) is list:
         return [item for item in payload if isinstance(item, Mapping)]
@@ -448,6 +502,76 @@ def _sync_script(
     ])
 
 
+
+
+def _remove_replica_host_p2p_publication(compose_text: str, *, node: str) -> tuple[str, dict[str, Any]]:
+    """Remove host P2P port publication from the replica service.
+
+    The sync proof only needs the C2 replica to make outbound P2P connections to
+    the existing bootnode.  Publishing host 30303 on a Coolify server that already
+    runs a validator can prevent Docker from starting the container before Besu
+    emits any logs.
+    """
+
+    lines = compose_text.splitlines()
+    out: list[str] = []
+    removed_ports: list[str] = []
+    in_node = False
+    node_indent: int | None = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+
+        if re.match(rf"^\s*{re.escape(node)}:\s*$", line):
+            in_node = True
+            node_indent = indent
+        elif in_node and node_indent is not None and stripped and indent <= node_indent:
+            in_node = False
+            node_indent = None
+
+        if in_node and stripped == "ports:":
+            ports_indent = indent
+            block = [line]
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j]
+                next_stripped = next_line.strip()
+                next_indent = len(next_line) - len(next_line.lstrip(" "))
+                if next_stripped and next_indent <= ports_indent:
+                    break
+                block.append(next_line)
+                j += 1
+
+            entries = [item.strip().lstrip("-").strip().strip("'\"") for item in block[1:] if item.strip().startswith("-")]
+            p2p_entries = {
+                "30303:30303/tcp",
+                "30303:30303/udp",
+            }
+            if entries and all(entry in p2p_entries for entry in entries):
+                removed_ports.extend(entries)
+                i = j
+                continue
+            if any(entry in p2p_entries for entry in entries):
+                raise _fail(
+                    "MOTHER_DEPLOY_C2_REPLICA_SYNC_P2P_PORT_BLOCK_UNSUPPORTED",
+                    "C2 sync Compose mixes host P2P publication with other ports",
+                )
+
+        out.append(line)
+        i += 1
+
+    normalized = "\n".join(out)
+    if compose_text.endswith("\n"):
+        normalized += "\n"
+    return normalized, {
+        "host_p2p_publication_removed": bool(removed_ports),
+        "removed_host_ports": removed_ports,
+        "host_p2p_mapping_present": False,
+        "container_p2p_port": 30303,
+        "reason": "C2 sync proof uses outbound bootnode peering and must not bind host 30303 on a shared validator host",
+    }
 def _proof_compose(
     original: str,
     *,
@@ -514,6 +638,9 @@ def _proof_compose(
     forbidden = ("ports:", "expose:", "traefik.", "domains:", "fqdn:", "8545:8545")
     if any(item in guardian_section for item in forbidden):
         raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_GUARDIAN_EXPOSED", "sync guardian must not expose a port, URL, or proxy route")
+    updated, _ = _remove_replica_host_p2p_publication(updated, node=node)
+    if "30303:30303/tcp" in updated or "30303:30303/udp" in updated:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_HOST_P2P_EXPOSED", "C2 replica sync proof must not bind host P2P port 30303")
     return updated
 
 
@@ -547,8 +674,9 @@ def _proof_compose_report(*, observed: str, expected: str, node: str) -> dict[st
         "uses_node_private_key_file": "--node-private-key-file=/config/nodekey" in observed_text,
         "sync_mode_full": "--sync-mode=FULL" in observed_text,
         "bootnode_present": "--bootnodes=enode://" in observed_text,
-        "p2p_tcp_port_present": "30303:30303/tcp" in observed_text,
-        "p2p_udp_port_present": "30303:30303/udp" in observed_text,
+        "p2p_container_port_enabled": "--p2p-port=30303" in observed_text,
+        "host_p2p_tcp_port_absent": "30303:30303/tcp" not in observed_text,
+        "host_p2p_udp_port_absent": "30303:30303/udp" not in observed_text,
         "rpc_not_host_published": "8545:8545" not in observed_text,
         "validator_activation_blocked": "main_computer.mother.validator-activation: blocked" in observed_text,
         "sync_not_blocked": "main_computer.mother.replica-sync: proof-active" in observed_text or "main_computer.mother.replica-sync: blocked" not in observed_text,
@@ -803,6 +931,9 @@ def build_c2_replica_sync_release(
                 "guardian_public_ports": [],
                 "guardian_domains": [],
                 "host_rpc_mapping_present": False,
+                "host_p2p_mapping_present": False,
+                "host_p2p_publication_authorized": False,
+                "p2p_publication_mode": "container-internal-outbound-only",
             },
             "preconditions": [
                 {"controller_id": _C2_CONTROLLER, "method": "GET", "endpoint": f"/api/v1/services/{service_uuid_quoted}", "assertion": "C2 service still has the verified standby Compose"},
@@ -851,6 +982,8 @@ def build_c2_replica_sync_release(
             "manual_ssh_required": False,
             "public_http_endpoint_created": False,
             "host_rpc_mapping_present": False,
+            "host_p2p_mapping_present": False,
+            "host_p2p_publication_authorized": False,
             "private_keys_materialized_in_memory_only": True,
             "private_keys_persisted": False,
             "secrets_in_output": False,
@@ -1154,7 +1287,7 @@ def execute_c2_replica_sync_release(
                 "body_sha256": mutation.get("body_sha256"),
                 "status": "succeeded" if ok else "failed",
                 "live_write_acknowledged": ok,
-                "response": {key: response[key] for key in ("status", "response_sha256", "byte_length", "elapsed_ms")},
+                "response": _response_receipt(response, include_safe_text=mutation["method"] == "GET" and mutation["endpoint"].startswith("/api/v1/deploy")),
             })
             if not ok:
                 raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_MUTATION_FAILED", f"Coolify rejected C2 sync mutation {mutation['ordinal']}")
@@ -1227,6 +1360,7 @@ def execute_c2_replica_sync_release(
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "host_rpc_mapping_present": False,
+            "host_p2p_mapping_present": False,
             "guardian_internal_only": True,
             "service_status": observations[-1]["status"] if observations else None,
             "predicates_proven_by_guardian": list(plan["proof"]["predicates"]),
@@ -1256,6 +1390,8 @@ def execute_c2_replica_sync_release(
             "manual_ssh_required": False,
             "public_endpoint_created": False,
             "host_rpc_mapping_present": False,
+            "host_p2p_mapping_present": False,
+            "host_p2p_publication_authorized": False,
             "private_state_updated": False,
             "secrets_in_output": False,
             "automatic_rollback_performed": False,
@@ -1394,12 +1530,1289 @@ def verify_c2_replica_sync_evidence(
     }
 
 
+
+_DIAGNOSTIC_KIND = "main_computer.mother.deployment_c2_replica_sync_materialization_diagnostic.v1"
+_DIAGNOSTIC_DIRECTORY = ("evidence", "deployment-c2-replica-sync-materialization")
+
+
+def _record_contains_identifier(record: Mapping[str, Any], identifiers: set[str]) -> bool:
+    if not identifiers:
+        return False
+    try:
+        compact = canonical_json(dict(record)).decode("utf-8", errors="replace").lower()
+    except Exception:
+        compact = json.dumps(dict(record), sort_keys=True, default=str).lower()
+    return any(identifier and identifier.lower() in compact for identifier in identifiers)
+
+
+def _compact_record_summary(record: Mapping[str, Any], *, service_uuid: str, plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "uuid": record.get("uuid") or record.get("id"),
+        "id": record.get("id"),
+        "name": record.get("name") or record.get("human_name"),
+        "status": record.get("status"),
+        "type": record.get("type") or record.get("service_type"),
+        "service_id": record.get("service_id"),
+        "keys": sorted(str(key) for key in record.keys()),
+    }
+    for field in ("docker_compose_raw", "dockerComposeRaw", "docker_compose", "dockerCompose", "compose"):
+        value = record.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        text = value
+        if "\n" not in text and not text.startswith(("name:", "services:", "version:")):
+            try:
+                text = base64.b64decode(text, validate=True).decode("utf-8")
+            except Exception:
+                text = value
+        field_summary: dict[str, Any] = {
+            "byte_length": len(text.encode("utf-8")),
+            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        }
+        if plan is not None:
+            proof = _proof_compose_report(observed=text, expected=plan["proof_compose"]["canonical_text"], node=_C2_NODE)
+            standby_verified = None
+            original = plan.get("original_compose")
+            if isinstance(original, Mapping) and isinstance(original.get("canonical_text"), str):
+                standby = _standby_compose_semantic_report(observed=text, expected=original["canonical_text"], node=_C2_NODE)
+                standby_verified = standby.get("standby_compose_verified") is True
+            field_summary.update({
+                "sync_proof_compose_verified": proof.get("sync_compose_verified") is True,
+                "standby_compose_verified": standby_verified,
+                "host_rpc_mapping_present": "8545:8545" in text,
+                "old_alpine_tail_present": "tail -f /dev/null" in text,
+            })
+        summary.setdefault("compose_fields", {})[field] = field_summary
+    return summary
+
+
+def _child_application_records(service_record: Mapping[str, Any], *, service_uuid: str, node: str) -> list[dict[str, Any]]:
+    children: list[dict[str, Any]] = []
+    for item in _raw_items(service_record):
+        item_uuid = str(item.get("uuid") or item.get("id") or "")
+        if item_uuid == service_uuid:
+            continue
+        if item.get("service_id") is not None or item.get("name") == node or item.get("human_name") == node:
+            children.append({
+                "uuid": item.get("uuid") or item.get("id"),
+                "id": item.get("id"),
+                "name": item.get("name") or item.get("human_name"),
+                "status": item.get("status"),
+                "service_id": item.get("service_id"),
+                "keys": sorted(str(key) for key in item.keys()),
+            })
+    return children
+
+
+def _write_materialization_diagnostic(paths: PrivateStatePaths, report: Mapping[str, Any], *, operation: OperationIdentity) -> tuple[Path, str]:
+    payload = canonical_json(dict(report))
+    digest = hashlib.sha256(payload).hexdigest()
+    root = _ensure_directory(paths, _DIAGNOSTIC_DIRECTORY, operation=operation)
+    stamp = re.sub(r"[^0-9A-Za-z]+", "", str(report.get("observed_at") or ""))[:32] or "c2syncdiag"
+    destination = root / f"{stamp}-{digest[:16]}.json"
+    if destination.exists():
+        if destination.read_bytes() != payload:
+            raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_CONFLICT", "diagnostic destination contains different bytes")
+    else:
+        atomic_files.durable_create(destination, payload, operation=operation)
+    _secure_private_path(destination, is_directory=False, operation=operation)
+    return destination, digest
+
+
+def _diagnostic_failed_release(
+    paths: PrivateStatePaths,
+    release_path: Path,
+) -> tuple[dict[str, Any], bytes, str, tuple[str, ...], str]:
+    """Load the release consumed by a failed sync evidence.
+
+    v48 failures point at the original sync-release directory, while v50 resume
+    failures point at the resume-release directory.  Diagnostics need to support
+    both because both consume a one-use operator release and can fail before a
+    Docker workload materializes.
+    """
+
+    candidates = [
+        (_RELEASE_DIRECTORY, _RELEASE_KIND, "initial-sync-release"),
+        (_RESUME_RELEASE_DIRECTORY, _RESUME_RELEASE_KIND, "resume-sync-release"),
+    ]
+    last_error: MotherDeploymentC2ReplicaSyncError | None = None
+    for directory, kind, release_type in candidates:
+        try:
+            document, payload, digest = _canonical_under(paths, release_path, directory, f"failed C2 replica sync {release_type}")
+        except MotherDeploymentC2ReplicaSyncError as exc:
+            last_error = exc
+            continue
+        if document.get("kind") != kind:
+            last_error = _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", f"failed sync {release_type} kind is invalid")
+            continue
+        return document, payload, digest, directory, release_type
+    if last_error is not None:
+        raise last_error
+    raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", "failed sync release could not be loaded")
+
+
+def _diagnostic_failed_claim_exists(paths: PrivateStatePaths, failed_evidence: Mapping[str, Any], release_type: str) -> bool:
+    claim_locator = (failed_evidence.get("execution_claim") or {}).get("locator")
+    if not isinstance(claim_locator, str) or not claim_locator:
+        return False
+    directory = _RESUME_CLAIM_DIRECTORY if release_type == "resume-sync-release" else _CLAIM_DIRECTORY
+    try:
+        claim_path = _resolve_locator(paths, claim_locator, label="failed sync execution claim")
+        return _canonical_under(paths, claim_path, directory, "failed C2 replica sync execution claim")[0].get("node") == _C2_NODE
+    except MotherDeploymentC2ReplicaSyncError:
+        return False
+
+
+def _mutation_receipt_summary(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    response = receipt.get("response") if isinstance(receipt.get("response"), Mapping) else {}
+    summary: dict[str, Any] = {
+        "ordinal": receipt.get("ordinal"),
+        "mutation_id": receipt.get("mutation_id"),
+        "method": receipt.get("method"),
+        "endpoint": receipt.get("endpoint"),
+        "status": receipt.get("status"),
+        "live_write_acknowledged": receipt.get("live_write_acknowledged"),
+        "response": {
+            "status": response.get("status"),
+            "response_sha256": response.get("response_sha256"),
+            "byte_length": response.get("byte_length"),
+            "elapsed_ms": response.get("elapsed_ms"),
+            "safe_text": response.get("safe_text"),
+            "safe_payload": response.get("safe_payload"),
+            "safe_text_available": isinstance(response.get("safe_text"), str),
+        },
+    }
+    summary["deploy_request_acknowledged"] = (
+        summary["method"] == "GET"
+        and isinstance(summary["endpoint"], str)
+        and summary["endpoint"].startswith("/api/v1/deploy")
+        and summary["live_write_acknowledged"] is True
+    )
+    return summary
+
+
+
+def diagnose_c2_replica_sync_materialization(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    failed_evidence_path: Path,
+    *,
+    selected_nodes: Iterable[str] = (),
+    failed_evidence_max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    operator_confirm_no_docker_materialization: bool = False,
+    operator_confirm_host_p2p_port_conflict: bool = False,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+    write_evidence: bool = False,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    """GET-only diagnosis for a failed C2 sync that did not reach healthy.
+
+    The command intentionally does not deploy, start, stop, delete, or mutate any
+    service.  It reads the failed sync evidence, re-queries Coolify control-plane
+    state, and emits a retry gate only when the previous failure is safely bounded
+    away from chain, validator, routing, and topology mutation.
+    """
+
+    requested = tuple(_identifier(item, "selected node") for item in selected_nodes)
+    if requested and requested != (_C2_NODE,):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_SELECTION_MISMATCH", "C2 replica sync diagnostics target only mainnetc-super2")
+
+    failed_evidence, _, failed_evidence_sha = _canonical_under(
+        paths,
+        Path(failed_evidence_path),
+        _EVIDENCE_DIRECTORY,
+        "failed C2 replica sync evidence",
+    )
+    if failed_evidence.get("kind") != _EVIDENCE_KIND or failed_evidence.get("status") != "failed":
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", "failed evidence is not a failed C2 replica sync evidence document")
+    if failed_evidence.get("mother_binding") != _binding(private_state) or failed_evidence.get("node") != _C2_NODE:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", "failed evidence is not bound to the current C2 Mother state")
+    if _contains_sensitive(failed_evidence):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", "failed evidence contains sensitive material")
+    age = _age(failed_evidence.get("completed_at"), now=now, path="failed evidence completed_at")
+    if age > failed_evidence_max_age_seconds:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_STALE", "failed C2 sync evidence is outside the diagnostic freshness window")
+
+    failure = failed_evidence.get("failure") if isinstance(failed_evidence.get("failure"), Mapping) else {}
+    policy = failed_evidence.get("policy") if isinstance(failed_evidence.get("policy"), Mapping) else {}
+    previous_safe = (
+        failed_evidence.get("chain_mutation_count") == 0
+        and failed_evidence.get("identity_mutation_count") == 0
+        and failed_evidence.get("validator_mutation_count") == 0
+        and failed_evidence.get("validator_restart_count") == 0
+        and failed_evidence.get("validator_vote_performed") is False
+        and policy.get("validator_activation_performed") is False
+        and policy.get("validator_vote_performed") is False
+        and policy.get("routing_or_topology_published") is False
+        and policy.get("public_endpoint_created") is False
+    )
+    if not previous_safe:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_UNSAFE", "failed sync evidence is not safe for automated retry diagnosis")
+
+    release_locator = (failed_evidence.get("release") or {}).get("locator")
+    if not isinstance(release_locator, str) or not release_locator:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", "failed evidence is missing its release locator")
+    release_path = _resolve_locator(paths, release_locator, label="failed sync release")
+    release, _, release_sha, release_directory, release_type = _diagnostic_failed_release(paths, release_path)
+    plan = release.get("proof_plan")
+    if not isinstance(plan, Mapping):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", "failed sync release is missing its proof plan")
+
+    release_consumed = _diagnostic_failed_claim_exists(paths, failed_evidence, release_type)
+    reference_now = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    release_expired = _parse_utc(release.get("expires_at"), "release expires_at") <= reference_now
+
+    controller_c = resolve_coolify_controller(private_state, failed_evidence["network"], _C2_CONTROLLER)
+    service_uuid = _identifier(failed_evidence.get("service_uuid"), "service UUID")
+    identifiers = {service_uuid, _C2_NODE}
+
+    responses: list[dict[str, Any]] = []
+    service_detail_record: Mapping[str, Any] | None = None
+    child_records: list[dict[str, Any]] = []
+
+    quoted_service_uuid = urllib.parse.quote(service_uuid, safe="")
+    endpoint_specs = [
+        ("service-detail", f"/api/v1/services/{quoted_service_uuid}"),
+        ("service-list", "/api/v1/services"),
+        ("resource-list", "/api/v1/resources"),
+        ("application-list", "/api/v1/applications"),
+        ("deployment-list", "/api/v1/deployments"),
+        ("deployment-list-service-uuid", f"/api/v1/deployments?uuid={quoted_service_uuid}"),
+        ("deployment-list-resource-uuid", f"/api/v1/deployments?resource_uuid={quoted_service_uuid}"),
+        ("queued-deployment-list", "/api/v1/deployments?status=queued"),
+        ("running-deployment-list", "/api/v1/deployments?status=in_progress"),
+        ("failed-deployment-list", "/api/v1/deployments?status=failed"),
+        ("service-deployments", f"/api/v1/services/{quoted_service_uuid}/deployments"),
+        ("service-deployment-queue", f"/api/v1/services/{quoted_service_uuid}/deployments?status=queued"),
+    ]
+
+    for name, endpoint in endpoint_specs:
+        response = _http(controller_c, "GET", endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+        matched: list[dict[str, Any]] = []
+        if response["ok"]:
+            try:
+                records = _raw_items(response["payload"])
+            except Exception:
+                records = []
+            if name == "service-detail":
+                try:
+                    service_detail_record = _standby_service_record(response["payload"], service_uuid=service_uuid)
+                    child_records = _child_application_records(response["payload"], service_uuid=service_uuid, node=_C2_NODE)
+                    for child in child_records:
+                        identifiers.add(str(child.get("uuid") or child.get("id") or ""))
+                except MotherDeploymentC2ReplicaSyncError:
+                    service_detail_record = None
+            for record in records:
+                if _record_contains_identifier(record, identifiers):
+                    matched.append(_compact_record_summary(record, service_uuid=service_uuid, plan=plan))
+        responses.append({
+            "name": name,
+            "method": "GET",
+            "endpoint": endpoint,
+            "status": response["status"],
+            "ok": response["ok"],
+            "response_sha256": response["response_sha256"],
+            "byte_length": response["byte_length"],
+            "elapsed_ms": response["elapsed_ms"],
+            "matched_record_count": len(matched),
+            "matched_records": matched[:20],
+        })
+
+    status_values: list[str] = []
+    for response in responses:
+        for record in response.get("matched_records", []):
+            status = record.get("status")
+            if isinstance(status, str) and status.strip():
+                status_values.append(status.strip().lower())
+    if not status_values and isinstance(failed_evidence.get("proof"), Mapping):
+        status = failed_evidence["proof"].get("service_status")
+        if isinstance(status, str):
+            status_values.append(status.strip().lower())
+
+    deployment_records = [
+        record
+        for response in responses
+        if "deployment" in response["name"]
+        for record in response.get("matched_records", [])
+    ]
+    pending_deployment = any(
+        any(word in str(record.get("status") or "").lower() for word in ("pending", "queued", "running", "progress", "deploy", "build"))
+        for record in deployment_records
+    )
+    failed_deployment = any(
+        any(word in str(record.get("status") or "").lower() for word in ("fail", "error", "cancel"))
+        for record in deployment_records
+    )
+
+    compose_proof_verified = False
+    compose_standby_verified = False
+    if service_detail_record is not None:
+        current_compose = _standby_compose_from_service_record(service_detail_record)
+        proof_current_report = _proof_compose_report(observed=current_compose, expected=plan["proof_compose"]["canonical_text"], node=_C2_NODE)
+        compose_proof_verified = (
+            proof_current_report.get("sync_compose_verified") is True
+            or (
+                operator_confirm_host_p2p_port_conflict
+                and (proof_current_report.get("exact_match") is True or proof_current_report.get("yaml_equivalent") is True)
+            )
+        )
+        original_compose = plan.get("original_compose")
+        if isinstance(original_compose, Mapping) and isinstance(original_compose.get("canonical_text"), str):
+            compose_standby_verified = _standby_compose_semantic_report(observed=current_compose, expected=original_compose["canonical_text"], node=_C2_NODE).get("standby_compose_verified") is True
+
+    previous_mutations = []
+    for item in failed_evidence.get("mutation_receipts") or []:
+        if isinstance(item, Mapping):
+            previous_mutations.append(_mutation_receipt_summary(item))
+    previous_deploy_receipts = [item for item in previous_mutations if item.get("deploy_request_acknowledged") is True]
+    previous_deploy_acknowledged = bool(previous_deploy_receipts)
+
+    if (
+        operator_confirm_host_p2p_port_conflict
+        and previous_deploy_acknowledged
+        and not any(status == "running:healthy" for status in status_values)
+        and compose_proof_verified
+    ):
+        classification = "docker-created-host-p2p-port-conflict"
+    elif (
+        operator_confirm_no_docker_materialization
+        and previous_deploy_acknowledged
+        and release_type == "resume-sync-release"
+        and not pending_deployment
+        and not failed_deployment
+        and not any(status.startswith("running") for status in status_values)
+    ):
+        classification = "deploy-request-acknowledged-no-docker-materialization"
+    elif operator_confirm_no_docker_materialization and not pending_deployment and not failed_deployment and not any(status.startswith("running") for status in status_values):
+        classification = "no-docker-materialization"
+    elif any("unhealthy" in status or "failed" in status or "exited" in status for status in status_values):
+        classification = "containers-created-but-failed"
+    elif any(status.startswith("running") for status in status_values) or pending_deployment:
+        classification = "containers-running-health-unknown"
+    else:
+        classification = "coolify-control-plane-starting-without-materialization-proof"
+
+    retry_authorized = (
+        (
+            (classification == "docker-created-host-p2p-port-conflict" and release_type in {"initial-sync-release", "resume-sync-release"})
+            or (classification in {"no-docker-materialization", "coolify-control-plane-starting-without-materialization-proof"} and release_type == "initial-sync-release")
+        )
+        and previous_safe
+        and release_consumed
+        and (release_expired or failed_evidence.get("status") == "failed")
+        and not pending_deployment
+        and not failed_deployment
+        and not any(status == "running:healthy" for status in status_values)
+        and compose_proof_verified
+    )
+
+    observed_at = _timestamp()
+    report: dict[str, Any] = {
+        "kind": _DIAGNOSTIC_KIND,
+        "schema_version": 1,
+        "observed_at": observed_at,
+        "mother_binding": dict(_binding(private_state)),
+        "network": failed_evidence["network"],
+        "node": _C2_NODE,
+        "nodes": [_C2_NODE],
+        "controller_id": _C2_CONTROLLER,
+        "service_uuid": service_uuid,
+        "failed_sync_evidence": {
+            "locator": _relative(paths, Path(failed_evidence_path), label="failed C2 replica sync evidence"),
+            "sha256": failed_evidence_sha,
+            "age_seconds": age,
+            "status": failed_evidence.get("status"),
+            "failure_code": failure.get("code"),
+            "failure_message": failure.get("message"),
+        },
+        "failed_release": {
+            "locator": _relative(paths, release_path, label="failed C2 replica sync release"),
+            "sha256": release_sha,
+            "release_type": release_type,
+            "directory": "/".join(release_directory),
+            "consumed": release_consumed,
+            "expired": release_expired,
+            "expires_at": release.get("expires_at"),
+        },
+        "previous_mutation_receipts": previous_mutations,
+        "deploy_materialization": {
+            "deploy_request_acknowledged": previous_deploy_acknowledged,
+            "acknowledged_deploy_receipt_count": len(previous_deploy_receipts),
+            "pending_deployment_detected": pending_deployment,
+            "failed_deployment_detected": failed_deployment,
+            "docker_materialization_observed": operator_confirm_host_p2p_port_conflict,
+            "docker_materialization_observed_by": "operator-host-probe" if (operator_confirm_no_docker_materialization or operator_confirm_host_p2p_port_conflict) else None,
+            "http_200_is_not_materialization_proof": previous_deploy_acknowledged,
+            "queue_or_job_result_identified": pending_deployment or failed_deployment,
+        },
+        "coolify_control_plane": {
+            "service_status_values": status_values,
+            "child_applications": child_records,
+            "pending_deployment_detected": pending_deployment,
+            "failed_deployment_detected": failed_deployment,
+            "service_detail_found": service_detail_record is not None,
+            "sync_proof_compose_current": compose_proof_verified,
+            "standby_compose_current": compose_standby_verified,
+            "responses": responses,
+        },
+        "operator_host_probe": {
+            "no_docker_materialization_confirmed": operator_confirm_no_docker_materialization,
+            "host_p2p_port_conflict_confirmed": operator_confirm_host_p2p_port_conflict,
+            "required_for_strong_no_docker_classification": not operator_confirm_no_docker_materialization,
+            "statement": (
+                "operator confirmed Docker created C2 containers on the correct host and mainnetc-super2 failed before Besu logs with host 30303 already allocated"
+                if operator_confirm_host_p2p_port_conflict
+                else ("operator confirmed no exact service/child UUID containers or volumes on coolify-c" if operator_confirm_no_docker_materialization else None)
+            ),
+        },
+        "classification": {
+            "bucket": classification,
+            "retry_authorized": retry_authorized,
+            "retry_requires_new_release": retry_authorized,
+            "reason": (
+                "previous release was consumed by the failed execution; mint a fresh sync release only after this diagnostic remains retry-authorized"
+                if retry_authorized and classification != "docker-created-host-p2p-port-conflict"
+                else (
+                    "C2 Docker materialized on the correct host but Besu could not start because host 30303 was already allocated; retry only through the host-P2P-isolated resume path"
+                    if classification == "docker-created-host-p2p-port-conflict"
+                    else "deploy/start acknowledgement did not prove Docker materialization; capture Coolify deployment queue/job/no-op cause before another retry"
+                )
+            ),
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "live_mutation_performed": False,
+            "network_access_performed": True,
+            "private_state_updated": False,
+            "secrets_in_output": False,
+            "service_deploy_or_start_performed": False,
+            "replica_sync_performed": False,
+            "chain_mutation_performed": False,
+            "validator_activation_performed": False,
+            "validator_vote_performed": False,
+            "routing_or_topology_published": False,
+        },
+        "summary": {
+            "clean": True,
+            "diagnostic_complete": True,
+            "classification": classification,
+            "retry_authorized": retry_authorized,
+            "previous_failure_code": failure.get("code"),
+            "previous_release_type": release_type,
+            "previous_release_consumed": release_consumed,
+            "previous_release_expired": release_expired,
+            "previous_deploy_request_acknowledged": previous_deploy_acknowledged,
+            "deploy_response_safe_text_available": any(
+                (item.get("response") or {}).get("safe_text_available") is True for item in previous_mutations
+            ),
+            "docker_materialization_observed": operator_confirm_host_p2p_port_conflict,
+            "queue_or_job_result_identified": pending_deployment or failed_deployment,
+            "pending_deployment_detected": pending_deployment,
+            "failed_deployment_detected": failed_deployment,
+            "sync_proof_compose_current": compose_proof_verified,
+            "operator_no_docker_materialization_confirmed": operator_confirm_no_docker_materialization,
+            "operator_host_p2p_port_conflict_confirmed": operator_confirm_host_p2p_port_conflict,
+            "service_running_healthy": any(status == "running:healthy" for status in status_values),
+            "chain_mutation_count": 0,
+            "validator_mutation_count": 0,
+            "validator_restart_count": 0,
+            "validator_vote_performed": False,
+            "next_phase": "mint-fresh-c2-replica-sync-release" if retry_authorized else "manual-review-required",
+        },
+        "next_phase": "mint-fresh-c2-replica-sync-release" if retry_authorized else "manual-review-required",
+    }
+    if _contains_sensitive(report):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_DIAGNOSTIC_INVALID", "diagnostic report contains sensitive material")
+    if write_evidence:
+        evidence_path, evidence_sha = _write_materialization_diagnostic(paths, report, operation=operation)
+        report["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+    return report
+
+
+_RESUME_RELEASE_KIND = "main_computer.mother.deployment_c2_replica_sync_resume_release.v1"
+_RESUME_CLAIM_KIND = "main_computer.mother.deployment_c2_replica_sync_resume_claim.v1"
+_RESUME_RELEASE_DIRECTORY = ("actions", "deployment-c2-replica-sync-resume-releases")
+_RESUME_CLAIM_DIRECTORY = ("actions", "deployment-c2-replica-sync-resume-claims")
+
+
+def _resume_diagnostic_chain(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    diagnostic_evidence_path: Path,
+    *,
+    max_age_seconds: int,
+    now: datetime | None,
+) -> dict[str, Any]:
+    diagnostic, _, diagnostic_sha = _canonical_under(
+        paths,
+        Path(diagnostic_evidence_path),
+        _DIAGNOSTIC_DIRECTORY,
+        "C2 replica sync materialization diagnostic",
+    )
+    summary = diagnostic.get("summary")
+    classification = diagnostic.get("classification")
+    control_plane = diagnostic.get("coolify_control_plane")
+    failed_release_ref = diagnostic.get("failed_release")
+    if (
+        diagnostic.get("kind") != _DIAGNOSTIC_KIND
+        or diagnostic.get("mother_binding") != _binding(private_state)
+        or diagnostic.get("node") != _C2_NODE
+        or not isinstance(summary, Mapping)
+        or not isinstance(classification, Mapping)
+        or not isinstance(control_plane, Mapping)
+        or not isinstance(failed_release_ref, Mapping)
+        or summary.get("clean") is not True
+        or summary.get("diagnostic_complete") is not True
+        or summary.get("retry_authorized") is not True
+        or summary.get("sync_proof_compose_current") is not True
+        or summary.get("previous_release_consumed") is not True
+        or summary.get("service_running_healthy") is not False
+        or summary.get("chain_mutation_count") != 0
+        or summary.get("validator_mutation_count") != 0
+        or summary.get("validator_restart_count") != 0
+        or summary.get("validator_vote_performed") is not False
+        or classification.get("retry_authorized") is not True
+        or classification.get("bucket") not in {"no-docker-materialization", "coolify-control-plane-starting-without-materialization-proof", "docker-created-host-p2p-port-conflict"}
+        or control_plane.get("sync_proof_compose_current") is not True
+        or control_plane.get("pending_deployment_detected") is not False
+        or control_plane.get("failed_deployment_detected") is not False
+        or _contains_sensitive(diagnostic)
+    ):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "C2 sync materialization diagnostic is not a clean retry gate")
+    age = _age(diagnostic.get("observed_at"), now=now, path="diagnostic observed_at")
+    if age > max_age_seconds:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_STALE", "C2 sync materialization diagnostic is outside the permitted age")
+
+    release_path = _resolve_locator(paths, failed_release_ref.get("locator"), label="failed C2 replica sync release")
+    release_type = failed_release_ref.get("release_type")
+    if release_type == "resume-sync-release":
+        release_directory = _RESUME_RELEASE_DIRECTORY
+        release_kind = _RESUME_RELEASE_KIND
+        release_digest_key = "c2_replica_sync_resume_release_sha256"
+    else:
+        release_directory = _RELEASE_DIRECTORY
+        release_kind = _RELEASE_KIND
+        release_digest_key = "c2_replica_sync_release_sha256"
+    failed_release, _, failed_release_file_sha = _canonical_under(paths, release_path, release_directory, "failed C2 replica sync release")
+    if failed_release.get("kind") != release_kind or failed_release.get("mother_binding") != _binding(private_state):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "failed sync release binding is invalid")
+    failed_release_sha = _digest_without(failed_release, release_digest_key)
+    if failed_release.get(release_digest_key) != failed_release_sha or failed_release_ref.get("sha256") != failed_release_file_sha:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "failed sync release digest is invalid")
+    plan = failed_release.get("proof_plan")
+    if not isinstance(plan, Mapping):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "failed sync release lacks proof plan")
+    proof_compose = plan.get("proof_compose")
+    if not isinstance(proof_compose, Mapping) or type(proof_compose.get("canonical_text")) is not str:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "failed sync release lacks proof Compose")
+    if _proof_compose_report(observed=proof_compose["canonical_text"], expected=proof_compose["canonical_text"], node=_C2_NODE).get("sync_compose_verified") is not True:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "failed sync release proof Compose is invalid")
+    deploy_mutations = [
+        item for item in plan.get("mutations", [])
+        if isinstance(item, Mapping)
+        and item.get("method") == "GET"
+        and isinstance(item.get("endpoint"), str)
+        and item.get("endpoint", "").startswith("/api/v1/deploy?")
+    ]
+    if len(deploy_mutations) != 1:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "failed sync release does not contain exactly one deploy mutation")
+    service_uuid = _identifier(diagnostic.get("service_uuid") or failed_release.get("service_uuid"), "service UUID")
+    if service_uuid != _identifier(failed_release.get("service_uuid"), "failed release service UUID"):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "diagnostic and failed release service UUID differ")
+    return {
+        "diagnostic": diagnostic,
+        "diagnostic_path": Path(diagnostic_evidence_path).resolve(strict=False),
+        "diagnostic_sha256": diagnostic_sha,
+        "diagnostic_age_seconds": age,
+        "failed_release": failed_release,
+        "failed_release_path": release_path,
+        "failed_release_sha256": failed_release_sha,
+        "failed_release_file_sha256": failed_release_file_sha,
+        "plan": plan,
+        "deploy_mutation": dict(deploy_mutations[0]),
+        "network": diagnostic["network"],
+        "service_uuid": service_uuid,
+        "classification": classification["bucket"],
+    }
+
+
+def build_c2_replica_sync_resume_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    diagnostic_evidence_path: Path,
+    *,
+    acknowledged_c2_replica_sync_diagnostic_sha256: str,
+    selected_nodes: Iterable[str] = (),
+    diagnostic_max_age_seconds: int = 86400,
+    expires_in_seconds: int = 300,
+    created_at: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    chain = _resume_diagnostic_chain(
+        paths,
+        private_state,
+        Path(diagnostic_evidence_path),
+        max_age_seconds=diagnostic_max_age_seconds,
+        now=now,
+    )
+    ack = _sha256(acknowledged_c2_replica_sync_diagnostic_sha256, "acknowledged C2 replica sync diagnostic SHA-256")
+    if ack != chain["diagnostic_sha256"]:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_ACKNOWLEDGEMENT_MISMATCH", "operator acknowledgement does not match the exact C2 sync diagnostic")
+    requested = tuple(_identifier(item, "selected node") for item in selected_nodes)
+    if requested and requested != (_C2_NODE,):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_SELECTION_MISMATCH", "C2 replica sync resume may target only mainnetc-super2")
+    if type(expires_in_seconds) is not int or not _MIN_RELEASE_SECONDS <= expires_in_seconds <= _MAX_RELEASE_SECONDS:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_TTL_INVALID", f"expires_in_seconds must be between {_MIN_RELEASE_SECONDS} and {_MAX_RELEASE_SECONDS}")
+    created_text = _timestamp(created_at, path="created_at")
+    created_dt = _parse_utc(created_text, "created_at")
+    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    if created_dt > reference + timedelta(seconds=1):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "release creation time is in the future")
+    expires_at = (created_dt + timedelta(seconds=expires_in_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    plan = chain["plan"]
+    deploy_mutation = dict(chain["deploy_mutation"])
+    classification = chain["classification"]
+    existing_proof_compose = str(plan["proof_compose"]["canonical_text"])
+    corrected_proof_compose, port_isolation = _remove_replica_host_p2p_publication(existing_proof_compose, node=_C2_NODE)
+    host_p2p_isolation_resume = classification == "docker-created-host-p2p-port-conflict"
+    if host_p2p_isolation_resume and port_isolation["host_p2p_publication_removed"] is not True:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_DIAGNOSTIC_INVALID", "host P2P port conflict diagnostic did not reference a proof Compose with host 30303 publication")
+
+    proof_compose = dict(plan["proof_compose"])
+    mutations: list[dict[str, Any]]
+    pre_patch_compose: dict[str, Any] | None = None
+    if host_p2p_isolation_resume:
+        proof_bytes = corrected_proof_compose.encode("utf-8")
+        proof_compose.update({
+            "sha256": hashlib.sha256(proof_bytes).hexdigest(),
+            "semantic_sha256": _compose_semantic_sha256(corrected_proof_compose),
+            "byte_length": len(proof_bytes),
+            "canonical_text": corrected_proof_compose,
+            "host_rpc_mapping_present": False,
+            "host_p2p_mapping_present": False,
+            "host_p2p_publication_authorized": False,
+            "p2p_publication_mode": "container-internal-outbound-only",
+            "port_isolation": port_isolation,
+        })
+        pre_patch_compose = {
+            "sha256": hashlib.sha256(existing_proof_compose.encode("utf-8")).hexdigest(),
+            "semantic_sha256": _compose_semantic_sha256(existing_proof_compose),
+            "byte_length": len(existing_proof_compose.encode("utf-8")),
+            "canonical_text": existing_proof_compose,
+            "host_p2p_mapping_present": "30303:30303/tcp" in existing_proof_compose or "30303:30303/udp" in existing_proof_compose,
+        }
+        body = {
+            "name": _C2_NODE,
+            "docker_compose_raw": base64.b64encode(proof_bytes).decode("ascii"),
+        }
+        deploy_mutation["ordinal"] = 2
+        deploy_mutation["mutation_id"] = f"{_C2_NODE}.resume-deploy-host-p2p-isolated-sync-proof-compose"
+        mutations = [
+            {
+                "ordinal": 1,
+                "mutation_id": f"{_C2_NODE}.patch-sync-proof-compose-without-host-p2p",
+                "controller_id": _C2_CONTROLLER,
+                "method": "PATCH",
+                "endpoint": f"/api/v1/services/{urllib.parse.quote(chain['service_uuid'], safe='')}",
+                "canonical_request_body": body,
+                "body_sha256": hashlib.sha256(canonical_json(body)).hexdigest(),
+                "success_statuses": [200, 201, 202],
+            },
+            deploy_mutation,
+        ]
+    else:
+        deploy_mutation["ordinal"] = 1
+        deploy_mutation["mutation_id"] = f"{_C2_NODE}.resume-deploy-sync-proof-compose"
+        mutations = [deploy_mutation]
+    release: dict[str, Any] = {
+        "kind": _RESUME_RELEASE_KIND,
+        "schema_version": 1,
+        "created_at": created_text,
+        "expires_at": expires_at,
+        "network": chain["network"],
+        "operation_kind": "MOTHER-OP-ADD-NODE",
+        "mother_binding": _binding(private_state),
+        "node": _C2_NODE,
+        "nodes": [_C2_NODE],
+        "controller_id": _C2_CONTROLLER,
+        "service_uuid": chain["service_uuid"],
+        "staged_scope": "resume-c2-replica-sync-from-applied-proof-compose",
+        "diagnostic_evidence": {
+            "locator": _relative(paths, chain["diagnostic_path"], label="C2 replica sync diagnostic evidence"),
+            "sha256": chain["diagnostic_sha256"],
+            "observed_at": chain["diagnostic"].get("observed_at"),
+            "classification": chain["classification"],
+        },
+        "failed_sync_release": {
+            "locator": _relative(paths, chain["failed_release_path"], label="failed C2 replica sync release"),
+            "sha256": chain["failed_release_sha256"],
+            "byte_sha256": chain["failed_release_file_sha256"],
+        },
+        "operator_release": {
+            "intent": "patch-away-host-p2p-conflict-and-resume-c2-sync-proof-compose" if host_p2p_isolation_resume else "resume-deploy-start-from-already-applied-c2-sync-proof-compose",
+            "acknowledged_c2_replica_sync_diagnostic_sha256": ack,
+            "requested_use_limit": 1,
+        },
+        "proof_plan": {
+            "replica_node": _C2_NODE,
+            "controller_id": _C2_CONTROLLER,
+            "service_uuid": chain["service_uuid"],
+            "chain_id": plan["chain_id"],
+            "genesis_sha256": plan["genesis_sha256"],
+            "expected_validator_set": list(plan["expected_validator_set"]),
+            "c2_validator_address": plan["c2_validator_address"],
+            "bootnode_enode": plan["bootnode_enode"],
+            "initial_node_id": plan["initial_node_id"],
+            "replica_node_id": plan["replica_node_id"],
+            "proof_compose": proof_compose,
+            "pre_patch_compose": pre_patch_compose,
+            "port_isolation": port_isolation if host_p2p_isolation_resume else None,
+            "preconditions": [
+                {
+                    "controller_id": _C2_CONTROLLER,
+                    "method": "GET",
+                    "endpoint": f"/api/v1/services/{urllib.parse.quote(chain['service_uuid'], safe='')}",
+                    "assertion": (
+                        "C2 service has the previously applied sync-proof Compose with host P2P publication; the release will patch it to container-internal P2P only"
+                        if host_p2p_isolation_resume
+                        else "C2 service already has the sync-proof Compose; no Compose PATCH is authorized"
+                    ),
+                },
+                {
+                    "controller_id": _A_CONTROLLER,
+                    "method": "GET",
+                    "endpoint": "/api/v1/services",
+                    "assertion": "A1 remains running:healthy",
+                    "optional_service_uuid": (chain["failed_release"].get("initial_chain_precondition") or {}).get("service_uuid"),
+                },
+            ],
+            "mutations": mutations,
+            "proof": dict(plan["proof"]),
+        },
+        "authority": {
+            "authorization_source": "explicit-operator-release",
+            "resume_from_applied_sync_proof_compose_authorized": True,
+            "host_p2p_isolation_authorized": host_p2p_isolation_resume,
+            "compose_patch_authorized": host_p2p_isolation_resume,
+            "synchronization_proof_authorized": True,
+            "replica_start_authorized": True,
+            "replica_sync_authorized": True,
+            "validator_vote_authorized": False,
+            "validator_activation_authorized": False,
+            "routing_or_topology_publication_authorized": False,
+            "live_execution_authorized": False,
+            "requested_use_limit": 1,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET", "PATCH"] if host_p2p_isolation_resume else ["GET"],
+            "coolify_control_plane_only": True,
+            "initial_node_read_only": True,
+            "replica_node_only": True,
+            "manual_ssh_required": False,
+            "public_http_endpoint_created": False,
+            "host_rpc_mapping_present": False,
+            "host_p2p_mapping_present": False,
+            "host_p2p_publication_authorized": False,
+            "compose_patch_performed": False,
+            "host_p2p_isolation_performed": False,
+            "private_keys_materialized_in_memory_only": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "validator_vote_performed": False,
+            "validator_activation_performed": False,
+            "routing_or_topology_published": False,
+        },
+        "remaining_blockers": [
+            {"code": "MOTHER_DEPLOY_VALIDATOR_ADMISSION_NOT_AUTHORIZED", "message": "C2 replica synchronization resume does not authorize QBFT admission or voting"},
+            {"code": "MOTHER_DEPLOY_C2_RPC_ROUTING_NOT_AUTHORIZED", "message": "C2 replica synchronization resume does not authorize routing/topology publication"},
+        ],
+        "summary": {
+            "release_valid": True,
+            "mutation_count": len(mutations),
+            "host_p2p_isolation_authorized": host_p2p_isolation_resume,
+            "compose_patch_authorized": host_p2p_isolation_resume,
+            "resume_from_applied_sync_proof_compose_authorized": True,
+            "service_deploy_or_start_authorized": True,
+            "replica_sync_authorized": True,
+            "replica_node": _C2_NODE,
+            "initial_node_read_only": True,
+            "manual_ssh_required": False,
+            "public_endpoint_created": False,
+            "validator_vote_authorized": False,
+            "validator_activation_authorized": False,
+            "routing_or_topology_publication_authorized": False,
+            "next_phase_after_apply": "stage-c2-validator-admission",
+        },
+        "c2_replica_sync_resume_release_sha256": None,
+    }
+    release["c2_replica_sync_resume_release_sha256"] = _digest_without(release, "c2_replica_sync_resume_release_sha256")
+    if _contains_sensitive(release):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "C2 replica sync resume release contains sensitive material")
+    return release
+
+
+def write_c2_replica_sync_resume_release(paths: PrivateStatePaths, release: Mapping[str, Any], *, operation: OperationIdentity) -> tuple[Path, str]:
+    document = dict(release)
+    if document.get("kind") != _RESUME_RELEASE_KIND or document.get("c2_replica_sync_resume_release_sha256") != _digest_without(document, "c2_replica_sync_resume_release_sha256"):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "C2 replica sync resume release is malformed")
+    payload = canonical_json(document)
+    root = _ensure_directory(paths, _RESUME_RELEASE_DIRECTORY, operation=operation)
+    stamp = re.sub(r"[^0-9A-Za-z]+", "", str(document.get("created_at", "")))[:32] or "c2syncresume"
+    destination = root / f"{stamp}-{document['c2_replica_sync_resume_release_sha256'][:16]}.json"
+    if destination.exists():
+        if destination.read_bytes() != payload:
+            raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_CONFLICT", "resume release destination contains different bytes")
+    else:
+        atomic_files.durable_create(destination, payload, operation=operation)
+    _secure_private_path(destination, is_directory=False, operation=operation)
+    return destination, document["c2_replica_sync_resume_release_sha256"]
+
+
+def verify_c2_replica_sync_resume_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    release_path: Path,
+    *,
+    selected_nodes: Iterable[str] = (),
+    max_age_seconds: int = 300,
+    diagnostic_max_age_seconds: int = 86400,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    release, raw, byte_sha = _canonical_under(paths, Path(release_path), _RESUME_RELEASE_DIRECTORY, "C2 replica sync resume release")
+    if release.get("kind") != _RESUME_RELEASE_KIND or release.get("mother_binding") != _binding(private_state) or _contains_sensitive(release):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "C2 replica sync resume release kind or binding is invalid")
+    digest = _digest_without(release, "c2_replica_sync_resume_release_sha256")
+    if release.get("c2_replica_sync_resume_release_sha256") != digest:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "C2 replica sync resume release digest does not match")
+    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    created = _parse_utc(release.get("created_at"), "created_at")
+    expires = _parse_utc(release.get("expires_at"), "expires_at")
+    if reference < created - timedelta(seconds=1) or reference > expires or int((reference - created).total_seconds()) > max_age_seconds:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_EXPIRED", "C2 replica sync resume release is outside its authority window")
+    diagnostic_ref = release.get("diagnostic_evidence")
+    if not isinstance(diagnostic_ref, Mapping):
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "diagnostic evidence binding is missing")
+    expected = build_c2_replica_sync_resume_release(
+        paths,
+        private_state,
+        _resolve_locator(paths, diagnostic_ref.get("locator"), label="C2 replica sync diagnostic evidence"),
+        acknowledged_c2_replica_sync_diagnostic_sha256=_sha256(diagnostic_ref.get("sha256"), "diagnostic evidence SHA-256"),
+        selected_nodes=selected_nodes,
+        diagnostic_max_age_seconds=diagnostic_max_age_seconds,
+        expires_in_seconds=int((expires - created).total_seconds()),
+        created_at=release.get("created_at"),
+        now=reference,
+    )
+    if canonical_json(expected) != raw:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "C2 replica sync resume release no longer matches its exact inputs")
+    plan = release["proof_plan"]
+    return {
+        "clean": True,
+        "release_path": str(Path(release_path).resolve(strict=False)),
+        "c2_replica_sync_resume_release_sha256": digest,
+        "byte_sha256": byte_sha,
+        "diagnostic_evidence_sha256": diagnostic_ref["sha256"],
+        "mother_binding": dict(release["mother_binding"]),
+        "network": release["network"],
+        "node": _C2_NODE,
+        "nodes": [_C2_NODE],
+        "initial_node": _A1_NODE,
+        "replica_node": _C2_NODE,
+        "controller_id": _C2_CONTROLLER,
+        "service_uuid": release["service_uuid"],
+        "chain_id": plan["chain_id"],
+        "genesis_sha256": plan["genesis_sha256"],
+        "proof_compose_sha256": plan["proof_compose"]["sha256"],
+        "expected_validator_set": list(plan["expected_validator_set"]),
+        "mutation_count": len(plan["mutations"]),
+        "service_mutation_count": len(plan["mutations"]),
+        "created_at": release["created_at"],
+        "expires_at": release["expires_at"],
+        "staged_scope": release["staged_scope"],
+        "resume_from_applied_sync_proof_compose_authorized": True,
+        "host_p2p_isolation_authorized": release.get("authority", {}).get("host_p2p_isolation_authorized") is True,
+        "compose_patch_authorized": release.get("authority", {}).get("compose_patch_authorized") is True,
+        "synchronization_proof_authorized": True,
+        "replica_start_authorized": True,
+        "replica_sync_authorized": True,
+        "validator_vote_authorized": False,
+        "validator_activation_authorized": False,
+        "routing_or_topology_publication_authorized": False,
+        "live_execution_authorized": False,
+        "network_access_performed": False,
+        "live_mutation_performed": False,
+        "remaining_blocker_codes": [
+            "MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_EXECUTOR_NOT_RUN",
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_NOT_AUTHORIZED",
+            "MOTHER_DEPLOY_C2_RPC_ROUTING_NOT_AUTHORIZED",
+        ],
+    }
+
+
+def inspect_c2_replica_sync_resume_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    release_path: Path,
+    *,
+    acknowledged_release_sha256: str,
+    selected_nodes: Iterable[str] = (),
+    max_age_seconds: int = 300,
+    diagnostic_max_age_seconds: int = 86400,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    verified = verify_c2_replica_sync_resume_release(
+        paths,
+        private_state,
+        Path(release_path),
+        selected_nodes=selected_nodes,
+        max_age_seconds=max_age_seconds,
+        diagnostic_max_age_seconds=diagnostic_max_age_seconds,
+        now=now,
+    )
+    if _sha256(acknowledged_release_sha256, "acknowledged release SHA-256") != verified["c2_replica_sync_resume_release_sha256"]:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_ACKNOWLEDGEMENT_MISMATCH", "C2 replica sync resume release acknowledgement does not match")
+    claim = _root(paths, _RESUME_CLAIM_DIRECTORY) / f"{verified['c2_replica_sync_resume_release_sha256']}.json"
+    return {
+        **verified,
+        "executor_implemented": True,
+        "execute_requested": False,
+        "release_already_claimed": claim.exists(),
+        "live_execution_authorized": True,
+        "network_access_performed": False,
+        "live_mutation_performed": False,
+        "compose_patch_performed": False,
+        "service_deploy_or_start_performed": False,
+        "replica_synchronized": False,
+        "initial_node_read_only": True,
+        "guardian_internal_only": True,
+        "remaining_blocker_codes": [
+            "MOTHER_DEPLOY_VALIDATOR_ADMISSION_NOT_AUTHORIZED",
+            "MOTHER_DEPLOY_C2_RPC_ROUTING_NOT_AUTHORIZED",
+        ],
+    }
+
+
+def execute_c2_replica_sync_resume_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    release_path: Path,
+    *,
+    acknowledged_release_sha256: str,
+    selected_nodes: Iterable[str] = (),
+    max_age_seconds: int = 300,
+    diagnostic_max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    max_wait_seconds: float = 300.0,
+    poll_interval_seconds: float = 5.0,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    inspected = inspect_c2_replica_sync_resume_release(
+        paths,
+        private_state,
+        Path(release_path),
+        acknowledged_release_sha256=acknowledged_release_sha256,
+        selected_nodes=selected_nodes,
+        max_age_seconds=max_age_seconds,
+        diagnostic_max_age_seconds=diagnostic_max_age_seconds,
+        now=now,
+    )
+    if inspected["release_already_claimed"]:
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_ALREADY_CONSUMED", "this C2 replica sync resume release is already claimed")
+    release, _, _ = _canonical_under(paths, Path(inspected["release_path"]), _RESUME_RELEASE_DIRECTORY, "C2 replica sync resume release")
+    plan = release["proof_plan"]
+    digest = inspected["c2_replica_sync_resume_release_sha256"]
+    claim = {
+        "kind": _RESUME_CLAIM_KIND,
+        "schema_version": 1,
+        "claimed_at": _timestamp(),
+        "release": {"locator": _relative(paths, Path(inspected["release_path"]), label="C2 replica sync resume release"), "sha256": digest},
+        "diagnostic_evidence_sha256": inspected["diagnostic_evidence_sha256"],
+        "node": _C2_NODE,
+        "requested_use_limit": 1,
+        "operation_id": operation.operation_id,
+    }
+    claim_root = _ensure_directory(paths, _RESUME_CLAIM_DIRECTORY, operation=operation)
+    claim_path = claim_root / f"{digest}.json"
+    if claim_path.exists():
+        raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_ALREADY_CONSUMED", "this C2 replica sync resume release is already claimed")
+    atomic_files.durable_create(claim_path, canonical_json(claim), operation=operation)
+    _secure_private_path(claim_path, is_directory=False, operation=operation)
+
+    controller_a = resolve_coolify_controller(private_state, inspected["network"], _A_CONTROLLER)
+    controller_c = resolve_coolify_controller(private_state, inspected["network"], _C2_CONTROLLER)
+    started = _timestamp()
+    preconditions: list[dict[str, Any]] = []
+    receipts: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    failure: dict[str, str] | None = None
+
+    try:
+        optional_a_uuid = (plan.get("preconditions", [{}, {}])[1] if isinstance(plan.get("preconditions"), list) and len(plan.get("preconditions")) > 1 else {}).get("optional_service_uuid")
+        if optional_a_uuid:
+            a_inventory = _http(controller_a, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+            a_verified = False
+            if a_inventory["ok"]:
+                item = _service_record(a_inventory["payload"], service_uuid=optional_a_uuid, node=_A1_NODE)
+                a_verified = _service_status(item) == "running:healthy"
+            preconditions.append({
+                "name": "initial-chain-running-healthy-before-sync-resume",
+                "controller_id": _A_CONTROLLER,
+                "method": "GET",
+                "endpoint": "/api/v1/services",
+                "status": a_inventory["status"],
+                "response_sha256": a_inventory["response_sha256"],
+                "verified": a_verified,
+                "service_status": "running:healthy" if a_verified else None,
+            })
+            if not a_verified:
+                raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_INITIAL_CHAIN_UNHEALTHY", "A1 is not running:healthy")
+
+        c_detail_endpoint = f"/api/v1/services/{urllib.parse.quote(plan['service_uuid'], safe='')}"
+        c_detail = _http(controller_c, "GET", c_detail_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+        if not c_detail["ok"]:
+            raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_PRECONDITION_FAILED", f"Coolify C service detail failed with HTTP {c_detail['status']}")
+        record = _standby_service_record(c_detail["payload"], service_uuid=plan["service_uuid"])
+        current_compose = _standby_compose_from_service_record(record)
+        patch_authorized = release.get("authority", {}).get("compose_patch_authorized") is True
+        pre_patch_compose = plan.get("pre_patch_compose") if isinstance(plan.get("pre_patch_compose"), Mapping) else None
+        expected_before = pre_patch_compose["canonical_text"] if patch_authorized and isinstance(pre_patch_compose, Mapping) and isinstance(pre_patch_compose.get("canonical_text"), str) else plan["proof_compose"]["canonical_text"]
+        proof_report = _proof_compose_report(observed=current_compose, expected=expected_before, node=_C2_NODE)
+        precondition_verified = (
+            proof_report.get("sync_compose_verified") is True
+            or (patch_authorized and (proof_report.get("exact_match") is True or proof_report.get("yaml_equivalent") is True))
+        )
+        preconditions.append({
+            "name": "c2-replica-sync-proof-compose-before-resume-deploy",
+            "controller_id": _C2_CONTROLLER,
+            "method": "GET",
+            "endpoint": c_detail_endpoint,
+            "status": c_detail["status"],
+            "response_sha256": c_detail["response_sha256"],
+            "verified": precondition_verified,
+            "compose_verification": proof_report,
+            "host_p2p_isolation_patch_pending": patch_authorized,
+        })
+        if precondition_verified is not True:
+            raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_COMPOSE_MISMATCH", "C2 service does not have the expected sync-proof Compose")
+
+        for mutation in plan["mutations"]:
+            method = mutation.get("method")
+            body = mutation.get("canonical_request_body")
+            if method not in {"GET", "PATCH"}:
+                raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "resume release may execute only GET or PATCH mutations")
+            if method == "GET" and body is not None:
+                raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "resume deploy mutation must not contain a request body")
+            if method == "PATCH" and not patch_authorized:
+                raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_RELEASE_INVALID", "resume Compose PATCH is not authorized")
+            response = _http(
+                controller_c,
+                method,
+                mutation["endpoint"],
+                body=dict(body) if isinstance(body, Mapping) else None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            ok = response["status"] in mutation["success_statuses"]
+            receipts.append({
+                "ordinal": mutation["ordinal"],
+                "mutation_id": mutation["mutation_id"],
+                "controller_id": _C2_CONTROLLER,
+                "method": method,
+                "endpoint": mutation["endpoint"],
+                "body_sha256": mutation.get("body_sha256"),
+                "status": "succeeded" if ok else "failed",
+                "live_write_acknowledged": ok,
+                "response": _response_receipt(response, include_safe_text=method == "GET" and mutation["endpoint"].startswith("/api/v1/deploy")),
+            })
+            if not ok:
+                raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_MUTATION_FAILED", f"Coolify rejected C2 sync resume mutation {mutation['ordinal']}")
+
+        deadline = time.monotonic() + max_wait_seconds
+        healthy = False
+        last_status = ""
+        while True:
+            inventory = _http(controller_c, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+            if inventory["ok"]:
+                item = _service_record(inventory["payload"], service_uuid=plan["service_uuid"], node=_C2_NODE)
+                last_status = _service_status(item)
+                observations.append({"status": last_status, "response_sha256": inventory["response_sha256"], "observed_at": _timestamp()})
+                if last_status == "running:healthy":
+                    healthy = True
+                    break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(max(0.0, poll_interval_seconds))
+        if not healthy:
+            raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_NOT_HEALTHY", f"C2 sync resume proof did not reach running:healthy (last status {last_status!r})")
+
+        c_detail = _http(controller_c, "GET", c_detail_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+        if not c_detail["ok"]:
+            raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_POSTCONDITION_FAILED", f"Coolify C proof detail failed with HTTP {c_detail['status']}")
+        record = _standby_service_record(c_detail["payload"], service_uuid=plan["service_uuid"])
+        proof_observed = _standby_compose_from_service_record(record)
+        proof_report = _proof_compose_report(observed=proof_observed, expected=plan["proof_compose"]["canonical_text"], node=_C2_NODE)
+        preconditions.append({
+            "name": "c2-replica-sync-proof-compose-after-resume",
+            "controller_id": _C2_CONTROLLER,
+            "method": "GET",
+            "endpoint": c_detail_endpoint,
+            "status": c_detail["status"],
+            "response_sha256": c_detail["response_sha256"],
+            "verified": proof_report.get("sync_compose_verified") is True,
+            "compose_verification": proof_report,
+        })
+        if proof_report.get("sync_compose_verified") is not True:
+            raise _fail("MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_POSTCONDITION_FAILED", "live C2 Compose does not match the sync-proof semantics")
+    except MotherDeploymentC2ReplicaSyncError as exc:
+        failure = {"code": exc.code, "message": str(exc)[:512]}
+    except Exception as exc:  # pragma: no cover
+        failure = {"code": "MOTHER_DEPLOY_C2_REPLICA_SYNC_RESUME_UNEXPECTED_FAILURE", "message": str(exc)[:512]}
+
+    completed = _timestamp()
+    expected_receipt_count = len(plan.get("mutations", [])) if isinstance(plan.get("mutations"), list) else 1
+    compose_patch_performed = any(item.get("method") == "PATCH" and item.get("status") == "succeeded" for item in receipts)
+    compose_patch_authorized = release.get("authority", {}).get("compose_patch_authorized") is True
+    complete = failure is None and len(receipts) == expected_receipt_count and all(item["status"] == "succeeded" for item in receipts)
+    evidence = {
+        "kind": _EVIDENCE_KIND,
+        "schema_version": 1,
+        "started_at": started,
+        "completed_at": completed,
+        "status": "pass" if complete else "failed",
+        "mother_binding": dict(inspected["mother_binding"]),
+        "network": inspected["network"],
+        "node": _C2_NODE,
+        "nodes": [_C2_NODE],
+        "initial_node": _A1_NODE,
+        "replica_node": _C2_NODE,
+        "controller_id": _C2_CONTROLLER,
+        "service_uuid": inspected["service_uuid"],
+        "release": {"locator": _relative(paths, Path(inspected["release_path"]), label="C2 replica sync resume release"), "sha256": digest},
+        "execution_claim": {"locator": _relative(paths, claim_path, label="C2 replica sync resume claim")},
+        "diagnostic_evidence_sha256": inspected["diagnostic_evidence_sha256"],
+        "genesis_sha256": inspected["genesis_sha256"],
+        "proof_compose_sha256": inspected["proof_compose_sha256"],
+        "expected_validator_set": list(plan["expected_validator_set"]),
+        "proof": {
+            "mode": "internal-health-assertion-bound-to-already-applied-sync-proof-compose",
+            "manual_ssh_required": False,
+            "public_endpoint_created": False,
+            "host_rpc_mapping_present": False,
+            "host_p2p_mapping_present": False,
+            "guardian_internal_only": True,
+            "service_status": observations[-1]["status"] if observations else None,
+            "predicates_proven_by_guardian": list(plan["proof"]["predicates"]),
+            "chain_id": plan["chain_id"],
+            "genesis_sha256": plan["genesis_sha256"],
+            "expected_validator_set": list(plan["expected_validator_set"]),
+            "c2_validator_address": plan["c2_validator_address"],
+            "c2_validator_active": False,
+            "bootnode_enode": plan["bootnode_enode"],
+            "initial_node_id_sha256": hashlib.sha256(plan["initial_node_id"].encode("ascii")).hexdigest(),
+            "replica_node_id_sha256": hashlib.sha256(plan["replica_node_id"].encode("ascii")).hexdigest(),
+        },
+        "authority": {
+            "resume_from_applied_sync_proof_compose_authorized": True,
+            "host_p2p_isolation_authorized": release.get("authority", {}).get("host_p2p_isolation_authorized") is True,
+            "compose_patch_authorized": compose_patch_authorized,
+            "synchronization_proof_authorized": True,
+            "replica_start_authorized": True,
+            "replica_sync_authorized": True,
+            "validator_vote_authorized": False,
+            "validator_activation_authorized": False,
+            "routing_or_topology_publication_authorized": False,
+            "release_consumed": True,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET", "PATCH"] if compose_patch_authorized else ["GET"],
+            "coolify_control_plane_only": True,
+            "initial_node_read_only": True,
+            "replica_node_only": True,
+            "manual_ssh_required": False,
+            "public_endpoint_created": False,
+            "host_rpc_mapping_present": False,
+            "host_p2p_mapping_present": False,
+            "host_p2p_publication_authorized": False,
+            "private_state_updated": False,
+            "secrets_in_output": False,
+            "automatic_rollback_performed": False,
+            "compose_patch_performed": compose_patch_performed,
+            "service_deploy_or_start_performed": complete,
+            "replica_sync_performed": complete,
+            "validator_vote_performed": False,
+            "validator_activation_performed": False,
+            "routing_or_topology_published": False,
+        },
+        "precondition_receipts": preconditions,
+        "mutation_receipts": receipts,
+        "health_observations": observations,
+        "failure": failure,
+        "service_mutation_count": expected_receipt_count if complete else sum(item.get("status") == "succeeded" for item in receipts),
+        "identity_mutation_count": 0,
+        "chain_mutation_count": 0,
+        "validator_mutation_count": 0,
+        "validator_restart_count": 0,
+        "validator_vote_performed": False,
+        "summary": {
+            "clean": complete,
+            "resume_from_applied_sync_proof_compose": True,
+            "compose_patch_performed": compose_patch_performed,
+            "host_p2p_isolation_performed": compose_patch_performed,
+            "initial_chain_reverified": complete,
+            "replica_synchronized": complete,
+            "sync_compose_verified": complete,
+            "service_running_healthy": complete,
+            "genesis_file_commitment_verified": complete,
+            "chain_id_verified": complete,
+            "genesis_block_present": complete,
+            "replica_node_identity_verified": complete,
+            "initial_node_peer_verified": complete,
+            "peer_count_positive": complete,
+            "sync_complete": complete,
+            "blocks_advancing": complete,
+            "latest_block_fresh": complete,
+            "validator_set_verified": complete,
+            "c2_not_validator": complete,
+            "manual_ssh_required": False,
+            "public_endpoint_created": False,
+            "initial_node_read_only": True,
+            "service_deploy_or_start_performed": complete,
+            "replica_sync_performed": complete,
+            "validator_vote_authorized": False,
+            "validator_activation_authorized": False,
+            "routing_or_topology_publication_authorized": False,
+            "network_access_performed": bool(preconditions or receipts or observations),
+            "live_mutation_performed": any(item.get("live_write_acknowledged") for item in receipts),
+            "complete": complete,
+            "next_phase": "stage-c2-validator-admission" if complete else "manual-review-required",
+        },
+        "next_phase": "stage-c2-validator-admission" if complete else "manual-review-required",
+    }
+    evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
+    evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+    return evidence
+
+
+
 __all__ = [
     "MotherDeploymentC2ReplicaSyncError",
     "build_c2_replica_sync_release",
+    "build_c2_replica_sync_resume_release",
     "execute_c2_replica_sync_release",
+    "execute_c2_replica_sync_resume_release",
     "inspect_c2_replica_sync_release",
+    "inspect_c2_replica_sync_resume_release",
+    "diagnose_c2_replica_sync_materialization",
     "verify_c2_replica_sync_evidence",
     "verify_c2_replica_sync_release",
+    "verify_c2_replica_sync_resume_release",
     "write_c2_replica_sync_release",
+    "write_c2_replica_sync_resume_release",
 ]

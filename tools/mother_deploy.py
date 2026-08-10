@@ -62,11 +62,27 @@ from tools.mother.common.deployment_c2_replica_standby import (
 from tools.mother.common.deployment_c2_replica_sync import (
     MotherDeploymentC2ReplicaSyncError,
     build_c2_replica_sync_release,
+    build_c2_replica_sync_resume_release,
+    diagnose_c2_replica_sync_materialization,
     execute_c2_replica_sync_release,
+    execute_c2_replica_sync_resume_release,
     inspect_c2_replica_sync_release,
+    inspect_c2_replica_sync_resume_release,
     verify_c2_replica_sync_evidence,
     verify_c2_replica_sync_release,
+    verify_c2_replica_sync_resume_release,
     write_c2_replica_sync_release,
+    write_c2_replica_sync_resume_release,
+)
+from tools.mother.common.deployment_c2_validator_admission import (
+    MotherDeploymentC2ValidatorAdmissionError,
+    build_c2_validator_admission_release,
+    build_c2_validator_admission_transaction,
+    inspect_c2_validator_admission_release,
+    verify_c2_validator_admission_release,
+    verify_c2_validator_admission_transaction,
+    write_c2_validator_admission_release,
+    write_c2_validator_admission_transaction,
 )
 from tools.mother.common.deployment_identity_install import (
     MotherDeploymentIdentityInstallError,
@@ -2070,6 +2086,116 @@ def _parser() -> argparse.ArgumentParser:
     _common(verify_c2_replica_sync_cmd)
     verify_c2_replica_sync_cmd.add_argument("--evidence", required=True)
     verify_c2_replica_sync_cmd.add_argument("--max-age-seconds", type=int, default=300)
+
+    diagnose_c2_replica_sync_materialization_cmd = subparsers.add_parser(
+        "diagnose-c2-replica-sync-materialization",
+        help="GET-diagnose a failed C2 replica sync that did not materialize a healthy service",
+        allow_abbrev=False,
+    )
+    _common(diagnose_c2_replica_sync_materialization_cmd)
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--failed-evidence", required=True)
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--failed-evidence-max-age-seconds", type=int, default=86400)
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--timeout", type=float, default=30.0)
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--operator-confirm-no-docker-materialization", action="store_true")
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--operator-confirm-host-p2p-port-conflict", action="store_true")
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--write-evidence", action="store_true")
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--require-retry-authorized", action="store_true")
+    diagnose_c2_replica_sync_materialization_cmd.add_argument("--require-retry-blocked", action="store_true")
+
+    release_c2_replica_sync_resume = subparsers.add_parser(
+        "release-c2-replica-sync-resume",
+        help="authorize one deploy/start retry from an already-applied C2 sync-proof Compose",
+        allow_abbrev=False,
+    )
+    _common(release_c2_replica_sync_resume)
+    release_c2_replica_sync_resume.add_argument("--diagnostic-evidence", required=True)
+    release_c2_replica_sync_resume.add_argument("--acknowledge-c2-replica-sync-diagnostic-sha256", required=True)
+    release_c2_replica_sync_resume.add_argument("--diagnostic-max-age-seconds", type=int, default=86400)
+    release_c2_replica_sync_resume.add_argument("--expires-in-seconds", type=int, default=300)
+    release_c2_replica_sync_resume.add_argument("--created-at")
+    release_c2_replica_sync_resume.add_argument("--write-release", action="store_true")
+
+    verify_c2_replica_sync_resume_release_cmd = subparsers.add_parser(
+        "verify-c2-replica-sync-resume-release",
+        help="verify one expiring C2 replica sync resume release",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_replica_sync_resume_release_cmd)
+    verify_c2_replica_sync_resume_release_cmd.add_argument("--release", required=True)
+    verify_c2_replica_sync_resume_release_cmd.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_replica_sync_resume_release_cmd.add_argument("--diagnostic-max-age-seconds", type=int, default=86400)
+
+    apply_c2_replica_sync_resume = subparsers.add_parser(
+        "apply-c2-replica-sync-resume",
+        help="inspect or execute one C2 replica sync resume release without re-patching Compose",
+        allow_abbrev=False,
+    )
+    _common(apply_c2_replica_sync_resume)
+    apply_c2_replica_sync_resume.add_argument("--release", required=True)
+    apply_c2_replica_sync_resume.add_argument("--acknowledge-release-sha256", required=True)
+    apply_c2_replica_sync_resume.add_argument("--max-age-seconds", type=int, default=300)
+    apply_c2_replica_sync_resume.add_argument("--diagnostic-max-age-seconds", type=int, default=86400)
+    apply_c2_replica_sync_resume.add_argument("--timeout", type=float, default=30.0)
+    apply_c2_replica_sync_resume.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_c2_replica_sync_resume.add_argument("--max-wait-seconds", type=float, default=300.0)
+    apply_c2_replica_sync_resume.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_c2_replica_sync_resume.add_argument("--execute", action="store_true")
+
+
+    stage_c2_validator_admission = subparsers.add_parser(
+        "stage-c2-validator-admission",
+        help="compile the C2 two-voter QBFT validator admission transaction without casting votes",
+        allow_abbrev=False,
+    )
+    _common(stage_c2_validator_admission)
+    stage_c2_validator_admission.add_argument("--sync-evidence", required=True)
+    stage_c2_validator_admission.add_argument("--max-age-seconds", type=int, default=300)
+    stage_c2_validator_admission.add_argument("--created-at")
+    stage_c2_validator_admission.add_argument("--write-transaction", action="store_true")
+
+    verify_c2_validator_admission_tx = subparsers.add_parser(
+        "verify-c2-validator-admission-transaction",
+        help="verify a staged C2 validator-admission transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_validator_admission_tx)
+    verify_c2_validator_admission_tx.add_argument("--transaction", required=True)
+    verify_c2_validator_admission_tx.add_argument("--max-age-seconds", type=int, default=300)
+
+    release_c2_validator_admission = subparsers.add_parser(
+        "release-c2-validator-admission",
+        help="release the exact C2 two-voter validator-admission plan",
+        allow_abbrev=False,
+    )
+    _common(release_c2_validator_admission)
+    release_c2_validator_admission.add_argument("--transaction", required=True)
+    release_c2_validator_admission.add_argument("--acknowledge-c2-validator-admission-transaction-sha256", required=True)
+    release_c2_validator_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_c2_validator_admission.add_argument("--expires-in-seconds", type=int, default=300)
+    release_c2_validator_admission.add_argument("--created-at")
+    release_c2_validator_admission.add_argument("--write-release", action="store_true")
+
+    verify_c2_validator_admission_release_cmd = subparsers.add_parser(
+        "verify-c2-validator-admission-release",
+        help="verify an expiring C2 validator-admission release",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_validator_admission_release_cmd)
+    verify_c2_validator_admission_release_cmd.add_argument("--release", required=True)
+    verify_c2_validator_admission_release_cmd.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_validator_admission_release_cmd.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+
+    apply_c2_validator_admission = subparsers.add_parser(
+        "apply-c2-validator-admission",
+        help="inspect the released C2 validator-admission plan; live executor is deferred",
+        allow_abbrev=False,
+    )
+    _common(apply_c2_validator_admission)
+    apply_c2_validator_admission.add_argument("--release", required=True)
+    apply_c2_validator_admission.add_argument("--acknowledge-release-sha256", required=True)
+    apply_c2_validator_admission.add_argument("--max-age-seconds", type=int, default=300)
+    apply_c2_validator_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
 
     verify_coolify_service_lifecycle_probe = subparsers.add_parser(
         "verify-coolify-service-lifecycle-probe-evidence",
@@ -4820,6 +4946,188 @@ def _cmd_verify_c2_replica_sync_evidence(args: argparse.Namespace, private_state
     return 0
 
 
+def _cmd_diagnose_c2_replica_sync_materialization(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = diagnose_c2_replica_sync_materialization(
+        _paths(args),
+        private_state,
+        Path(args.failed_evidence),
+        selected_nodes=_selected_nodes(args.node),
+        failed_evidence_max_age_seconds=args.failed_evidence_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operator_confirm_no_docker_materialization=args.operator_confirm_no_docker_materialization,
+        operator_confirm_host_p2p_port_conflict=args.operator_confirm_host_p2p_port_conflict,
+        opener=_DEFAULT_OPENER,
+        now=None,
+        write_evidence=args.write_evidence,
+        operation=_operation("diagnose-c2-replica-sync-materialization", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    if args.require_retry_authorized and result.get("summary", {}).get("retry_authorized") is not True:
+        return 1
+    if args.require_retry_blocked and result.get("summary", {}).get("retry_authorized") is not False:
+        return 1
+    return 0
+
+
+def _cmd_release_c2_replica_sync_resume(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    release = build_c2_replica_sync_resume_release(
+        _paths(args),
+        private_state,
+        Path(args.diagnostic_evidence),
+        acknowledged_c2_replica_sync_diagnostic_sha256=args.acknowledge_c2_replica_sync_diagnostic_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        diagnostic_max_age_seconds=args.diagnostic_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_c2_replica_sync_resume_release(
+            _paths(args),
+            release,
+            operation=_operation("write-c2-replica-sync-resume-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_replica_sync_resume_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_replica_sync_resume_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        diagnostic_max_age_seconds=args.diagnostic_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_c2_replica_sync_resume(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    common = {
+        "acknowledged_release_sha256": args.acknowledge_release_sha256,
+        "selected_nodes": _selected_nodes(args.node),
+        "max_age_seconds": args.max_age_seconds,
+        "diagnostic_max_age_seconds": args.diagnostic_max_age_seconds,
+    }
+    if not args.execute:
+        result = inspect_c2_replica_sync_resume_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            **common,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_c2_replica_sync_resume_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        opener=_DEFAULT_OPENER,
+        operation=_operation("apply-c2-replica-sync-resume", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_stage_c2_validator_admission(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    transaction = build_c2_validator_admission_transaction(
+        _paths(args),
+        private_state,
+        Path(args.sync_evidence),
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = write_c2_validator_admission_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("write-c2-validator-admission-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(transaction, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_validator_admission_transaction(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_validator_admission_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_c2_validator_admission(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    release = build_c2_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=args.acknowledge_c2_validator_admission_transaction_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_c2_validator_admission_release(
+            _paths(args),
+            release,
+            operation=_operation("write-c2-validator-admission-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_validator_admission_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_c2_validator_admission(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = inspect_c2_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -5058,6 +5366,24 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_apply_c2_replica_sync(args, private_state)
         if args.command == "verify-c2-replica-sync-evidence":
             return _cmd_verify_c2_replica_sync_evidence(args, private_state)
+        if args.command == "diagnose-c2-replica-sync-materialization":
+            return _cmd_diagnose_c2_replica_sync_materialization(args, private_state)
+        if args.command == "release-c2-replica-sync-resume":
+            return _cmd_release_c2_replica_sync_resume(args, private_state)
+        if args.command == "verify-c2-replica-sync-resume-release":
+            return _cmd_verify_c2_replica_sync_resume_release(args, private_state)
+        if args.command == "apply-c2-replica-sync-resume":
+            return _cmd_apply_c2_replica_sync_resume(args, private_state)
+        if args.command == "stage-c2-validator-admission":
+            return _cmd_stage_c2_validator_admission(args, private_state)
+        if args.command == "verify-c2-validator-admission-transaction":
+            return _cmd_verify_c2_validator_admission_transaction(args, private_state)
+        if args.command == "release-c2-validator-admission":
+            return _cmd_release_c2_validator_admission(args, private_state)
+        if args.command == "verify-c2-validator-admission-release":
+            return _cmd_verify_c2_validator_admission_release(args, private_state)
+        if args.command == "apply-c2-validator-admission":
+            return _cmd_apply_c2_validator_admission(args, private_state)
         if args.command == "probe-coolify-service-lifecycle":
             return _cmd_probe_coolify_service_lifecycle(args, private_state)
         if args.command == "verify-coolify-service-lifecycle-probe-evidence":
@@ -5068,6 +5394,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentC2StateExtensionError,
         MotherDeploymentC2ReplicaStandbyError,
         MotherDeploymentC2ReplicaSyncError,
+        MotherDeploymentC2ValidatorAdmissionError,
         MotherDeploymentExecutorError,
         MotherDeploymentCoolifyServiceLifecycleProbeError,
         MotherDeploymentCompletedHelperCleanupError,

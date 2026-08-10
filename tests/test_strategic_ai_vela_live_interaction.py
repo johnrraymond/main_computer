@@ -620,6 +620,130 @@ class StrategicAIVelaLiveInteractionTests(unittest.TestCase):
         self.assertIn("return !this.velaSubsurfacePhaserAvailable?.()", scene_source)
         self.assertIn("resolveVelaGuardPhaserRecovery", interaction_source)
         self.assertIn("phaserRecoveryAvailable", interaction_source)
+        self.assertIn("VELA_CAVE_ROOMS", interaction_source)
+        self.assertIn("VELA_CAVE_HOSTILES", interaction_source)
+        self.assertIn("resolveVelaCaveEnemyPhaserHit", interaction_source)
+        self.assertIn("resolveVelaSurfaceTransporter", interaction_source)
+        self.assertIn("velaSubsurfaceCaveSystem", scene_source)
+        self.assertIn("velaSubsurfaceActiveCaveEnemies", scene_source)
+        self.assertIn("velaSubsurfaceTransporterStatus", scene_source)
+        self.assertIn("vela-cave.surface-transporter-room", scene_source)
+
+
+    def test_vela_phaser_run_has_six_cave_sectors_hostiles_and_beam_back(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for the Vela cave-system smoke")
+
+        script = textwrap.dedent(
+            """
+            const fs = require("fs");
+            const path = require("path");
+            const root = process.argv[1];
+            const project = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+
+            [
+              "strategic-ai-runtime.js",
+              "strategic-ai-action-runtime.js",
+              "strategic-ai-social-runtime.js",
+              "strategic-ai-commitment-runtime.js",
+              "strategic-ai-director-runtime.js",
+              "strategic-ai-communication-runtime.js",
+              "strategic-ai-coordinator.js",
+              "strategic-ai-offscreen-runtime.js"
+            ].forEach((name) => require(path.join(root, name)));
+
+            const sessionApi = require(path.join(root, "strategic-ai-session.js"));
+            const interaction = require(path.join(root, "strategic-ai-vela-interaction.js"));
+            global.document = {
+              querySelector(selector) {
+                if (selector !== "#webgl-demo") return null;
+                return {
+                  __mainComputerShuttle3dRenderer: {
+                    syncVelaSubsurfaceScene() { return true; }
+                  }
+                };
+              }
+            };
+
+            const session = new sessionApi.StrategicAISession("webgl-demo", project, {
+              storage: null,
+              restore: false,
+              seed: 412,
+              activeSystemId: "system.vela-gate"
+            });
+            interaction.setSession(session);
+
+            interaction.runInteraction(session);
+            interaction.resolveVelaGuardMelee({reason: "test-melee"});
+            const armed = interaction.resolveVelaPhaserRecovery({reason: "test-phaser-recovery"});
+            if (armed.stageId !== "surface-transporter-extraction") {
+              throw new Error("Vela phaser recovery did not enter the transporter run");
+            }
+            if (!armed.caveSystem || armed.caveSystem.roomCount !== 6) {
+              throw new Error("Vela cave system did not expose six sectors");
+            }
+            if (armed.caveSystem.enemiesActive !== 8) {
+              throw new Error(`expected 8 active cave hostiles, got ${armed.caveSystem.enemiesActive}`);
+            }
+
+            const firstHit = interaction.resolveVelaCaveEnemyPhaserHit({
+              enemyId: "enemy.vela.cave-guard-02",
+              reason: "test-first-phaser-hit"
+            });
+            if (firstHit.caveSystem.enemiesActive !== 7 || firstHit.caveSystem.enemiesDefeated !== 1) {
+              throw new Error("Vela cave hostile hit did not update enemy counts");
+            }
+
+            let snapshot = firstHit;
+            for (const enemy of snapshot.caveSystem.enemies) {
+              if (enemy.status !== "defeated") {
+                snapshot = interaction.resolveVelaCaveEnemyPhaserHit({
+                  enemyId: enemy.id,
+                  reason: "test-clear-route"
+                });
+              }
+            }
+            if (snapshot.caveSystem.enemiesActive !== 0 || snapshot.extraction.beamBack !== "ready") {
+              throw new Error("clearing cave hostiles did not unlock the transporter route");
+            }
+
+            const complete = interaction.resolveVelaSurfaceTransporter({
+              reason: "test-beam-back"
+            });
+            if (
+              complete.stageId !== "beam-back-complete"
+              || complete.investigationComplete !== true
+              || complete.extraction.beamBack !== "complete"
+            ) {
+              throw new Error("surface transporter did not complete the Vela escape");
+            }
+
+            process.stdout.write(JSON.stringify({
+              roomCount: armed.caveSystem.roomCount,
+              enemiesInitiallyActive: armed.caveSystem.enemiesActive,
+              afterFirstHit: firstHit.caveSystem.enemiesActive,
+              finalEnemiesActive: snapshot.caveSystem.enemiesActive,
+              finalStage: complete.stageId,
+              beamBack: complete.extraction.beamBack
+            }));
+            """
+        )
+        result = subprocess.run(
+            ["node", "-e", script, str(SCRIPT_ROOT), str(PROJECT_PATH)],
+            cwd=ROOT,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["roomCount"], 6)
+        self.assertEqual(report["enemiesInitiallyActive"], 8)
+        self.assertEqual(report["afterFirstHit"], 7)
+        self.assertEqual(report["finalEnemiesActive"], 0)
+        self.assertEqual(report["finalStage"], "beam-back-complete")
+        self.assertEqual(report["beamBack"], "complete")
+
 
 
     def test_live_interaction_is_player_visible_and_loaded_before_webgl(self) -> None:

@@ -27,6 +27,24 @@
     [VELA_ESCAPE_STAGE_IDS.extraction]: "Fight to the surface transporter",
     [VELA_ESCAPE_STAGE_IDS.complete]: "Beam-back complete"
   });
+  const VELA_CAVE_ROOMS = Object.freeze([
+    {id: "vela-cave.holding-ledge", label: "Holding Ledge", position: [0, -0.55, 3.05], kind: "start"},
+    {id: "vela-cave.guard-post", label: "Guard Post", position: [1.85, -0.55, 0.85], kind: "weapon-recovery"},
+    {id: "vela-cave.crystal-narrows", label: "Crystal Narrows", position: [-2.6, -0.55, -2.6], kind: "passage"},
+    {id: "vela-cave.supply-hollow", label: "Supply Hollow", position: [2.8, -0.55, -4.85], kind: "ambush"},
+    {id: "vela-cave.generator-grotto", label: "Generator Grotto", position: [-3.1, -0.55, -7.6], kind: "route-control"},
+    {id: "vela-cave.surface-transporter-room", label: "Surface Transporter Room", position: [0, -0.55, -12.65], kind: "extraction"}
+  ]);
+  const VELA_CAVE_HOSTILES = Object.freeze([
+    {id: "enemy.vela.cave-guard-02", label: "Cave guard", roomId: "vela-cave.crystal-narrows", position: [-2.45, -0.03, -2.15]},
+    {id: "enemy.vela.cave-guard-03", label: "Cave guard", roomId: "vela-cave.crystal-narrows", position: [-1.35, -0.03, -3.0]},
+    {id: "enemy.vela.cave-guard-04", label: "Supply guard", roomId: "vela-cave.supply-hollow", position: [2.3, -0.03, -4.25]},
+    {id: "enemy.vela.cave-guard-05", label: "Supply guard", roomId: "vela-cave.supply-hollow", position: [3.35, -0.03, -5.45]},
+    {id: "enemy.vela.cave-guard-06", label: "Generator guard", roomId: "vela-cave.generator-grotto", position: [-3.45, -0.03, -7.05]},
+    {id: "enemy.vela.cave-guard-07", label: "Generator guard", roomId: "vela-cave.generator-grotto", position: [-2.15, -0.03, -8.15]},
+    {id: "enemy.vela.cave-guard-08", label: "Transporter guard", roomId: "vela-cave.surface-transporter-room", position: [-0.75, -0.03, -11.85]},
+    {id: "enemy.vela.cave-guard-09", label: "Transporter guard", roomId: "vela-cave.surface-transporter-room", position: [0.85, -0.03, -12.85]}
+  ]);
   const velaEscapeScenarioStateBySession = new WeakMap();
 
   function objectValue(value) {
@@ -48,6 +66,87 @@
   function finiteNumber(value, fallback = 0) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function finiteVector3(value, fallback = [0, 0, 0]) {
+    const source = Array.isArray(value) ? value : fallback;
+    return [0, 1, 2].map((index) => finiteNumber(source[index], fallback[index] || 0));
+  }
+
+  function defaultVelaCaveSystem() {
+    const rooms = VELA_CAVE_ROOMS.map((room, index) => ({
+      id: stringValue(room.id),
+      label: stringValue(room.label),
+      kind: stringValue(room.kind),
+      order: index + 1,
+      position: finiteVector3(room.position)
+    }));
+    const enemies = VELA_CAVE_HOSTILES.map((enemy) => ({
+      id: stringValue(enemy.id),
+      label: stringValue(enemy.label),
+      roomId: stringValue(enemy.roomId),
+      position: finiteVector3(enemy.position),
+      health: 1,
+      status: "active"
+    }));
+    return {
+      rooms,
+      roomCount: rooms.length,
+      enemies,
+      enemiesTotal: enemies.length,
+      enemiesActive: enemies.length,
+      enemiesDefeated: 0,
+      transporterRoomId: "vela-cave.surface-transporter-room",
+      transporterPosition: finiteVector3(
+        VELA_CAVE_ROOMS.find((room) => room.id === "vela-cave.surface-transporter-room")?.position,
+        [0, -0.55, -12.65]
+      )
+    };
+  }
+
+  function normalizeVelaCaveSystem(record) {
+    const base = defaultVelaCaveSystem();
+    const source = objectValue(record);
+    const sourceRooms = arrayValue(source.rooms);
+    const rooms = sourceRooms.length
+      ? sourceRooms.map((room, index) => ({
+        id: stringValue(objectValue(room).id || base.rooms[index]?.id),
+        label: stringValue(objectValue(room).label || base.rooms[index]?.label || "Cave room"),
+        kind: stringValue(objectValue(room).kind || base.rooms[index]?.kind || "cave"),
+        order: finiteNumber(objectValue(room).order, index + 1),
+        position: finiteVector3(objectValue(room).position, base.rooms[index]?.position || [0, -0.55, 0])
+      }))
+      : base.rooms;
+    const knownEnemies = new Map(base.enemies.map((enemy) => [enemy.id, enemy]));
+    const sourceEnemies = arrayValue(source.enemies);
+    const enemies = sourceEnemies.length
+      ? sourceEnemies.map((enemy, index) => {
+        const record = objectValue(enemy);
+        const fallback = knownEnemies.get(stringValue(record.id)) || base.enemies[index] || {};
+        const health = Math.max(0, finiteNumber(record.health, finiteNumber(fallback.health, 1)));
+        const status = stringValue(record.status || fallback.status || (health > 0 ? "active" : "defeated"));
+        return {
+          id: stringValue(record.id || fallback.id),
+          label: stringValue(record.label || fallback.label || "Cave hostile"),
+          roomId: stringValue(record.roomId || fallback.roomId),
+          position: finiteVector3(record.position, fallback.position || [0, -0.03, 0]),
+          health,
+          status: status === "defeated" || health <= 0 ? "defeated" : "active"
+        };
+      })
+      : base.enemies;
+    const enemiesActive = enemies.filter((enemy) => enemy.status !== "defeated" && finiteNumber(enemy.health, 1) > 0).length;
+    const enemiesDefeated = enemies.length - enemiesActive;
+    return {
+      rooms,
+      roomCount: rooms.length,
+      enemies,
+      enemiesTotal: enemies.length,
+      enemiesActive,
+      enemiesDefeated,
+      transporterRoomId: stringValue(source.transporterRoomId || base.transporterRoomId),
+      transporterPosition: finiteVector3(source.transporterPosition, base.transporterPosition)
+    };
   }
 
   function titleWords(value) {
@@ -153,6 +252,7 @@
         surfaceTransporter: "not-reached",
         beamBack: "locked"
       },
+      caveSystem: defaultVelaCaveSystem(),
       trigger: null,
       notes: visible
         ? ["Investigation has not yet sprung the trap."]
@@ -196,6 +296,7 @@
         ...base.extraction,
         ...objectValue(record.extraction)
       },
+      caveSystem: normalizeVelaCaveSystem(record.caveSystem || base.caveSystem),
       notes: arrayValue(record.notes).length ? clone(arrayValue(record.notes)) : base.notes
     };
   }
@@ -367,7 +468,7 @@
       stageLabel: VELA_ESCAPE_STAGE_LABELS[VELA_ESCAPE_STAGE_IDS.extraction],
       locationId: VELA_ESCAPE_LOCATION_ID,
       locationLabel: "Subsurface cavern beneath Vela Gate",
-      objective: "Phaser recovered. Fight toward the surface transporter and find a beam-back lock.",
+      objective: "Phaser recovered. Fight through six cave sectors to reach the surface transporter.",
       trapTriggered: true,
       captive: false,
       investigationComplete: false,
@@ -389,6 +490,7 @@
         surfaceTransporter: "ahead",
         beamBack: "locked"
       },
+      caveSystem: normalizeVelaCaveSystem(existing.caveSystem),
       weaponRecovery: {
         phaserRecovered: true,
         method: "guard-post-pickup",
@@ -398,6 +500,121 @@
         "The guard post phaser is back in your hand.",
         "The cave route to the surface transporter is now the active objective."
       ]
+    });
+  }
+
+  function resolveVelaCaveEnemyHit(session, context = {}) {
+    if (!session || typeof session !== "object") return defaultVelaEscapeScenarioSnapshot(session);
+    const existing = velaEscapeScenarioSnapshot(session);
+    if (existing.stageId !== VELA_ESCAPE_STAGE_IDS.extraction) return clone(existing);
+    const caveSystem = normalizeVelaCaveSystem(existing.caveSystem);
+    const enemyId = stringValue(context.enemyId);
+    if (!enemyId) return clone(existing);
+    let changed = false;
+    const enemies = caveSystem.enemies.map((enemy) => {
+      if (enemy.id !== enemyId || enemy.status === "defeated") return enemy;
+      changed = true;
+      return {
+        ...enemy,
+        health: 0,
+        status: "defeated",
+        defeatedReason: stringValue(context.reason || "player-phaser-hit")
+      };
+    });
+    if (!changed) return clone(existing);
+    const nextCaveSystem = normalizeVelaCaveSystem({
+      ...caveSystem,
+      enemies
+    });
+    return setVelaEscapeScenarioSnapshot(session, {
+      ...existing,
+      active: true,
+      phase: "surface-transporter-run",
+      stageId: VELA_ESCAPE_STAGE_IDS.extraction,
+      stageLabel: VELA_ESCAPE_STAGE_LABELS[VELA_ESCAPE_STAGE_IDS.extraction],
+      objective: nextCaveSystem.enemiesActive > 0
+        ? `Fight through the cave system. ${nextCaveSystem.enemiesActive} hostiles still block the surface transporter.`
+        : "The cave route is clear. Reach the surface transporter and press E to beam back.",
+      caveSystem: nextCaveSystem,
+      guardState: {
+        ...objectValue(existing.guardState),
+        watching: 0,
+        defeated: 1,
+        combatMode: nextCaveSystem.enemiesActive > 0 ? "phaser-fight" : "transporter-route-clear"
+      },
+      extraction: {
+        ...objectValue(existing.extraction),
+        destinationId: VELA_SURFACE_TRANSPORTER_ID,
+        surfaceTransporter: nextCaveSystem.enemiesActive > 0 ? "contested" : "reachable",
+        beamBack: nextCaveSystem.enemiesActive > 0 ? "locked" : "ready"
+      },
+      notes: [
+        nextCaveSystem.enemiesActive > 0
+          ? `${nextCaveSystem.enemiesActive} Vela cave hostiles remain between you and the transporter room.`
+          : "All cave hostiles are down. The surface transporter can beam you back."
+      ]
+    });
+  }
+
+  function resolveVelaCaveEnemyPhaserHit(context = {}) {
+    const session = state.session || global.MainComputerStrategicAISession?.current?.() || null;
+    return resolveVelaCaveEnemyHit(session, {
+      ...objectValue(context),
+      reason: stringValue(context.reason || "renderer-phaser-hit-cave-hostile")
+    });
+  }
+
+  function resolveVelaSurfaceTransporterBeamBack(session, context = {}) {
+    if (!session || typeof session !== "object") return defaultVelaEscapeScenarioSnapshot(session);
+    const existing = velaEscapeScenarioSnapshot(session);
+    const caveSystem = normalizeVelaCaveSystem(existing.caveSystem);
+    if (existing.stageId !== VELA_ESCAPE_STAGE_IDS.extraction) return clone(existing);
+    if (caveSystem.enemiesActive > 0) return clone(existing);
+    return setVelaEscapeScenarioSnapshot(session, {
+      ...existing,
+      active: false,
+      phase: "complete",
+      stageId: VELA_ESCAPE_STAGE_IDS.complete,
+      stageLabel: VELA_ESCAPE_STAGE_LABELS[VELA_ESCAPE_STAGE_IDS.complete],
+      locationId: VELA_SYSTEM_ID,
+      locationLabel: "Returned aboard ship",
+      objective: "Beam-back complete. The Vela investigation is complete.",
+      trapTriggered: true,
+      captive: false,
+      investigationComplete: true,
+      playerEquipment: {
+        ...objectValue(existing.playerEquipment),
+        phaser: "recovered",
+        melee: "available"
+      },
+      guardState: {
+        ...objectValue(existing.guardState),
+        watching: 0,
+        defeated: 1,
+        combatMode: "complete"
+      },
+      extraction: {
+        ...objectValue(existing.extraction),
+        destinationId: VELA_SURFACE_TRANSPORTER_ID,
+        surfaceTransporter: "reached",
+        beamBack: "complete"
+      },
+      caveSystem,
+      completion: {
+        method: "surface-transporter-beam-back",
+        reason: stringValue(context.reason || "player-reached-surface-transporter")
+      },
+      notes: [
+        "The player escaped the Vela subsurface cave system and returned aboard with direct evidence."
+      ]
+    });
+  }
+
+  function resolveVelaSurfaceTransporter(context = {}) {
+    const session = state.session || global.MainComputerStrategicAISession?.current?.() || null;
+    return resolveVelaSurfaceTransporterBeamBack(session, {
+      ...objectValue(context),
+      reason: stringValue(context.reason || "renderer-e-key-surface-transporter")
     });
   }
 
@@ -482,6 +699,7 @@
     const equipment = objectValue(snapshot.playerEquipment);
     const guardState = objectValue(snapshot.guardState);
     const extraction = objectValue(snapshot.extraction);
+    const caveSystem = normalizeVelaCaveSystem(snapshot.caveSystem);
     const phaser = stringValue(equipment.phaser || "unknown");
     const melee = stringValue(equipment.melee || "unknown");
     const watching = finiteNumber(guardState.watching);
@@ -537,8 +755,17 @@
           ? "Beam-back locked until the surface transporter is reached"
           : titleWords(extraction.beamBack)
       },
+      caveSystem: {
+        label: "Cave system",
+        value: `${caveSystem.roomCount} sectors • ${caveSystem.enemiesActive} hostiles active`,
+        rooms: clone(caveSystem.rooms),
+        enemiesActive: caveSystem.enemiesActive,
+        enemiesDefeated: caveSystem.enemiesDefeated
+      },
       prompt: phaserRecovered
-        ? "Phaser recovered. Fight upward to the surface transporter."
+        ? caveSystem.enemiesActive > 0
+          ? `Phaser recovered. Fight through ${caveSystem.roomCount} cave sectors; ${caveSystem.enemiesActive} hostiles remain.`
+          : "Route clear. Reach the surface transporter and press E to beam back."
         : guardDefeated
           ? "Guard disabled. Recover your phaser from the guard post."
           : "Hand-to-hand escape is next: disable the lone guard, recover your phaser, and fight upward to the surface transporter.",
@@ -610,6 +837,9 @@
     if (!visible) {
       phase = "away";
       status = "The Vela Gate channel is available only while the ship is in Vela Gate.";
+    } else if (escape.trapTriggered && escape.stageId === VELA_ESCAPE_STAGE_IDS.complete) {
+      phase = "escape-complete";
+      status = "You escaped the Vela subsurface cave system and beamed back aboard.";
     } else if (escape.trapTriggered && escape.stageId === VELA_ESCAPE_STAGE_IDS.captive) {
       phase = "captive";
       status = "The Vela investigation triggered a transporter trap. You are captive beneath the surface.";
@@ -1024,6 +1254,8 @@
     VELA_ESCAPE_LOCATION_ID,
     VELA_SURFACE_TRANSPORTER_ID,
     VELA_ESCAPE_STAGE_IDS,
+    VELA_CAVE_ROOMS,
+    VELA_CAVE_HOSTILES,
     OFFICIAL_ACTOR_ID,
     BRIEFING_INTENT_ID,
     velaEscapeScenarioSnapshot,
@@ -1031,6 +1263,11 @@
     triggerVelaUndergroundCapture,
     velaGuardTakedownAvailable,
     velaGuardPhaserRecoveryAvailable,
+    normalizeVelaCaveSystem,
+    resolveVelaCaveEnemyHit,
+    resolveVelaCaveEnemyPhaserHit,
+    resolveVelaSurfaceTransporterBeamBack,
+    resolveVelaSurfaceTransporter,
     resolveVelaGuardTakedown,
     resolveVelaGuardMelee,
     resolveVelaGuardPhaserRecovery,

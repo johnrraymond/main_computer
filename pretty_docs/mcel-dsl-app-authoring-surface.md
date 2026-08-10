@@ -76,6 +76,77 @@ main_computer/web/applications/scripts/mcel-application-package-catalog.js
 
 If a physical build is required for inspection, deployment, or a proof harness, it belongs under ignored runtime output such as `runtime/build/mcel/...`.
 
+
+## Static semantic/layout declarations
+
+A semantic-runtime app must not rely on a later central backfill for the static
+diagnostic layers. During initial authoring, or during the first migration slice
+that asks for semantic-runtime promotion, `application.js` must name the app's
+static surface contract in the DSL.
+
+The authored source owns these declarations:
+
+```js
+app.presentation.semanticSurface({
+  id: "my-app.semantic-surface",
+  surfaceId: "my-app.primary-surface",
+  presentationAuthority: "existing-host-html",
+  runtimeFacade: "MainComputerMyAppRuntime",
+  regions: [
+    {id: "root", role: "application-root", selector: "#my-app"},
+    {id: "primary-surface", role: "primary-work-surface", selector: "#my-app-main", primary: true}
+  ],
+  controls: [
+    {id: "do-thing-control", selector: "[data-mcel-intent='do-thing']", intent: "doThing"}
+  ],
+  forbiddenDefaultRegions: [
+    {id: "debug-tools", selector: "[data-mcel-region='debug-tools']", defaultVisible: false}
+  ]
+});
+
+app.layout.grammar({
+  id: "my-app.layout",
+  rootSelector: "#my-app",
+  regions: [
+    {id: "root", selector: "#my-app", layout: "grid", children: ["primary-surface"]},
+    {id: "primary-surface", selector: "#my-app-main"}
+  ],
+  constraints: [
+    {id: "primary-surface-nonzero", selector: "#my-app-main", minWidth: 320, minHeight: 240}
+  ]
+});
+```
+
+The projection path materializes those declarations into
+`mcel.application-surface-bundle.v1` and exposes the logical package contract as
+`contracts/surface-bundle.json`. That bundle is generated package/catalog data:
+it may be inspected through runtime projection and the browser package catalog,
+but it is not hand-authored source and must not be checked into the app package.
+
+The no-backfill rule is:
+
+```text
+new or ported semantic-runtime app
+  -> declares semanticSurface and layoutGrammar in application.js
+  -> materializes a surface bundle through package projection
+  -> proves bundle availability through package-local tests
+  -> proves semantic-surface and layout-grammar diagnostics in browser smoke
+  -> only then may the surface registry require those layers
+```
+
+Package-local tests should prove that the declarations exist, region and control
+IDs are unique, controls map to declared intents, selectors are grounded in the
+host HTML or package document, the primary work surface is identified, default
+hidden/forbidden regions are explicit, and layout regions plus constraints are
+present. Browser smoke should run with diagnosis required and fail if required
+layers are unavailable or failing.
+
+When an app cannot provide these declarations yet, keep it at `legacy` or
+`runtime-baseline`, or document a separate non-static semantic adapter rationale.
+Do not promote the registry first and plan to fill in semantic-surface or
+layout-grammar evidence later.
+
+
 ## Presentation modes
 
 An MCEL DSL app has one of two runtime presentation modes.
@@ -210,11 +281,13 @@ For a new app or app rewrite, the authoring surface is complete when:
 
 ```text
 application.js declares all stable states, intents, effects, capabilities, scenarios, and proof obligations
+application.js declares semanticSurface and layoutGrammar before semantic-runtime registry promotion
 mcel.app.json names the authoring status, presentation mode, projection profile, contracts, and evidence
 blueprint.json records the app identity and product framing
 requirements.md records the app-local contract
 existing HTML/CSS/route/facade are named when using host-bound mode
-generated contracts and normalized IR are not checked in
+contracts/surface-bundle.json is derived from the DSL, not hand-authored or checked in
+package-local tests prove surface bundle declarations, selector grounding, intent mapping, primary surface, default-hidden regions, and layout constraints
 acceptance, browser observation, IR-native proof, candidate evidence, promotion rehearsal, and rollback are executable
 normal viewport mounting does not create source-tree files
 ```

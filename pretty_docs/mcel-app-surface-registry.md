@@ -19,8 +19,32 @@ mcel-lab         semantic-runtime
 git-tools        semantic-runtime
 ```
 
-File Explorer and Calculator require the full five-layer baseline because they have
-truth-auditable domain-neutral semantic surface contracts:
+## Enrollment rule for new or ported apps
+
+A registry promotion must follow source truth. No new or ported app should be
+promoted to require `semantic-surface` or `layout-grammar` until one of these
+source paths is present and tested:
+
+```text
+DSL static declarations
+  application.js declares app.presentation.semanticSurface(...)
+  application.js declares app.layout.grammar(...)
+  package projection exposes mcel.application-surface-bundle.v1
+  browser diagnostics pass the required layers
+
+audited non-static semantic path
+  requirements and adapter evidence document why static extraction is not the authority
+  registry policy names only the layers that the audited path can prove
+```
+
+The first path is the default for new authoring. It prevents the Code
+Editor-style late backfill from becoming normal process. If either static layer
+is unavailable, the app may still run, but its registry level must remain
+`legacy` or `runtime-baseline` until the declarations, projection, catalog, and
+diagnostics are wired through.
+
+File Explorer, Calculator, and Code Editor require the full five-layer baseline because they have
+truth-auditable domain-neutral semantic surface contracts or declared static surface bundles:
 
 ```text
 semantic-surface
@@ -29,6 +53,10 @@ runtime-ownership
 runtime-visual-fit
 diagnostic-no-throw
 ```
+
+Code Editor's full baseline requirement is backed by its package-projected
+`mcel.application-surface-bundle.v1` semantic surface and layout grammar plus the
+existing legacy-fidelity runtime ownership and visual-fit checks.
 
 Document Editor remains conformance-required but is parked at runtime-baseline. It still runs the browser/runtime app-surface checks, but it is no longer declared semantic-runtime until its requirements contract and semantic adapter coverage are truth-auditable:
 

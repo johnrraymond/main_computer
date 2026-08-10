@@ -6517,6 +6517,104 @@
           );
         }
 
+        velaSubsurfaceCaveSystem(snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot()) {
+          const record = snapshot?.caveSystem && typeof snapshot.caveSystem === "object"
+            ? snapshot.caveSystem
+            : {};
+          const fallbackRooms = [
+            {id: "vela-cave.holding-ledge", label: "Holding Ledge", position: [0, -0.55, 3.05]},
+            {id: "vela-cave.guard-post", label: "Guard Post", position: [1.85, -0.55, 0.85]},
+            {id: "vela-cave.crystal-narrows", label: "Crystal Narrows", position: [-2.6, -0.55, -2.6]},
+            {id: "vela-cave.supply-hollow", label: "Supply Hollow", position: [2.8, -0.55, -4.85]},
+            {id: "vela-cave.generator-grotto", label: "Generator Grotto", position: [-3.1, -0.55, -7.6]},
+            {id: "vela-cave.surface-transporter-room", label: "Surface Transporter Room", position: [0, -0.55, -12.65]}
+          ];
+          const vector = (value, fallback) => {
+            const source = Array.isArray(value) ? value : fallback;
+            return [0, 1, 2].map((index) => {
+              const parsed = Number(source?.[index]);
+              return Number.isFinite(parsed) ? parsed : (fallback?.[index] || 0);
+            });
+          };
+          const rooms = Array.isArray(record.rooms) && record.rooms.length
+            ? record.rooms.map((room, index) => ({
+              id: String(room?.id || fallbackRooms[index]?.id || `vela-cave.room-${index + 1}`),
+              label: String(room?.label || fallbackRooms[index]?.label || `Cave Room ${index + 1}`),
+              position: vector(room?.position, fallbackRooms[index]?.position || [0, -0.55, 0]),
+              order: Number.isFinite(Number(room?.order)) ? Number(room.order) : index + 1
+            }))
+            : fallbackRooms;
+          const fallbackEnemies = [
+            {id: "enemy.vela.cave-guard-02", label: "Cave guard", roomId: "vela-cave.crystal-narrows", position: [-2.45, -0.03, -2.15], health: 1, status: "active"},
+            {id: "enemy.vela.cave-guard-03", label: "Cave guard", roomId: "vela-cave.crystal-narrows", position: [-1.35, -0.03, -3.0], health: 1, status: "active"},
+            {id: "enemy.vela.cave-guard-04", label: "Supply guard", roomId: "vela-cave.supply-hollow", position: [2.3, -0.03, -4.25], health: 1, status: "active"},
+            {id: "enemy.vela.cave-guard-05", label: "Supply guard", roomId: "vela-cave.supply-hollow", position: [3.35, -0.03, -5.45], health: 1, status: "active"},
+            {id: "enemy.vela.cave-guard-06", label: "Generator guard", roomId: "vela-cave.generator-grotto", position: [-3.45, -0.03, -7.05], health: 1, status: "active"},
+            {id: "enemy.vela.cave-guard-07", label: "Generator guard", roomId: "vela-cave.generator-grotto", position: [-2.15, -0.03, -8.15], health: 1, status: "active"},
+            {id: "enemy.vela.cave-guard-08", label: "Transporter guard", roomId: "vela-cave.surface-transporter-room", position: [-0.75, -0.03, -11.85], health: 1, status: "active"},
+            {id: "enemy.vela.cave-guard-09", label: "Transporter guard", roomId: "vela-cave.surface-transporter-room", position: [0.85, -0.03, -12.85], health: 1, status: "active"}
+          ];
+          const sourceEnemies = Array.isArray(record.enemies) && record.enemies.length
+            ? record.enemies
+            : fallbackEnemies;
+          const enemies = sourceEnemies.map((enemy, index) => ({
+            id: String(enemy?.id || fallbackEnemies[index]?.id || `enemy.vela.cave-${index + 1}`),
+            label: String(enemy?.label || fallbackEnemies[index]?.label || "Cave hostile"),
+            roomId: String(enemy?.roomId || fallbackEnemies[index]?.roomId || ""),
+            position: vector(enemy?.position, fallbackEnemies[index]?.position || [0, -0.03, 0]),
+            health: Math.max(0, Number.isFinite(Number(enemy?.health)) ? Number(enemy.health) : 1),
+            status: String(enemy?.status || (Number(enemy?.health) <= 0 ? "defeated" : "active"))
+          }));
+          const active = enemies.filter((enemy) => enemy.status !== "defeated" && enemy.health > 0);
+          return {
+            rooms,
+            enemies,
+            enemiesActive: active.length,
+            enemiesDefeated: enemies.length - active.length,
+            transporterPosition: vector(record.transporterPosition, [0, -0.55, -12.65])
+          };
+        }
+
+        velaSubsurfaceActiveCaveEnemies(snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot()) {
+          if (!this.isVelaSubsurfaceSnapshotActive(snapshot) || !this.velaSubsurfacePhaserAvailable(snapshot)) return [];
+          return this.velaSubsurfaceCaveSystem(snapshot).enemies
+            .filter((enemy) => enemy.status !== "defeated" && enemy.health > 0);
+        }
+
+        velaSubsurfaceTransporterStatus(snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot()) {
+          const caveSystem = this.velaSubsurfaceCaveSystem(snapshot);
+          const transporterPosition = caveSystem.transporterPosition;
+          const playerX = Number(this.camera?.[0] || 0);
+          const playerZ = Number(this.camera?.[2] || 0);
+          const distance = Math.hypot(playerX - transporterPosition[0], playerZ - transporterPosition[2]);
+          const inRange = distance <= 1.65;
+          const available = Boolean(
+            this.isVelaSubsurfaceSnapshotActive(snapshot)
+            && this.velaSubsurfacePhaserAvailable(snapshot)
+            && String(snapshot?.stageId || "") === "surface-transporter-extraction"
+            && caveSystem.enemiesActive <= 0
+            && inRange
+          );
+          return {
+            state: available
+              ? "beam-back-ready"
+              : caveSystem.enemiesActive > 0
+                ? "hostiles-blocking"
+                : inRange ? "transporter-ready" : "approach-transporter",
+            action: "beam-back",
+            available,
+            distance,
+            transporterPosition,
+            enemiesActive: caveSystem.enemiesActive,
+            enemiesDefeated: caveSystem.enemiesDefeated,
+            prompt: caveSystem.enemiesActive > 0
+              ? `${caveSystem.enemiesActive} hostiles still block the surface transporter.`
+              : available
+                ? "Press E at the surface transporter to beam back aboard."
+                : "Reach the surface transporter room, then press E to beam back."
+          };
+        }
+
         velaSubsurfaceGuardInteractionStatus() {
           const snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot() || {};
           const stageId = String(snapshot.stageId || "");
@@ -6541,16 +6639,20 @@
             };
           }
           if (this.velaSubsurfacePhaserAvailable(snapshot)) {
+            const transporterStatus = this.velaSubsurfaceTransporterStatus(snapshot);
             return {
-              state: "phaser-recovered",
-              action: "none",
-              available: false,
-              distance: phaserDistance,
+              state: transporterStatus.state,
+              action: transporterStatus.action,
+              available: transporterStatus.available,
+              distance: transporterStatus.distance,
               guardDistance,
               phaserDistance,
               guardPosition,
               phaserPickupPosition,
-              prompt: "Phaser recovered. Fight toward the surface transporter."
+              transporterPosition: transporterStatus.transporterPosition,
+              enemiesActive: transporterStatus.enemiesActive,
+              enemiesDefeated: transporterStatus.enemiesDefeated,
+              prompt: transporterStatus.prompt
             };
           }
           if (guardDefeated && this.velaSubsurfacePhaserRecoveryAvailable(snapshot)) {
@@ -6631,6 +6733,32 @@
           const interaction = globalThis.MainComputerStrategicAIVelaInteraction;
           const session = interaction?.state?.session || globalThis.MainComputerStrategicAISession?.current?.() || null;
           let snapshot = null;
+          if (status.action === "beam-back") {
+            const beamBack = interaction?.resolveVelaSurfaceTransporter || interaction?.resolveVelaSurfaceTransporterBeamBack;
+            if (typeof beamBack === "function") {
+              snapshot = beamBack === interaction.resolveVelaSurfaceTransporter
+                ? beamBack.call(interaction, {
+                  reason: "renderer-e-key-surface-transporter",
+                  playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                  transporterPosition: Array.isArray(status.transporterPosition) ? status.transporterPosition.slice() : [],
+                  distance: Number(status.distance.toFixed(3))
+                })
+                : beamBack.call(interaction, session, {
+                  reason: "renderer-e-key-surface-transporter",
+                  playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                  transporterPosition: Array.isArray(status.transporterPosition) ? status.transporterPosition.slice() : [],
+                  distance: Number(status.distance.toFixed(3))
+                });
+            }
+            if (snapshot) {
+              this.syncVelaSubsurfaceScene(snapshot);
+              this.lastVelaSubsurfaceMessage = "Beam-back complete. You are back aboard with the Vela evidence.";
+              this.emitPilotState?.(true);
+              return true;
+            }
+            this.emitPilotState?.(true);
+            return true;
+          }
           if (status.action === "recover-phaser") {
             const recover = interaction?.resolveVelaPhaserRecovery || interaction?.resolveVelaGuardPhaserRecovery;
             if (typeof recover === "function") {
@@ -6690,18 +6818,19 @@
             ...this.movement,
             radius,
             bounds: {
-              minX: -4.1,
-              maxX: 4.1,
-              minZ: -8.4,
-              maxZ: 4.5
+              minX: -6.2,
+              maxX: 6.2,
+              minZ: -14.2,
+              maxZ: 4.7
             },
             colliders: [
-              {id: "vela-holding-left-wall", minX: -4.25, maxX: -3.82, minZ: -8.6, maxZ: 4.8},
-              {id: "vela-holding-right-wall", minX: 3.82, maxX: 4.25, minZ: -8.6, maxZ: 4.8},
-              {id: "vela-holding-back-wall", minX: -4.4, maxX: 4.4, minZ: 4.28, maxZ: 4.8},
-              {id: "vela-surface-transporter-lock", minX: -1.1, maxX: 1.1, minZ: -8.55, maxZ: -7.95},
-              {id: "vela-cave-rubble-left", minX: -3.55, maxX: -2.15, minZ: -2.2, maxZ: -0.85},
-              {id: "vela-cave-rubble-right", minX: 2.05, maxX: 3.45, minZ: -5.4, maxZ: -3.75}
+              {id: "vela-cave-outer-left-wall", minX: -6.35, maxX: -5.96, minZ: -14.4, maxZ: 4.9},
+              {id: "vela-cave-outer-right-wall", minX: 5.96, maxX: 6.35, minZ: -14.4, maxZ: 4.9},
+              {id: "vela-cave-back-wall", minX: -6.35, maxX: 6.35, minZ: 4.38, maxZ: 4.9},
+              {id: "vela-cave-transporter-back-wall", minX: -6.35, maxX: 6.35, minZ: -14.45, maxZ: -14.05},
+              {id: "vela-cave-crystal-spine-left", minX: -5.2, maxX: -3.95, minZ: -5.2, maxZ: -3.55},
+              {id: "vela-cave-crystal-spine-right", minX: 4.05, maxX: 5.25, minZ: -8.6, maxZ: -6.85},
+              {id: "vela-cave-generator-core", minX: -1.0, maxX: 1.0, minZ: -9.6, maxZ: -8.6}
             ]
           };
         }
@@ -6721,10 +6850,22 @@
 
           if (!active) {
             if (this.velaSubsurface.active) {
+              const returnCamera = this.velaSubsurface.returnCamera;
+              const returnLook = this.velaSubsurface.returnLook;
               this.velaSubsurface.active = false;
               this.velaSubsurface.lastStageId = "";
               this.velaSubsurface.lastSnapshot = null;
+              if (Array.isArray(returnCamera) && returnCamera.length === 3) {
+                this.camera = returnCamera.slice();
+                if (typeof this.onCameraMoved === "function") {
+                  this.onCameraMoved(this.camera.slice());
+                }
+              }
+              if (returnLook && typeof returnLook === "object") {
+                this.look = {...returnLook};
+              }
               this.clearMovementKeys?.();
+              this.emitPilotState?.(true);
             }
             return false;
           }
@@ -8621,8 +8762,8 @@
 
         appendVelaSubsurfaceCaveGeometry(builder, nowMs) {
           const snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot() || {};
-          const stageId = String(snapshot.stageId || "");
           const guardDefeated = this.velaSubsurfaceGuardDefeated(snapshot);
+          const caveSystem = this.velaSubsurfaceCaveSystem(snapshot);
           const floor = builder.color("#1f2937");
           const floorEdge = builder.color("#374151");
           const wall = builder.color("#18181b");
@@ -8630,32 +8771,58 @@
           const amber = builder.color("#f59e0b", true);
           const cyan = builder.color("#22d3ee", true);
           const red = builder.color("#ef4444", true);
+          const violet = builder.color("#a855f7", true);
           const slate = builder.color("#64748b");
           const guardBody = builder.color(guardDefeated ? "#78350f" : "#7f1d1d");
           const guardArmor = builder.color("#111827");
           const transporter = builder.color("#38bdf8", true);
+          const hostileBody = builder.color("#7f1d1d");
+          const hostileArmor = builder.color("#111827");
+          const defeatedBody = builder.color("#3f3f46");
 
-          // Seal the normal ship world behind an alternate-scene cave shell.
-          builder.box([-4.45, -0.95, -8.65], [4.45, -0.78, 4.75], floor);
-          builder.box([-4.45, 2.55, -8.65], [4.45, 2.72, 4.75], wall);
-          builder.box([-4.55, -0.95, -8.75], [-4.22, 2.68, 4.85], wall);
-          builder.box([4.22, -0.95, -8.75], [4.55, 2.68, 4.85], wall);
-          builder.box([-4.45, -0.95, 4.42], [4.45, 2.68, 4.85], wallFace);
-          builder.box([-4.45, -0.95, -8.75], [4.45, 2.68, -8.42], wallFace);
+          // Six-room Vela cave envelope: holding ledge, guard post, crystal narrows,
+          // supply hollow, generator grotto, and the surface transporter room.
+          builder.box([-6.45, -0.95, -14.45], [6.45, -0.78, 4.9], floor);
+          builder.box([-6.45, 2.55, -14.45], [6.45, 2.72, 4.9], wall);
+          builder.box([-6.55, -0.95, -14.55], [-6.18, 2.68, 5.05], wall);
+          builder.box([6.18, -0.95, -14.55], [6.55, 2.68, 5.05], wall);
+          builder.box([-6.45, -0.95, 4.52], [6.45, 2.68, 5.05], wallFace);
+          builder.box([-6.45, -0.95, -14.55], [6.45, 2.68, -14.18], wallFace);
 
-          // Holding ledge. No vertical-bar facade: the escape reads as an open cave space.
-          builder.box([-2.95, -0.78, 1.08], [2.95, -0.55, 4.35], floorEdge);
-          builder.box([-3.1, -0.45, 1.02], [3.1, -0.28, 1.18], wallFace);
+          const roomColor = builder.color("#334155");
+          const roomAccent = builder.color("#0f766e", true);
+          const drawRoomPad = (room, index) => {
+            const p = Array.isArray(room.position) ? room.position : [0, -0.55, 0];
+            const x = Number(p[0]) || 0;
+            const z = Number(p[2]) || 0;
+            const halfX = room.id === "vela-cave.surface-transporter-room" ? 2.25 : 1.55;
+            const halfZ = room.id === "vela-cave.surface-transporter-room" ? 1.45 : 1.15;
+            builder.box([x - halfX, -0.76, z - halfZ], [x + halfX, -0.52, z + halfZ], roomColor);
+            builder.beam([x - halfX + 0.15, -0.36, z - halfZ + 0.12], [x + halfX - 0.15, -0.36, z - halfZ + 0.12], 0.025, roomAccent);
+            if (index > 0) {
+              builder.beam([x - 0.2, -0.24, z], [x + 0.2, -0.24, z], 0.03, amber);
+            }
+          };
+          caveSystem.rooms.forEach(drawRoomPad);
 
-          // A short route from the holding ledge toward the surface transporter.
-          builder.box([-1.65, -0.74, -7.8], [1.65, -0.52, 1.2], floorEdge);
-          builder.box([-3.55, -0.55, -2.2], [-2.15, -0.04, -0.85], wallFace);
-          builder.box([2.05, -0.55, -5.4], [3.45, 0.08, -3.75], wallFace);
-          builder.beam([-1.85, 0.1, -3.8], [-1.85, 1.65, -3.8], 0.035, cyan);
-          builder.beam([1.85, 0.1, -3.8], [1.85, 1.65, -3.8], 0.035, cyan);
-          builder.beam([-1.85, 1.65, -3.8], [1.85, 1.65, -3.8], 0.035, cyan);
+          // Open tunnels between the six places.
+          [
+            [[-0.85, -0.74, 0.5], [0.85, -0.52, 3.15]],
+            [[-2.95, -0.74, -3.2], [-0.65, -0.52, 0.65]],
+            [[0.65, -0.74, -5.45], [3.3, -0.52, -3.55]],
+            [[-3.75, -0.74, -8.2], [-0.45, -0.52, -5.45]],
+            [[-0.95, -0.74, -12.8], [0.95, -0.52, -8.2]]
+          ].forEach(([min, max]) => builder.box(min, max, floorEdge));
 
-          // Guard marker. It stays visible in the cave even before full character AI wiring.
+          // Cave obstacles that define the route without closing it.
+          builder.box([-5.2, -0.55, -5.2], [-3.95, 0.42, -3.55], wallFace);
+          builder.box([4.05, -0.55, -8.6], [5.25, 0.34, -6.85], wallFace);
+          builder.box([-1.0, -0.55, -9.6], [1.0, 0.58, -8.6], wallFace);
+          builder.beam([-4.4, 0.1, -2.8], [-4.4, 1.65, -2.8], 0.035, cyan);
+          builder.beam([3.95, 0.1, -4.85], [3.95, 1.65, -4.85], 0.035, cyan);
+          builder.beam([-3.15, 0.1, -7.6], [-3.15, 1.7, -7.6], 0.04, violet);
+
+          // Initial guard marker. It stays down after the phaser pickup.
           if (guardDefeated) {
             builder.box([0.8, -0.55, 0.05], [1.65, -0.35, 0.55], guardBody);
             builder.box([1.05, -0.34, 0.16], [1.35, -0.08, 0.45], guardArmor);
@@ -8675,16 +8842,39 @@
             builder.beam([pickup[0] - 0.05, pickup[1] + 0.16, pickup[2]], [pickup[0] + 0.05, pickup[1] + 0.16, pickup[2]], 0.028 + 0.012 * Math.sin((nowMs || 0) / 180), amber);
           }
 
-          // Locked surface transporter preview.
-          builder.beam([-0.95, -0.5, -7.92], [-0.95, 1.9, -7.92], 0.055, transporter);
-          builder.beam([0.95, -0.5, -7.92], [0.95, 1.9, -7.92], 0.055, transporter);
-          builder.beam([-0.95, 1.9, -7.92], [0.95, 1.9, -7.92], 0.055, transporter);
-          builder.beam([-0.75, -0.45, -8.0], [0.75, -0.45, -8.0], 0.035, transporter);
+          // Cave hostiles. These are lightweight Vela encounter targets until the
+          // generic encounter/character runtime owns away-mission actors.
+          caveSystem.enemies.forEach((enemy) => {
+            const position = Array.isArray(enemy.position) ? enemy.position : [0, -0.03, 0];
+            const defeated = enemy.status === "defeated" || Number(enemy.health) <= 0;
+            const color = defeated ? defeatedBody : hostileBody;
+            if (defeated) {
+              builder.box([position[0] - 0.38, -0.55, position[2] - 0.25], [position[0] + 0.38, -0.36, position[2] + 0.25], color);
+              return;
+            }
+            builder.ellipsoid(position, [0.27, 0.52, 0.24], 10, 6, color);
+            builder.ellipsoid([position[0], position[1] + 0.6, position[2]], [0.22, 0.23, 0.2], 10, 6, color);
+            builder.box([position[0] - 0.32, position[1] + 0.08, position[2] - 0.14], [position[0] + 0.32, position[1] + 0.22, position[2] + 0.14], hostileArmor);
+            builder.box([position[0] - 0.12, position[1] + 0.66, position[2] - 0.18], [position[0] - 0.04, position[1] + 0.74, position[2] - 0.12], red);
+            builder.box([position[0] + 0.04, position[1] + 0.66, position[2] - 0.18], [position[0] + 0.12, position[1] + 0.74, position[2] - 0.12], red);
+          });
 
-          // Flicker strips make the cave read as a different physical location.
+          // Surface transporter room.
+          const transporterPosition = caveSystem.transporterPosition;
+          const tx = Number(transporterPosition[0]) || 0;
+          const tz = Number(transporterPosition[2]) || -12.65;
+          builder.beam([tx - 0.95, -0.5, tz], [tx - 0.95, 1.9, tz], 0.055, transporter);
+          builder.beam([tx + 0.95, -0.5, tz], [tx + 0.95, 1.9, tz], 0.055, transporter);
+          builder.beam([tx - 0.95, 1.9, tz], [tx + 0.95, 1.9, tz], 0.055, transporter);
+          builder.beam([tx - 0.75, -0.45, tz - 0.08], [tx + 0.75, -0.45, tz - 0.08], 0.035, transporter);
+          if (caveSystem.enemiesActive <= 0) {
+            builder.beam([tx, -0.35, tz], [tx, 1.85, tz], 0.07 + 0.025 * Math.sin((nowMs || 0) / 180), cyan);
+          }
+
           const flicker = 0.75 + 0.25 * Math.sin((nowMs || 0) / 220);
-          builder.beam([-3.5, 2.2, 3.7], [-1.2, 2.2, 3.7], 0.035 + flicker * 0.012, amber);
-          builder.beam([1.2, 2.15, -0.8], [3.35, 2.15, -0.8], 0.025 + flicker * 0.01, amber);
+          builder.beam([-5.2, 2.2, 3.7], [-2.2, 2.2, 3.7], 0.035 + flicker * 0.012, amber);
+          builder.beam([1.2, 2.15, -0.8], [4.25, 2.15, -0.8], 0.025 + flicker * 0.01, amber);
+          builder.beam([-2.6, 2.15, -11.6], [2.6, 2.15, -11.6], 0.03 + flicker * 0.01, transporter);
         }
 
         appendPhaserViewModel(builder) {
@@ -8946,6 +9136,7 @@
 
           let hitAlien = null;
           let hitCharacter = null;
+          let hitVelaEnemy = null;
           let hitDistance = this.combat.phaser.range;
           const considerTarget = (target, center, radius, kind) => {
             const toCenter = shuttle3dSubtract(center, this.camera);
@@ -8966,11 +9157,28 @@
             if (kind === "character") {
               hitCharacter = target;
               hitAlien = null;
+              hitVelaEnemy = null;
+            } else if (kind === "vela-cave-hostile") {
+              hitVelaEnemy = target;
+              hitCharacter = null;
+              hitAlien = null;
             } else {
               hitAlien = target;
               hitCharacter = null;
+              hitVelaEnemy = null;
             }
           };
+
+          if (this.isVelaSubsurfaceSceneActive?.() && this.velaSubsurfacePhaserAvailable?.()) {
+            this.velaSubsurfaceActiveCaveEnemies().forEach((enemy) => {
+              considerTarget(
+                enemy,
+                [enemy.position[0], enemy.position[1] + 0.64, enemy.position[2]],
+                0.62,
+                "vela-cave-hostile"
+              );
+            });
+          }
 
           this.aliens.forEach((alien) => {
             if (alien.state !== "active") return;
@@ -9010,12 +9218,14 @@
               scenarioContext.id,
               "weapon-discharge",
               {
-                targetId: hitCharacter?.id || hitAlien?.id || "",
+                targetId: hitCharacter?.id || hitAlien?.id || hitVelaEnemy?.id || "",
                 targetKind: hitCharacter
                   ? "character"
                   : hitAlien
                     ? "legacy-alien"
-                    : "none",
+                    : hitVelaEnemy
+                      ? "vela-cave-hostile"
+                      : "none",
                 defensive: scenarioContext.stageId === "protect-witness"
               },
               {nowMs}
@@ -9027,6 +9237,35 @@
             hitAlien.hitFlashUntilMs = nowMs + 120;
             if (hitAlien.health <= 0) {
               this.aliens = this.aliens.filter((alien) => alien !== hitAlien);
+              this.kills += 1;
+            }
+          }
+          if (hitVelaEnemy) {
+            const interaction = globalThis.MainComputerStrategicAIVelaInteraction;
+            const resolve = interaction?.resolveVelaCaveEnemyPhaserHit || interaction?.resolveVelaCaveEnemyHit;
+            let snapshot = null;
+            if (typeof resolve === "function") {
+              const session = interaction?.state?.session || globalThis.MainComputerStrategicAISession?.current?.() || null;
+              snapshot = resolve === interaction.resolveVelaCaveEnemyPhaserHit
+                ? resolve.call(interaction, {
+                  enemyId: hitVelaEnemy.id,
+                  reason: "renderer-phaser-hit-cave-hostile",
+                  playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                  targetPosition: hitVelaEnemy.position.slice()
+                })
+                : resolve.call(interaction, session, {
+                  enemyId: hitVelaEnemy.id,
+                  reason: "renderer-phaser-hit-cave-hostile",
+                  playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                  targetPosition: hitVelaEnemy.position.slice()
+                });
+            }
+            if (snapshot) {
+              this.syncVelaSubsurfaceScene(snapshot);
+              const caveSystem = this.velaSubsurfaceCaveSystem(snapshot);
+              this.lastVelaSubsurfaceMessage = caveSystem.enemiesActive > 0
+                ? `${caveSystem.enemiesActive} cave hostiles remain.`
+                : "Route clear. Reach the surface transporter and press E.";
               this.kills += 1;
             }
           }

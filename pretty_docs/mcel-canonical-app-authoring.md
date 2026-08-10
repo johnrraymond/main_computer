@@ -2,10 +2,13 @@
 
 Calculator is the canonical real MCEL app in this repository.
 
-Use `mcel_apps/calculator/application.js` to understand how new real MCEL apps
-should be authored today. It uses the shared `mcel.defineApp` host-bound
-authoring surface and declares app meaning through presentation, state, intents,
-capabilities, scenarios, invariants, layout, and proof.
+Use `mcel_apps/calculator/application.js` to understand the stable host-bound
+shape for a real app: presentation binding, state, intents, capabilities,
+scenarios, invariants, and proof. Use `mcel_apps/code-editor/application.js` to
+understand the current static semantic/layout surface declaration pattern for a
+host-bound workbench app. A new or ported app that targets semantic-runtime
+conformance must combine both lessons instead of postponing semantic-surface and
+layout-grammar declarations to a later backfill.
 
 Counter and Workbench are valid MCEL reference fixtures, but they are not the
 canonical new-app authoring examples.
@@ -30,6 +33,32 @@ module.exports = mcel.defineApp(
       runtimeFacade: "MainComputerMyAppRuntime",
     });
 
+    app.presentation.semanticSurface({
+      id: "my-app.semantic-surface",
+      surfaceId: "my-app.primary-surface",
+      presentationAuthority: "existing-host-html",
+      runtimeFacade: "MainComputerMyAppRuntime",
+      regions: [
+        {id: "root", role: "application-root", selector: "#my-app"},
+        {id: "primary-surface", role: "primary-work-surface", selector: "#my-app-main", primary: true},
+      ],
+      controls: [
+        {id: "do-thing-control", selector: "[data-mcel-intent='do-thing']", intent: "doThing"},
+      ],
+      forbiddenDefaultRegions: [],
+    });
+    app.layout.grammar({
+      id: "my-app.layout",
+      rootSelector: "#my-app",
+      regions: [
+        {id: "root", selector: "#my-app", layout: "grid", children: ["primary-surface"]},
+        {id: "primary-surface", selector: "#my-app-main"},
+      ],
+      constraints: [
+        {id: "primary-surface-nonzero", selector: "#my-app-main", minWidth: 320, minHeight: 240},
+      ],
+    });
+
     app.state.rendererLocal("mode", app.field.string(), {initial: "default"});
     app.intent.interaction("do-thing", {
       runtimeMethod: "doThing",
@@ -49,6 +78,20 @@ module.exports = mcel.defineApp(
   })
 );
 ```
+
+## Static surface declarations are part of authoring
+
+The Code Editor backfill established the rule for future work: semantic-runtime
+authoring includes static `app.presentation.semanticSurface(...)` and
+`app.layout.grammar(...)` declarations before registry promotion. Those
+declarations must name stable regions, controls, intent bindings, selectors,
+primary surfaces, hidden/default-forbidden regions, and layout constraints in
+the DSL source. The generated `mcel.application-surface-bundle.v1` is then
+package/catalog output, not a hand-written file.
+
+Use Code Editor's DSL surface declarations as the host-bound reference for this
+part of the app authoring shape until the scaffold template produces the same
+declarations for every new app.
 
 ## Do not learn app authoring from Counter
 
@@ -73,7 +116,10 @@ Use these files for these purposes:
 
 ```text
 mcel_apps/calculator/application.js
-  canonical modern MCEL app authoring example
+  canonical modern host-bound behavior, state, intent, and facade example
+
+mcel_apps/code-editor/application.js
+  host-bound static semanticSurface/layoutGrammar bundle declaration example
 
 mcel_apps/contract-counter/
   explicit-package compatibility/projection/proof fixture

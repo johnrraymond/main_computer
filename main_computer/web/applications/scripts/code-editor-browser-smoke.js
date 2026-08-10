@@ -27,6 +27,38 @@
   const DEFAULT_APP_SELECTOR = "#code-editor-app";
   const DEFAULT_MIN_WIDTH = 320;
   const DEFAULT_MIN_HEIGHT = 220;
+  const REQUIRED_CONFORMANCE_LAYER_IDS = Object.freeze([
+    "semantic-surface",
+    "layout-grammar",
+    "runtime-ownership",
+    "runtime-visual-fit",
+    "diagnostic-no-throw"
+  ]);
+  const REQUIRED_SEMANTIC_REGION_IDS = Object.freeze([
+    "root",
+    "shell",
+    "activitybar",
+    "explorer",
+    "editor-group",
+    "primary-editor",
+    "assistant",
+    "proof-dock"
+  ]);
+  const REQUIRED_LAYOUT_REGION_IDS = Object.freeze([
+    "shell",
+    "workbench",
+    "activitybar",
+    "explorer",
+    "editor-group",
+    "primary-editor",
+    "assistant"
+  ]);
+  const REQUIRED_FORBIDDEN_DEFAULT_REGION_IDS = Object.freeze([
+    "source-pane",
+    "serialized-pane",
+    "contract-pane",
+    "proof-dock"
+  ]);
 
   function text(value) {
     return value == null ? "" : String(value);
@@ -185,6 +217,190 @@
       null;
   }
 
+  function applicationPackagesApi(globalRef) {
+    return (globalRef && globalRef.McelApplicationPackages) ||
+      (globalRef && globalRef.MCEL && globalRef.MCEL.applicationPackages) ||
+      null;
+  }
+
+  function surfaceBundleFor(globalRef, options = {}) {
+    if (options.surfaceBundle && typeof options.surfaceBundle === "object") return options.surfaceBundle;
+    const api = applicationPackagesApi(globalRef);
+    if (!api || typeof api.getSurfaceBundle !== "function") return null;
+    try {
+      return api.getSurfaceBundle("code-editor");
+    } catch {
+      return null;
+    }
+  }
+
+  function isPlainObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function arrayItems(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function idSet(items) {
+    return new Set(arrayItems(items).map((item) => text(item && item.id)).filter(Boolean));
+  }
+
+  function missingIds(requiredIds, items) {
+    const present = idSet(items);
+    return requiredIds.filter((id) => !present.has(id));
+  }
+
+  function findById(items, id) {
+    return arrayItems(items).find((item) => item && text(item.id) === id) || null;
+  }
+
+  function layerStatusMap(conformance) {
+    return new Map(arrayItems(conformance && conformance.layers).map((item) => [text(item && item.id), text(item && item.status)]));
+  }
+
+  function summarizeBundle(surfaceBundle) {
+    const semanticSurface = isPlainObject(surfaceBundle && surfaceBundle.semanticSurface) ? surfaceBundle.semanticSurface : null;
+    const layoutGrammar = isPlainObject(surfaceBundle && surfaceBundle.layoutGrammar) ? surfaceBundle.layoutGrammar : null;
+    return {
+      schema: text(surfaceBundle && surfaceBundle.schema),
+      appId: text(surfaceBundle && surfaceBundle.appId),
+      surfaceId: text(surfaceBundle && (surfaceBundle.surfaceId || (semanticSurface && semanticSurface.surfaceId))),
+      presentationAuthority: text(surfaceBundle && surfaceBundle.presentationAuthority),
+      semanticRegionIds: arrayItems(semanticSurface && semanticSurface.regions).map((item) => text(item && item.id)).filter(Boolean),
+      controlIds: arrayItems(semanticSurface && semanticSurface.controls).map((item) => text(item && item.id)).filter(Boolean),
+      forbiddenDefaultRegionIds: arrayItems(semanticSurface && semanticSurface.forbiddenDefaultRegions).map((item) => text(item && item.id)).filter(Boolean),
+      layoutRegionIds: arrayItems(layoutGrammar && layoutGrammar.regions).map((item) => text(item && item.id)).filter(Boolean),
+      constraintIds: arrayItems(layoutGrammar && layoutGrammar.constraints).map((item) => text(item && item.id)).filter(Boolean)
+    };
+  }
+
+  function validateStaticBundle(checks, surfaceBundle) {
+    const semanticSurface = isPlainObject(surfaceBundle && surfaceBundle.semanticSurface) ? surfaceBundle.semanticSurface : null;
+    const layoutGrammar = isPlainObject(surfaceBundle && surfaceBundle.layoutGrammar) ? surfaceBundle.layoutGrammar : null;
+    const primaryRegion = findById(semanticSurface && semanticSurface.regions, "primary-editor");
+    const missingSemanticRegions = missingIds(REQUIRED_SEMANTIC_REGION_IDS, semanticSurface && semanticSurface.regions);
+    const missingLayoutRegions = missingIds(REQUIRED_LAYOUT_REGION_IDS, layoutGrammar && layoutGrammar.regions);
+    const missingForbiddenRegions = missingIds(REQUIRED_FORBIDDEN_DEFAULT_REGION_IDS, semanticSurface && semanticSurface.forbiddenDefaultRegions);
+    const forbiddenDefaultRegions = arrayItems(semanticSurface && semanticSurface.forbiddenDefaultRegions);
+    const nonHiddenForbiddenRegions = forbiddenDefaultRegions
+      .filter((item) => REQUIRED_FORBIDDEN_DEFAULT_REGION_IDS.includes(text(item && item.id)) && item.defaultVisible !== false)
+      .map((item) => text(item && item.id));
+
+    buildCheck(
+      checks,
+      !!surfaceBundle &&
+        text(surfaceBundle.schema) === "mcel.application-surface-bundle.v1" &&
+        text(surfaceBundle.appId) === "code-editor" &&
+        text(surfaceBundle.surfaceId || (semanticSurface && semanticSurface.surfaceId)) === "code-editor.surface.monaco-selected-file-editor",
+      "surface-bundle-available",
+      "Code Editor browser package catalog exposes the declared MCEL surface bundle.",
+      summarizeBundle(surfaceBundle)
+    );
+    buildCheck(
+      checks,
+      !!semanticSurface &&
+        text(semanticSurface.surfaceId || surfaceBundle?.surfaceId) === "code-editor.surface.monaco-selected-file-editor" &&
+        missingSemanticRegions.length === 0 &&
+        arrayItems(semanticSurface.controls).length > 0,
+      "semantic-surface-declared",
+      "Declared semanticSurface contains the preserved Code Studio authoring regions and controls.",
+      {
+        missingRegionIds: missingSemanticRegions,
+        regionCount: arrayItems(semanticSurface && semanticSurface.regions).length,
+        controlCount: arrayItems(semanticSurface && semanticSurface.controls).length
+      }
+    );
+    buildCheck(
+      checks,
+      !!primaryRegion &&
+        primaryRegion.primary === true &&
+        text(primaryRegion.selector) === "#code-studio-runtime-preview" &&
+        text(primaryRegion.runtimeHostSelector) === "#code-studio-runtime-monaco",
+      "primary-editor-region-declared",
+      "Declared semanticSurface identifies the primary Monaco editor region and runtime host.",
+      {
+        primaryRegionId: text(primaryRegion && primaryRegion.id),
+        selector: text(primaryRegion && primaryRegion.selector),
+        runtimeHostSelector: text(primaryRegion && primaryRegion.runtimeHostSelector),
+        primary: !!(primaryRegion && primaryRegion.primary)
+      }
+    );
+    buildCheck(
+      checks,
+      !!layoutGrammar &&
+        text(layoutGrammar.rootSelector) === ".code-studio-shell" &&
+        missingLayoutRegions.length === 0 &&
+        arrayItems(layoutGrammar.constraints).length > 0,
+      "layout-grammar-declared",
+      "Declared layoutGrammar contains the preserved shell/workbench/editor regions and constraints.",
+      {
+        rootSelector: text(layoutGrammar && layoutGrammar.rootSelector),
+        missingRegionIds: missingLayoutRegions,
+        regionCount: arrayItems(layoutGrammar && layoutGrammar.regions).length,
+        constraintCount: arrayItems(layoutGrammar && layoutGrammar.constraints).length
+      }
+    );
+    buildCheck(
+      checks,
+      !!layoutGrammar &&
+        missingLayoutRegions.length === 0 &&
+        ["shell-single-column", "workbench-nonzero-tracks", "primary-editor-nonzero", "proof-dock-hidden-by-default"].every((id) => idSet(layoutGrammar.constraints).has(id)),
+      "workbench-regions-declared",
+      "Declared layoutGrammar includes workbench regions and resize/visibility constraints.",
+      {
+        missingRegionIds: missingLayoutRegions,
+        constraintIds: arrayItems(layoutGrammar && layoutGrammar.constraints).map((item) => text(item && item.id)).filter(Boolean)
+      }
+    );
+    buildCheck(
+      checks,
+      !!semanticSurface &&
+        missingForbiddenRegions.length === 0 &&
+        nonHiddenForbiddenRegions.length === 0,
+      "forbidden-default-regions-declared",
+      "Declared semanticSurface marks source/contract/proof regions as hidden in the default authoring mode.",
+      {
+        missingRegionIds: missingForbiddenRegions,
+        nonHiddenRegionIds: nonHiddenForbiddenRegions
+      }
+    );
+  }
+
+  function validateDiagnosticConformance(checks, report, options = {}) {
+    const requireDiagnosis = options.requireDiagnosis === true || options.requireAppSurfaceConformance === true;
+    const conformance = report && (report.appSurfaceConformance || (report.summary && report.summary.appSurfaceConformance));
+    const requiredLayerIds = arrayItems(conformance && conformance.requiredLayerIds).map(text).filter(Boolean);
+    const statuses = layerStatusMap(conformance);
+    const expectedLayerIds = requiredLayerIds.length ? requiredLayerIds : REQUIRED_CONFORMANCE_LAYER_IDS;
+    const missingRequiredLayerIds = REQUIRED_CONFORMANCE_LAYER_IDS.filter((id) => !expectedLayerIds.includes(id));
+    const nonPassingLayerIds = expectedLayerIds.filter((id) => statuses.get(id) !== "pass");
+    const policyFailedLayerIds = arrayItems(conformance && conformance.policyFailedLayerIds).map(text).filter(Boolean);
+    const policyUnavailableLayerIds = arrayItems(conformance && conformance.policyUnavailableLayerIds).map(text).filter(Boolean);
+    const ok = !!conformance &&
+      text(conformance.status) === "pass" &&
+      missingRequiredLayerIds.length === 0 &&
+      nonPassingLayerIds.length === 0 &&
+      policyFailedLayerIds.length === 0 &&
+      policyUnavailableLayerIds.length === 0;
+
+    buildCheck(
+      checks,
+      ok || (!requireDiagnosis && !conformance),
+      "diagnostics-required-layers-pass",
+      "Code Editor diagnosis requires and passes semantic-surface, layout-grammar, runtime ownership, visual fit, and diagnostic no-throw layers.",
+      {
+        status: text(conformance && conformance.status),
+        requiredLayerIds: expectedLayerIds,
+        missingRequiredLayerIds,
+        nonPassingLayerIds,
+        policyFailedLayerIds,
+        policyUnavailableLayerIds
+      },
+      "error"
+    );
+  }
+
   function diagnoseIfRequested(globalRef, checks, options) {
     const requireDiagnosis = options.requireDiagnosis === true;
     const includeDiagnosis = options.includeDiagnosis !== false || requireDiagnosis;
@@ -303,6 +519,10 @@
     const shellTracks = parseTracks(measurements.shell.gridTemplateColumns);
     const bodyTracks = parseTracks(measurements.body.gridTemplateColumns);
     const defaultMode = datasetValue(app, "codeEditorMode") !== "mcel";
+    const surfaceBundle = surfaceBundleFor(globalRef, options);
+    const staticSurfaceSummary = summarizeBundle(surfaceBundle);
+
+    validateStaticBundle(checks, surfaceBundle);
 
     buildCheck(checks, !!app, "root-present", "Code Editor root exists.", measurements.app);
     buildCheck(checks, !!shell, "shell-present", "Preserved Code Studio shell exists.", measurements.shell);
@@ -383,6 +603,7 @@
     );
 
     const diagnosis = diagnoseIfRequested(globalRef, checks, options);
+    if (diagnosis) validateDiagnosticConformance(checks, diagnosis, options);
     const state = runtimeState(globalRef);
     const debug = runtimeDebug(globalRef);
     const counts = severityCounts(checks);
@@ -396,6 +617,7 @@
       counts,
       checks,
       measurements,
+      staticSurface: staticSurfaceSummary,
       runtime: {
         activePath: state && state.activeFile ? text(state.activeFile.path) : "",
         debug

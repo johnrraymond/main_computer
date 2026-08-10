@@ -24,6 +24,13 @@ var McelAppSurfaceConformance = (() => {
     return null;
   })();
 
+  function applicationPackageCatalogApi() {
+    if (typeof McelApplicationPackages !== "undefined") return McelApplicationPackages;
+    if (typeof window !== "undefined" && window.McelApplicationPackages) return window.McelApplicationPackages;
+    if (typeof window !== "undefined" && window.MCEL?.applicationPackages) return window.MCEL.applicationPackages;
+    return null;
+  }
+
   function safeString(value) {
     if (value === undefined || value === null) return "";
     return String(value);
@@ -86,6 +93,256 @@ var McelAppSurfaceConformance = (() => {
     return freezeArray([...(new Set((values || []).map((value) => safeString(value).trim()).filter(Boolean)))]);
   }
 
+  const DECLARED_SURFACE_BUNDLE_SCHEMA = "mcel.application-surface-bundle.v1";
+  const CODE_EDITOR_INTENTS = Object.freeze([
+    "applyReviewedPatch",
+    "closeFile",
+    "discardDraft",
+    "editDraft",
+    "inspectWorkspace",
+    "openFile",
+    "previewAiderPlan",
+    "saveFile"
+  ]);
+
+  function safeArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function isPlainObject(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  }
+
+  function selectorList(selector) {
+    return safeString(selector)
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function escapeRegExp(value) {
+    return safeString(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function getDocument() {
+    try {
+      if (typeof document !== "undefined" && document?.querySelector) return document;
+    } catch {}
+    try {
+      if (typeof window !== "undefined" && window.document?.querySelector) return window.document;
+    } catch {}
+    return null;
+  }
+
+  function elementMatches(el, selector) {
+    if (!el || typeof el.matches !== "function" || !selector) return false;
+    try {
+      return el.matches(selector);
+    } catch {
+      return false;
+    }
+  }
+
+  function queryAll(selector, root = null) {
+    const base = root?.querySelectorAll ? root : getDocument();
+    if (!base || !selector) return null;
+    const matches = [];
+    for (const part of selectorList(selector)) {
+      try {
+        if (elementMatches(base, part)) matches.push(base);
+        matches.push(...Array.from(base.querySelectorAll(part)));
+      } catch {}
+    }
+    return matches;
+  }
+
+  function selectorExistsInDom(selector, root = null) {
+    const matches = queryAll(selector, root);
+    return matches ? matches.length > 0 : null;
+  }
+
+  function htmlContainsId(html, id) {
+    return new RegExp(`\\bid\\s*=\\s*["']${escapeRegExp(id)}["']`, "i").test(html);
+  }
+
+  function htmlContainsClass(html, className) {
+    return new RegExp(`\\bclass\\s*=\\s*["'][^"']*\\b${escapeRegExp(className)}\\b[^"']*["']`, "i").test(html);
+  }
+
+  function htmlContainsAttribute(html, name, value = null) {
+    const attr = escapeRegExp(name);
+    if (value === null || value === undefined) {
+      return new RegExp(`\\b${attr}(\\s*=|\\s|>|/)`, "i").test(html);
+    }
+    const escaped = escapeRegExp(value);
+    return new RegExp(`\\b${attr}\\s*=\\s*["']${escaped}["']`, "i").test(html) ||
+      new RegExp(`\\b${attr}\\s*=\\s*${escaped}(\\s|>|/)`, "i").test(html);
+  }
+
+  function simpleSelectorExistsInHtml(part, html) {
+    if (!part || !html) return null;
+    const idMatch = /^#([A-Za-z0-9_-]+)$/.exec(part);
+    if (idMatch) return htmlContainsId(html, idMatch[1]);
+
+    const classMatch = /^\.([A-Za-z0-9_-]+)$/.exec(part);
+    if (classMatch) return htmlContainsClass(html, classMatch[1]);
+
+    const attrMatch = /^\[\s*([A-Za-z0-9:_-]+)(?:\s*=\s*["']?([^"'\]]+)["']?)?\s*\]$/.exec(part);
+    if (attrMatch) return htmlContainsAttribute(html, attrMatch[1], attrMatch[2] ?? null);
+
+    const tagClassMatch = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$/.exec(part);
+    if (tagClassMatch) {
+      return part
+        .split(".")
+        .slice(1)
+        .every((className) => htmlContainsClass(html, className));
+    }
+
+    return null;
+  }
+
+  function selectorExistsInHtml(selector, html) {
+    const source = safeString(html);
+    if (!source.trim()) return null;
+    let sawUnknown = false;
+    for (const part of selectorList(selector)) {
+      const exists = simpleSelectorExistsInHtml(part, source);
+      if (exists === true) return true;
+      if (exists === null) sawUnknown = true;
+    }
+    return sawUnknown ? null : false;
+  }
+
+  function observedBoxes(report) {
+    const measurements = report?.measurements || {};
+    const boxes = [];
+    for (const collection of [measurements.requiredRegions, measurements.optionalRegions, measurements.surfaces]) {
+      if (!collection || typeof collection !== "object") continue;
+      for (const value of Object.values(collection)) {
+        if (value && typeof value === "object") boxes.push(value);
+      }
+    }
+    for (const entry of safeArray(measurements.forbiddenRegions)) {
+      if (entry?.box) boxes.push(entry.box);
+    }
+    for (const entry of safeArray(measurements.ownerChain)) {
+      if (entry && typeof entry === "object") boxes.push(entry);
+    }
+    const primary = primarySurface(report);
+    if (primary.host) boxes.push(primary.host);
+    if (primary.editor) boxes.push(primary.editor);
+    return boxes;
+  }
+
+  function selectorPartMatchesObserved(part, observedSelector) {
+    const actual = safeString(observedSelector);
+    if (!part || !actual) return false;
+    if (actual === part) return true;
+    if (part.startsWith("#")) return actual.includes(part);
+    if (part.startsWith(".")) {
+      const className = part.slice(1);
+      return actual === part || actual.split(/\s+/).some((token) => token === part) || actual.includes(`.${className}`);
+    }
+    return actual.includes(part);
+  }
+
+  function selectorExistsInReport(selector, report) {
+    if (!report || typeof report !== "object") return null;
+    const parts = selectorList(selector);
+    const matches = observedBoxes(report).filter((box) =>
+      parts.some((part) => selectorPartMatchesObserved(part, box?.selector))
+    );
+    if (!matches.length) return null;
+    return matches.some((box) => box?.exists !== false);
+  }
+
+  function selectorExists(selector, options = {}) {
+    const domExists = selectorExistsInDom(selector, options.root);
+    if (domExists !== null) return domExists;
+    const htmlExists = selectorExistsInHtml(selector, options.surfaceHtml || options.html || "");
+    if (htmlExists !== null) return htmlExists;
+    return selectorExistsInReport(selector, options.report);
+  }
+
+  function visibleElement(el) {
+    if (!el) return false;
+    try {
+      if (el.hidden || el.getAttribute?.("aria-hidden") === "true") return false;
+      const style = typeof getComputedStyle === "function" ? getComputedStyle(el) : {};
+      if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
+      const rect = typeof el.getBoundingClientRect === "function" ? el.getBoundingClientRect() : {};
+      return Number(rect.width || el.offsetWidth || 0) > 0 && Number(rect.height || el.offsetHeight || 0) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function selectorHasVisibleMatchesInDom(selector, root = null) {
+    const matches = queryAll(selector, root);
+    return matches ? matches.some(visibleElement) : null;
+  }
+
+  function selectorHasVisibleMatchesInReport(selector, report) {
+    if (!report || typeof report !== "object") return null;
+    const parts = selectorList(selector);
+    const matches = observedBoxes(report).filter((box) =>
+      parts.some((part) => selectorPartMatchesObserved(part, box?.selector))
+    );
+    if (!matches.length) return null;
+    return matches.some((box) => box?.exists && box.visible);
+  }
+
+  function selectorHasVisibleMatches(selector, options = {}) {
+    const domVisible = selectorHasVisibleMatchesInDom(selector, options.root);
+    if (domVisible !== null) return domVisible;
+    return selectorHasVisibleMatchesInReport(selector, options.report);
+  }
+
+  function trackListHasZeroWidth(trackList) {
+    const value = safeString(trackList).trim();
+    if (!value) return false;
+    return /(^|\s)0(?:px|fr|rem|em|%)?(\s|$)/.test(value);
+  }
+
+  function selectorTrackList(selector, options = {}) {
+    const matches = queryAll(selector, options.root);
+    if (matches && matches.length) {
+      try {
+        const style = typeof getComputedStyle === "function" ? getComputedStyle(matches[0]) : {};
+        return safeString(style.gridTemplateColumns || "");
+      } catch {}
+    }
+    for (const box of observedBoxes(options.report)) {
+      if (selectorList(selector).some((part) => selectorPartMatchesObserved(part, box?.selector))) {
+        return safeString(box.gridTemplateColumns || "");
+      }
+    }
+    return "";
+  }
+
+  function knownIntentIds(bundle, options = {}) {
+    if (Array.isArray(options.knownIntentIds)) return new Set(uniqueStrings(options.knownIntentIds));
+    if (Array.isArray(bundle?.intentIds)) return new Set(uniqueStrings(bundle.intentIds));
+    if (Array.isArray(bundle?.intents)) {
+      return new Set(uniqueStrings(bundle.intents.map((item) => isPlainObject(item) ? (item.sourceName || item.id) : item)));
+    }
+    if (isPlainObject(bundle?.intents)) return new Set(Object.keys(bundle.intents));
+    if (safeString(bundle?.appId) === "code-editor") return new Set(CODE_EDITOR_INTENTS);
+    return null;
+  }
+
+  function duplicateIds(items) {
+    const seen = new Set();
+    const duplicates = new Set();
+    for (const item of safeArray(items)) {
+      const id = safeString(item?.id);
+      if (!id) continue;
+      if (seen.has(id)) duplicates.add(id);
+      seen.add(id);
+    }
+    return [...duplicates].sort();
+  }
+
   function fallbackPolicy(appId) {
     const safeAppId = safeString(appId);
     return Object.freeze({
@@ -135,10 +392,455 @@ var McelAppSurfaceConformance = (() => {
     return freezeArray(diagnostics.map(compactDiagnostic));
   }
 
-  function evaluateSurfaceBundle(surfaceBundle, options = {}) {
-    const bundle = surfaceBundle || null;
+  function resolveCatalogSurfaceBundle(appId, surfaceId = "") {
+    const catalog = applicationPackageCatalogApi();
+    if (!catalog || typeof catalog.getSurfaceBundle !== "function") return null;
+    try {
+      const bundle = catalog.getSurfaceBundle(appId);
+      if (!bundle || typeof bundle !== "object") return null;
+      const expectedSurfaceId = safeString(surfaceId);
+      const actualSurfaceId = safeString(bundle.surfaceId || bundle.semanticSurface?.surfaceId || "");
+      if (expectedSurfaceId && actualSurfaceId && expectedSurfaceId !== actualSurfaceId) {
+        return {
+          ...bundle,
+          __surfaceBundleMismatch: {
+            expectedSurfaceId,
+            actualSurfaceId
+          }
+        };
+      }
+      return bundle;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveSurfaceBundle(input = {}, options = {}) {
+    if (input.surfaceBundle) return input.surfaceBundle;
+    if (options.surfaceBundle) return options.surfaceBundle;
+    const appId = input.appId || input.report?.appId || options.appId || "";
+    const surfaceId = input.surfaceId || input.expectedSurfaceId || options.surfaceId || options.expectedSurfaceId || "";
+    const catalogBundle = resolveCatalogSurfaceBundle(appId, surfaceId);
+    if (catalogBundle) return catalogBundle;
+    return extractSurfaceBundleFromHtml(input.surfaceHtml || input.html || "", {appId, surfaceId});
+  }
+
+  function declarationValidationOptions(options = {}) {
+    return {
+      report: options.report || null,
+      surfaceHtml: options.surfaceHtml || options.html || "",
+      root: options.root || null,
+      knownIntentIds: options.knownIntentIds || null
+    };
+  }
+
+  function pushSelectorDiagnostic(diagnostics, code, bundle, item, kind, selector) {
+    diagnostics.push(diagnostic(
+      code,
+      "error",
+      `Declared ${kind} selector does not match the live surface: ${selector}`,
+      {
+        appId: bundle?.appId || "",
+        id: item?.id || "",
+        selector: selector || "",
+        kind
+      }
+    ));
+  }
+
+  function validateDeclaredSemanticSurface(bundle, options = {}) {
+    const semanticSurface = bundle?.semanticSurface;
     const diagnostics = [];
+    const detail = {
+      surfaceId: safeString(bundle?.surfaceId || semanticSurface?.surfaceId || options.surfaceId || ""),
+      regionCount: 0,
+      controlCount: 0,
+      forbiddenDefaultRegionCount: 0,
+      primaryRegionId: ""
+    };
+    let valid = true;
+
+    if (!isPlainObject(semanticSurface)) {
+      return {
+        valid: false,
+        detail,
+        diagnostics: [
+          diagnostic(
+            "app-surface-conformance-semantic-surface-missing",
+            "error",
+            "A declared MCEL surface bundle must include semanticSurface.",
+            {appId: bundle?.appId || options.appId || ""}
+          )
+        ]
+      };
+    }
+
+    const expectedSurfaceId = safeString(options.surfaceId || "");
+    const actualSurfaceId = safeString(bundle?.surfaceId || semanticSurface.surfaceId || "");
+    if (expectedSurfaceId && actualSurfaceId && expectedSurfaceId !== actualSurfaceId) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-surface-id-mismatch",
+        "error",
+        "The static surface bundle targets a different surface than the conformance policy.",
+        {
+          appId: bundle?.appId || options.appId || "",
+          expectedSurfaceId,
+          actualSurfaceId
+        }
+      ));
+    }
+
+    if (bundle?.__surfaceBundleMismatch) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-catalog-surface-id-mismatch",
+        "error",
+        "The browser package catalog returned a surface bundle for a different surface.",
+        {
+          appId: bundle?.appId || options.appId || "",
+          ...bundle.__surfaceBundleMismatch
+        }
+      ));
+    }
+
+    const regions = safeArray(semanticSurface.regions);
+    const controls = safeArray(semanticSurface.controls);
+    const forbidden = safeArray(semanticSurface.forbiddenDefaultRegions);
+    detail.regionCount = regions.length;
+    detail.controlCount = controls.length;
+    detail.forbiddenDefaultRegionCount = forbidden.length;
+
+    const duplicateRegionIds = duplicateIds(regions);
+    if (duplicateRegionIds.length) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-semantic-region-id-duplicate",
+        "error",
+        "Declared semantic surface region IDs must be unique.",
+        {appId: bundle?.appId || "", duplicateRegionIds}
+      ));
+    }
+
+    const primaryRegions = regions.filter((region) => region?.primary === true || safeString(region?.role) === "primary-authoring-surface");
+    if (primaryRegions.length !== 1) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-primary-region-invalid",
+        "error",
+        "Declared semantic surface must identify exactly one primary authoring region.",
+        {appId: bundle?.appId || "", primaryRegionCount: primaryRegions.length}
+      ));
+    } else {
+      detail.primaryRegionId = safeString(primaryRegions[0].id || "");
+    }
+
+    const evidenceOptions = declarationValidationOptions(options);
+    for (const region of regions) {
+      const selector = safeString(region?.selector || region?.runtimeHostSelector || "");
+      if (!region?.id || !selector) {
+        valid = false;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-semantic-region-incomplete",
+          "error",
+          "Declared semantic surface regions must include id and selector.",
+          {appId: bundle?.appId || "", id: region?.id || "", selector}
+        ));
+        continue;
+      }
+      const exists = selectorExists(selector, evidenceOptions);
+      const runtimeHostExists = region?.runtimeHostSelector
+        ? selectorExists(region.runtimeHostSelector, evidenceOptions)
+        : null;
+      if (exists === false && runtimeHostExists !== true) {
+        valid = false;
+        pushSelectorDiagnostic(
+          diagnostics,
+          "app-surface-conformance-semantic-region-selector-missing",
+          bundle,
+          region,
+          "semantic region",
+          selector
+        );
+      }
+    }
+
+    const duplicateControlIds = duplicateIds(controls);
+    if (duplicateControlIds.length) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-semantic-control-id-duplicate",
+        "error",
+        "Declared semantic surface control IDs must be unique.",
+        {appId: bundle?.appId || "", duplicateControlIds}
+      ));
+    }
+
+    const knownIntents = knownIntentIds(bundle, options);
+    for (const control of controls) {
+      const selector = safeString(control?.selector || "");
+      const intent = safeString(control?.intent || "");
+      if (!control?.id || !selector || !intent) {
+        valid = false;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-semantic-control-incomplete",
+          "error",
+          "Declared semantic surface controls must include id, selector, and intent.",
+          {appId: bundle?.appId || "", id: control?.id || "", selector, intent}
+        ));
+        continue;
+      }
+      const exists = selectorExists(selector, evidenceOptions);
+      if (exists === false) {
+        valid = false;
+        pushSelectorDiagnostic(
+          diagnostics,
+          "app-surface-conformance-semantic-control-selector-missing",
+          bundle,
+          control,
+          "semantic control",
+          selector
+        );
+      }
+      if (knownIntents && !knownIntents.has(intent)) {
+        valid = false;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-semantic-control-intent-unknown",
+          "error",
+          "Declared semantic surface control targets an unknown intent.",
+          {appId: bundle?.appId || "", id: control.id || "", intent}
+        ));
+      }
+    }
+
+    for (const region of forbidden) {
+      if (region?.defaultVisible !== false) {
+        valid = false;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-forbidden-default-region-not-hidden",
+          "error",
+          "Forbidden/default-hidden regions must declare defaultVisible: false.",
+          {appId: bundle?.appId || "", id: region?.id || "", selector: region?.selector || ""}
+        ));
+      }
+      const selector = safeString(region?.selector || "");
+      if (!selector) continue;
+      const visible = selectorHasVisibleMatches(selector, evidenceOptions);
+      if (visible === true) {
+        valid = false;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-forbidden-default-region-visible",
+          "error",
+          "A forbidden/default-hidden region is visible in the current runtime surface.",
+          {appId: bundle?.appId || "", id: region?.id || "", selector}
+        ));
+      }
+    }
+
+    return {valid, detail, diagnostics};
+  }
+
+  function validateDeclaredLayoutGrammar(bundle, options = {}) {
+    const layoutGrammar = bundle?.layoutGrammar;
+    const diagnostics = [];
+    const detail = {
+      surfaceId: safeString(bundle?.surfaceId || layoutGrammar?.surfaceId || options.surfaceId || ""),
+      regionCount: 0,
+      constraintCount: 0,
+      primaryUsable: false,
+      zeroWidthTrackDetected: false
+    };
+    let valid = true;
+
+    if (!isPlainObject(layoutGrammar)) {
+      return {
+        valid: false,
+        detail,
+        diagnostics: [
+          diagnostic(
+            "app-surface-conformance-layout-grammar-missing",
+            "error",
+            "A declared MCEL surface bundle must include layoutGrammar.",
+            {appId: bundle?.appId || options.appId || ""}
+          )
+        ]
+      };
+    }
+
+    const regions = safeArray(layoutGrammar.regions);
+    const constraints = safeArray(layoutGrammar.constraints);
+    detail.regionCount = regions.length;
+    detail.constraintCount = constraints.length;
+
+    if (!regions.length || !constraints.length) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-layout-grammar-incomplete",
+        "error",
+        "Declared layout grammar must include regions and constraints.",
+        {appId: bundle?.appId || "", regionCount: regions.length, constraintCount: constraints.length}
+      ));
+    }
+
+    const duplicateRegionIds = duplicateIds(regions);
+    if (duplicateRegionIds.length) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-layout-region-id-duplicate",
+        "error",
+        "Declared layout grammar region IDs must be unique.",
+        {appId: bundle?.appId || "", duplicateRegionIds}
+      ));
+    }
+
+    const evidenceOptions = declarationValidationOptions(options);
+    for (const region of regions) {
+      const selector = safeString(region?.selector || region?.runtimeHostSelector || "");
+      if (!region?.id || !selector) {
+        valid = false;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-layout-region-incomplete",
+          "error",
+          "Declared layout grammar regions must include id and selector.",
+          {appId: bundle?.appId || "", id: region?.id || "", selector}
+        ));
+        continue;
+      }
+      const exists = selectorExists(selector, evidenceOptions);
+      const runtimeHostExists = region?.runtimeHostSelector
+        ? selectorExists(region.runtimeHostSelector, evidenceOptions)
+        : null;
+      if (exists === false && runtimeHostExists !== true) {
+        valid = false;
+        pushSelectorDiagnostic(
+          diagnostics,
+          "app-surface-conformance-layout-region-selector-missing",
+          bundle,
+          region,
+          "layout region",
+          selector
+        );
+      }
+    }
+
+    const report = options.report || {};
+    const primary = primarySurface(report);
+    const host = primaryHostBox(report);
+    const primaryConstraint = constraints.find((constraint) =>
+      safeString(constraint?.id).includes("primary-editor") ||
+      safeString(constraint?.selector).includes("code-studio-runtime")
+    );
+    const minWidth = Number(primaryConstraint?.minWidth || contractMin(report, "minWidth") || 1);
+    const minHeightValue = isPlainObject(primaryConstraint?.minHeight)
+      ? (primaryConstraint.minHeight.compactViewport || primaryConstraint.minHeight.default)
+      : primaryConstraint?.minHeight;
+    const minHeight = Number(minHeightValue || contractMin(report, "minHeight") || 1);
+    detail.primaryUsable = !!primary.usable || isVisibleUsefulBox(host, minWidth, minHeight);
+    if ((report && Object.keys(report).length) && !detail.primaryUsable) {
+      valid = false;
+      diagnostics.push(diagnostic(
+        "app-surface-conformance-layout-primary-editor-unusable",
+        "error",
+        "Declared layout grammar primary editor is not non-zero and owned in the runtime report.",
+        {
+          appId: bundle?.appId || "",
+          minWidth,
+          minHeight,
+          hostSelector: host.selector || primary.host?.selector || "",
+          width: Number(host.width || 0),
+          height: Number(host.height || 0)
+        }
+      ));
+    }
+
+    for (const constraint of constraints) {
+      const rule = safeString(constraint?.rule || "");
+      if (!/zero-width|single-nonzero/.test(rule)) continue;
+      const selector = safeString(constraint?.selector || "");
+      const trackList = selector ? selectorTrackList(selector, evidenceOptions) : "";
+      if (trackListHasZeroWidth(trackList)) {
+        valid = false;
+        detail.zeroWidthTrackDetected = true;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-layout-zero-width-track",
+          "error",
+          "Declared layout grammar detected a zero-width shell/workbench grid track.",
+          {appId: bundle?.appId || "", id: constraint?.id || "", selector, gridTemplateColumns: trackList}
+        ));
+      }
+    }
+
+    const forbiddenConstraints = constraints.filter((constraint) => constraint?.defaultVisible === false);
+    for (const constraint of forbiddenConstraints) {
+      const selector = safeString(constraint?.selector || "");
+      if (!selector) continue;
+      const visible = selectorHasVisibleMatches(selector, evidenceOptions);
+      if (visible === true) {
+        valid = false;
+        diagnostics.push(diagnostic(
+          "app-surface-conformance-layout-default-hidden-region-visible",
+          "error",
+          "Declared layout grammar default-hidden constraint is visible in the current runtime surface.",
+          {appId: bundle?.appId || "", id: constraint?.id || "", selector}
+        ));
+      }
+    }
+
+    return {valid, detail, diagnostics};
+  }
+
+  function isDeclaredSurfaceBundle(bundle) {
+    return Boolean(
+      bundle &&
+      typeof bundle === "object" &&
+      (
+        bundle.schema === DECLARED_SURFACE_BUNDLE_SCHEMA ||
+        bundle.semanticSurface ||
+        (bundle.layoutGrammar && !bundle.surfaceIR)
+      )
+    );
+  }
+
+  function evaluateDeclaredSurfaceBundle(bundle, options = {}) {
+    const semantic = validateDeclaredSemanticSurface(bundle, options);
+    const layoutResult = validateDeclaredLayoutGrammar(bundle, options);
+    const diagnostics = [
+      ...surfaceBundleDiagnostics(bundle),
+      ...semantic.diagnostics,
+      ...layoutResult.diagnostics
+    ];
+    const layers = [
+      layer(
+        "semantic-surface",
+        semantic.valid ? "pass" : "fail",
+        semantic.valid
+          ? "Declared MCEL semantic surface matches the current runtime surface."
+          : "Declared MCEL semantic surface does not match the current runtime surface.",
+        semantic.detail
+      ),
+      layer(
+        "layout-grammar",
+        layoutResult.valid ? "pass" : "fail",
+        layoutResult.valid
+          ? "Declared MCEL layout grammar matches the current runtime surface."
+          : "Declared MCEL layout grammar does not match the current runtime surface.",
+        layoutResult.detail
+      )
+    ];
+
+    return Object.freeze({
+      contractVersion,
+      status: hasCriticalFailure(layers) ? "fail" : "pass",
+      valid: !hasCriticalFailure(layers),
+      surfaceId: bundle?.surfaceId || bundle?.semanticSurface?.surfaceId || options.surfaceId || "",
+      layers: freezeArray(layers),
+      diagnostics: freezeArray(diagnostics)
+    });
+  }
+
+  function evaluateExtractedSurfaceBundle(bundle, options = {}) {
     const missing = !bundle;
+    const diagnostics = [];
     const surfaceValid = !missing && !!(bundle.valid && bundle.surfaceIR && bundle.validation?.surface?.valid);
     const layoutValid = !missing && !!(bundle.valid && bundle.layoutGrammar && bundle.validation?.layout?.valid);
 
@@ -146,7 +848,7 @@ var McelAppSurfaceConformance = (() => {
       diagnostics.push(diagnostic(
         "app-surface-conformance-surface-bundle-unavailable",
         "info",
-        "No extracted MCEL surface bundle was supplied for static semantic/layout conformance.",
+        "No extracted or declared MCEL surface bundle was supplied for static semantic/layout conformance.",
         {appId: options.appId || ""}
       ));
     } else {
@@ -196,6 +898,12 @@ var McelAppSurfaceConformance = (() => {
       layers: freezeArray(layers),
       diagnostics: freezeArray(diagnostics)
     });
+  }
+
+  function evaluateSurfaceBundle(surfaceBundle, options = {}) {
+    const bundle = surfaceBundle || null;
+    if (isDeclaredSurfaceBundle(bundle)) return evaluateDeclaredSurfaceBundle(bundle, options);
+    return evaluateExtractedSurfaceBundle(bundle, options);
   }
 
   function extractSurfaceBundleFromHtml(surfaceHtml, options = {}) {
@@ -406,8 +1114,15 @@ var McelAppSurfaceConformance = (() => {
       options.expectedSurfaceId ||
       policy.surfaceId ||
       "";
-    const surfaceBundle = input.surfaceBundle || extractSurfaceBundleFromHtml(input.surfaceHtml || input.html || "", {appId, surfaceId});
-    const staticResult = evaluateSurfaceBundle(surfaceBundle, {appId, surfaceId});
+    const surfaceHtml = input.surfaceHtml || input.html || options.surfaceHtml || options.html || "";
+    const surfaceBundle = resolveSurfaceBundle({...input, surfaceHtml}, {...options, appId, surfaceId});
+    const staticResult = evaluateSurfaceBundle(surfaceBundle, {
+      ...options,
+      appId,
+      surfaceId,
+      report: input.report,
+      surfaceHtml
+    });
     const runtimeResult = input.report ? evaluateRuntimeReport(input.report, {appId}) : null;
     const layers = mergeLayerSets(staticResult, runtimeResult);
     const failed = layers.filter((item) => item.status === "fail");

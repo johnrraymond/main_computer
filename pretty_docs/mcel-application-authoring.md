@@ -42,6 +42,17 @@ reports, and promotion material are not app source. They are logical package
 outputs reconstructed in memory or beneath ignored disposable runtime/candidate
 locations.
 
+
+The static app-surface contract is not optional follow-up work for apps that
+target semantic-runtime conformance. New or ported DSL apps should declare
+`app.presentation.semanticSurface(...)` and `app.layout.grammar(...)` in
+`application.js` before their registry entry requires the `semantic-surface` and
+`layout-grammar` layers. Projection then materializes
+`mcel.application-surface-bundle.v1` as generated package/catalog data, including
+the logical `contracts/surface-bundle.json` contract. That generated bundle must
+come from the app source; it is not a manual central-registry patch.
+
+
 MCEL currently supports two presentation modes:
 
 | Mode | Durable presentation source | Runtime shape |

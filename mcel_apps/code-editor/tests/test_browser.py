@@ -118,6 +118,10 @@ def test_code_editor_browser_smoke_contract_is_loaded_and_checks_resize_regressi
     assert "runtime-pane-is-single-active-pane" in smoke
     assert "monaco-primary-surface-usable" in smoke
     assert "proof-dock-hidden-by-default" in smoke
+    assert "surface-bundle-available" in smoke
+    assert "semantic-surface-declared" in smoke
+    assert "layout-grammar-declared" in smoke
+    assert "diagnostics-required-layers-pass" in smoke
     assert "diagnostics-raw-verdict-pass" in smoke
 
 

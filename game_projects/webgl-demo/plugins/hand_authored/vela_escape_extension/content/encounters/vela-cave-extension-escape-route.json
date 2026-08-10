@@ -1,0 +1,63 @@
+{
+  "description": "Declarative fixture encounter using existing cave-combat-run template requirements.",
+  "id": "encounter.plugin.vela-cave-extension.escape-route",
+  "kind": "encounter",
+  "location": {
+    "destinationId": "destination.vela-gate.subsurface-cavern",
+    "systemId": "system.vela-gate"
+  },
+  "lossConditions": [],
+  "objectives": [
+    {
+      "id": "recover-phaser",
+      "label": "Recover the phaser",
+      "required": true,
+      "type": "objective-type.recover-item"
+    },
+    {
+      "id": "clear-hostiles",
+      "label": "Clear the cave guards",
+      "required": true,
+      "type": "objective-type.clear-hostiles"
+    },
+    {
+      "id": "reach-extraction",
+      "label": "Reach the transporter room",
+      "required": true,
+      "type": "objective-type.reach-extraction"
+    }
+  ],
+  "outcomes": [
+    {
+      "consequenceTypeIds": [
+        "consequence-type.record-receipt"
+      ],
+      "id": "outcome.plugin.vela-cave-extension.extracted",
+      "receiptIds": [
+        "receipt.plugin.vela-cave-extension.extracted"
+      ],
+      "when": "win"
+    }
+  ],
+  "participants": [
+    {
+      "actorArchetypeId": "actor-archetype.vela-cave-guard",
+      "count": 6,
+      "role": "hostile"
+    }
+  ],
+  "schema": "game.gameplayPluginContent.v1",
+  "template": "encounter-template.cave-combat-run",
+  "title": "Vela Cave Extension Escape Route",
+  "winConditions": [
+    {
+      "allHostilesDefeated": true,
+      "extractionReached": true,
+      "objectiveIds": [
+        "recover-phaser",
+        "clear-hostiles",
+        "reach-extraction"
+      ]
+    }
+  ]
+}
