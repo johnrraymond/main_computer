@@ -362,18 +362,17 @@ def test_code_editor_runtime_preserves_authored_code_studio_chrome_for_ui_fideli
     assert "code-studio-monaco-authoring-surface mcel-code-editor-primary-authoring-surface" in runtime
     assert 'runtimePreview.dataset.codeEditorRuntimePrimaryHost = "true"' in runtime
     assert "activateLegacyRuntimePane();" in runtime
-    assert "bindLegacyFidelityResizeStability();" in runtime
-    assert "enforceLegacyFidelityResizeStability();" in runtime
     assert 'runtimePane.dataset.codeEditorRuntimeOwnedPane = "true"' in runtime
     assert 'tab.getAttribute("data-code-studio-tab") === "runtime"' in runtime
     assert "#code-editor-app[data-code-editor-runtime-surface-mode=\"legacy-fidelity\"] .code-studio-body" in styles
     assert "Patch 11: legacy-fidelity grid-area repair" in styles
     assert "Patch 12: legacy-fidelity mode separates" in styles
-    assert "Patch 13: legacy-fidelity resize stability" in styles
+    assert "Patch 14: legacy-fidelity shell direct-child containment" in styles
+    assert '#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > *' in styles
+    assert "grid-auto-columns: 0 !important;" in styles
     assert '#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body' in styles
     assert 'grid-template-areas: "activitybar sidebar editor inspector" !important;' in styles
     assert 'grid-template-areas: "activitybar sidebar editor" !important;' in styles
-    assert 'grid-template-columns: 50px 300px minmax(990px, 1fr) 380px !important;' in styles
     assert "grid-column: 3 !important;" in styles
     assert "#code-editor-app[data-code-editor-runtime-surface-mode=\"legacy-fidelity\"] .code-studio-inspector" in styles
     assert "#code-editor-app[data-code-editor-runtime-surface-mode=\"legacy-fidelity\"] .mcel-code-editor-primary-authoring-surface" in styles

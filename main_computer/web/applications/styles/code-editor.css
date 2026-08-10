@@ -6343,132 +6343,108 @@ body[data-active-app="code-editor"] #code-editor-app .code-studio-shell {
   }
 }
 
-
-
-/* Patch 13: legacy-fidelity resize stability.
-   The preserved Code Studio workbench must not re-solve into a cramped fitted
-   surface when browser resize/zoom changes the available inline size. Below the
-   authored four-pane minimum, the page scrolls horizontally instead of collapsing
-   the center Monaco editor or overlapping the inspector/sidebar. */
-html:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
-body:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]) {
-  min-width: 1720px !important;
-  min-inline-size: 1720px !important;
-  overflow-x: auto !important;
-  overflow-y: hidden !important;
-}
-
-.viewport:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
-main:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
-.mc-app-host:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]),
-.applications-workspace:has(#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"]) {
-  width: max(100%, 1720px) !important;
-  min-width: 1720px !important;
-  min-inline-size: 1720px !important;
-  max-width: none !important;
-  overflow-x: auto !important;
-  overflow-y: hidden !important;
-}
-
-#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"],
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] {
-  --mcel-code-editor-activity-inline: 50px !important;
-  --mcel-code-editor-explorer-inline: 300px !important;
-  --mcel-code-editor-inspector-inline: 380px !important;
-  --mcel-code-editor-proof-block: 0px !important;
-  --mcel-code-editor-status-block: 22px !important;
-  --mcel-code-editor-title-block: 42px !important;
-  width: max(100%, 1720px) !important;
-  min-width: 1720px !important;
-  min-inline-size: 1720px !important;
-  max-width: none !important;
-  overflow: hidden !important;
-}
-
-#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-shell {
-  width: 100% !important;
-  min-width: 1720px !important;
-  min-inline-size: 1720px !important;
-  max-width: none !important;
+/* Patch 14: legacy-fidelity shell direct-child containment.
+   Resize/zoom does not shrink #code-editor-app first; the live shell grid can
+   re-resolve to implicit zero-width columns (for example 0px 0px 1250px), which
+   places titlebar/body/editor children into zero tracks. Keep the shell itself as
+   one explicit column and pin each direct shell child to that column so viewport
+   and zoom changes can only resize the intended workbench grid, not create hidden
+   shell columns. */
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell {
+  display: grid !important;
   grid-template-columns: minmax(0, 1fr) !important;
-  grid-template-rows: 42px minmax(0, 1fr) 22px !important;
+  grid-auto-columns: 0 !important;
+  grid-template-rows:
+    var(--mcel-code-editor-title-block, 36px)
+    minmax(0, 1fr)
+    var(--mcel-code-editor-proof-block, 0px)
+    var(--mcel-code-editor-status-block, 22px) !important;
   grid-template-areas:
     "titlebar"
     "workbench"
+    "proof"
     "statusbar" !important;
-  overflow: hidden !important;
-}
-
-#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-body,
-#code-editor-app[data-mcel-layout-live="true"][data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
-  width: 100% !important;
-  min-width: 1720px !important;
-  min-inline-size: 1720px !important;
-  max-width: none !important;
-  grid-template-columns: 50px 300px minmax(990px, 1fr) 380px !important;
-  grid-template-rows: minmax(0, 1fr) !important;
-  grid-template-areas: "activitybar sidebar editor inspector" !important;
-  overflow: hidden !important;
-}
-
-#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-activitybar,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-activitybar {
-  grid-area: activitybar !important;
-  grid-column: 1 !important;
-  width: 50px !important;
-  min-width: 50px !important;
-  max-width: 50px !important;
-}
-
-#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-sidebar,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-sidebar {
-  grid-area: sidebar !important;
-  grid-column: 2 !important;
-  width: 300px !important;
-  min-width: 300px !important;
-  max-width: 300px !important;
-  overflow: auto !important;
-}
-
-#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-group,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-editor-group {
-  grid-area: editor !important;
-  grid-column: 3 !important;
-  width: 100% !important;
-  min-width: 990px !important;
-  min-inline-size: 990px !important;
-  max-width: none !important;
-  overflow: hidden !important;
-}
-
-#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-inspector,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-inspector,
-#code-editor-app[data-mcel-layout-live="true"][data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] [data-code-studio-workbench-region="scm-ai-inspector"] {
-  grid-area: inspector !important;
-  grid-column: 4 !important;
-  display: grid !important;
-  width: 380px !important;
-  min-width: 380px !important;
-  max-width: 380px !important;
-  overflow: hidden !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-}
-
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-editor-pane.active,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] #code-studio-runtime-preview,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .code-studio-monaco-authoring-surface,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] .mcel-code-editor-primary-authoring-surface,
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] #code-studio-runtime-monaco {
   width: 100% !important;
   min-width: 0 !important;
   max-width: none !important;
   overflow: hidden !important;
 }
 
-#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"][data-code-editor-resize-stability="locked"] #code-studio-runtime-monaco .monaco-editor {
-  width: 100% !important;
-  height: 100% !important;
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > * {
+  grid-column: 1 / -1 !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
 }
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-titlebar {
+  grid-area: titlebar !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-body {
+  grid-area: workbench !important;
+  grid-row: 2 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > #code-studio-bottom-panel,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-bottom-panel,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-proof-dock {
+  grid-area: proof !important;
+  grid-row: 3 !important;
+  width: 100% !important;
+  min-height: 0 !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-statusbar {
+  grid-area: statusbar !important;
+  grid-row: 4 !important;
+  width: 100% !important;
+}
+
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-body,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-group,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-editor-pane.active,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-preview,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-monaco-authoring-surface,
+#code-editor-app[data-code-editor-runtime-surface-mode="legacy-fidelity"] #code-studio-runtime-monaco {
+  min-width: 0 !important;
+  max-width: none !important;
+  overflow: hidden !important;
+}
+
+/* Patch 16: legacy-fidelity keeps proof diagnostics out of the default authoring surface.
+   The proof/evidence dock is a diagnostic tool surface, not part of the selected-file
+   Monaco golden path. Patch 14 pins the dock to a zero shell row; this guard also
+   removes its compact tab strip from default legacy-fidelity mode so diagnostics do
+   not report a visible forbidden proof region after startup. MCEL tools mode may
+   still reveal the dock intentionally. */
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > #code-studio-bottom-panel,
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-bottom-panel,
+#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-proof-dock {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+#code-editor-app[data-code-editor-mode="mcel"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > #code-studio-bottom-panel,
+#code-editor-app[data-code-editor-mode="mcel"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-bottom-panel,
+#code-editor-app[data-code-editor-mode="mcel"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > .code-studio-proof-dock {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+

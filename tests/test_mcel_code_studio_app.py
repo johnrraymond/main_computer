@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import html
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -70,7 +72,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'data-code-editor-mode="authoring"',
             'id="code-editor-mcel-tools-toggle"',
             'data-code-editor-mcel-only="true" data-code-studio-tab="contract"',
-            'data-code-editor-mcel-only="true" data-code-studio-file="mcel.contract.json"',
+            'data-code-editor-mcel-only="true" data-code-studio-file=".mcel/contract.json"',
             'data-code-editor-region="right-pane"',
             'data-code-editor-secondary-surface="assistant-diagnostics"',
             "MCEL Assistant",
@@ -110,6 +112,29 @@ class McelCodeStudioAppTests(unittest.TestCase):
         for expected in script_expected:
             with self.subTest(expected=expected):
                 self.assertIn(expected, script)
+
+
+    def test_code_studio_mcel_contract_tree_entry_loads_authored_file(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('data-code-studio-file=".mcel/contract.json"', app)
+        self.assertNotIn('data-code-studio-file="mcel.contract.json"', app)
+
+        source_match = re.search(
+            r'<textarea[^>]*id="code-studio-source-editor"[^>]*>(.*?)</textarea>',
+            app,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(source_match)
+        source = html.unescape(source_match.group(1))
+        authored_paths = set(re.findall(r'data-mc-file-path="([^"]+)"', source))
+
+        self.assertIn(".mcel/contract.json", authored_paths)
+        self.assertIn('"contractId": "code-editor.contract.authoring.monaco-golden-path"', source)
+
+        for file_path in re.findall(r'data-code-studio-file="([^"]+)"', app):
+            with self.subTest(file_path=file_path):
+                self.assertIn(file_path, authored_paths)
 
 
     def test_layout_is_locked_to_a_workbench_viewport(self) -> None:
@@ -2344,6 +2369,212 @@ console.log(JSON.stringify({{
         self.assertTrue(payload["primarySurface"]["exactlyOneAuthoritativeSurface"])
         self.assertEqual(payload["primarySurface"]["ownership"]["primarySurfaceId"], "code-editor.surface.monaco-selected-file-editor")
         self.assertTrue(payload["primarySurface"]["ownership"]["ownsEditor"])
+
+    def test_mcel_self_diagnosis_accepts_legacy_fidelity_compact_monaco_surface(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+global.window = {{}};
+require({script_literal});
+const api = window.McelSelfDiagnosis;
+const report = api.evaluateCodeEditorAuthoringSnapshot({{
+  appId: "code-editor",
+  mode: "legacy-fidelity",
+  route: "/applications/code-editor",
+  timestamp: "test",
+  viewport: {{width: 1054, height: 643}},
+  requiredRegions: {{
+    "code-editor.region.root": {{exists: true, visible: true, selector: "#code-editor-app", width: 1054, height: 643}},
+    "#code-editor-app": {{exists: true, visible: true, selector: "#code-editor-app", width: 1054, height: 643}},
+    "code-editor.region.explorer": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 245, height: 510}},
+    ".code-studio-sidebar": {{exists: true, visible: true, selector: ".code-studio-sidebar", width: 245, height: 510}},
+    "code-editor.region.editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 535, height: 510}},
+    ".code-studio-editor-group": {{exists: true, visible: true, selector: ".code-studio-editor-group", width: 535, height: 510}},
+    "code-editor.region.status-bar": {{exists: true, visible: true, selector: ".code-studio-statusbar", width: 1054, height: 22}},
+    ".code-studio-statusbar": {{exists: true, visible: true, selector: ".code-studio-statusbar", width: 1054, height: 22}}
+  }},
+  optionalRegions: {{
+    "code-editor.region.inspector": {{exists: true, visible: true, selector: ".code-studio-inspector", width: 326, height: 510, position: "static"}},
+    ".code-studio-inspector": {{exists: true, visible: true, selector: ".code-studio-inspector", width: 326, height: 510, position: "static"}}
+  }},
+  surfaces: {{
+    monacoHost: {{exists: true, visible: true, selector: "#code-studio-runtime-monaco", width: 535, height: 275, display: "block", gridRow: "2", gridColumn: "1"}},
+    monacoEditor: {{exists: true, visible: true, selector: "div.monaco-editor.no-user-select.showUnused.showDeprecated.vs-dark", width: 535, height: 275, display: "block", gridRow: "auto", gridColumn: "auto"}},
+    sourceTextarea: {{exists: true, visible: false, selector: "#code-studio-source-editor", width: 0, height: 0}},
+    runtimeDraft: {{exists: true, visible: false, selector: "#code-studio-runtime-draft", width: 0, height: 0}},
+    fallbackTextarea: {{exists: true, visible: false, selector: ".code-studio-runtime-fallback", width: 0, height: 0}}
+  }},
+  forbiddenRegions: [
+    {{id: "code-editor.forbidden.proof-dock", selector: ".code-studio-proof-dock, #code-studio-bottom-panel", label: "MCEL proof/evidence dock", box: {{exists: true, visible: false, selector: "#code-studio-bottom-panel", width: 0, height: 22}}}}
+  ],
+  ownerChain: [
+    {{exists: true, selector: "div.monaco-editor.no-user-select.showUnused.showDeprecated.vs-dark", width: 535, height: 275}},
+    {{exists: true, selector: "#code-studio-runtime-monaco", width: 535, height: 275}},
+    {{exists: true, selector: ".code-studio-monaco-authoring-surface", width: 535, height: 320}},
+    {{exists: true, selector: ".code-studio-editor-group", width: 535, height: 510}}
+  ]
+}});
+console.log(JSON.stringify({{
+  verdict: report.verdict,
+  codes: report.findings.map((finding) => finding.code).sort(),
+  primarySurface: report.summary.primarySurface,
+  contract: report.contract
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["verdict"], "pass")
+        self.assertNotIn("mode-mismatch", payload["codes"])
+        self.assertNotIn("primary-editor-host-unusable", payload["codes"])
+        self.assertNotIn("primary-editor-unusable", payload["codes"])
+        self.assertTrue(payload["primarySurface"]["usable"])
+        self.assertTrue(payload["primarySurface"]["exactlyOneAuthoritativeSurface"])
+        self.assertEqual(payload["primarySurface"]["minHeight"], 240)
+        self.assertTrue(payload["primarySurface"]["compactMinimumApplied"])
+        self.assertIn("legacy-fidelity", payload["contract"]["modeAliases"])
+
+
+    def test_code_editor_legacy_fidelity_hides_proof_dock_from_default_diagnostics(self) -> None:
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        runtime = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor.js").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'Patch 16: legacy-fidelity keeps proof diagnostics out of the default authoring surface.',
+            style,
+        )
+        self.assertIn(
+            '#code-editor-app[data-code-editor-mode="legacy-fidelity"][data-code-editor-runtime-surface-mode="legacy-fidelity"] .code-studio-shell > #code-studio-bottom-panel',
+            style,
+        )
+        self.assertIn("display: none !important;", style)
+        self.assertIn("function enforceLegacyFidelityDefaultDiagnostics", runtime)
+        self.assertIn('proofDock.dataset.mcelResolvedPlacement = "hidden";', runtime)
+        self.assertIn('proofDock.setAttribute("aria-hidden", "true");', runtime)
+
+    def test_mcel_self_diagnosis_ignores_owned_activity_panel_buttons_as_overlays(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(SELF_DIAGNOSIS_PATH))
+        probe = f"""
+function makeElement({{tagName = "DIV", id = "", className = "", attrs = {{}}, width = 0, height = 0, position = "static", children = []}} = {{}}) {{
+  const element = {{
+    nodeType: 1,
+    tagName,
+    id,
+    className,
+    hidden: false,
+    children,
+    parentElement: null,
+    _attrs: attrs,
+    _position: position,
+    getAttribute(name) {{
+      if (name === "style") return "";
+      if (name === "aria-hidden") return null;
+      return this._attrs[name] || null;
+    }},
+    getBoundingClientRect() {{
+      return {{x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height}};
+    }},
+    matches(selector) {{
+      if (selector === ".code-studio-activitybar") return String(className).split(/\\s+/).includes("code-studio-activitybar");
+      if (selector === '[data-code-studio-panel="assistant"]') return this._attrs["data-code-studio-panel"] === "assistant";
+      return false;
+    }},
+    querySelectorAll(selector) {{
+      const matches = [];
+      const visit = (node) => {{
+        if (node.matches(selector)) matches.push(node);
+        for (const child of node.children || []) visit(child);
+      }};
+      for (const child of children) visit(child);
+      return matches;
+    }},
+    querySelector(selector) {{
+      return this.querySelectorAll(selector)[0] || null;
+    }},
+    contains(target) {{
+      if (target === this) return true;
+      return children.some((child) => child === target || child.contains?.(target));
+    }}
+  }};
+  children.forEach((child) => {{ child.parentElement = element; }});
+  return element;
+}}
+
+const assistantButton = makeElement({{tagName: "BUTTON", attrs: {{"data-code-studio-panel": "assistant"}}, width: 40, height: 48}});
+const activitybar = makeElement({{tagName: "NAV", className: "code-studio-activitybar", width: 50, height: 520, children: [assistantButton]}});
+const root = makeElement({{id: "code-editor-app", width: 1054, height: 643, children: [activitybar]}});
+const floatingAssistant = makeElement({{tagName: "SECTION", attrs: {{"data-code-studio-panel": "assistant"}}, width: 320, height: 420, position: "fixed"}});
+
+global.document = {{
+  querySelectorAll(selector) {{
+    if (selector === '[data-code-studio-panel="assistant"]') return [assistantButton];
+    return [];
+  }},
+  querySelector(selector) {{
+    return this.querySelectorAll(selector)[0] || null;
+  }}
+}};
+global.getComputedStyle = (el) => ({{
+  display: "block",
+  visibility: "visible",
+  opacity: "1",
+  position: el._position || "static",
+  gridTemplateRows: "",
+  gridTemplateColumns: "",
+  gridRow: "",
+  gridColumn: "",
+  gridArea: "",
+  alignSelf: "",
+  justifySelf: "",
+  width: "",
+  height: "",
+  minWidth: "",
+  minHeight: "",
+  maxWidth: "",
+  maxHeight: "",
+  overflow: "",
+  overflowX: "",
+  overflowY: "",
+  zIndex: "",
+  pointerEvents: "auto"
+}});
+global.window = {{}};
+require({script_literal});
+const api = window.McelSelfDiagnosis;
+const ownedInline = api._private.detectOverlays(root, {{appId: "code-editor", mode: "legacy-fidelity"}});
+
+global.document.querySelectorAll = (selector) => {{
+  if (selector === '[data-code-studio-panel="assistant"]') return [floatingAssistant];
+  return [];
+}};
+const floating = api._private.detectOverlays(root, {{appId: "code-editor", mode: "legacy-fidelity"}});
+console.log(JSON.stringify({{
+  ownedInlineCount: ownedInline.length,
+  floatingCount: floating.length,
+  floatingClassification: floating[0]?.classification || ""
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["ownedInlineCount"], 0)
+        self.assertEqual(payload["floatingCount"], 1)
+        self.assertEqual(payload["floatingClassification"], "diagnostic-overlay")
 
     def test_code_editor_primary_and_context_surfaces_have_mcel_ridges(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")

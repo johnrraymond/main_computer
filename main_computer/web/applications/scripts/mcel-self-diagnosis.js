@@ -39,6 +39,7 @@
       contractId: "code-editor.contract.authoring.monaco-golden-path",
       appId: "code-editor",
       mode: "authoring",
+      modeAliases: ["legacy-fidelity"],
       intent: "Expose one usable selected-source editor work surface with owned project-selection context, supporting context/feedback projection, and ambient status feedback.",
       derivedFromBlockTypes: [
         "mcel-region",
@@ -56,7 +57,9 @@
         hostSelector: "#code-studio-runtime-monaco",
         editorSelector: ".monaco-editor",
         minWidth: 360,
-        minHeight: 320
+        minHeight: 320,
+        compactMinHeight: 240,
+        compactViewportMaxHeight: 720
       },
       requiredRegions: [
         {id: "code-editor.region.root", selector: "#code-editor-app", label: "Code Editor app root"},
@@ -230,7 +233,9 @@
       hostSelector,
       editorSelector,
       minWidth: Number(input.minWidth || input.min_width || safeFallback.minWidth || 1),
-      minHeight: Number(input.minHeight || input.min_height || safeFallback.minHeight || 1)
+      minHeight: Number(input.minHeight || input.min_height || safeFallback.minHeight || 1),
+      compactMinHeight: Number(input.compactMinHeight || input.compact_min_height || safeFallback.compactMinHeight || safeFallback.compact_min_height || input.minHeight || input.min_height || safeFallback.minHeight || 1),
+      compactViewportMaxHeight: Number(input.compactViewportMaxHeight || input.compact_viewport_max_height || safeFallback.compactViewportMaxHeight || safeFallback.compact_viewport_max_height || 0)
     };
   }
 
@@ -256,6 +261,7 @@
       contractId: String(input.contractId || input.contract_id || safeFallback.contractId || `${appId}.contract.${mode}`),
       appId,
       mode,
+      modeAliases: normalizeList(input.modeAliases || input.mode_aliases || safeFallback.modeAliases || safeFallback.mode_aliases),
       intent: String(input.intent || safeFallback.intent || ""),
       source: String(input.source || "static-fallback"),
       derivedFromBlockTypes: normalizeList(input.derivedFromBlockTypes || input.derived_from_block_types || safeFallback.derivedFromBlockTypes),
@@ -706,6 +712,46 @@
     return String(contract?.mode || "default");
   }
 
+  function modeAliasesFor(contract) {
+    return normalizeList(contract?.modeAliases || contract?.mode_aliases)
+      .map((mode) => String(mode || "").trim())
+      .filter(Boolean);
+  }
+
+  function modeMatchesContract(mode, contract) {
+    const actual = String(mode || "").trim();
+    const expected = String(contract?.mode || "").trim();
+    return Boolean(actual && (actual === expected || modeAliasesFor(contract).includes(actual)));
+  }
+
+  function primarySurfaceMinimums(snapshot, contract, options = {}) {
+    const surface = contract?.primarySurface || {};
+    const explicitMinWidth = options.minWidth !== undefined && options.minWidth !== null;
+    const explicitMinHeight = options.minHeight !== undefined && options.minHeight !== null;
+    const baseMinWidth = Number((explicitMinWidth ? options.minWidth : surface.minWidth) || 1);
+    const baseMinHeight = Number((explicitMinHeight ? options.minHeight : surface.minHeight) || 1);
+    const compactMinHeight = Number(options.compactMinHeight || surface.compactMinHeight || baseMinHeight);
+    const compactViewportMaxHeight = Number(surface.compactViewportMaxHeight || 0);
+    const viewportHeight = Number(snapshot?.viewport?.height || snapshot?.root?.height || 0);
+    const actualMode = normalizedMode(snapshot, contract);
+    const compactEligible = !explicitMinHeight &&
+      String(contract?.appId || "") === "code-editor" &&
+      compactViewportMaxHeight > 0 &&
+      viewportHeight > 0 &&
+      viewportHeight <= compactViewportMaxHeight &&
+      modeMatchesContract(actualMode, contract);
+
+    return {
+      minWidth: baseMinWidth,
+      minHeight: compactEligible ? Math.min(baseMinHeight, compactMinHeight) : baseMinHeight,
+      baseMinWidth,
+      baseMinHeight,
+      compactMinHeight,
+      compactViewportMaxHeight,
+      compactApplied: compactEligible && compactMinHeight < baseMinHeight
+    };
+  }
+
   function visibleAndUseful(box, minWidth, minHeight) {
     return Boolean(box?.exists && box.visible && box.width >= minWidth && box.height >= minHeight);
   }
@@ -750,8 +796,9 @@
 
   function evaluateRuntimeContractSnapshot(snapshot, options = {}) {
     const contract = normalizeDiagnosisContract(options.contract || resolveDiagnosisContract(snapshot?.appId || "code-editor", options));
-    const minWidth = Number(options.minWidth || contract.primarySurface.minWidth || 1);
-    const minHeight = Number(options.minHeight || contract.primarySurface.minHeight || 1);
+    const minimums = primarySurfaceMinimums(snapshot, contract, options);
+    const minWidth = minimums.minWidth;
+    const minHeight = minimums.minHeight;
     const findings = [];
     const mode = normalizedMode(snapshot, contract);
     const surfaces = snapshot.surfaces || {};
@@ -765,13 +812,13 @@
     const forbiddenRegions = snapshot.forbiddenRegions || [];
     const ownerChain = Array.isArray(snapshot.ownerChain) ? snapshot.ownerChain : [];
 
-    if (mode !== contract.mode) {
+    if (!modeMatchesContract(mode, contract)) {
       addFinding(
         findings,
         "warning",
         "mode-mismatch",
         `Expected ${contract.mode} mode while evaluating ${contract.appId} diagnosis contract.`,
-        {expected: contract.mode, actual: mode},
+        {expected: contract.mode, actual: mode, aliases: modeAliasesFor(contract)},
         "mode.contractAudit"
       );
     }
@@ -950,7 +997,12 @@
           exactlyOneAuthoritativeSurface: exactlyOnePrimary,
           host: compactBox(host),
           editor: compactBox(primaryEditor),
-          ownership: surfaceOwnershipProbe(snapshot, contract)
+          ownership: surfaceOwnershipProbe(snapshot, contract),
+          minWidth,
+          minHeight,
+          baseMinWidth: minimums.baseMinWidth,
+          baseMinHeight: minimums.baseMinHeight,
+          compactMinimumApplied: minimums.compactApplied
         },
         optionalRegions: {
           visible: visibleOptionalRegionCount,
@@ -973,8 +1025,13 @@
         id: contract.contractId,
         appId: contract.appId,
         mode: contract.mode,
+        modeAliases: contract.modeAliases || [],
         derivedFromBlockTypes: contract.derivedFromBlockTypes,
-        primarySurface: contract.primarySurface,
+        primarySurface: {
+          ...contract.primarySurface,
+          effectiveMinWidth: minWidth,
+          effectiveMinHeight: minHeight
+        },
         optionalRegions: contract.optionalRegions || [],
         lifecycleAssertions: contract.lifecycleAssertions
       }
@@ -2025,6 +2082,25 @@
     }));
   }
 
+  function closestMatchingElement(el, selector) {
+    let current = el;
+    while (isElement(current)) {
+      if (matchesSelector(current, selector)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function isOwnedInlineDiagnosticControl(selector, el, box, context = {}) {
+    const selectorText = String(selector || "");
+    if (String(context.appId || "") !== "code-editor") return false;
+    if (!selectorText.includes("data-code-studio-panel")) return false;
+    const position = String(box?.position || "");
+    const isFloating = position === "fixed" || position === "absolute" || position === "sticky";
+    const insideActivitybar = Boolean(closestMatchingElement(el, ".code-studio-activitybar"));
+    return Boolean(insideActivitybar && !isFloating && Number(box?.width || 0) <= 100 && Number(box?.height || 0) <= 100);
+  }
+
   function classifyOverlay(selector, box, context = {}) {
     const isWidgetEditor = selector.includes("mc-widget");
     const isProof = selector.includes("proof") || selector.includes("bottom-panel");
@@ -2055,6 +2131,7 @@
         seen.add(el);
         const box = computeBox(el);
         if (box.exists) {
+          if (isOwnedInlineDiagnosticControl(selector, el, box, context)) return;
           overlays.push({
             selector,
             box,

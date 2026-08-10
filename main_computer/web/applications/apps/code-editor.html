@@ -66,7 +66,7 @@
           <strong>Open Editors</strong>
           <button type="button" class="code-studio-file active" data-code-studio-file="src/app.js" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">src/app.js</button>
           <button type="button" class="code-studio-file" data-code-studio-file="tests/app.test.js" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">tests/app.test.js</button>
-          <button type="button" class="code-studio-file" data-code-editor-mcel-only="true" data-code-studio-file="mcel.contract.json" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">mcel.contract.json</button>
+          <button type="button" class="code-studio-file" data-code-editor-mcel-only="true" data-code-studio-file=".mcel/contract.json" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">.mcel/contract.json</button>
         </div>
         <div class="code-studio-tree" aria-label="Project tree" data-mc-component-id="code-editor.explorer.workspace-tree" data-mc-component-kind="tree" data-mc-component-label="Project Tree" data-mc-component-owner="code-editor.studio.sidebar" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-widget-kind="tree" data-mc-item-display-preset="compact" data-mc-density="compact" data-mc-layout-fill="remaining" data-mc-layout-overflow="scroll">
           <strong>MCEL-WORKSPACE</strong>
@@ -75,7 +75,7 @@
           <div data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ tests</div>
           <button type="button" data-code-studio-file="tests/app.test.js" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">app.test.js</button>
           <div data-code-editor-mcel-only="true" data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ .mcel</div>
-          <button type="button" data-code-editor-mcel-only="true" data-code-studio-file="mcel.contract.json" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">contract.json</button>
+          <button type="button" data-code-editor-mcel-only="true" data-code-studio-file=".mcel/contract.json" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">contract.json</button>
         </div>
       </aside>
 
@@ -143,6 +143,20 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
   root.append(editor);
   expect(bootStudio(root)).toMatch(&quot;MCEL keeps&quot;);
 });
+  &lt;/article&gt;
+
+  &lt;article
+    data-mc-component=&quot;code-file&quot;
+    data-mc-field=&quot;mcel-contract-file&quot;
+    data-mc-file-path=&quot;.mcel/contract.json&quot;
+    data-mc-language=&quot;json&quot;
+  &gt;{
+  &quot;kind&quot;: &quot;mcel-contract-envelope&quot;,
+  &quot;contractId&quot;: &quot;code-editor.contract.authoring.monaco-golden-path&quot;,
+  &quot;useCase&quot;: &quot;source-safe-code-editor&quot;,
+  &quot;canonical&quot;: &quot;author source&quot;,
+  &quot;runtime&quot;: &quot;discardable&quot;
+}
   &lt;/article&gt;
 &lt;/section&gt;</textarea>
           </div>

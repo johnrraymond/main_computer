@@ -22,6 +22,9 @@ NORMALIZED_DEFINITION = "generated/mcel.application.normalized.json"
 RUNTIME_FACADE = "MainComputerCodeEditorRuntime"
 HOST_ROUTE = "/applications/code-editor"
 ROOT_SELECTOR = "#code-editor-app"
+STATIC_SURFACE_ID = "code-editor.surface.monaco-selected-file-editor"
+AUTHORING_CONTRACT_ID = "code-editor.contract.authoring.monaco-golden-path"
+SURFACE_BUNDLE_SCHEMA = "mcel.application-surface-bundle.v1"
 EXPECTED_INTENTS = {
     "applyReviewedPatch": "applyReviewedPatch",
     "closeFile": "closeFile",
@@ -161,6 +164,14 @@ def project_code_editor_ir(application_ir: Mapping[str, Any]) -> CodeEditorProje
         }
         for source_name, intent in sorted(intents.items())
     }
+    semantic_surface = _plain_object(surface.get("semanticSurface"), "Code Editor semantic surface declaration")
+    if semantic_surface.get("surfaceId") != STATIC_SURFACE_ID:
+        raise CodeEditorProjectionProfileError(
+            f"Code Editor semantic surface must target {STATIC_SURFACE_ID!r}."
+        )
+    if not semantic_surface.get("regions") or not semantic_surface.get("controls"):
+        raise CodeEditorProjectionProfileError("Code Editor semantic surface must declare regions and controls.")
+
     surface_payload = {
         "schema": "mcel.application-surface.v1",
         "appId": APP_ID,
@@ -169,6 +180,7 @@ def project_code_editor_ir(application_ir: Mapping[str, Any]) -> CodeEditorProje
         "rootSelector": str(surface.get("root")),
         "presentationAuthority": str(surface.get("presentationAuthority")),
         "runtimeFacade": str(surface.get("runtimeFacade")),
+        "semanticSurface": semantic_surface,
         "nodes": [
             {
                 "id": str(item.get("id")),
@@ -185,16 +197,38 @@ def project_code_editor_ir(application_ir: Mapping[str, Any]) -> CodeEditorProje
         if isinstance(item, Mapping) and item.get("id") == "layout:code-editor.workspace"
     ]
     layout = layouts[0] if layouts else {}
+    layout_grammar = _plain_object(layout.get("layoutGrammar"), "Code Editor layout grammar declaration")
+    if layout_grammar.get("rootSelector") != ".code-studio-shell":
+        raise CodeEditorProjectionProfileError("Code Editor layout grammar must remain rooted at the legacy shell.")
+    if not layout_grammar.get("regions") or not layout_grammar.get("constraints"):
+        raise CodeEditorProjectionProfileError("Code Editor layout grammar must declare regions and constraints.")
+
     layout_payload = {
         "schema": "mcel.application-layout.v1",
         "appId": APP_ID,
         "layoutId": str(layout.get("id") or ""),
         "surface": str(_mapping(layout.get("surface")).get("ref") or ""),
+        "layoutGrammar": layout_grammar,
         "orderedChildren": [
             str(_mapping(item).get("ref") or "") for item in layout.get("orderedChildren") or []
         ],
         "zones": [str(value) for value in layout.get("zones") or []],
     }
+    surface_bundle_payload = {
+        "schema": SURFACE_BUNDLE_SCHEMA,
+        "appId": APP_ID,
+        "surfaceId": STATIC_SURFACE_ID,
+        "workspaceSurface": str(surface.get("id")),
+        "contractId": AUTHORING_CONTRACT_ID,
+        "route": str(surface.get("route")),
+        "rootSelector": str(surface.get("root")),
+        "presentationAuthority": str(surface.get("presentationAuthority")),
+        "runtimeFacade": str(surface.get("runtimeFacade")),
+        "projectionProfile": PROFILE_ID,
+        "semanticSurface": semantic_surface,
+        "layoutGrammar": layout_grammar,
+    }
+
     observation_payload = {
         "schema": "mcel.application-observation.v1",
         "appId": APP_ID,
@@ -242,6 +276,7 @@ def project_code_editor_ir(application_ir: Mapping[str, Any]) -> CodeEditorProje
         "contracts/adapter.js": _adapter_module(bindings),
         "contracts/surface.js": _data_module("CodeEditorSurface", surface_payload),
         "contracts/layout.js": _data_module("CodeEditorLayout", layout_payload),
+        "contracts/surface-bundle.json": canonical_json_bytes(surface_bundle_payload) + b"\n",
         "contracts/observation.js": _data_module("CodeEditorObservation", observation_payload),
         "contracts/acceptance.js": _data_module("CodeEditorAcceptance", acceptance_payload),
         NORMALIZED_DEFINITION: canonical_json_bytes(application_ir) + b"\n",
@@ -301,6 +336,12 @@ export const CodeEditorAdapter = Object.freeze({{
 }});
 """
     return text.encode("utf-8")
+
+
+def _plain_object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise CodeEditorProjectionProfileError(f"{label} must be an object.")
+    return json.loads(json.dumps(value, sort_keys=True))
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

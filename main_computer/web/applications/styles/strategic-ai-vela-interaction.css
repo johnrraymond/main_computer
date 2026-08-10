@@ -280,3 +280,267 @@
     animation: none;
   }
 }
+
+
+.vela-gate-captive-scene {
+  position: absolute;
+  inset: 18px auto auto 18px;
+  z-index: 15;
+  width: min(520px, calc(100% - 56px));
+  color: #fde68a;
+  pointer-events: none;
+}
+
+.vela-gate-captive-scene[hidden] {
+  display: none;
+}
+
+.vela-gate-captive-card {
+  overflow: hidden;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  border-radius: 18px;
+  padding: 18px;
+  background:
+    linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(41, 24, 10, 0.94)),
+    radial-gradient(circle at 18% 20%, rgba(245, 158, 11, 0.2), transparent 36%),
+    radial-gradient(circle at 75% 15%, rgba(14, 165, 233, 0.16), transparent 34%);
+  box-shadow:
+    0 22px 70px rgba(0, 0, 0, 0.58),
+    inset 0 0 38px rgba(146, 64, 14, 0.24);
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+}
+
+.vela-gate-captive-kicker {
+  display: block;
+  color: #fbbf24;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.vela-gate-captive-card h2 {
+  margin: 5px 0 8px;
+  color: #fff7ed;
+  font-size: 1.45rem;
+  line-height: 1.05;
+  text-shadow: 0 0 18px rgba(251, 191, 36, 0.24);
+}
+
+.vela-gate-captive-objective {
+  margin: 0 0 12px;
+  color: #fed7aa;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.vela-gate-captive-facts {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.vela-gate-captive-facts div {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid rgba(251, 191, 36, 0.24);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(2, 6, 23, 0.46);
+}
+
+.vela-gate-captive-facts dt {
+  color: #fcd34d;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.vela-gate-captive-facts dd {
+  margin: 0;
+  color: #ffedd5;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.vela-gate-captive-equipment {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vela-gate-captive-equipment .vela-gate-strategic-list-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+}
+
+.vela-gate-captive-equipment .vela-gate-strategic-list-value {
+  color: #fdba74;
+  text-align: right;
+}
+
+.vela-gate-captive-guard-rail {
+  position: relative;
+  height: 88px;
+  margin: 10px 0 12px;
+  overflow: hidden;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 14px;
+  background:
+    linear-gradient(120deg, rgba(12, 74, 110, 0.22), transparent 38%),
+    repeating-linear-gradient(90deg, rgba(120, 53, 15, 0.45), rgba(120, 53, 15, 0.45) 14px, rgba(2, 6, 23, 0.3) 14px, rgba(2, 6, 23, 0.3) 22px),
+    linear-gradient(180deg, rgba(30, 41, 59, 0.9), rgba(28, 25, 23, 0.96));
+}
+
+.vela-gate-captive-guard-rail::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 78% 38%, rgba(248, 113, 113, 0.32), transparent 16%),
+    radial-gradient(circle at 25% 62%, rgba(34, 211, 238, 0.2), transparent 17%);
+}
+
+.vela-gate-captive-player-marker,
+.vela-gate-captive-guard-marker {
+  position: absolute;
+  bottom: 18px;
+  width: 20px;
+  height: 32px;
+  border-radius: 10px 10px 4px 4px;
+}
+
+.vela-gate-captive-player-marker {
+  left: 22%;
+  background: #38bdf8;
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.55);
+}
+
+.vela-gate-captive-guard-marker {
+  right: 19%;
+  background: #ef4444;
+  box-shadow: 0 0 22px rgba(239, 68, 68, 0.62);
+}
+
+.vela-gate-captive-bars {
+  position: absolute;
+  inset: 10px 45% 10px auto;
+  width: 46px;
+  border-left: 5px solid rgba(251, 191, 36, 0.65);
+  border-right: 5px solid rgba(251, 191, 36, 0.65);
+}
+
+.vela-gate-captive-bars::before,
+.vela-gate-captive-bars::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  background: rgba(251, 191, 36, 0.65);
+}
+
+.vela-gate-captive-bars::before {
+  left: 12px;
+}
+
+.vela-gate-captive-bars::after {
+  right: 12px;
+}
+
+.vela-gate-captive-state-list {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+  color: #ffedd5;
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.vela-gate-captive-state-list li {
+  border-left: 3px solid rgba(248, 113, 113, 0.78);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.vela-gate-captive-prompt {
+  display: block;
+  border-radius: 10px;
+  padding: 9px 10px;
+  color: #fef3c7;
+  background: rgba(146, 64, 14, 0.48);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.vela-gate-captive-action {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid rgba(251, 191, 36, 0.64);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #111827;
+  background: linear-gradient(180deg, #fbbf24, #f97316);
+  font-size: 0.8rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.vela-gate-captive-action:hover:not(:disabled),
+.vela-gate-captive-action:focus-visible:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18), 0 10px 24px rgba(249, 115, 22, 0.28);
+}
+
+.vela-gate-captive-action:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.vela-gate-captive-action[data-state="guard-down"] {
+  color: #ecfeff;
+  border-color: rgba(34, 211, 238, 0.46);
+  background: linear-gradient(180deg, rgba(14, 116, 144, 0.94), rgba(21, 94, 117, 0.92));
+}
+
+.vela-gate-strategic-contact[data-phase="captive"] .vela-gate-strategic-signal,
+.vela-gate-strategic-contact[data-phase="breakout"] .vela-gate-strategic-signal {
+  background: #f97316;
+  box-shadow: 0 0 0 5px rgba(249, 115, 22, 0.16), 0 0 22px rgba(249, 115, 22, 0.86);
+}
+
+.vela-gate-strategic-status[data-state="captive"],
+.vela-gate-strategic-status[data-state="breakout"] {
+  border-left-color: #fb923c;
+  color: #ffedd5;
+  background: rgba(154, 52, 18, 0.34);
+}
+
+.vela-gate-strategic-request[data-state="captive"],
+.vela-gate-strategic-request[data-state="breakout"] {
+  border-color: rgba(251, 146, 60, 0.65);
+  color: #ffedd5;
+  background: linear-gradient(180deg, rgba(194, 65, 12, 0.96), rgba(124, 45, 18, 0.96));
+}
+
+@media (max-width: 860px) {
+  .vela-gate-captive-scene {
+    inset: 10px auto auto 10px;
+    width: calc(100% - 20px);
+  }
+}

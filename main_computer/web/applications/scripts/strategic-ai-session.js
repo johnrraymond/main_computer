@@ -472,12 +472,20 @@
         String(worldTime)
       ].join("|");
       if (arrayValue(this.travelState.processedArrivalKeys).includes(arrivalKey)) {
-        return {
+        const result = {
           reused: true,
           arrivalKey,
-          activeSystemId: this.activeSystemId,
-          returnNotice: clone(this.travelState.returnNotice)
+          activeSystemId: currentSystemId,
+          returnNotice: clone(this.travelState.returnNotice),
+          activeSystemSynced: false
         };
+        if (this.activeSystemId !== currentSystemId) {
+          this.activeSystemId = currentSystemId;
+          result.activeSystemSynced = true;
+          if (options.persist !== false) this.persist();
+          this.emit("travel-arrival-reused-active-system-sync", result);
+        }
+        return result;
       }
 
       const previousSystemId = stringValue(this.activeSystemId);

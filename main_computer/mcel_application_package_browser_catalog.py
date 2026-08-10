@@ -97,11 +97,17 @@ def build_browser_catalog_payload(
     # Publish only packages with validated browser runtime projections. Source-
     # only shadow authorities remain discoverable to authoring tools but cannot
     # appear as duplicate live applications.
-    packages = [
-        _browser_record(record, runtime_projections[record.app_id or ""])
-        for record in catalog.packages
-        if (record.app_id or "") in runtime_projections
-    ]
+    packages = []
+    surface_bundles: dict[str, Any] = {}
+    for record in catalog.packages:
+        app_id = record.app_id or ""
+        if app_id not in runtime_projections:
+            continue
+        runtime_record = dict(runtime_projections[app_id])
+        surface_bundle = runtime_record.pop("surfaceBundle", None)
+        packages.append(_browser_record(record, runtime_record))
+        if isinstance(surface_bundle, Mapping):
+            surface_bundles[app_id] = json.loads(json.dumps(surface_bundle, sort_keys=True))
     orphaned = sorted(set(runtime_projections) - {str(record.app_id or "") for record in catalog.packages})
     if orphaned:
         raise InvalidRepositoryPackageCatalog(
@@ -117,6 +123,8 @@ def build_browser_catalog_payload(
         "catalogFingerprintAlgorithm": catalog.fingerprint_algorithm,
         "packageCount": len(packages),
         "packages": packages,
+        "surfaceBundleCount": len(surface_bundles),
+        "surfaceBundles": {app_id: surface_bundles[app_id] for app_id in sorted(surface_bundles)},
     }
 
 
@@ -163,6 +171,7 @@ def render_browser_catalog_javascript(payload: Mapping[str, Any]) -> str:
 
   const PAYLOAD = deepFreeze({encoded});
   const PACKAGES_BY_ID = new Map(PAYLOAD.packages.map((record) => [record.appId, record]));
+  const SURFACE_BUNDLES_BY_APP_ID = new Map(Object.entries(PAYLOAD.surfaceBundles || {{}}));
 
   function normalizeAppId(value) {{
     return String(value || "").trim();
@@ -185,16 +194,36 @@ def render_browser_catalog_javascript(payload: Mapping[str, Any]) -> str:
     return PACKAGES_BY_ID.has(normalizeAppId(appId));
   }}
 
+  function getSurfaceBundle(appId) {{
+    const bundle = SURFACE_BUNDLES_BY_APP_ID.get(normalizeAppId(appId));
+    return bundle ? clonePlain(bundle) : null;
+  }}
+
+  function hasSurfaceBundle(appId) {{
+    return SURFACE_BUNDLES_BY_APP_ID.has(normalizeAppId(appId));
+  }}
+
+  function listSurfaceBundles() {{
+    return Array.from(SURFACE_BUNDLES_BY_APP_ID.entries()).map(([appId, bundle]) => ({{
+      appId,
+      bundle: clonePlain(bundle)
+    }}));
+  }}
+
   return Object.freeze({{
     SCHEMA: PAYLOAD.schema,
     FORMAT: PAYLOAD.format,
     catalogFingerprint: PAYLOAD.catalogFingerprint,
     catalogFingerprintAlgorithm: PAYLOAD.catalogFingerprintAlgorithm,
     packageCount: PAYLOAD.packageCount,
+    surfaceBundleCount: PAYLOAD.surfaceBundleCount || 0,
     getCatalog,
     listPackages,
     getPackage,
-    hasPackage
+    hasPackage,
+    getSurfaceBundle,
+    hasSurfaceBundle,
+    listSurfaceBundles
   }});
 }})();
 

@@ -112,9 +112,21 @@ def test_code_editor_runtime_projection_is_host_bound_and_contains_no_copied_pre
         "contracts/adapter.js",
         "contracts/surface.js",
         "contracts/layout.js",
+        "contracts/surface-bundle.json",
         "contracts/acceptance.js",
         "contracts/observation.js",
     }
+    assert projection.surface_bundle_url == "applications/mcel-packages/code-editor/contracts/surface-bundle.json"
+    assert projection.manifest["surfaceBundle"] == {
+        "path": "contracts/surface-bundle.json",
+        "url": "applications/mcel-packages/code-editor/contracts/surface-bundle.json",
+        "schema": "mcel.application-surface-bundle.v1",
+        "surfaceId": "code-editor.surface.monaco-selected-file-editor",
+        "contractId": "code-editor.contract.authoring.monaco-golden-path",
+    }
+    assert projection.surface_bundle is not None
+    assert projection.surface_bundle["semanticSurface"]["id"] == "code-editor.semantic-surface.legacy-fidelity"
+    assert projection.surface_bundle["layoutGrammar"]["id"] == "code-editor.layout.legacy-fidelity-workbench"
     assert projection.manifest["runtime"] == {
         "mode": "host-bound",
         "route": "/applications/code-editor",

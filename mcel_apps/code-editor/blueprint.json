@@ -40,7 +40,8 @@
     "requirements.md",
     "main_computer/web/applications/apps/code-editor.html",
     "main_computer/web/applications/styles/code-editor.css",
-    "main_computer/web/applications/scripts/code-editor.js"
+    "main_computer/web/applications/scripts/code-editor.js",
+    "main_computer/web/applications/scripts/code-editor-browser-smoke.js"
   ],
   "testHints": [
     "tests/mcel_acceptance_bindings.json",
@@ -48,6 +49,7 @@
     "tests/test_operations.py",
     "tests/test_surface.py",
     "tests/test_browser.py",
-    "tests/test_truth.py"
+    "tests/test_truth.py",
+    "tests/test_mcel_code_editor_browser_smoke.py"
   ]
 }

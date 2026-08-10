@@ -15,7 +15,59 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.mother.common.coolify_state import CoolifyObservationError
+from tools.mother.common.coolify_state import CoolifyObservationError, _DEFAULT_OPENER
+from tools.mother.common.deployment_c2_state_extension import (
+    MotherDeploymentC2StateExtensionError,
+    build_c2_state_extension_release,
+    execute_c2_state_extension_release,
+    inspect_c2_state_extension_release,
+    stage_c2_state_extension,
+    verify_c2_state_extension_evidence,
+    verify_c2_state_extension_release,
+    verify_c2_state_extension_transaction,
+    write_c2_state_extension_release,
+    write_c2_state_extension_transaction,
+)
+from tools.mother.common.deployment_c2_standby import (
+    MotherDeploymentC2StandbyError,
+    build_c2_standby_identity_release,
+    build_c2_standby_service_release,
+    execute_c2_standby_identity_release,
+    execute_c2_standby_service_release,
+    inspect_c2_standby_identity_release,
+    inspect_c2_standby_service_release,
+    stage_c2_standby_identity_transaction,
+    stage_c2_standby_service_transaction,
+    verify_c2_standby_identity,
+    verify_c2_standby_identity_release,
+    verify_c2_standby_identity_transaction,
+    verify_c2_standby_service,
+    verify_c2_standby_service_release,
+    verify_c2_standby_service_transaction,
+    write_c2_standby_identity_release,
+    write_c2_standby_service_release,
+)
+from tools.mother.common.deployment_c2_replica_standby import (
+    MotherDeploymentC2ReplicaStandbyError,
+    build_c2_replica_standby_release,
+    execute_c2_replica_standby_release,
+    inspect_c2_replica_standby_release,
+    stage_c2_replica_standby_transaction,
+    verify_c2_replica_standby,
+    verify_c2_replica_standby_release,
+    verify_c2_replica_standby_transaction,
+    write_c2_replica_standby_release,
+    write_c2_replica_standby_transaction,
+)
+from tools.mother.common.deployment_c2_replica_sync import (
+    MotherDeploymentC2ReplicaSyncError,
+    build_c2_replica_sync_release,
+    execute_c2_replica_sync_release,
+    inspect_c2_replica_sync_release,
+    verify_c2_replica_sync_evidence,
+    verify_c2_replica_sync_release,
+    write_c2_replica_sync_release,
+)
 from tools.mother.common.deployment_identity_install import (
     MotherDeploymentIdentityInstallError,
     build_deployment_identity_install_transaction,
@@ -1658,6 +1710,366 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help="required only with --execute",
     )
+
+    stage_c2_extension = subparsers.add_parser(
+        "stage-c2-state-extension",
+        help="stage a local-only post-T2 Mother generation that reserves canonical mainnetc-super2",
+        allow_abbrev=False,
+    )
+    _common(stage_c2_extension)
+    stage_c2_extension.add_argument("--canary-evidence", required=True)
+    stage_c2_extension.add_argument("--canary-max-age-seconds", type=int, default=86400)
+    stage_c2_extension.add_argument("--created-at")
+    stage_c2_extension.add_argument(
+        "--write-transaction",
+        action="store_true",
+        help="persist the secret-safe transaction and its private C2 reservation payload",
+    )
+
+    verify_c2_extension_transaction = subparsers.add_parser(
+        "verify-c2-state-extension-transaction",
+        help="verify a staged C2 private-state successor against current T2 state and canary evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_extension_transaction)
+    verify_c2_extension_transaction.add_argument("--transaction", required=True)
+    verify_c2_extension_transaction.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_c2_extension_transaction.add_argument("--canary-max-age-seconds", type=int, default=86400)
+
+    release_c2_extension = subparsers.add_parser(
+        "release-c2-state-extension",
+        help="authorize one exact local-only C2 private-state generation advance",
+        allow_abbrev=False,
+    )
+    _common(release_c2_extension)
+    release_c2_extension.add_argument("--transaction", required=True)
+    release_c2_extension.add_argument("--acknowledge-c2-state-extension-transaction-sha256", required=True)
+    release_c2_extension.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_c2_extension.add_argument("--canary-max-age-seconds", type=int, default=86400)
+    release_c2_extension.add_argument("--expires-in-seconds", type=int, default=300)
+    release_c2_extension.add_argument("--created-at")
+    release_c2_extension.add_argument(
+        "--write-release",
+        action="store_true",
+        help="persist the canonical one-use C2 state-extension release",
+    )
+
+    verify_c2_extension_release = subparsers.add_parser(
+        "verify-c2-state-extension-release",
+        help="verify an expiring C2 state-extension release before use",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_extension_release)
+    verify_c2_extension_release.add_argument("--release", required=True)
+    verify_c2_extension_release.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_extension_release.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_c2_extension_release.add_argument("--canary-max-age-seconds", type=int, default=86400)
+
+    apply_c2_extension = subparsers.add_parser(
+        "apply-c2-state-extension",
+        help="inspect or consume one C2 release and advance Mother private state exactly one generation",
+        allow_abbrev=False,
+    )
+    _common(apply_c2_extension)
+    apply_c2_extension.add_argument("--release", required=True)
+    apply_c2_extension.add_argument("--acknowledge-release-sha256", required=True)
+    apply_c2_extension.add_argument("--max-age-seconds", type=int, default=300)
+    apply_c2_extension.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_c2_extension.add_argument("--canary-max-age-seconds", type=int, default=86400)
+    apply_c2_extension.add_argument(
+        "--execute",
+        action="store_true",
+        help="commit the released local private-state successor; without this flag inspect only",
+    )
+
+    verify_c2_extension_evidence = subparsers.add_parser(
+        "verify-c2-state-extension-evidence",
+        help="verify the committed C2 generation, predecessor recovery, and downstream soft-target plan",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_extension_evidence)
+    verify_c2_extension_evidence.add_argument("--evidence", required=True)
+    verify_c2_extension_evidence.add_argument("--max-age-seconds", type=int, default=86400)
+
+
+    stage_c2_standby_service = subparsers.add_parser(
+        "stage-c2-standby-service",
+        help="stage the C2-only standby service creation transaction from clean preflight evidence",
+        allow_abbrev=False,
+    )
+    _common(stage_c2_standby_service)
+    stage_c2_standby_service.add_argument("--preflight-evidence", required=True)
+    stage_c2_standby_service.add_argument("--c2-state-extension-evidence", required=True)
+    stage_c2_standby_service.add_argument("--preflight-max-age-seconds", type=int, default=300)
+    stage_c2_standby_service.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    stage_c2_standby_service.add_argument("--created-at")
+
+    verify_c2_standby_service_transaction = subparsers.add_parser(
+        "verify-c2-standby-service-transaction",
+        help="verify a staged C2 standby-service transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_standby_service_transaction)
+    verify_c2_standby_service_transaction.add_argument("--transaction", required=True)
+    verify_c2_standby_service_transaction.add_argument("--c2-state-extension-evidence", required=True)
+    verify_c2_standby_service_transaction.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_standby_service_transaction.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+
+    release_c2_standby_service = subparsers.add_parser(
+        "release-c2-standby-service",
+        help="authorize one exact C2 standby-service creation mutation",
+        allow_abbrev=False,
+    )
+    _common(release_c2_standby_service)
+    release_c2_standby_service.add_argument("--transaction", required=True)
+    release_c2_standby_service.add_argument("--c2-state-extension-evidence", required=True)
+    release_c2_standby_service.add_argument("--acknowledge-c2-standby-service-transaction-sha256", required=True)
+    release_c2_standby_service.add_argument("--max-age-seconds", type=int, default=300)
+    release_c2_standby_service.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    release_c2_standby_service.add_argument("--expires-in-seconds", type=int, default=300)
+    release_c2_standby_service.add_argument("--created-at")
+    release_c2_standby_service.add_argument("--write-release", action="store_true")
+
+    verify_c2_standby_service_release = subparsers.add_parser(
+        "verify-c2-standby-service-release",
+        help="verify an expiring C2 standby-service release before use",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_standby_service_release)
+    verify_c2_standby_service_release.add_argument("--release", required=True)
+    verify_c2_standby_service_release.add_argument("--c2-state-extension-evidence", required=True)
+    verify_c2_standby_service_release.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_standby_service_release.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+
+    apply_c2_standby_service = subparsers.add_parser(
+        "apply-c2-standby-service",
+        help="inspect or execute the released C2 standby-service creation mutation",
+        allow_abbrev=False,
+    )
+    _common(apply_c2_standby_service)
+    apply_c2_standby_service.add_argument("--release", required=True)
+    apply_c2_standby_service.add_argument("--c2-state-extension-evidence", required=True)
+    apply_c2_standby_service.add_argument("--acknowledge-release-sha256", required=True)
+    apply_c2_standby_service.add_argument("--max-age-seconds", type=int, default=300)
+    apply_c2_standby_service.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    apply_c2_standby_service.add_argument("--timeout", type=float, default=30.0)
+    apply_c2_standby_service.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_c2_standby_service.add_argument("--execute", action="store_true")
+
+    verify_c2_standby_service_cmd = subparsers.add_parser(
+        "verify-c2-standby-service",
+        help="GET-verify the C2 standby service created by a successful service execution",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_standby_service_cmd)
+    verify_c2_standby_service_cmd.add_argument("--execution", required=True)
+    verify_c2_standby_service_cmd.add_argument("--timeout", type=float, default=30.0)
+    verify_c2_standby_service_cmd.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    verify_c2_standby_service_cmd.add_argument("--observed-at")
+    verify_c2_standby_service_cmd.add_argument("--write-evidence", action="store_true")
+    verify_c2_standby_service_cmd.add_argument("--require-clean", action="store_true")
+
+    stage_c2_standby_identity = subparsers.add_parser(
+        "stage-c2-standby-identity",
+        help="stage C2 reserved identity service-environment writes",
+        allow_abbrev=False,
+    )
+    _common(stage_c2_standby_identity)
+    stage_c2_standby_identity.add_argument("--standby-evidence", required=True)
+    stage_c2_standby_identity.add_argument("--max-age-seconds", type=int, default=300)
+    stage_c2_standby_identity.add_argument("--created-at")
+
+    verify_c2_standby_identity_transaction_cmd = subparsers.add_parser(
+        "verify-c2-standby-identity-transaction",
+        help="verify a staged C2 standby identity transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_standby_identity_transaction_cmd)
+    verify_c2_standby_identity_transaction_cmd.add_argument("--transaction", required=True)
+    verify_c2_standby_identity_transaction_cmd.add_argument("--max-age-seconds", type=int, default=300)
+
+    release_c2_standby_identity = subparsers.add_parser(
+        "release-c2-standby-identity",
+        help="authorize one exact C2 standby identity installation mutation set",
+        allow_abbrev=False,
+    )
+    _common(release_c2_standby_identity)
+    release_c2_standby_identity.add_argument("--transaction", required=True)
+    release_c2_standby_identity.add_argument("--acknowledge-c2-standby-identity-transaction-sha256", required=True)
+    release_c2_standby_identity.add_argument("--max-age-seconds", type=int, default=300)
+    release_c2_standby_identity.add_argument("--expires-in-seconds", type=int, default=300)
+    release_c2_standby_identity.add_argument("--created-at")
+    release_c2_standby_identity.add_argument("--write-release", action="store_true")
+
+    verify_c2_standby_identity_release_cmd = subparsers.add_parser(
+        "verify-c2-standby-identity-release",
+        help="verify an expiring C2 standby identity release before use",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_standby_identity_release_cmd)
+    verify_c2_standby_identity_release_cmd.add_argument("--release", required=True)
+    verify_c2_standby_identity_release_cmd.add_argument("--max-age-seconds", type=int, default=300)
+
+    apply_c2_standby_identity = subparsers.add_parser(
+        "apply-c2-standby-identity",
+        help="inspect or execute the released C2 standby identity env writes",
+        allow_abbrev=False,
+    )
+    _common(apply_c2_standby_identity)
+    apply_c2_standby_identity.add_argument("--release", required=True)
+    apply_c2_standby_identity.add_argument("--acknowledge-release-sha256", required=True)
+    apply_c2_standby_identity.add_argument("--max-age-seconds", type=int, default=300)
+    apply_c2_standby_identity.add_argument("--timeout", type=float, default=30.0)
+    apply_c2_standby_identity.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_c2_standby_identity.add_argument("--execute", action="store_true")
+
+    verify_c2_standby_identity_cmd = subparsers.add_parser(
+        "verify-c2-standby-identity",
+        help="GET-verify the C2 standby identity env keys installed by a successful identity execution",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_standby_identity_cmd)
+    verify_c2_standby_identity_cmd.add_argument("--execution", required=True)
+    verify_c2_standby_identity_cmd.add_argument("--timeout", type=float, default=30.0)
+    verify_c2_standby_identity_cmd.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    verify_c2_standby_identity_cmd.add_argument("--observed-at")
+    verify_c2_standby_identity_cmd.add_argument("--write-evidence", action="store_true")
+    verify_c2_standby_identity_cmd.add_argument("--require-clean", action="store_true")
+
+    stage_c2_replica_standby = subparsers.add_parser(
+        "stage-c2-replica-standby",
+        help="stage C2 genesis/replica standby Compose preparation without deploy, sync, or validator authority",
+        allow_abbrev=False,
+    )
+    _common(stage_c2_replica_standby)
+    stage_c2_replica_standby.add_argument("--c2-state-extension-evidence", required=True)
+    stage_c2_replica_standby.add_argument("--identity-evidence", required=True)
+    stage_c2_replica_standby.add_argument("--identity-rollback-evidence", required=True)
+    stage_c2_replica_standby.add_argument("--genesis-birth-evidence", required=True)
+    stage_c2_replica_standby.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    stage_c2_replica_standby.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    stage_c2_replica_standby.add_argument("--genesis-birth-max-age-seconds", type=int, default=86400)
+    stage_c2_replica_standby.add_argument("--created-at")
+    stage_c2_replica_standby.add_argument("--write-transaction", action="store_true")
+
+    verify_c2_replica_standby_transaction_cmd = subparsers.add_parser(
+        "verify-c2-replica-standby-transaction",
+        help="verify a staged C2 replica standby transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_replica_standby_transaction_cmd)
+    verify_c2_replica_standby_transaction_cmd.add_argument("--transaction", required=True)
+    verify_c2_replica_standby_transaction_cmd.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_replica_standby_transaction_cmd.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    verify_c2_replica_standby_transaction_cmd.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_c2_replica_standby_transaction_cmd.add_argument("--genesis-birth-max-age-seconds", type=int, default=86400)
+
+    release_c2_replica_standby = subparsers.add_parser(
+        "release-c2-replica-standby",
+        help="authorize one exact C2 replica standby Compose PATCH",
+        allow_abbrev=False,
+    )
+    _common(release_c2_replica_standby)
+    release_c2_replica_standby.add_argument("--transaction", required=True)
+    release_c2_replica_standby.add_argument("--acknowledge-c2-replica-standby-transaction-sha256", required=True)
+    release_c2_replica_standby.add_argument("--max-age-seconds", type=int, default=300)
+    release_c2_replica_standby.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    release_c2_replica_standby.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    release_c2_replica_standby.add_argument("--genesis-birth-max-age-seconds", type=int, default=86400)
+    release_c2_replica_standby.add_argument("--expires-in-seconds", type=int, default=300)
+    release_c2_replica_standby.add_argument("--created-at")
+    release_c2_replica_standby.add_argument("--write-release", action="store_true")
+
+    verify_c2_replica_standby_release_cmd = subparsers.add_parser(
+        "verify-c2-replica-standby-release",
+        help="verify an expiring C2 replica standby release",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_replica_standby_release_cmd)
+    verify_c2_replica_standby_release_cmd.add_argument("--release", required=True)
+    verify_c2_replica_standby_release_cmd.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_replica_standby_release_cmd.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_c2_replica_standby_release_cmd.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    verify_c2_replica_standby_release_cmd.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_c2_replica_standby_release_cmd.add_argument("--genesis-birth-max-age-seconds", type=int, default=86400)
+
+    apply_c2_replica_standby = subparsers.add_parser(
+        "apply-c2-replica-standby",
+        help="inspect or execute the released C2 replica standby Compose PATCH",
+        allow_abbrev=False,
+    )
+    _common(apply_c2_replica_standby)
+    apply_c2_replica_standby.add_argument("--release", required=True)
+    apply_c2_replica_standby.add_argument("--acknowledge-release-sha256", required=True)
+    apply_c2_replica_standby.add_argument("--max-age-seconds", type=int, default=300)
+    apply_c2_replica_standby.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_c2_replica_standby.add_argument("--c2-state-extension-max-age-seconds", type=int, default=86400)
+    apply_c2_replica_standby.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    apply_c2_replica_standby.add_argument("--genesis-birth-max-age-seconds", type=int, default=86400)
+    apply_c2_replica_standby.add_argument("--timeout", type=float, default=30.0)
+    apply_c2_replica_standby.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_c2_replica_standby.add_argument("--execute", action="store_true")
+
+    verify_c2_replica_standby_cmd = subparsers.add_parser(
+        "verify-c2-replica-standby",
+        help="GET-verify the C2 replica standby Compose/genesis configuration",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_replica_standby_cmd)
+    verify_c2_replica_standby_cmd.add_argument("--execution", required=True)
+    verify_c2_replica_standby_cmd.add_argument("--timeout", type=float, default=30.0)
+    verify_c2_replica_standby_cmd.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    verify_c2_replica_standby_cmd.add_argument("--observed-at")
+    verify_c2_replica_standby_cmd.add_argument("--write-evidence", action="store_true")
+    verify_c2_replica_standby_cmd.add_argument("--require-clean", action="store_true")
+
+    release_c2_replica_sync = subparsers.add_parser(
+        "release-c2-replica-sync",
+        help="authorize one C2 non-validator replica synchronization proof",
+        allow_abbrev=False,
+    )
+    _common(release_c2_replica_sync)
+    release_c2_replica_sync.add_argument("--standby-evidence", required=True)
+    release_c2_replica_sync.add_argument("--acknowledge-c2-replica-standby-evidence-sha256", required=True)
+    release_c2_replica_sync.add_argument("--standby-max-age-seconds", type=int, default=86400)
+    release_c2_replica_sync.add_argument("--expires-in-seconds", type=int, default=300)
+    release_c2_replica_sync.add_argument("--created-at")
+    release_c2_replica_sync.add_argument("--write-release", action="store_true")
+
+    verify_c2_replica_sync_release_cmd = subparsers.add_parser(
+        "verify-c2-replica-sync-release",
+        help="verify one expiring C2 replica synchronization release",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_replica_sync_release_cmd)
+    verify_c2_replica_sync_release_cmd.add_argument("--release", required=True)
+    verify_c2_replica_sync_release_cmd.add_argument("--max-age-seconds", type=int, default=300)
+    verify_c2_replica_sync_release_cmd.add_argument("--standby-max-age-seconds", type=int, default=86400)
+
+    apply_c2_replica_sync = subparsers.add_parser(
+        "apply-c2-replica-sync",
+        help="inspect or execute one released C2 non-validator replica synchronization proof",
+        allow_abbrev=False,
+    )
+    _common(apply_c2_replica_sync)
+    apply_c2_replica_sync.add_argument("--release", required=True)
+    apply_c2_replica_sync.add_argument("--acknowledge-release-sha256", required=True)
+    apply_c2_replica_sync.add_argument("--max-age-seconds", type=int, default=300)
+    apply_c2_replica_sync.add_argument("--standby-max-age-seconds", type=int, default=86400)
+    apply_c2_replica_sync.add_argument("--timeout", type=float, default=30.0)
+    apply_c2_replica_sync.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_c2_replica_sync.add_argument("--max-wait-seconds", type=float, default=300.0)
+    apply_c2_replica_sync.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_c2_replica_sync.add_argument("--execute", action="store_true")
+
+    verify_c2_replica_sync_cmd = subparsers.add_parser(
+        "verify-c2-replica-sync-evidence",
+        help="verify persisted C2 replica synchronization evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_replica_sync_cmd)
+    verify_c2_replica_sync_cmd.add_argument("--evidence", required=True)
+    verify_c2_replica_sync_cmd.add_argument("--max-age-seconds", type=int, default=300)
 
     verify_coolify_service_lifecycle_probe = subparsers.add_parser(
         "verify-coolify-service-lifecycle-probe-evidence",
@@ -3822,6 +4234,592 @@ def _cmd_verify_coolify_service_lifecycle_probe_evidence(
     return 0
 
 
+
+def _c2_selection(args: argparse.Namespace) -> None:
+    selected = _selected_nodes(args.node)
+    if selected and selected != ("mainnetc-super2",):
+        raise MotherDeploymentC2StateExtensionError(
+            "MOTHER_DEPLOY_C2_STATE_EXTENSION_TARGET_INVALID",
+            "C2 state extension may target only canonical mainnetc-super2",
+        )
+
+
+def _cmd_stage_c2_state_extension(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    operation = _operation("stage-c2-state-extension", args.network, args.operation_id)
+    staging = stage_c2_state_extension(
+        _paths(args),
+        private_state,
+        Path(args.canary_evidence),
+        network=args.network,
+        canary_max_age_seconds=args.canary_max_age_seconds,
+        created_at=args.created_at,
+        operation=operation,
+    )
+    result = dict(staging.transaction)
+    if args.write_transaction:
+        path, digest = write_c2_state_extension_transaction(
+            _paths(args),
+            staging,
+            operation=_operation("write-c2-state-extension-transaction", args.network, args.operation_id),
+        )
+        result = {
+            **result,
+            "transaction_artifact": {"path": str(path), "sha256": digest},
+            "secret_payload_persisted": True,
+        }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_state_extension_transaction(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_state_extension_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        max_age_seconds=args.max_age_seconds,
+        canary_max_age_seconds=args.canary_max_age_seconds,
+        operation=_operation("verify-c2-state-extension-transaction", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_c2_state_extension(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    operation = _operation("release-c2-state-extension", args.network, args.operation_id)
+    release = build_c2_state_extension_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledge_transaction_sha256=args.acknowledge_c2_state_extension_transaction_sha256,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        canary_max_age_seconds=args.canary_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+        operation=operation,
+    )
+    if args.write_release:
+        path, digest = write_c2_state_extension_release(
+            _paths(args),
+            release,
+            operation=_operation("write-c2-state-extension-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_state_extension_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_state_extension_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        canary_max_age_seconds=args.canary_max_age_seconds,
+        operation=_operation("verify-c2-state-extension-release", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_c2_state_extension(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    common = {
+        "acknowledge_release_sha256": args.acknowledge_release_sha256,
+        "max_age_seconds": args.max_age_seconds,
+        "transaction_max_age_seconds": args.transaction_max_age_seconds,
+        "canary_max_age_seconds": args.canary_max_age_seconds,
+        "operation": _operation("apply-c2-state-extension", args.network, args.operation_id),
+    }
+    if not args.execute:
+        result = inspect_c2_state_extension_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            **common,
+        )
+        result = {**result, "execute_requested": False}
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_c2_state_extension_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_c2_state_extension_evidence(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_state_extension_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        operation=_operation("verify-c2-state-extension-evidence", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_stage_c2_standby_service(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = stage_c2_standby_service_transaction(
+        _paths(args),
+        private_state,
+        Path(args.preflight_evidence),
+        Path(args.c2_state_extension_evidence),
+        network=args.network,
+        preflight_max_age_seconds=args.preflight_max_age_seconds,
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        created_at=args.created_at,
+        operation=_operation("stage-c2-standby-service", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_standby_service_transaction(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_standby_service_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        Path(args.c2_state_extension_evidence),
+        max_age_seconds=args.max_age_seconds,
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        operation=_operation("verify-c2-standby-service-transaction", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_c2_standby_service(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    release = build_c2_standby_service_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        Path(args.c2_state_extension_evidence),
+        acknowledged_transaction_sha256=args.acknowledge_c2_standby_service_transaction_sha256,
+        max_age_seconds=args.max_age_seconds,
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+        operation=_operation("release-c2-standby-service", args.network, args.operation_id),
+    )
+    if args.write_release:
+        path, digest = write_c2_standby_service_release(
+            _paths(args),
+            release,
+            operation=_operation("write-c2-standby-service-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_standby_service_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_standby_service_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        Path(args.c2_state_extension_evidence),
+        max_age_seconds=args.max_age_seconds,
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        operation=_operation("verify-c2-standby-service-release", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_c2_standby_service(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    common = {
+        "acknowledged_release_sha256": args.acknowledge_release_sha256,
+        "max_age_seconds": args.max_age_seconds,
+        "c2_state_extension_max_age_seconds": args.c2_state_extension_max_age_seconds,
+        "operation": _operation("apply-c2-standby-service", args.network, args.operation_id),
+    }
+    if not args.execute:
+        result = inspect_c2_standby_service_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            Path(args.c2_state_extension_evidence),
+            **common,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_c2_standby_service_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        Path(args.c2_state_extension_evidence),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        opener=_DEFAULT_OPENER,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_c2_standby_service(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_standby_service(
+        _paths(args),
+        private_state,
+        Path(args.execution),
+        network=args.network,
+        observed_at=args.observed_at,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        opener=_DEFAULT_OPENER,
+        write_evidence=args.write_evidence,
+        operation=_operation("verify-c2-standby-service", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    if args.require_clean and result["summary"]["clean"] is not True:
+        return 1
+    return 0
+
+
+def _cmd_stage_c2_standby_identity(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = stage_c2_standby_identity_transaction(
+        _paths(args),
+        private_state,
+        Path(args.standby_evidence),
+        max_age_seconds=args.max_age_seconds,
+        created_at=args.created_at,
+        operation=_operation("stage-c2-standby-identity", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_standby_identity_transaction(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_standby_identity_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_c2_standby_identity(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    release = build_c2_standby_identity_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_identity_transaction_sha256=args.acknowledge_c2_standby_identity_transaction_sha256,
+        max_age_seconds=args.max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_c2_standby_identity_release(
+            _paths(args),
+            release,
+            operation=_operation("write-c2-standby-identity-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_standby_identity_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_standby_identity_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_c2_standby_identity(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    common = {
+        "acknowledged_release_sha256": args.acknowledge_release_sha256,
+        "max_age_seconds": args.max_age_seconds,
+    }
+    if not args.execute:
+        result = inspect_c2_standby_identity_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            **common,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_c2_standby_identity_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        opener=_DEFAULT_OPENER,
+        operation=_operation("apply-c2-standby-identity", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_c2_standby_identity(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_standby_identity(
+        _paths(args),
+        private_state,
+        Path(args.execution),
+        network=args.network,
+        observed_at=args.observed_at,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        opener=_DEFAULT_OPENER,
+        write_evidence=args.write_evidence,
+        operation=_operation("verify-c2-standby-identity", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    if args.require_clean and result["summary"]["clean"] is not True:
+        return 1
+    return 0
+
+
+
+def _cmd_stage_c2_replica_standby(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    transaction = stage_c2_replica_standby_transaction(
+        _paths(args),
+        private_state,
+        c2_state_extension_evidence=Path(args.c2_state_extension_evidence),
+        identity_evidence=Path(args.identity_evidence),
+        identity_rollback_evidence=Path(args.identity_rollback_evidence),
+        genesis_birth_evidence=Path(args.genesis_birth_evidence),
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        genesis_birth_max_age_seconds=args.genesis_birth_max_age_seconds,
+        created_at=args.created_at,
+        operation=_operation("stage-c2-replica-standby", args.network, args.operation_id),
+    )
+    if args.write_transaction:
+        path, digest = write_c2_replica_standby_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("write-c2-replica-standby-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(transaction, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_replica_standby_transaction(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_replica_standby_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        max_age_seconds=args.max_age_seconds,
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        genesis_birth_max_age_seconds=args.genesis_birth_max_age_seconds,
+        operation=_operation("verify-c2-replica-standby-transaction", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_c2_replica_standby(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    release = build_c2_replica_standby_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=args.acknowledge_c2_replica_standby_transaction_sha256,
+        max_age_seconds=args.max_age_seconds,
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        genesis_birth_max_age_seconds=args.genesis_birth_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+        operation=_operation("release-c2-replica-standby", args.network, args.operation_id),
+    )
+    if args.write_release:
+        path, digest = write_c2_replica_standby_release(
+            _paths(args),
+            release,
+            operation=_operation("write-c2-replica-standby-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_replica_standby_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_replica_standby_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        c2_state_extension_max_age_seconds=args.c2_state_extension_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        genesis_birth_max_age_seconds=args.genesis_birth_max_age_seconds,
+        operation=_operation("verify-c2-replica-standby-release", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_c2_replica_standby(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    common = {
+        "acknowledged_release_sha256": args.acknowledge_release_sha256,
+        "max_age_seconds": args.max_age_seconds,
+        "transaction_max_age_seconds": args.transaction_max_age_seconds,
+        "c2_state_extension_max_age_seconds": args.c2_state_extension_max_age_seconds,
+        "identity_max_age_seconds": args.identity_max_age_seconds,
+        "genesis_birth_max_age_seconds": args.genesis_birth_max_age_seconds,
+        "operation": _operation("apply-c2-replica-standby", args.network, args.operation_id),
+    }
+    if not args.execute:
+        result = inspect_c2_replica_standby_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            **common,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_c2_replica_standby_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_c2_replica_standby(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_replica_standby(
+        _paths(args),
+        private_state,
+        Path(args.execution),
+        observed_at=args.observed_at,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        write_evidence=args.write_evidence,
+        operation=_operation("verify-c2-replica-standby", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    if args.require_clean and result["summary"]["clean"] is not True:
+        return 1
+    return 0
+
+
+def _cmd_release_c2_replica_sync(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    release = build_c2_replica_sync_release(
+        _paths(args),
+        private_state,
+        Path(args.standby_evidence),
+        acknowledged_c2_replica_standby_evidence_sha256=args.acknowledge_c2_replica_standby_evidence_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        standby_max_age_seconds=args.standby_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_c2_replica_sync_release(
+            _paths(args),
+            release,
+            operation=_operation("write-c2-replica-sync-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_replica_sync_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_replica_sync_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        standby_max_age_seconds=args.standby_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_c2_replica_sync(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    common = {
+        "acknowledged_release_sha256": args.acknowledge_release_sha256,
+        "selected_nodes": _selected_nodes(args.node),
+        "max_age_seconds": args.max_age_seconds,
+        "standby_max_age_seconds": args.standby_max_age_seconds,
+    }
+    if not args.execute:
+        result = inspect_c2_replica_sync_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            **common,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_c2_replica_sync_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        **common,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        opener=_DEFAULT_OPENER,
+        operation=_operation("apply-c2-replica-sync", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_c2_replica_sync_evidence(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_replica_sync_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -4004,6 +5002,62 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_cleanup_completed_mother_helpers(args, private_state)
         if args.command == "verify-completed-mother-helper-cleanup-evidence":
             return _cmd_verify_completed_mother_helper_cleanup_evidence(args, private_state)
+        if args.command == "stage-c2-state-extension":
+            return _cmd_stage_c2_state_extension(args, private_state)
+        if args.command == "verify-c2-state-extension-transaction":
+            return _cmd_verify_c2_state_extension_transaction(args, private_state)
+        if args.command == "release-c2-state-extension":
+            return _cmd_release_c2_state_extension(args, private_state)
+        if args.command == "verify-c2-state-extension-release":
+            return _cmd_verify_c2_state_extension_release(args, private_state)
+        if args.command == "apply-c2-state-extension":
+            return _cmd_apply_c2_state_extension(args, private_state)
+        if args.command == "verify-c2-state-extension-evidence":
+            return _cmd_verify_c2_state_extension_evidence(args, private_state)
+        if args.command == "stage-c2-standby-service":
+            return _cmd_stage_c2_standby_service(args, private_state)
+        if args.command == "verify-c2-standby-service-transaction":
+            return _cmd_verify_c2_standby_service_transaction(args, private_state)
+        if args.command == "release-c2-standby-service":
+            return _cmd_release_c2_standby_service(args, private_state)
+        if args.command == "verify-c2-standby-service-release":
+            return _cmd_verify_c2_standby_service_release(args, private_state)
+        if args.command == "apply-c2-standby-service":
+            return _cmd_apply_c2_standby_service(args, private_state)
+        if args.command == "verify-c2-standby-service":
+            return _cmd_verify_c2_standby_service(args, private_state)
+        if args.command == "stage-c2-standby-identity":
+            return _cmd_stage_c2_standby_identity(args, private_state)
+        if args.command == "verify-c2-standby-identity-transaction":
+            return _cmd_verify_c2_standby_identity_transaction(args, private_state)
+        if args.command == "release-c2-standby-identity":
+            return _cmd_release_c2_standby_identity(args, private_state)
+        if args.command == "verify-c2-standby-identity-release":
+            return _cmd_verify_c2_standby_identity_release(args, private_state)
+        if args.command == "apply-c2-standby-identity":
+            return _cmd_apply_c2_standby_identity(args, private_state)
+        if args.command == "verify-c2-standby-identity":
+            return _cmd_verify_c2_standby_identity(args, private_state)
+        if args.command == "stage-c2-replica-standby":
+            return _cmd_stage_c2_replica_standby(args, private_state)
+        if args.command == "verify-c2-replica-standby-transaction":
+            return _cmd_verify_c2_replica_standby_transaction(args, private_state)
+        if args.command == "release-c2-replica-standby":
+            return _cmd_release_c2_replica_standby(args, private_state)
+        if args.command == "verify-c2-replica-standby-release":
+            return _cmd_verify_c2_replica_standby_release(args, private_state)
+        if args.command == "apply-c2-replica-standby":
+            return _cmd_apply_c2_replica_standby(args, private_state)
+        if args.command == "verify-c2-replica-standby":
+            return _cmd_verify_c2_replica_standby(args, private_state)
+        if args.command == "release-c2-replica-sync":
+            return _cmd_release_c2_replica_sync(args, private_state)
+        if args.command == "verify-c2-replica-sync-release":
+            return _cmd_verify_c2_replica_sync_release(args, private_state)
+        if args.command == "apply-c2-replica-sync":
+            return _cmd_apply_c2_replica_sync(args, private_state)
+        if args.command == "verify-c2-replica-sync-evidence":
+            return _cmd_verify_c2_replica_sync_evidence(args, private_state)
         if args.command == "probe-coolify-service-lifecycle":
             return _cmd_probe_coolify_service_lifecycle(args, private_state)
         if args.command == "verify-coolify-service-lifecycle-probe-evidence":
@@ -4011,6 +5065,9 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"unsupported command: {args.command}")
     except (
         CoolifyObservationError,
+        MotherDeploymentC2StateExtensionError,
+        MotherDeploymentC2ReplicaStandbyError,
+        MotherDeploymentC2ReplicaSyncError,
         MotherDeploymentExecutorError,
         MotherDeploymentCoolifyServiceLifecycleProbeError,
         MotherDeploymentCompletedHelperCleanupError,

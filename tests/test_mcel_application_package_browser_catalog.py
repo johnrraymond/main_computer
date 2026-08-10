@@ -47,6 +47,15 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
         "contract-workbench",
     }
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
+    assert payload["surfaceBundleCount"] == 1
+    assert set(payload["surfaceBundles"]) == {"code-editor"}
+    code_editor_bundle = payload["surfaceBundles"]["code-editor"]
+    assert code_editor_bundle["schema"] == "mcel.application-surface-bundle.v1"
+    assert code_editor_bundle["appId"] == "code-editor"
+    assert code_editor_bundle["surfaceId"] == "code-editor.surface.monaco-selected-file-editor"
+    assert code_editor_bundle["contractId"] == "code-editor.contract.authoring.monaco-golden-path"
+    assert code_editor_bundle["semanticSurface"]["id"] == "code-editor.semantic-surface.legacy-fidelity"
+    assert code_editor_bundle["layoutGrammar"]["id"] == "code-editor.layout.legacy-fidelity-workbench"
 
     package = next(item for item in payload["packages"] if item["appId"] == "contract-counter")
     assert package["appId"] == "contract-counter"
@@ -71,6 +80,7 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
     assert code_editor["runtimeProjection"]["hostRoute"] == "/applications/code-editor"
     assert code_editor["runtimeProjection"]["rootSelector"] == "#code-editor-app"
     assert code_editor["runtimeProjection"]["runtimeFacade"] == "MainComputerCodeEditorRuntime"
+    assert code_editor["runtimeProjection"]["surfaceBundleUrl"] == "applications/mcel-packages/code-editor/contracts/surface-bundle.json"
     assert code_editor["runtimeProjection"]["documentUrl"] is None
     assert code_editor["runtimeProjection"]["scriptUrl"] is None
     assert code_editor["runtimeProjection"]["styleUrl"] is None
@@ -206,6 +216,12 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
         currentMode: record.conformance.currentMode,
         adapterPath: record.contracts.adapter,
         runtimeManifestUrl: record.runtimeProjection.manifestUrl,
+        surfaceBundleCount: catalog.surfaceBundleCount,
+        hasCodeEditorBundle: catalog.hasSurfaceBundle("code-editor"),
+        hasCounterBundle: catalog.hasSurfaceBundle("contract-counter"),
+        codeEditorSurfaceId: catalog.getSurfaceBundle("code-editor").surfaceId,
+        codeEditorSemanticSurfaceId: catalog.getSurfaceBundle("code-editor").semanticSurface.id,
+        listedSurfaceBundles: catalog.listSurfaceBundles().map((entry) => entry.appId),
         executableKeys: Object.keys(record).filter((key) => typeof record[key] === "function")
       }}));
     """
@@ -232,6 +248,12 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
         "currentMode": "semantic-runtime-proven",
         "adapterPath": "mcel_apps/contract-counter/contracts/adapter.js",
         "runtimeManifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",
+        "surfaceBundleCount": 1,
+        "hasCodeEditorBundle": True,
+        "hasCounterBundle": False,
+        "codeEditorSurfaceId": "code-editor.surface.monaco-selected-file-editor",
+        "codeEditorSemanticSurfaceId": "code-editor.semantic-surface.legacy-fidelity",
+        "listedSurfaceBundles": ["code-editor"],
         "executableKeys": [],
     }
 

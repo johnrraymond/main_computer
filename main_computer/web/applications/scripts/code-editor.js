@@ -533,6 +533,27 @@
       return !!(dom.root && dom.root.dataset && dom.root.dataset.codeEditorRuntimeSurfaceMode === "legacy-fidelity");
     }
 
+
+    function enforceLegacyFidelityDefaultDiagnostics() {
+      if (!dom.root || !isLegacyFidelitySurface()) return;
+      const defaultMode = dom.root.dataset.codeEditorMode !== "mcel";
+      const proofDock = dom.root.querySelector("#code-studio-bottom-panel");
+      if (proofDock) {
+        if (defaultMode) {
+          proofDock.dataset.expanded = "false";
+          proofDock.dataset.mcelResolvedPlacement = "hidden";
+          proofDock.setAttribute("aria-hidden", "true");
+        } else {
+          proofDock.setAttribute("aria-hidden", "false");
+        }
+      }
+      const proofDockToggle = dom.root.querySelector("#code-studio-toggle-assistant");
+      if (proofDockToggle && defaultMode) {
+        proofDockToggle.setAttribute("aria-expanded", "false");
+        proofDockToggle.textContent = "Open proof dock";
+      }
+    }
+
     function enforceLegacyFidelityResizeStability() {
       if (!dom.root || !isLegacyFidelitySurface()) return;
       dom.root.dataset.codeEditorResizeStability = "locked";
@@ -552,6 +573,7 @@
       if (editor) {
         editor.dataset.codeEditorResizeStability = "locked";
       }
+      enforceLegacyFidelityDefaultDiagnostics();
     }
 
     function bindLegacyFidelityResizeStability() {

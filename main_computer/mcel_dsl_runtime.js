@@ -263,6 +263,8 @@ function createHostBoundApplicationBuilder(metadata) {
   let presentation = null;
   let proof = null;
   let zones = [];
+  let semanticSurface = null;
+  let layoutGrammar = null;
   const states = [];
   const capabilities = [];
   const intents = [];
@@ -420,13 +422,18 @@ function createHostBoundApplicationBuilder(metadata) {
         intents,
         capabilities,
         effects,
-        surfaces: [{...presentation, nodes: surfaceNodes}],
+        surfaces: [{
+          ...presentation,
+          ...(semanticSurface ? {semanticSurface: deepClone(semanticSurface, "semanticSurface")} : {}),
+          nodes: surfaceNodes,
+        }],
         layouts: [
           {
             id: appScopedId(metadata, "layout", "workspace"),
             kind: "layout",
             surface: appScopedRef(metadata, "surface", "workspace"),
             zones,
+            ...(layoutGrammar ? {layoutGrammar: deepClone(layoutGrammar, "layoutGrammar")} : {}),
             orderedChildren: surfaceNodes.map((node) => ({ref: node.id})),
           },
         ],
@@ -467,6 +474,9 @@ function createHostBoundApplicationBuilder(metadata) {
           presentation.runtimeFacade = options.runtimeFacade.trim();
         }
       },
+      semanticSurface(options) {
+        semanticSurface = deepClone(options || {}, "semanticSurface");
+      },
     },
     state: {
       rendererLocal(name, schema, options = {}) {
@@ -497,6 +507,9 @@ function createHostBoundApplicationBuilder(metadata) {
     layout: {
       zones(zoneNames) {
         zones = deepClone(zoneNames || []);
+      },
+      grammar(options) {
+        layoutGrammar = deepClone(options || {}, "layoutGrammar");
       },
     },
     proof: {

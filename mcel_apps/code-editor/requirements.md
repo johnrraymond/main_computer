@@ -185,5 +185,23 @@ When the DSL runtime preserves the old Code Studio chrome, the selected-file Mon
 
 - Legacy-fidelity runtime mode must not inherit the old simplified `data-code-editor-mode="authoring"` workbench grid; the preserved Code Studio shell owns activity, explorer, editor, and inspector tracks directly, with the inspector hidden on narrow viewports so Monaco keeps the primary lane.
 
+- Legacy-fidelity shell children must be pinned to a single explicit shell column (`titlebar`, `workbench`, `proof`, `statusbar`). Browser zoom or viewport resize must not allow `.code-studio-shell` to re-resolve into implicit zero-width columns such as `0px 0px <remaining>`, because that collapses `.code-studio-body`, `.code-studio-editor-group`, and the Monaco host even when the app surface itself is wider.
 
-- Legacy-fidelity resize/zoom behavior must preserve a stable workbench canvas. If the browser viewport or zoom level cannot fit the full four-pane Code Studio chrome, the page must scroll horizontally instead of re-solving the shell into overlapping or cramped tracks. The preserved surface locks activity, explorer, primary Monaco editor, and inspector widths so the primary editor does not collapse below its authored minimum.
+## Legacy-fidelity diagnostics contract
+
+The Code Editor diagnosis contract remains the authoring Monaco golden path, but the preserved legacy-fidelity shell is an allowed runtime alias for that authoring path. Diagnostics must not flag `data-code-editor-mode="legacy-fidelity"` as a mode mismatch when the selected-file Monaco surface is owned by `#code-studio-runtime-monaco`.
+
+The primary Monaco surface has a full-size minimum of 360×320 CSS pixels and a compact viewport minimum height of 240 CSS pixels when the available app viewport is at or below 720 CSS pixels tall. This keeps the contract sensitive to true collapsed/zero-height editors while allowing browser zoom and shorter windows that still render a usable selected-file editor.
+
+The activity rail's normal assistant button (`[data-code-studio-panel="assistant"]` inside `.code-studio-activitybar`) is an owned navigation control, not a diagnostic overlay. Overlay detection must ignore that small inline control while still reporting floating or fixed diagnostic/assistant surfaces.
+
+- Patch 16: Default legacy-fidelity authoring hides the MCEL proof/evidence dock completely so diagnostics do not report the compact proof tab strip as a visible forbidden region; MCEL tools mode can still reveal diagnostic proof surfaces intentionally.
+
+
+## Browser smoke contract
+
+The Code Editor runtime must expose a browser-side smoke probe for the legacy-fidelity selected-file editor. The probe is non-mutating: it records the current live DOM state after refresh, resize, or browser zoom and reports pass/fail checks without applying layout overrides.
+
+The smoke contract must verify that legacy-fidelity mode remains active, the shell grid has one non-zero explicit column, the workbench grid has no zero-width visible tracks, exactly one runtime pane is active, the Monaco primary host and editor are visible above compact smoke minimums, the proof dock is hidden by default, and the MCEL diagnosis raw verdict has no critical/error findings when the diagnosis API is available.
+
+The probe is available in the browser as `MainComputerCodeEditorBrowserSmoke.run()` and `MainComputerCodeEditorBrowserSmoke.startResizeWatch()`.

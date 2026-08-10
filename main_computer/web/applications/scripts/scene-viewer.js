@@ -5536,6 +5536,13 @@
           this.movement = shuttle3dMovementConfig(scene);
           this.camera = this.movement.start.slice();
           this.camera[1] = this.movement.eyeHeight;
+          this.velaSubsurface = {
+            active: false,
+            lastStageId: "",
+            lastSnapshot: null,
+            returnCamera: null,
+            returnLook: null
+          };
           this.movementKeys = new Set();
           this.lastFrameTime = null;
           this.onCameraMoved = null;
@@ -5869,6 +5876,7 @@
 
         characterAIPhase() {
           if (this.isDockingCutsceneActive?.()) return "transition";
+          if (this.isVelaSubsurfaceSceneActive?.()) return "vela-subsurface";
           return this.isShuttleBaySceneActive?.() ? "mother-ship" : "shuttle";
         }
 
@@ -6420,6 +6428,344 @@
           return Boolean(this.flight?.bayPlayerControlActive);
         }
 
+        velaSubsurfaceEscapeSnapshot() {
+          const interaction = globalThis.MainComputerStrategicAIVelaInteraction;
+          if (!interaction) return null;
+          if (typeof interaction.activeVelaEscapeScenarioSnapshot === "function") {
+            return interaction.activeVelaEscapeScenarioSnapshot();
+          }
+          const session = interaction.state?.session
+            || globalThis.MainComputerStrategicAISession?.current?.()
+            || null;
+          if (!session || typeof interaction.velaEscapeScenarioSnapshot !== "function") return null;
+          return interaction.velaEscapeScenarioSnapshot(session);
+        }
+
+        isVelaSubsurfaceSnapshotActive(snapshot = this.velaSubsurfaceEscapeSnapshot()) {
+          const stageId = String(snapshot?.stageId || "");
+          return Boolean(
+            snapshot?.trapTriggered
+            && (
+              stageId === "captive-under-surface"
+              || stageId === "hand-to-hand-breakout"
+              || stageId === "surface-transporter-extraction"
+            )
+          );
+        }
+
+        isVelaSubsurfaceSceneActive() {
+          return this.isVelaSubsurfaceSnapshotActive(
+            this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot()
+          );
+        }
+
+        velaSubsurfacePlayerSpawn(snapshot = this.velaSubsurface?.lastSnapshot) {
+          const stageId = String(snapshot?.stageId || "");
+          if (stageId === "hand-to-hand-breakout") {
+            return {
+              position: [0.15, 1.08, 2.9],
+              yaw: 3,
+              pitch: -5
+            };
+          }
+          return {
+            position: [0, 1.08, 3.35],
+            yaw: 0,
+            pitch: -5
+          };
+        }
+
+        velaSubsurfaceGuardPosition() {
+          return [1.2, -0.03, 0.05];
+        }
+
+        velaSubsurfacePhaserPickupPosition() {
+          return [1.78, -0.42, 0.82];
+        }
+
+        velaSubsurfacePhaserAvailable(snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot()) {
+          const equipment = snapshot?.playerEquipment && typeof snapshot.playerEquipment === "object"
+            ? snapshot.playerEquipment
+            : {};
+          const phaser = String(equipment.phaser || "").trim();
+          return phaser === "recovered" || phaser === "available";
+        }
+
+        velaSubsurfaceGuardDefeated(snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot()) {
+          const stageId = String(snapshot?.stageId || "");
+          const guardState = snapshot?.guardState && typeof snapshot.guardState === "object" ? snapshot.guardState : {};
+          const watching = Math.max(0, Number(guardState.watching) || 0);
+          const defeated = Math.max(0, Number(guardState.defeated) || 0);
+          return Boolean(
+            defeated >= 1
+            || watching <= 0
+            || stageId === "hand-to-hand-breakout"
+            || stageId === "surface-transporter-extraction"
+          );
+        }
+
+        velaSubsurfacePhaserRecoveryAvailable(snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot()) {
+          const stageId = String(snapshot?.stageId || "");
+          const guardState = snapshot?.guardState && typeof snapshot.guardState === "object" ? snapshot.guardState : {};
+          const watching = Math.max(0, Number(guardState.watching) || 0);
+          const defeated = Math.max(0, Number(guardState.defeated) || 0);
+          return Boolean(
+            this.isVelaSubsurfaceSnapshotActive(snapshot)
+            && stageId === "hand-to-hand-breakout"
+            && !this.velaSubsurfacePhaserAvailable(snapshot)
+            && (watching <= 0 || defeated >= 1)
+          );
+        }
+
+        velaSubsurfaceGuardInteractionStatus() {
+          const snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot() || {};
+          const stageId = String(snapshot.stageId || "");
+          const guardState = snapshot.guardState && typeof snapshot.guardState === "object" ? snapshot.guardState : {};
+          const guardPosition = this.velaSubsurfaceGuardPosition();
+          const phaserPickupPosition = this.velaSubsurfacePhaserPickupPosition();
+          const playerX = Number(this.camera?.[0] || 0);
+          const playerZ = Number(this.camera?.[2] || 0);
+          const guardDistance = Math.hypot(playerX - guardPosition[0], playerZ - guardPosition[2]);
+          const phaserDistance = Math.hypot(playerX - phaserPickupPosition[0], playerZ - phaserPickupPosition[2]);
+          const guardDefeated = this.velaSubsurfaceGuardDefeated(snapshot);
+          if (!this.isVelaSubsurfaceSnapshotActive(snapshot)) {
+            return {
+              state: "inactive",
+              action: "none",
+              available: false,
+              distance: guardDistance,
+              guardDistance,
+              phaserDistance,
+              guardPosition,
+              phaserPickupPosition
+            };
+          }
+          if (this.velaSubsurfacePhaserAvailable(snapshot)) {
+            return {
+              state: "phaser-recovered",
+              action: "none",
+              available: false,
+              distance: phaserDistance,
+              guardDistance,
+              phaserDistance,
+              guardPosition,
+              phaserPickupPosition,
+              prompt: "Phaser recovered. Fight toward the surface transporter."
+            };
+          }
+          if (guardDefeated && this.velaSubsurfacePhaserRecoveryAvailable(snapshot)) {
+            const inPickupRange = phaserDistance <= 1.4;
+            return {
+              state: inPickupRange ? "phaser-ready" : "search-guard-post",
+              action: "recover-phaser",
+              available: inPickupRange,
+              distance: phaserDistance,
+              guardDistance,
+              phaserDistance,
+              guardPosition,
+              phaserPickupPosition,
+              prompt: inPickupRange
+                ? "Press E to recover your phaser from the guard post."
+                : "Search the guard post for your phaser, then press E."
+            };
+          }
+          if (guardDefeated) {
+            return {
+              state: "guard-down",
+              action: "none",
+              available: false,
+              distance: phaserDistance,
+              guardDistance,
+              phaserDistance,
+              guardPosition,
+              phaserPickupPosition,
+              prompt: "Guard down. Search the guard post for your phaser."
+            };
+          }
+          if (stageId !== "captive-under-surface") {
+            return {
+              state: "unavailable",
+              action: "none",
+              available: false,
+              distance: guardDistance,
+              guardDistance,
+              phaserDistance,
+              guardPosition,
+              phaserPickupPosition,
+              prompt: "Find the next escape route."
+            };
+          }
+          const inRange = guardDistance <= 1.55;
+          return {
+            state: inRange ? "ready" : "close-distance",
+            action: "guard-melee",
+            available: inRange,
+            distance: guardDistance,
+            guardDistance,
+            phaserDistance,
+            guardPosition,
+            phaserPickupPosition,
+            prompt: inRange
+              ? "Press E to strike the lone guard hand-to-hand."
+              : "Close distance to the lone guard, then press E."
+          };
+        }
+
+        velaSubsurfaceInteractionHint() {
+          const status = this.velaSubsurfaceGuardInteractionStatus();
+          const distanceText = Number.isFinite(status.distance)
+            ? ` • range ${status.distance.toFixed(1)}`
+            : "";
+          return `${status.prompt || "Escape the Vela subsurface cavern."}${distanceText}`;
+        }
+
+        handleVelaSubsurfaceInteract(nowMs = performance.now()) {
+          if (!this.isVelaSubsurfaceSceneActive?.()) return false;
+          const status = this.velaSubsurfaceGuardInteractionStatus();
+          this.lastVelaSubsurfaceInteractionAtMs = Number.isFinite(nowMs) ? nowMs : performance.now();
+          this.lastVelaSubsurfaceMessage = status.prompt || "";
+          if (!status.available) {
+            this.emitPilotState?.(true);
+            return true;
+          }
+          const interaction = globalThis.MainComputerStrategicAIVelaInteraction;
+          const session = interaction?.state?.session || globalThis.MainComputerStrategicAISession?.current?.() || null;
+          let snapshot = null;
+          if (status.action === "recover-phaser") {
+            const recover = interaction?.resolveVelaPhaserRecovery || interaction?.resolveVelaGuardPhaserRecovery;
+            if (typeof recover === "function") {
+              snapshot = recover === interaction.resolveVelaPhaserRecovery
+                ? recover.call(interaction, {
+                  reason: "renderer-e-key-recover-phaser",
+                  playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                  pickupPosition: status.phaserPickupPosition.slice(),
+                  distance: Number(status.phaserDistance.toFixed(3))
+                })
+                : recover.call(interaction, session, {
+                  reason: "renderer-e-key-recover-phaser",
+                  playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                  pickupPosition: status.phaserPickupPosition.slice(),
+                  distance: Number(status.phaserDistance.toFixed(3))
+                });
+            }
+            if (snapshot) {
+              this.syncVelaSubsurfaceScene(snapshot);
+              this.lastVelaSubsurfaceMessage = "Phaser recovered. Fight toward the surface transporter.";
+              this.emitPilotState?.(true);
+              return true;
+            }
+            this.emitPilotState?.(true);
+            return true;
+          }
+
+          const resolve = interaction?.resolveVelaGuardMelee || interaction?.resolveVelaGuardTakedown;
+          if (typeof resolve === "function") {
+            snapshot = resolve === interaction.resolveVelaGuardMelee
+              ? resolve.call(interaction, {
+                reason: "renderer-e-key-unarmed-melee",
+                playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                guardPosition: status.guardPosition.slice(),
+                distance: Number(status.guardDistance.toFixed(3))
+              })
+              : resolve.call(interaction, session, {
+                reason: "renderer-e-key-unarmed-melee",
+                playerPosition: Array.isArray(this.camera) ? this.camera.slice() : [],
+                guardPosition: status.guardPosition.slice(),
+                distance: Number(status.guardDistance.toFixed(3))
+              });
+          }
+          if (snapshot) {
+            this.syncVelaSubsurfaceScene(snapshot);
+            this.lastVelaSubsurfaceMessage = "Guard down. Search the guard post for your phaser.";
+            this.emitPilotState?.(true);
+            return true;
+          }
+          this.emitPilotState?.(true);
+          return true;
+        }
+
+        velaSubsurfaceMovementConfig() {
+          const radius = Math.max(0.18, Number(this.movement?.radius) || 0.28);
+          return {
+            ...this.movement,
+            radius,
+            bounds: {
+              minX: -4.1,
+              maxX: 4.1,
+              minZ: -8.4,
+              maxZ: 4.5
+            },
+            colliders: [
+              {id: "vela-holding-left-wall", minX: -4.25, maxX: -3.82, minZ: -8.6, maxZ: 4.8},
+              {id: "vela-holding-right-wall", minX: 3.82, maxX: 4.25, minZ: -8.6, maxZ: 4.8},
+              {id: "vela-holding-back-wall", minX: -4.4, maxX: 4.4, minZ: 4.28, maxZ: 4.8},
+              {id: "vela-surface-transporter-lock", minX: -1.1, maxX: 1.1, minZ: -8.55, maxZ: -7.95},
+              {id: "vela-cave-rubble-left", minX: -3.55, maxX: -2.15, minZ: -2.2, maxZ: -0.85},
+              {id: "vela-cave-rubble-right", minX: 2.05, maxX: 3.45, minZ: -5.4, maxZ: -3.75}
+            ]
+          };
+        }
+
+        syncVelaSubsurfaceScene(snapshotOverride = null) {
+          const snapshot = snapshotOverride || this.velaSubsurfaceEscapeSnapshot();
+          const active = this.isVelaSubsurfaceSnapshotActive(snapshot);
+          if (!this.velaSubsurface) {
+            this.velaSubsurface = {
+              active: false,
+              lastStageId: "",
+              lastSnapshot: null,
+              returnCamera: null,
+              returnLook: null
+            };
+          }
+
+          if (!active) {
+            if (this.velaSubsurface.active) {
+              this.velaSubsurface.active = false;
+              this.velaSubsurface.lastStageId = "";
+              this.velaSubsurface.lastSnapshot = null;
+              this.clearMovementKeys?.();
+            }
+            return false;
+          }
+
+          const stageId = String(snapshot?.stageId || "");
+          const firstEntry = !this.velaSubsurface.active;
+          const stageChanged = this.velaSubsurface.lastStageId !== stageId;
+          const repositionForStage = stageId !== "surface-transporter-extraction";
+          this.velaSubsurface.lastSnapshot = snapshot;
+          this.velaSubsurface.lastStageId = stageId;
+          this.velaSubsurface.active = true;
+
+          if (firstEntry || (stageChanged && repositionForStage)) {
+            if (firstEntry) {
+              this.velaSubsurface.returnCamera = Array.isArray(this.camera)
+                ? this.camera.slice()
+                : null;
+              this.velaSubsurface.returnLook = this.look ? {...this.look} : null;
+            }
+            const spawn = this.velaSubsurfacePlayerSpawn(snapshot);
+            this.camera = spawn.position.slice();
+            if (this.look) {
+              this.look.yaw = spawn.yaw;
+              this.look.pitch = spawn.pitch;
+            } else {
+              this.look = {yaw: spawn.yaw, pitch: spawn.pitch};
+            }
+            if (this.pilot) {
+              this.pilot.active = false;
+              this.pilot.throttle = 0;
+              this.pilot.impulse = 0;
+            }
+            this.clearMovementKeys?.();
+            if (typeof this.onCameraMoved === "function") {
+              this.onCameraMoved(this.camera.slice());
+            }
+            this.emitPilotState?.(true);
+          }
+          return true;
+        }
+
         shuttleBayPlayerSpawn() {
           const fallback = shuttle3dMotherShipInteriorLevelDefaults().spawns["spawn.shuttle-bay"];
           const spawn = this.interiorConfig?.spawns?.["spawn.shuttle-bay"] || fallback;
@@ -6953,6 +7299,9 @@
         }
 
         isWeaponFirePaused() {
+          if (this.isVelaSubsurfaceSceneActive?.()) {
+            return !this.velaSubsurfacePhaserAvailable?.();
+          }
           if (this.characterAIPhase?.() === "mother-ship") {
             return Boolean(
               this.isDockingCutsceneActive()
@@ -8270,6 +8619,74 @@
           }
         }
 
+        appendVelaSubsurfaceCaveGeometry(builder, nowMs) {
+          const snapshot = this.velaSubsurface?.lastSnapshot || this.velaSubsurfaceEscapeSnapshot() || {};
+          const stageId = String(snapshot.stageId || "");
+          const guardDefeated = this.velaSubsurfaceGuardDefeated(snapshot);
+          const floor = builder.color("#1f2937");
+          const floorEdge = builder.color("#374151");
+          const wall = builder.color("#18181b");
+          const wallFace = builder.color("#292524");
+          const amber = builder.color("#f59e0b", true);
+          const cyan = builder.color("#22d3ee", true);
+          const red = builder.color("#ef4444", true);
+          const slate = builder.color("#64748b");
+          const guardBody = builder.color(guardDefeated ? "#78350f" : "#7f1d1d");
+          const guardArmor = builder.color("#111827");
+          const transporter = builder.color("#38bdf8", true);
+
+          // Seal the normal ship world behind an alternate-scene cave shell.
+          builder.box([-4.45, -0.95, -8.65], [4.45, -0.78, 4.75], floor);
+          builder.box([-4.45, 2.55, -8.65], [4.45, 2.72, 4.75], wall);
+          builder.box([-4.55, -0.95, -8.75], [-4.22, 2.68, 4.85], wall);
+          builder.box([4.22, -0.95, -8.75], [4.55, 2.68, 4.85], wall);
+          builder.box([-4.45, -0.95, 4.42], [4.45, 2.68, 4.85], wallFace);
+          builder.box([-4.45, -0.95, -8.75], [4.45, 2.68, -8.42], wallFace);
+
+          // Holding ledge. No vertical-bar facade: the escape reads as an open cave space.
+          builder.box([-2.95, -0.78, 1.08], [2.95, -0.55, 4.35], floorEdge);
+          builder.box([-3.1, -0.45, 1.02], [3.1, -0.28, 1.18], wallFace);
+
+          // A short route from the holding ledge toward the surface transporter.
+          builder.box([-1.65, -0.74, -7.8], [1.65, -0.52, 1.2], floorEdge);
+          builder.box([-3.55, -0.55, -2.2], [-2.15, -0.04, -0.85], wallFace);
+          builder.box([2.05, -0.55, -5.4], [3.45, 0.08, -3.75], wallFace);
+          builder.beam([-1.85, 0.1, -3.8], [-1.85, 1.65, -3.8], 0.035, cyan);
+          builder.beam([1.85, 0.1, -3.8], [1.85, 1.65, -3.8], 0.035, cyan);
+          builder.beam([-1.85, 1.65, -3.8], [1.85, 1.65, -3.8], 0.035, cyan);
+
+          // Guard marker. It stays visible in the cave even before full character AI wiring.
+          if (guardDefeated) {
+            builder.box([0.8, -0.55, 0.05], [1.65, -0.35, 0.55], guardBody);
+            builder.box([1.05, -0.34, 0.16], [1.35, -0.08, 0.45], guardArmor);
+          } else {
+            builder.ellipsoid([1.2, -0.03, 0.05], [0.28, 0.55, 0.24], 10, 6, guardBody);
+            builder.ellipsoid([1.2, 0.58, 0.05], [0.24, 0.25, 0.22], 10, 6, guardBody);
+            builder.box([0.84, 0.08, -0.13], [1.56, 0.24, 0.22], guardArmor);
+            builder.beam([1.48, 0.25, 0.12], [1.72, 0.04, 0.48], 0.04, guardArmor);
+            builder.box([1.08, 0.62, -0.18], [1.17, 0.7, -0.12], red);
+            builder.box([1.24, 0.62, -0.18], [1.33, 0.7, -0.12], red);
+          }
+
+          if (guardDefeated && !this.velaSubsurfacePhaserAvailable(snapshot)) {
+            const pickup = this.velaSubsurfacePhaserPickupPosition();
+            builder.beam([pickup[0] - 0.22, pickup[1] + 0.08, pickup[2]], [pickup[0] + 0.22, pickup[1] + 0.08, pickup[2]], 0.055, cyan);
+            builder.beam([pickup[0] + 0.13, pickup[1] + 0.05, pickup[2] - 0.06], [pickup[0] + 0.28, pickup[1] - 0.12, pickup[2] - 0.06], 0.05, slate);
+            builder.beam([pickup[0] - 0.05, pickup[1] + 0.16, pickup[2]], [pickup[0] + 0.05, pickup[1] + 0.16, pickup[2]], 0.028 + 0.012 * Math.sin((nowMs || 0) / 180), amber);
+          }
+
+          // Locked surface transporter preview.
+          builder.beam([-0.95, -0.5, -7.92], [-0.95, 1.9, -7.92], 0.055, transporter);
+          builder.beam([0.95, -0.5, -7.92], [0.95, 1.9, -7.92], 0.055, transporter);
+          builder.beam([-0.95, 1.9, -7.92], [0.95, 1.9, -7.92], 0.055, transporter);
+          builder.beam([-0.75, -0.45, -8.0], [0.75, -0.45, -8.0], 0.035, transporter);
+
+          // Flicker strips make the cave read as a different physical location.
+          const flicker = 0.75 + 0.25 * Math.sin((nowMs || 0) / 220);
+          builder.beam([-3.5, 2.2, 3.7], [-1.2, 2.2, 3.7], 0.035 + flicker * 0.012, amber);
+          builder.beam([1.2, 2.15, -0.8], [3.35, 2.15, -0.8], 0.025 + flicker * 0.01, amber);
+        }
+
         appendPhaserViewModel(builder) {
           if (this.pilot.active || !this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return;
           const {forward, right, up} = this.cameraBasis();
@@ -8307,6 +8724,20 @@
           const alienEyes = builder.color("#ef4444", true);
           const healthBack = builder.color("#111827");
           const healthFill = builder.color("#84cc16", true);
+          this.syncVelaSubsurfaceScene?.();
+          if (this.isVelaSubsurfaceSceneActive?.()) {
+            this.appendVelaSubsurfaceCaveGeometry(builder, nowMs);
+            if (this.velaSubsurfacePhaserAvailable?.()) {
+              this.appendPhaserViewModel(builder);
+              if (this.phaserBeam && nowMs <= this.phaserBeam.expiresAtMs) {
+                builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.025, builder.color("#f59e0b", true));
+                builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.009, builder.color("#fff7d6", true));
+              }
+            }
+            this.dynamicAnnotationPrimitiveTargets = annotationTargets;
+            this.refreshAnnotationPrimitiveTargets?.();
+            return builder.toFloat32Array();
+          }
           this.appendFlightScene(builder, nowMs);
           if (this.isDockingCutsceneActive()) {
             this.dynamicAnnotationPrimitiveTargets = annotationTargets;
@@ -8712,6 +9143,17 @@
         }
 
         canOccupy(x, z) {
+          if (this.isVelaSubsurfaceSceneActive()) {
+            const movement = this.velaSubsurfaceMovementConfig();
+            const {bounds, radius, colliders} = movement;
+            if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
+            return !colliders.some((collider) => (
+              x > collider.minX - radius
+              && x < collider.maxX + radius
+              && z > collider.minZ - radius
+              && z < collider.maxZ + radius
+            ));
+          }
           const shipSceneActive = this.isShuttleBaySceneActive();
           const movement = shipSceneActive ? this.shuttleBayMovementConfig() : this.movement;
           const {bounds, radius, colliders} = movement;
@@ -8797,6 +9239,7 @@
           const deltaSeconds = this.lastFrameTime === null ? 0 : Math.max(0, (frameTime - this.lastFrameTime) / 1000);
           this.lastFrameTime = frameTime;
           this.updateSpaceNavigation(frameTime);
+          this.syncVelaSubsurfaceScene?.();
           this.updateMovement(deltaSeconds);
           this.updateCharacterAI(frameTime, deltaSeconds);
           this.updateCombat(frameTime, deltaSeconds);
@@ -8809,7 +9252,8 @@
           const gl = this.gl;
           const dockingCutsceneActive = this.isDockingCutsceneActive();
           const shuttleBaySceneActive = this.isShuttleBaySceneActive();
-          const alternateSceneActive = dockingCutsceneActive || shuttleBaySceneActive;
+          const velaSubsurfaceSceneActive = this.isVelaSubsurfaceSceneActive?.();
+          const alternateSceneActive = dockingCutsceneActive || shuttleBaySceneActive || velaSubsurfaceSceneActive;
           const direction = this.cameraDirection();
           const target = [
             this.camera[0] + direction[0],
@@ -9242,6 +9686,9 @@
           if (event.code === "KeyE") {
             event.preventDefault();
             if (event.repeat || shuttle?.isDockingCutsceneActive?.()) return;
+            if (shuttle?.handleVelaSubsurfaceInteract?.()) {
+              return;
+            }
             if (shuttle?.isShuttleBayPlayerControlActive?.()) {
               shuttle.interactWithShip?.();
             } else if (shuttle?.pilot?.active) {
@@ -9735,6 +10182,24 @@
           };
 
           const updatePilotHud = (pilot) => {
+            const velaSubsurfaceSceneActive = renderer.isVelaSubsurfaceSceneActive?.();
+            canvas.dataset.velaSubsurfaceScene = velaSubsurfaceSceneActive ? "active" : "inactive";
+            shell.dataset.velaSubsurfaceScene = velaSubsurfaceSceneActive ? "active" : "inactive";
+            if (velaSubsurfaceSceneActive) {
+              const status = renderer.velaSubsurfaceGuardInteractionStatus?.() || {};
+              const snapshot = renderer.velaSubsurface?.lastSnapshot || renderer.velaSubsurfaceEscapeSnapshot?.() || {};
+              const stageId = String(snapshot.stageId || "");
+              canvas.dataset.pilotMode = "vela-subsurface";
+              shell.dataset.pilotMode = "vela-subsurface";
+              pilotLine.textContent = stageId === "hand-to-hand-breakout"
+                ? "VELA CAVERN • GUARD DOWN • FIND A WEAPON"
+                : "VELA CAVERN • UNARMED • PRESS E FOR HAND-TO-HAND";
+              pilotPrompt.hidden = false;
+              pilotPrompt.textContent = renderer.velaSubsurfaceInteractionHint?.()
+                || (status.prompt || "Escape the Vela subsurface cavern.");
+              updateMovementStatus(renderer.camera);
+              return;
+            }
             canvas.dataset.pilotMode = pilot.active ? "active" : "inactive";
             canvas.dataset.hoveredPilotStation = pilot.hoverId;
             canvas.dataset.activePilotStation = pilot.stationId;

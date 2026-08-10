@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timedelta, timezone
 import hashlib
 import sys
 import types
@@ -263,6 +264,118 @@ def test_execution_apply_writes_cross_validator_evidence_without_validator_mutat
     assert verified["chain_state"] == "exact-cross-validator-verified"
     assert verified["canary_execution_performed"] is True
     assert verified["validator_mutation_count"] == 0
+
+
+def test_evidence_verification_accepts_expired_consumed_release(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (
+        paths,
+        private_state,
+        _soak_path,
+        _soak,
+        _identity,
+        canary,
+        canary_path,
+        canary_digest,
+    ) = _fixture(tmp_path, monkeypatch)
+    canary_address = canary["identity"]["address"]
+    funding_evidence_path, _file_sha, _evidence_sha, _funding_tx_hash = _fake_funding_evidence(
+        paths,
+        monkeypatch,
+        canary_address,
+    )
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    created_at = (now - timedelta(seconds=600)).isoformat().replace("+00:00", "Z")
+
+    release = build_validator_rpc_canary_release(
+        paths,
+        private_state,
+        canary_path,
+        funding_evidence_path,
+        acknowledged_transaction_sha256=canary_digest,
+        created_at=created_at,
+        expires_in_seconds=300,
+        operation=_operation("validator-rpc-canary-expired-evidence-release"),
+    )
+    release_path, release_digest = write_validator_rpc_canary_release(
+        paths,
+        release,
+        operation=_operation("validator-rpc-canary-expired-evidence-release-write"),
+    )
+
+    with pytest.raises(Exception) as active_release_error:
+        verify_validator_rpc_canary_release(
+            paths,
+            private_state,
+            release_path,
+            operation=_operation("validator-rpc-canary-expired-active-release"),
+        )
+    assert getattr(active_release_error.value, "code", "") == "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_RELEASE_EXPIRED"
+
+    evidence_path = paths.root / "evidence" / "deployment-validator-rpc-canary" / "expired-release-evidence.json"
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    completed_at = now.isoformat().replace("+00:00", "Z")
+    document = {
+        "kind": "main_computer.mother.deployment_validator_rpc_canary_evidence.v1",
+        "schema_version": 1,
+        "status": "pass",
+        "started_at": (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+        "completed_at": completed_at,
+        "network": "mainnet",
+        "mother_binding": execution_module._binding(private_state),
+        "release": {
+            "locator": execution_module._relative(paths, release_path, "validator-RPC canary release"),
+            "sha256": release_digest,
+        },
+        "claim": {"locator": "actions/deployment-validator-rpc-canary-execution-claims/synthetic.json"},
+        "chain": dict(release["chain"]),
+        "canary_address": canary_address,
+        "funding_evidence": dict(release["funding_evidence"]),
+        "chain_state": "exact-cross-validator-verified",
+        "cross_validator_verification": {
+            "receipt_verified": True,
+            "bytecode_verified": True,
+            "storage_verified": True,
+        },
+        "mutation_receipts": [],
+        "service_observations": [],
+        "runtime_proofs": {},
+        "runtime_results": {},
+        "failure": None,
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "canary_execution_complete": True,
+            "canary_execution_performed": True,
+            "canary_receipts_verified_on_C": True,
+            "canary_bytecode_verified_on_C": True,
+            "canary_storage_verified_on_C": True,
+            "validator_mutation_count": 0,
+            "validator_restart_count": 0,
+            "validator_vote_performed": False,
+            "next_phase": "validator-rpc-canary-execution-complete",
+        },
+    }
+    document["validator_rpc_canary_evidence_sha256"] = execution_module._digest_without(
+        document,
+        "validator_rpc_canary_evidence_sha256",
+    )
+    evidence_path.write_bytes(canonical_json(document))
+
+    verified = verify_validator_rpc_canary_evidence(
+        paths,
+        private_state,
+        evidence_path,
+        release_max_age_seconds=86400,
+        operation=_operation("validator-rpc-canary-evidence-with-expired-release"),
+    )
+
+    assert verified["clean"] is True
+    assert verified["chain_state"] == "exact-cross-validator-verified"
+    assert verified["next_phase"] == "validator-rpc-canary-execution-complete"
 
 
 def test_local_python_canary_execution_uses_keyword_hex_quantity_fields_and_checksum_transaction_to(monkeypatch) -> None:

@@ -35,6 +35,8 @@ RUNTIME_MANIFEST_NAME = "mcel.runtime.json"
 
 _BROWSER_CONTRACT_KEYS = ("domain", "intents", "adapter", "surface", "layout", "acceptance", "observation")
 _BROWSER_RUNTIME_KEYS = ("document", "script", "style")
+_SURFACE_BUNDLE_CONTRACT_KEY = "surfaceBundle"
+_SURFACE_BUNDLE_PROJECTION_PATH = "contracts/surface-bundle.json"
 HOST_BOUND_RUNTIME_MODE = "host-bound"
 COPIED_RUNTIME_MODE = "package-document"
 
@@ -76,6 +78,8 @@ class ApplicationRuntimeProjection:
     host_route: str | None
     root_selector: str
     runtime_facade: str | None
+    surface_bundle_url: str | None
+    surface_bundle: Mapping[str, Any] | None
     fingerprint: str
     fingerprint_algorithm: str
     files: Mapping[str, bytes]
@@ -94,6 +98,8 @@ class ApplicationRuntimeProjection:
             "hostRoute": self.host_route,
             "rootSelector": self.root_selector,
             "runtimeFacade": self.runtime_facade,
+            "surfaceBundleUrl": self.surface_bundle_url,
+            "surfaceBundle": json.loads(json.dumps(self.surface_bundle, sort_keys=True)) if self.surface_bundle else None,
             "fingerprint": self.fingerprint,
             "fingerprintAlgorithm": self.fingerprint_algorithm,
             "fileCount": len(self.files),
@@ -211,6 +217,16 @@ def _copy_sources(
         if content is None:
             raise InvalidRuntimeProjectionSource(f"Virtual package contract is missing: {relative}.")
         files[f"contracts/{key}.js"] = content
+    if record.contracts.get(_SURFACE_BUNDLE_CONTRACT_KEY):
+        relative = _package_relative(
+            record,
+            record.contracts.get(_SURFACE_BUNDLE_CONTRACT_KEY),
+            f"contracts.{_SURFACE_BUNDLE_CONTRACT_KEY}",
+        )
+        content = record.files.get(relative)
+        if content is None:
+            raise InvalidRuntimeProjectionSource(f"Virtual package surface bundle is missing: {relative}.")
+        files[_SURFACE_BUNDLE_PROJECTION_PATH] = content
     if host_bound:
         return files
     for key in _BROWSER_RUNTIME_KEYS:
@@ -222,6 +238,25 @@ def _copy_sources(
         extension = {"document": "html", "script": "js", "style": "css"}[key]
         files[f"src/{'index' if key == 'document' else 'app'}.{extension}"] = content
     return files
+
+
+def _surface_bundle_from_files(app_id: str, files: Mapping[str, bytes]) -> Mapping[str, Any] | None:
+    content = files.get(_SURFACE_BUNDLE_PROJECTION_PATH)
+    if content is None:
+        return None
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidRuntimeProjectionSource(f"Application {app_id} surface bundle is not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise InvalidRuntimeProjectionSource(f"Application {app_id} surface bundle must be a JSON object.")
+    if value.get("appId") != app_id:
+        raise InvalidRuntimeProjectionSource(f"Application {app_id} surface bundle identity mismatch.")
+    if not isinstance(value.get("semanticSurface"), Mapping):
+        raise InvalidRuntimeProjectionSource(f"Application {app_id} surface bundle requires semanticSurface.")
+    if not isinstance(value.get("layoutGrammar"), Mapping):
+        raise InvalidRuntimeProjectionSource(f"Application {app_id} surface bundle requires layoutGrammar.")
+    return value
 
 
 def build_application_runtime_projection(
@@ -243,8 +278,18 @@ def build_application_runtime_projection(
             f"Application {record.app_id} has neither package runtime files nor a valid host binding."
         )
     host_bound = host_binding is not None and not has_copied_runtime
+    app_id = record.app_id
+    class_name = _class_name(app_id)
+    projection_root = PurePosixPath(DEFAULT_RUNTIME_PROJECTION_ROOT, app_id).as_posix()
+    browser_root = PurePosixPath("applications/mcel-packages", app_id).as_posix()
 
     copied = _copy_sources(repo_root, record, host_bound=host_bound)
+    surface_bundle = _surface_bundle_from_files(app_id=app_id, files=copied)
+    surface_bundle_url = (
+        PurePosixPath(browser_root, _SURFACE_BUNDLE_PROJECTION_PATH).as_posix()
+        if surface_bundle is not None
+        else None
+    )
     fingerprint_inputs = dict(copied)
     fingerprint_inputs["@source-package-fingerprint"] = record.fingerprint.encode("utf-8")
     fingerprint_inputs["@catalog-fingerprint"] = catalog.fingerprint.encode("utf-8")
@@ -253,10 +298,6 @@ def build_application_runtime_projection(
         ((path, fingerprint_inputs[path]) for path in sorted(fingerprint_inputs)),
     )
 
-    app_id = record.app_id
-    class_name = _class_name(app_id)
-    projection_root = PurePosixPath(DEFAULT_RUNTIME_PROJECTION_ROOT, app_id).as_posix()
-    browser_root = PurePosixPath("applications/mcel-packages", app_id).as_posix()
     manifest: dict[str, Any] = {
         "schema": RUNTIME_PROJECTION_SCHEMA,
         "appId": app_id,
@@ -276,6 +317,17 @@ def build_application_runtime_projection(
         "surface": {
             "rootSelector": root_selector.strip(),
         },
+        "surfaceBundle": (
+            {
+                "path": _SURFACE_BUNDLE_PROJECTION_PATH,
+                "url": surface_bundle_url,
+                "schema": str(surface_bundle.get("schema") or ""),
+                "surfaceId": str(surface_bundle.get("surfaceId") or ""),
+                "contractId": str(surface_bundle.get("contractId") or ""),
+            }
+            if surface_bundle is not None
+            else None
+        ),
         "modules": {
             "domain": {"path": "contracts/domain.js", "export": f"{class_name}Domain"},
             "intents": {"path": "contracts/intents.js", "export": f"{class_name}Intents"},
@@ -325,6 +377,8 @@ def build_application_runtime_projection(
         host_route=host_binding["route"] if host_bound and host_binding is not None else None,
         root_selector=root_selector.strip(),
         runtime_facade=host_binding["runtimeFacade"] if host_bound and host_binding is not None else None,
+        surface_bundle_url=surface_bundle_url,
+        surface_bundle=surface_bundle,
         fingerprint=projection_fingerprint,
         fingerprint_algorithm=RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM,
         files=files,

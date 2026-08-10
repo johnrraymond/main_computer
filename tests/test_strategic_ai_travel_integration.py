@@ -117,6 +117,34 @@ class StrategicAITravelIntegrationTests(unittest.TestCase):
               throw new Error("repeated arrival callback advanced state twice");
             }
 
+            const staleReplay = new sessionApi.StrategicAISession("webgl-demo", project, {
+              storage: null,
+              restore: false,
+              seed: 9912
+            });
+            staleReplay.restore(session.exportSnapshot(0), {record: false});
+            staleReplay.setActiveSystemId("system.solace-reach", {record: false, persist: false});
+            let reusedSyncEventCount = 0;
+            staleReplay.subscribe((detail) => {
+              if (detail.operation === "travel-arrival-reused-active-system-sync") {
+                reusedSyncEventCount += 1;
+              }
+            });
+            const staleReplaySequence = staleReplay.summary().sequence;
+            const staleReplayResult = travel.handleNavigation(staleReplay, toVela);
+            if (!staleReplayResult.reused || !staleReplayResult.activeSystemSynced) {
+              throw new Error("reused arrival did not report active-system resync");
+            }
+            if (staleReplay.summary().activeSystemId !== "system.vela-gate") {
+              throw new Error("reused arrival left the strategic session on the stale system");
+            }
+            if (staleReplay.summary().sequence !== staleReplaySequence) {
+              throw new Error("reused arrival active-system resync advanced strategic sequence");
+            }
+            if (reusedSyncEventCount !== 1) {
+              throw new Error("reused arrival active-system resync did not notify subscribers");
+            }
+
             const toSolace = {
               currentSystemId: "system.solace-reach",
               lastCompletedRouteId: "route.solace-reach-vela-gate",

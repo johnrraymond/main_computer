@@ -219,6 +219,35 @@
     });
   }
 
+  function contractModeAliases(report) {
+    const aliases = report?.contract?.modeAliases || report?.contract?.mode_aliases || [];
+    return Array.isArray(aliases) ? aliases.map((mode) => String(mode || "").trim()).filter(Boolean) : [];
+  }
+
+  function reportModeMatchesContract(report) {
+    const actual = String(report?.mode || "").trim();
+    const expected = String(report?.contract?.mode || "").trim();
+    return Boolean(actual && expected && (actual === expected || contractModeAliases(report).includes(actual)));
+  }
+
+  function reportPrimarySurfaceMinimums(report, primarySurface) {
+    const contractSurface = report?.contract?.primarySurface || {};
+    return {
+      minWidth: Number(
+        primarySurface?.minWidth ||
+        contractSurface.effectiveMinWidth ||
+        contractSurface.minWidth ||
+        1
+      ),
+      minHeight: Number(
+        primarySurface?.minHeight ||
+        contractSurface.effectiveMinHeight ||
+        contractSurface.minHeight ||
+        1
+      )
+    };
+  }
+
   function derivedOkCount(report) {
     if (!report || typeof report !== "object") return 0;
 
@@ -226,11 +255,12 @@
     const measurements = report.measurements || {};
     const summary = report.summary || {};
     const primarySurface = summary.primarySurface || {};
-    const minWidth = Number(report.contract?.primarySurface?.minWidth || 1);
-    const minHeight = Number(report.contract?.primarySurface?.minHeight || 1);
+    const minimums = reportPrimarySurfaceMinimums(report, primarySurface);
+    const minWidth = minimums.minWidth;
+    const minHeight = minimums.minHeight;
 
     if (report.verdict === "pass") ok += 1;
-    if (report.mode && report.contract?.mode && report.mode === report.contract.mode) ok += 1;
+    if (reportModeMatchesContract(report)) ok += 1;
 
     for (const region of uniqueRegionEntries(measurements.requiredRegions)) {
       if (region?.exists && region.visible) ok += 1;

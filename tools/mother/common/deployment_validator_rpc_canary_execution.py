@@ -308,6 +308,7 @@ def verify_validator_rpc_canary_release(
     funding_transaction_max_age_seconds: int = 86400,
     soak_max_age_seconds: int = 86400,
     now: datetime | None = None,
+    require_active_window: bool = True,
     operation: OperationIdentity,
 ) -> dict[str, Any]:
     document, _, file_sha = _canonical_under(paths, Path(release_path), _RELEASE_DIRECTORY, "validator-RPC canary release")
@@ -318,7 +319,9 @@ def verify_validator_rpc_canary_release(
     expires = _parse_utc(document.get("expires_at"), "release.expires_at")
     current = datetime.now(timezone.utc) if now is None else now.astimezone(timezone.utc)
     age = int((current - created).total_seconds())
-    if age < -15 or age > max_age_seconds or current > expires:
+    if age < -15 or age > max_age_seconds:
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_RELEASE_EXPIRED", "validator-RPC canary release is outside its accepted age window")
+    if require_active_window and current > expires:
         raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_RELEASE_EXPIRED", "validator-RPC canary release is outside its active window")
     tx_ref = _mapping(document.get("transaction"), "release.transaction")
     tx_path = _resolve(paths, tx_ref.get("locator"), _TRANSACTION_DIRECTORY, "validator-RPC canary transaction")
@@ -868,7 +871,7 @@ def verify_validator_rpc_canary_evidence(
         raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_EVIDENCE_EXPIRED", "validator-RPC canary execution evidence is outside the accepted age window")
     release_ref = _mapping(document.get("release"), "evidence.release")
     release_path = _resolve(paths, release_ref.get("locator"), _RELEASE_DIRECTORY, "validator-RPC canary release")
-    verified_release = verify_validator_rpc_canary_release(paths, private_state, release_path, selected_nodes=selected_nodes, max_age_seconds=release_max_age_seconds, transaction_max_age_seconds=transaction_max_age_seconds, funding_evidence_max_age_seconds=funding_evidence_max_age_seconds, funding_transaction_max_age_seconds=funding_transaction_max_age_seconds, soak_max_age_seconds=soak_max_age_seconds, operation=operation)
+    verified_release = verify_validator_rpc_canary_release(paths, private_state, release_path, selected_nodes=selected_nodes, max_age_seconds=release_max_age_seconds, transaction_max_age_seconds=transaction_max_age_seconds, funding_evidence_max_age_seconds=funding_evidence_max_age_seconds, funding_transaction_max_age_seconds=funding_transaction_max_age_seconds, soak_max_age_seconds=soak_max_age_seconds, require_active_window=False, operation=operation)
     summary = _mapping(document.get("summary"), "evidence.summary")
     cross = _mapping(document.get("cross_validator_verification"), "evidence.cross_validator_verification")
     if not (release_ref.get("sha256") == verified_release["release_sha256"] and document.get("chain_state") == "exact-cross-validator-verified" and summary.get("clean") is True and summary.get("canary_execution_performed") is True and summary.get("canary_receipts_verified_on_C") is True and summary.get("validator_mutation_count") == 0 and summary.get("validator_restart_count") == 0 and summary.get("validator_vote_performed") is False and cross.get("receipt_verified") is True and cross.get("bytecode_verified") is True and cross.get("storage_verified") is True):

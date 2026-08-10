@@ -26,6 +26,8 @@ _PRIVATE_STATE_KIND = "main_computer.mother.private_state.v1"
 _PRIVATE_METADATA_KIND = "main_computer.mother.private_state_metadata.v1"
 _PRIVATE_MANIFEST_VERSION = "main_computer.mother.private_recovery_manifest.v1"
 _STABLE_READ_ATTEMPTS = 3
+_PRIVATE_TRANSITION_DIRECTORY = "private-state-transitions"
+_PRIVATE_TRANSITION_KIND = "main_computer.mother.private_state_transition.v1"
 
 _ACCESS_ALLOWED_ACE_TYPE = 0
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
@@ -925,13 +927,37 @@ def _read_once(paths: PrivateStatePaths, operation: OperationIdentity, manifest_
     )
 
 
-def read_private_state(
+def _binding_transition_wire(binding: PrivateStateBinding) -> dict[str, object]:
+    return {
+        "content_sha256": binding.content_hash.digest,
+        "generation": binding.generation,
+        "manifest_sha256": binding.recovery_manifest_hash.digest,
+        "private_state_kind": binding.private_state_kind,
+    }
+
+
+def _private_state_bundle_components(paths: PrivateStatePaths) -> tuple[tuple[str, Path], ...]:
+    return (
+        ("identity.private.yaml", paths.identity_file),
+        ("identity.private.meta.json", paths.metadata_file),
+        ("private-recovery", paths.recovery_manifest.parent),
+    )
+
+
+def _private_state_paths_at(root: Path) -> PrivateStatePaths:
+    return PrivateStatePaths(
+        root=root,
+        identity_file=root / "identity.private.yaml",
+        metadata_file=root / "identity.private.meta.json",
+        recovery_objects_root=root / "private-recovery" / "objects",
+        recovery_manifest=root / "private-recovery" / "manifest.json",
+    )
+
+
+def _read_private_state_stable(
     paths: PrivateStatePaths,
-    *,
     operation: OperationIdentity,
 ) -> PrivateStateReadResult:
-    operation = _operation(operation)
-    _validate_paths(paths, operation)
     last_mismatch = False
     for _ in range(_STABLE_READ_ATTEMPTS):
         # Manifest bytes are the commit determinant and must bracket the read.
@@ -952,6 +978,151 @@ def read_private_state(
     if last_mismatch:
         raise _error(operation, "MOTHER_STATE_UNSTABLE_PRIVATE_STATE", "private-state commit manifest changed during verification", retry_class="after-reobserve")
     raise AssertionError("unreachable")
+
+
+def _transition_intent(path: Path, operation: OperationIdentity) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "private-state transition intent is unreadable",
+            retry_class="operator-decision",
+            cause=exc,
+        ) from exc
+    required = {"kind", "new_binding", "old_binding", "operation_id", "schema_version"}
+    if (
+        type(value) is not dict
+        or set(value) != required
+        or value.get("kind") != _PRIVATE_TRANSITION_KIND
+        or value.get("schema_version") != 1
+        or canonical_json(value) != raw
+        or type(value.get("old_binding")) is not dict
+        or type(value.get("new_binding")) is not dict
+    ):
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "private-state transition intent is malformed",
+            retry_class="operator-decision",
+        )
+    return value
+
+
+def _remove_transition_tree(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    parent = path.parent
+    try:
+        parent.rmdir()
+    except OSError:
+        pass
+
+
+def _recover_interrupted_private_state_transition(
+    paths: PrivateStatePaths,
+    operation: OperationIdentity,
+) -> None:
+    transition_parent = paths.root / _PRIVATE_TRANSITION_DIRECTORY
+    if not transition_parent.exists():
+        return
+    try:
+        candidates = tuple(sorted((item for item in transition_parent.iterdir() if item.is_dir()), key=lambda item: item.name))
+    except OSError as exc:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "private-state transition directory could not be enumerated",
+            retry_class="operator-decision",
+            cause=exc,
+        ) from exc
+    if not candidates:
+        try:
+            transition_parent.rmdir()
+        except OSError:
+            pass
+        return
+    if len(candidates) != 1:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "multiple private-state transitions require operator review",
+            retry_class="operator-decision",
+        )
+
+    transition = candidates[0]
+    intent_path = transition / "intent.json"
+    if not intent_path.is_file():
+        # Commit never starts before intent publication.  An orphan staging tree
+        # is therefore safe to discard only when the canonical state still reads.
+        _read_private_state_stable(paths, operation)
+        _remove_transition_tree(transition)
+        return
+
+    intent = _transition_intent(intent_path, operation)
+    old_wire = intent["old_binding"]
+    new_wire = intent["new_binding"]
+    try:
+        observed = _read_private_state_stable(paths, operation)
+    except MotherError:
+        observed = None
+
+    if observed is not None:
+        observed_wire = _binding_transition_wire(observed.binding)
+        if observed_wire == new_wire or observed_wire == old_wire:
+            _remove_transition_tree(transition)
+            return
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "canonical private state does not match either side of the interrupted transition",
+            retry_class="operator-decision",
+        )
+
+    old_root = transition / "old"
+    for relative_name, canonical_path in _private_state_bundle_components(paths):
+        backup_path = old_root / relative_name
+        if not backup_path.exists():
+            continue
+        try:
+            if canonical_path.exists():
+                if canonical_path.is_dir():
+                    shutil.rmtree(canonical_path)
+                else:
+                    canonical_path.unlink()
+            os.replace(backup_path, canonical_path)
+            atomic_files.flush_directory(canonical_path.parent)
+        except OSError as exc:
+            raise _error(
+                operation,
+                "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+                "interrupted private-state transition could not restore its predecessor",
+                retry_class="operator-decision",
+                cause=exc,
+            ) from exc
+
+    restored = _read_private_state_stable(paths, operation)
+    if _binding_transition_wire(restored.binding) != old_wire:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "interrupted private-state transition predecessor did not verify after recovery",
+            retry_class="operator-decision",
+        )
+    _remove_transition_tree(transition)
+
+
+def read_private_state(
+    paths: PrivateStatePaths,
+    *,
+    operation: OperationIdentity,
+) -> PrivateStateReadResult:
+    operation = _operation(operation)
+    _validate_paths(paths, operation)
+    _recover_interrupted_private_state_transition(paths, operation)
+    return _read_private_state_stable(paths, operation)
 
 
 def resolve_validator_ref(
@@ -1351,6 +1522,155 @@ def prepare_private_state_successor(
     return closure
 
 
+
+def replace_verified_private_state(
+    paths: PrivateStatePaths,
+    closure: PrivateRecoveryClosure,
+    expected_binding: PrivateStateBinding,
+    *,
+    operation: OperationIdentity,
+) -> PrivateStateInstallResult:
+    """Replace one verified private-state generation while preserving other Mother state.
+
+    The replacement is staged beneath ``private-state-transitions`` and publishes an
+    intent before any canonical bundle member moves.  A later ``read_private_state``
+    can therefore roll an interrupted partial swap back to the exact predecessor.
+    The successor itself embeds the predecessor recovery closure.
+    """
+
+    operation = _operation(operation)
+    _validate_paths(paths, operation)
+    if not isinstance(expected_binding, PrivateStateBinding):
+        raise TypeError("expected_binding must be a PrivateStateBinding")
+    _verify_closure(closure, operation)
+    _recover_interrupted_private_state_transition(paths, operation)
+
+    current = _read_private_state_stable(paths, operation)
+    if current.binding != expected_binding:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "observed private state does not match expected predecessor binding",
+            retry_class="operator-decision",
+        )
+    if closure.binding.generation != current.binding.generation + 1:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "successor private-state generation is not contiguous",
+            retry_class="operator-decision",
+        )
+    successor_metadata = _parse_metadata(closure.metadata_bytes, operation)
+    if successor_metadata.previous_content_hash != current.binding.content_hash:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "successor private state does not bind the installed predecessor",
+            retry_class="operator-decision",
+        )
+
+    token_source = (
+        operation.operation_id.encode("utf-8")
+        + closure.binding.content_hash.digest.encode("ascii")
+        + str(closure.binding.generation).encode("ascii")
+    )
+    token = sha256(token_source).digest[:20]
+    transition_parent = paths.root / _PRIVATE_TRANSITION_DIRECTORY
+    transition = transition_parent / token
+    if transition.exists():
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "private-state transition staging path already exists",
+            retry_class="operator-decision",
+        )
+
+    atomic_files.ensure_durable_directory(transition_parent, operation=operation)
+    _secure_private_path(transition_parent, is_directory=True, operation=operation)
+    atomic_files.ensure_durable_directory(transition, operation=operation)
+    _secure_private_path(transition, is_directory=True, operation=operation)
+
+    intent = {
+        "kind": _PRIVATE_TRANSITION_KIND,
+        "schema_version": 1,
+        "operation_id": operation.operation_id,
+        "old_binding": _binding_transition_wire(current.binding),
+        "new_binding": _binding_transition_wire(closure.binding),
+    }
+    intent_path = transition / "intent.json"
+    atomic_files.durable_create(intent_path, canonical_json(intent), operation=operation)
+    _secure_private_path(intent_path, is_directory=False, operation=operation)
+
+    next_root = transition / "new"
+    old_root = transition / "old"
+    next_paths = _private_state_paths_at(next_root)
+
+    try:
+        install_verified_private_state(next_paths, closure, None, operation=operation)
+        staged = _read_private_state_stable(next_paths, operation)
+        if staged.binding != closure.binding:
+            raise RuntimeError("staged private-state successor did not verify")
+
+        atomic_files.ensure_durable_directory(old_root, operation=operation)
+        _secure_private_path(old_root, is_directory=True, operation=operation)
+
+        reobserved = _read_private_state_stable(paths, operation)
+        if reobserved.binding != expected_binding:
+            raise _error(
+                operation,
+                "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+                "private state changed after successor staging",
+                retry_class="operator-decision",
+            )
+
+        # Move the entire predecessor bundle aside before publishing any successor
+        # member.  Recovery can then always reconstruct the old state from the
+        # union of the canonical paths and ``old``.
+        for relative_name, canonical_path in _private_state_bundle_components(paths):
+            backup_path = old_root / relative_name
+            os.replace(canonical_path, backup_path)
+            atomic_files.flush_directory(canonical_path.parent)
+            atomic_files.flush_directory(backup_path.parent)
+
+        for relative_name, canonical_path in _private_state_bundle_components(paths):
+            staged_path = next_root / relative_name
+            os.replace(staged_path, canonical_path)
+            atomic_files.flush_directory(canonical_path.parent)
+            atomic_files.flush_directory(staged_path.parent)
+
+        verified = _read_private_state_stable(paths, operation)
+        if verified.binding != closure.binding:
+            raise RuntimeError("installed private-state successor did not verify")
+
+        _remove_transition_tree(transition)
+        return PrivateStateInstallResult(
+            True,
+            closure.binding,
+            sha256(closure.recovery_manifest_bytes),
+        )
+    except (MotherError, OSError, RuntimeError) as exc:
+        try:
+            _recover_interrupted_private_state_transition(paths, operation)
+            final = _read_private_state_stable(paths, operation)
+        except MotherError:
+            raise
+        if final.binding == closure.binding:
+            return PrivateStateInstallResult(
+                True,
+                closure.binding,
+                sha256(closure.recovery_manifest_bytes),
+            )
+        if isinstance(exc, MotherError):
+            raise
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_CONFLICT",
+            "private-state generation replacement failed and predecessor was restored",
+            retry_class="operator-decision",
+            cause=exc,
+        ) from exc
+
+
 def _starter_bundle_file_set(current: PrivateStateReadResult) -> set[Path]:
     expected = {
         current.paths.identity_file,
@@ -1552,6 +1872,7 @@ __all__ = [
     "prepare_private_state_bootstrap",
     "prepare_private_state_successor",
     "read_private_state",
+    "replace_verified_private_state",
     "replace_verified_starter_private_state",
     "resolve_validator_ref",
 ]
