@@ -616,6 +616,8 @@ def test_self_diagnosis_attaches_app_surface_conformance_without_replacing_findi
     assert "function harmonizeContractWithAppSurfacePolicy" in source
     assert "function attachAppSurfaceConformance" in source
     assert "function attachDslAuthoringDeclarationFindings" in source
+    assert "function auditDslAuthoringDeclarationCoverage" in source
+    assert "listDslAuthoredSemanticRuntimePackages" in source
     assert "dsl-semantic-surface-missing" in source
     assert "dsl-layout-grammar-missing" in source
     assert "semanticSurfaceHtml" in source
@@ -660,6 +662,21 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
           sandbox.MCELDiagnosticsCounterWidget._private.createIssueHistory("2026-08-10T22:00:00.000Z")
         );
 
+        const unsupportedContractCounterReport = sandbox.McelSelfDiagnosis.diagnose("contract-counter", {{silent: true}});
+        const unsupportedContractCounterCounts = sandbox.MCELDiagnosticsCounterWidget._private.summarizeReport(
+          unsupportedContractCounterReport,
+          sandbox.MCELDiagnosticsCounterWidget._private.createIssueHistory("2026-08-10T22:00:00.000Z")
+        );
+
+        const audit = sandbox.McelSelfDiagnosis.auditDslAuthoringDeclarationCoverage();
+        const coverage = Object.fromEntries(audit.apps.map((app) => [app.appId, {{
+          status: app.status,
+          warningCount: app.warningCount,
+          semanticSurfaceDeclared: app.semanticSurfaceDeclared,
+          layoutGrammarDeclared: app.layoutGrammarDeclared,
+          codes: app.findings.map((finding) => finding.code)
+        }}]));
+
         process.stdout.write(JSON.stringify({{
           calculatorVerdict: calculatorReport.verdict,
           calculatorSummary: calculatorReport.summary,
@@ -667,7 +684,16 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
           calculatorSeverities: calculatorReport.findings.map((finding) => finding.severity),
           calculatorCounts,
           codeEditorCodes: codeEditorReport.findings.map((finding) => finding.code),
-          codeEditorCounts
+          codeEditorCounts,
+          unsupportedContractCounterVerdict: unsupportedContractCounterReport.verdict,
+          unsupportedContractCounterCodes: unsupportedContractCounterReport.findings.map((finding) => finding.code),
+          unsupportedContractCounterCounts,
+          audit: {{
+            appCount: audit.appCount,
+            warningCount: audit.warningCount,
+            greenCount: audit.greenCount,
+            coverage
+          }}
         }}));
         """
     )
@@ -686,6 +712,37 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
     assert data["codeEditorCodes"] == []
     assert data["codeEditorCounts"]["errors"] == 0
     assert data["codeEditorCounts"]["warnings"] == 0
+    assert data["unsupportedContractCounterVerdict"] == "unsupported"
+    assert data["unsupportedContractCounterCodes"] == [
+        "unsupported-app",
+        "dsl-semantic-surface-missing",
+        "dsl-layout-grammar-missing",
+    ]
+    assert data["unsupportedContractCounterCounts"]["errors"] == 0
+    assert data["unsupportedContractCounterCounts"]["warnings"] == 3
+
+    coverage = data["audit"]["coverage"]
+    assert data["audit"]["appCount"] == 4
+    assert data["audit"]["warningCount"] == 6
+    assert data["audit"]["greenCount"] == 1
+    assert coverage["code-editor"] == {
+        "status": "green",
+        "warningCount": 0,
+        "semanticSurfaceDeclared": True,
+        "layoutGrammarDeclared": True,
+        "codes": [],
+    }
+    for app_id in ["calculator", "contract-counter", "contract-workbench"]:
+        assert coverage[app_id] == {
+            "status": "warning",
+            "warningCount": 2,
+            "semanticSurfaceDeclared": False,
+            "layoutGrammarDeclared": False,
+            "codes": [
+                "dsl-semantic-surface-missing",
+                "dsl-layout-grammar-missing",
+            ],
+        }
 
 
 def test_diagnostics_counter_copy_payload_includes_app_surface_conformance() -> None:

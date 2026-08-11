@@ -29,12 +29,35 @@ class GameplayEncounterTemplate:
 
 
 @dataclass(frozen=True)
+class BuiltInGameplayTemplateConsumer:
+    """One built-in hand-authored gameplay implementation that consumes a template.
+
+    This lets the validator vocabulary point back at real, already-playable game
+    content instead of becoming an abstract plugin-only list. It is diagnostic
+    metadata only; it does not activate or mutate runtime gameplay.
+    """
+
+    id: str
+    title: str
+    source: str
+    template_id: str
+    scenario_id: str
+    encounter_id: str
+    system_id: str
+    destination_id: str
+    objective_types: tuple[str, ...]
+    actor_archetypes: tuple[str, ...]
+    consequence_types: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class GameplayTemplateRegistry:
     """Canonical game-owned vocabulary for declarative gameplay plugins."""
 
     schema: str
     registry_version: str
     encounter_templates: tuple[GameplayEncounterTemplate, ...]
+    built_in_consumers: tuple[BuiltInGameplayTemplateConsumer, ...]
     objective_types: tuple[str, ...]
     actor_archetypes: tuple[str, ...]
     consequence_types: tuple[str, ...]
@@ -49,6 +72,12 @@ class GameplayTemplateRegistry:
         for template in self.encounter_templates:
             if template.id == template_id:
                 return template
+        return None
+
+    def built_in_consumer(self, consumer_id: str) -> BuiltInGameplayTemplateConsumer | None:
+        for consumer in self.built_in_consumers:
+            if consumer.id == consumer_id:
+                return consumer
         return None
 
 
@@ -170,6 +199,29 @@ def default_gameplay_template_registry() -> GameplayTemplateRegistry:
                 ),
             ),
         ),
+        built_in_consumers=(
+            BuiltInGameplayTemplateConsumer(
+                id="built-in.vela-gate.subsurface-cave-escape",
+                title="Vela Gate Subsurface Cave Escape",
+                source="built-in",
+                template_id="encounter-template.cave-combat-run",
+                scenario_id="scenario.vela.underground-captivity-escape",
+                encounter_id="encounter.vela.subsurface-captive-breakout",
+                system_id="system.vela-gate",
+                destination_id="destination.vela-gate.subsurface-cavern",
+                objective_types=(
+                    "objective-type.escape-captivity",
+                    "objective-type.recover-item",
+                    "objective-type.clear-hostiles",
+                    "objective-type.reach-extraction",
+                ),
+                actor_archetypes=("actor-archetype.vela-cave-guard",),
+                consequence_types=(
+                    "consequence-type.record-receipt",
+                    "consequence-type.unlock-route",
+                ),
+            ),
+        ),
         objective_types=(
             "objective-type.clear-hostiles",
             "objective-type.recover-item",
@@ -256,6 +308,60 @@ def _template_allowed_values(template: GameplayEncounterTemplate | None, field: 
     if field == "destinations":
         return template.destinations
     return tuple()
+
+
+def validate_built_in_template_consumers(
+    registry: GameplayTemplateRegistry | None = None,
+) -> list[str]:
+    """Return consistency problems in built-in template consumer metadata."""
+
+    active_registry = registry or default_gameplay_template_registry()
+    problems: list[str] = []
+    consumer_ids: set[str] = set()
+
+    for consumer in active_registry.built_in_consumers:
+        if consumer.id in consumer_ids:
+            problems.append(f"duplicate built-in gameplay template consumer id: {consumer.id}")
+        consumer_ids.add(consumer.id)
+
+        template = active_registry.template(consumer.template_id)
+        if template is None:
+            problems.append(
+                f"built-in gameplay template consumer {consumer.id} references unknown template "
+                f"{consumer.template_id}"
+            )
+            continue
+
+        for objective_type in consumer.objective_types:
+            if objective_type not in template.objective_types:
+                problems.append(
+                    f"built-in gameplay template consumer {consumer.id} objective {objective_type} "
+                    f"is not allowed by template {consumer.template_id}"
+                )
+        for actor_archetype in consumer.actor_archetypes:
+            if actor_archetype not in template.actor_archetypes:
+                problems.append(
+                    f"built-in gameplay template consumer {consumer.id} actor archetype {actor_archetype} "
+                    f"is not allowed by template {consumer.template_id}"
+                )
+        for consequence_type in consumer.consequence_types:
+            if consequence_type not in template.consequence_types:
+                problems.append(
+                    f"built-in gameplay template consumer {consumer.id} consequence {consequence_type} "
+                    f"is not allowed by template {consumer.template_id}"
+                )
+        if template.systems and consumer.system_id not in template.systems:
+            problems.append(
+                f"built-in gameplay template consumer {consumer.id} system {consumer.system_id} "
+                f"is not allowed by template {consumer.template_id}"
+            )
+        if template.destinations and consumer.destination_id not in template.destinations:
+            problems.append(
+                f"built-in gameplay template consumer {consumer.id} destination {consumer.destination_id} "
+                f"is not allowed by template {consumer.template_id}"
+            )
+
+    return problems
 
 
 def validate_gameplay_plugin_manifest_against_template_registry(

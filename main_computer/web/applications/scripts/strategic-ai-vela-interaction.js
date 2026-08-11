@@ -27,6 +27,30 @@
     [VELA_ESCAPE_STAGE_IDS.extraction]: "Fight to the surface transporter",
     [VELA_ESCAPE_STAGE_IDS.complete]: "Beam-back complete"
   });
+  const VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER = Object.freeze({
+    id: "built-in.vela-gate.subsurface-cave-escape",
+    source: "built-in",
+    registryVersion: "gameplay-template-registry.v1",
+    templateId: "encounter-template.cave-combat-run",
+    templateTitle: "Cave Combat Run",
+    scenarioId: VELA_ESCAPE_SCENARIO_ID,
+    encounterId: VELA_ESCAPE_ENCOUNTER_ID,
+    systemId: VELA_SYSTEM_ID,
+    destinationId: VELA_ESCAPE_LOCATION_ID,
+    objectiveTypeIds: Object.freeze([
+      "objective-type.escape-captivity",
+      "objective-type.recover-item",
+      "objective-type.clear-hostiles",
+      "objective-type.reach-extraction"
+    ]),
+    actorArchetypeIds: Object.freeze([
+      "actor-archetype.vela-cave-guard"
+    ]),
+    consequenceTypeIds: Object.freeze([
+      "consequence-type.record-receipt",
+      "consequence-type.unlock-route"
+    ])
+  });
   const VELA_CAVE_ROOMS = Object.freeze([
     {id: "vela-cave.holding-ledge", label: "Holding Ledge", position: [0, -0.55, 3.05], kind: "start"},
     {id: "vela-cave.guard-post", label: "Guard Post", position: [1.85, -0.55, 0.85], kind: "weapon-recovery"},
@@ -90,6 +114,11 @@
       status: "active"
     }));
     return {
+      templateId: VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER.templateId,
+      templateConsumerId: VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER.id,
+      objectiveTypeIds: clone(VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER.objectiveTypeIds),
+      actorArchetypeIds: clone(VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER.actorArchetypeIds),
+      consequenceTypeIds: clone(VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER.consequenceTypeIds),
       rooms,
       roomCount: rooms.length,
       enemies,
@@ -138,6 +167,17 @@
     const enemiesActive = enemies.filter((enemy) => enemy.status !== "defeated" && finiteNumber(enemy.health, 1) > 0).length;
     const enemiesDefeated = enemies.length - enemiesActive;
     return {
+      templateId: stringValue(source.templateId || source.encounterTemplateId || base.templateId),
+      templateConsumerId: stringValue(source.templateConsumerId || base.templateConsumerId),
+      objectiveTypeIds: arrayValue(source.objectiveTypeIds).length
+        ? clone(arrayValue(source.objectiveTypeIds).map((id) => stringValue(id)).filter(Boolean))
+        : clone(base.objectiveTypeIds),
+      actorArchetypeIds: arrayValue(source.actorArchetypeIds).length
+        ? clone(arrayValue(source.actorArchetypeIds).map((id) => stringValue(id)).filter(Boolean))
+        : clone(base.actorArchetypeIds),
+      consequenceTypeIds: arrayValue(source.consequenceTypeIds).length
+        ? clone(arrayValue(source.consequenceTypeIds).map((id) => stringValue(id)).filter(Boolean))
+        : clone(base.consequenceTypeIds),
       rooms,
       roomCount: rooms.length,
       enemies,
@@ -223,6 +263,8 @@
       snapshotKind: "vela-underground-escape-scenario",
       scenarioId: VELA_ESCAPE_SCENARIO_ID,
       encounterId: VELA_ESCAPE_ENCOUNTER_ID,
+      encounterTemplateId: VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER.templateId,
+      gameplayTemplate: clone(VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER),
       systemId: VELA_SYSTEM_ID,
       activeSystemId: velaActiveSystemId(session),
       visible,
@@ -274,6 +316,8 @@
       snapshotKind: "vela-underground-escape-scenario",
       scenarioId: VELA_ESCAPE_SCENARIO_ID,
       encounterId: VELA_ESCAPE_ENCOUNTER_ID,
+      encounterTemplateId: VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER.templateId,
+      gameplayTemplate: clone(VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER),
       systemId: VELA_SYSTEM_ID,
       activeSystemId: velaActiveSystemId(session),
       visible: velaActiveSystemId(session) === VELA_SYSTEM_ID,
@@ -1254,6 +1298,7 @@
     VELA_ESCAPE_LOCATION_ID,
     VELA_SURFACE_TRANSPORTER_ID,
     VELA_ESCAPE_STAGE_IDS,
+    VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER,
     VELA_CAVE_ROOMS,
     VELA_CAVE_HOSTILES,
     OFFICIAL_ACTOR_ID,

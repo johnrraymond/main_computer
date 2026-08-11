@@ -13,6 +13,7 @@ from main_computer.gameplay_template_registry import (
     GAMEPLAY_TEMPLATE_REGISTRY_VERSION,
     assert_gameplay_plugin_matches_template_registry,
     default_gameplay_template_registry,
+    validate_built_in_template_consumers,
     validate_gameplay_plugin_content_against_template_registry,
     validate_gameplay_plugin_manifest_against_template_registry,
 )
@@ -76,6 +77,32 @@ def test_default_template_registry_names_supported_gameplay_primitives() -> None
     assert "objective-type.reach-extraction" in registry.objective_types
     assert "actor-archetype.vela-cave-guard" in registry.actor_archetypes
     assert "consequence-type.record-receipt" in registry.consequence_types
+
+
+def test_builtin_vela_cave_escape_declares_supported_template_consumer() -> None:
+    registry = default_gameplay_template_registry()
+
+    assert validate_built_in_template_consumers(registry) == []
+
+    consumer = registry.built_in_consumer("built-in.vela-gate.subsurface-cave-escape")
+    assert consumer is not None
+    assert consumer.source == "built-in"
+    assert consumer.template_id == "encounter-template.cave-combat-run"
+    assert consumer.scenario_id == "scenario.vela.underground-captivity-escape"
+    assert consumer.encounter_id == "encounter.vela.subsurface-captive-breakout"
+    assert consumer.system_id == "system.vela-gate"
+    assert consumer.destination_id == "destination.vela-gate.subsurface-cavern"
+    assert consumer.objective_types == (
+        "objective-type.escape-captivity",
+        "objective-type.recover-item",
+        "objective-type.clear-hostiles",
+        "objective-type.reach-extraction",
+    )
+    assert consumer.actor_archetypes == ("actor-archetype.vela-cave-guard",)
+    assert consumer.consequence_types == (
+        "consequence-type.record-receipt",
+        "consequence-type.unlock-route",
+    )
 
 
 def test_hand_authored_vela_fixture_matches_template_registry() -> None:

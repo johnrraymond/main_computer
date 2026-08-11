@@ -12,7 +12,9 @@ from tools.mother.common.deployment_c2_replica_sync import (
 from tools.mother.common.deployment_c2_validator_admission import (
     build_c2_validator_admission_release,
     build_c2_validator_admission_transaction,
+    execute_c2_validator_admission_release,
     inspect_c2_validator_admission_release,
+    verify_c2_validator_admission_evidence,
     verify_c2_validator_admission_release,
     verify_c2_validator_admission_transaction,
     write_c2_validator_admission_release,
@@ -20,6 +22,7 @@ from tools.mother.common.deployment_c2_validator_admission import (
 )
 from tests.test_mother_deployment_c2_replica_sync import (
     _C2ReplicaSyncOpener,
+    _Response,
     _operation,
     _standby_gate,
     _stamp,
@@ -150,7 +153,7 @@ def test_c2_validator_admission_release_inspects_without_live_mutation(tmp_path,
         transaction_max_age_seconds=999999999,
     )
     assert inspection["summary"]["clean"] is True
-    assert inspection["summary"]["executor_implemented"] is False
+    assert inspection["summary"]["executor_implemented"] is True
     assert inspection["live_mutation_performed"] is False
     assert inspection["validator_vote_performed"] is False
     assert inspection["routing_or_topology_published"] is False
@@ -212,5 +215,126 @@ def test_cli_stages_releases_and_inspects_c2_validator_admission(tmp_path, monke
     ])
     assert code == 0
     inspected = json.loads(capsys.readouterr().out)
-    assert inspected["summary"]["executor_implemented"] is False
-    assert inspected["summary"]["next_phase"] == "implement-c2-validator-admission-executor"
+    assert inspected["summary"]["executor_implemented"] is True
+    assert inspected["summary"]["next_phase"] == "execute-c2-validator-admission"
+
+
+
+class _C2ValidatorAdmissionOpener:
+    def __init__(self, *, a_service_uuid: str = "svc-a1", c1_service_uuid: str = "svc-c1", c2_service_uuid: str = "svc-c2") -> None:
+        self.a_service_uuid = a_service_uuid
+        self.c1_service_uuid = c1_service_uuid
+        self.c2_service_uuid = c2_service_uuid
+        self.requests: list[dict] = []
+        self.statuses = {
+            "coolify-a.invalid": [{"uuid": a_service_uuid, "name": "mainneta-super1", "status": "running:healthy"}],
+            "coolify-c.invalid": [
+                {"uuid": c1_service_uuid, "name": "mainnetc-super1", "status": "running:healthy"},
+                {"uuid": c2_service_uuid, "name": "mainnetc-super2", "status": "running:healthy"},
+            ],
+        }
+        self.composes = {
+            "coolify-a.invalid": {"mainneta-super1": "name: mainneta-super1\nservices:\n  mainneta-super1:\n    image: hyperledger/besu:latest\nvolumes:\n  mother-config:\n"},
+            "coolify-c.invalid": {
+                "mainnetc-super1": "name: mainnetc-super1\nservices:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\nvolumes:\n  mother-config:\n",
+                "mainnetc-super2": "name: mainnetc-super2\nservices:\n  mainnetc-super2:\n    image: hyperledger/besu:latest\nvolumes:\n  mother-config:\n",
+            },
+        }
+
+    def _service_uuid(self, host: str, node: str) -> str:
+        for item in self.statuses[host]:
+            if item["name"] == node:
+                return item["uuid"]
+        raise AssertionError(node)
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        from urllib.parse import urlsplit, parse_qs
+        import base64
+
+        parsed = urlsplit(request.full_url)
+        host = parsed.hostname or ""
+        path = parsed.path
+        method = request.get_method()
+        body = json.loads(request.data.decode("utf-8")) if request.data else None
+        self.requests.append({"method": method, "host": host, "path": path, "query": parsed.query, "body": body})
+        assert timeout > 0
+
+        if method == "GET" and path == "/api/v1/services":
+            return _Response({"services": self.statuses[host]})
+
+        if method == "GET" and path.startswith("/api/v1/services/"):
+            service_uuid = path.rsplit("/", 1)[-1]
+            for item in self.statuses[host]:
+                node = item["name"]
+                if service_uuid == item["uuid"]:
+                    return _Response({"service": {"uuid": service_uuid, "name": node, "status": "running:healthy", "docker_compose_raw": self.composes[host][node]}})
+            raise AssertionError(service_uuid)
+
+        if method == "PATCH" and path.startswith("/api/v1/services/"):
+            service_uuid = path.rsplit("/", 1)[-1]
+            for item in self.statuses[host]:
+                node = item["name"]
+                if service_uuid == item["uuid"] and node in {"mainneta-super1", "mainnetc-super1"}:
+                    self.composes[host][node] = base64.b64decode(body["docker_compose_raw"]).decode("utf-8")
+                    assert "mother-c2-validator-admission-voter" in self.composes[host][node]
+                    assert "8545:8545" not in self.composes[host][node]
+                    return _Response({"uuid": service_uuid, "name": node, "docker_compose_raw": self.composes[host][node]}, status=200)
+            raise AssertionError(service_uuid)
+
+        if method == "GET" and path == "/api/v1/deploy":
+            query = parse_qs(parsed.query)
+            assert query.get("force") == ["true"]
+            assert query.get("uuid")
+            return _Response({"uuid": query["uuid"][0], "status": "accepted"}, status=200)
+
+        raise AssertionError(f"unexpected {method} {host} {path}?{parsed.query}")
+
+
+def test_c2_validator_admission_executor_installs_two_internal_voter_guardians(tmp_path, monkeypatch) -> None:
+    paths, private_state, sync_evidence, now = _sync_evidence(tmp_path, monkeypatch)
+
+    tx = build_c2_validator_admission_transaction(
+        paths,
+        private_state,
+        sync_evidence,
+        max_age_seconds=999999999,
+    )
+    tx_path, tx_sha = write_c2_validator_admission_transaction(paths, tx, operation=_operation("write-c2-validator-admission-exec-tx"))
+    release = build_c2_validator_admission_release(
+        paths,
+        private_state,
+        tx_path,
+        acknowledged_transaction_sha256=tx_sha,
+        transaction_max_age_seconds=999999999,
+    )
+    release_path, release_sha = write_c2_validator_admission_release(paths, release, operation=_operation("write-c2-validator-admission-exec-release"))
+
+    opener = _C2ValidatorAdmissionOpener()
+    result = execute_c2_validator_admission_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=999999999,
+        transaction_max_age_seconds=999999999,
+        max_wait_seconds=1,
+        poll_interval_seconds=0,
+        opener=opener,
+        operation=_operation("execute-c2-validator-admission"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["summary"]["validator_vote_performed"] is True
+    assert result["summary"]["routing_or_topology_published"] is False
+    assert result["summary"]["next_phase"] == "stage-t3-post-admission-steady-state"
+    assert [item["method"] for item in result["mutation_receipts"]] == ["PATCH", "GET", "PATCH", "GET"]
+
+    verified = verify_c2_validator_admission_evidence(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+        max_age_seconds=999999999,
+    )
+    assert verified["clean"] is True
+    assert verified["next_phase"] == "stage-t3-post-admission-steady-state"

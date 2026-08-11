@@ -347,14 +347,24 @@
     return Boolean(bundle && typeof bundle === "object" && bundle.layoutGrammar && typeof bundle.layoutGrammar === "object");
   }
 
-  function dslAuthoringDeclarationFindings(appId) {
-    const record = getApplicationPackageRecord(appId);
+  function listDslAuthoredSemanticRuntimePackages() {
+    const catalog = getApplicationPackageCatalog();
+    if (!catalog || typeof catalog.listPackages !== "function") return [];
+    try {
+      return catalog.listPackages().filter(isDslAuthoredSemanticRuntimePackage);
+    } catch {
+      return [];
+    }
+  }
+
+  function dslAuthoringDeclarationFindingsForRecord(record) {
     if (!isDslAuthoredSemanticRuntimePackage(record)) return [];
+    const appId = String(record.appId || "");
     const bundle = getApplicationSurfaceBundle(appId);
     const authoring = record.authoring || {};
     const conformance = record.conformance || {};
     const evidence = {
-      appId: String(appId || ""),
+      appId,
       packageRoot: String(record.packageRoot || ""),
       authoringSource: String(authoring.source || ""),
       currentMode: String(conformance.currentMode || conformance.current_mode || ""),
@@ -381,6 +391,43 @@
       });
     }
     return findings;
+  }
+
+  function dslAuthoringDeclarationFindings(appId) {
+    const record = getApplicationPackageRecord(appId);
+    if (!record) return [];
+    return dslAuthoringDeclarationFindingsForRecord(record);
+  }
+
+  function dslAuthoringDeclarationCoverageForRecord(record) {
+    const findings = dslAuthoringDeclarationFindingsForRecord(record);
+    const codes = findings.map((finding) => finding.code);
+    return {
+      appId: String(record?.appId || ""),
+      packageRoot: String(record?.packageRoot || ""),
+      authoringSource: String(record?.authoring?.source || ""),
+      semanticSurfaceDeclared: !codes.includes("dsl-semantic-surface-missing"),
+      layoutGrammarDeclared: !codes.includes("dsl-layout-grammar-missing"),
+      status: findings.length ? "warning" : "green",
+      warningCount: findings.filter((finding) => finding.severity === "warning").length,
+      findings
+    };
+  }
+
+  function auditDslAuthoringDeclarationCoverage() {
+    const apps = listDslAuthoredSemanticRuntimePackages()
+      .map(dslAuthoringDeclarationCoverageForRecord)
+      .sort((left, right) => left.appId.localeCompare(right.appId));
+    const warningCount = apps.reduce((total, app) => total + app.warningCount, 0);
+    return {
+      schema: "mcel.dsl-authoring-declaration-coverage.v1",
+      version: VERSION,
+      timestamp: nowIso(),
+      appCount: apps.length,
+      warningCount,
+      greenCount: apps.filter((app) => app.status === "green").length,
+      apps
+    };
   }
 
   function attachDslAuthoringDeclarationFindings(report) {
@@ -2368,6 +2415,8 @@
       measurements: {},
       summary: {critical: 0, warning: 1, info: 0}
     };
+    attachDslAuthoringDeclarationFindings(report);
+    report.buckets = buildReportBuckets(report);
     lastReport = report;
     return report;
   }
@@ -2425,6 +2474,7 @@
       diagnose,
       exportLastDiagnosis,
       listContracts,
+      auditDslAuthoringDeclarationCoverage,
       buildDiagnosisSnapshot,
       buildCodeEditorSnapshot,
       evaluateRuntimeContractSnapshot,
@@ -2440,7 +2490,11 @@
         getApplicationPackageCatalog,
         getApplicationPackageRecord,
         getApplicationSurfaceBundle,
+        listDslAuthoredSemanticRuntimePackages,
         dslAuthoringDeclarationFindings,
+        dslAuthoringDeclarationFindingsForRecord,
+        dslAuthoringDeclarationCoverageForRecord,
+        auditDslAuthoringDeclarationCoverage,
         attachDslAuthoringDeclarationFindings,
         attachMcelSurfacePathway,
         attachAppSurfaceConformance,

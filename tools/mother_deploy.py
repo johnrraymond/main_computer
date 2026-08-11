@@ -78,7 +78,9 @@ from tools.mother.common.deployment_c2_validator_admission import (
     MotherDeploymentC2ValidatorAdmissionError,
     build_c2_validator_admission_release,
     build_c2_validator_admission_transaction,
+    execute_c2_validator_admission_release,
     inspect_c2_validator_admission_release,
+    verify_c2_validator_admission_evidence,
     verify_c2_validator_admission_release,
     verify_c2_validator_admission_transaction,
     write_c2_validator_admission_release,
@@ -2188,7 +2190,7 @@ def _parser() -> argparse.ArgumentParser:
 
     apply_c2_validator_admission = subparsers.add_parser(
         "apply-c2-validator-admission",
-        help="inspect the released C2 validator-admission plan; live executor is deferred",
+        help="inspect or execute the released C2 two-voter validator-admission plan",
         allow_abbrev=False,
     )
     _common(apply_c2_validator_admission)
@@ -2196,6 +2198,20 @@ def _parser() -> argparse.ArgumentParser:
     apply_c2_validator_admission.add_argument("--acknowledge-release-sha256", required=True)
     apply_c2_validator_admission.add_argument("--max-age-seconds", type=int, default=300)
     apply_c2_validator_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_c2_validator_admission.add_argument("--timeout", type=float, default=30.0)
+    apply_c2_validator_admission.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_c2_validator_admission.add_argument("--max-wait-seconds", type=float, default=300.0)
+    apply_c2_validator_admission.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    apply_c2_validator_admission.add_argument("--execute", action="store_true")
+
+    verify_c2_validator_admission_evidence_cmd = subparsers.add_parser(
+        "verify-c2-validator-admission-evidence",
+        help="verify persisted C2 validator-admission evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_c2_validator_admission_evidence_cmd)
+    verify_c2_validator_admission_evidence_cmd.add_argument("--evidence", required=True)
+    verify_c2_validator_admission_evidence_cmd.add_argument("--max-age-seconds", type=int, default=300)
 
     verify_coolify_service_lifecycle_probe = subparsers.add_parser(
         "verify-coolify-service-lifecycle-probe-evidence",
@@ -5115,14 +5131,43 @@ def _cmd_verify_c2_validator_admission_release(args: argparse.Namespace, private
 
 def _cmd_apply_c2_validator_admission(args: argparse.Namespace, private_state) -> int:
     _c2_selection(args)
-    result = inspect_c2_validator_admission_release(
+    if args.execute:
+        result = execute_c2_validator_admission_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            acknowledged_release_sha256=args.acknowledge_release_sha256,
+            selected_nodes=_selected_nodes(args.node),
+            max_age_seconds=args.max_age_seconds,
+            transaction_max_age_seconds=args.transaction_max_age_seconds,
+            timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+            max_wait_seconds=args.max_wait_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+            operation=_operation("execute-c2-validator-admission", args.network, args.operation_id),
+        )
+    else:
+        result = inspect_c2_validator_admission_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            acknowledged_release_sha256=args.acknowledge_release_sha256,
+            selected_nodes=_selected_nodes(args.node),
+            max_age_seconds=args.max_age_seconds,
+            transaction_max_age_seconds=args.transaction_max_age_seconds,
+        )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_c2_validator_admission_evidence(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_c2_validator_admission_evidence(
         _paths(args),
         private_state,
-        Path(args.release),
-        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        Path(args.evidence),
         selected_nodes=_selected_nodes(args.node),
         max_age_seconds=args.max_age_seconds,
-        transaction_max_age_seconds=args.transaction_max_age_seconds,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
@@ -5384,6 +5429,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_c2_validator_admission_release(args, private_state)
         if args.command == "apply-c2-validator-admission":
             return _cmd_apply_c2_validator_admission(args, private_state)
+        if args.command == "verify-c2-validator-admission-evidence":
+            return _cmd_verify_c2_validator_admission_evidence(args, private_state)
         if args.command == "probe-coolify-service-lifecycle":
             return _cmd_probe_coolify_service_lifecycle(args, private_state)
         if args.command == "verify-coolify-service-lifecycle-probe-evidence":

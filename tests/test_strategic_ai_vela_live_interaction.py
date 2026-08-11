@@ -620,6 +620,9 @@ class StrategicAIVelaLiveInteractionTests(unittest.TestCase):
         self.assertIn("return !this.velaSubsurfacePhaserAvailable?.()", scene_source)
         self.assertIn("resolveVelaGuardPhaserRecovery", interaction_source)
         self.assertIn("phaserRecoveryAvailable", interaction_source)
+        self.assertIn("VELA_CAVE_GAMEPLAY_TEMPLATE_CONSUMER", interaction_source)
+        self.assertIn('"encounter-template.cave-combat-run"', interaction_source)
+        self.assertIn('"objective-type.clear-hostiles"', interaction_source)
         self.assertIn("VELA_CAVE_ROOMS", interaction_source)
         self.assertIn("VELA_CAVE_HOSTILES", interaction_source)
         self.assertIn("resolveVelaCaveEnemyPhaserHit", interaction_source)
@@ -681,6 +684,22 @@ class StrategicAIVelaLiveInteractionTests(unittest.TestCase):
             }
             if (!armed.caveSystem || armed.caveSystem.roomCount !== 6) {
               throw new Error("Vela cave system did not expose six sectors");
+            }
+            if (
+              armed.encounterTemplateId !== "encounter-template.cave-combat-run"
+              || !armed.gameplayTemplate
+              || armed.gameplayTemplate.id !== "built-in.vela-gate.subsurface-cave-escape"
+              || armed.gameplayTemplate.templateId !== "encounter-template.cave-combat-run"
+            ) {
+              throw new Error("Vela escape snapshot did not declare its built-in cave-combat-run template consumer");
+            }
+            if (
+              !armed.caveSystem.objectiveTypeIds.includes("objective-type.clear-hostiles")
+              || !armed.caveSystem.objectiveTypeIds.includes("objective-type.reach-extraction")
+              || !armed.caveSystem.actorArchetypeIds.includes("actor-archetype.vela-cave-guard")
+              || !armed.caveSystem.consequenceTypeIds.includes("consequence-type.unlock-route")
+            ) {
+              throw new Error("Vela cave system did not expose registry-aligned gameplay primitives");
             }
             if (armed.caveSystem.enemiesActive !== 8) {
               throw new Error(`expected 8 active cave hostiles, got ${armed.caveSystem.enemiesActive}`);
