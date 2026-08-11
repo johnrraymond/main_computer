@@ -16,7 +16,7 @@ mcel app create <app-id>
 
 ### DSL-v1 migration target
 
-The current scaffold emits the explicit canonical package used by Contract Counter. The documented v1 target in `pretty_docs/mcel-official-vanilla-javascript-dsl.md` changes the authored/generated boundary without discarding the current package authority:
+The current scaffold emits the explicit canonical package template. The documented v1 target in `pretty_docs/mcel-official-vanilla-javascript-dsl.md` changes the authored/generated boundary without discarding the current package authority:
 
 ```text
 mcel_apps/<app-id>/application.js                       official DSL source
@@ -114,7 +114,7 @@ tools/mcel_create_app.py                 live
 main_computer.mcel_scaffolding           live
 mcel.canonical-application-template.v1   live
 structural package validation            live
-golden Contract Counter fixture          live
+golden template fixture                  live
 repository package discovery             live
 browser-safe package catalog             live
 adapter-to-SCM application runtime       live
@@ -124,7 +124,7 @@ operation-linked browser observation     live
 app-oriented proof orchestration         implemented
 ```
 
-The live generator creates the complete target package shape under the repository-root `mcel_apps/` directory by default. `tools/mcel_application_packages.py` discovers and fingerprints canonical packages. `tools/mcel_application_runtime_projection.py` deterministically copies only browser-executable domain, intent, adapter, surface, layout, observation, document, script, and style files into `main_computer/web/applications/mcel-packages/`, with a source-bound runtime manifest. The generated browser catalog carries the matching projection fingerprint and browser URLs. `MCEL.mountApplicationPackage()` verifies package, catalog, and projection identity; loads declared modules; compiles intents through `mcel-scm.js`; validates authored semantic ridges; binds controls to intents; and renders committed state and operation receipts. Package-local acceptance is discovered from the package manifest, requirements, and package-relative binding file. The generic package host mounts the projected application in Chromium, and `mcel_application_observation_runner.py` independently compares committed SCM state and receipts against rendered semantic nodes while proving the five required surface-conformance layers. `mcel_app_prove.py` then reconciles all fingerprints and asks `McelAppTruthGate` for the final `semantic-runtime-proven` verdict.
+The live generator creates the complete target package shape under the repository-root `mcel_apps/` directory by default. Command examples now use a neutral sample identifier; the historical Contract Counter fixture remains only as a compatibility oracle while tests move to fixture-neutral generator and package checks. `tools/mcel_application_packages.py` discovers and fingerprints canonical packages. `tools/mcel_application_runtime_projection.py` deterministically copies only browser-executable domain, intent, adapter, surface, layout, observation, document, script, and style files into `main_computer/web/applications/mcel-packages/`, with a source-bound runtime manifest. The generated browser catalog carries the matching projection fingerprint and browser URLs. `MCEL.mountApplicationPackage()` verifies package, catalog, and projection identity; loads declared modules; compiles intents through `mcel-scm.js`; validates authored semantic ridges; binds controls to intents; and renders committed state and operation receipts. Package-local acceptance is discovered from the package manifest, requirements, and package-relative binding file. The generic package host mounts the projected application in Chromium, and `mcel_application_observation_runner.py` independently compares committed SCM state and receipts against rendered semantic nodes while proving the five required surface-conformance layers. `mcel_app_prove.py` then reconciles all fingerprints and asks `McelAppTruthGate` for the final `semantic-runtime-proven` verdict.
 
 ## The four artifacts
 
@@ -158,13 +158,13 @@ When those assertions can be expressed through a fixture-neutral generator or
 package-conformance test, prefer the fixture-neutral test and leave Contract
 Counter as historical compatibility coverage rather than a new-app target.
 
-The generator's expected output is recorded under:
+The historical generator-output oracle is recorded under:
 
 ```text
 tests/fixtures/mcel_application_template_v1/contract-counter/
 ```
 
-Tests generate a package into a temporary directory and compare every generated file byte-for-byte with this fixture.
+Current generator tests no longer depend on Contract Counter as the golden target. They generate a neutral sample package, compare the written tree against the in-memory rendered template, and keep this fixture only as compatibility evidence until the fixture can be deleted.
 
 ### Checked-in reference application
 
@@ -174,20 +174,20 @@ The repository carries one generated browser-mountable reference instance:
 contract-counter
 ```
 
-The checked-in Contract Counter and golden fixture are regenerated from the same template and remain byte-aligned. Its browser-safe projection is generated separately from the canonical package. The package is the canonical `semantic-runtime-proven` template fixture: proof still requires fresh app-scoped acceptance, Chromium observation, exact provenance, and the final truth-gate verdict.
+The checked-in Contract Counter and golden fixture remain historical compatibility evidence for the template family. Its browser-safe projection is generated separately from the canonical package. The package is the canonical `semantic-runtime-proven` template fixture while compatibility tests still need it; proof still requires fresh app-scoped acceptance, Chromium observation, exact provenance, and the final truth-gate verdict.
 
 ## Target command contract
 
 The live repository command is:
 
 ```bat
-python tools/mcel_create_app.py contract-counter --title "Contract Counter"
+python tools/mcel_create_app.py sample-app --title "Sample Application"
 ```
 
 The eventual product command is proposed as:
 
 ```text
-mcel app create contract-counter --title "Contract Counter"
+mcel app create sample-app --title "Sample Application"
 ```
 
 ### Required initial arguments
@@ -250,7 +250,7 @@ The target package is self-contained and application-oriented:
 
 ```text
 mcel_apps/
-└── contract-counter/
+└── sample-app/
     ├── mcel.app.json
     ├── requirements.md
     ├── blueprint.json
@@ -304,8 +304,8 @@ Target shape:
 ```json
 {
   "schema": "mcel.application-package.v1",
-  "appId": "contract-counter",
-  "title": "Contract Counter",
+  "appId": "sample-app",
+  "title": "Sample Application",
   "template": {
     "id": "mcel.canonical-application-template",
     "version": "1.0.0"
@@ -353,7 +353,7 @@ The blueprint records the app's declared regions, responsibilities, and implemen
 
 Status: `fixture-target`.
 
-The domain contract defines canonical application state and invariants. For Contract Counter:
+The domain contract defines canonical application state and invariants. For the current historical counter fixture:
 
 ```text
 count: nonnegative integer
@@ -644,7 +644,7 @@ Golden comparison should normalize only properties explicitly declared nondeterm
 
 ## Checked-in reference app rules
 
-The checked-in Contract Counter must be reproducible from the template.
+Any generated package must be reproducible from the template. Contract Counter remains historical compatibility evidence, not the only allowed generator target.
 
 A conformance test should establish one of these relationships:
 
@@ -887,7 +887,7 @@ Live implementation:
 Verified exit gate:
 
 ```text
-python main_computer/mcel_acceptance_runner.py --app contract-counter --check
+python main_computer/mcel_acceptance_runner.py --app sample-app --check
 → evidence_scope: app-scoped
 → enforceable_contracts: 1
 → passed_contracts: 1
@@ -919,7 +919,7 @@ accepted increment
 Required command:
 
 ```bat
-python main_computer/mcel_application_observation_runner.py --app contract-counter --check
+python main_computer/mcel_application_observation_runner.py --app sample-app --check
 ```
 
 Tampered state text, tampered receipts, missing semantic nodes, surface mismatch, refused operations, and stale package or runtime-projection fingerprints are hard failures. The observation report also proves semantic-surface, layout-grammar, runtime-ownership, runtime-visual-fit, and diagnostic-no-throw layers for final proof composition.
@@ -930,7 +930,7 @@ Tampered state text, tampered receipts, missing semantic nodes, surface mismatch
 Live command:
 
 ```bat
-python main_computer/mcel_app_prove.py --app contract-counter --check
+python main_computer/mcel_app_prove.py --app sample-app --check
 ```
 
 The runner composes, without collapsing, these authorities:
@@ -980,7 +980,7 @@ Deliver:
 
 ## Required MCEL changes after the first working scaffold
 
-A working generator is not completion. Once the first package can be emitted, development must move the platform toward the template rather than embedding compatibility hacks in Contract Counter.
+A working generator is not completion. Once the first package can be emitted, development must move the platform toward the template rather than embedding compatibility hacks in a historical fixture app.
 
 Required principles:
 
@@ -1039,13 +1039,13 @@ Each platform wave must add the smallest failing fixture assertion before implem
 The scaffolding program is complete when this conceptual command succeeds without app-specific integration work:
 
 ```text
-mcel app create contract-counter --prove
+mcel app create sample-app --prove
 ```
 
 Expected result:
 
 ```text
-MCEL application created: contract-counter
+MCEL application created: sample-app
 
 Scaffold conformance       pass
 Application discovery      pass

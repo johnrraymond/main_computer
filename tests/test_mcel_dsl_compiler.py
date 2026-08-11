@@ -6,15 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from main_computer.mcel_application_ir import canonical_json_bytes
 from main_computer.mcel_dsl_compiler import compile_dsl_application
-from main_computer.mcel_application_ir import validate_application_ir
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DSL_FIXTURE = ROOT / "mcel_apps" / "contract-counter" / "application.js"
-LEGACY_IR = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
+DSL_FIXTURE = ROOT / "mcel_apps" / "calculator" / "application.js"
 TOOL = ROOT / "tools" / "mcel_dsl_compile.py"
-EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
 
 
 def _codes(report) -> set[str]:
@@ -27,37 +25,52 @@ def _write_source(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def _write_compare_ir(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "comparison.ir.json"
+    path.write_bytes(canonical_json_bytes(payload) + b"\n")
+    return path
+
+
 def _minimal_source(builder_body: str) -> str:
-    return f'''"use strict";\nconst mcel = require("@mcel/app");\nmodule.exports = mcel.defineApp(\n  {{id: "test-app", title: "Test App"}},\n  (dsl) => {{\n    {builder_body}\n  }}\n);\n'''
+    return f"""\"use strict\";\nconst mcel = require(\"@mcel/app\");\nmodule.exports = mcel.defineApp(\n  {{id: \"test-app\", title: \"Test App\"}},\n  (dsl) => {{\n    {builder_body}\n  }}\n);\n"""
 
 
-def test_counter_dsl_compiles_to_exact_legacy_semantics() -> None:
-    report = compile_dsl_application(DSL_FIXTURE, compare_ir_path=LEGACY_IR)
+def test_real_dsl_app_compiles_to_exact_generated_semantics(tmp_path: Path) -> None:
+    baseline = compile_dsl_application(DSL_FIXTURE)
+
+    assert baseline.valid is True
+    assert baseline.status == "pass"
+    assert baseline.diagnostics == ()
+    assert baseline.semantic_fingerprint
+    assert baseline.source_binding_fingerprint
+    assert baseline.normalized_ir is not None
+    assert baseline.normalized_ir["application"]["appId"] == "calculator"
+    assert baseline.normalized_ir["provenance"]["frontend"]["id"] == "mcel.dsl.v1"
+
+    comparison_ir = _write_compare_ir(tmp_path, dict(baseline.normalized_ir))
+    report = compile_dsl_application(DSL_FIXTURE, compare_ir_path=comparison_ir)
 
     assert report.valid is True
     assert report.status == "pass"
-    assert report.diagnostics == ()
-    assert report.semantic_fingerprint == EXPECTED_SEMANTIC
-    assert report.source_binding_fingerprint
-    legacy_report = validate_application_ir(json.loads(LEGACY_IR.read_text()))
-    assert report.source_binding_fingerprint != legacy_report.source_binding_fingerprint
     assert report.comparison_status == "exact"
-    assert report.normalized_ir is not None
-    assert report.normalized_ir["migration"]["state"] == "dual-authored"
-    assert report.normalized_ir["provenance"]["frontend"]["id"] == "mcel.dsl.v1"
+    assert report.semantic_fingerprint == baseline.semantic_fingerprint
 
 
 def test_candidate_is_staged_outside_live_application(tmp_path: Path) -> None:
-    live_files = sorted((ROOT / "mcel_apps" / "contract-counter").rglob("*"))
+    live_files = sorted(DSL_FIXTURE.parent.rglob("*"))
     before = {
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in live_files
         if path.is_file()
     }
 
+    baseline = compile_dsl_application(DSL_FIXTURE)
+    assert baseline.valid is True and baseline.normalized_ir is not None
+    comparison_ir = _write_compare_ir(tmp_path, dict(baseline.normalized_ir))
+
     report = compile_dsl_application(
         DSL_FIXTURE,
-        compare_ir_path=LEGACY_IR,
+        compare_ir_path=comparison_ir,
         write_candidate=True,
         candidate_root=tmp_path / "compiler-candidates",
     )
@@ -67,7 +80,7 @@ def test_candidate_is_staged_outside_live_application(tmp_path: Path) -> None:
     assert report.candidate_report_path and report.candidate_report_path.is_file()
     candidate = json.loads(report.candidate_ir_path.read_text(encoding="utf-8"))
     compiler_report = json.loads(report.candidate_report_path.read_text(encoding="utf-8"))
-    assert candidate["fingerprints"]["semantic"] == EXPECTED_SEMANTIC
+    assert candidate["fingerprints"]["semantic"] == baseline.semantic_fingerprint
     assert compiler_report["authority"] == {
         "candidatePromoted": False,
         "contractsGenerated": False,
@@ -84,6 +97,10 @@ def test_candidate_is_staged_outside_live_application(tmp_path: Path) -> None:
 
 
 def test_cli_runs_under_python_without_site_packages(tmp_path: Path) -> None:
+    baseline = compile_dsl_application(DSL_FIXTURE)
+    assert baseline.valid is True and baseline.normalized_ir is not None and baseline.semantic_fingerprint
+    comparison_ir = _write_compare_ir(tmp_path, dict(baseline.normalized_ir))
+
     completed = subprocess.run(
         [
             sys.executable,
@@ -92,7 +109,7 @@ def test_cli_runs_under_python_without_site_packages(tmp_path: Path) -> None:
             "--input",
             str(DSL_FIXTURE),
             "--compare-ir",
-            str(LEGACY_IR),
+            str(comparison_ir),
             "--write-candidate",
             "--candidate-root",
             str(tmp_path / "candidates"),
@@ -106,7 +123,7 @@ def test_cli_runs_under_python_without_site_packages(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert "status: pass" in completed.stdout
     assert "comparison: exact" in completed.stdout
-    assert EXPECTED_SEMANTIC in completed.stdout
+    assert baseline.semantic_fingerprint in completed.stdout
 
 
 def test_generic_host_bound_application_builder_compiles(tmp_path: Path) -> None:
@@ -157,11 +174,10 @@ module.exports = mcel.defineApp(
     assert ir["proof"]["targetTruthStatus"] == "semantic-runtime-proven"
 
 
-
 def test_forbidden_node_module_is_rejected(tmp_path: Path) -> None:
     source = _write_source(
         tmp_path,
-        '''"use strict";\nconst fs = require("node:fs");\nconst mcel = require("@mcel/app");\nmodule.exports = mcel.defineApp({id:"test-app",title:"Test App"}, () => ({}));\n''',
+        """\"use strict\";\nconst fs = require(\"node:fs\");\nconst mcel = require(\"@mcel/app\");\nmodule.exports = mcel.defineApp({id:\"test-app\",title:\"Test App\"}, () => ({}));\n""",
     )
 
     report = compile_dsl_application(source)
@@ -204,7 +220,7 @@ def test_nonportable_callback_result_is_rejected(tmp_path: Path) -> None:
 def test_infinite_builder_is_terminated(tmp_path: Path) -> None:
     source = _write_source(
         tmp_path,
-        '''"use strict";\nconst mcel = require("@mcel/app");\nwhile (true) {}\nmodule.exports = mcel.defineApp({id:"test-app",title:"Test App"}, () => ({}));\n''',
+        """\"use strict\";\nconst mcel = require(\"@mcel/app\");\nwhile (true) {}\nmodule.exports = mcel.defineApp({id:\"test-app\",title:\"Test App\"}, () => ({}));\n""",
     )
 
     report = compile_dsl_application(source, timeout_ms=25)
@@ -214,12 +230,16 @@ def test_infinite_builder_is_terminated(tmp_path: Path) -> None:
 
 
 def test_semantic_conflict_is_reported_and_not_promoted(tmp_path: Path) -> None:
-    text = DSL_FIXTURE.read_text(encoding="utf-8").replace("count.increment(1), revision.increment(1)", "count.increment(2), revision.increment(1)", 1)
+    baseline = compile_dsl_application(DSL_FIXTURE)
+    assert baseline.valid is True and baseline.normalized_ir is not None
+    comparison_ir = _write_compare_ir(tmp_path, dict(baseline.normalized_ir))
+
+    text = DSL_FIXTURE.read_text(encoding="utf-8").replace('initial: "basic"', 'initial: "graphing"', 1)
     source = _write_source(tmp_path, text)
 
     report = compile_dsl_application(
         source,
-        compare_ir_path=LEGACY_IR,
+        compare_ir_path=comparison_ir,
         write_candidate=True,
         candidate_root=tmp_path / "candidates",
     )

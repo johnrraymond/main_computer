@@ -11,6 +11,18 @@ import sys
 from typing import Any
 
 
+_MAINNET_SOAK_OUT_OF_DATE_WARNING = (
+    "WARNING: mainnet steady-state soak is out of date and out of scope for the "
+    "current golden path. It is still the old A/C-specific soak and must not be "
+    "used as definitive evidence for topology-derived validator sets until the "
+    "soak runner is generalized."
+)
+
+
+def _warn_mainnet_soak_out_of_date(command: str) -> None:
+    print(f"{command}: {_MAINNET_SOAK_OUT_OF_DATE_WARNING}", file=sys.stderr)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -97,6 +109,47 @@ from tools.mother.common.deployment_t3_post_admission_steady_state import (
     verify_t3_post_admission_steady_state_transaction,
     write_t3_post_admission_steady_state_release,
     write_t3_post_admission_steady_state_transaction,
+)
+from tools.mother.common.deployment_node_remove_prep import (
+    MotherDeploymentNodeRemovePrepError,
+    build_node_remove_prep_transaction,
+    verify_node_remove_prep_transaction,
+    write_node_remove_prep_transaction,
+)
+from tools.mother.common.deployment_node_remove_do import (
+    MotherDeploymentNodeRemoveDoError,
+    build_node_remove_do_release,
+    execute_node_remove_do_release,
+    verify_node_remove_do_evidence,
+    verify_node_remove_do_release,
+    write_node_remove_do_release,
+)
+from tools.mother.common.deployment_node_remove_finalize import (
+    MotherDeploymentNodeRemoveFinalizeError,
+    finalize_node_remove,
+    verify_node_remove_finalize_evidence,
+)
+from tools.mother.common.deployment_node_add_prep import (
+    MotherDeploymentNodeAddPrepError,
+    build_node_add_prep_transaction,
+    verify_node_add_prep_transaction,
+    write_node_add_prep_transaction,
+)
+from tools.mother.common.deployment_node_add_do import (
+    MotherDeploymentNodeAddDoError,
+    build_node_add_do_release,
+    execute_node_add_do_release,
+    verify_node_add_do_evidence,
+    verify_node_add_do_release,
+    write_node_add_do_release,
+)
+from tools.mother.common.deployment_node_add_identity import (
+    MotherDeploymentNodeAddIdentityError,
+    build_node_add_identity_release,
+    execute_node_add_identity_release,
+    verify_node_add_identity_evidence,
+    verify_node_add_identity_release,
+    write_node_add_identity_release,
 )
 from tools.mother.common.deployment_identity_install import (
     MotherDeploymentIdentityInstallError,
@@ -413,6 +466,291 @@ def _common(parser: argparse.ArgumentParser) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+
+    add_node = subparsers.add_parser(
+        "add-node",
+        help="documented generic Mother node-add surface; prep is topology-diff driven and local-only",
+        allow_abbrev=False,
+    )
+    add_node_subparsers = add_node.add_subparsers(dest="add_node_phase", required=True)
+    add_node_prep = add_node_subparsers.add_parser(
+        "prep",
+        help="prepare an explicit add-node transaction from canonical topology evidence",
+        allow_abbrev=False,
+    )
+    add_node_prep.add_argument("network", choices=["mainnet"])
+    add_node_prep.add_argument("--node", required=True, help="explicit absent node name to add; never inferred from a golden-path stage")
+    add_node_prep.add_argument("--host", required=True, help="explicit target Coolify controller/host for the added node")
+    add_node_prep.add_argument("--mode", default="soft", choices=["initial", "soft", "reactivate"])
+    add_node_prep.add_argument("--baseline-evidence", required=True)
+    add_node_prep.add_argument("--baseline-evidence-sha256", required=True)
+    add_node_prep.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    add_node_prep.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_prep.add_argument("--operation-id")
+    add_node_prep.add_argument("--created-at")
+    add_node_prep.add_argument("--write-transaction", action="store_true")
+
+    add_node_do = add_node_subparsers.add_parser(
+        "do",
+        help="execute the released generic add-node standby-service creation phase",
+        allow_abbrev=False,
+    )
+    add_node_do.add_argument("network", choices=["mainnet"])
+    add_node_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_do.add_argument("--operation-id")
+    add_node_do.add_argument("--release", required=True)
+    add_node_do.add_argument("--acknowledge-release-sha256", required=True)
+    add_node_do.add_argument("--max-age-seconds", type=int, default=900)
+    add_node_do.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    add_node_do.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    add_node_do.add_argument("--timeout", type=float, default=30.0)
+    add_node_do.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_identity = add_node_subparsers.add_parser(
+        "identity",
+        help="execute the released generic add-node identity-install phase",
+        allow_abbrev=False,
+    )
+    add_node_identity.add_argument("network", choices=["mainnet"])
+    add_node_identity.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_identity.add_argument("--operation-id")
+    add_node_identity.add_argument("--release", required=True)
+    add_node_identity.add_argument("--acknowledge-release-sha256", required=True)
+    add_node_identity.add_argument("--max-age-seconds", type=int, default=900)
+    add_node_identity.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    add_node_identity.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    add_node_identity.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    add_node_identity.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    add_node_identity.add_argument("--timeout", type=float, default=30.0)
+    add_node_identity.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_identity.add_argument("--execute", action="store_true")
+
+    verify_node_add_prep = subparsers.add_parser(
+        "verify-add-node-prep-transaction",
+        help="verify a prepared generic Mother add-node transaction without live mutation",
+        allow_abbrev=False,
+    )
+    verify_node_add_prep.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_prep.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_prep.add_argument("--operation-id")
+    verify_node_add_prep.add_argument("--transaction", required=True)
+    verify_node_add_prep.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_prep.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    release_node_add_do = subparsers.add_parser(
+        "release-add-node-do",
+        help="mint an explicit expiring release for a verified generic Mother add-node prep transaction",
+        allow_abbrev=False,
+    )
+    release_node_add_do.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    release_node_add_do.add_argument("--operation-id")
+    release_node_add_do.add_argument("--transaction", required=True)
+    release_node_add_do.add_argument("--acknowledge-node-add-prep-transaction-sha256", required=True)
+    release_node_add_do.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_node_add_do.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    release_node_add_do.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_add_do.add_argument("--created-at")
+    release_node_add_do.add_argument("--write-release", action="store_true")
+
+    verify_node_add_do_release_parser = subparsers.add_parser(
+        "verify-add-node-do-release",
+        help="verify a generic Mother add-node do release before live service creation",
+        allow_abbrev=False,
+    )
+    verify_node_add_do_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_do_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_do_release_parser.add_argument("--operation-id")
+    verify_node_add_do_release_parser.add_argument("--release", required=True)
+    verify_node_add_do_release_parser.add_argument("--max-age-seconds", type=int, default=900)
+    verify_node_add_do_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_do_release_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    verify_node_add_do_evidence_parser = subparsers.add_parser(
+        "verify-add-node-do-evidence",
+        help="verify generic Mother add-node do evidence after standby service creation",
+        allow_abbrev=False,
+    )
+    verify_node_add_do_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_do_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_do_evidence_parser.add_argument("--operation-id")
+    verify_node_add_do_evidence_parser.add_argument("--evidence", required=True)
+    verify_node_add_do_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_do_evidence_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_add_do_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_do_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    release_node_add_identity = subparsers.add_parser(
+        "release-add-node-identity",
+        help="mint an explicit expiring release for generic Mother add-node identity installation",
+        allow_abbrev=False,
+    )
+    release_node_add_identity.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_identity.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    release_node_add_identity.add_argument("--operation-id")
+    release_node_add_identity.add_argument("--add-do-evidence", required=True)
+    release_node_add_identity.add_argument("--acknowledge-add-node-do-evidence-sha256", required=True)
+    release_node_add_identity.add_argument("--max-age-seconds", type=int, default=86400)
+    release_node_add_identity.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    release_node_add_identity.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_node_add_identity.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    release_node_add_identity.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_add_identity.add_argument("--created-at")
+    release_node_add_identity.add_argument("--write-release", action="store_true")
+
+    verify_node_add_identity_release_parser = subparsers.add_parser(
+        "verify-add-node-identity-release",
+        help="verify a generic Mother add-node identity release before live env installation",
+        allow_abbrev=False,
+    )
+    verify_node_add_identity_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_identity_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_identity_release_parser.add_argument("--operation-id")
+    verify_node_add_identity_release_parser.add_argument("--release", required=True)
+    verify_node_add_identity_release_parser.add_argument("--max-age-seconds", type=int, default=900)
+    verify_node_add_identity_release_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_release_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_release_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    verify_node_add_identity_evidence_parser = subparsers.add_parser(
+        "verify-add-node-identity-evidence",
+        help="verify generic Mother add-node identity evidence after environment installation",
+        allow_abbrev=False,
+    )
+    verify_node_add_identity_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_identity_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_identity_evidence_parser.add_argument("--operation-id")
+    verify_node_add_identity_evidence_parser.add_argument("--evidence", required=True)
+    verify_node_add_identity_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_evidence_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_evidence_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_evidence_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_identity_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+
+    remove_node = subparsers.add_parser(
+        "remove-node",
+        help="documented Mother node-removal surface; prep is local-only, do requires an explicit release",
+        allow_abbrev=False,
+    )
+    remove_node_subparsers = remove_node.add_subparsers(dest="remove_node_phase", required=True)
+    remove_node_prep = remove_node_subparsers.add_parser(
+        "prep",
+        help="prepare an explicit node-removal transaction from canonical baseline evidence",
+        allow_abbrev=False,
+    )
+    remove_node_prep.add_argument("network", choices=["mainnet"])
+    remove_node_prep.add_argument("--node", required=True, help="explicit node name to remove; never inferred from host or ordinal")
+    remove_node_prep.add_argument("--mode", default="soft", choices=["soft"])
+    remove_node_prep.add_argument("--baseline-evidence", required=True)
+    remove_node_prep.add_argument("--baseline-evidence-sha256", required=True)
+    remove_node_prep.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    remove_node_prep.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    remove_node_prep.add_argument("--operation-id")
+    remove_node_prep.add_argument("--created-at")
+    remove_node_prep.add_argument("--write-transaction", action="store_true")
+
+    remove_node_do = remove_node_subparsers.add_parser(
+        "do",
+        help="execute a released Mother node-removal plan; mutates only after release acknowledgement",
+        allow_abbrev=False,
+    )
+    remove_node_do.add_argument("network", choices=["mainnet"])
+    remove_node_do.add_argument("--release", required=True)
+    remove_node_do.add_argument("--acknowledge-release-sha256", required=True)
+    remove_node_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    remove_node_do.add_argument("--operation-id")
+    remove_node_do.add_argument("--max-age-seconds", type=int, default=300)
+    remove_node_do.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    remove_node_do.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    remove_node_do.add_argument("--timeout", type=float, default=30.0)
+    remove_node_do.add_argument("--max-wait-seconds", type=float, default=300.0)
+    remove_node_do.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    remove_node_do.add_argument("--allow-missing-service", action="store_true")
+    remove_node_do.add_argument("--execute", action="store_true", help="required to perform live mutation")
+
+    remove_node_finalize = remove_node_subparsers.add_parser(
+        "finalize",
+        help="finalize a completed Mother node-removal do evidence artifact with read-only checks",
+        allow_abbrev=False,
+    )
+    remove_node_finalize.add_argument("network", choices=["mainnet"])
+    remove_node_finalize.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    remove_node_finalize.add_argument("--operation-id")
+    remove_node_finalize.add_argument("--do-evidence", required=True)
+    remove_node_finalize.add_argument("--max-age-seconds", type=int, default=86400)
+    remove_node_finalize.add_argument("--timeout", type=float, default=30.0)
+    remove_node_finalize.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    remove_node_finalize.add_argument("--write-evidence", action="store_true")
+
+    verify_node_remove_prep = subparsers.add_parser(
+        "verify-remove-node-prep-transaction",
+        help="verify a prepared Mother node-removal transaction without live mutation",
+        allow_abbrev=False,
+    )
+    verify_node_remove_prep.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_prep.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_remove_prep.add_argument("--operation-id")
+    verify_node_remove_prep.add_argument("--transaction", required=True)
+    verify_node_remove_prep.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_remove_prep.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    release_node_remove_do = subparsers.add_parser(
+        "release-remove-node-do",
+        help="mint an explicit expiring release for a verified Mother remove-node prep transaction",
+        allow_abbrev=False,
+    )
+    release_node_remove_do.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_remove_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    release_node_remove_do.add_argument("--operation-id")
+    release_node_remove_do.add_argument("--transaction", required=True)
+    release_node_remove_do.add_argument("--acknowledge-node-remove-prep-transaction-sha256", required=True)
+    release_node_remove_do.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_node_remove_do.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    release_node_remove_do.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_remove_do.add_argument("--created-at")
+    release_node_remove_do.add_argument("--write-release", action="store_true")
+
+    verify_node_remove_do_release = subparsers.add_parser(
+        "verify-remove-node-do-release",
+        help="verify a Mother remove-node do release without live mutation",
+        allow_abbrev=False,
+    )
+    verify_node_remove_do_release.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_do_release.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_remove_do_release.add_argument("--operation-id")
+    verify_node_remove_do_release.add_argument("--release", required=True)
+    verify_node_remove_do_release.add_argument("--max-age-seconds", type=int, default=300)
+    verify_node_remove_do_release.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_remove_do_release.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    verify_node_remove_do_evidence = subparsers.add_parser(
+        "verify-remove-node-do-evidence",
+        help="verify persisted Mother remove-node do evidence",
+        allow_abbrev=False,
+    )
+    verify_node_remove_do_evidence.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_do_evidence.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_remove_do_evidence.add_argument("--operation-id")
+    verify_node_remove_do_evidence.add_argument("--evidence", required=True)
+    verify_node_remove_do_evidence.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_remove_do_evidence.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_remove_do_evidence.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_remove_do_evidence.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    verify_node_remove_finalize = subparsers.add_parser(
+        "verify-remove-node-finalize-evidence",
+        help="verify Mother node-removal finalize evidence",
+        allow_abbrev=False,
+    )
+    verify_node_remove_finalize.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_finalize.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_remove_finalize.add_argument("--operation-id")
+    verify_node_remove_finalize.add_argument("--evidence", required=True)
+    verify_node_remove_finalize.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_remove_finalize.add_argument("--do-max-age-seconds", type=int, default=86400)
 
     plan = subparsers.add_parser(
         "plan",
@@ -1386,7 +1724,7 @@ def _parser() -> argparse.ArgumentParser:
 
     run_mainnet_soak = subparsers.add_parser(
         "run-mainnet-steady-state-soak",
-        help="run a GET-only A/C steady-state soak from canonical continuation evidence",
+        help="OUT OF DATE: warns before running the old A/C-specific steady-state soak",
         allow_abbrev=False,
     )
     _common(run_mainnet_soak)
@@ -1400,7 +1738,7 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_mainnet_soak = subparsers.add_parser(
         "verify-mainnet-steady-state-soak-evidence",
-        help="verify canonical persisted GET-only A/C soak evidence",
+        help="OUT OF DATE: warns before verifying old A/C-specific soak evidence",
         allow_abbrev=False,
     )
     _common(verify_mainnet_soak)
@@ -3729,6 +4067,7 @@ def _cmd_run_mainnet_steady_state_soak(
     args: argparse.Namespace,
     private_state,
 ) -> int:
+    _warn_mainnet_soak_out_of_date("run-mainnet-steady-state-soak")
     result = run_mainnet_steady_state_soak(
         _paths(args),
         private_state,
@@ -3764,6 +4103,7 @@ def _cmd_verify_mainnet_steady_state_soak_evidence(
     args: argparse.Namespace,
     private_state,
 ) -> int:
+    _warn_mainnet_soak_out_of_date("verify-mainnet-steady-state-soak-evidence")
     result = verify_mainnet_steady_state_soak_evidence(
         _paths(args),
         private_state,
@@ -5371,10 +5711,365 @@ def _cmd_verify_t3_post_admission_steady_state_evidence(args: argparse.Namespace
     return 0
 
 
+
+
+def _cmd_add_node_prep(args: argparse.Namespace, private_state) -> int:
+    transaction = build_node_add_prep_transaction(
+        _paths(args),
+        private_state,
+        Path(args.baseline_evidence),
+        network=args.network,
+        target_node=args.node,
+        target_host=args.host,
+        mode=args.mode,
+        baseline_evidence_sha256=args.baseline_evidence_sha256,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = write_node_add_prep_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("write-node-add-prep-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(transaction, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_prep_transaction(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_prep_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        max_age_seconds=args.max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_node_add_do(args: argparse.Namespace, private_state) -> int:
+    release = build_node_add_do_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_prep_transaction_sha256=args.acknowledge_node_add_prep_transaction_sha256,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_node_add_do_release(
+            _paths(args),
+            release,
+            operation=_operation("write-node-add-do-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_do_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_do_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_add_node_do(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        raise RuntimeError("--execute is required for add-node do")
+    result = execute_node_add_do_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("execute-node-add-do", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_do_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_do_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_node_add_identity(args: argparse.Namespace, private_state) -> int:
+    release = build_node_add_identity_release(
+        _paths(args),
+        private_state,
+        Path(args.add_do_evidence),
+        acknowledged_add_do_evidence_sha256=args.acknowledge_add_node_do_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_node_add_identity_release(
+            _paths(args),
+            release,
+            operation=_operation("write-node-add-identity-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_identity_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_identity_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_add_node_identity(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        raise RuntimeError("--execute is required for add-node identity")
+    result = execute_node_add_identity_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        max_age_seconds=args.max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("execute-node-add-identity", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_identity_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_identity_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_remove_node_prep(args: argparse.Namespace, private_state) -> int:
+    transaction = build_node_remove_prep_transaction(
+        _paths(args),
+        private_state,
+        Path(args.baseline_evidence),
+        network=args.network,
+        target_node=args.node,
+        mode=args.mode,
+        baseline_evidence_sha256=args.baseline_evidence_sha256,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = write_node_remove_prep_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("write-node-remove-prep-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(transaction, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_remove_prep_transaction(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_remove_prep_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        max_age_seconds=args.max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_node_remove_do(args: argparse.Namespace, private_state) -> int:
+    release = build_node_remove_do_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_prep_transaction_sha256=args.acknowledge_node_remove_prep_transaction_sha256,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_node_remove_do_release(
+            _paths(args),
+            release,
+            operation=_operation("write-node-remove-do-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_remove_do_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_remove_do_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_remove_node_do(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        raise RuntimeError("--execute is required for remove-node do")
+    result = execute_node_remove_do_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        timeout=args.timeout,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        allow_missing_service=args.allow_missing_service,
+        operation=_operation("execute-node-remove-do", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_remove_do_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_remove_do_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_remove_node_finalize(args: argparse.Namespace, private_state) -> int:
+    result = finalize_node_remove(
+        _paths(args),
+        private_state,
+        Path(args.do_evidence),
+        network=args.network,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        write_evidence=args.write_evidence,
+        operation=_operation("finalize-node-remove", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_remove_finalize_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_remove_finalize_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        do_max_age_seconds=args.do_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         private_state = _load(args)
+        if args.command == "add-node":
+            if args.add_node_phase == "prep":
+                return _cmd_add_node_prep(args, private_state)
+            if args.add_node_phase == "do":
+                return _cmd_add_node_do(args, private_state)
+            if args.add_node_phase == "identity":
+                return _cmd_add_node_identity(args, private_state)
+            raise RuntimeError(f"unsupported add-node phase: {args.add_node_phase}")
+        if args.command == "verify-add-node-prep-transaction":
+            return _cmd_verify_node_add_prep_transaction(args, private_state)
+        if args.command == "release-add-node-do":
+            return _cmd_release_node_add_do(args, private_state)
+        if args.command == "verify-add-node-do-release":
+            return _cmd_verify_node_add_do_release(args, private_state)
+        if args.command == "verify-add-node-do-evidence":
+            return _cmd_verify_node_add_do_evidence(args, private_state)
+        if args.command == "release-add-node-identity":
+            return _cmd_release_node_add_identity(args, private_state)
+        if args.command == "verify-add-node-identity-release":
+            return _cmd_verify_node_add_identity_release(args, private_state)
+        if args.command == "verify-add-node-identity-evidence":
+            return _cmd_verify_node_add_identity_evidence(args, private_state)
+        if args.command == "remove-node":
+            if args.remove_node_phase == "prep":
+                return _cmd_remove_node_prep(args, private_state)
+            if args.remove_node_phase == "do":
+                return _cmd_remove_node_do(args, private_state)
+            if args.remove_node_phase == "finalize":
+                return _cmd_remove_node_finalize(args, private_state)
+            raise RuntimeError(f"unsupported remove-node phase: {args.remove_node_phase}")
+        if args.command == "verify-remove-node-prep-transaction":
+            return _cmd_verify_node_remove_prep_transaction(args, private_state)
+        if args.command == "release-remove-node-do":
+            return _cmd_release_node_remove_do(args, private_state)
+        if args.command == "verify-remove-node-do-release":
+            return _cmd_verify_node_remove_do_release(args, private_state)
+        if args.command == "verify-remove-node-do-evidence":
+            return _cmd_verify_node_remove_do_evidence(args, private_state)
+        if args.command == "verify-remove-node-finalize-evidence":
+            return _cmd_verify_node_remove_finalize_evidence(args, private_state)
         if args.command == "plan":
             return _cmd_plan(args, private_state)
         if args.command == "preflight":
@@ -5653,6 +6348,11 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentC2ReplicaSyncError,
         MotherDeploymentC2ValidatorAdmissionError,
         MotherDeploymentT3PostAdmissionSteadyStateError,
+        MotherDeploymentNodeAddPrepError,
+        MotherDeploymentNodeAddDoError,
+        MotherDeploymentNodeRemovePrepError,
+        MotherDeploymentNodeRemoveDoError,
+        MotherDeploymentNodeRemoveFinalizeError,
         MotherDeploymentExecutorError,
         MotherDeploymentCoolifyServiceLifecycleProbeError,
         MotherDeploymentCompletedHelperCleanupError,

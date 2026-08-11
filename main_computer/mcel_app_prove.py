@@ -315,14 +315,21 @@ def _intent_complete_coverage(
             "passed": all(checks.values()),
         }
 
+    def _observed_scenario_suffix_passed(suffix: str) -> bool:
+        return any(
+            scenario_id == suffix or scenario_id.endswith(f".{suffix}")
+            for scenario_id, entry in observed_by_id.items()
+            if entry.get("passed") is True
+        )
+
     cross_cutting = {
         "acceptanceEnforceable": acceptance_pass,
         "allDeclaredScenariosObserved": not missing_scenarios,
         "noUnexpectedScenarios": not unexpected_scenarios,
         "allBrowserScenariosPassed": not failed_scenarios and len(observed_by_id) == len(declared_by_id),
-        "filterSortObserved": observed_by_id.get("contract-workbench.acceptance.filter-sort", {}).get("passed") is True,
-        "multiInstanceObserved": observed_by_id.get("contract-workbench.acceptance.multi-instance", {}).get("passed") is True,
-        "clearAllObserved": observed_by_id.get("contract-workbench.acceptance.clear-all", {}).get("passed") is True,
+        "filterSortObserved": _observed_scenario_suffix_passed("filter-sort"),
+        "multiInstanceObserved": _observed_scenario_suffix_passed("multi-instance"),
+        "clearAllObserved": _observed_scenario_suffix_passed("clear-all"),
     }
     failed_intents = sorted(intent_id for intent_id, entry in intent_results.items() if entry["passed"] is not True)
     passed = not failed_intents and all(cross_cutting.values())

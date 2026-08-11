@@ -13,11 +13,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from main_computer.mcel_counter_candidate_projection import generate_counter_contracts
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_projection_profiles.calculator_shadow_v1 import project_calculator_ir
 from main_computer.mcel_projection_profiles.code_editor_host_bound_v1 import project_code_editor_ir
-from main_computer.mcel_projection_profiles.contract_workbench_v1 import project_workbench_ir
 
 GENERATED_DIRECTORY_NAMES = frozenset({"contracts", "generated"})
 GENERATED_FILE_NAMES = frozenset({"mcel.generated.json"})
@@ -60,6 +58,8 @@ def materialize_generated_package_files(
         raise ValueError(f"Could not compile DSL-authoritative package {app_id!r}: {details}")
 
     if app_id == "contract-counter":
+        from main_computer.mcel_counter_candidate_projection import generate_counter_contracts
+
         generated = generate_counter_contracts(compiled.normalized_ir)
         generated["mcel.generated.json"] = _ownership_bytes(
             app_id=app_id,
@@ -72,6 +72,8 @@ def materialize_generated_package_files(
         return generated
 
     if app_id == "contract-workbench":
+        from main_computer.mcel_projection_profiles.contract_workbench_v1 import project_workbench_ir
+
         projection = project_workbench_ir(compiled.normalized_ir)
         generated = dict(projection.files)
         generated["mcel.generated.json"] = _ownership_bytes(

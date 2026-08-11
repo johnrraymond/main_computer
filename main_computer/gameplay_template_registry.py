@@ -170,6 +170,8 @@ def default_gameplay_template_registry() -> GameplayTemplateRegistry:
                     "consequence-type.record-receipt",
                     "consequence-type.mark-system",
                 ),
+                systems=("system.solace-reach",),
+                destinations=("destination.solace-reach.haven-orbit",),
             ),
             GameplayEncounterTemplate(
                 id="encounter-template.social-investigation",
@@ -219,6 +221,26 @@ def default_gameplay_template_registry() -> GameplayTemplateRegistry:
                 consequence_types=(
                     "consequence-type.record-receipt",
                     "consequence-type.unlock-route",
+                ),
+            ),
+            BuiltInGameplayTemplateConsumer(
+                id="built-in.solace-reach.opening-shuttle-ambush",
+                title="Solace Reach Opening Shuttle Ambush",
+                source="built-in",
+                template_id="encounter-template.shuttle-ambush",
+                scenario_id="scenario.solace-reach.opening-shuttle-ambush",
+                encounter_id="encounter.solace-reach.opening-shuttle-ambush",
+                system_id="system.solace-reach",
+                destination_id="destination.solace-reach.haven-orbit",
+                objective_types=(
+                    "objective-type.survive",
+                    "objective-type.clear-hostiles",
+                    "objective-type.reach-destination",
+                ),
+                actor_archetypes=("actor-archetype.shuttle-raider",),
+                consequence_types=(
+                    "consequence-type.record-receipt",
+                    "consequence-type.mark-system",
                 ),
             ),
         ),

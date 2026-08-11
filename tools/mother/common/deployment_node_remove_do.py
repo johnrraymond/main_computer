@@ -1,0 +1,1165 @@
+"""Guarded Mother node-removal ``do`` release and executor.
+
+This module implements the executable half of the documented staged Mother
+``remove-node`` flow for a previously verified prep transaction.  It requires an
+explicit one-use release, preserves the prep ordering contract, proves routing
+and topology withdrawal before service deletion, votes the target validator out
+from the survivor validators, and only then removes the exact prepared Coolify
+service.
+
+The executor does not finalize durable Mother topology; finalize remains a later
+stage that must consume the evidence written here.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from datetime import datetime, timedelta, timezone
+import base64
+import hashlib
+import json
+from pathlib import Path
+import re
+import time
+from typing import Any
+import urllib.parse
+import urllib.request
+import urllib.error
+
+import yaml
+
+from . import atomic_files
+from .canonical import canonical_json
+from .coolify_state import (
+    _DEFAULT_MAX_RESPONSE_BYTES,
+    _DEFAULT_OPENER,
+    resolve_coolify_controller,
+)
+from .deployment_node_remove import MotherDeploymentNodeRemoveError, acknowledgement_for, execute_node_removal
+from .deployment_node_remove_prep import verify_node_remove_prep_transaction
+from .models import OperationIdentity, PrivateStatePaths
+from .private_state import PrivateStateReadResult, _secure_private_path
+
+
+_RELEASE_KIND = "main_computer.mother.deployment_node_remove_do_release.v1"
+_CLAIM_KIND = "main_computer.mother.deployment_node_remove_do_execution_claim.v1"
+_EVIDENCE_KIND = "main_computer.mother.deployment_node_remove_do_evidence.v1"
+_PREP_DIRECTORY = ("actions", "deployment-node-remove-prep-transactions")
+_RELEASE_DIRECTORY = ("actions", "deployment-node-remove-do-releases")
+_CLAIM_DIRECTORY = ("actions", "deployment-node-remove-do-execution-claims")
+_EVIDENCE_DIRECTORY = ("evidence", "deployment-node-remove-do")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_SENSITIVE_MARKERS = (
+    "BEGIN PRIVATE KEY",
+    "BEGIN RSA PRIVATE KEY",
+    "api_token",
+    "bearer ",
+    "password",
+    "private_key",
+    "secret",
+)
+
+
+class MotherDeploymentNodeRemoveDoError(RuntimeError):
+    """Node-removal do/release failed closed."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _fail(code: str, message: str) -> MotherDeploymentNodeRemoveDoError:
+    return MotherDeploymentNodeRemoveDoError(code, message)
+
+
+def _identifier(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value or not _IDENTIFIER_RE.fullmatch(value):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_INVALID", f"{label} is not a valid node name")
+    return value
+
+
+def _address(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not _ADDRESS_RE.fullmatch(value):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_INVALID", f"{label} is not a validator address")
+    return value.lower()
+
+
+def _sha256(value: Any, label: str) -> str:
+    text = str(value or "").lower()
+    if not _SHA256_RE.fullmatch(text):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_INVALID", f"{label} is not a SHA-256 digest")
+    return text
+
+
+def _timestamp(value: str | None = None, *, now: datetime | None = None) -> str:
+    if value is not None:
+        parsed = _parse_utc(value, "created_at")
+        return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    return reference.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(value: Any, label: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_TIME_INVALID", f"{label} is missing")
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_TIME_INVALID", f"{label} is invalid") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_seconds(value: Any, *, now: datetime | None = None) -> int:
+    observed = _parse_utc(value, "created_at")
+    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    age = int((reference - observed).total_seconds())
+    if age < -60:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_TIME_INVALID", "timestamp is in the future")
+    return max(age, 0)
+
+
+def _expires(created_text: str, expires_in_seconds: int) -> str:
+    if not (1 <= int(expires_in_seconds) <= 900):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_DURATION_INVALID", "release duration must be between 1 and 900 seconds")
+    return (_parse_utc(created_text, "created_at") + timedelta(seconds=int(expires_in_seconds))).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _binding(private_state: PrivateStateReadResult) -> dict[str, Any]:
+    return {
+        "generation": int(private_state.binding.generation),
+        "content_sha256": private_state.binding.content_hash.digest,
+        "manifest_sha256": private_state.binding.recovery_manifest_hash.digest,
+    }
+
+
+def _digest_without(document: Mapping[str, Any], field: str) -> str:
+    payload = dict(document)
+    payload.pop(field, None)
+    return hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def _contains_sensitive(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.lower()
+        return any(marker.lower() in text for marker in _SENSITIVE_MARKERS)
+    if isinstance(value, Mapping):
+        return any(_contains_sensitive(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_contains_sensitive(item) for item in value)
+    return False
+
+
+def _relative(paths: PrivateStatePaths, path: Path, *, label: str) -> str:
+    resolved = Path(path).resolve(strict=False)
+    try:
+        return str(resolved.relative_to(paths.root.resolve(strict=False))).replace("\\", "/")
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_PATH_INVALID", f"{label} is outside Mother runtime state") from exc
+
+
+def _resolve_under(paths: PrivateStatePaths, locator: Any, directory: tuple[str, ...], *, label: str) -> Path:
+    if not isinstance(locator, str) or not locator:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_PATH_INVALID", f"{label} locator is missing")
+    candidate = (paths.root / Path(locator)).resolve(strict=False)
+    allowed = (paths.root / Path(*directory)).resolve(strict=False)
+    try:
+        candidate.relative_to(allowed)
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_PATH_INVALID", f"{label} is outside its directory") from exc
+    return candidate
+
+
+def _canonical_file(path: Path) -> tuple[dict[str, Any], bytes, str]:
+    try:
+        payload = Path(path).read_bytes()
+    except OSError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_PATH_INVALID", "canonical file could not be read") from exc
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_CANONICAL_INVALID", "canonical JSON file is invalid") from exc
+    if not isinstance(document, dict) or canonical_json(document) != payload:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_CANONICAL_INVALID", "file is not canonical Mother JSON")
+    return document, payload, hashlib.sha256(payload).hexdigest()
+
+
+def _canonical_under(paths: PrivateStatePaths, path: Path, directory: tuple[str, ...], label: str) -> tuple[dict[str, Any], bytes, str]:
+    resolved = Path(path).resolve(strict=False)
+    allowed = (paths.root / Path(*directory)).resolve(strict=False)
+    try:
+        resolved.relative_to(allowed)
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_PATH_INVALID", f"{label} is outside its directory") from exc
+    return _canonical_file(resolved)
+
+
+def _ensure_directory(paths: PrivateStatePaths, parts: tuple[str, ...], *, operation: OperationIdentity) -> Path:
+    destination = paths.root.joinpath(*parts)
+    destination.mkdir(parents=True, exist_ok=True)
+    _secure_private_path(destination, is_directory=True, operation=operation)
+    return destination
+
+
+def _release_claim_path(paths: PrivateStatePaths, release_sha256: str) -> Path:
+    return paths.root.joinpath(*_CLAIM_DIRECTORY, f"{_sha256(release_sha256, 'release SHA-256')}.json")
+
+
+def _records(payload: Any) -> list[Mapping[str, Any]]:
+    records: list[Mapping[str, Any]] = []
+    if isinstance(payload, Mapping):
+        if any(key in payload for key in ("uuid", "id", "name")):
+            records.append(payload)
+        for key in ("data", "service", "resource", "application"):
+            value = payload.get(key)
+            if isinstance(value, Mapping):
+                records.append(value)
+            elif isinstance(value, list):
+                records.extend(item for item in value if isinstance(item, Mapping))
+        for key in ("services", "resources", "applications", "databases"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                records.extend(item for item in value if isinstance(item, Mapping))
+    elif isinstance(payload, list):
+        records.extend(item for item in payload if isinstance(item, Mapping))
+    return records
+
+
+def _children(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    children: list[Mapping[str, Any]] = []
+    for key in ("applications", "services", "databases"):
+        value = record.get(key)
+        if isinstance(value, list):
+            children.extend(item for item in value if isinstance(item, Mapping))
+    return children
+
+
+def _find_service_record(payload: Any, *, node: str, service_uuid: str | None = None) -> Mapping[str, Any]:
+    matches = [
+        item
+        for item in _records(payload)
+        if (service_uuid is not None and item.get("uuid") == service_uuid)
+        or (service_uuid is None and item.get("name") == node)
+        or (item.get("name") == node and (service_uuid is None or item.get("uuid") == service_uuid))
+    ]
+    top = [item for item in matches if item.get("name") == node or item.get("uuid") == service_uuid]
+    if len(top) != 1:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_SERVICE_MISMATCH", f"expected one service record for {node}; found {len(top)}")
+    return top[0]
+
+
+def _service_status(record: Mapping[str, Any]) -> str:
+    value = record.get("status")
+    return value if isinstance(value, str) else ""
+
+
+def _guardian_healthy(record: Mapping[str, Any], *, guardian_name: str) -> bool:
+    if _service_status(record) == "running:healthy":
+        return True
+    for child in _children(record):
+        if child.get("name") == guardian_name and child.get("status") in {"running:healthy", "running"}:
+            return True
+    return False
+
+
+def _compose_text(record: Mapping[str, Any]) -> str:
+    for key in ("docker_compose_raw", "docker_compose", "dockerComposeRaw", "dockerCompose"):
+        value = record.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        text = value.strip()
+        if "\n" in text or text.startswith(("name:", "services:", "version:")):
+            return text
+        try:
+            decoded = base64.b64decode(text, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if "services:" in decoded:
+            return decoded
+    raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_COMPOSE_MISSING", "Coolify service record has no Compose text")
+
+
+def _open(opener: Any, request: urllib.request.Request, timeout: float):
+    if hasattr(opener, "open"):
+        return opener.open(request, timeout=timeout)
+    if callable(opener):
+        return opener(request, timeout=timeout)
+    raise TypeError("opener must be callable or provide open(request, timeout=...)")
+
+
+def _http(
+    controller: Any,
+    method: str,
+    endpoint: str,
+    *,
+    body: Mapping[str, Any] | None,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    payload = canonical_json(dict(body)) if body is not None else None
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {controller.api_token}",
+        "User-Agent": "main-computer-mother-node-remove-do/1",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        controller.base_url.rstrip("/") + endpoint,
+        data=payload,
+        headers=headers,
+        method=method,
+    )
+    started = time.monotonic()
+    try:
+        try:
+            response = _open(opener, request, float(timeout))
+            status = int(getattr(response, "status", response.getcode()))
+            raw = response.read(max_response_bytes + 1)
+            response.close()
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            raw = exc.read(max_response_bytes + 1)
+    except (urllib.error.URLError, OSError) as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_REQUEST_FAILED", "Coolify request failed") from exc
+    if len(raw) > max_response_bytes:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESPONSE_TOO_LARGE", "Coolify response is too large")
+    try:
+        parsed: Any = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        parsed = raw.decode("utf-8", errors="replace")
+    return {
+        "status": status,
+        "ok": 200 <= status < 300,
+        "payload": parsed,
+        "response_sha256": hashlib.sha256(raw).hexdigest(),
+        "byte_length": len(raw),
+        "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+    }
+
+
+def _safe_response(response: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "status": int(response.get("status", 0)),
+        "ok": bool(response.get("ok")),
+        "response_sha256": str(response.get("response_sha256", "")),
+        "byte_length": int(response.get("byte_length", 0)),
+        "elapsed_ms": int(response.get("elapsed_ms", 0)),
+    }
+
+
+def _request_sha256(target_validator: str, proposal: bool) -> str:
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "qbft_proposeValidatorVote",
+        "params": [_address(target_validator, "target validator"), bool(proposal)],
+    }
+    return hashlib.sha256(canonical_json(request)).hexdigest()
+
+
+def _removal_voter_script(
+    *,
+    voter: str,
+    target_validator: str,
+    current_validators: Iterable[str],
+    desired_validators: Iterable[str],
+    chain_id: int,
+    genesis_sha256: str,
+    request_sha256: str,
+) -> str:
+    current = [item.lower() for item in current_validators]
+    desired = [item.lower() for item in desired_validators]
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "qbft_proposeValidatorVote",
+        "params": [target_validator.lower(), False],
+    }
+    request_json = json.dumps(request, sort_keys=True, separators=(",", ":"))
+    return "\n".join([
+        "import hashlib, json, os, time, urllib.request",
+        f"RPC = 'http://{voter}:8545'",
+        f"VOTER_NODE = {voter!r}",
+        f"EXPECTED_CHAIN_ID = {int(chain_id)}",
+        f"EXPECTED_GENESIS_SHA256 = {genesis_sha256!r}",
+        f"EXPECTED_CURRENT = {current!r}",
+        f"EXPECTED_DESIRED = {desired!r}",
+        f"TARGET_VALIDATOR = {target_validator.lower()!r}",
+        f"REQUEST = json.loads({request_json!r})",
+        f"EXPECTED_REQUEST_SHA256 = {request_sha256!r}",
+        "PROOF = '/proof/' + VOTER_NODE + '-node-remove-do.json'",
+        "HEALTHY = '/proof/' + VOTER_NODE + '-node-remove-do-healthy'",
+        "MAX_BLOCK_AGE_SECONDS = 90",
+        "def encoded(value): return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()",
+        "def rpc(method, params):",
+        "    body = encoded({'jsonrpc':'2.0','id':1,'method':method,'params':params})",
+        "    req = urllib.request.Request(RPC, data=body, headers={'Content-Type':'application/json','Host':'localhost'}, method='POST')",
+        "    with urllib.request.urlopen(req, timeout=5) as response:",
+        "        value = json.loads(response.read(1048576).decode())",
+        "    if value.get('error') is not None or 'result' not in value: raise RuntimeError(method + ' failed')",
+        "    return value['result']",
+        "def validators(): return [str(item).lower() for item in rpc('qbft_getValidatorsByBlockNumber', ['latest'])]",
+        "def same_set(left, right): return sorted(left) == sorted(right)",
+        "def prove():",
+        "    if hashlib.sha256(encoded(REQUEST)).hexdigest() != EXPECTED_REQUEST_SHA256: raise RuntimeError('vote request commitment mismatch')",
+        "    chain_id = int(rpc('eth_chainId', []), 16)",
+        "    if chain_id != EXPECTED_CHAIN_ID: raise RuntimeError('chain id mismatch')",
+        "    genesis = rpc('eth_getBlockByNumber', ['0x0', False])",
+        "    if not isinstance(genesis, dict) or not genesis.get('hash'): raise RuntimeError('genesis block missing')",
+        "    with open('/config/genesis.json', 'rb') as handle:",
+        "        if hashlib.sha256(handle.read()).hexdigest() != EXPECTED_GENESIS_SHA256: raise RuntimeError('genesis commitment mismatch')",
+        "    current = validators()",
+        "    vote_submitted = False",
+        "    if not same_set(current, EXPECTED_DESIRED):",
+        "        if not same_set(current, EXPECTED_CURRENT): raise RuntimeError('unexpected pre-vote validator set')",
+        "        if rpc(REQUEST['method'], REQUEST['params']) is not True: raise RuntimeError('validator-removal vote rejected')",
+        "        vote_submitted = True",
+        "    deadline = time.time() + 120",
+        "    final = validators()",
+        "    while time.time() < deadline:",
+        "        final = validators()",
+        "        if same_set(final, EXPECTED_DESIRED): break",
+        "        if not same_set(final, EXPECTED_CURRENT): raise RuntimeError('unexpected validator transition')",
+        "        time.sleep(2)",
+        "    if not same_set(final, EXPECTED_DESIRED): raise RuntimeError('desired validator set not reached')",
+        "    first = int(rpc('eth_blockNumber', []), 16)",
+        "    time.sleep(4)",
+        "    second = int(rpc('eth_blockNumber', []), 16)",
+        "    if second <= first: raise RuntimeError('block height did not advance')",
+        "    latest = rpc('eth_getBlockByNumber', ['latest', False])",
+        "    if not isinstance(latest, dict) or not latest.get('hash'): raise RuntimeError('latest block missing')",
+        "    block_time = int(latest.get('timestamp', '0x0'), 16)",
+        "    now = int(time.time())",
+        "    if block_time > now + 15 or now - block_time > MAX_BLOCK_AGE_SECONDS: raise RuntimeError('latest block is stale')",
+        "    proof = {'voter_node':VOTER_NODE,'chain_id':chain_id,'genesis_sha256':EXPECTED_GENESIS_SHA256,'rpc_request_sha256':EXPECTED_REQUEST_SHA256,'vote_submitted':vote_submitted,'target_validator':TARGET_VALIDATOR,'expected_current_validator_set':EXPECTED_CURRENT,'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'latest_block_hash':latest['hash'],'latest_block_timestamp':block_time,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "    tmp = PROOF + '.tmp'",
+        "    with open(tmp, 'w', encoding='utf-8') as handle: json.dump(proof, handle, sort_keys=True, separators=(',', ':'))",
+        "    os.replace(tmp, PROOF)",
+        "    with open(HEALTHY, 'w', encoding='ascii') as handle: handle.write(str(int(time.time())))",
+        "while True:",
+        "    try:",
+        "        prove()",
+        "    except Exception:",
+        "        try: os.unlink(HEALTHY)",
+        "        except FileNotFoundError: pass",
+        "    time.sleep(6)",
+        "",
+    ])
+
+
+def _guardian_service_name(voter: str) -> str:
+    return f"mother-node-remove-voter-{voter.replace('-', '_')}"
+
+
+def _install_removal_guardian(compose_text: str, *, voter: str, script: str) -> tuple[str, str]:
+    try:
+        document = yaml.safe_load(compose_text)
+    except yaml.YAMLError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_COMPOSE_INVALID", "service Compose cannot be parsed") from exc
+    if not isinstance(document, dict):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_COMPOSE_INVALID", "service Compose root is invalid")
+    services = document.setdefault("services", {})
+    if not isinstance(services, dict) or voter not in services:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_COMPOSE_INVALID", f"{voter} service is missing from Compose")
+    name = _guardian_service_name(voter)
+    services[name] = {
+        "image": "python:3.12-alpine",
+        "restart": "unless-stopped",
+        "read_only": True,
+        "depends_on": {voter: {"condition": "service_started"}},
+        "command": ["python", "-u", "-c", script],
+        "healthcheck": {
+            "test": [
+                "CMD",
+                "python",
+                "-c",
+                f"import os,time; p='/proof/{voter}-node-remove-do-healthy'; assert os.path.isfile(p) and time.time()-os.path.getmtime(p) < 45",
+            ],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 24,
+            "start_period": "30s",
+        },
+        "volumes": ["mother-config:/config:ro", "mother-node-remove-do-proof:/proof"],
+        "labels": {
+            "main_computer.mother.stage": "node-remove-do",
+            "main_computer.mother.voter-node": voter,
+            "main_computer.mother.routing-publication": "blocked",
+        },
+    }
+    volumes = document.setdefault("volumes", {})
+    if not isinstance(volumes, dict):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_COMPOSE_INVALID", "Compose volumes section is invalid")
+    volumes.setdefault("mother-node-remove-do-proof", None)
+    updated = yaml.safe_dump(document, sort_keys=False)
+    section = updated.split(f"  {name}:", 1)[1].split("\nvolumes:", 1)[0]
+    if any(marker in section for marker in ("ports:", "expose:", "traefik.", "fqdn:", "domains:")):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_GUARDIAN_EXPOSED", "node-removal vote guardian must remain internal-only")
+    if "8545:8545" in updated:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_EXPOSED", "node removal must not publish JSON-RPC")
+    return updated, name
+
+
+def build_node_remove_do_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    transaction_path: Path,
+    *,
+    acknowledged_prep_transaction_sha256: str,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    expires_in_seconds: int = 300,
+    created_at: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    acknowledged = _sha256(acknowledged_prep_transaction_sha256, "acknowledged prep transaction SHA-256")
+    verified = verify_node_remove_prep_transaction(
+        paths,
+        private_state,
+        Path(transaction_path),
+        max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    if verified["node_remove_prep_transaction_sha256"] != acknowledged:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_ACK_MISMATCH", "acknowledged prep transaction SHA-256 does not match")
+    prep, _, tx_byte_sha = _canonical_under(paths, Path(transaction_path), _PREP_DIRECTORY, "node-removal prep transaction")
+    created_text = _timestamp(created_at)
+    current_set = [_address(item, "current validator") for item in verified["current_validator_set"]]
+    desired_set = [_address(item, "post-removal validator") for item in verified["post_removal_validator_set"]]
+    request_sha = _request_sha256(verified["target_validator_address"], False)
+    release: dict[str, Any] = {
+        "kind": _RELEASE_KIND,
+        "schema_version": 1,
+        "created_at": created_text,
+        "expires_at": _expires(created_text, expires_in_seconds),
+        "mother_binding": _binding(private_state),
+        "network": verified["network"],
+        "mode": verified["mode"],
+        "source_transaction": {
+            "locator": _relative(paths, Path(transaction_path), label="node-removal prep transaction"),
+            "sha256": verified["node_remove_prep_transaction_sha256"],
+            "byte_sha256": tx_byte_sha,
+        },
+        "source_baseline_evidence": dict(prep["source_baseline_evidence"]),
+        "target": dict(prep["target"]),
+        "survivors": list(prep["survivors"]),
+        "current_topology": dict(prep["current_topology"]),
+        "post_removal_topology": dict(prep["post_removal_topology"]),
+        "ordered_removal_plan": list(prep["ordered_removal_plan"]),
+        "validator_removal_vote": {
+            "method": "qbft_proposeValidatorVote",
+            "params": [verified["target_validator_address"], False],
+            "request_sha256": request_sha,
+            "voter_nodes": list(verified["survivor_nodes"]),
+            "current_validator_set": current_set,
+            "desired_validator_set": desired_set,
+        },
+        "routing_topology_withdrawal": {
+            "authorized": True,
+            "expected_noop_from_baseline": True,
+            "reason": "baseline evidence proved routing/topology and public endpoints were not yet published",
+        },
+        "policy": {
+            "compiler": "mother-native-remove-node-do-v1",
+            "manual_ssh_required": False,
+            "network_access_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "public_http_endpoint_created": False,
+            "routing_or_topology_publication_authorized": False,
+            "routing_or_topology_withdrawal_authorized": True,
+            "validator_activation_authorized": False,
+            "validator_removal_vote_authorized": True,
+            "service_deletion_authorized": True,
+            "service_deletion_is_first": False,
+            "requested_use_limit": 1,
+        },
+        "authority": {
+            "authorization_source": "explicit-operator-release",
+            "requested_use_limit": 1,
+            "live_execution_authorized": True,
+            "routing_or_topology_withdrawal_authorized": True,
+            "routing_or_topology_publication_authorized": False,
+            "validator_removal_vote_authorized": True,
+            "validator_activation_authorized": False,
+            "service_deletion_authorized": True,
+        },
+    }
+    release["summary"] = {
+        "clean": True,
+        "executor_implemented": True,
+        "target_node": verified["target_node"],
+        "survivor_nodes": list(verified["survivor_nodes"]),
+        "current_validator_count": len(current_set),
+        "post_removal_validator_count": len(desired_set),
+        "service_deletion_is_first": False,
+        "service_deletion_authorized": True,
+        "validator_removal_vote_authorized": True,
+        "routing_topology_withdrawal_authorized": True,
+        "routing_or_topology_publication_authorized": False,
+        "next_phase": f"remove-node-do-{verified['network']}",
+    }
+    release["node_remove_do_release_sha256"] = _digest_without(release, "node_remove_do_release_sha256")
+    if _contains_sensitive(release):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_SENSITIVE", "node-removal do release contains sensitive material")
+    return release
+
+
+def write_node_remove_do_release(
+    paths: PrivateStatePaths,
+    release: Mapping[str, Any],
+    *,
+    operation: OperationIdentity,
+) -> tuple[Path, str]:
+    document = dict(release)
+    if document.get("kind") != _RELEASE_KIND or _contains_sensitive(document):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release is malformed or sensitive")
+    digest = _digest_without(document, "node_remove_do_release_sha256")
+    if document.get("node_remove_do_release_sha256") != digest:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release digest mismatch")
+    payload = canonical_json(document)
+    root = _ensure_directory(paths, _RELEASE_DIRECTORY, operation=operation)
+    stamp = re.sub(r"[^0-9A-Za-z]+", "", str(document.get("created_at", "")))[:32] or "noderemovedorelease"
+    network = str(document.get("network") or "network")
+    target = str(document.get("target", {}).get("node") or "node")
+    destination = root / f"{stamp}-{network}-{target}-{digest[:16]}.json"
+    if destination.exists():
+        if destination.read_bytes() != payload:
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_CONFLICT", "release destination contains different bytes")
+        return destination, digest
+    atomic_files.durable_create(destination, payload, operation=operation)
+    _secure_private_path(destination, is_directory=False, operation=operation)
+    return destination, digest
+
+
+def verify_node_remove_do_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    release_path: Path,
+    *,
+    max_age_seconds: int = 300,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    document, _, _file_sha = _canonical_under(paths, Path(release_path), _RELEASE_DIRECTORY, "node-removal do release")
+    digest = _digest_without(document, "node_remove_do_release_sha256")
+    if (
+        document.get("kind") != _RELEASE_KIND
+        or document.get("mother_binding") != _binding(private_state)
+        or document.get("node_remove_do_release_sha256") != digest
+        or _contains_sensitive(document)
+    ):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release is invalid")
+    age = _age_seconds(document.get("created_at"), now=now)
+    if age > max_age_seconds:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_STALE", "node-removal do release is outside the freshness window")
+    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    if _parse_utc(document.get("expires_at"), "release.expires_at") <= reference:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_EXPIRED", "node-removal do release has expired")
+    source = document.get("source_transaction")
+    if not isinstance(source, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "release transaction binding is missing")
+    transaction_path = _resolve_under(paths, source.get("locator"), _PREP_DIRECTORY, label="node-removal prep transaction")
+    verified_tx = verify_node_remove_prep_transaction(
+        paths,
+        private_state,
+        transaction_path,
+        max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    if verified_tx["node_remove_prep_transaction_sha256"] != source.get("sha256"):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "release prep transaction binding changed")
+    return {
+        "clean": True,
+        "release_path": str(Path(release_path).resolve(strict=False)),
+        "node_remove_do_release_sha256": digest,
+        "release_already_claimed": _release_claim_path(paths, digest).exists(),
+        "age_seconds": age,
+        "expires_at": document["expires_at"],
+        "mother_binding": dict(document["mother_binding"]),
+        "network": document["network"],
+        "mode": document["mode"],
+        "target_node": document["target"]["node"],
+        "target_validator_address": document["target"]["validator_address"],
+        "target_service_uuid": document["target"]["service_uuid"],
+        "target_controller_id": document["target"]["controller_id"],
+        "survivor_nodes": [item["node"] for item in document["survivors"]],
+        "current_validator_set": list(document["current_topology"]["validator_set"]),
+        "post_removal_validator_set": list(document["post_removal_topology"]["validator_set"]),
+        "source_prep_transaction_sha256": verified_tx["node_remove_prep_transaction_sha256"],
+        "source_baseline_evidence_sha256": verified_tx["source_baseline_evidence_sha256"],
+        "routing_topology_withdrawal_authorized": True,
+        "routing_or_topology_publication_authorized": False,
+        "validator_removal_vote_authorized": True,
+        "service_deletion_authorized": True,
+        "service_deletion_is_first": False,
+        "next_phase": f"remove-node-do-{document['network']}",
+    }
+
+
+def inspect_node_remove_do_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    release_path: Path,
+    *,
+    acknowledged_release_sha256: str,
+    max_age_seconds: int = 300,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    acknowledged = _sha256(acknowledged_release_sha256, "acknowledged release SHA-256")
+    verified = verify_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        max_age_seconds=max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    if verified["node_remove_do_release_sha256"] != acknowledged:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_ACK_MISMATCH", "acknowledged release SHA-256 does not match")
+    return verified
+
+
+def _write_evidence(paths: PrivateStatePaths, evidence: Mapping[str, Any], *, operation: OperationIdentity) -> tuple[Path, str]:
+    document = dict(evidence)
+    if document.get("kind") != _EVIDENCE_KIND or _contains_sensitive(document):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "node-removal do evidence is malformed or sensitive")
+    payload = canonical_json(document)
+    digest = hashlib.sha256(payload).hexdigest()
+    root = _ensure_directory(paths, _EVIDENCE_DIRECTORY, operation=operation)
+    stamp = re.sub(r"[^0-9A-Za-z]+", "", str(document.get("completed_at", "")))[:32] or "noderemovedoevidence"
+    target = str(document.get("target", {}).get("node") or "node")
+    destination = root / f"{stamp}-{target}-{digest[:16]}.json"
+    if destination.exists():
+        if destination.read_bytes() != payload:
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_CONFLICT", "evidence destination contains different bytes")
+        return destination, digest
+    atomic_files.durable_create(destination, payload, operation=operation)
+    _secure_private_path(destination, is_directory=False, operation=operation)
+    return destination, digest
+
+
+def execute_node_remove_do_release(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    release_path: Path,
+    *,
+    acknowledged_release_sha256: str,
+    max_age_seconds: int = 300,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_wait_seconds: float = 300.0,
+    poll_interval_seconds: float = 5.0,
+    allow_missing_service: bool = False,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    inspected = inspect_node_remove_do_release(
+        paths,
+        private_state,
+        Path(release_path),
+        acknowledged_release_sha256=acknowledged_release_sha256,
+        max_age_seconds=max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    if inspected["release_already_claimed"]:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_ALREADY_CONSUMED", "this node-removal do release is already claimed")
+    release, _, _ = _canonical_under(paths, Path(inspected["release_path"]), _RELEASE_DIRECTORY, "node-removal do release")
+    digest = inspected["node_remove_do_release_sha256"]
+    claim = {
+        "kind": _CLAIM_KIND,
+        "schema_version": 1,
+        "claimed_at": _timestamp(now=now),
+        "release": {"locator": _relative(paths, Path(inspected["release_path"]), label="node-removal do release"), "sha256": digest},
+        "target_node": inspected["target_node"],
+        "requested_use_limit": 1,
+        "operation_id": operation.operation_id,
+    }
+    claim_root = _ensure_directory(paths, _CLAIM_DIRECTORY, operation=operation)
+    claim_path = claim_root / f"{digest}.json"
+    if claim_path.exists():
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_ALREADY_CONSUMED", "this node-removal do release is already claimed")
+    atomic_files.durable_create(claim_path, canonical_json(claim), operation=operation)
+    _secure_private_path(claim_path, is_directory=False, operation=operation)
+
+    started = _timestamp(now=now)
+    routing_receipts = [
+        {
+            "ordinal": 1,
+            "phase": "withdraw-hub-fdb-topology",
+            "status": "already-unpublished",
+            "live_mutation_performed": False,
+            "verified_before_service_deletion": True,
+            "source": "source_baseline_evidence",
+        },
+        {
+            "ordinal": 2,
+            "phase": "withdraw-rpc-routing",
+            "status": "already-unpublished",
+            "live_mutation_performed": False,
+            "verified_before_service_deletion": True,
+            "source": "source_baseline_evidence",
+        },
+    ]
+    mutation_receipts: list[dict[str, Any]] = []
+    health_observations: list[dict[str, Any]] = []
+    service_removal: dict[str, Any] | None = None
+    failure: dict[str, str] | None = None
+
+    try:
+        controller_ids = {release["target"]["controller_id"], *(item["controller_id"] for item in release["survivors"])}
+        controllers = {
+            controller_id: resolve_coolify_controller(private_state, release["network"], controller_id)
+            for controller_id in sorted(controller_ids)
+        }
+        guardians: dict[str, str] = {}
+        vote = release["validator_removal_vote"]
+        current_set = [_address(item, "current validator") for item in vote["current_validator_set"]]
+        desired_set = [_address(item, "desired validator") for item in vote["desired_validator_set"]]
+        target_validator = _address(release["target"]["validator_address"], "target validator")
+        for survivor in release["survivors"]:
+            voter = _identifier(survivor["node"], "survivor node")
+            controller_id = _identifier(survivor["controller_id"], "survivor controller")
+            service_uuid = str(survivor["service_uuid"])
+            controller = controllers[controller_id]
+            endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+            detail = _http(
+                controller,
+                "GET",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            if not detail["ok"]:
+                raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_PRECONDITION_FAILED", f"{voter} service detail failed with HTTP {detail['status']}")
+            record = _find_service_record(detail["payload"], node=voter, service_uuid=service_uuid)
+            script = _removal_voter_script(
+                voter=voter,
+                target_validator=target_validator,
+                current_validators=current_set,
+                desired_validators=desired_set,
+                chain_id=int(release["current_topology"]["chain_id"]),
+                genesis_sha256=str(release["current_topology"]["genesis_sha256"]),
+                request_sha256=_sha256(vote["request_sha256"], "validator-removal vote request SHA-256"),
+            )
+            updated_compose, guardian = _install_removal_guardian(_compose_text(record), voter=voter, script=script)
+            guardians[voter] = guardian
+            body = {"docker_compose_raw": base64.b64encode(updated_compose.encode("utf-8")).decode("ascii"), "instant_deploy": False, "name": voter}
+            body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
+            patch = _http(
+                controller,
+                "PATCH",
+                endpoint,
+                body=body,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            patch_ok = patch["status"] in {200, 201, 202}
+            mutation_receipts.append({
+                "ordinal": len(mutation_receipts) + 1,
+                "phase": "remove-qbft-validator",
+                "mutation_id": f"{voter}.install-node-removal-vote-guardian",
+                "controller_id": controller_id,
+                "node": voter,
+                "service_uuid": service_uuid,
+                "method": "PATCH",
+                "endpoint": endpoint,
+                "body_sha256": body_sha,
+                "guardian_service": guardian,
+                "response": _safe_response(patch),
+                "live_write_acknowledged": patch_ok,
+                "status": "succeeded" if patch_ok else "failed",
+            })
+            if not patch_ok:
+                raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} guardian patch with HTTP {patch['status']}")
+            deploy_endpoint = f"/api/v1/deploy?uuid={urllib.parse.quote(service_uuid, safe='')}&force=true"
+            deploy = _http(
+                controller,
+                "GET",
+                deploy_endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            deploy_ok = deploy["status"] in {200, 201, 202}
+            mutation_receipts.append({
+                "ordinal": len(mutation_receipts) + 1,
+                "phase": "remove-qbft-validator",
+                "mutation_id": f"{voter}.deploy-node-removal-vote-guardian",
+                "controller_id": controller_id,
+                "node": voter,
+                "service_uuid": service_uuid,
+                "method": "GET",
+                "endpoint": deploy_endpoint,
+                "body_sha256": None,
+                "guardian_service": guardian,
+                "response": _safe_response(deploy),
+                "live_write_acknowledged": deploy_ok,
+                "status": "succeeded" if deploy_ok else "failed",
+            })
+            if not deploy_ok:
+                raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} deploy with HTTP {deploy['status']}")
+
+        deadline = time.monotonic() + max_wait_seconds
+        healthy_voters: set[str] = set()
+        last_statuses: dict[str, str] = {}
+        survivor_by_node = {item["node"]: item for item in release["survivors"]}
+        while True:
+            healthy_voters.clear()
+            for voter, guardian in guardians.items():
+                survivor = survivor_by_node[voter]
+                controller = controllers[survivor["controller_id"]]
+                inventory = _http(
+                    controller,
+                    "GET",
+                    "/api/v1/services",
+                    body=None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                if inventory["ok"]:
+                    record = _find_service_record(inventory["payload"], node=voter, service_uuid=survivor["service_uuid"])
+                    status = _service_status(record)
+                    healthy = _guardian_healthy(record, guardian_name=guardian)
+                    last_statuses[voter] = status
+                    if healthy:
+                        healthy_voters.add(voter)
+                    health_observations.append({
+                        "node": voter,
+                        "controller_id": survivor["controller_id"],
+                        "service_uuid": survivor["service_uuid"],
+                        "service_status": status,
+                        "guardian_service": guardian,
+                        "guardian_healthy": healthy,
+                        "response_sha256": inventory["response_sha256"],
+                        "observed_at": _timestamp(now=now),
+                    })
+            if set(guardians) <= healthy_voters:
+                break
+            if time.monotonic() >= deadline:
+                break
+            if poll_interval_seconds:
+                time.sleep(max(0.0, poll_interval_seconds))
+        if not (set(guardians) <= healthy_voters):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_VALIDATOR_REMOVAL_NOT_PROVEN", f"validator-removal guardians did not become healthy: {last_statuses!r}")
+
+        service_removal = execute_node_removal(
+            private_state,
+            network=release["network"],
+            controller_id=release["target"]["controller_id"],
+            node=release["target"]["node"],
+            service_uuid=release["target"]["service_uuid"],
+            acknowledged_node_removal=acknowledgement_for(release["target"]["node"], release["target"]["service_uuid"]),
+            allow_missing=allow_missing_service,
+            timeout=timeout,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            max_response_bytes=max_response_bytes,
+            operation=operation,
+            opener=opener,
+        )
+    except MotherDeploymentNodeRemoveDoError as exc:
+        failure = {"code": exc.code, "message": str(exc)[:512]}
+    except MotherDeploymentNodeRemoveError as exc:
+        failure = {"code": exc.code, "message": str(exc)[:512]}
+    except Exception as exc:  # pragma: no cover
+        failure = {"code": "MOTHER_DEPLOY_NODE_REMOVE_DO_UNEXPECTED_FAILURE", "message": str(exc)[:512]}
+
+    completed = _timestamp(now=now)
+    guardian_complete = failure is None and release["validator_removal_vote"]["voter_nodes"] and set(release["validator_removal_vote"]["voter_nodes"]) <= {
+        item.get("node") for item in health_observations if item.get("guardian_healthy") is True
+    }
+    service_deleted = bool(service_removal and service_removal.get("status") == "pass" and service_removal.get("already_absent") is not True)
+    service_already_absent = bool(service_removal and service_removal.get("already_absent") is True)
+    live_mutation = any(item.get("live_write_acknowledged") is True for item in mutation_receipts) or service_deleted
+    complete = failure is None and guardian_complete and bool(service_removal and service_removal.get("status") == "pass")
+    evidence: dict[str, Any] = {
+        "kind": _EVIDENCE_KIND,
+        "schema_version": 1,
+        "started_at": started,
+        "completed_at": completed,
+        "status": "pass" if complete else "failed",
+        "failure": failure,
+        "mother_binding": dict(inspected["mother_binding"]),
+        "network": inspected["network"],
+        "mode": inspected["mode"],
+        "target": dict(release["target"]),
+        "survivors": list(release["survivors"]),
+        "current_topology": dict(release["current_topology"]),
+        "post_removal_topology": dict(release["post_removal_topology"]),
+        "release": {"locator": _relative(paths, Path(inspected["release_path"]), label="node-removal do release"), "sha256": digest},
+        "execution_claim": {"locator": _relative(paths, claim_path, label="node-removal do claim")},
+        "source_transaction": dict(release["source_transaction"]),
+        "source_baseline_evidence": dict(release["source_baseline_evidence"]),
+        "routing_topology_withdrawal_receipts": routing_receipts,
+        "validator_removal_vote": dict(release["validator_removal_vote"]),
+        "mutation_receipts": mutation_receipts,
+        "health_observations": health_observations,
+        "service_removal": service_removal,
+        "authority": {
+            "release_consumed": True,
+            "routing_topology_withdrawal_authorized": True,
+            "routing_or_topology_publication_authorized": False,
+            "validator_removal_vote_authorized": True,
+            "validator_removal_vote_proven": guardian_complete,
+            "validator_activation_authorized": False,
+            "service_deletion_authorized": True,
+            "service_deletion_proven": complete,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET", "PATCH", "DELETE"],
+            "coolify_control_plane_only": True,
+            "manual_ssh_required": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "public_http_endpoint_created": False,
+            "routing_or_topology_published": False,
+            "routing_or_topology_withdrawn": True,
+            "validator_activation_performed": False,
+            "service_deletion_is_first": False,
+        },
+        "summary": {
+            "clean": complete,
+            "complete": complete,
+            "target_node": release["target"]["node"],
+            "target_validator_address": release["target"]["validator_address"],
+            "survivor_nodes": [item["node"] for item in release["survivors"]],
+            "current_validator_count": len(release["current_topology"]["validator_set"]),
+            "post_removal_validator_count": len(release["post_removal_topology"]["validator_set"]),
+            "routing_topology_withdrawal_verified_before_service_deletion": True,
+            "service_deletion_is_first": False,
+            "validator_removal_vote_performed": guardian_complete,
+            "service_deletion_performed": service_deleted,
+            "service_already_absent": service_already_absent,
+            "network_access_performed": bool(mutation_receipts or health_observations or service_removal),
+            "live_mutation_performed": live_mutation,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "manual_ssh_required": False,
+            "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+        },
+        "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+        "live_mutation_performed": live_mutation,
+        "service_deletion_performed": service_deleted,
+        "validator_removal_vote_performed": guardian_complete,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+    }
+    evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
+    evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+    return evidence
+
+
+def verify_node_remove_do_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    max_age_seconds: int = 86400,
+    release_max_age_seconds: int = 86400,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    document, _, digest = _canonical_under(paths, Path(evidence_path), _EVIDENCE_DIRECTORY, "node-removal do evidence")
+    if document.get("kind") != _EVIDENCE_KIND or document.get("mother_binding") != _binding(private_state) or _contains_sensitive(document):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "node-removal do evidence is invalid or sensitive")
+    age = _age_seconds(document.get("completed_at"), now=now)
+    if age > max_age_seconds:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_STALE", "node-removal do evidence is outside the freshness window")
+    release = document.get("release")
+    if not isinstance(release, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "evidence release binding is missing")
+    release_path = _resolve_under(paths, release.get("locator"), _RELEASE_DIRECTORY, label="node-removal do release")
+    verified_release = verify_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        max_age_seconds=release_max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    if verified_release["node_remove_do_release_sha256"] != release.get("sha256"):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "evidence release binding changed")
+    summary = document.get("summary")
+    authority = document.get("authority")
+    policy = document.get("policy")
+    if not isinstance(summary, Mapping) or not isinstance(authority, Mapping) or not isinstance(policy, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "evidence is incomplete")
+    if not all([
+        document.get("status") == "pass",
+        summary.get("clean") is True,
+        summary.get("complete") is True,
+        summary.get("service_deletion_is_first") is False,
+        summary.get("routing_topology_withdrawal_verified_before_service_deletion") is True,
+        summary.get("validator_removal_vote_performed") is True,
+        summary.get("network_access_performed") is True,
+        summary.get("routing_or_topology_published") is False,
+        summary.get("public_endpoint_created") is False,
+        authority.get("validator_removal_vote_proven") is True,
+        authority.get("service_deletion_proven") is True,
+        policy.get("service_deletion_is_first") is False,
+    ]):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "node-removal do evidence does not prove the staged removal")
+    return {
+        "clean": True,
+        "evidence_path": str(Path(evidence_path).resolve(strict=False)),
+        "evidence_sha256": digest,
+        "age_seconds": age,
+        "mother_binding": dict(document["mother_binding"]),
+        "network": document["network"],
+        "mode": document["mode"],
+        "target_node": document["target"]["node"],
+        "target_validator_address": document["target"]["validator_address"],
+        "survivor_nodes": [item["node"] for item in document["survivors"]],
+        "current_validator_set": list(document["current_topology"]["validator_set"]),
+        "post_removal_validator_set": list(document["post_removal_topology"]["validator_set"]),
+        "source_prep_transaction_sha256": document["source_transaction"]["sha256"],
+        "source_baseline_evidence_sha256": document["source_baseline_evidence"]["sha256"],
+        "node_remove_do_release_sha256": verified_release["node_remove_do_release_sha256"],
+        "routing_topology_withdrawal_verified_before_service_deletion": True,
+        "validator_removal_vote_performed": True,
+        "service_deletion_performed": bool(summary.get("service_deletion_performed")),
+        "service_already_absent": bool(summary.get("service_already_absent")),
+        "service_deletion_is_first": False,
+        "live_mutation_performed": bool(summary.get("live_mutation_performed")),
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "next_phase": document["next_phase"],
+    }
+
+
+__all__ = [
+    "MotherDeploymentNodeRemoveDoError",
+    "build_node_remove_do_release",
+    "write_node_remove_do_release",
+    "verify_node_remove_do_release",
+    "inspect_node_remove_do_release",
+    "execute_node_remove_do_release",
+    "verify_node_remove_do_evidence",
+]

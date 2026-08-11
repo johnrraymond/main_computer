@@ -9,6 +9,7 @@ import os
 
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
+from main_computer.gameplay_plugin_project_catalog import apply_gameplay_plugin_project_catalog, read_gameplay_plugin_project_catalog
 
 
 def _mounted_editor_should_inline_test_provider(provider: Any) -> bool:
@@ -2221,7 +2222,15 @@ class ViewportGameRoutesMixin:
             assets_root=root / "assets",
         )
         project = self._game_project_apply_runtime_migrations(project)
-        return {"ok": True, "project_id": root.name, "project": project, **self._game_file_shared(project_file)}
+        generated_catalog = read_gameplay_plugin_project_catalog(root, project_id=root.name)
+        project = apply_gameplay_plugin_project_catalog(root, project, project_id=root.name, catalog=generated_catalog)
+        return {
+            "ok": True,
+            "project_id": root.name,
+            "project": project,
+            "generated_gameplay_catalog": generated_catalog.payload,
+            **self._game_file_shared(project_file),
+        }
 
     def _game_asset_kind(self, path: Path) -> str:
         suffix = path.suffix.lower()

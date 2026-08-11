@@ -43,46 +43,46 @@ class Element {
   getAttribute(name) { return name === "data-mcel-node-id" ? this.nodeId : null; }
   getBoundingClientRect() { return {width: 20, height: 20}; }
 }
-const value = new Element("contract-counter.value", "1");
+const value = new Element("sample-app.value", "1");
 const receiptValue = {
-  operationId: "contract-counter.increment.1",
+  operationId: "sample-app.operation.1",
   intentId: "increment",
   status: "committed",
   after: {revision: 1, state: {count: 1, revision: 1}}
 };
-const receipt = new Element("contract-counter.latest-receipt", JSON.stringify(receiptValue));
+const receipt = new Element("sample-app.latest-receipt", JSON.stringify(receiptValue));
 const root = {
   children: [value, receipt],
-  getAttribute(name) { return name === "data-mcel-surface-id" ? "contract-counter.surface.primary" : null; },
+  getAttribute(name) { return name === "data-mcel-surface-id" ? "sample-app.surface.primary" : null; },
   querySelectorAll(selector) { return selector === "[data-mcel-node-id]" ? [value, receipt] : []; }
 };
 const contract = {
   schema: "mcel.observation-contract.v1",
-  appId: "contract-counter",
+  appId: "sample-app",
   currentStatus: "operation-linked",
   observations: [
-    {id: "value", semanticNodeId: "contract-counter.value", property: "textContent", compareToStatePath: "count", normalization: "string"},
-    {id: "visible", semanticNodeId: "contract-counter.value", property: "visible", expected: true, normalization: "boolean"},
-    {id: "receipt", semanticNodeId: "contract-counter.latest-receipt", property: "textContent", compareToOperationReceipt: true}
+    {id: "value", semanticNodeId: "sample-app.value", property: "textContent", compareToStatePath: "count", normalization: "string"},
+    {id: "visible", semanticNodeId: "sample-app.value", property: "visible", expected: true, normalization: "boolean"},
+    {id: "receipt", semanticNodeId: "sample-app.latest-receipt", property: "textContent", compareToOperationReceipt: true}
   ]
 };
 const result = {
   ok: true,
   status: "committed",
-  appId: "contract-counter",
-  operationId: "contract-counter.increment.1",
+  appId: "sample-app",
+  operationId: "sample-app.operation.1",
   intentId: "increment",
   revision: 1,
-  receipt: {before: {revision: 0}, after: {revision: 1}, operationId: "contract-counter.increment.1", status: "committed"}
+  receipt: {before: {revision: 0}, after: {revision: 1}, operationId: "sample-app.operation.1", status: "committed"}
 };
 const mount = {
   kind: "mcel-application-package-mount",
-  appId: "contract-counter",
+  appId: "sample-app",
   root,
-  surface: {surfaceId: "contract-counter.surface.primary"},
+  surface: {surfaceId: "sample-app.surface.primary"},
   observation: contract,
   packageRecord: {fingerprint: "sha256:package"},
-  manifest: {projection: {fingerprint: "sha256:projection"}, source: {catalogFingerprint: "sha256:catalog"}, surface: {rootSelector: "#contract-counter-app"}},
+  manifest: {projection: {fingerprint: "sha256:projection"}, source: {catalogFingerprint: "sha256:catalog"}, surface: {rootSelector: "#sample-app-app"}},
   readState() { return {count: 1, revision: 1}; }
 };
 const fakeProducer = {captureReadOnlyObservation(input) { return {schema: "mcel.observation-bundle.v1", observationId: input.observationId}; }};
@@ -92,8 +92,8 @@ const report = McelApplicationOperationObserver.observeCommittedOperation({
   repositoryFingerprint: "repo-fingerprint",
   packageFingerprint: "sha256:package",
   runtimeProjectionFingerprint: "sha256:projection",
-  route: "/mcel-package-host.html?app=contract-counter",
-  surfaceLocator: "#contract-counter-app"
+  route: "/mcel-package-host.html?app=sample-app",
+  surfaceLocator: "#sample-app-app"
 }, {observationProducer: fakeProducer});
 const failures = [];
 value.textContent = "9";
@@ -119,8 +119,8 @@ process.stdout.write(JSON.stringify({report, failures}));
         "surfaceMatches": True,
         "checks": data["report"]["comparison"]["checks"],
     }
-    assert data["report"]["observedNodes"]["contract-counter.value"]["textContent"] == "1"
-    assert data["report"]["receiptObservation"]["operationId"] == "contract-counter.increment.1"
+    assert data["report"]["observedNodes"]["sample-app.value"]["textContent"] == "1"
+    assert data["report"]["receiptObservation"]["operationId"] == "sample-app.operation.1"
     assert data["failures"] == [
         "MCEL_APPLICATION_OBSERVATION_COMPARISON_FAILED",
         "MCEL_APPLICATION_OBSERVATION_COMPARISON_FAILED",

@@ -20,17 +20,21 @@ from main_computer.mcel_application_package_browser_catalog import (
 )
 from main_computer.mcel_application_packages import build_application_package_catalog
 
+from mcel_dsl_authoring_harness import (
+    assert_surface_bundle_contract_shape,
+    copy_reference_self_contained_runtime_package,
+    expected_application_package_ids,
+    surface_bundle_cases,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_PACKAGE = ROOT / "mcel_apps" / "contract-counter"
 TOOL = ROOT / "tools" / "mcel_application_package_browser_catalog.py"
 GENERATED = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" / "scripts" / "mcel-application-package-catalog.js"
 
 
 def _copy_repository_package(target_root: Path) -> Path:
-    destination = target_root / "mcel_apps" / "contract-counter"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(SOURCE_PACKAGE, destination)
+    _case, destination = copy_reference_self_contained_runtime_package(ROOT, target_root)
     return destination
 
 
@@ -39,36 +43,25 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
 
     assert payload["schema"] == BROWSER_CATALOG_SCHEMA
     assert payload["format"] == BROWSER_CATALOG_FORMAT
-    assert payload["packageCount"] == 4
-    assert {item["appId"] for item in payload["packages"]} == {
-        "calculator",
-        "code-editor",
-        "contract-counter",
-        "contract-workbench",
-    }
-    assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
-    assert payload["surfaceBundleCount"] == 2
-    assert set(payload["surfaceBundles"]) == {"calculator", "code-editor"}
-    calculator_bundle = payload["surfaceBundles"]["calculator"]
-    assert calculator_bundle["schema"] == "mcel.application-surface-bundle.v1"
-    assert calculator_bundle["appId"] == "calculator"
-    assert calculator_bundle["surfaceId"] == "calculator.surface.workspace"
-    assert calculator_bundle["semanticSurface"]["id"] == "calculator.semantic-surface.semantic-runtime-workspace"
-    assert calculator_bundle["layoutGrammar"]["id"] == "calculator.layout.semantic-runtime-workspace"
-    code_editor_bundle = payload["surfaceBundles"]["code-editor"]
-    assert code_editor_bundle["schema"] == "mcel.application-surface-bundle.v1"
-    assert code_editor_bundle["appId"] == "code-editor"
-    assert code_editor_bundle["surfaceId"] == "code-editor.surface.monaco-selected-file-editor"
-    assert code_editor_bundle["contractId"] == "code-editor.contract.authoring.monaco-golden-path"
-    assert code_editor_bundle["semanticSurface"]["id"] == "code-editor.semantic-surface.legacy-fidelity"
-    assert code_editor_bundle["layoutGrammar"]["id"] == "code-editor.layout.legacy-fidelity-workbench"
+    expected_ids = expected_application_package_ids(ROOT)
+    declared_cases = surface_bundle_cases(ROOT)
 
-    package = next(item for item in payload["packages"] if item["appId"] == "contract-counter")
-    assert package["appId"] == "contract-counter"
-    assert package["conformance"]["currentMode"] == "semantic-runtime-proven"
-    assert package["runtime"]["document"] == "mcel_apps/contract-counter/src/index.html"
-    assert package["runtimeProjection"]["manifestUrl"] == "applications/mcel-packages/contract-counter/mcel.runtime.json"
-    assert package["runtimeProjection"]["fingerprint"].startswith("sha256:")
+    assert payload["packageCount"] == len(expected_ids)
+    assert {item["appId"] for item in payload["packages"]} == expected_ids
+    assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
+    assert payload["surfaceBundleCount"] == len(declared_cases)
+    assert set(payload["surfaceBundles"]) == {case.app_id for case in declared_cases}
+    for case in declared_cases:
+        assert payload["surfaceBundles"][case.app_id] == assert_surface_bundle_contract_shape(case)
+
+    runtime_package = next((item for item in payload["packages"] if item["runtime"]), None)
+    if runtime_package is not None:
+        assert runtime_package["conformance"]["currentMode"] == "semantic-runtime-proven"
+        assert runtime_package["runtime"]["document"] == f"mcel_apps/{runtime_package['appId']}/src/index.html"
+        assert runtime_package["runtimeProjection"]["manifestUrl"] == (
+            f"applications/mcel-packages/{runtime_package['appId']}/mcel.runtime.json"
+        )
+        assert runtime_package["runtimeProjection"]["fingerprint"].startswith("sha256:")
 
     calculator = next(item for item in payload["packages"] if item["appId"] == "calculator")
     assert calculator["runtime"] == {}
@@ -91,7 +84,9 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
     assert code_editor["runtimeProjection"]["scriptUrl"] is None
     assert code_editor["runtimeProjection"]["styleUrl"] is None
 
-    assert set(package) == {
+    package_shape = runtime_package or calculator
+
+    assert set(package_shape) == {
         "appId",
         "title",
         "packageRoot",
@@ -170,7 +165,7 @@ def test_browser_catalog_cli_check_and_json_output() -> None:
     payload = json.loads(completed.stdout)
     assert payload["schema"] == "mcel.application-package-browser-catalog-result.v1"
     assert payload["resultCode"] == "browser_catalog_fresh"
-    assert payload["packageCount"] == 4
+    assert payload["packageCount"] == len(expected_application_package_ids(ROOT))
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
 
 
@@ -208,25 +203,26 @@ def test_browser_catalog_cli_check_uses_stale_exit_class(tmp_path: Path) -> None
 def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
     script = f"""
       const catalog = require({json.dumps(str(GENERATED))});
-      const record = catalog.getPackage("contract-counter");
+      const record = catalog.listPackages().find((entry) => entry.runtimeProjection.manifestUrl);
       const first = catalog.listPackages();
       first[0].title = "mutated copy";
+      const surfaceBundle = catalog.listSurfaceBundles()[0];
       console.log(JSON.stringify({{
         schema: catalog.SCHEMA,
         format: catalog.FORMAT,
         packageCount: catalog.packageCount,
-        hasCounter: catalog.hasPackage("contract-counter"),
+        selectedAppId: record.appId,
+        hasSelectedPackage: catalog.hasPackage(record.appId),
         missing: catalog.getPackage("missing-app"),
         title: record.title,
-        titleAfterCopyMutation: catalog.getPackage("contract-counter").title,
+        titleAfterCopyMutation: catalog.getPackage(record.appId).title,
         currentMode: record.conformance.currentMode,
         adapterPath: record.contracts.adapter,
         runtimeManifestUrl: record.runtimeProjection.manifestUrl,
         surfaceBundleCount: catalog.surfaceBundleCount,
-        hasCodeEditorBundle: catalog.hasSurfaceBundle("code-editor"),
-        hasCounterBundle: catalog.hasSurfaceBundle("contract-counter"),
-        codeEditorSurfaceId: catalog.getSurfaceBundle("code-editor").surfaceId,
-        codeEditorSemanticSurfaceId: catalog.getSurfaceBundle("code-editor").semanticSurface.id,
+        selectedHasSurfaceBundle: catalog.hasSurfaceBundle(record.appId),
+        firstSurfaceBundleAppId: surfaceBundle.appId,
+        firstSurfaceBundleSurfaceId: surfaceBundle.bundle.surfaceId,
         listedSurfaceBundles: catalog.listSurfaceBundles().map((entry) => entry.appId),
         executableKeys: Object.keys(record).filter((key) => typeof record[key] === "function")
       }}));
@@ -243,25 +239,27 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     payload = json.loads(completed.stdout)
-    assert payload == {
-        "schema": BROWSER_CATALOG_SCHEMA,
-        "format": BROWSER_CATALOG_FORMAT,
-        "packageCount": 4,
-        "hasCounter": True,
-        "missing": None,
-        "title": "Contract Counter",
-        "titleAfterCopyMutation": "Contract Counter",
-        "currentMode": "semantic-runtime-proven",
-        "adapterPath": "mcel_apps/contract-counter/contracts/adapter.js",
-        "runtimeManifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",
-        "surfaceBundleCount": 2,
-        "hasCodeEditorBundle": True,
-        "hasCounterBundle": False,
-        "codeEditorSurfaceId": "code-editor.surface.monaco-selected-file-editor",
-        "codeEditorSemanticSurfaceId": "code-editor.semantic-surface.legacy-fidelity",
-        "listedSurfaceBundles": ["calculator", "code-editor"],
-        "executableKeys": [],
-    }
+    expected_ids = expected_application_package_ids(ROOT)
+    declared_bundle_ids = [case.app_id for case in surface_bundle_cases(ROOT)]
+
+    assert payload["schema"] == BROWSER_CATALOG_SCHEMA
+    assert payload["format"] == BROWSER_CATALOG_FORMAT
+    assert payload["packageCount"] == len(expected_ids)
+    assert payload["selectedAppId"] in expected_ids
+    assert payload["hasSelectedPackage"] is True
+    assert payload["missing"] is None
+    assert payload["titleAfterCopyMutation"] == payload["title"]
+    assert payload["currentMode"] == "semantic-runtime-proven"
+    assert payload["adapterPath"] == f"mcel_apps/{payload['selectedAppId']}/contracts/adapter.js"
+    assert payload["runtimeManifestUrl"] == (
+        f"applications/mcel-packages/{payload['selectedAppId']}/mcel.runtime.json"
+    )
+    assert payload["surfaceBundleCount"] == len(declared_bundle_ids)
+    assert payload["selectedHasSurfaceBundle"] == (payload["selectedAppId"] in declared_bundle_ids)
+    assert payload["firstSurfaceBundleAppId"] in declared_bundle_ids
+    assert payload["firstSurfaceBundleSurfaceId"]
+    assert payload["listedSurfaceBundles"] == declared_bundle_ids
+    assert payload["executableKeys"] == []
 
 
 def test_sanity_freshness_check_rejects_stale_browser_package_catalog(tmp_path: Path) -> None:

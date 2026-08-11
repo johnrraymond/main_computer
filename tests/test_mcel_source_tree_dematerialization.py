@@ -10,16 +10,11 @@ from main_computer.mcel_application_virtual_assets import (
     build_virtual_mcel_browser_assets,
     normalize_mcel_asset_route,
 )
+from mcel_dsl_authoring_harness import discover_valid_application_package_cases
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PROMOTED_APPS = ("calculator", "contract-counter", "contract-workbench")
-SHADOW_APPS: tuple[str, ...] = ()
 GENERATED_SOURCE_NAMES = ("contracts", "generated", "mcel.generated.json")
-
-
-def _package(catalog, app_id: str):
-    return next(record for record in catalog.packages if record.app_id == app_id)
 
 
 def _files_beneath(path: Path) -> list[Path]:
@@ -30,11 +25,14 @@ def _files_beneath(path: Path) -> list[Path]:
     return [candidate for candidate in path.rglob("*") if candidate.is_file()]
 
 
+def _runtime_asset_route(app_id: str, relative_path: str) -> str:
+    return f"applications/mcel-packages/{app_id}/{relative_path}"
+
+
 def test_authored_packages_contain_no_materialized_generated_source() -> None:
-    for app_id in (*PROMOTED_APPS, *SHADOW_APPS):
-        root = REPO_ROOT / "mcel_apps" / app_id
+    for case in discover_valid_application_package_cases(REPO_ROOT):
         for name in GENERATED_SOURCE_NAMES:
-            path = root / name
+            path = case.package_path / name
             assert not _files_beneath(path), f"generated source-tree artifact remains: {path}"
 
 
@@ -45,20 +43,18 @@ def test_checked_in_browser_projection_is_absent() -> None:
     ).exists()
 
 
-def test_duplicate_live_dsl_fixtures_are_absent() -> None:
-    assert not (REPO_ROOT / "tests/fixtures/mcel_dsl/contract-counter.application.js").exists()
-    assert not (REPO_ROOT / "tests/fixtures/mcel_dsl/contract-workbench.application.js").exists()
+def test_duplicate_live_dsl_fixture_copies_are_absent() -> None:
+    assert not _files_beneath(REPO_ROOT / "tests/fixtures/mcel_dsl")
 
 
 def test_package_catalog_reconstructs_generated_files_in_memory() -> None:
     catalog = build_application_package_catalog(REPO_ROOT)
     assert catalog.ok
+    cases = discover_valid_application_package_cases(REPO_ROOT)
+    assert cases
 
-    calculator = _package(catalog, "calculator")
-    counter = _package(catalog, "contract-counter")
-    workbench = _package(catalog, "contract-workbench")
-
-    for record in (calculator, counter, workbench):
+    for case in cases:
+        record = case.record
         assert record.files["mcel.generated.json"]
         for contract in (
             "acceptance",
@@ -71,9 +67,10 @@ def test_package_catalog_reconstructs_generated_files_in_memory() -> None:
         ):
             assert record.files[f"contracts/{contract}.js"]
 
-    assert calculator.files["generated/mcel.application.normalized.json"]
-    assert "generated/mcel.application.normalized.json" not in counter.files
-    assert workbench.files["generated/mcel.application.normalized.json"]
+    assert any(
+        "generated/mcel.application.normalized.json" in case.record.files
+        for case in cases
+    )
 
 
 def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path: Path) -> None:
@@ -87,10 +84,12 @@ def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path
     )
     assert runtime_root.is_dir()
     assert catalog_path.is_file()
-    assert (runtime_root / "contract-counter/contracts/domain.js").is_file()
-    assert (runtime_root / "contract-workbench/contracts/domain.js").is_file()
-    assert (runtime_root / "calculator/contracts/domain.js").is_file()
-    assert not (runtime_root / "calculator/src").exists()
+
+    cases = discover_valid_application_package_cases(REPO_ROOT)
+    assert cases
+    for case in cases:
+        assert (runtime_root / case.app_id / "contracts/domain.js").is_file()
+    assert any(not (runtime_root / case.app_id / "src").exists() for case in cases)
 
     virtual_assets = build_virtual_mcel_browser_assets(REPO_ROOT)
     physical_files = {
@@ -102,8 +101,8 @@ def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path
             physical_files[route] = path.read_bytes()
     assert physical_files == dict(virtual_assets.files)
 
-    for app_id in (*PROMOTED_APPS, *SHADOW_APPS):
-        assert not _files_beneath(REPO_ROOT / "mcel_apps" / app_id / "contracts")
+    for case in cases:
+        assert not _files_beneath(case.package_path / "contracts")
     assert not _files_beneath(REPO_ROOT / "main_computer/web/applications/mcel-packages")
 
 
@@ -111,23 +110,23 @@ def test_normal_viewport_mount_assets_stay_in_memory(tmp_path: Path) -> None:
     shutil.copytree(REPO_ROOT / "mcel_apps", tmp_path / "mcel_apps")
 
     assets = build_virtual_mcel_browser_assets(tmp_path)
+    cases = discover_valid_application_package_cases(tmp_path)
+    assert cases
 
     assert assets.files[CATALOG_ROUTE].startswith(b"var McelApplicationPackages")
-    assert assets.files[
-        "applications/mcel-packages/contract-counter/contracts/domain.js"
-    ]
-    assert assets.files[
-        "applications/mcel-packages/contract-workbench/mcel.runtime.json"
-    ]
-    assert assets.files[
-        "applications/mcel-packages/calculator/contracts/adapter.js"
-    ]
-    assert assets.files[
-        "applications/mcel-packages/calculator/mcel.runtime.json"
-    ]
+    for case in cases:
+        assert assets.files[_runtime_asset_route(case.app_id, "contracts/domain.js")]
+        assert assets.files[_runtime_asset_route(case.app_id, "mcel.runtime.json")]
+
+    assert any(
+        assets.files[_runtime_asset_route(case.app_id, "contracts/adapter.js")]
+        for case in cases
+    )
     assert not any(
-        path.startswith("applications/mcel-packages/calculator/src/")
+        path.startswith(_runtime_asset_route(case.app_id, "src/"))
+        for case in cases
         for path in assets.files
+        if not case.record.runtime
     )
     assert not (tmp_path / "runtime").exists()
 
@@ -148,10 +147,12 @@ def test_virtual_mount_asset_paths_fail_closed() -> None:
         == CATALOG_ROUTE
     )
 
+    valid_case = discover_valid_application_package_cases(REPO_ROOT)[0]
+
     for path in (
         "",
         "/applications/mcel-packages/",
-        "/applications/mcel-packages/contract-counter",
+        f"/applications/mcel-packages/{valid_case.app_id}",
         "/applications/mcel-packages/../secret.txt",
         "/main_computer/web/applications/scripts/mcel-core.js",
     ):
@@ -160,4 +161,3 @@ def test_virtual_mount_asset_paths_fail_closed() -> None:
         except RuntimeError:
             continue
         raise AssertionError(f"unsafe virtual MCEL asset path was accepted: {path!r}")
-

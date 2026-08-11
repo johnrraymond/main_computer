@@ -1,3 +1,12 @@
+# Retired Allfather documentation
+
+Status: retired. Allfather scripts have been replaced by the Mother scripts.
+This document is preserved only as historical reference. Do not use it as an
+operator runbook. Use `tools/mother_deploy.py` and `tools/mother/*` for
+lifecycle operations.
+
+---
+
 # All-father control plane bootstrap
 
 The all-father deployment starts with a control surface, not with a guessed

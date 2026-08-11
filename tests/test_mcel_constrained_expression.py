@@ -27,12 +27,12 @@ from main_computer.mcel_constrained_expression import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
+REFERENCE_IR = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "reference-counter.ir.json"
 TOOL = ROOT / "tools" / "mcel_constrained_expression.py"
 
 
-def load_fixture() -> dict:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+def load_reference_ir() -> dict:
+    return json.loads(REFERENCE_IR.read_text(encoding="utf-8"))
 
 
 def codes(analysis) -> set[str]:
@@ -44,7 +44,7 @@ def test_builders_construct_typed_canonical_transition_without_execution() -> No
         transition_assign("state:count", constant(0)),
         number_increment("state:revision"),
     )
-    symbols = build_expression_symbols(load_fixture())
+    symbols = build_expression_symbols(load_reference_ir())
 
     analysis = analyze_expression(expression, context="mutation-transition", symbols=symbols)
 
@@ -59,8 +59,8 @@ def test_builders_construct_typed_canonical_transition_without_execution() -> No
     assert expression.get("type") is None  # normalization never mutates authored input
 
 
-def test_counter_application_has_fifteen_typed_expression_roots() -> None:
-    report = analyze_application_expressions(load_fixture(), emit_reference_diagnostics=True)
+def test_reference_application_has_fifteen_typed_expression_roots() -> None:
+    report = analyze_application_expressions(load_reference_ir(), emit_reference_diagnostics=True)
 
     assert report.valid is True
     assert report.expression_count == 15
@@ -230,7 +230,7 @@ def test_expression_normalization_and_fingerprint_ignore_object_key_order() -> N
 
 
 def test_application_ir_validation_includes_expression_context_and_type_checks() -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     candidate["derivations"] = [
         {
             "id": "derivation:invalid-result-read",
@@ -251,7 +251,7 @@ def test_application_ir_validation_includes_expression_context_and_type_checks()
 
 
 def test_application_ir_validation_rejects_transition_type_mismatch() -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     reset = next(item for item in candidate["intents"] if item["id"] == "intent:reset")
     reset["transition"]["steps"][0]["value"] = constant("zero")
 
@@ -261,12 +261,12 @@ def test_application_ir_validation_rejects_transition_type_mismatch() -> None:
     assert "MCEL_EXPR_OPERAND_TYPE_MISMATCH" in {item.code for item in report.diagnostics}
 
 
-def test_counter_semantic_fingerprint_is_unchanged_by_wave2a_analysis() -> None:
-    report = validate_application_ir(load_fixture())
+def test_reference_semantic_fingerprint_is_unchanged_by_wave2a_analysis() -> None:
+    report = validate_application_ir(load_reference_ir())
 
     assert report.valid is True
-    assert report.semantic_fingerprint == "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-    assert report.source_binding_fingerprint == "sha256:47eb3d1888708ab67c0c4c5c6a5e284f7178f68cf4efb3d1e8b5c33f30236610"
+    assert report.semantic_fingerprint == "sha256:93bb5a2ab249aa9d5fbaa721b5813acc8767aaa8897160e047f7184f1e5a4e75"
+    assert report.source_binding_fingerprint == "sha256:dd0d9b4c7f3f59c86045eb71622b32c2c4f2e8765730e71552705f57e88c938c"
 
 
 def test_expression_cli_runs_without_site_packages() -> None:
@@ -276,7 +276,7 @@ def test_expression_cli_runs_without_site_packages() -> None:
             "-S",
             str(TOOL),
             "--input",
-            str(FIXTURE),
+            str(REFERENCE_IR),
             "--json",
         ],
         cwd=ROOT,

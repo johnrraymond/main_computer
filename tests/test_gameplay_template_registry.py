@@ -78,6 +78,11 @@ def test_default_template_registry_names_supported_gameplay_primitives() -> None
     assert "actor-archetype.vela-cave-guard" in registry.actor_archetypes
     assert "consequence-type.record-receipt" in registry.consequence_types
 
+    shuttle_template = registry.template("encounter-template.shuttle-ambush")
+    assert shuttle_template is not None
+    assert shuttle_template.systems == ("system.solace-reach",)
+    assert shuttle_template.destinations == ("destination.solace-reach.haven-orbit",)
+
 
 def test_builtin_vela_cave_escape_declares_supported_template_consumer() -> None:
     registry = default_gameplay_template_registry()
@@ -102,6 +107,31 @@ def test_builtin_vela_cave_escape_declares_supported_template_consumer() -> None
     assert consumer.consequence_types == (
         "consequence-type.record-receipt",
         "consequence-type.unlock-route",
+    )
+
+
+def test_builtin_opening_shuttle_ambush_declares_supported_template_consumer() -> None:
+    registry = default_gameplay_template_registry()
+
+    assert validate_built_in_template_consumers(registry) == []
+
+    consumer = registry.built_in_consumer("built-in.solace-reach.opening-shuttle-ambush")
+    assert consumer is not None
+    assert consumer.source == "built-in"
+    assert consumer.template_id == "encounter-template.shuttle-ambush"
+    assert consumer.scenario_id == "scenario.solace-reach.opening-shuttle-ambush"
+    assert consumer.encounter_id == "encounter.solace-reach.opening-shuttle-ambush"
+    assert consumer.system_id == "system.solace-reach"
+    assert consumer.destination_id == "destination.solace-reach.haven-orbit"
+    assert consumer.objective_types == (
+        "objective-type.survive",
+        "objective-type.clear-hostiles",
+        "objective-type.reach-destination",
+    )
+    assert consumer.actor_archetypes == ("actor-archetype.shuttle-raider",)
+    assert consumer.consequence_types == (
+        "consequence-type.record-receipt",
+        "consequence-type.mark-system",
     )
 
 

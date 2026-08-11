@@ -40,6 +40,21 @@ class AppAuthoringProfileError(RuntimeError):
     """Raised when no generic-pipeline mechanics profile exists for an app."""
 
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _fixture_package_source_exists(app_id: str) -> bool:
+    """Return whether a retired reference fixture package is still checked in.
+
+    The old Counter/Workbench profiles are lazy compatibility adapters only.
+    They must disappear from profile discovery once the fixture app directories
+    are physically removed, so generic authoring paths keep working after
+    fixture retirement.
+    """
+
+    return (_REPOSITORY_ROOT / "mcel_apps" / app_id / "application.js").is_file()
+
+
 def _counter_profile() -> AppAuthoringProfile:
     from main_computer.mcel_counter_candidate_evidence import run_counter_candidate_evidence
     from main_computer.mcel_counter_effect_probe import (
@@ -174,9 +189,9 @@ def get_app_authoring_profile(app_id: str) -> AppAuthoringProfile:
     normalized = str(app_id or "").strip()
     if normalized == "calculator":
         return _calculator_profile()
-    if normalized == "contract-counter":
+    if normalized == "contract-counter" and _fixture_package_source_exists("contract-counter"):
         return _counter_profile()
-    if normalized == "contract-workbench":
+    if normalized == "contract-workbench" and _fixture_package_source_exists("contract-workbench"):
         return _workbench_profile()
     raise AppAuthoringProfileError(
         f"No generic MCEL authoring profile is registered for application {normalized!r}."
@@ -184,4 +199,8 @@ def get_app_authoring_profile(app_id: str) -> AppAuthoringProfile:
 
 
 def registered_app_authoring_profiles() -> tuple[str, ...]:
-    return ("calculator", "contract-counter", "contract-workbench")
+    profiles = ["calculator"]
+    for fixture_app_id in ("contract-counter", "contract-workbench"):
+        if _fixture_package_source_exists(fixture_app_id):
+            profiles.append(fixture_app_id)
+    return tuple(profiles)

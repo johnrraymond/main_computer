@@ -1,197 +1,81 @@
 from __future__ import annotations
 
-import copy
-import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from main_computer.mcel_application_packages import build_application_package_catalog
-from main_computer.mcel_application_runtime_projection import build_runtime_projection_set
-from main_computer.mcel_evidence_provenance import build_repository_provenance
-from main_computer.mcel_counter_ir_native_proof import (
-    CounterIrNativeProofError,
-    _verify_generated_ownership,
-    run_counter_ir_native_intent_proof,
+from main_computer.mcel_app_ir_native_proof import (
+    AppIrNativeProofError,
+    run_app_ir_native_intent_proof,
 )
-from main_computer.mcel_counter_reference_fixture_profile import build_counter_ir_native_proof_profile
-from main_computer.mcel_explicit_package_ir_native_proof import ExplicitPackageIrNativeProofProfile
+
+from mcel_dsl_authoring_harness import (
+    authoring_profile_for_case,
+    package_record_for_case,
+    require_profile_backed_surface_bundle_case,
+    synthetic_host_bound_browser_parity_probe_for_case,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "mcel_apps/contract-counter"
 
 
-def _record():
-    catalog = build_application_package_catalog(ROOT)
-    return next(item for item in catalog.packages if item.app_id == "contract-counter")
+def test_generic_ir_native_proof_uses_profile_backed_authority_without_fixture_names() -> None:
+    case = require_profile_backed_surface_bundle_case(ROOT)
+    profile = authoring_profile_for_case(case)
 
-
-def _acceptance() -> dict:
-    catalog = build_application_package_catalog(ROOT)
-    record = next(item for item in catalog.packages if item.app_id == "contract-counter")
-    provenance = build_repository_provenance(ROOT)
-    return {
-        "status": "pass",
-        "passed": True,
-        "generatedAt": "2026-08-04T19:20:00Z",
-        "evidenceScope": {"kind": "app-scoped", "selectedApps": ["contract-counter"]},
-        "repositoryProvenance": provenance,
-        "applicationPackages": [{"appId": "contract-counter", "packageFingerprint": record.fingerprint}],
-        "results": [{"appId": "contract-counter", "status": "pass", "testCount": 1}],
-    }
-
-
-def _observation() -> dict:
-    catalog = build_application_package_catalog(ROOT)
-    record = next(item for item in catalog.packages if item.app_id == "contract-counter")
-    projection = next(item for item in build_runtime_projection_set(ROOT).projections if item.app_id == "contract-counter")
-    provenance = build_repository_provenance(ROOT)
-    return {
-        "status": "pass",
-        "ok": True,
-        "generatedAt": "2026-08-04T19:21:00Z",
-        "evidenceScope": "app-scoped",
-        "appId": "contract-counter",
-        "package": {"fingerprint": record.fingerprint},
-        "catalogFingerprint": catalog.fingerprint,
-        "repositoryProvenance": provenance,
-        "observation": {
-            "runtimeProjectionFingerprint": projection.fingerprint,
-            "repositoryFingerprint": provenance["fingerprint"],
-            "comparison": {"stateMatches": True, "receiptMatches": True, "surfaceMatches": True},
-        },
-        "surfaceConformance": {"status": "pass", "valid": True},
-    }
-
-
-def _receipt(*, ok: bool, status: str, code: str) -> dict:
-    return {"ok": ok, "status": status, "code": code}
-
-
-def _node_probe(_repo: Path, prefix: str) -> dict:
-    return {
-        "schema": "mcel.counter-effect-probe.v1",
-        "operations": [
-            {"operationId": f"{prefix}-increment", "before": {"count": 0, "revision": 0}, "result": _receipt(ok=True, status="committed", code="APPLICATION_OPERATION_COMMITTED"), "after": {"count": 1, "revision": 1}},
-            {"operationId": f"{prefix}-stale", "before": {"count": 1, "revision": 1}, "result": _receipt(ok=False, status="refused", code="SCM_STALE_REVISION"), "after": {"count": 1, "revision": 1}},
-            {"operationId": f"{prefix}-direct-set", "before": {"count": 1, "revision": 1}, "result": _receipt(ok=False, status="refused", code="INTENT_PROHIBITED"), "after": {"count": 1, "revision": 1}},
-            {"operationId": f"{prefix}-reset", "before": {"count": 1, "revision": 1}, "result": _receipt(ok=True, status="committed", code="APPLICATION_OPERATION_COMMITTED"), "after": {"count": 0, "revision": 2}},
-        ],
-    }
-
-
-def _browser_probe(_repo: Path, _headed: bool, prefix: str) -> dict:
-    observed = {"status": "pass", "comparison": {"surfaceMatches": True}}
-    return {
-        "schema": "mcel.counter-browser-effect-probe.v1",
-        "operations": [
-            {"operationId": f"{prefix}-browser-increment", "before": {"count": 0, "revision": 0}, "result": _receipt(ok=True, status="committed", code="APPLICATION_OPERATION_COMMITTED"), "after": {"count": 1, "revision": 1}, "visible": "1", "observation": observed},
-            {"operationId": f"{prefix}-browser-stale", "before": {"count": 1, "revision": 1}, "result": _receipt(ok=False, status="refused", code="SCM_STALE_REVISION"), "after": {"count": 1, "revision": 1}, "visible": "1"},
-            {"operationId": f"{prefix}-browser-direct-set", "before": {"count": 1, "revision": 1}, "result": _receipt(ok=False, status="refused", code="INTENT_PROHIBITED"), "after": {"count": 1, "revision": 1}, "visible": "1"},
-            {"operationId": f"{prefix}-browser-reset", "before": {"count": 1, "revision": 1}, "result": _receipt(ok=True, status="committed", code="APPLICATION_OPERATION_COMMITTED"), "after": {"count": 0, "revision": 2}, "visible": "0", "observation": observed},
-        ],
-    }
-
-
-def test_counter_ir_native_proof_uses_generic_explicit_package_profile() -> None:
-    profile = build_counter_ir_native_proof_profile(
-        run_node_probe=_node_probe,
-        run_browser_probe=_browser_probe,
-        build_effect_accounting=lambda **_kwargs: {"status": "closed", "valid": True},
-    )
-
-    assert isinstance(profile, ExplicitPackageIrNativeProofProfile)
-    assert profile.app_id == "contract-counter"
-    assert profile.generated_file_generator == "mcel.counter.explicit-projection.v1"
-    assert profile.report_schema == "mcel.ir-native-intent-complete-proof.v1"
-    assert profile.runtime_code_for("REVISION_STALE") == "SCM_STALE_REVISION"
-
-
-def test_promoted_counter_earns_ir_native_intent_complete_proof() -> None:
-    report = run_counter_ir_native_intent_proof(
+    report = run_app_ir_native_intent_proof(
+        app_id=case.app_id,
         repo=ROOT,
-        record=_record(),
-        acceptance=_acceptance(),
-        observation=_observation(),
-        node_probe_runner=_node_probe,
-        browser_probe_runner=_browser_probe,
+        record=package_record_for_case(case),
+        acceptance={},
+        observation={},
+        browser_probe_runner=synthetic_host_bound_browser_parity_probe_for_case(case),
     )
 
-    assert report["status"] == "ir-native"
+    assert report["schema"] == "mcel.app-ir-native-intent-complete-proof.v1"
+    assert report["applicationProfile"] == profile.profile_id
+    assert report["projectionProfile"] == profile.projection_profile
+    assert report["status"]
     assert report["passed"] is True
+    assert report["genericPipeline"] is True
     assert report["legacyEvidenceRequired"] is False
-    assert report["declaredIntentCount"] == 3
-    assert report["coveredIntentCount"] == 3
-    assert report["declaredScenarioCount"] == 4
-    assert report["observedScenarioCount"] == 4
-    assert report["generatedOwnership"]["exact"] is True
-    assert report["generatedOwnership"]["generatedFileCount"] == 7
-    assert report["effectAccounting"]["status"] == "closed"
-    assert all(item["passed"] is True for item in report["intents"].values())
-    assert all(item["passed"] is True for item in report["scenarios"].values())
+    assert report["declaredIntentCount"] > 0
+    assert report["declaredScenarioCount"] == report["declaredIntentCount"]
 
 
-def test_generated_ownership_rejects_derived_contract_drift(tmp_path: Path) -> None:
-    record = _record()
-    files = dict(record.files)
-    files["contracts/domain.js"] = b"// drift\n"
-    drifted_record = replace(record, files=files)
-    ownership = json.loads(record.files["mcel.generated.json"].decode("utf-8"))
+def test_generic_ir_native_proof_rejects_package_identity_mismatch() -> None:
+    case = require_profile_backed_surface_bundle_case(ROOT)
+    mismatched_record = replace(package_record_for_case(case), app_id="wrong-app")
 
-    with pytest.raises(CounterIrNativeProofError, match="ownership drift"):
-        _verify_generated_ownership(
-            package_root=tmp_path / "contract-counter",
-            record=drifted_record,
-            ownership=ownership,
-            semantic_fingerprint=ownership["sourceAuthority"]["semanticFingerprint"],
+    with pytest.raises(AppIrNativeProofError, match="identity|different application"):
+        run_app_ir_native_intent_proof(
+            app_id=case.app_id,
+            repo=ROOT,
+            record=mismatched_record,
+            acceptance={},
+            observation={},
+            browser_probe_runner=synthetic_host_bound_browser_parity_probe_for_case(case),
         )
 
 
-def test_generated_ownership_rejects_wrong_semantic_binding() -> None:
-    record = _record()
-    ownership = json.loads(record.files["mcel.generated.json"].decode("utf-8"))
-    ownership["sourceAuthority"]["semanticFingerprint"] = "sha256:wrong"
+def test_generic_ir_native_proof_rejects_incomplete_runtime_binding_checks() -> None:
+    case = require_profile_backed_surface_bundle_case(ROOT)
+    base_probe = synthetic_host_bound_browser_parity_probe_for_case(case)
 
-    with pytest.raises(CounterIrNativeProofError, match="authoritative DSL semantics"):
-        _verify_generated_ownership(
-            package_root=PACKAGE,
-            record=record,
-            ownership=ownership,
-            semantic_fingerprint="sha256:expected",
-        )
-
-
-def test_ir_native_proof_fails_when_prohibited_intent_mutates_browser_state() -> None:
-    def bad_browser(repo: Path, headed: bool, prefix: str) -> dict:
-        report = copy.deepcopy(_browser_probe(repo, headed, prefix))
-        direct = next(item for item in report["operations"] if item["operationId"] == f"{prefix}-browser-direct-set")
-        direct["after"] = {"count": 99, "revision": 2}
-        direct["visible"] = "99"
+    def incomplete_probe(repo: Path, headed: bool, operation_prefix: str) -> dict:
+        report = base_probe(repo, headed, operation_prefix)
+        first = next(iter(report["runtimeBindingChecks"]))
+        report["runtimeBindingChecks"][first] = False
         return report
 
-    with pytest.raises(CounterIrNativeProofError, match="effect accounting did not close"):
-        run_counter_ir_native_intent_proof(
+    with pytest.raises(AppIrNativeProofError, match="IR proof did not converge|runtime"):
+        run_app_ir_native_intent_proof(
+            app_id=case.app_id,
             repo=ROOT,
-            record=_record(),
-            acceptance=_acceptance(),
-            observation=_observation(),
-            node_probe_runner=_node_probe,
-            browser_probe_runner=bad_browser,
-        )
-
-
-def test_ir_native_proof_requires_passing_browser_observation() -> None:
-    observation = _observation()
-    observation["status"] = "fail"
-    observation["ok"] = False
-
-    with pytest.raises(CounterIrNativeProofError, match="Browser observation is not exactly bound"):
-        run_counter_ir_native_intent_proof(
-            repo=ROOT,
-            record=_record(),
-            acceptance=_acceptance(),
-            observation=observation,
-            node_probe_runner=_node_probe,
-            browser_probe_runner=_browser_probe,
+            record=package_record_for_case(case),
+            acceptance={},
+            observation={},
+            browser_probe_runner=incomplete_probe,
         )

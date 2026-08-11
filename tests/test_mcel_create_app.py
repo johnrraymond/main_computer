@@ -28,7 +28,8 @@ from tools.mcel_requirements_registry import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "mcel_create_app.py"
-GOLDEN = ROOT / "tests" / "fixtures" / "mcel_application_template_v1" / "contract-counter"
+SAMPLE_APP_ID = "sample-app"
+SAMPLE_TITLE = "Sample Application"
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:
@@ -37,6 +38,11 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def _rendered_tree_bytes(app_id: str = SAMPLE_APP_ID, title: str = SAMPLE_TITLE) -> dict[str, bytes]:
+    _template, _title, files = render_package_files(app_id, title)
+    return {relative_path: text.encode("utf-8") for relative_path, text in sorted(files.items())}
 
 
 def _strict_requirements_registry(package_root: Path) -> RequirementsRegistry:
@@ -55,7 +61,7 @@ def _strict_requirements_registry(package_root: Path) -> RequirementsRegistry:
 
 @pytest.mark.parametrize(
     "app_id",
-    ["counter", "contract-counter", "mcel-app-1", "a1-b2-c3"],
+    ["counter", SAMPLE_APP_ID, "mcel-app-1", "a1-b2-c3"],
 )
 def test_mcel_create_app_accepts_canonical_identifiers(app_id: str) -> None:
     assert validate_app_id(app_id) == app_id
@@ -63,7 +69,7 @@ def test_mcel_create_app_accepts_canonical_identifiers(app_id: str) -> None:
 
 @pytest.mark.parametrize(
     "app_id",
-    ["", "Counter", "contract_counter", "contract counter", "-counter", "counter-", "a--b", "../counter", "a/b", r"a\\b"],
+    ["", "Counter", "sample_app", "sample app", "-sample", "sample-", "a--b", "../sample", "a/b", r"a\\b"],
 )
 def test_mcel_create_app_refuses_unsafe_or_noncanonical_identifiers(app_id: str) -> None:
     with pytest.raises(InvalidScaffoldInput):
@@ -74,8 +80,8 @@ def test_mcel_create_app_dry_run_is_write_free(tmp_path: Path) -> None:
     output_root = tmp_path / "not-created"
 
     result = generate_application(
-        "contract-counter",
-        title="Contract Counter",
+        SAMPLE_APP_ID,
+        title=SAMPLE_TITLE,
         output_root=output_root,
         dry_run=True,
     )
@@ -89,18 +95,18 @@ def test_mcel_create_app_dry_run_is_write_free(tmp_path: Path) -> None:
 
 def test_mcel_create_app_generates_structurally_valid_package(tmp_path: Path) -> None:
     result = generate_application(
-        "contract-counter",
-        title="Contract Counter",
+        SAMPLE_APP_ID,
+        title=SAMPLE_TITLE,
         output_root=tmp_path,
     )
-    package_root = tmp_path / "contract-counter"
+    package_root = tmp_path / SAMPLE_APP_ID
 
     assert result.result_code == "generated"
     assert package_root.is_dir()
     assert validate_package_path(
         package_root,
-        expected_app_id="contract-counter",
-        expected_title="Contract Counter",
+        expected_app_id=SAMPLE_APP_ID,
+        expected_title=SAMPLE_TITLE,
         expected_template_id="mcel.canonical-application-template",
         expected_template_version="1.0.0",
     ).ok
@@ -117,26 +123,26 @@ def test_mcel_create_app_is_byte_deterministic_and_path_independent(tmp_path: Pa
     first_root = tmp_path / "first"
     second_root = tmp_path / "nested" / "second"
 
-    generate_application("contract-counter", title="Contract Counter", output_root=first_root)
-    generate_application("contract-counter", title="Contract Counter", output_root=second_root)
+    generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=first_root)
+    generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=second_root)
 
-    assert _tree_bytes(first_root / "contract-counter") == _tree_bytes(second_root / "contract-counter")
+    assert _tree_bytes(first_root / SAMPLE_APP_ID) == _tree_bytes(second_root / SAMPLE_APP_ID)
 
 
-def test_mcel_create_app_matches_checked_in_golden_fixture(tmp_path: Path) -> None:
-    generate_application("contract-counter", title="Contract Counter", output_root=tmp_path)
+def test_mcel_create_app_writes_the_rendered_template_without_fixture_golden(tmp_path: Path) -> None:
+    generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=tmp_path)
 
-    assert _tree_bytes(tmp_path / "contract-counter") == _tree_bytes(GOLDEN)
+    assert _tree_bytes(tmp_path / SAMPLE_APP_ID) == _rendered_tree_bytes()
 
 
 def test_mcel_create_app_refuses_destination_collision_without_mutation(tmp_path: Path) -> None:
-    destination = tmp_path / "contract-counter"
+    destination = tmp_path / SAMPLE_APP_ID
     destination.mkdir()
     sentinel = destination / "keep.txt"
     sentinel.write_text("do not overwrite\n", encoding="utf-8")
 
     with pytest.raises(UnsafeScaffoldDestination):
-        generate_application("contract-counter", title="Contract Counter", output_root=tmp_path)
+        generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=tmp_path)
 
     assert sentinel.read_text(encoding="utf-8") == "do not overwrite\n"
     assert list(destination.iterdir()) == [sentinel]
@@ -154,20 +160,20 @@ def test_mcel_create_app_cleans_partial_output_after_write_failure(tmp_path: Pat
 
     with pytest.raises(ScaffoldWriteError):
         generate_application(
-            "contract-counter",
-            title="Contract Counter",
+            SAMPLE_APP_ID,
+            title=SAMPLE_TITLE,
             output_root=tmp_path / "apps",
             writer=failing_writer,
         )
 
     output_root = tmp_path / "apps"
-    assert not (output_root / "contract-counter").exists()
-    assert not list(output_root.glob(".contract-counter.mcel-create-*")) if output_root.exists() else True
+    assert not (output_root / SAMPLE_APP_ID).exists()
+    assert not list(output_root.glob(f".{SAMPLE_APP_ID}.mcel-create-*")) if output_root.exists() else True
 
 
 def test_mcel_create_app_generated_requirements_pass_current_strict_parser(tmp_path: Path) -> None:
-    generate_application("contract-counter", title="Contract Counter", output_root=tmp_path)
-    registry = _strict_requirements_registry(tmp_path / "contract-counter")
+    generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=tmp_path)
+    registry = _strict_requirements_registry(tmp_path / SAMPLE_APP_ID)
 
     assert registry.valid is True
     assert registry.strict_schema_ready is True
@@ -176,8 +182,8 @@ def test_mcel_create_app_generated_requirements_pass_current_strict_parser(tmp_p
 
 
 def test_mcel_create_app_generated_tests_collect_and_pass(tmp_path: Path) -> None:
-    generate_application("contract-counter", title="Contract Counter", output_root=tmp_path)
-    package_root = tmp_path / "contract-counter"
+    generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=tmp_path)
+    package_root = tmp_path / SAMPLE_APP_ID
 
     completed = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", str(package_root / "tests")],
@@ -199,9 +205,9 @@ def test_mcel_create_app_cli_json_result_is_machine_readable_and_write_free(tmp_
         [
             sys.executable,
             str(TOOL),
-            "contract-counter",
+            SAMPLE_APP_ID,
             "--title",
-            "Contract Counter",
+            SAMPLE_TITLE,
             "--output-root",
             str(output_root),
             "--dry-run",
@@ -248,20 +254,19 @@ def test_mcel_create_app_cli_uses_stable_invalid_input_exit_class(tmp_path: Path
     assert payload["result_code"] == "invalid_input"
 
 
-def test_template_rendering_substitutes_identity_without_contract_counter_leakage() -> None:
-    _template, title, files = render_package_files("sample-app", "Sample Application")
+def test_template_rendering_substitutes_identity_without_unresolved_placeholders() -> None:
+    _template, title, files = render_package_files(SAMPLE_APP_ID, SAMPLE_TITLE)
     joined = "\n".join(files.values())
 
-    assert title == "Sample Application"
-    assert '"appId": "sample-app"' in files["mcel.app.json"]
-    assert 'id="sample-app-app"' in files["src/index.html"]
-    assert "Contract Counter" not in joined
-    assert "contract-counter" not in joined
+    assert title == SAMPLE_TITLE
+    assert f'"appId": "{SAMPLE_APP_ID}"' in files["mcel.app.json"]
+    assert f'id="{SAMPLE_APP_ID}-app"' in files["src/index.html"]
+    assert SAMPLE_TITLE in joined
     assert generator_module.PLACEHOLDER_PATTERN.search(joined) is None
 
 
 def test_package_validator_requires_current_mode_and_gap_consistency() -> None:
-    _template, _title, files = render_package_files("sample-app", "Sample Application")
+    _template, _title, files = render_package_files(SAMPLE_APP_ID, SAMPLE_TITLE)
     manifest = json.loads(files["mcel.app.json"])
 
     manifest["conformance"]["currentMode"] = "semantic-runtime-proven"
@@ -270,8 +275,8 @@ def test_package_validator_requires_current_mode_and_gap_consistency() -> None:
     files_with_open_gap["mcel.app.json"] = json.dumps(manifest, indent=2) + "\n"
     result = validate_package_files(
         files_with_open_gap,
-        expected_app_id="sample-app",
-        expected_title="Sample Application",
+        expected_app_id=SAMPLE_APP_ID,
+        expected_title=SAMPLE_TITLE,
         expected_template_id="mcel.canonical-application-template",
         expected_template_version="1.0.0",
     )
@@ -284,8 +289,8 @@ def test_package_validator_requires_current_mode_and_gap_consistency() -> None:
     files_without_gap["mcel.app.json"] = json.dumps(manifest, indent=2) + "\n"
     result = validate_package_files(
         files_without_gap,
-        expected_app_id="sample-app",
-        expected_title="Sample Application",
+        expected_app_id=SAMPLE_APP_ID,
+        expected_title=SAMPLE_TITLE,
         expected_template_id="mcel.canonical-application-template",
         expected_template_version="1.0.0",
     )

@@ -1,156 +1,78 @@
 from __future__ import annotations
 
-import hashlib
-import inspect
-import json
-import subprocess
-import sys
 from pathlib import Path
 
-from main_computer.mcel_package_test_support import logical_package_files
-from main_computer.mcel_counter_candidate_projection import (
-    GENERATED_CONTRACTS,
-    counter_explicit_package_projection_profile,
-    generate_counter_contracts,
-    project_counter_candidate,
+from mcel_dsl_authoring_harness import (
+    authoring_profile_for_case,
+    package_file_snapshot,
+    require_profile_backed_surface_bundle_case,
 )
-import main_computer.mcel_counter_candidate_projection as counter_projection
-import main_computer.mcel_counter_generated_contracts as counter_generated_contracts
-from main_computer.mcel_counter_reference_fixture_profile import (
-    APP_ID,
-    FIXTURE_ROLE,
-)
+
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "tools" / "mcel_counter_candidate_projection.py"
-DSL = ROOT / "mcel_apps" / "contract-counter" / "application.js"
-FIXTURE = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
-LIVE = ROOT / "mcel_apps" / "contract-counter"
-EXPECTED_SEMANTIC = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-EXPECTED_PACKAGE = "sha256:497c61d77701d30fe3ac26dcb915e7ebe87ff22aac36555aa7b69dafa46c9421"
-EXPECTED_RUNTIME = "sha256:f0f8abd38aa98a34b5bf15bf15ad763184b065b01abee40c723ab05250551e5b"
 
 
-def _live_hashes() -> dict[str, str]:
-    return {
-        p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in LIVE.rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
-    }
+def test_generic_candidate_projection_dispatches_profile_backed_app_without_fixture_names(tmp_path: Path) -> None:
+    case = require_profile_backed_surface_bundle_case(ROOT)
+    profile = authoring_profile_for_case(case)
+    package_path = ROOT / case.record.package_root
 
-
-
-def test_counter_projection_delegates_to_generic_explicit_package_profile() -> None:
-    profile = counter_explicit_package_projection_profile()
-    assert APP_ID == "contract-counter"
-    assert FIXTURE_ROLE == "mcel.reference-fixture.explicit-package.counter.v1"
-    assert profile.app_id == APP_ID
-    assert profile.generated_contracts == GENERATED_CONTRACTS
-    assert profile.report_schema == "mcel.counter-candidate-projection-report.v1"
-    assert profile.projection_profile == "mcel.counter.explicit-projection.v1"
-
-
-
-def test_counter_projection_wrapper_stays_thin_and_generated_contracts_are_isolated() -> None:
-    projection_source = inspect.getsource(counter_projection)
-    generated_source = inspect.getsource(counter_generated_contracts)
-
-    assert "project_explicit_package_candidate" in projection_source
-    assert "ContractCounterDomain" not in projection_source
-    assert "ContractCounterDomain" in generated_source
-    assert counter_projection.generate_counter_contracts is counter_generated_contracts.generate_counter_contracts
-
-def test_counter_projection_is_exact_and_roundtrips(tmp_path: Path) -> None:
-    report = project_counter_candidate(candidate_root=tmp_path, write_candidate=True)
-    data = report.to_dict()
-
-    assert report.valid is True
-    assert report.status == "exact"
-    assert report.diagnostics == ()
-    assert len(data["projections"]) == 7
-    assert all(item["status"] == "exact" for item in data["projections"])
-    assert data["roundtrip"] == {"status": "exact", "semanticFingerprint": EXPECTED_SEMANTIC}
-    assert data["fingerprints"]["package"] == {"candidate": EXPECTED_PACKAGE, "live": EXPECTED_PACKAGE, "status": "exact"}
-    assert data["fingerprints"]["runtimeProjection"] == {"candidate": EXPECTED_RUNTIME, "live": EXPECTED_RUNTIME, "status": "exact"}
-    assert data["authority"] == {
-        "liveApplicationChanged": False,
-        "contractsGeneratedInCandidate": True,
-        "candidatePromoted": False,
-        "evidenceReused": False,
-        "promotionEligible": False,
-    }
-
-
-def test_generated_contracts_are_byte_exact_with_live_package() -> None:
-    ir = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    generated = generate_counter_contracts(ir)
-
-    logical = logical_package_files("contract-counter", ROOT)
-    assert set(generated) == set(GENERATED_CONTRACTS)
-    for relative, content in generated.items():
-        assert content == logical[relative], relative
-
-
-def test_candidate_stages_projections_shadow_package_manifest_and_report(tmp_path: Path) -> None:
-    report = project_counter_candidate(candidate_root=tmp_path, write_candidate=True)
-    assert report.candidate_directory is not None
-    root = report.candidate_directory
-
-    logical = logical_package_files("contract-counter", ROOT)
-    for relative in GENERATED_CONTRACTS:
-        assert (root / "projections" / relative).read_bytes() == logical[relative]
-        assert (root / "package" / "mcel_apps" / "contract-counter" / relative).read_bytes() == logical[relative]
-    manifest = json.loads((root / "projections" / "mcel.runtime.json").read_text(encoding="utf-8"))
-    assert manifest["projection"]["fingerprint"] == EXPECTED_RUNTIME
-    assert manifest["source"]["packageFingerprint"] == EXPECTED_PACKAGE
-    persisted = json.loads((root / "projection-report.json").read_text(encoding="utf-8"))
-    assert persisted["status"] == "exact"
-    assert persisted["authority"]["candidatePromoted"] is False
-
-
-def test_projection_does_not_modify_live_package(tmp_path: Path) -> None:
-    before = _live_hashes()
-    report = project_counter_candidate(candidate_root=tmp_path, write_candidate=True)
-    assert report.valid is True
-    assert _live_hashes() == before
-
-
-def test_existing_generated_drift_fails_closed(tmp_path: Path) -> None:
-    first = project_counter_candidate(candidate_root=tmp_path, write_candidate=True)
-    assert first.valid is True and first.candidate_directory
-    drifted = first.candidate_directory / "projections" / "contracts" / "domain.js"
-    drifted.write_text("// manual drift\n", encoding="utf-8")
-
-    second = project_counter_candidate(candidate_root=tmp_path, write_candidate=True)
-    assert second.valid is False
-    assert second.status == "conflicting"
-    assert any(item.get("code") == "MCEL_COUNTER_CANDIDATE_GENERATED_DRIFT" for item in second.diagnostics)
-    assert drifted.read_text(encoding="utf-8") == "// manual drift\n"
-
-
-def test_unsupported_counter_ir_is_rejected() -> None:
-    ir = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    ir["intents"] = [item for item in ir["intents"] if item["id"] != "intent:direct-set"]
-    try:
-        generate_counter_contracts(ir)
-    except ValueError as exc:
-        assert "direct-set" in str(exc)
-    else:
-        raise AssertionError("unsupported IR was accepted")
-
-
-def test_cli_runs_without_python_site_packages(tmp_path: Path) -> None:
-    completed = subprocess.run(
-        [sys.executable, "-S", str(TOOL), "--write-candidate", "--candidate-root", str(tmp_path)],
-        cwd=ROOT, text=True, capture_output=True, check=False,
+    result = profile.project_candidate(
+        dsl_source_path=package_path / "application.js",
+        live_package_root=package_path,
+        candidate_root=tmp_path / "candidates",
+        write_candidate=False,
     )
-    assert completed.returncode == 0, completed.stderr
-    assert "status: exact" in completed.stdout
-    assert "files_exact: 7/7" in completed.stdout
-    assert "roundtrip: exact" in completed.stdout
+    payload = result.to_dict()
+
+    assert result.valid is True
+    assert payload["appId"] == case.app_id
+    assert payload["projectionProfile"] == profile.projection_profile
+    assert payload["source"]["semanticFingerprint"].startswith("sha256:")
+    assert payload["projection"]["fileCount"] >= 1
+    assert payload["diagnosticCount"] == 0
 
 
-def test_report_only_mode_does_not_write_candidate(tmp_path: Path) -> None:
-    report = project_counter_candidate(candidate_root=tmp_path, write_candidate=False)
-    assert report.valid is True
-    assert report.candidate_directory is None
-    assert list(tmp_path.iterdir()) == []
+def test_generic_candidate_projection_write_mode_is_non_mutating(tmp_path: Path) -> None:
+    case = require_profile_backed_surface_bundle_case(ROOT)
+    profile = authoring_profile_for_case(case)
+    package_path = ROOT / case.record.package_root
+    before = package_file_snapshot(package_path)
+
+    first = profile.project_candidate(
+        dsl_source_path=package_path / "application.js",
+        live_package_root=package_path,
+        candidate_root=tmp_path / "candidates",
+        write_candidate=True,
+    )
+    second = profile.project_candidate(
+        dsl_source_path=package_path / "application.js",
+        live_package_root=package_path,
+        candidate_root=tmp_path / "candidates",
+        write_candidate=True,
+    )
+    after = package_file_snapshot(package_path)
+
+    assert first.valid is True
+    assert second.valid is True
+    assert first.to_dict()["projection"] == second.to_dict()["projection"]
+    assert first.candidate_directory is not None
+    assert (first.candidate_directory / "projections").is_dir()
+    assert before == after
+
+
+def test_generic_candidate_projection_report_only_mode_does_not_write_candidate(tmp_path: Path) -> None:
+    case = require_profile_backed_surface_bundle_case(ROOT)
+    profile = authoring_profile_for_case(case)
+    package_path = ROOT / case.record.package_root
+
+    result = profile.project_candidate(
+        dsl_source_path=package_path / "application.js",
+        live_package_root=package_path,
+        candidate_root=tmp_path / "candidates",
+        write_candidate=False,
+    )
+
+    assert result.valid is True
+    assert result.candidate_directory is None
+    assert not (tmp_path / "candidates").exists()

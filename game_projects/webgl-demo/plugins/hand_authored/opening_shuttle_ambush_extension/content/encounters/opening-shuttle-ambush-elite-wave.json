@@ -1,0 +1,63 @@
+{
+  "description": "Declarative fixture encounter using the shuttle-ambush template. The current runtime may preview the plan, but it must not spawn actors or modify the live opening fight.",
+  "id": "encounter.plugin.opening-shuttle-ambush.elite-wave",
+  "kind": "encounter",
+  "location": {
+    "destinationId": "destination.solace-reach.haven-orbit",
+    "systemId": "system.solace-reach"
+  },
+  "lossConditions": [],
+  "objectives": [
+    {
+      "id": "survive-boarding",
+      "label": "Survive the shuttle boarding",
+      "required": true,
+      "type": "objective-type.survive"
+    },
+    {
+      "id": "clear-raiders",
+      "label": "Clear the shuttle raiders",
+      "required": true,
+      "type": "objective-type.clear-hostiles"
+    },
+    {
+      "id": "reach-haven-orbit",
+      "label": "Reach Haven orbit",
+      "required": true,
+      "type": "objective-type.reach-destination"
+    }
+  ],
+  "outcomes": [
+    {
+      "consequenceTypeIds": [
+        "consequence-type.record-receipt",
+        "consequence-type.mark-system"
+      ],
+      "id": "outcome.plugin.opening-shuttle-ambush.cleared",
+      "receiptIds": [
+        "receipt.plugin.opening-shuttle-ambush.cleared"
+      ],
+      "when": "win"
+    }
+  ],
+  "participants": [
+    {
+      "actorArchetypeId": "actor-archetype.shuttle-raider",
+      "count": 3,
+      "role": "hostile"
+    }
+  ],
+  "schema": "game.gameplayPluginContent.v1",
+  "template": "encounter-template.shuttle-ambush",
+  "title": "Opening Shuttle Ambush Elite Wave",
+  "winConditions": [
+    {
+      "allHostilesDefeated": true,
+      "objectiveIds": [
+        "survive-boarding",
+        "clear-raiders",
+        "reach-haven-orbit"
+      ]
+    }
+  ]
+}

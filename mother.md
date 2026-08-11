@@ -70,20 +70,20 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-025` | Finalization commits one exact terminal entry/authorization-bundle head locally, resynchronizes sealed replicas, acknowledges outside the journal, and releases ownership only from full-set proof | [Finalization resynchronization and full-set acknowledgement](#finalization-resynchronization-and-full-set-acknowledgement) | Local pair-pointer crash-boundary, monotonic replica retry, closure transfer, acknowledgement, partial-release, and unreachable-participant block tests | — | Implementable |
 | `MOTHER-REQ-026` | Authority-restoring reseal is safety-first: reachable divergent replicas require full base-authority proposal and completed-certificate acceptance, while unreachable base-authority replicas block exclusion and reseal | [Authority-restoring reseal and rectification](#authority-restoring-reseal-and-rectification) | Divergent-lineage, common-base, one-proposal, cancellation, checkpoint, pointer-commit, and unreachable-block tests | `MOTHER-REQ-023`, `MOTHER-REQ-024`, `MOTHER-REQ-025` | Specified |
 | `MOTHER-REQ-027` | Hub application code upgrades deploy immutable signed releases through ordinary D026 authority, preserve topology and schemas, and retain exact rollback artifacts until typed release-state finalization | [Authoritative Hub release rollout](#authoritative-hub-release-rollout) | Legacy-baseline, signature, artifact-closure, mixed-version, outage-policy, progress, rollback, and typed-delta finalization tests | `MOTHER-REQ-005`, `MOTHER-REQ-007`, `MOTHER-REQ-009`, `MOTHER-REQ-022`, `MOTHER-REQ-023`, `MOTHER-REQ-025` | Specified |
+| `MOTHER-REQ-028` | Golden-path and lifecycle implementation MUST be topology-derived and MUST NOT special-case a named node, host, stage label, or one-off acceptance fixture | [Golden-path no-special-casing rule](#golden-path-no-special-casing-rule) | Command-surface audit, topology fixture matrix, hardcoded-node scan, reset-from-empty add/remove rehearsal | `MOTHER-REQ-012`, `MOTHER-REQ-013` | Specified |
 
-`mother` is the replacement control surface for validator lifecycle operations that
-have outgrown `tools/allfather_control.py`. Allfather remains useful reference
-material for Coolify API access, private-state loading, guard/probe mechanics,
-existing network naming conventions, and the current super-node runtime model,
-but it is no longer the lifecycle authority. Mother starts from clean boundaries.
+`mother` is the replacement control surface for validator lifecycle operations.
+Allfather scripts are retired and MUST fail closed with an error that directs
+operators to the Mother scripts. Allfather is historical implementation material
+only; it is not a runtime authority, fallback path, repair path, propagation
+path, migration path, or source of live lifecycle truth.
 
-Once a lifecycle path has moved to Mother, remediation MUST happen through
-Mother-owned staged, released, applied, and verified actions. Operators and
-agents MUST NOT repair a Mother deployment by running Allfather propagation,
-patching Allfather live-control paths, or borrowing an Allfather helper as the
-runtime authority. When an Allfather behavior remains the correct contract,
-Mother must carry that contract in Mother-owned code, evidence, and rollback
-state.
+Remediation MUST happen through Mother-owned staged, released, applied, and
+verified actions. Operators and agents MUST NOT repair a Mother deployment by
+running Allfather propagation, patching Allfather live-control paths, or
+borrowing an Allfather helper as the runtime authority. When an old Allfather
+behavior remains the correct contract, Mother must carry that contract in
+Mother-owned code, evidence, and rollback state before it can be used.
 
 The immediate purpose of Mother is to make network state observable, prepare an
 explicit operation, save that operation as the current operation for the affected
@@ -268,6 +268,57 @@ so `T6` verifies and reconciles `C1` and reactivates the removed `C2`. Mother
 MUST NOT create `mainnetc-super3`, duplicate `C1`, or replace either C identity
 with a new logical node to satisfy this stage.
 
+### Golden-path no-special-casing rule
+
+The golden path is an acceptance fixture, not an implementation architecture.
+It names `A1`, `C1`, and `C2` only to make one concrete lifecycle auditable.
+Mother lifecycle code MUST implement the generic operation being exercised by the
+fixture. It MUST NOT implement a command, module, branch, artifact schema, or
+release path whose behavior depends on a hardcoded logical node such as `A1`,
+`C1`, or `C2`, a hardcoded host such as `coolify-a` or `coolify-c`, or a
+hardcoded story stage such as `T3`.
+
+All node lifecycle behavior MUST be derived from:
+
+```text
+canonical baseline evidence
++ explicit desired operation
++ node registry / host capability data
++ topology diff
++ transaction/release/apply/finalize evidence
+```
+
+The permitted public lifecycle commands are topology verbs such as `add-node`,
+`remove-node`, `publish-topology`, and `observe-steady-state`. A command named
+for a fixture node or stage, including `stage-c2-*`, `apply-c2-*`,
+`stage-t3-*`, or an equivalent future `a1-*` path, is legacy scaffolding only
+and MUST NOT be extended or used as the implementation pattern for new lifecycle
+work. Starting from an empty network MUST use `add-node`; restoring a removed
+node MUST use `add-node`; removing any active node MUST use `remove-node`.
+
+Tests MAY contain fixture names such as `mainneta-super1` and `mainnetc-super2`
+only as data. They MUST also include at least one alternate topology fixture for
+generic lifecycle behavior before an add/remove implementation is accepted. A
+test that passes only because code recognizes the golden-path node names is not
+evidence of Mother correctness.
+
+### Temporary steady-state soak hold
+
+The current mainnet steady-state soak runner is out of date and MUST NOT be used
+as definitive golden-path evidence. It was written around an older A/C-specific
+steady-state continuation shape instead of a topology-derived baseline-evidence
+contract. The golden path is therefore paused before soak execution until the
+soak runner is redesigned around the current canonical evidence topology.
+
+For now, operators MUST treat soak testing as out of scope after
+`stage-t3-post-admission-steady-state` evidence passes. Operators MUST NOT
+advance the golden path by running `run-mainnet-steady-state-soak` or by treating
+`verify-mainnet-steady-state-soak-evidence` as proof for an A1+C1+C2 or future
+validator topology. The existing command remains present only to emit an
+operator warning and to avoid hiding the fact that the soak implementation still
+needs replacement.
+
+
 Prerequisite:
 
 ```text
@@ -315,6 +366,55 @@ mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode reac
 mother add-node do mainnet
 mother add-node finalize mainnet
 ```
+
+Current local CLI note: until the `mother` shell facade is installed, the
+runnable repository surface MAY expose the same staged shape through
+`tools/mother_deploy.py`. That wrapper is only acceptable when the command names
+and behavior remain generic topology verbs. It MUST NOT add another
+fixture-specific command family to make the golden path pass.
+
+```text
+python .\tools\mother_deploy.py add-node prep mainnet --node <logical-node> --host <coolify-host> --mode <initial|soft|reactivate> --baseline-evidence <canonical-topology-evidence.json> --baseline-evidence-sha256 <sha256> --write-transaction
+python .\tools\mother_deploy.py verify-add-node-prep-transaction --transaction <add-node-prep-transaction.json>
+python .\tools\mother_deploy.py release-add-node-do --transaction <add-node-prep-transaction.json> --acknowledge-node-add-prep-transaction-sha256 <sha256> --write-release
+python .\tools\mother_deploy.py verify-add-node-do-release --release <add-node-do-release.json>
+python .\tools\mother_deploy.py add-node do mainnet --release <add-node-do-release.json> --acknowledge-release-sha256 <sha256> --execute
+python .\tools\mother_deploy.py verify-add-node-do-evidence --evidence <add-node-do-evidence.json>
+python .\tools\mother_deploy.py release-add-node-identity --add-do-evidence <add-node-do-evidence.json> --acknowledge-add-node-do-evidence-sha256 <sha256> --write-release
+python .\tools\mother_deploy.py verify-add-node-identity-release --release <add-node-identity-release.json>
+python .\tools\mother_deploy.py add-node identity mainnet --release <add-node-identity-release.json> --acknowledge-release-sha256 <sha256> --execute
+python .\tools\mother_deploy.py verify-add-node-identity-evidence --evidence <add-node-identity-evidence.json>
+python .\tools\mother_deploy.py add-node finalize mainnet --identity-evidence <add-node-identity-evidence.json> --write-evidence
+
+python .\tools\mother_deploy.py remove-node prep mainnet --node <logical-node> --mode <soft|hard> --baseline-evidence <canonical-topology-evidence.json> --baseline-evidence-sha256 <sha256> --write-transaction
+python .\tools\mother_deploy.py remove-node do mainnet --release <remove-node-do-release.json> --acknowledge-release-sha256 <sha256> --execute
+python .\tools\mother_deploy.py remove-node finalize mainnet --do-evidence <remove-node-do-evidence.json> --write-evidence
+```
+
+`add-node prep` and `remove-node prep` are local-only topology planning
+transactions. They MUST freeze an explicit target node, derive current and
+desired topology from supplied canonical evidence, and emit a transaction for
+inspection. They MUST NOT delete a service, create a service, publish
+routing/topology, create a public endpoint, cast validator votes, or authorize
+live mutation.
+
+The guarded `do` and `identity` commands MUST require explicit expiring one-use
+releases. They MUST execute only the operation recorded in the verified
+transaction or source evidence and MUST produce operation evidence before any
+later command can succeed. Add-node `do` is currently implemented as the generic
+standby-service creation phase: it creates exactly one complete-super-node
+standby shell for the explicit target node on the explicit host, proves the
+created service UUID, and leaves identity installation, replica sync, validator
+admission, post-admission observation, and finalization as later generic
+add-node phases. Add-node `identity` is currently implemented as the generic
+reserved-identity installation phase: it consumes add-node `do` evidence,
+installs only the validator and Hub administrator identity environment variables
+for the created standby service, proves the value commitments without persisting
+secret values in evidence, and leaves replica sync, validator admission,
+post-admission observation, and finalization as later generic add-node phases.
+Neither phase may pretend a later phase completed. `finalize` MUST consume the
+resulting evidence chain, verify the durable topology result, and close the
+pending operation without inventing a new lifecycle path.
 
 Every finalized stage MUST prove all of the following:
 
@@ -9557,6 +9657,21 @@ or becomes unreachable. Lower completed layers are not attempted.
 - all affected participant and resource scopes;
 - the complete ordered distributed rollback plan.
 
+`add-node` is the only normal lifecycle operation that creates, restores, or
+reactivates a super-node. Its implementation MUST be generic over node name,
+host, ordinal, and current topology. `initial`, `soft`, `hard`, and
+`reactivate` are modes of the same operation, not separate fixture-specific
+pipelines. A bootstrap from no validators, a second node on a new host, a second
+node on an existing host, and a reactivation after removal MUST all enter
+through this same `add-node` transaction contract.
+
+`add-node` MUST reject implementation state that cannot be derived from the
+baseline evidence, explicit desired node, node registry, and host capability
+data. It MUST NOT rely on a hardcoded `C2` pipeline, a hardcoded `A1`
+reactivation path, a stage-number branch, or a copied golden-path artifact shape.
+Existing historical commands that name `c2` or another fixture are non-general
+scaffolding and MUST NOT be used as the basis for new add-node work.
+
 `add-node do` is ordered. Every captured frame or distributed layer is
 promoted only after its complete forward poststate is freshly verified; the next
 numbered phase MUST NOT begin before promotion commits.
@@ -9631,6 +9746,19 @@ activation, reservation release, and terminal scope release.
 - the final service policy: detached, disabled, archived, or removed;
 - all affected participant and resource scopes;
 - the complete ordered distributed rollback plan.
+
+`remove-node` is the only normal lifecycle operation that withdraws and removes
+one active super-node. Its implementation MUST be generic over target node, host,
+validator address, survivor set, and current topology. The target MUST be
+explicitly named by `--node`; Mother MUST NOT infer the target from host,
+highest ordinal, service count, stale inventory order, or a helper script's
+selection rule.
+
+`remove-node` MUST reject implementation state that cannot be derived from the
+baseline evidence, explicit target node, node registry, and host capability data.
+It MUST NOT call a host-based deletion helper as the lifecycle authority, and it
+MUST NOT special-case the golden-path A/C topology. Service deletion remains a
+late phase of the prepared operation, never the operation definition.
 
 `remove-node do` is ordered. Every captured frame or distributed layer is
 promoted only after its complete forward poststate is freshly verified; a failed

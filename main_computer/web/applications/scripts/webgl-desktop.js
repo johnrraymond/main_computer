@@ -52,7 +52,8 @@
       }
       try {
         const runtime = api.ensure(projectId, definition, {
-          activeSystemId: String(activeSystemId || webglDefaultStrategicSystem(project))
+          activeSystemId: String(activeSystemId || webglDefaultStrategicSystem(project)),
+          generatedGameplayCatalog: project?.metadata?.generatedGameplayPlugins
         });
         webglProjectState.systemScenarioRuntime = runtime;
         webglProjectState.systemScenarioError = "";

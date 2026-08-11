@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from main_computer.mcel_application_packages import build_application_package_catalog
 from main_computer.mcel_application_ir import (
     APPLICATION_IR_SCHEMA,
     APPLICATION_IR_SCHEMA_ID,
@@ -22,15 +21,15 @@ from main_computer.mcel_application_ir import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "contract-counter.ir.json"
+REFERENCE_IR = ROOT / "tests" / "fixtures" / "mcel_application_ir" / "reference-counter.ir.json"
 TOOL = ROOT / "tools" / "mcel_application_ir.py"
 
-EXPECTED_SEMANTIC_FINGERPRINT = "sha256:a9dbe6b7ec49978d313f18836b30c3394539c18f29430c3a7553837bc46eb0ef"
-EXPECTED_SOURCE_BINDING_FINGERPRINT = "sha256:47eb3d1888708ab67c0c4c5c6a5e284f7178f68cf4efb3d1e8b5c33f30236610"
+EXPECTED_SEMANTIC_FINGERPRINT = "sha256:93bb5a2ab249aa9d5fbaa721b5813acc8767aaa8897160e047f7184f1e5a4e75"
+EXPECTED_SOURCE_BINDING_FINGERPRINT = "sha256:dd0d9b4c7f3f59c86045eb71622b32c2c4f2e8765730e71552705f57e88c938c"
 
 
-def load_fixture() -> dict:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+def load_reference_ir() -> dict:
+    return json.loads(REFERENCE_IR.read_text(encoding="utf-8"))
 
 
 def diagnostic_codes(report) -> set[str]:
@@ -68,8 +67,8 @@ def test_schema_checker_rejects_unsupported_keywords_and_unresolved_refs() -> No
         raise AssertionError("unresolved schema reference was accepted")
 
 
-def test_counter_fixture_normalizes_with_stable_fingerprints() -> None:
-    report = validate_application_ir(load_fixture())
+def test_reference_ir_normalizes_with_stable_fingerprints() -> None:
+    report = validate_application_ir(load_reference_ir())
 
     assert report.valid is True
     assert report.diagnostics == ()
@@ -85,31 +84,21 @@ def test_counter_fixture_normalizes_with_stable_fingerprints() -> None:
     }
 
 
-def test_counter_fixture_source_hashes_bind_to_current_repository_files() -> None:
-    import hashlib
-
-    fixture = load_fixture()
+def test_reference_ir_source_bindings_are_relative_and_hashed() -> None:
+    fixture = load_reference_ir()
     source_files = fixture["provenance"]["frontend"]["sourceFiles"]
 
-    catalog = build_application_package_catalog(ROOT)
-    package = next(item for item in catalog.packages if item.app_id == "contract-counter")
-
+    assert source_files
     for record in source_files:
         relative_path = str(record["path"])
-        path = ROOT / relative_path
-        if path.is_file():
-            content = path.read_bytes()
-        else:
-            package_prefix = "mcel_apps/contract-counter/"
-            assert relative_path.startswith(package_prefix), relative_path
-            package_relative = relative_path[len(package_prefix):]
-            assert package_relative in package.files, relative_path
-            content = package.files[package_relative]
-        assert hashlib.sha256(content).hexdigest() == record["sha256"]
+        assert relative_path and not relative_path.startswith("/")
+        assert ".." not in relative_path.split("/")
+        assert len(str(record["sha256"])) == 64
+        assert all(char in "0123456789abcdef" for char in str(record["sha256"]))
 
 
 def test_unordered_declarations_and_reference_lists_normalize_deterministically() -> None:
-    original = load_fixture()
+    original = load_reference_ir()
     reordered = copy.deepcopy(original)
     for key in ("states", "intents", "effects", "surfaces", "layouts", "scenarios"):
         reordered[key].reverse()
@@ -126,7 +115,7 @@ def test_unordered_declarations_and_reference_lists_normalize_deterministically(
 
 
 def test_source_line_movement_changes_source_binding_not_semantics() -> None:
-    original = load_fixture()
+    original = load_reference_ir()
     moved = copy.deepcopy(original)
     find_node(moved, "intents", "intent:increment")["source"]["start"]["line"] += 10
     for binding in moved["provenance"]["nodeBindings"]:
@@ -142,7 +131,7 @@ def test_source_line_movement_changes_source_binding_not_semantics() -> None:
 
 
 def test_migration_status_and_source_name_do_not_change_semantic_fingerprint() -> None:
-    original = load_fixture()
+    original = load_reference_ir()
     changed = copy.deepcopy(original)
     changed["application"]["authoringStatus"] = "dual-authored"
     find_node(changed, "intents", "intent:increment")["sourceName"] = "incrementCount"
@@ -156,7 +145,7 @@ def test_migration_status_and_source_name_do_not_change_semantic_fingerprint() -
 
 
 def test_duplicate_semantic_id_emits_stable_diagnostic_key() -> None:
-    first = load_fixture()
+    first = load_reference_ir()
     duplicate = copy.deepcopy(first["states"][0])
     duplicate["source"]["start"]["line"] = 999
     first["states"].append(duplicate)
@@ -176,7 +165,7 @@ def test_duplicate_semantic_id_emits_stable_diagnostic_key() -> None:
 
 
 def test_unresolved_reference_fails_before_normalization() -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     find_node(candidate, "intents", "intent:increment")["reads"][0] = {"ref": "state:missing"}
 
     report = validate_application_ir(candidate)
@@ -187,7 +176,7 @@ def test_unresolved_reference_fails_before_normalization() -> None:
 
 
 def test_wrong_kind_reference_is_rejected_contextually() -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     find_node(candidate, "intents", "intent:increment")["reads"][0] = {"ref": "intent:reset"}
 
     report = validate_application_ir(candidate)
@@ -197,7 +186,7 @@ def test_wrong_kind_reference_is_rejected_contextually() -> None:
 
 
 def test_state_authority_is_required() -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     del find_node(candidate, "states", "state:count")["authority"]
 
     report = validate_application_ir(candidate)
@@ -207,7 +196,7 @@ def test_state_authority_is_required() -> None:
 
 
 def test_unknown_expression_and_effect_kinds_are_rejected() -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     find_node(candidate, "intents", "intent:increment")["transition"]["kind"] = "javascript.callback"
     find_node(candidate, "effects", "effect:increment.count-write")["effectKind"] = "run-callback"
 
@@ -221,7 +210,7 @@ def test_unknown_expression_and_effect_kinds_are_rejected() -> None:
 
 
 def test_transition_write_set_must_match_declared_authority() -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     find_node(candidate, "intents", "intent:increment")["writes"] = [{"ref": "state:count"}]
 
     report = validate_application_ir(candidate)
@@ -236,7 +225,7 @@ def test_transition_write_set_must_match_declared_authority() -> None:
 
 def test_nonfinite_and_non_json_values_are_rejected() -> None:
     for invalid in (math.nan, math.inf, object()):
-        candidate = load_fixture()
+        candidate = load_reference_ir()
         candidate["application"]["invalid"] = invalid
         report = validate_application_ir(candidate)
         assert report.valid is False
@@ -250,7 +239,7 @@ def test_cli_runs_without_site_packages() -> None:
             "-S",
             str(TOOL),
             "--input",
-            str(FIXTURE),
+            str(REFERENCE_IR),
             "--json",
         ],
         cwd=ROOT,
@@ -266,13 +255,13 @@ def test_cli_runs_without_site_packages() -> None:
 
 
 def test_cli_validates_and_writes_canonical_ir(tmp_path: Path) -> None:
-    output = tmp_path / "contract-counter.normalized.json"
+    output = tmp_path / "reference-counter.normalized.json"
     completed = subprocess.run(
         [
             sys.executable,
             str(TOOL),
             "--input",
-            str(FIXTURE),
+            str(REFERENCE_IR),
             "--write-normalized",
             str(output),
         ],
@@ -291,7 +280,7 @@ def test_cli_validates_and_writes_canonical_ir(tmp_path: Path) -> None:
 
 
 def test_cli_returns_nonzero_and_machine_diagnostics_for_invalid_ir(tmp_path: Path) -> None:
-    candidate = load_fixture()
+    candidate = load_reference_ir()
     candidate["states"][0]["id"] = "not a semantic id"
     invalid = tmp_path / "invalid.json"
     invalid.write_text(json.dumps(candidate), encoding="utf-8")

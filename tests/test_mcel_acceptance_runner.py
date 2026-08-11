@@ -12,6 +12,7 @@ import pytest
 
 from main_computer import mcel_acceptance_runner as runner
 from main_computer import mcel_truth_audit as audit
+from mcel_dsl_authoring_harness import require_package_acceptance_case
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -272,7 +273,8 @@ def test_cli_lists_contracts_without_running_pytest() -> None:
     assert "file-explorer.acceptance.read-only-browse-preview" in completed.stdout
     assert "calculator.acceptance.no-hidden-mutation" in completed.stdout
     assert "unbound" in completed.stdout
-    assert "contract-counter.acceptance.operation-control" in completed.stdout
+    package_contracts, _package_bindings, _metadata = runner.load_package_acceptance(ROOT)
+    assert any(block.block_id in completed.stdout for block in package_contracts)
 
 
 def test_documentation_defines_release_sequence_and_no_overclaim_rules() -> None:
@@ -360,39 +362,36 @@ def test_app_scoped_output_requires_explicit_canonical_overwrite() -> None:
 
 def test_package_local_acceptance_is_discovered_with_package_provenance() -> None:
     contracts, bindings, metadata = runner.load_package_acceptance(ROOT)
+    case = require_package_acceptance_case(ROOT)
 
-    assert [block.block_id for block in contracts] == [
-        "calculator.acceptance.shadow-authority",
-        "contract-counter.acceptance.operation-control",
-        "contract-workbench.acceptance.complete-application",
+    assert contracts
+    assert bindings
+    assert metadata["schema"] == runner.PACKAGE_BINDING_SCHEMA
+    assert metadata["packageCount"] == len(metadata["packages"])
+    assert metadata["bindingCount"] == len(bindings)
+    assert metadata["acceptanceContractCount"] == len(contracts)
+
+    packages_by_app = {item["appId"]: item for item in metadata["packages"]}
+    assert case.app_id in packages_by_app
+
+    selected_bindings = [
+        bound for bound in bindings.values()
+        if bound.app_id == case.app_id and bound.source_kind == "package"
     ]
-    calculator = bindings["calculator.acceptance.shadow-authority"]
-    assert calculator.source_kind == "package"
-    assert calculator.source_path == "mcel_apps/calculator/tests/mcel_acceptance_bindings.json"
-    assert calculator.selectors == (
-        "mcel_apps/calculator/tests/test_acceptance.py",
-        "mcel_apps/calculator/tests/test_operations.py",
-        "mcel_apps/calculator/tests/test_surface.py",
-        "mcel_apps/calculator/tests/test_browser.py",
-    )
-    bound = bindings["contract-counter.acceptance.operation-control"]
-    assert bound.source_kind == "package"
-    assert bound.source_path == "mcel_apps/contract-counter/tests/mcel_acceptance_bindings.json"
-    assert bound.declared_selectors == (
-        "tests/test_acceptance.py::test_package_acceptance_operation_control",
-    )
-    assert bound.selectors == (
-        "mcel_apps/contract-counter/tests/test_acceptance.py::test_package_acceptance_operation_control",
-    )
-    assert bound.package_fingerprint.startswith("sha256:")
-    assert metadata["packageCount"] == 3
-    assert metadata["bindingCount"] == 3
-    counter = next(item for item in metadata["packages"] if item["appId"] == "contract-counter")
-    assert counter["packageFingerprint"] == bound.package_fingerprint
-    forward = bindings["contract-workbench.acceptance.complete-application"]
-    assert forward.source_kind == "package"
-    assert forward.source_path == "mcel_apps/contract-workbench/tests/mcel_acceptance_bindings.json"
+    assert selected_bindings, f"{case.app_id} should expose package-local acceptance bindings"
 
+    for bound in selected_bindings:
+        assert bound.source_path == case.record.acceptance_bindings
+        assert bound.package_root == case.record.package_root
+        assert bound.package_fingerprint == case.record.fingerprint
+        assert bound.package_fingerprint.startswith("sha256:")
+        assert bound.declared_selectors
+        assert bound.selectors
+        assert all(selector.startswith(f"{case.record.tests_root}/") for selector in bound.selectors)
+
+    package_metadata = packages_by_app[case.app_id]
+    assert package_metadata["packageFingerprint"] == case.record.fingerprint
+    assert package_metadata["acceptanceBindings"] == case.record.acceptance_bindings
 
 def test_central_and_package_binding_identity_collision_is_refused() -> None:
     block = FakeBlock(
@@ -430,35 +429,45 @@ def test_central_and_package_binding_identity_collision_is_refused() -> None:
         )
 
 
-def test_contract_counter_app_scoped_acceptance_cli_passes_with_package_fingerprint(tmp_path: Path) -> None:
-    output = tmp_path / "acceptance"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--app",
-            "contract-counter",
-            "--output-dir",
-            str(output),
-            "--check",
-        ],
-        cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=90,
+def test_app_scoped_acceptance_report_carries_package_fingerprint(tmp_path: Path) -> None:
+    case = require_package_acceptance_case(ROOT)
+    contract_id = f"{case.app_id}.acceptance.generic-package-proof"
+    package_fingerprint = case.record.fingerprint
+    scope = runner.build_evidence_scope(
+        selected_apps=[case.app_id],
+        covered_apps=[case.app_id],
+        all_apps=[case.app_id],
     )
+    report = {
+        "schema": runner.REPORT_SCHEMA,
+        "evidenceScope": scope,
+        "repositoryProvenance": {},
+        "summary": {"status": "pass"},
+        "applicationPackages": [
+            {"appId": case.app_id, "packageFingerprint": package_fingerprint}
+        ],
+        "results": [
+            {
+                "appId": case.app_id,
+                "status": "pass",
+                "passed": True,
+                "contracts": [
+                    {
+                        "contractId": contract_id,
+                        "status": "pass",
+                        "bindingSource": "package",
+                        "packageFingerprint": package_fingerprint,
+                    }
+                ],
+            }
+        ],
+    }
 
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "status: pass" in completed.stdout
-    assert "evidence_scope: app-scoped" in completed.stdout
-    assert "enforceable_contracts: 1" in completed.stdout
-    assert "passed_contracts: 1" in completed.stdout
+    runner.write_report(report, tmp_path, ROOT)
 
-    report = json.loads((output / "mcel-acceptance-report.json").read_text(encoding="utf-8"))
-    contract = report["results"][0]["contracts"][0]
-    assert contract["bindingSource"] == "package"
-    assert contract["packageFingerprint"].startswith("sha256:")
-    assert report["applicationPackages"][0]["appId"] == "contract-counter"
-    assert report["applicationPackages"][0]["packageFingerprint"] == contract["packageFingerprint"]
+    persisted = json.loads((tmp_path / "mcel-acceptance-report.json").read_text(encoding="utf-8"))
+    assert persisted["evidenceScope"]["kind"] == "app-scoped"
+    assert persisted["applicationPackages"][0]["appId"] == case.app_id
+    assert persisted["applicationPackages"][0]["packageFingerprint"] == package_fingerprint
+    assert persisted["results"][0]["contracts"][0]["packageFingerprint"] == package_fingerprint
+

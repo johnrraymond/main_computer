@@ -640,35 +640,31 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
         vm.runInNewContext(fs.readFileSync({json.dumps(str(SELF_DIAGNOSIS_JS))}, "utf8"), sandbox, {{filename: "mcel-self-diagnosis.js"}});
         vm.runInNewContext(fs.readFileSync({json.dumps(str(COUNTER_JS))}, "utf8"), sandbox, {{filename: "mcel-diagnostics-counter-widget.js"}});
 
-        const calculatorReport = sandbox.McelSelfDiagnosis._private.attachDslAuthoringDeclarationFindings({{
-          appId: "calculator",
-          verdict: "pass",
-          summary: {{critical: 0, warning: 0, info: 0}},
-          findings: []
-        }});
-        const calculatorCounts = sandbox.MCELDiagnosticsCounterWidget._private.summarizeReport(
-          calculatorReport,
-          sandbox.MCELDiagnosticsCounterWidget._private.createIssueHistory("2026-08-10T22:00:00.000Z")
-        );
-
-        const codeEditorReport = sandbox.McelSelfDiagnosis._private.attachDslAuthoringDeclarationFindings({{
-          appId: "code-editor",
-          verdict: "pass",
-          summary: {{critical: 0, warning: 0, info: 0}},
-          findings: []
-        }});
-        const codeEditorCounts = sandbox.MCELDiagnosticsCounterWidget._private.summarizeReport(
-          codeEditorReport,
-          sandbox.MCELDiagnosticsCounterWidget._private.createIssueHistory("2026-08-10T22:00:00.000Z")
-        );
-
-        const unsupportedContractCounterReport = sandbox.McelSelfDiagnosis.diagnose("contract-counter", {{silent: true}});
-        const unsupportedContractCounterCounts = sandbox.MCELDiagnosticsCounterWidget._private.summarizeReport(
-          unsupportedContractCounterReport,
-          sandbox.MCELDiagnosticsCounterWidget._private.createIssueHistory("2026-08-10T22:00:00.000Z")
-        );
-
         const audit = sandbox.McelSelfDiagnosis.auditDslAuthoringDeclarationCoverage();
+        const greenApp = audit.apps.find((app) => app.status === "green");
+        const warningApp = audit.apps.find((app) => app.status === "warning");
+
+        const greenReport = sandbox.McelSelfDiagnosis._private.attachDslAuthoringDeclarationFindings({{
+          appId: greenApp?.appId || "",
+          verdict: "pass",
+          summary: {{critical: 0, warning: 0, info: 0}},
+          findings: []
+        }});
+        const greenCounts = sandbox.MCELDiagnosticsCounterWidget._private.summarizeReport(
+          greenReport,
+          sandbox.MCELDiagnosticsCounterWidget._private.createIssueHistory("2026-08-10T22:00:00.000Z")
+        );
+
+        const warningReport = warningApp
+          ? sandbox.McelSelfDiagnosis.diagnose(warningApp.appId, {{silent: true}})
+          : null;
+        const warningCounts = warningReport
+          ? sandbox.MCELDiagnosticsCounterWidget._private.summarizeReport(
+              warningReport,
+              sandbox.MCELDiagnosticsCounterWidget._private.createIssueHistory("2026-08-10T22:00:00.000Z")
+            )
+          : null;
+
         const coverage = Object.fromEntries(audit.apps.map((app) => [app.appId, {{
           status: app.status,
           warningCount: app.warningCount,
@@ -678,16 +674,16 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
         }}]));
 
         process.stdout.write(JSON.stringify({{
-          calculatorVerdict: calculatorReport.verdict,
-          calculatorSummary: calculatorReport.summary,
-          calculatorCodes: calculatorReport.findings.map((finding) => finding.code),
-          calculatorSeverities: calculatorReport.findings.map((finding) => finding.severity),
-          calculatorCounts,
-          codeEditorCodes: codeEditorReport.findings.map((finding) => finding.code),
-          codeEditorCounts,
-          unsupportedContractCounterVerdict: unsupportedContractCounterReport.verdict,
-          unsupportedContractCounterCodes: unsupportedContractCounterReport.findings.map((finding) => finding.code),
-          unsupportedContractCounterCounts,
+          greenAppId: greenApp?.appId || "",
+          greenVerdict: greenReport.verdict,
+          greenSummary: greenReport.summary,
+          greenCodes: greenReport.findings.map((finding) => finding.code),
+          greenSeverities: greenReport.findings.map((finding) => finding.severity),
+          greenCounts,
+          warningAppId: warningApp?.appId || "",
+          warningVerdict: warningReport?.verdict || "",
+          warningCodes: warningReport?.findings.map((finding) => finding.code) || [],
+          warningCounts,
           audit: {{
             appCount: audit.appCount,
             warningCount: audit.warningCount,
@@ -699,54 +695,43 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
     )
     data = run_node_json(script)
 
-    assert data["calculatorVerdict"] == "pass"
-    assert data["calculatorSummary"]["critical"] == 0
-    assert data["calculatorSummary"]["warning"] == 0
-    assert data["calculatorCodes"] == []
-    assert data["calculatorSeverities"] == []
-    assert data["calculatorCounts"]["errors"] == 0
-    assert data["calculatorCounts"]["warnings"] == 0
-    assert data["codeEditorCodes"] == []
-    assert data["codeEditorCounts"]["errors"] == 0
-    assert data["codeEditorCounts"]["warnings"] == 0
-    assert data["unsupportedContractCounterVerdict"] == "unsupported"
-    assert data["unsupportedContractCounterCodes"] == [
-        "unsupported-app",
-        "dsl-semantic-surface-missing",
-        "dsl-layout-grammar-missing",
-    ]
-    assert data["unsupportedContractCounterCounts"]["errors"] == 0
-    assert data["unsupportedContractCounterCounts"]["warnings"] == 3
+    assert data["greenAppId"]
+    assert data["greenVerdict"] == "pass"
+    assert data["greenSummary"]["critical"] == 0
+    assert data["greenSummary"]["warning"] == 0
+    assert data["greenCodes"] == []
+    assert data["greenSeverities"] == []
+    assert data["greenCounts"]["errors"] == 0
+    assert data["greenCounts"]["warnings"] == 0
 
     coverage = data["audit"]["coverage"]
-    assert data["audit"]["appCount"] == 4
-    assert data["audit"]["warningCount"] == 4
-    assert data["audit"]["greenCount"] == 2
-    assert coverage["calculator"] == {
-        "status": "green",
-        "warningCount": 0,
-        "semanticSurfaceDeclared": True,
-        "layoutGrammarDeclared": True,
-        "codes": [],
-    }
-    assert coverage["code-editor"] == {
-        "status": "green",
-        "warningCount": 0,
-        "semanticSurfaceDeclared": True,
-        "layoutGrammarDeclared": True,
-        "codes": [],
-    }
-    for app_id in ["contract-counter", "contract-workbench"]:
-        assert coverage[app_id] == {
-            "status": "warning",
-            "warningCount": 2,
-            "semanticSurfaceDeclared": False,
-            "layoutGrammarDeclared": False,
-            "codes": [
+    assert data["audit"]["appCount"] == len(coverage)
+    assert data["audit"]["warningCount"] == sum(item["warningCount"] for item in coverage.values())
+    assert data["audit"]["greenCount"] == sum(1 for item in coverage.values() if item["status"] == "green")
+
+    for item in coverage.values():
+        if item["status"] == "green":
+            assert item["warningCount"] == 0
+            assert item["semanticSurfaceDeclared"] is True
+            assert item["layoutGrammarDeclared"] is True
+            assert item["codes"] == []
+        else:
+            assert item["status"] == "warning"
+            assert item["warningCount"] == 2
+            assert item["semanticSurfaceDeclared"] is False
+            assert item["layoutGrammarDeclared"] is False
+            assert item["codes"] == [
                 "dsl-semantic-surface-missing",
                 "dsl-layout-grammar-missing",
-            ],
+            ]
+
+    if data["warningAppId"]:
+        assert set(data["warningCodes"]) >= {
+            "dsl-semantic-surface-missing",
+            "dsl-layout-grammar-missing",
         }
+        assert data["warningCounts"]["errors"] == 0
+        assert data["warningCounts"]["warnings"] >= 2
 
 
 def test_diagnostics_counter_copy_payload_includes_app_surface_conformance() -> None:

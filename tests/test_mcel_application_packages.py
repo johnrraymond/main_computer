@@ -15,17 +15,23 @@ from main_computer.mcel_application_packages import (
     build_application_package_catalog,
 )
 
+from mcel_dsl_authoring_harness import (
+    copy_reference_self_contained_runtime_package,
+    discover_valid_application_package_cases,
+    expected_application_package_ids,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "mcel_application_packages.py"
-REFERENCE_PACKAGE = ROOT / "mcel_apps" / "contract-counter"
 
 
-def _copy_package(repo: Path, directory_name: str = "contract-counter") -> Path:
-    packages = repo / "mcel_apps"
-    packages.mkdir(parents=True, exist_ok=True)
-    destination = packages / directory_name
-    shutil.copytree(REFERENCE_PACKAGE, destination)
+def _copy_package(repo: Path, directory_name: str | None = None) -> Path:
+    _case, destination = copy_reference_self_contained_runtime_package(
+        ROOT,
+        repo,
+        directory_name=directory_name,
+    )
     return destination
 
 
@@ -37,30 +43,33 @@ def _error_codes(record: object) -> set[str]:
     return {issue.code for issue in record.errors}  # type: ignore[attr-defined]
 
 
-def test_repository_catalog_discovers_checked_in_contract_counter() -> None:
+def test_repository_catalog_discovers_checked_in_packages_without_fixture_names() -> None:
     catalog = build_application_package_catalog(ROOT)
+    expected_ids = expected_application_package_ids(ROOT)
 
     assert catalog.ok is True
-    assert catalog.package_count == 4
-    assert catalog.valid_count == 4
+    assert catalog.package_count == len(expected_ids)
+    assert catalog.valid_count == len(expected_ids)
     assert catalog.invalid_count == 0
+    assert {record.app_id for record in catalog.packages} == expected_ids
 
-    record = next(item for item in catalog.packages if item.app_id == "contract-counter")
-    assert record.valid is True
-    assert record.app_id == "contract-counter"
-    assert record.package_root == "mcel_apps/contract-counter"
-    assert record.manifest == "mcel_apps/contract-counter/mcel.app.json"
-    assert record.requirements == "mcel_apps/contract-counter/requirements.md"
-    assert record.blueprint == "mcel_apps/contract-counter/blueprint.json"
-    assert record.contracts["adapter"] == "mcel_apps/contract-counter/contracts/adapter.js"
-    assert record.runtime["document"] == "mcel_apps/contract-counter/src/index.html"
-    assert record.tests_root == "mcel_apps/contract-counter/tests"
-    assert record.acceptance_bindings == "mcel_apps/contract-counter/tests/mcel_acceptance_bindings.json"
-    assert record.fingerprint is not None and record.fingerprint.startswith("sha256:")
-    assert record.fingerprint_algorithm == PACKAGE_FINGERPRINT_ALGORITHM
-    assert record.conformance["currentMode"] == "semantic-runtime-proven"
-    assert record.conformance["targetMode"] == "semantic-runtime-proven"
-    assert "application-package-discovery" not in record.conformance["missingBridges"]
+    for record in catalog.packages:
+        assert record.valid is True
+        assert record.app_id
+        assert record.package_root == f"mcel_apps/{record.directory_name}"
+        assert record.manifest == f"{record.package_root}/mcel.app.json"
+        assert record.requirements == f"{record.package_root}/requirements.md"
+        assert record.blueprint == f"{record.package_root}/blueprint.json"
+        assert record.contracts["adapter"] == f"{record.package_root}/contracts/adapter.js"
+        if record.runtime:
+            assert record.runtime["document"] == f"{record.package_root}/src/index.html"
+        assert record.tests_root == f"{record.package_root}/tests"
+        assert record.acceptance_bindings == f"{record.package_root}/tests/mcel_acceptance_bindings.json"
+        assert record.fingerprint is not None and record.fingerprint.startswith("sha256:")
+        assert record.fingerprint_algorithm == PACKAGE_FINGERPRINT_ALGORITHM
+        assert record.conformance["currentMode"] == "semantic-runtime-proven"
+        assert record.conformance["targetMode"] == "semantic-runtime-proven"
+        assert "application-package-discovery" not in record.conformance["missingBridges"]
 
 
 def test_repository_catalog_materializes_calculator_authoritative_contracts_in_memory() -> None:
@@ -122,8 +131,11 @@ def test_repository_catalog_fingerprint_changes_with_package_contents(tmp_path: 
     package = _copy_package(tmp_path)
     before = build_application_package_catalog(tmp_path)
 
-    app_source = package / "src" / "app.js"
-    app_source.write_text(app_source.read_text(encoding="utf-8") + "\n// fingerprint change\n", encoding="utf-8")
+    requirements = package / "requirements.md"
+    requirements.write_text(
+        requirements.read_text(encoding="utf-8") + "\n<!-- fingerprint change -->\n",
+        encoding="utf-8",
+    )
     after = build_application_package_catalog(tmp_path)
 
     assert before.ok is True
@@ -145,12 +157,12 @@ def test_repository_catalog_refuses_missing_manifest_candidate(tmp_path: Path) -
 
 
 def test_repository_catalog_refuses_directory_manifest_and_blueprint_identity_mismatch(tmp_path: Path) -> None:
-    package = _copy_package(tmp_path, "renamed-counter")
+    package = _copy_package(tmp_path, "renamed-package")
     manifest = json.loads((package / "mcel.app.json").read_text(encoding="utf-8"))
-    manifest["appId"] = "other-counter"
+    manifest["appId"] = "other-app"
     _write_json(package / "mcel.app.json", manifest)
     blueprint = json.loads((package / "blueprint.json").read_text(encoding="utf-8"))
-    blueprint["appId"] = "third-counter"
+    blueprint["appId"] = "third-app"
     _write_json(package / "blueprint.json", blueprint)
 
     catalog = build_application_package_catalog(tmp_path)
@@ -163,14 +175,14 @@ def test_repository_catalog_refuses_directory_manifest_and_blueprint_identity_mi
 
 
 def test_repository_catalog_refuses_duplicate_declared_application_ids(tmp_path: Path) -> None:
-    first = _copy_package(tmp_path, "first-counter")
-    second = _copy_package(tmp_path, "second-counter")
+    first = _copy_package(tmp_path, "first-package")
+    second = _copy_package(tmp_path, "second-package")
     for package in (first, second):
         manifest = json.loads((package / "mcel.app.json").read_text(encoding="utf-8"))
-        manifest["appId"] = "shared-counter"
+        manifest["appId"] = "shared-app"
         _write_json(package / "mcel.app.json", manifest)
         blueprint = json.loads((package / "blueprint.json").read_text(encoding="utf-8"))
-        blueprint["appId"] = "shared-counter"
+        blueprint["appId"] = "shared-app"
         _write_json(package / "blueprint.json", blueprint)
 
     catalog = build_application_package_catalog(tmp_path)
@@ -198,7 +210,9 @@ def test_repository_catalog_refuses_internal_symlink_escape(tmp_path: Path) -> N
     package = _copy_package(tmp_path)
     outside = tmp_path / "outside.js"
     outside.write_text("export const escaped = true;\n", encoding="utf-8")
-    target = package / "contracts" / "escaped.js"
+    contracts = package / "contracts"
+    contracts.mkdir(exist_ok=True)
+    target = contracts / "escaped.js"
     try:
         target.symlink_to(outside)
     except OSError as exc:
@@ -217,7 +231,7 @@ def test_repository_catalog_refuses_symlink_package_root(tmp_path: Path) -> None
     outside_package = _copy_package(outside_repo)
     packages_root = tmp_path / "repo" / "mcel_apps"
     packages_root.mkdir(parents=True)
-    link = packages_root / "contract-counter"
+    link = packages_root / outside_package.name
     try:
         link.symlink_to(outside_package, target_is_directory=True)
     except OSError as exc:
@@ -265,8 +279,9 @@ def test_repository_catalog_cli_json_is_machine_readable() -> None:
     assert payload["schema"] == CATALOG_SCHEMA
     assert payload["format"] == "mcel-application-packages-v1"
     assert payload["ok"] is True
-    assert payload["packageCount"] == 4
-    assert {item["appId"] for item in payload["packages"]} == {"calculator", "code-editor", "contract-counter", "contract-workbench"}
+    expected_ids = expected_application_package_ids(ROOT)
+    assert payload["packageCount"] == len(expected_ids)
+    assert {item["appId"] for item in payload["packages"]} == expected_ids
 
 
 def test_repository_catalog_cli_returns_invalid_catalog_exit_class(tmp_path: Path) -> None:
@@ -302,17 +317,17 @@ def test_repository_catalog_human_report_has_fast_readout() -> None:
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.startswith("mcel-application-packages-v1\n")
-    assert "packages: 4" in completed.stdout
-    assert "calculator" in completed.stdout
-    assert "code-editor" in completed.stdout
-    assert "contract-counter" in completed.stdout
-    assert "contract-workbench" in completed.stdout
+    expected_ids = expected_application_package_ids(ROOT)
+    assert f"packages: {len(expected_ids)}" in completed.stdout
+    for app_id in expected_ids:
+        assert app_id in completed.stdout
     assert "package: valid" in completed.stdout
     assert "current conformance: semantic-runtime-proven" in completed.stdout
 
 
 def test_repository_catalog_ignores_generated_python_cache_files(tmp_path: Path) -> None:
     package = _copy_package(tmp_path)
+    before = build_application_package_catalog(tmp_path)
     cache = package / "tests" / "__pycache__"
     cache.mkdir(parents=True, exist_ok=True)
     (cache / "test_package.cpython-313.pyc").write_bytes(b"\x00generated-cache")
@@ -321,7 +336,7 @@ def test_repository_catalog_ignores_generated_python_cache_files(tmp_path: Path)
 
     assert catalog.ok is True
     assert catalog.packages[0].valid is True
-    assert catalog.packages[0].file_count == 22
+    assert catalog.packages[0].file_count == before.packages[0].file_count
 
 
 def test_repository_catalog_refuses_package_acceptance_selector_escape(tmp_path: Path) -> None:

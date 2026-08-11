@@ -1,0 +1,54 @@
+{
+  "completionStages": [
+    "ambush-cleared"
+  ],
+  "description": "A non-activated plugin fixture for describing additional opening-shuttle combat logic through the shuttle-ambush template.",
+  "encounterIds": [
+    "encounter.plugin.opening-shuttle-ambush.elite-wave"
+  ],
+  "entry": {
+    "destinationId": "destination.solace-reach.haven-orbit",
+    "systemId": "system.solace-reach"
+  },
+  "entryStage": "ambush-warning",
+  "id": "scenario.plugin.opening-shuttle-ambush.elite-wave",
+  "kind": "scenario",
+  "receiptIds": [
+    "receipt.plugin.opening-shuttle-ambush.cleared"
+  ],
+  "schema": "game.gameplayPluginContent.v1",
+  "stages": [
+    {
+      "id": "ambush-warning",
+      "kind": "briefing",
+      "nextStage": "elite-wave",
+      "objective": "Survive the first contact and keep the shuttle on course for Haven orbit.",
+      "title": "Boarders breach the shuttle"
+    },
+    {
+      "encounterId": "encounter.plugin.opening-shuttle-ambush.elite-wave",
+      "id": "elite-wave",
+      "kind": "encounter",
+      "objective": "Survive, clear the shuttle raiders, and reach the Haven orbit destination.",
+      "onComplete": "ambush-cleared",
+      "onFail": "shuttle-overrun",
+      "title": "Repel the elite boarding wave"
+    },
+    {
+      "id": "ambush-cleared",
+      "kind": "resolution",
+      "objective": "The shuttle remains intact long enough to continue toward Haven orbit.",
+      "receiptIds": [
+        "receipt.plugin.opening-shuttle-ambush.cleared"
+      ],
+      "title": "Ambush cleared"
+    },
+    {
+      "id": "shuttle-overrun",
+      "kind": "failure",
+      "objective": "The shuttle ambush overwhelms the crew before the route stabilizes.",
+      "title": "Shuttle overrun"
+    }
+  ],
+  "title": "Opening Shuttle Ambush Elite Wave"
+}
