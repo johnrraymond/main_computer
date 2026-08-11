@@ -221,7 +221,14 @@ def test_cli_stages_releases_and_inspects_c2_validator_admission(tmp_path, monke
 
 
 class _C2ValidatorAdmissionOpener:
-    def __init__(self, *, a_service_uuid: str = "svc-a1", c1_service_uuid: str = "svc-c1", c2_service_uuid: str = "svc-c2") -> None:
+    def __init__(
+        self,
+        *,
+        a_service_uuid: str = "svc-a1",
+        c1_service_uuid: str = "svc-c1",
+        c2_service_uuid: str = "svc-c2",
+        c2_status: str = "running:healthy",
+    ) -> None:
         self.a_service_uuid = a_service_uuid
         self.c1_service_uuid = c1_service_uuid
         self.c2_service_uuid = c2_service_uuid
@@ -230,7 +237,7 @@ class _C2ValidatorAdmissionOpener:
             "coolify-a.invalid": [{"uuid": a_service_uuid, "name": "mainneta-super1", "status": "running:healthy"}],
             "coolify-c.invalid": [
                 {"uuid": c1_service_uuid, "name": "mainnetc-super1", "status": "running:healthy"},
-                {"uuid": c2_service_uuid, "name": "mainnetc-super2", "status": "running:healthy"},
+                {"uuid": c2_service_uuid, "name": "mainnetc-super2", "status": c2_status},
             ],
         }
         self.composes = {
@@ -327,6 +334,8 @@ def test_c2_validator_admission_executor_installs_two_internal_voter_guardians(t
     assert result["summary"]["clean"] is True
     assert result["summary"]["validator_vote_performed"] is True
     assert result["summary"]["routing_or_topology_published"] is False
+    assert result["summary"]["c2_sync_evidence_reverified"] is True
+    assert result["summary"]["c2_readiness_source"] == "c2-replica-sync-evidence"
     assert result["summary"]["next_phase"] == "stage-t3-post-admission-steady-state"
     assert [item["method"] for item in result["mutation_receipts"]] == ["PATCH", "GET", "PATCH", "GET"]
 
@@ -338,3 +347,47 @@ def test_c2_validator_admission_executor_installs_two_internal_voter_guardians(t
     )
     assert verified["clean"] is True
     assert verified["next_phase"] == "stage-t3-post-admission-steady-state"
+
+
+def test_c2_validator_admission_executor_accepts_verified_sync_evidence_when_c2_aggregate_unhealthy(tmp_path, monkeypatch) -> None:
+    paths, private_state, sync_evidence, _ = _sync_evidence(tmp_path, monkeypatch)
+
+    tx = build_c2_validator_admission_transaction(
+        paths,
+        private_state,
+        sync_evidence,
+        max_age_seconds=999999999,
+    )
+    tx_path, tx_sha = write_c2_validator_admission_transaction(paths, tx, operation=_operation("write-c2-validator-admission-unhealthy-c2-tx"))
+    release = build_c2_validator_admission_release(
+        paths,
+        private_state,
+        tx_path,
+        acknowledged_transaction_sha256=tx_sha,
+        transaction_max_age_seconds=999999999,
+    )
+    release_path, release_sha = write_c2_validator_admission_release(paths, release, operation=_operation("write-c2-validator-admission-unhealthy-c2-release"))
+
+    opener = _C2ValidatorAdmissionOpener(c2_status="running:unhealthy")
+    result = execute_c2_validator_admission_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=999999999,
+        transaction_max_age_seconds=999999999,
+        max_wait_seconds=1,
+        poll_interval_seconds=0,
+        opener=opener,
+        operation=_operation("execute-c2-validator-admission-unhealthy-c2"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["summary"]["c2_sync_evidence_reverified"] is True
+    assert result["summary"]["c2_readiness_source"] == "c2-replica-sync-evidence"
+    assert result["precondition_receipts"][0]["name"] == "mainnetc-super2-sync-evidence-before-c2-admission"
+    assert result["precondition_receipts"][0]["verified"] is True
+    assert result["precondition_receipts"][0]["coolify_aggregate_status_required"] is False
+    assert all(item["name"] != "mainnetc-super2-service-before-c2-admission" for item in result["precondition_receipts"])
+    assert [item["method"] for item in result["mutation_receipts"]] == ["PATCH", "GET", "PATCH", "GET"]

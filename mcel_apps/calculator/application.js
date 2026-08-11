@@ -12,6 +12,207 @@ const APP_ID = "calculator";
 const TITLE = "Calculator";
 const TARGET_TRUTH_STATUS = "semantic-runtime-proven";
 
+const CALCULATOR_SEMANTIC_SURFACE = {
+  id: "calculator.semantic-surface.semantic-runtime-workspace",
+  surfaceId: "calculator.surface.workspace",
+  presentationAuthority: "existing-host-html",
+  runtimeFacade: "MainComputerCalculatorRuntime",
+  regions: [
+    {
+      id: "root",
+      role: "application-root",
+      selector: "#calculator-app"
+    },
+    {
+      id: "shell",
+      role: "calculation-shell",
+      selector: ".calculator-shell"
+    },
+    {
+      id: "mode-switch",
+      role: "calculation-mode-selector",
+      selector: ".calculator-mode-switch"
+    },
+    {
+      id: "workspace",
+      role: "primary-computation-workspace",
+      selector: ".calculator-workspace",
+      primary: true,
+      surface: "workspace"
+    },
+    {
+      id: "arithmetic",
+      role: "deterministic-arithmetic-lane",
+      selector: ".calculator-basic-pane"
+    },
+    {
+      id: "graphing",
+      role: "deterministic-graphing-lane",
+      selector: "#calculator-graphing-panel"
+    },
+    {
+      id: "mathics",
+      role: "explicit-symbolic-lane",
+      selector: "#calculator-mathics-panel"
+    },
+    {
+      id: "result-qa",
+      role: "result-question-lane",
+      selector: "#calculator-qa-panel"
+    },
+    {
+      id: "chat",
+      role: "calculation-context-companion",
+      selector: "#calculator-chat-panel"
+    }
+  ],
+  controls: [
+    {
+      id: "mode-basic",
+      selector: "#calculator-mode-basic",
+      intent: "switchMode"
+    },
+    {
+      id: "mode-graphing",
+      selector: "#calculator-mode-graphing",
+      intent: "switchMode"
+    },
+    {
+      id: "enter-token",
+      selector: "[data-calc-key]",
+      intent: "enterToken"
+    },
+    {
+      id: "clear-expression",
+      selector: "[data-calc-action='clear']",
+      intent: "clearExpression"
+    },
+    {
+      id: "evaluate-expression",
+      selector: "[data-calc-action='equals']",
+      intent: "evaluateExpression"
+    },
+    {
+      id: "ask-model-for-expression",
+      selector: "#calculator-ask-model",
+      intent: "askModelForExpression"
+    },
+    {
+      id: "ask-model-for-graph-expression",
+      selector: "#calculator-scientific-ask-model",
+      intent: "askModelForGraphExpression"
+    },
+    {
+      id: "draw-graph",
+      selector: "#calculator-graph-draw",
+      intent: "drawGraph"
+    },
+    {
+      id: "reset-graph",
+      selector: "#calculator-graph-reset",
+      intent: "resetGraph"
+    },
+    {
+      id: "ask-model-for-mathics-expression",
+      selector: "#calculator-mathics-ask-model",
+      intent: "askModelForMathicsExpression"
+    },
+    {
+      id: "evaluate-mathics",
+      selector: "#calculator-mathics-evaluate",
+      intent: "evaluateMathics"
+    },
+    {
+      id: "ask-result-question",
+      selector: "#calculator-qa-ask",
+      intent: "askResultQuestion"
+    }
+  ],
+  forbiddenDefaultRegions: []
+};
+
+const CALCULATOR_LAYOUT_GRAMMAR = {
+  id: "calculator.layout.semantic-runtime-workspace",
+  rootSelector: ".calculator-shell",
+  presentationAuthority: "existing-host-html",
+  regions: [
+    {
+      id: "shell",
+      selector: ".calculator-shell",
+      layout: "grid",
+      children: ["mode-switch", "workspace"]
+    },
+    {
+      id: "mode-switch",
+      selector: ".calculator-mode-switch"
+    },
+    {
+      id: "workspace",
+      selector: ".calculator-workspace",
+      layout: "grid",
+      children: ["arithmetic", "graphing", "mathics", "chat"]
+    },
+    {
+      id: "arithmetic",
+      selector: ".calculator-basic-pane",
+      children: ["result-qa"]
+    },
+    {
+      id: "result-qa",
+      selector: "#calculator-qa-panel"
+    },
+    {
+      id: "graphing",
+      selector: "#calculator-graphing-panel"
+    },
+    {
+      id: "mathics",
+      selector: "#calculator-mathics-panel"
+    },
+    {
+      id: "chat",
+      selector: "#calculator-chat-panel"
+    }
+  ],
+  constraints: [
+    {
+      id: "workspace-primary-nonzero",
+      selector: ".calculator-workspace",
+      minWidth: 420,
+      minHeight: 320
+    },
+    {
+      id: "mode-switch-visible",
+      selector: ".calculator-mode-switch",
+      minHeight: 44
+    },
+    {
+      id: "arithmetic-lane-nonzero",
+      selector: ".calculator-basic-pane",
+      minWidth: 280,
+      minHeight: 320
+    },
+    {
+      id: "graphing-lane-nonzero",
+      selector: "#calculator-graphing-panel",
+      minWidth: 320,
+      minHeight: 320
+    },
+    {
+      id: "mathics-lane-nonzero",
+      selector: "#calculator-mathics-panel",
+      minWidth: 280,
+      minHeight: 320
+    },
+    {
+      id: "chat-companion-visible",
+      selector: "#calculator-chat-panel",
+      minHeight: 180
+    }
+  ]
+};
+
+
 function declareCalculator(app) {
   app.presentation.hostBound("workspace", {
     route: "/applications/calculator",
@@ -19,6 +220,8 @@ function declareCalculator(app) {
     presentationAuthority: "existing-host-html",
     runtimeFacade: "MainComputerCalculatorRuntime",
   });
+  app.presentation.semanticSurface(CALCULATOR_SEMANTIC_SURFACE);
+  app.layout.grammar(CALCULATOR_LAYOUT_GRAMMAR);
 
   app.state.rendererLocal("mode", app.field.string(), {initial: "basic"});
   app.state.rendererLocal("arithmetic-expression", app.field.string(), {initial: ""});

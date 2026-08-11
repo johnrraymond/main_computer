@@ -73,6 +73,12 @@ def test_repository_catalog_materializes_calculator_authoritative_contracts_in_m
     assert record.runtime == {}
     assert record.files["contracts/domain.js"]
     assert record.files["contracts/adapter.js"]
+    assert record.files["contracts/surface-bundle.json"]
+    assert record.contracts["surfaceBundle"] == "mcel_apps/calculator/contracts/surface-bundle.json"
+    surface_bundle = json.loads(record.files["contracts/surface-bundle.json"].decode("utf-8"))
+    assert surface_bundle["appId"] == "calculator"
+    assert surface_bundle["semanticSurface"]["id"] == "calculator.semantic-surface.semantic-runtime-workspace"
+    assert surface_bundle["layoutGrammar"]["id"] == "calculator.layout.semantic-runtime-workspace"
     assert record.files["generated/mcel.application.normalized.json"]
     assert record.files["mcel.generated.json"]
     assert not (ROOT / "mcel_apps/calculator/contracts").exists()

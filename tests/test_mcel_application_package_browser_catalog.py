@@ -47,8 +47,14 @@ def test_browser_catalog_payload_projects_validated_package_metadata_only() -> N
         "contract-workbench",
     }
     assert payload["catalogFingerprint"] == build_application_package_catalog(ROOT).fingerprint
-    assert payload["surfaceBundleCount"] == 1
-    assert set(payload["surfaceBundles"]) == {"code-editor"}
+    assert payload["surfaceBundleCount"] == 2
+    assert set(payload["surfaceBundles"]) == {"calculator", "code-editor"}
+    calculator_bundle = payload["surfaceBundles"]["calculator"]
+    assert calculator_bundle["schema"] == "mcel.application-surface-bundle.v1"
+    assert calculator_bundle["appId"] == "calculator"
+    assert calculator_bundle["surfaceId"] == "calculator.surface.workspace"
+    assert calculator_bundle["semanticSurface"]["id"] == "calculator.semantic-surface.semantic-runtime-workspace"
+    assert calculator_bundle["layoutGrammar"]["id"] == "calculator.layout.semantic-runtime-workspace"
     code_editor_bundle = payload["surfaceBundles"]["code-editor"]
     assert code_editor_bundle["schema"] == "mcel.application-surface-bundle.v1"
     assert code_editor_bundle["appId"] == "code-editor"
@@ -248,12 +254,12 @@ def test_browser_catalog_javascript_exposes_data_only_lookup_api() -> None:
         "currentMode": "semantic-runtime-proven",
         "adapterPath": "mcel_apps/contract-counter/contracts/adapter.js",
         "runtimeManifestUrl": "applications/mcel-packages/contract-counter/mcel.runtime.json",
-        "surfaceBundleCount": 1,
+        "surfaceBundleCount": 2,
         "hasCodeEditorBundle": True,
         "hasCounterBundle": False,
         "codeEditorSurfaceId": "code-editor.surface.monaco-selected-file-editor",
         "codeEditorSemanticSurfaceId": "code-editor.semantic-surface.legacy-fidelity",
-        "listedSurfaceBundles": ["code-editor"],
+        "listedSurfaceBundles": ["calculator", "code-editor"],
         "executableKeys": [],
     }
 

@@ -478,4 +478,11 @@ The centralized Workbench portable-projection snapshot remains a compatibility b
 
 ## Canonical app authoring source
 
-Calculator is the canonical real MCEL app in this repository. Counter and Workbench are retained reference fixtures for MCEL platform compatibility/projection/proof paths and should not be used as new-app authoring examples.
+Calculator is the canonical real MCEL app in this repository. Counter and
+Workbench are retained reference fixtures for MCEL platform
+compatibility/projection/proof paths and should not be used as new-app
+authoring examples. They are also not current product-migration targets. Future
+stabilization should upgrade tests so generic DSL/package/conformance harnesses,
+generated packages, or real promoted apps prove the same behavior without
+depending on Contract Counter or Contract Workbench by name except where a
+fixture-specific compatibility edge is intentionally under test.

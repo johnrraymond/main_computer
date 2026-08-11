@@ -555,7 +555,7 @@ def test_code_editor_app_surface_conformance_resolves_browser_catalog_surface_bu
     )
     data = run_node_json(script)
 
-    assert data["surfaceBundleCount"] == 1
+    assert data["surfaceBundleCount"] == 2
     assert data["status"] == "pass"
     assert data["valid"] is True
     assert data["requiredLayerIds"] == [
@@ -701,14 +701,11 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
 
     assert data["calculatorVerdict"] == "pass"
     assert data["calculatorSummary"]["critical"] == 0
-    assert data["calculatorSummary"]["warning"] == 2
-    assert data["calculatorCodes"] == [
-        "dsl-semantic-surface-missing",
-        "dsl-layout-grammar-missing",
-    ]
-    assert data["calculatorSeverities"] == ["warning", "warning"]
+    assert data["calculatorSummary"]["warning"] == 0
+    assert data["calculatorCodes"] == []
+    assert data["calculatorSeverities"] == []
     assert data["calculatorCounts"]["errors"] == 0
-    assert data["calculatorCounts"]["warnings"] == 2
+    assert data["calculatorCounts"]["warnings"] == 0
     assert data["codeEditorCodes"] == []
     assert data["codeEditorCounts"]["errors"] == 0
     assert data["codeEditorCounts"]["warnings"] == 0
@@ -723,8 +720,15 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
 
     coverage = data["audit"]["coverage"]
     assert data["audit"]["appCount"] == 4
-    assert data["audit"]["warningCount"] == 6
-    assert data["audit"]["greenCount"] == 1
+    assert data["audit"]["warningCount"] == 4
+    assert data["audit"]["greenCount"] == 2
+    assert coverage["calculator"] == {
+        "status": "green",
+        "warningCount": 0,
+        "semanticSurfaceDeclared": True,
+        "layoutGrammarDeclared": True,
+        "codes": [],
+    }
     assert coverage["code-editor"] == {
         "status": "green",
         "warningCount": 0,
@@ -732,7 +736,7 @@ def test_dsl_authoring_declaration_gaps_warn_without_failing_widget_counts() -> 
         "layoutGrammarDeclared": True,
         "codes": [],
     }
-    for app_id in ["calculator", "contract-counter", "contract-workbench"]:
+    for app_id in ["contract-counter", "contract-workbench"]:
         assert coverage[app_id] == {
             "status": "warning",
             "warningCount": 2,

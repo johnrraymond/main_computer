@@ -73,7 +73,23 @@ existing requirements registry
 
 The generated fixture is where the two directions must meet.
 
-The fixture and generator are also migration inputs, not a second permanent application language. `pretty_docs/mcel-application-ir-and-compiler-migration.md` defines the target relationship: the scaffolder creates a safe workspace; legacy/current and future DSL front ends compile authored semantics to one MCEL Application IR; replaceable back ends generate the explicit package; independent acceptance and browser evidence prove the result. `pretty_docs/mcel-application-ir-schema-and-normalization.md` defines the proposed IR artifact the future scaffold must reserve space for, while `pretty_docs/mcel-existing-application-definition-migration-inventory.md` prevents the scaffolded package family from replacing or orphaning requirements-driven, surface-led, normalized, blueprint, or legacy application definitions during the transition.
+The fixture and generator are also migration inputs, not a second permanent
+application language. Contract Counter and Contract Workbench must not become
+standing product-migration obligations. They are temporary test instruments for
+scaffolding, projection, compatibility, acceptance, and proof edges. As the
+generic DSL/package/conformance harness matures, tests should be upgraded away
+from fixture-specific app names whenever the same behavior can be proven by the
+template, a generated package, or a real promoted app. `pretty_docs/mcel-application-ir-and-compiler-migration.md`
+defines the target relationship: the scaffolder creates a safe workspace;
+legacy/current and future DSL front ends compile authored semantics to one MCEL
+Application IR; replaceable back ends generate the explicit package;
+independent acceptance and browser evidence prove the result.
+`pretty_docs/mcel-application-ir-schema-and-normalization.md` defines the
+proposed IR artifact the future scaffold must reserve space for, while
+`pretty_docs/mcel-existing-application-definition-migration-inventory.md`
+prevents the scaffolded package family from replacing or orphaning
+requirements-driven, surface-led, normalized, blueprint, or legacy application
+definitions during the transition.
 
 ## Status vocabulary
 
@@ -135,6 +151,12 @@ tools/mcel_create_app.py
 Its job is deterministic scaffolding. It does not use a model to invent application behavior. The installed product-level `mcel app create` command remains proposed.
 
 ### Golden fixture
+
+The golden fixture is a compatibility oracle, not a product app. Keeping it
+green is useful only while it detects template and package-contract regressions.
+When those assertions can be expressed through a fixture-neutral generator or
+package-conformance test, prefer the fixture-neutral test and leave Contract
+Counter as historical compatibility coverage rather than a new-app target.
 
 The generator's expected output is recorded under:
 
@@ -1039,6 +1061,13 @@ This does not mean that MCEL can merely display a counter.
 It means that MCEL can generate the canonical structure of a new application, connect every platform contract, control accepted and refused operations, prove the browser result, and classify the complete application without bespoke central integration work.
 
 ## Bottom line
+
+The generator, fixture, and reference application form one test-driven
+development instrument, not a permanent app portfolio. Stability work should
+retire fixture-specific tests into generic template, DSL, package, catalog,
+runtime, acceptance, and proof checks as soon as those checks can express the
+same invariant without depending on Contract Counter or Contract Workbench by
+name.
 
 The generator, fixture, and reference application form one test-driven development instrument:
 

@@ -82,9 +82,21 @@ def test_calculator_runtime_projection_is_host_bound_and_contains_no_copied_pres
         "contracts/adapter.js",
         "contracts/surface.js",
         "contracts/layout.js",
+        "contracts/surface-bundle.json",
         "contracts/acceptance.js",
         "contracts/observation.js",
     }
+    assert projection.surface_bundle_url == "applications/mcel-packages/calculator/contracts/surface-bundle.json"
+    assert projection.manifest["surfaceBundle"] == {
+        "path": "contracts/surface-bundle.json",
+        "url": "applications/mcel-packages/calculator/contracts/surface-bundle.json",
+        "schema": "mcel.application-surface-bundle.v1",
+        "surfaceId": "calculator.surface.workspace",
+        "contractId": "calculator.contract.default.app-health",
+    }
+    assert projection.surface_bundle is not None
+    assert projection.surface_bundle["semanticSurface"]["id"] == "calculator.semantic-surface.semantic-runtime-workspace"
+    assert projection.surface_bundle["layoutGrammar"]["id"] == "calculator.layout.semantic-runtime-workspace"
     assert projection.manifest["runtime"] == {
         "mode": "host-bound",
         "route": "/applications/calculator",

@@ -23,7 +23,8 @@
     "intents": "contracts/intents.js",
     "layout": "contracts/layout.js",
     "observation": "contracts/observation.js",
-    "surface": "contracts/surface.js"
+    "surface": "contracts/surface.js",
+    "surfaceBundle": "contracts/surface-bundle.json"
   },
   "evidence": {
     "freshBrowserParity": "mcel.calculator-browser-parity-observation.v1",

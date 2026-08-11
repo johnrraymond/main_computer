@@ -1040,6 +1040,77 @@ def _voter_script(
     ])
 
 
+
+
+def _verify_c2_sync_precondition(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    release: Mapping[str, Any],
+    inspected: Mapping[str, Any],
+    *,
+    max_age_seconds: int,
+    now: datetime | None,
+) -> dict[str, Any]:
+    sync_ref = release.get("sync_evidence")
+    if not isinstance(sync_ref, Mapping):
+        raise _fail("MOTHER_DEPLOY_C2_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "C2 sync evidence binding is missing")
+    sync_path = _resolve_locator(paths, sync_ref.get("locator"), label="C2 replica sync evidence")
+    expected_sync_sha = _sha256(sync_ref.get("sha256"), "C2 replica sync evidence SHA-256")
+    verified = verify_c2_replica_sync_evidence(
+        paths,
+        private_state,
+        sync_path,
+        selected_nodes=(_C2_NODE,),
+        max_age_seconds=max_age_seconds,
+        now=now,
+    )
+    if verified.get("evidence_sha256") != expected_sync_sha:
+        raise _fail("MOTHER_DEPLOY_C2_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "C2 sync evidence digest mismatch")
+    candidate = release.get("candidate")
+    if not isinstance(candidate, Mapping):
+        raise _fail("MOTHER_DEPLOY_C2_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "C2 candidate binding is missing")
+    current_set = [_address(item, "current validator") for item in inspected["current_validator_set"]]
+    verified_set = [_address(item, "expected validator") for item in verified.get("expected_validator_set", [])]
+    required = [
+        verified.get("network") == inspected["network"],
+        verified.get("node") == _C2_NODE,
+        verified.get("replica_node") == _C2_NODE,
+        _identifier(verified.get("service_uuid"), "C2 sync evidence service UUID") == _identifier(candidate.get("service_uuid"), "candidate service UUID"),
+        int(verified.get("chain_id")) == int(inspected["chain_id"]),
+        verified.get("genesis_sha256") == inspected["genesis_sha256"],
+        sorted(verified_set) == sorted(current_set),
+        verified.get("replica_synchronized") is True,
+        verified.get("service_running_healthy") is True,
+        verified.get("initial_chain_reverified") is True,
+        verified.get("guardian_internal_only") is True,
+        verified.get("public_endpoint_created") is False,
+        verified.get("validator_vote_authorized") is False,
+        verified.get("validator_activation_authorized") is False,
+        verified.get("routing_or_topology_publication_authorized") is False,
+        verified.get("next_phase") == "stage-c2-validator-admission",
+    ]
+    if not all(required):
+        raise _fail(
+            "MOTHER_DEPLOY_C2_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID",
+            "C2 sync evidence no longer proves admission readiness",
+        )
+    return {
+        "name": "mainnetc-super2-sync-evidence-before-c2-admission",
+        "controller_id": _C2_CONTROLLER,
+        "method": "VERIFY",
+        "endpoint": _relative(paths, sync_path, label="C2 replica sync evidence"),
+        "status": "verified",
+        "response_sha256": verified["evidence_sha256"],
+        "service_uuid": verified["service_uuid"],
+        "service_status": "verified-by-c2-replica-sync-evidence",
+        "component_or_service_healthy": True,
+        "verified": True,
+        "proof_source": "c2-replica-sync-evidence",
+        "replica_synchronized": True,
+        "service_running_healthy": True,
+        "coolify_aggregate_status_required": False,
+    }
+
 def _install_voter_guardian(compose_text: str, *, voter: str, script: str) -> tuple[str, str]:
     try:
         document = yaml.safe_load(compose_text)
@@ -1172,7 +1243,15 @@ def execute_c2_validator_admission_release(
         inventories: dict[str, dict[str, Any]] = {}
         service_records: dict[str, Mapping[str, Any]] = {}
         service_uuids: dict[str, str] = {}
-        for controller_id, node in (("coolify-a", _A1_NODE), ("coolify-c", _C1_NODE), ("coolify-c", _C2_NODE)):
+        preconditions.append(_verify_c2_sync_precondition(
+            paths,
+            private_state,
+            release,
+            inspected,
+            max_age_seconds=transaction_max_age_seconds,
+            now=now,
+        ))
+        for controller_id, node in (("coolify-a", _A1_NODE), ("coolify-c", _C1_NODE)):
             inventory = _http(controllers[controller_id], "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
             inventories[f"{controller_id}:{node}"] = inventory
             record = _find_service_record(inventory["payload"], node=node)
@@ -1191,6 +1270,7 @@ def execute_c2_validator_admission_release(
                 "service_status": _service_status(record),
                 "component_or_service_healthy": healthy,
                 "verified": healthy,
+                "proof_source": "coolify-voter-service-health",
             })
             if not healthy:
                 raise _fail("MOTHER_DEPLOY_C2_VALIDATOR_ADMISSION_PRECONDITION_UNHEALTHY", f"{node} is not healthy enough for C2 admission")
@@ -1368,6 +1448,8 @@ def execute_c2_validator_admission_release(
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
             "manual_ssh_required": False,
+            "c2_sync_evidence_reverified": any(item.get("proof_source") == "c2-replica-sync-evidence" and item.get("verified") is True for item in preconditions),
+            "c2_readiness_source": "c2-replica-sync-evidence",
             "blocks_advancing": complete,
             "latest_block_fresh": complete,
             "next_phase": "stage-t3-post-admission-steady-state" if complete else "manual-review-required",

@@ -86,6 +86,18 @@ from tools.mother.common.deployment_c2_validator_admission import (
     write_c2_validator_admission_release,
     write_c2_validator_admission_transaction,
 )
+from tools.mother.common.deployment_t3_post_admission_steady_state import (
+    MotherDeploymentT3PostAdmissionSteadyStateError,
+    build_t3_post_admission_steady_state_release,
+    build_t3_post_admission_steady_state_transaction,
+    execute_t3_post_admission_steady_state_release,
+    inspect_t3_post_admission_steady_state_release,
+    verify_t3_post_admission_steady_state_evidence,
+    verify_t3_post_admission_steady_state_release,
+    verify_t3_post_admission_steady_state_transaction,
+    write_t3_post_admission_steady_state_release,
+    write_t3_post_admission_steady_state_transaction,
+)
 from tools.mother.common.deployment_identity_install import (
     MotherDeploymentIdentityInstallError,
     build_deployment_identity_install_transaction,
@@ -2212,6 +2224,75 @@ def _parser() -> argparse.ArgumentParser:
     _common(verify_c2_validator_admission_evidence_cmd)
     verify_c2_validator_admission_evidence_cmd.add_argument("--evidence", required=True)
     verify_c2_validator_admission_evidence_cmd.add_argument("--max-age-seconds", type=int, default=300)
+
+    stage_t3_post_admission_steady_state = subparsers.add_parser(
+        "stage-t3-post-admission-steady-state",
+        help="compile a read-only T3 post-C2-admission steady-state observation transaction",
+        allow_abbrev=False,
+    )
+    _common(stage_t3_post_admission_steady_state)
+    stage_t3_post_admission_steady_state.add_argument("--admission-evidence", required=True)
+    stage_t3_post_admission_steady_state.add_argument("--max-age-seconds", type=int, default=86400)
+    stage_t3_post_admission_steady_state.add_argument("--created-at")
+    stage_t3_post_admission_steady_state.add_argument("--write-transaction", action="store_true")
+
+    verify_t3_post_admission_steady_state_tx = subparsers.add_parser(
+        "verify-t3-post-admission-steady-state-transaction",
+        help="verify a staged T3 post-admission steady-state transaction",
+        allow_abbrev=False,
+    )
+    _common(verify_t3_post_admission_steady_state_tx)
+    verify_t3_post_admission_steady_state_tx.add_argument("--transaction", required=True)
+    verify_t3_post_admission_steady_state_tx.add_argument("--max-age-seconds", type=int, default=300)
+
+    release_t3_post_admission_steady_state = subparsers.add_parser(
+        "release-t3-post-admission-steady-state",
+        help="release the exact read-only T3 post-admission steady-state observation plan",
+        allow_abbrev=False,
+    )
+    _common(release_t3_post_admission_steady_state)
+    release_t3_post_admission_steady_state.add_argument("--transaction", required=True)
+    release_t3_post_admission_steady_state.add_argument("--acknowledge-t3-post-admission-steady-state-transaction-sha256", required=True)
+    release_t3_post_admission_steady_state.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_t3_post_admission_steady_state.add_argument("--expires-in-seconds", type=int, default=300)
+    release_t3_post_admission_steady_state.add_argument("--created-at")
+    release_t3_post_admission_steady_state.add_argument("--write-release", action="store_true")
+
+    verify_t3_post_admission_steady_state_release_cmd = subparsers.add_parser(
+        "verify-t3-post-admission-steady-state-release",
+        help="verify an expiring T3 post-admission steady-state release",
+        allow_abbrev=False,
+    )
+    _common(verify_t3_post_admission_steady_state_release_cmd)
+    verify_t3_post_admission_steady_state_release_cmd.add_argument("--release", required=True)
+    verify_t3_post_admission_steady_state_release_cmd.add_argument("--max-age-seconds", type=int, default=300)
+    verify_t3_post_admission_steady_state_release_cmd.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+
+    apply_t3_post_admission_steady_state = subparsers.add_parser(
+        "apply-t3-post-admission-steady-state",
+        help="inspect or execute read-only T3 post-admission steady-state observations",
+        allow_abbrev=False,
+    )
+    _common(apply_t3_post_admission_steady_state)
+    apply_t3_post_admission_steady_state.add_argument("--release", required=True)
+    apply_t3_post_admission_steady_state.add_argument("--acknowledge-release-sha256", required=True)
+    apply_t3_post_admission_steady_state.add_argument("--max-age-seconds", type=int, default=300)
+    apply_t3_post_admission_steady_state.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    apply_t3_post_admission_steady_state.add_argument("--timeout", type=float, default=30.0)
+    apply_t3_post_admission_steady_state.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    apply_t3_post_admission_steady_state.add_argument("--window-count", type=int, default=2)
+    apply_t3_post_admission_steady_state.add_argument("--window-seconds", type=float, default=60.0)
+    apply_t3_post_admission_steady_state.add_argument("--execute", action="store_true")
+
+    verify_t3_post_admission_steady_state_evidence_cmd = subparsers.add_parser(
+        "verify-t3-post-admission-steady-state-evidence",
+        help="verify persisted T3 post-admission steady-state evidence",
+        allow_abbrev=False,
+    )
+    _common(verify_t3_post_admission_steady_state_evidence_cmd)
+    verify_t3_post_admission_steady_state_evidence_cmd.add_argument("--evidence", required=True)
+    verify_t3_post_admission_steady_state_evidence_cmd.add_argument("--max-age-seconds", type=int, default=300)
+    verify_t3_post_admission_steady_state_evidence_cmd.add_argument("--transaction-max-age-seconds", type=int, default=86400)
 
     verify_coolify_service_lifecycle_probe = subparsers.add_parser(
         "verify-coolify-service-lifecycle-probe-evidence",
@@ -5173,6 +5254,123 @@ def _cmd_verify_c2_validator_admission_evidence(args: argparse.Namespace, privat
     return 0
 
 
+def _cmd_stage_t3_post_admission_steady_state(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    transaction = build_t3_post_admission_steady_state_transaction(
+        _paths(args),
+        private_state,
+        Path(args.admission_evidence),
+        network=args.network,
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_transaction:
+        path, digest = write_t3_post_admission_steady_state_transaction(
+            _paths(args),
+            transaction,
+            operation=_operation("write-t3-post-admission-steady-state-transaction", args.network, args.operation_id),
+        )
+        transaction = {**transaction, "transaction_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(transaction, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_t3_post_admission_steady_state_transaction(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_t3_post_admission_steady_state_transaction(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_t3_post_admission_steady_state(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    release = build_t3_post_admission_steady_state_release(
+        _paths(args),
+        private_state,
+        Path(args.transaction),
+        acknowledged_transaction_sha256=args.acknowledge_t3_post_admission_steady_state_transaction_sha256,
+        selected_nodes=_selected_nodes(args.node),
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_t3_post_admission_steady_state_release(
+            _paths(args),
+            release,
+            operation=_operation("write-t3-post-admission-steady-state-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_t3_post_admission_steady_state_release(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_t3_post_admission_steady_state_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_apply_t3_post_admission_steady_state(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    if args.execute:
+        result = execute_t3_post_admission_steady_state_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            acknowledged_release_sha256=args.acknowledge_release_sha256,
+            selected_nodes=_selected_nodes(args.node),
+            max_age_seconds=args.max_age_seconds,
+            transaction_max_age_seconds=args.transaction_max_age_seconds,
+            timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+            window_count=args.window_count,
+            window_seconds=args.window_seconds,
+            operation=_operation("execute-t3-post-admission-steady-state", args.network, args.operation_id),
+        )
+    else:
+        result = inspect_t3_post_admission_steady_state_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            acknowledged_release_sha256=args.acknowledge_release_sha256,
+            selected_nodes=_selected_nodes(args.node),
+            max_age_seconds=args.max_age_seconds,
+            transaction_max_age_seconds=args.transaction_max_age_seconds,
+        )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_t3_post_admission_steady_state_evidence(args: argparse.Namespace, private_state) -> int:
+    _c2_selection(args)
+    result = verify_t3_post_admission_steady_state_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        selected_nodes=_selected_nodes(args.node),
+        max_age_seconds=args.max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -5431,6 +5629,18 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_apply_c2_validator_admission(args, private_state)
         if args.command == "verify-c2-validator-admission-evidence":
             return _cmd_verify_c2_validator_admission_evidence(args, private_state)
+        if args.command == "stage-t3-post-admission-steady-state":
+            return _cmd_stage_t3_post_admission_steady_state(args, private_state)
+        if args.command == "verify-t3-post-admission-steady-state-transaction":
+            return _cmd_verify_t3_post_admission_steady_state_transaction(args, private_state)
+        if args.command == "release-t3-post-admission-steady-state":
+            return _cmd_release_t3_post_admission_steady_state(args, private_state)
+        if args.command == "verify-t3-post-admission-steady-state-release":
+            return _cmd_verify_t3_post_admission_steady_state_release(args, private_state)
+        if args.command == "apply-t3-post-admission-steady-state":
+            return _cmd_apply_t3_post_admission_steady_state(args, private_state)
+        if args.command == "verify-t3-post-admission-steady-state-evidence":
+            return _cmd_verify_t3_post_admission_steady_state_evidence(args, private_state)
         if args.command == "probe-coolify-service-lifecycle":
             return _cmd_probe_coolify_service_lifecycle(args, private_state)
         if args.command == "verify-coolify-service-lifecycle-probe-evidence":
@@ -5442,6 +5652,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentC2ReplicaStandbyError,
         MotherDeploymentC2ReplicaSyncError,
         MotherDeploymentC2ValidatorAdmissionError,
+        MotherDeploymentT3PostAdmissionSteadyStateError,
         MotherDeploymentExecutorError,
         MotherDeploymentCoolifyServiceLifecycleProbeError,
         MotherDeploymentCompletedHelperCleanupError,

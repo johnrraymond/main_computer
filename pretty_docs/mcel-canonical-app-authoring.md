@@ -11,7 +11,10 @@ conformance must combine both lessons instead of postponing semantic-surface and
 layout-grammar declarations to a later backfill.
 
 Counter and Workbench are valid MCEL reference fixtures, but they are not the
-canonical new-app authoring examples.
+canonical new-app authoring examples. They are also not product migration
+targets: future test upgrades should remove bespoke dependence on these
+fixtures where a generic DSL/package/conformance harness can prove the same
+platform behavior.
 
 ## Use Calculator for new app authoring
 
@@ -100,6 +103,9 @@ to test legacy import, generated contract projection, compatibility, evidence,
 IR-native proof, promotion rehearsal, and promotion execution.
 
 It is useful for MCEL internals. It is a bad starting point for a new real app.
+Do not spend product-migration effort making Contract Counter look like the
+modern app examples solely to silence fixture debt. Upgrade tests toward the
+generic application harness, generated template, or a real promoted app instead.
 
 ## Do not learn app authoring from Workbench
 
@@ -109,6 +115,9 @@ rich evidence, IR-native proof, promotion rehearsal, and idempotent promotion
 execution.
 
 It is useful for MCEL internals. It is a bad starting point for a new real app.
+Do not spend product-migration effort making Contract Workbench look like the
+modern app examples solely to silence fixture debt. Upgrade tests toward the
+generic application harness, generated template, or a real promoted app instead.
 
 ## Rule of thumb
 
@@ -127,3 +136,14 @@ mcel_apps/contract-counter/
 mcel_apps/contract-workbench/
   profiled-package/projection-profile/proof fixture
 ```
+
+
+## Fixture retirement target
+
+Contract Counter and Contract Workbench are scaffolding/projection/proof
+fixtures. They may remain in the repository while they protect compatibility
+edges, but the long-term test shape should not require either fixture app by
+name. When a fixture-backed test becomes platform-generic, prefer to move the
+assertion to a generated package, a reusable DSL/package conformance harness, or
+a real app with product value. Fixture-specific assertions should remain only
+where the fixture's tiny domain is the thing being tested.
