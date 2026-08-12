@@ -1,0 +1,57 @@
+{
+  "activated": false,
+  "consequences": [
+    "consequence.plugin.opening-shuttle-ambush.system-marked"
+  ],
+  "encounters": [
+    "encounter.plugin.opening-shuttle-ambush.elite-wave"
+  ],
+  "entryPoints": [
+    "scenario.plugin.opening-shuttle-ambush.elite-wave"
+  ],
+  "files": [
+    {
+      "bytesWritten": 1948,
+      "contentId": "scenario.plugin.opening-shuttle-ambush.elite-wave",
+      "contentKind": "scenario",
+      "sha256": "7e814a23efe114653c9a75a35b9f30f8d8274bab5980a13f460f7eca0ecb551c",
+      "sourcePath": "content/scenarios/opening-shuttle-ambush-elite-wave.json",
+      "targetPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json"
+    },
+    {
+      "bytesWritten": 1898,
+      "contentId": "encounter.plugin.opening-shuttle-ambush.elite-wave",
+      "contentKind": "encounter",
+      "sha256": "aab42d87d134fc02596186ae7a1f88419ea468fc2e4bc33d15b7e54159d78ec5",
+      "sourcePath": "content/encounters/opening-shuttle-ambush-elite-wave.json",
+      "targetPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json"
+    }
+  ],
+  "generatedRoot": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001",
+  "kind": "gameplay-plugin-materialization",
+  "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+  "projectJsonModified": false,
+  "provenance": {
+    "generatedBy": "developer",
+    "requestId": "hand-authored-opening-shuttle-fixture",
+    "sourceSnapshotId": "main_computer_test-20260811-143756"
+  },
+  "receiptPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/materialization-receipt.json",
+  "receipts": [
+    "receipt.plugin.opening-shuttle-ambush.cleared"
+  ],
+  "rollback": {
+    "disablePluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+    "mode": "disable-plugin",
+    "supported": true
+  },
+  "rollbackPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/rollback-plan.json",
+  "runtimeLoaded": false,
+  "runtimeStatus": "filesystem-staged-only",
+  "scenarios": [
+    "scenario.plugin.opening-shuttle-ambush.elite-wave"
+  ],
+  "schema": "game.gameplayPluginMaterializationReceipt.v1",
+  "status": "materialized",
+  "targetLayer": "generated-plugin-content"
+}

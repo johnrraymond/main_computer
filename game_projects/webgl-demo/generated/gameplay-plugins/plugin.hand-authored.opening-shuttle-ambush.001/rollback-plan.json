@@ -1,0 +1,25 @@
+{
+  "activated": false,
+  "deleteGeneratedFiles": [
+    "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+    "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json"
+  ],
+  "deleteMetadataFiles": [
+    "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/materialization-receipt.json",
+    "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/rollback-plan.json"
+  ],
+  "disablePluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+  "kind": "gameplay-plugin-rollback-plan",
+  "mode": "disable-plugin",
+  "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+  "preserveBaseContent": true,
+  "preserveRuntimeState": true,
+  "projectJsonModified": false,
+  "receiptPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/materialization-receipt.json",
+  "rollbackPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/rollback-plan.json",
+  "runtimeLoaded": false,
+  "runtimeSafe": true,
+  "schema": "game.gameplayPluginRollbackPlan.v1",
+  "supported": true,
+  "targetLayer": "generated-plugin-content"
+}

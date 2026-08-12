@@ -1,5 +1,5 @@
 {
-  "description": "Selectable shuttle-ambush encounter pack. The live runner may consume this authored participant count as whitelisted configuration: shuttle-raider health is tripled while two base raiders remain in the opening fight, then one named elite boarding leader can spawn as the extra required hostile. The pack remains data-only and cannot run arbitrary spawn or renderer code.",
+  "description": "Selectable shuttle-ambush encounter pack. The live runner may consume this authored participant count as whitelisted configuration: two base raiders remain unchanged, then one named elite boarding leader can spawn as the extra required hostile. The pack remains data-only and cannot run arbitrary spawn or renderer code.",
   "id": "encounter.plugin.opening-shuttle-ambush.elite-wave",
   "kind": "encounter",
   "location": {
@@ -10,19 +10,19 @@
   "objectives": [
     {
       "id": "survive-boarding",
-      "label": "Survive the triple-strength boarding escalation",
+      "label": "Survive the elite boarding escalation",
       "required": true,
       "type": "objective-type.survive"
     },
     {
       "id": "clear-raiders",
-      "label": "Defeat the 3x-health elite boarding leader",
+      "label": "Defeat the elite boarding leader",
       "required": true,
       "type": "objective-type.clear-hostiles"
     },
     {
       "id": "reach-haven-orbit",
-      "label": "Reach Haven orbit after neutralizing the 3x-health leader",
+      "label": "Reach Haven orbit with the leader neutralized",
       "required": true,
       "type": "objective-type.reach-destination"
     }

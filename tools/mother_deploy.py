@@ -160,6 +160,14 @@ from tools.mother.common.deployment_node_add_identity import (
     verify_node_add_identity_release,
     write_node_add_identity_release,
 )
+from tools.mother.common.deployment_node_add_single_node_bootstrap import (
+    MotherDeploymentNodeAddSingleNodeBootstrapError,
+    build_node_add_single_node_bootstrap_release,
+    execute_node_add_single_node_bootstrap_release,
+    verify_node_add_single_node_bootstrap_evidence,
+    verify_node_add_single_node_bootstrap_release,
+    write_node_add_single_node_bootstrap_release,
+)
 from tools.mother.common.deployment_node_add_replica_sync import (
     MotherDeploymentNodeAddReplicaSyncError,
     build_node_add_replica_sync_release,
@@ -559,6 +567,29 @@ def _parser() -> argparse.ArgumentParser:
     add_node_identity.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
     add_node_identity.add_argument("--execute", action="store_true")
 
+    add_node_single_node_bootstrap = add_node_subparsers.add_parser(
+        "single-node-bootstrap",
+        help="execute the released operator-directed empty-topology single-node chain+Hub bootstrap phase",
+        allow_abbrev=False,
+    )
+    add_node_single_node_bootstrap.add_argument("network", choices=["mainnet"])
+    add_node_single_node_bootstrap.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_single_node_bootstrap.add_argument("--operation-id")
+    add_node_single_node_bootstrap.add_argument("--release", required=True)
+    add_node_single_node_bootstrap.add_argument("--acknowledge-release-sha256", required=True)
+    add_node_single_node_bootstrap.add_argument("--max-age-seconds", type=int, default=900)
+    add_node_single_node_bootstrap.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    add_node_single_node_bootstrap.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    add_node_single_node_bootstrap.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    add_node_single_node_bootstrap.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    add_node_single_node_bootstrap.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    add_node_single_node_bootstrap.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    add_node_single_node_bootstrap.add_argument("--timeout", type=float, default=30.0)
+    add_node_single_node_bootstrap.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_single_node_bootstrap.add_argument("--max-wait-seconds", type=float, default=300.0)
+    add_node_single_node_bootstrap.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    add_node_single_node_bootstrap.add_argument("--execute", action="store_true")
+
     add_node_replica_sync = add_node_subparsers.add_parser(
         "replica-sync",
         help="execute the released generic add-node non-validator replica-sync phase",
@@ -728,6 +759,64 @@ def _parser() -> argparse.ArgumentParser:
     verify_node_add_identity_evidence_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
     verify_node_add_identity_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     verify_node_add_identity_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+
+    release_node_add_single_node_bootstrap = subparsers.add_parser(
+        "release-add-node-single-node-bootstrap",
+        help="mint an explicit expiring release for operator-directed empty-topology single-node chain+Hub bootstrap",
+        allow_abbrev=False,
+    )
+    release_node_add_single_node_bootstrap.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_single_node_bootstrap.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    release_node_add_single_node_bootstrap.add_argument("--operation-id")
+    release_node_add_single_node_bootstrap.add_argument("--identity-evidence", required=True)
+    release_node_add_single_node_bootstrap.add_argument("--acknowledge-add-node-identity-evidence-sha256", required=True)
+    release_node_add_single_node_bootstrap.add_argument("--max-age-seconds", type=int, default=86400)
+    release_node_add_single_node_bootstrap.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    release_node_add_single_node_bootstrap.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    release_node_add_single_node_bootstrap.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    release_node_add_single_node_bootstrap.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_node_add_single_node_bootstrap.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    release_node_add_single_node_bootstrap.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_add_single_node_bootstrap.add_argument("--hub-git-repository", default="https://github.com/johnrraymond/main_computer")
+    release_node_add_single_node_bootstrap.add_argument("--hub-git-ref", default="main")
+    release_node_add_single_node_bootstrap.add_argument("--created-at")
+    release_node_add_single_node_bootstrap.add_argument("--write-release", action="store_true")
+
+    verify_node_add_single_node_bootstrap_release_parser = subparsers.add_parser(
+        "verify-add-node-single-node-bootstrap-release",
+        help="verify an operator-directed single-node bootstrap release before live chain+Hub bootstrap",
+        allow_abbrev=False,
+    )
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--operation-id")
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--release", required=True)
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--max-age-seconds", type=int, default=900)
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    verify_node_add_single_node_bootstrap_evidence_parser = subparsers.add_parser(
+        "verify-add-node-single-node-bootstrap-evidence",
+        help="verify operator-directed single-node chain+Hub bootstrap evidence",
+        allow_abbrev=False,
+    )
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--operation-id")
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--evidence", required=True)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
 
 
     release_node_add_replica_sync = subparsers.add_parser(
@@ -6151,6 +6240,95 @@ def _cmd_verify_node_add_identity_evidence(args: argparse.Namespace, private_sta
     return 0
 
 
+def _cmd_release_node_add_single_node_bootstrap(args: argparse.Namespace, private_state) -> int:
+    release = build_node_add_single_node_bootstrap_release(
+        _paths(args),
+        private_state,
+        Path(args.identity_evidence),
+        acknowledged_add_node_identity_evidence_sha256=args.acknowledge_add_node_identity_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        hub_git_repository=args.hub_git_repository,
+        hub_git_ref=args.hub_git_ref,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_node_add_single_node_bootstrap_release(
+            _paths(args),
+            release,
+            operation=_operation("write-node-add-single-node-bootstrap-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_single_node_bootstrap_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_single_node_bootstrap_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_add_node_single_node_bootstrap(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        raise RuntimeError("--execute is required for add-node single-node-bootstrap")
+    result = execute_node_add_single_node_bootstrap_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        max_age_seconds=args.max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("execute-node-add-single-node-bootstrap", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_single_node_bootstrap_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_single_node_bootstrap_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+
 def _cmd_release_node_add_replica_sync(args: argparse.Namespace, private_state) -> int:
     release = build_node_add_replica_sync_release(
         _paths(args),
@@ -6557,6 +6735,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _cmd_add_node_do(args, private_state)
             if args.add_node_phase == "identity":
                 return _cmd_add_node_identity(args, private_state)
+            if args.add_node_phase == "single-node-bootstrap":
+                return _cmd_add_node_single_node_bootstrap(args, private_state)
             if args.add_node_phase == "replica-sync":
                 return _cmd_add_node_replica_sync(args, private_state)
             if args.add_node_phase == "validator-admission":
@@ -6578,6 +6758,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_node_add_identity_release(args, private_state)
         if args.command == "verify-add-node-identity-evidence":
             return _cmd_verify_node_add_identity_evidence(args, private_state)
+        if args.command == "release-add-node-single-node-bootstrap":
+            return _cmd_release_node_add_single_node_bootstrap(args, private_state)
+        if args.command == "verify-add-node-single-node-bootstrap-release":
+            return _cmd_verify_node_add_single_node_bootstrap_release(args, private_state)
+        if args.command == "verify-add-node-single-node-bootstrap-evidence":
+            return _cmd_verify_node_add_single_node_bootstrap_evidence(args, private_state)
         if args.command == "release-add-node-replica-sync":
             return _cmd_release_node_add_replica_sync(args, private_state)
         if args.command == "verify-add-node-replica-sync-release":
@@ -6895,6 +7081,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentNodeAddPrepError,
         MotherDeploymentNodeAddDoError,
         MotherDeploymentNodeAddIdentityError,
+        MotherDeploymentNodeAddSingleNodeBootstrapError,
         MotherDeploymentNodeAddReplicaSyncError,
         MotherDeploymentNodeAddValidatorAdmissionError,
         MotherDeploymentNodeAddRollbackError,

@@ -239,14 +239,18 @@
         selection,
         activePluginIds: selection.activePluginIds.slice(),
         scenarioId: "",
+        scenarioTitle: "",
         pluginId: "",
+        packLabel: "None — base game",
         encounterId: "",
+        encounterTitle: "",
         templateId: "encounter-template.shuttle-ambush",
         systemId,
         destinationId,
         baseHostileCount,
         hostileCount: baseHostileCount,
         extraHostileCount: 0,
+        hostileHealthMultiplier: 1,
         objectiveIds: [],
         objectiveTypes: [],
         receiptIds: [],
@@ -255,7 +259,11 @@
           triggerDefeats: baseHostileCount,
           count: 0,
           actorArchetypeId: "actor-archetype.shuttle-raider",
-          source: "none"
+          source: "none",
+          displayName: "",
+          objectiveLabel: "",
+          alert: "",
+          healthMultiplier: 1
         },
         problems
       };
@@ -275,6 +283,14 @@
     const extraHostileCount = Math.max(0, effectiveHostileCount - baseHostileCount);
     const actorArchetypeId = stringValue(hostileParticipants[0]?.actorArchetypeId || "actor-archetype.shuttle-raider");
     const location = generatedLocationRecord(matchedEncounter.location);
+    const scenarioTitle = stringValue(matchedScenario.title);
+    const encounterTitle = stringValue(matchedEncounter.title);
+    const packLabel = scenarioTitle || encounterTitle || matchedScenario.pluginId;
+    const eliteObjective = objectives.find((objective) => objective.id === "clear-raiders")
+      || objectives.find((objective) => objective.type === "objective-type.clear-hostiles")
+      || null;
+    const eliteDisplayName = "Elite Boarding Leader";
+    const hostileHealthMultiplier = 3;
     return {
       schema: OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_SCHEMA,
       kind: OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_KIND,
@@ -296,14 +312,18 @@
       selection,
       activePluginIds: selection.activePluginIds.slice(),
       scenarioId: matchedScenario.id,
+      scenarioTitle,
       pluginId: matchedScenario.pluginId,
+      packLabel,
       encounterId: matchedEncounter.id,
+      encounterTitle,
       templateId: matchedEncounter.template,
       systemId: location.systemId || systemId,
       destinationId: location.destinationId || destinationId,
       baseHostileCount,
       hostileCount: effectiveHostileCount,
       extraHostileCount,
+      hostileHealthMultiplier,
       objectiveIds: objectives.map((objective) => objective.id),
       objectiveTypes: uniqueStrings(
         matchedEncounter.objectiveTypes.concat(objectives.map((objective) => objective.type))
@@ -316,7 +336,11 @@
         actorArchetypeId,
         source: matchedScenario.pluginId,
         scenarioId: matchedScenario.id,
-        encounterId: matchedEncounter.id
+        encounterId: matchedEncounter.id,
+        displayName: eliteDisplayName,
+        objectiveLabel: stringValue(eliteObjective?.label || "Defeat the elite boarding leader"),
+        alert: `${packLabel}: elite boarding leader inbound — 3x hostile health confirmed`,
+        healthMultiplier: hostileHealthMultiplier
       },
       problems
     };

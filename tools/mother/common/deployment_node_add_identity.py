@@ -114,6 +114,60 @@ def _binding(private_state: PrivateStateReadResult) -> dict[str, Any]:
     }
 
 
+def _identity_current_validator_count(document: Mapping[str, Any]) -> int:
+    current = document.get("current_topology")
+    if not isinstance(current, Mapping):
+        return -1
+    value = current.get("validator_count")
+    if isinstance(value, int):
+        return value
+    validators = current.get("validator_set")
+    return len(validators) if isinstance(validators, list) else -1
+
+
+def _identity_prepared_validator_count(document: Mapping[str, Any]) -> int:
+    prepared = document.get("prepared_post_add_topology")
+    if not isinstance(prepared, Mapping):
+        return -1
+    value = prepared.get("validator_count")
+    if isinstance(value, int):
+        return value
+    validators = prepared.get("validator_set")
+    return len(validators) if isinstance(validators, list) else -1
+
+
+def _identity_after_install_routing(document: Mapping[str, Any]) -> dict[str, Any]:
+    network = _identifier(document.get("network"), "network")
+    current_count = _identity_current_validator_count(document)
+    prepared_count = _identity_prepared_validator_count(document)
+    if current_count == 0 and prepared_count == 1:
+        return {
+            "bootstrap_mode": "operator-directed-single-node",
+            "single_node_bootstrap_required": True,
+            "replica_sync_required": False,
+            "validator_admission_required": False,
+            "remaining_phases": [
+                "single-node-bootstrap",
+                "single-node-chain-and-hub-proof",
+                "finalize-operation",
+            ],
+            "next_phase": f"add-node-single-node-bootstrap-{network}",
+        }
+    return {
+        "bootstrap_mode": "join-existing-validator-set",
+        "single_node_bootstrap_required": False,
+        "replica_sync_required": True,
+        "validator_admission_required": True,
+        "remaining_phases": [
+            "sync-replica",
+            "admit-validator",
+            "post-admission-observe",
+            "finalize-operation",
+        ],
+        "next_phase": f"add-node-replica-sync-{network}",
+    }
+
+
 def _digest_without(value: Mapping[str, Any], field: str) -> str:
     payload = dict(value)
     payload.pop(field, None)
@@ -884,13 +938,21 @@ def execute_node_add_identity_release(
             "validator_activation_authorized": False,
             "routing_or_topology_publication_authorized": False,
         },
-        "remaining_phases": [
-            "sync-replica",
-            "admit-validator",
-            "post-admission-observe",
-            "finalize-operation",
-        ],
-        "next_phase": f"add-node-replica-sync-{network}" if complete else "manual-review-required",
+        **({
+            "remaining_phases": _identity_after_install_routing(release)["remaining_phases"],
+            "next_phase": _identity_after_install_routing(release)["next_phase"],
+            "single_node_bootstrap_required": _identity_after_install_routing(release)["single_node_bootstrap_required"],
+            "replica_sync_required": _identity_after_install_routing(release)["replica_sync_required"],
+            "validator_admission_required": _identity_after_install_routing(release)["validator_admission_required"],
+            "bootstrap_mode": _identity_after_install_routing(release)["bootstrap_mode"],
+        } if complete else {
+            "remaining_phases": ["manual-review"],
+            "next_phase": "manual-review-required",
+            "single_node_bootstrap_required": False,
+            "replica_sync_required": False,
+            "validator_admission_required": False,
+            "bootstrap_mode": "manual-review",
+        }),
     }
     evidence["summary"] = {
         "clean": complete,
@@ -905,6 +967,10 @@ def execute_node_add_identity_release(
         "service_creation_previously_performed": True,
         "replica_sync_performed": False,
         "validator_admission_performed": False,
+        "single_node_bootstrap_required": evidence["single_node_bootstrap_required"],
+        "replica_sync_required": evidence["replica_sync_required"],
+        "validator_admission_required": evidence["validator_admission_required"],
+        "bootstrap_mode": evidence["bootstrap_mode"],
         "live_mutation_performed": installed_count > 0,
         "mutation_count": installed_count,
         "generic_topology_diff": True,
@@ -1006,7 +1072,18 @@ def verify_node_add_identity_evidence(
         "live_mutation_performed": True,
         "generic_topology_diff": True,
         "hardcoded_stage_target": False,
-        "next_phase": document["next_phase"],
+        "single_node_bootstrap_required": document.get("single_node_bootstrap_required") is True,
+        "replica_sync_required": document.get("replica_sync_required") is True,
+        "validator_admission_required": document.get("validator_admission_required") is True,
+        "bootstrap_mode": document.get("bootstrap_mode"),
+        "legacy_next_phase": (
+            document["next_phase"]
+            if _identity_current_validator_count(document) == 0
+            and _identity_prepared_validator_count(document) == 1
+            and document.get("next_phase") == f"add-node-replica-sync-{document.get('network')}"
+            else None
+        ),
+        "next_phase": _identity_after_install_routing(document)["next_phase"],
     }
 
 

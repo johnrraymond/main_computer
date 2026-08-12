@@ -180,19 +180,19 @@ def test_opening_shuttle_plugin_fixture_materializes_and_exports_without_runtime
             "id": "survive-boarding",
             "type": "objective-type.survive",
             "required": True,
-            "label": "Survive the shuttle boarding",
+            "label": "Survive the triple-strength boarding escalation",
         },
         {
             "id": "clear-raiders",
             "type": "objective-type.clear-hostiles",
             "required": True,
-            "label": "Clear the shuttle raiders",
+            "label": "Defeat the 3x-health elite boarding leader",
         },
         {
             "id": "reach-haven-orbit",
             "type": "objective-type.reach-destination",
             "required": True,
-            "label": "Reach Haven orbit",
+            "label": "Reach Haven orbit after neutralizing the 3x-health leader",
         },
     ]
     assert encounter["participants"] == [
@@ -267,7 +267,7 @@ def test_opening_shuttle_exported_catalog_builds_preview_only_executor_contract(
         "id": "survive-boarding",
         "type": "objective-type.survive",
         "required": True,
-        "label": "Survive the shuttle boarding",
+        "label": "Survive the triple-strength boarding escalation",
     }
     assert result["handoff"]["templateInput"]["actors"] == [
         {

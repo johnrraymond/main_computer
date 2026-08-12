@@ -201,3 +201,53 @@ def test_validator_admission_preflights_selected_voters_before_candidate_mutatio
         raise AssertionError("expected stale-baseline failure")
 
     assert opener.methods == ["GET"]
+
+
+def test_identity_after_install_routes_empty_current_topology_to_single_node_bootstrap() -> None:
+    from tools.mother.common.deployment_node_add_identity import _identity_after_install_routing
+
+    route = _identity_after_install_routing({
+        "network": "mainnet",
+        "current_topology": {"validator_count": 0, "validator_set": []},
+        "prepared_post_add_topology": {
+            "validator_count": 1,
+            "validator_set": ["0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+        },
+    })
+
+    assert route["bootstrap_mode"] == "operator-directed-single-node"
+    assert route["next_phase"] == "add-node-single-node-bootstrap-mainnet"
+    assert route["single_node_bootstrap_required"] is True
+    assert route["replica_sync_required"] is False
+    assert route["validator_admission_required"] is False
+    assert "sync-replica" not in route["remaining_phases"]
+    assert "admit-validator" not in route["remaining_phases"]
+
+
+def test_identity_after_install_routes_existing_validators_to_replica_sync() -> None:
+    from tools.mother.common.deployment_node_add_identity import _identity_after_install_routing
+
+    route = _identity_after_install_routing({
+        "network": "mainnet",
+        "current_topology": {
+            "validator_count": 2,
+            "validator_set": [
+                "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+            ],
+        },
+        "prepared_post_add_topology": {
+            "validator_count": 3,
+            "validator_set": [
+                "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+                "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+            ],
+        },
+    })
+
+    assert route["bootstrap_mode"] == "join-existing-validator-set"
+    assert route["next_phase"] == "add-node-replica-sync-mainnet"
+    assert route["single_node_bootstrap_required"] is False
+    assert route["replica_sync_required"] is True
+    assert route["validator_admission_required"] is True

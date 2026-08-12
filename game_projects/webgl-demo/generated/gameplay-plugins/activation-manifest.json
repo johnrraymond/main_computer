@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "activatedInRuntime": false,
+      "consequences": [
+        "consequence.plugin.opening-shuttle-ambush.system-marked"
+      ],
+      "encounters": [
+        "encounter.plugin.opening-shuttle-ambush.elite-wave"
+      ],
+      "entryPoints": [
+        "scenario.plugin.opening-shuttle-ambush.elite-wave"
+      ],
+      "generatedRoot": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001",
+      "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+      "projectJsonModified": false,
+      "receiptPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/materialization-receipt.json",
+      "receipts": [
+        "receipt.plugin.opening-shuttle-ambush.cleared"
+      ],
+      "rollbackPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/rollback-plan.json",
+      "runtimeLoaded": false,
+      "scenarios": [
+        "scenario.plugin.opening-shuttle-ambush.elite-wave"
+      ],
+      "status": "enabled",
+      "targetLayer": "generated-plugin-content"
+    }
+  ],
+  "kind": "gameplay-plugin-activation-manifest",
+  "projectJsonModified": false,
+  "runtimeLoaded": false,
+  "runtimeStatus": "filesystem-metadata-only",
+  "schema": "game.gameplayPluginActivationManifest.v1"
+}

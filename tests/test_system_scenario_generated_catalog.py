@@ -1415,6 +1415,10 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
             "source": "plugin.hand-authored.opening-shuttle-ambush.001",
             "scenarioId": "scenario.plugin.opening-shuttle-ambush.elite-wave",
             "encounterId": "encounter.plugin.opening-shuttle-ambush.elite-wave",
+            "displayName": "Elite Boarding Leader",
+            "objectiveLabel": "Defeat the elite boarding leader",
+            "alert": "Opening Shuttle Ambush Elite Wave: elite boarding leader inbound — 3x hostile health confirmed",
+            "healthMultiplier": 3,
         }
         assert pack_config["generatedPluginExecution"] is False
         assert pack_config["generatedTemplateExecution"] is False
@@ -1499,9 +1503,9 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         )
         self.assertEqual(result["storedNone"]["mode"], "none")
         self.assertEqual(result["storedNone"]["activeGameplayPackIds"], [])
-        self.assertEqual(result["storedNone"]["source"], "localStorage-none")
+        self.assertEqual(result["storedNone"]["source"], "local-storage")
         self.assertEqual(result["queryOverride"]["mode"], "selected")
-        self.assertEqual(result["queryOverride"]["source"], "query-string")
+        self.assertEqual(result["queryOverride"]["source"], "query-param")
 
     def test_webgl_desktop_pack_selector_lists_none_and_available_packs(self) -> None:
         result = self.run_webgl_desktop_node(
@@ -1623,7 +1627,7 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         self.assertIn("Opening Shuttle Ambush Elite Wave", result["options"][1]["text"])
         self.assertFalse(result["disabled"])
         self.assertEqual(result["controlsDataset"]["gameplayPackMode"], "selected")
-        self.assertEqual(result["stored"], '["None"]')
+        self.assertEqual(json.loads(result["stored"]), {"schema": "game.reloadGameplayPackSelection.v1", "mode": "none", "activeGameplayPackIds": []})
         self.assertEqual(result["applied"]["mode"], "none")
         self.assertEqual(result["reloadCount"], 1)
 

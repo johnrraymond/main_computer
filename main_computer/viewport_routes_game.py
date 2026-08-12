@@ -9,7 +9,11 @@ import os
 
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
+from main_computer.gameplay_plugin_activation import enable_gameplay_plugin
+from main_computer.gameplay_plugin_catalog_export import write_gameplay_plugin_catalog_export
+from main_computer.gameplay_plugin_materializer import materialize_gameplay_plugin_generated_content
 from main_computer.gameplay_plugin_project_catalog import apply_gameplay_plugin_project_catalog, read_gameplay_plugin_project_catalog
+from main_computer.gameplay_plugin_registry import discover_gameplay_plugin_registry
 
 
 def _mounted_editor_should_inline_test_provider(provider: Any) -> bool:
@@ -71,6 +75,9 @@ class ViewportGameRoutesMixin:
                 return
             if route == "/api/applications/game-editor/project/read":
                 self._send_json(self._game_project_read_payload(str(body.get("project_id", "") or "")))
+                return
+            if route == "/api/applications/game-editor/gameplay-pack/load":
+                self._send_json(self._game_gameplay_pack_load_payload(body))
                 return
             if route == "/api/applications/game-editor/chat/edit":
                 self._handle_game_editor_chat_edit(body)
@@ -2212,6 +2219,149 @@ class ViewportGameRoutesMixin:
             project["default"] = project.get("id") == self._default_game_project_id()
         return {"ok": True, "root": "game_projects", "projects": projects, "count": len(projects)}
 
+    def _game_available_gameplay_packs_payload(self, root: Path) -> dict[str, Any]:
+        registry = discover_gameplay_plugin_registry(root)
+        packs: list[dict[str, Any]] = []
+        for entry in registry.entries:
+            manifest = entry.package.manifest if entry.package is not None else {}
+            content = manifest.get("content") if isinstance(manifest, dict) else {}
+            scenarios = content.get("scenarios") if isinstance(content, dict) else []
+            encounters = content.get("encounters") if isinstance(content, dict) else []
+            requires = manifest.get("requires") if isinstance(manifest, dict) else {}
+            first_scenario = scenarios[0] if isinstance(scenarios, list) and scenarios and isinstance(scenarios[0], dict) else {}
+            first_encounter = encounters[0] if isinstance(encounters, list) and encounters and isinstance(encounters[0], dict) else {}
+            label = str(
+                first_scenario.get("title")
+                or first_encounter.get("title")
+                or manifest.get("title")
+                or entry.plugin_id
+                or entry.relative_package_root
+            )
+            packs.append({
+                "id": entry.plugin_id,
+                "pluginId": entry.plugin_id,
+                "label": label,
+                "description": str(manifest.get("description", "")) if isinstance(manifest, dict) else "",
+                "sourceKind": entry.source_kind,
+                "packageRoot": entry.relative_package_root,
+                "status": entry.status,
+                "loadable": entry.valid,
+                "activationStatus": entry.activation_status,
+                "entryPoints": list(content.get("entryPoints", [])) if isinstance(content, dict) and isinstance(content.get("entryPoints"), list) else [],
+                "scenarioIds": [
+                    str(item.get("id", ""))
+                    for item in scenarios
+                    if isinstance(item, dict) and item.get("id")
+                ] if isinstance(scenarios, list) else [],
+                "encounterIds": [
+                    str(item.get("id", ""))
+                    for item in encounters
+                    if isinstance(item, dict) and item.get("id")
+                ] if isinstance(encounters, list) else [],
+                "encounterTemplates": [
+                    str(item)
+                    for item in requires.get("encounterTemplates", [])
+                ] if isinstance(requires, dict) and isinstance(requires.get("encounterTemplates"), list) else [],
+                "problems": list(entry.problems),
+            })
+        return {
+            "schema": "game.availableGameplayPacks.v1",
+            "kind": "available-gameplay-packs",
+            "source": "plugins",
+            "runtimeLoaded": False,
+            "projectJsonModified": False,
+            "packs": packs,
+            "problems": list(registry.problems),
+        }
+
+    def _game_attach_available_gameplay_packs(self, root: Path, project: dict[str, Any]) -> dict[str, Any]:
+        metadata = project.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            project["metadata"] = metadata
+        metadata["availableGameplayPacks"] = self._game_available_gameplay_packs_payload(root)
+        return project
+
+    def _game_gameplay_pack_load_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        root = self._game_project_root(str(body.get("project_id", "") or ""))
+        requested = str(
+            body.get("plugin_id")
+            or body.get("pluginId")
+            or body.get("gameplay_pack_id")
+            or body.get("gameplayPackId")
+            or ""
+        ).strip()
+        none_requested = requested.lower() in {"", "none", "no-pack", "no_pack", "base"}
+
+        if none_requested:
+            generated_catalog = read_gameplay_plugin_project_catalog(root, project_id=root.name)
+            return {
+                "ok": True,
+                "schema": "game.gameplayPackLoadResult.v1",
+                "kind": "gameplay-pack-load-result",
+                "mode": "none",
+                "project_id": root.name,
+                "requestedPluginId": requested or "None",
+                "loaded": False,
+                "activeGameplayPackIds": [],
+                "availableGameplayPacks": self._game_available_gameplay_packs_payload(root),
+                "generated_gameplay_catalog": generated_catalog.payload,
+                "generatedGameplayPlugins": generated_catalog.payload,
+                "runtimeLoaded": False,
+                "projectJsonModified": False,
+                "saveStateMutated": False,
+            }
+
+        materialized = materialize_gameplay_plugin_generated_content(root, requested, overwrite=True)
+        if materialized.problems or not materialized.valid:
+            return {
+                "ok": False,
+                "error": "gameplay pack materialization failed",
+                "problems": list(materialized.problems),
+                "project_id": root.name,
+                "requestedPluginId": requested,
+            }
+
+        activated = enable_gameplay_plugin(root, requested)
+        if activated.problems or not activated.valid:
+            return {
+                "ok": False,
+                "error": "gameplay pack activation failed",
+                "problems": list(activated.problems),
+                "project_id": root.name,
+                "requestedPluginId": requested,
+            }
+
+        exported = write_gameplay_plugin_catalog_export(root, overwrite=True)
+        if exported.problems or not exported.valid:
+            return {
+                "ok": False,
+                "error": "gameplay pack catalog export failed",
+                "problems": list(exported.problems),
+                "project_id": root.name,
+                "requestedPluginId": requested,
+            }
+
+        generated_catalog = read_gameplay_plugin_project_catalog(root, project_id=root.name)
+        return {
+            "ok": True,
+            "schema": "game.gameplayPackLoadResult.v1",
+            "kind": "gameplay-pack-load-result",
+            "mode": "selected",
+            "project_id": root.name,
+            "requestedPluginId": requested,
+            "loaded": True,
+            "activeGameplayPackIds": [requested],
+            "availableGameplayPacks": self._game_available_gameplay_packs_payload(root),
+            "generated_gameplay_catalog": generated_catalog.payload,
+            "generatedGameplayPlugins": generated_catalog.payload,
+            "materializedFiles": list(materialized.target_paths),
+            "catalogPath": exported.relative_export_path,
+            "runtimeLoaded": False,
+            "projectJsonModified": False,
+            "saveStateMutated": False,
+        }
+
     def _game_project_read_payload(self, project_id: str) -> dict[str, Any]:
         root = self._game_project_root(project_id)
         project_file = root / "project.json"
@@ -2222,6 +2372,7 @@ class ViewportGameRoutesMixin:
             assets_root=root / "assets",
         )
         project = self._game_project_apply_runtime_migrations(project)
+        project = self._game_attach_available_gameplay_packs(root, project)
         generated_catalog = read_gameplay_plugin_project_catalog(root, project_id=root.name)
         project = apply_gameplay_plugin_project_catalog(root, project, project_id=root.name, catalog=generated_catalog)
         return {

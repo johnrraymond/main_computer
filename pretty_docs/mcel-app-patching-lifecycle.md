@@ -9,9 +9,9 @@ bind that authority; shared MCEL tooling proves the result.
 Use `mcel_apps/calculator/application.js` as the canonical real-app authoring
 example. It is the repo's modern host-bound MCEL app.
 
-Do not use `mcel_apps/contract-counter/` or `mcel_apps/contract-workbench/` as
-new-app authoring models. They are reference fixtures for explicit-package and
-profiled-package compatibility/projection/proof paths.
+Do not use the historical Contract Counter or Contract Workbench fixture names
+as new-app authoring models. Those fixture source trees and the old
+Workbench/profiled-package migration helpers are retired in this snapshot.
 
 ## Patch classes
 
@@ -35,8 +35,8 @@ Use this path when the app gains or changes behavior.
 5. Bind through the host or package shell.
    - Host-bound apps should read/write the existing DOM and call the declared
      runtime facade.
-   - Explicit/profiled package fixtures should update generated-package inputs
-     through the appropriate fixture/profile path.
+   - Package-document apps should keep generated artifacts virtual unless a
+     current, bounded compatibility edge explicitly requires materialization.
 6. Renew proof.
    - Update deterministic tests, scenarios, browser/projection evidence, and
      promotion/rehearsal checks that are invalidated by the semantic change.
@@ -46,11 +46,13 @@ Use this path when the app gains or changes behavior.
 Use this path when moving reusable MCEL mechanics out of an app-specific wrapper.
 
 1. Identify whether the code is app fact or platform machinery.
-   - App facts belong in the reference profile.
+   - App facts belong in the current app declaration or current profile.
    - Projection, evidence, proof, promotion, browser observation, parity, and
      workspace mechanics belong in shared MCEL modules.
-2. Keep wrapper entry points stable.
-   - `mcel_<app>_*` modules may remain as compatibility wrappers.
+2. Keep wrapper entry points stable only when they still exist and are still
+   referenced.
+   - `mcel_<app>_*` modules may remain as compatibility wrappers for active
+     surfaces.
    - Wrappers should delegate to shared machinery and pass a profile/hook set.
 3. Preserve app behavior.
    - Semantic fingerprints should stay unchanged unless the app declaration
@@ -59,7 +61,8 @@ Use this path when moving reusable MCEL mechanics out of an app-specific wrapper
      become generic.
 4. Add or update guardrails.
    - Wrapper thinness and forbidden workspace-mechanics imports should be tested.
-   - Profiles should state their app or fixture role.
+   - Retired fixture artifacts should remain absent instead of being recreated
+     to satisfy stale documentation.
 
 ## Current reference cases
 
@@ -78,36 +81,22 @@ main_computer/web/applications/apps/calculator.html
 main_computer/web/applications/styles/calculator.css
 ```
 
-Only the layers required by the feature should change. For example, Unit Arithmetic v1 changed the declaration, deterministic core, display path, host
+Only the layers required by the feature should change. For example, Unit
+Arithmetic v1 changed the declaration, deterministic core, display path, host
 input handling, and tests, but did not require graph units, Mathics transport,
 or model-output guarantees.
 
-### Counter
+### Retired fixture names
 
-Counter is the small explicit-package reference fixture. Counter patches should
-preserve its role as fixture input for explicit-package import, generated
-contract projection, evidence, compatibility, proof, promotion rehearsal, and
-promotion execution. Its fixture facts and legacy fixture metadata live in:
+Contract Counter and Contract Workbench are historical compatibility fixtures,
+not current product-migration targets or new-app authoring examples. Their
+checked-in app trees and fixture-specific profiles are absent in this snapshot.
+Docs may mention those names only when describing historical migration waves or
+bounded compatibility behavior.
 
-```text
-main_computer/mcel_counter_reference_fixture_profile.py
-main_computer/mcel_counter_legacy_fixture.py
-main_computer/mcel_counter_generated_contracts.py
-main_computer/mcel_counter_effect_probe.py
-```
-
-### Workbench
-
-Workbench is the profiled-package / authoring reference fixture. Workbench
-patches should preserve its role as the richer fixture for projection profiles,
-constrained expressions, acceptance/evidence aggregation, IR-native proof, and
-promotion proof. Its fixture facts are split intentionally:
-
-```text
-main_computer/mcel_workbench_reference_fixture_profile.py
-main_computer/mcel_workbench_expression_profile.py
-main_computer/mcel_projection_profiles/contract_workbench_v1.py
-```
+The old Workbench/profiled-package path is retired. Current MCEL work should not
+reference profiled-package projection, evidence, proof, promotion rehearsal, or
+promotion execution helpers.
 
 ## What should not regress
 
@@ -116,6 +105,6 @@ main_computer/mcel_projection_profiles/contract_workbench_v1.py
 - Capability modules should not implement deterministic app semantics.
 - Host shells should not re-own domain parsers, evaluators, or semantic
   invariants.
-- Generated artifacts should stay virtual unless a fixture explicitly exists to
-  test generated package materialization.
+- Generated artifacts should stay virtual unless a current compatibility edge
+  explicitly exists to test generated package materialization.
 - Retired legacy app artifacts should stay absent after promotion.

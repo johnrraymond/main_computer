@@ -244,6 +244,7 @@ def test_loaded_pack_selection_drives_shuttle_behavior_and_none_does_not(tmp_pat
     assert selected["config"]["encounterId"] == ENCOUNTER_ID
     assert selected["config"]["hostileCount"] == 3
     assert selected["config"]["extraHostileCount"] == 1
+    assert selected["config"]["hostileHealthMultiplier"] == 3
     assert selected["config"]["eliteWave"] == {
         "enabled": True,
         "triggerDefeats": 2,
@@ -252,10 +253,17 @@ def test_loaded_pack_selection_drives_shuttle_behavior_and_none_does_not(tmp_pat
         "source": PLUGIN_ID,
         "scenarioId": SCENARIO_ID,
         "encounterId": ENCOUNTER_ID,
+        "displayName": "Elite Boarding Leader",
+        "objectiveLabel": "Defeat the 3x-health elite boarding leader",
+        "alert": "Opening Shuttle Ambush Elite Wave: elite boarding leader inbound — 3x hostile health confirmed",
+        "healthMultiplier": 3,
     }
     assert selected["spawned"] is True
     assert selected["elite"]["id"] == "boarding-elite-raider-3"
     assert selected["elite"]["eliteWave"] is True
+    assert selected["elite"]["health"] == 180
+    assert selected["elite"]["maxHealth"] == 180
+    assert selected["elite"]["healthMultiplier"] == 3
     assert selected["snapshot"]["status"] == "completed"
     assert selected["snapshot"]["eliteWave"]["packConfigured"] is True
     assert selected["snapshot"]["eliteWave"]["activePluginIds"] == [PLUGIN_ID]
@@ -300,13 +308,14 @@ def test_reload_pack_selection_allows_explicit_none_to_override_metadata() -> No
     """The reload selector must let the player choose None even if project metadata enables a pack."""
 
     desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
-    storage_read = desktop.index(
-        'window.localStorage?.getItem?.("main-computer.webgl.active-gameplay-packs.v1")'
-    )
+    storage_read = desktop.index("window.localStorage?.getItem?.(WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY)")
     query_read = desktop.index('new URLSearchParams(window.location?.search || "")')
     metadata_read = desktop.index("const configured = metadata.activeGameplayPackIds")
 
     assert metadata_read < storage_read < query_read
     assert "selected = webglNormalizeGameplayPackIds(JSON.parse(raw));" in desktop
     assert "selected = webglNormalizeGameplayPackIds(raw);" in desktop
-    assert "if (queryValue !== null) selected = webglNormalizeGameplayPackIds(queryValue);" in desktop
+    assert 'params.has("gameplayPack")' in desktop
+    assert 'params.has("gameplayPacks")' in desktop
+    assert "selected = webglNormalizeGameplayPackIds(queryValue);" in desktop
+    assert 'selectionSource = "query-param";' in desktop

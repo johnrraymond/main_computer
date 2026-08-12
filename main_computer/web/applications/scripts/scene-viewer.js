@@ -9014,7 +9014,12 @@
             pluginId: "",
             packConfigAvailable: false,
             packConfigured: false,
-            activePluginIds: []
+            activePluginIds: [],
+            displayName: "",
+            objectiveLabel: "",
+            packLabel: "None — base game",
+            alert: "",
+            healthMultiplier: 1
           };
           return {
             schema: "game.openingShuttleEncounterRuntime.v1",
@@ -9051,7 +9056,12 @@
               packConfigured: eliteWaveConfig.packConfigured === true,
               activePluginIds: Array.isArray(eliteWaveConfig.activePluginIds)
                 ? eliteWaveConfig.activePluginIds.slice()
-                : []
+                : [],
+              displayName: eliteWaveConfig.displayName,
+              objectiveLabel: eliteWaveConfig.objectiveLabel,
+              packLabel: eliteWaveConfig.packLabel,
+              alert: eliteWaveConfig.alert,
+              healthMultiplier: eliteWaveConfig.healthMultiplier
             },
             receipts: [],
             events: [],
@@ -9109,6 +9119,10 @@
           const requiredExtraHostiles = enabled
             ? Math.max(1, Math.floor(Number(eliteWave.count || config.extraHostileCount || 1)))
             : 0;
+          const displayName = enabled ? String(eliteWave.displayName || "Elite Boarding Leader") : "";
+          const packLabel = enabled
+            ? String(config.packLabel || config.scenarioTitle || config.pluginId || "Opening Shuttle Ambush Elite Wave")
+            : "None — base game";
           return {
             enabled,
             triggerDefeats,
@@ -9122,8 +9136,31 @@
             packConfigured: enabled,
             activePluginIds: Array.isArray(config.activePluginIds)
               ? config.activePluginIds.map((pluginId) => String(pluginId || "")).filter(Boolean)
-              : []
+              : [],
+            displayName,
+            objectiveLabel: enabled ? String(eliteWave.objectiveLabel || `Defeat the ${displayName.toLowerCase()}`) : "",
+            packLabel,
+            alert: enabled ? String(eliteWave.alert || `${packLabel}: ${displayName} inbound — 3x hostile health confirmed`) : "",
+            healthMultiplier: enabled && Number.isFinite(Number(eliteWave.healthMultiplier || config.hostileHealthMultiplier))
+              ? Math.max(1, Math.min(6, Number(eliteWave.healthMultiplier || config.hostileHealthMultiplier)))
+              : (enabled ? 3 : 1)
           };
+        }
+
+        openingShuttleHostileHealthMultiplier(runtime = this.openingShuttleEncounter || null) {
+          const eliteWave = runtime?.eliteWave || {};
+          if (eliteWave.packConfigured !== true) return 1;
+          const multiplier = Number(eliteWave.healthMultiplier);
+          return Number.isFinite(multiplier)
+            ? Math.max(1, Math.min(6, multiplier))
+            : 3;
+        }
+
+        openingShuttleHostileMaxHealth(runtime = this.openingShuttleEncounter || null) {
+          const baseHealth = Number.isFinite(Number(this.combat?.alien?.maxHealth))
+            ? Math.max(1, Number(this.combat.alien.maxHealth))
+            : 1;
+          return Math.ceil(baseHealth * this.openingShuttleHostileHealthMultiplier(runtime));
         }
 
         isOpeningShuttleEncounterRuntimeActive() {
@@ -9139,9 +9176,12 @@
           const eliteWave = runtime?.eliteWave || {};
           const defeated = Math.max(0, Number(counters.defeated || 0));
           const playerDefeated = Math.max(0, Number(counters.playerDefeated || 0));
+          const eliteEnabled = eliteWave.enabled === true;
           const eliteRequested = eliteWave.requested === true;
           const eliteSpawned = eliteWave.spawned === true;
           const eliteCleared = eliteWave.cleared === true;
+          const eliteDisplayName = String(eliteWave.displayName || "Elite Boarding Leader");
+          const eliteObjectiveLabel = String(eliteWave.objectiveLabel || `Defeat the ${eliteDisplayName.toLowerCase()}`);
           const completion = runtime?.completion || {};
           const destinationReached = completion.destinationReached === true;
           const encounterCompleted = completion.completed === true;
@@ -9155,7 +9195,9 @@
             ? "failed"
             : eliteCleared || encounterCompleted
               ? "completed"
-              : "active";
+              : eliteEnabled && !eliteRequested
+                ? "pending"
+                : "active";
           const reachStatus = failed
             ? "failed"
             : destinationReached
@@ -9167,45 +9209,70 @@
             {
               id: "survive-boarding",
               type: "objective-type.survive",
-              label: "Survive the shuttle boarding",
+              label: eliteEnabled ? "Survive the elite boarding escalation" : "Survive the shuttle boarding",
               required: true,
               status: surviveStatus,
               progress: {
                 playerDefeated,
                 playerDamaged: Math.max(0, Number(counters.playerDamaged || 0)),
-                encounterCompleted
+                encounterCompleted,
+                packConfigured: eliteEnabled
               }
             },
             {
               id: "clear-raiders",
               type: "objective-type.clear-hostiles",
-              label: "Clear shuttle raiders",
+              label: eliteEnabled ? eliteObjectiveLabel : "Clear shuttle raiders",
               required: true,
               status: clearStatus,
               progress: {
                 defeated,
                 eliteRequested,
                 eliteSpawned,
-                eliteCleared
+                eliteCleared,
+                requiredExtraHostiles: Math.max(0, Number(eliteWave.requiredExtraHostiles || 0)),
+                eliteDisplayName,
+                packConfigured: eliteEnabled
               }
             },
             {
               id: "reach-haven-orbit",
               type: "objective-type.reach-destination",
-              label: "Reach Haven orbit",
+              label: eliteEnabled ? "Reach Haven orbit with the leader neutralized" : "Reach Haven orbit",
               required: true,
               status: reachStatus,
               progress: {
                 systemId: runtime?.systemId || "system.solace-reach",
                 destinationId: runtime?.destinationId || "destination.solace-reach.haven-orbit",
                 destinationReached,
-                encounterCompleted
+                encounterCompleted,
+                packConfigured: eliteEnabled
               }
             }
           ];
         }
 
-        openingShuttleEncounterObjectiveLine(objectives = []) {
+        openingShuttleEncounterObjectiveLine(objectives = [], runtime = this.openingShuttleEncounter || null) {
+          const eliteWave = runtime?.eliteWave || {};
+          if (eliteWave.enabled === true) {
+            const displayName = String(eliteWave.displayName || "Elite Boarding Leader");
+            if (runtime?.completion?.failed === true || Math.max(0, Number(runtime?.counters?.playerDefeated || 0)) > 0) {
+              return `${displayName} boarding defense failed • FAILED`;
+            }
+            if (runtime?.completion?.completed === true) {
+              return `${displayName} defeated; Haven orbit reached • COMPLETED`;
+            }
+            if (eliteWave.cleared === true) {
+              return "Reach Haven orbit with the leader neutralized • ACTIVE";
+            }
+            if (eliteWave.spawned === true) {
+              return `${displayName} aboard — neutralize immediately • ACTIVE`;
+            }
+            if (eliteWave.requested === true) {
+              return `${displayName} inbound via transport trace • INBOUND`;
+            }
+            return `${displayName} pack armed — clear two raiders to trigger escalation • PACK ACTIVE`;
+          }
           const active = objectives.find((objective) => objective.status === "active")
             || objectives.find((objective) => objective.status === "pending")
             || objectives[objectives.length - 1]
@@ -9213,6 +9280,23 @@
           if (!active) return "";
           const status = String(active.status || "unknown").toUpperCase();
           return `${active.label} • ${status}`;
+        }
+
+        openingShuttleEncounterPackLine(runtime = this.openingShuttleEncounter || null) {
+          const eliteWave = runtime?.eliteWave || {};
+          if (eliteWave.enabled !== true) return "Gameplay Pack: None — base game";
+          const packLabel = String(eliteWave.packLabel || "Opening Shuttle Ambush Elite Wave");
+          const displayName = String(eliteWave.displayName || "Elite Boarding Leader");
+          const count = Math.max(0, Number(eliteWave.requiredExtraHostiles || 0));
+          const healthMultiplier = this.openingShuttleHostileHealthMultiplier(runtime);
+          const state = eliteWave.cleared === true
+            ? "cleared"
+            : eliteWave.spawned === true
+              ? "aboard"
+              : eliteWave.requested === true
+                ? "inbound"
+                : "armed";
+          return `Gameplay Pack: ${packLabel} • ${displayName} ${state} • +${count} hostile • ${healthMultiplier}x hostile health`;
         }
 
         openingShuttleEncounterSnapshot() {
@@ -9227,7 +9311,8 @@
             destinationId: runtime.destinationId,
             builtInConsumerId: runtime.builtInConsumerId,
             objectiveSequence: objectives,
-            objectiveLine: this.openingShuttleEncounterObjectiveLine(objectives),
+            objectiveLine: this.openingShuttleEncounterObjectiveLine(objectives, runtime),
+            packLine: this.openingShuttleEncounterPackLine(runtime),
             counters: {...runtime.counters},
             eliteWave: {...runtime.eliteWave},
             receipts: runtime.receipts.map((receipt) => ({...receipt})),
@@ -9349,7 +9434,7 @@
             if (detail.eliteWave === true) {
               runtime.counters.eliteDefeated += 1;
               runtime.eliteWave.cleared = true;
-              runtime.lastMessage = "Elite boarding raider neutralized.";
+              runtime.lastMessage = `${String(runtime.eliteWave.displayName || "Elite Boarding Leader")} neutralized.`;
               this.awardOpeningShuttleEncounterReceipt(
                 "receipt.solace-reach.opening-shuttle-ambush.elite-wave-cleared",
                 nowMs,
@@ -9372,7 +9457,7 @@
             ) {
               runtime.eliteWave.requested = true;
               runtime.execution.additionalSpawnRequested = true;
-              runtime.lastMessage = "Gameplay pack elite boarding signal locked.";
+              runtime.lastMessage = String(runtime.eliteWave.alert || "Gameplay pack elite boarding leader inbound.");
               this.awardOpeningShuttleEncounterReceipt(
                 "receipt.solace-reach.opening-shuttle-ambush.elite-wave-requested",
                 nowMs,
@@ -9441,9 +9526,11 @@
           if (!runtime.eliteWave.requested || runtime.eliteWave.spawned) return false;
           const point = this.openingShuttleEliteSpawnPoint();
           this.transportSequence += 1;
+          const eliteDisplayName = String(runtime.eliteWave.displayName || "Elite Boarding Leader");
+          const eliteHealthMultiplier = this.openingShuttleHostileHealthMultiplier(runtime);
           const eliteHealth = Math.max(
             this.combat.alien.maxHealth,
-            Math.ceil(this.combat.alien.maxHealth * 1.5)
+            this.openingShuttleHostileMaxHealth(runtime)
           );
           const alien = {
             id: `boarding-elite-raider-${this.transportSequence}`,
@@ -9456,7 +9543,11 @@
             nextAttackAtMs: nowMs + this.combat.transport.beamDurationMs + 350,
             hitFlashUntilMs: 0,
             eliteWave: true,
-            encounterRole: "elite-followup-raider",
+            healthMultiplier: eliteHealthMultiplier,
+            packPowered: eliteHealthMultiplier > 1,
+            encounterRole: "elite-boarding-leader",
+            displayName: eliteDisplayName,
+            label: eliteDisplayName,
             actorArchetypeId: runtime.eliteWave.actorArchetypeId,
             sourcePluginId: runtime.eliteWave.pluginId || "",
             sourceScenarioId: runtime.eliteWave.scenarioId || "",
@@ -9470,6 +9561,9 @@
               spawnId: alien.spawnId,
               actorArchetypeId: alien.actorArchetypeId,
               encounterRole: alien.encounterRole,
+              displayName: alien.displayName,
+              maxHealth: alien.maxHealth,
+              healthMultiplier: eliteHealthMultiplier,
               transportSequence: this.transportSequence,
               sourcePluginId: alien.sourcePluginId,
               sourceScenarioId: alien.sourceScenarioId,
@@ -9654,12 +9748,24 @@
           const points = this.combat.transport.spawnPoints;
           const point = points[this.transportSequence % points.length];
           this.transportSequence += 1;
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          const hostileHealthMultiplier = this.openingShuttleHostileHealthMultiplier(runtime);
+          const hostileHealth = Math.max(
+            this.combat.alien.maxHealth,
+            this.openingShuttleHostileMaxHealth(runtime)
+          );
           const alien = {
             id: `boarding-alien-${this.transportSequence}`,
             spawnId: point.id,
             position: point.position.slice(),
-            health: this.combat.alien.maxHealth,
-            maxHealth: this.combat.alien.maxHealth,
+            health: hostileHealth,
+            maxHealth: hostileHealth,
+            healthMultiplier: hostileHealthMultiplier,
+            packPowered: hostileHealthMultiplier > 1,
+            sourcePluginId: runtime?.eliteWave?.pluginId || "",
+            sourceScenarioId: runtime?.eliteWave?.scenarioId || "",
+            sourceEncounterId: runtime?.eliteWave?.encounterId || "",
             state: "transporting",
             transportUntilMs: nowMs + this.combat.transport.beamDurationMs,
             nextAttackAtMs: nowMs + this.combat.transport.beamDurationMs + 400,
@@ -9668,7 +9774,17 @@
           this.aliens.push(alien);
           this.recordOpeningShuttleEncounterEvent(
             "alien-spawned",
-            {alienId: alien.id, spawnId: alien.spawnId, transportSequence: this.transportSequence},
+            {
+              alienId: alien.id,
+              spawnId: alien.spawnId,
+              transportSequence: this.transportSequence,
+              maxHealth: alien.maxHealth,
+              healthMultiplier: hostileHealthMultiplier,
+              packPowered: alien.packPowered === true,
+              sourcePluginId: alien.sourcePluginId,
+              sourceScenarioId: alien.sourceScenarioId,
+              sourceEncounterId: alien.sourceEncounterId
+            },
             nowMs
           );
           this.emitCombatState(true);
@@ -10754,6 +10870,9 @@
         const encounterLine = document.createElement("div");
         encounterLine.className = "scene-shuttle3d-encounter-line";
         encounterLine.textContent = "OBJECTIVE: SURVIVE THE SHUTTLE BOARDING";
+        const packLine = document.createElement("div");
+        packLine.className = "scene-shuttle3d-pack-line";
+        packLine.textContent = "GAMEPLAY PACK: NONE — BASE GAME";
         const authoringLine = document.createElement("div");
         authoringLine.className = "scene-shuttle3d-authoring-line";
         authoringLine.textContent = "AUTHORING ALIGNMENT: BRIDGE ONLY";
@@ -10771,7 +10890,7 @@
         shipLine.className = "scene-shuttle3d-ship-line";
         shipLine.textContent = "SHIP: SHUTTLE IN FLIGHT";
         shipLine.hidden = true;
-        hud.append(healthPanel, combatLine, encounterLine, authoringLine, characterLine, phaserLine, pilotLine, shipLine);
+        hud.append(healthPanel, combatLine, encounterLine, packLine, authoringLine, characterLine, phaserLine, pilotLine, shipLine);
 
         const crosshair = document.createElement("div");
         crosshair.className = "scene-shuttle3d-crosshair";
@@ -11041,6 +11160,11 @@
             encounterLine.dataset.objectiveStatus = String(currentObjective?.status || "");
             encounterLine.dataset.eliteWaveRequested = String(encounter.eliteWave?.requested === true);
             encounterLine.dataset.eliteWaveCleared = String(encounter.eliteWave?.cleared === true);
+            packLine.hidden = !encounter.packLine;
+            packLine.textContent = encounter.packLine ? String(encounter.packLine).toUpperCase() : "";
+            packLine.dataset.packConfigured = String(encounter.eliteWave?.packConfigured === true);
+            packLine.dataset.packPluginId = String(encounter.eliteWave?.pluginId || "");
+            packLine.dataset.eliteDisplayName = String(encounter.eliteWave?.displayName || "");
             const authoringAlignment = combat.openingShuttleAuthoringAlignment || {};
             authoringLine.hidden = !authoringAlignment.alignmentStatus;
             if (authoringAlignment.alignmentStatus) {

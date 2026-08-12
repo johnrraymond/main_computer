@@ -2,7 +2,7 @@
   "completionStages": [
     "ambush-cleared"
   ],
-  "description": "Selectable gameplay pack for the opening shuttle encounter. On reload, choosing this pack gives the whitelisted shuttle-ambush runner a three-hostile contract and triples shuttle-raider health so the loaded pack is unmistakably active.",
+  "description": "Selectable gameplay pack for the opening shuttle encounter. On reload, choosing this pack gives the whitelisted shuttle-ambush runner a three-hostile contract so the base boarding fight escalates into one extra elite boarding leader.",
   "encounterIds": [
     "encounter.plugin.opening-shuttle-ambush.elite-wave"
   ],
@@ -22,14 +22,14 @@
       "id": "ambush-warning",
       "kind": "briefing",
       "nextStage": "elite-wave",
-      "objective": "Survive first contact; sensors warn that all shuttle raiders are carrying triple-strength bio-signatures.",
+      "objective": "Survive first contact; sensors warn that an elite boarding leader is riding the transport trace.",
       "title": "Elite boarding signal detected"
     },
     {
       "encounterId": "encounter.plugin.opening-shuttle-ambush.elite-wave",
       "id": "elite-wave",
       "kind": "encounter",
-      "objective": "Survive the 3x-health raiders, defeat the elite boarding leader, and keep the shuttle on course for Haven orbit.",
+      "objective": "Survive, defeat the elite boarding leader, and keep the shuttle on course for Haven orbit.",
       "onComplete": "ambush-cleared",
       "onFail": "shuttle-overrun",
       "title": "Defeat the elite boarding leader"
@@ -37,7 +37,7 @@
     {
       "id": "ambush-cleared",
       "kind": "resolution",
-      "objective": "The triple-strength elite boarding leader is down and the shuttle remains on course for Haven orbit.",
+      "objective": "The elite boarding leader is down and the shuttle remains on course for Haven orbit.",
       "receiptIds": [
         "receipt.plugin.opening-shuttle-ambush.cleared"
       ],

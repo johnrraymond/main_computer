@@ -151,56 +151,6 @@
   white-space: pre-wrap;
 }
 
-
-.webgl-gameplay-pack-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  width: 100%;
-  border: 1px solid color-mix(in srgb, var(--gold, #fbbf24) 32%, transparent);
-  border-radius: 999px;
-  padding: 8px 10px;
-  background:
-    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--gold, #fbbf24) 12%, transparent), transparent 58%),
-    color-mix(in srgb, var(--panel, Canvas) 88%, transparent);
-}
-
-.webgl-gameplay-pack-controls strong {
-  color: var(--gold, #fbbf24);
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.webgl-gameplay-pack-controls label {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink, currentColor);
-  font-size: 0.76rem;
-  font-weight: 800;
-}
-
-.webgl-gameplay-pack-controls select {
-  max-width: min(320px, 54vw);
-  border-radius: 999px;
-  padding: 5px 28px 5px 10px;
-  font-size: 0.76rem;
-}
-
-.webgl-gameplay-pack-controls button {
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 0.72rem;
-}
-
-.webgl-gameplay-pack-controls output {
-  color: var(--muted, currentColor);
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-
 .webgl-vfx-controls {
   display: flex;
   flex-wrap: wrap;
@@ -251,6 +201,73 @@
   padding: 5px 8px;
   border-radius: 999px;
   font-size: 0.72rem;
+}
+
+
+
+.webgl-gameplay-pack-selector,
+.webgl-gameplay-pack-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--gold, #facc15) 34%, transparent);
+  border-radius: 14px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--panel, Canvas) 90%, transparent);
+}
+
+.webgl-gameplay-pack-selector strong,
+.webgl-gameplay-pack-controls strong {
+  color: var(--gold, #facc15);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.webgl-gameplay-pack-selector label,
+.webgl-gameplay-pack-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink, currentColor);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.webgl-gameplay-pack-selector select {
+  min-width: min(320px, 58vw);
+  border: 1px solid color-mix(in srgb, var(--mint, #7dd3fc) 34%, transparent);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--panel, Canvas) 96%, #020617);
+  color: var(--ink, currentColor);
+  font: inherit;
+}
+
+.webgl-gameplay-pack-selector button {
+  border-radius: 999px;
+  padding: 6px 11px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.webgl-gameplay-pack-status {
+  flex-basis: 100%;
+  color: var(--muted, currentColor);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.webgl-gameplay-pack-status[data-mode="selected"] {
+  color: var(--gold, #facc15);
+}
+
+.webgl-gameplay-pack-status[data-mode="error"] {
+  color: #fca5a5;
 }
 
 .game-editor-vfx-presets button.active,
@@ -2466,9 +2483,37 @@
 
 .scene-shuttle3d-health-label,
 .scene-shuttle3d-combat-line,
+.scene-shuttle3d-encounter-line,
+.scene-shuttle3d-pack-line,
+.scene-shuttle3d-authoring-line,
 .scene-shuttle3d-character-line,
 .scene-shuttle3d-phaser-line,
 .scene-shuttle3d-pilot-line,
+
+.scene-shuttle3d-encounter-line {
+  color: #fde68a;
+  line-height: 1.35;
+}
+
+.scene-shuttle3d-pack-line {
+  color: #f0abfc;
+  line-height: 1.35;
+}
+
+.scene-shuttle3d-pack-line[data-pack-configured="true"] {
+  color: #fef3c7;
+}
+
+.scene-shuttle3d-authoring-line {
+  color: #bfdbfe;
+  line-height: 1.35;
+}
+
+.scene-shuttle3d-authoring-line[hidden],
+.scene-shuttle3d-pack-line[hidden] {
+  display: none;
+}
+
 .scene-shuttle3d-ship-line {
   font-size: 0.68rem;
   font-weight: 900;

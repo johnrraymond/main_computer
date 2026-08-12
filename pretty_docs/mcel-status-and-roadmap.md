@@ -19,16 +19,17 @@ For current MCEL DSL application authoring mechanics, use `pretty_docs/mcel-dsl-
 
 ## Reference app and fixture platform status
 
-The current MCEL reference set has three deliberately different roles:
+The current MCEL reference set has one active real-app authoring example and
+retired historical fixture names:
 
 ```text
-Calculator: real host-bound reference app
-Counter:    explicit-package reference fixture
-Workbench:  profiled-package / authoring reference fixture
+Calculator: active real host-bound reference app
+Counter:    retired explicit-package fixture name
+Workbench:  retired profiled-package / authoring fixture name
 ```
 
-The reusable mechanics for those roles now live in shared MCEL modules instead of
-large app-specific operational scripts.
+The durable shared mechanics that remain checked in should be used instead of
+large app-specific operational scripts. The active host-bound mechanics are:
 
 ```text
 host-bound path:
@@ -38,29 +39,19 @@ host-bound path:
   mcel_host_bound_runtime_parity.py
   mcel_host_bound_ir_native_proof.py
   mcel_host_bound_promotion_rehearsal.py
-
-explicit-package path:
-  mcel_explicit_package_candidate_projection.py
-  mcel_explicit_package_candidate_evidence.py
-  mcel_explicit_package_compatibility.py
-  mcel_explicit_package_ir_native_proof.py
-  mcel_explicit_package_promotion_rehearsal.py
-  mcel_explicit_package_promotion.py
-
-profiled-package path:
-  mcel_profiled_package_candidate_projection.py
-  mcel_profiled_package_candidate_evidence.py
-  mcel_profiled_package_ir_native_proof.py
-  mcel_profiled_package_promotion_rehearsal.py
-  mcel_profiled_package_promotion.py
 ```
 
-The app-specific `mcel_<app>_*` modules are compatibility entry points. They
-should stay thin, delegate to the shared mechanics above, and take app facts from
-their reference profiles. `pretty_docs/mcel-reference-app-and-fixture-roles.md`
-defines the three roles, and `pretty_docs/mcel-app-patching-lifecycle.md`
-defines how semantic feature patches and platform cleanup patches should move
-through those layers.
+The old Counter/explicit-package and Workbench/profiled-package migration
+paths are retired. Do not reference or recreate app-specific projection,
+evidence, compatibility, proof, rehearsal, or promotion helper families for
+current MCEL app work. The remaining shared mechanics should flow through the
+generic DSL/package/conformance layers and the active host-bound path listed
+above.
+
+`pretty_docs/mcel-reference-app-and-fixture-roles.md` defines the current role
+boundary, and `pretty_docs/mcel-app-patching-lifecycle.md` defines how semantic
+feature patches and platform cleanup patches should move through the remaining
+active layers.
 
 
 ## Current generated baseline

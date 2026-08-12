@@ -310,6 +310,15 @@ NOT be extended or used as the implementation pattern for new lifecycle work.
 Starting from an empty network MUST use `add-node`; restoring a removed node
 MUST use `add-node`; removing any active node MUST use `remove-node`.
 
+After identity evidence, Mother MUST branch from the current topology recorded in
+operator-directed evidence. When `current_topology.validator_count == 0` and
+`prepared_post_add_topology.validator_count == 1`, the next phase is
+`add-node-single-node-bootstrap-<network>`. In that case Mother MUST NOT route
+the operation to replica sync or validator admission, because there is no live
+validator set to sync from or vote through. Replica sync and validator admission
+remain the correct next phases only for a join-existing-validator-set operation
+with at least one explicitly selected live current validator.
+
 Tests MAY contain fixture names such as `mainneta-super1` and `mainnetc-super2`
 only as data. The operator-directed path for the current run is whatever the
 operator explicitly supplies and verifies through evidence. Tests MUST also
@@ -399,6 +408,12 @@ python .\tools\mother_deploy.py release-add-node-identity --add-do-evidence <add
 python .\tools\mother_deploy.py verify-add-node-identity-release --release <add-node-identity-release.json>
 python .\tools\mother_deploy.py add-node identity mainnet --release <add-node-identity-release.json> --acknowledge-release-sha256 <sha256> --execute
 python .\tools\mother_deploy.py verify-add-node-identity-evidence --evidence <add-node-identity-evidence.json>
+# Empty-current-topology branch: one operator-selected node becomes the single live chain+Hub node.
+python .\tools\mother_deploy.py release-add-node-single-node-bootstrap --identity-evidence <add-node-identity-evidence.json> --acknowledge-add-node-identity-evidence-sha256 <sha256> --write-release
+python .\tools\mother_deploy.py verify-add-node-single-node-bootstrap-release --release <add-node-single-node-bootstrap-release.json>
+python .\tools\mother_deploy.py add-node single-node-bootstrap mainnet --release <add-node-single-node-bootstrap-release.json> --acknowledge-release-sha256 <sha256> --execute
+python .\tools\mother_deploy.py verify-add-node-single-node-bootstrap-evidence --evidence <add-node-single-node-bootstrap-evidence.json>
+# Join-existing-validator-set branch only when current topology has explicitly selected live validators.
 python .\tools\mother_deploy.py release-add-node-replica-sync --identity-evidence <add-node-identity-evidence.json> --acknowledge-add-node-identity-evidence-sha256 <sha256> --write-release
 python .\tools\mother_deploy.py verify-add-node-replica-sync-release --release <add-node-replica-sync-release.json>
 python .\tools\mother_deploy.py add-node replica-sync mainnet --release <add-node-replica-sync-release.json> --acknowledge-release-sha256 <sha256> --execute

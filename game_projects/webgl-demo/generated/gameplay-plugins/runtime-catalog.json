@@ -1,0 +1,248 @@
+{
+  "activatedInRuntime": false,
+  "catalogPath": "generated/gameplay-plugins/runtime-catalog.json",
+  "consequenceIds": [
+    "consequence.plugin.opening-shuttle-ambush.system-marked"
+  ],
+  "disabledPluginIds": [],
+  "documentPaths": [
+    "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+    "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json"
+  ],
+  "documents": [
+    {
+      "actorArchetypes": [],
+      "consequenceTypes": [],
+      "encounterIds": [
+        "encounter.plugin.opening-shuttle-ambush.elite-wave"
+      ],
+      "id": "scenario.plugin.opening-shuttle-ambush.elite-wave",
+      "kind": "scenario",
+      "location": {
+        "destinationId": "destination.solace-reach.haven-orbit",
+        "systemId": "system.solace-reach"
+      },
+      "objectiveTypes": [],
+      "objectives": [],
+      "participants": [],
+      "path": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+      "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+      "receiptIds": [
+        "receipt.plugin.opening-shuttle-ambush.cleared"
+      ],
+      "stageIds": [
+        "ambush-warning",
+        "elite-wave",
+        "ambush-cleared",
+        "shuttle-overrun"
+      ],
+      "template": "",
+      "title": "Opening Shuttle Ambush Elite Wave"
+    },
+    {
+      "actorArchetypes": [
+        "actor-archetype.shuttle-raider"
+      ],
+      "consequenceTypes": [
+        "consequence-type.record-receipt",
+        "consequence-type.mark-system"
+      ],
+      "encounterIds": [],
+      "id": "encounter.plugin.opening-shuttle-ambush.elite-wave",
+      "kind": "encounter",
+      "location": {
+        "destinationId": "destination.solace-reach.haven-orbit",
+        "systemId": "system.solace-reach"
+      },
+      "objectiveTypes": [
+        "objective-type.survive",
+        "objective-type.clear-hostiles",
+        "objective-type.reach-destination"
+      ],
+      "objectives": [
+        {
+          "id": "survive-boarding",
+          "label": "Survive the elite boarding escalation",
+          "required": true,
+          "type": "objective-type.survive"
+        },
+        {
+          "id": "clear-raiders",
+          "label": "Defeat the elite boarding leader",
+          "required": true,
+          "type": "objective-type.clear-hostiles"
+        },
+        {
+          "id": "reach-haven-orbit",
+          "label": "Reach Haven orbit with the leader neutralized",
+          "required": true,
+          "type": "objective-type.reach-destination"
+        }
+      ],
+      "participants": [
+        {
+          "actorArchetypeId": "actor-archetype.shuttle-raider",
+          "count": 3,
+          "role": "hostile"
+        }
+      ],
+      "path": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json",
+      "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+      "receiptIds": [
+        "receipt.plugin.opening-shuttle-ambush.cleared"
+      ],
+      "stageIds": [],
+      "template": "encounter-template.shuttle-ambush",
+      "title": "Opening Shuttle Ambush Elite Leader"
+    }
+  ],
+  "enabledPluginIds": [
+    "plugin.hand-authored.opening-shuttle-ambush.001"
+  ],
+  "encounterIds": [
+    "encounter.plugin.opening-shuttle-ambush.elite-wave"
+  ],
+  "entryPoints": [
+    "scenario.plugin.opening-shuttle-ambush.elite-wave"
+  ],
+  "generatedLayer": "generated/gameplay-plugins",
+  "kind": "gameplay-plugin-runtime-catalog-export",
+  "plugins": [
+    {
+      "activatedInRuntime": false,
+      "consequenceIds": [
+        "consequence.plugin.opening-shuttle-ambush.system-marked"
+      ],
+      "documentPaths": [
+        "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+        "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json"
+      ],
+      "documents": [
+        {
+          "actorArchetypes": [],
+          "consequenceTypes": [],
+          "encounterIds": [
+            "encounter.plugin.opening-shuttle-ambush.elite-wave"
+          ],
+          "id": "scenario.plugin.opening-shuttle-ambush.elite-wave",
+          "kind": "scenario",
+          "location": {
+            "destinationId": "destination.solace-reach.haven-orbit",
+            "systemId": "system.solace-reach"
+          },
+          "objectiveTypes": [],
+          "objectives": [],
+          "participants": [],
+          "path": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+          "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+          "receiptIds": [
+            "receipt.plugin.opening-shuttle-ambush.cleared"
+          ],
+          "stageIds": [
+            "ambush-warning",
+            "elite-wave",
+            "ambush-cleared",
+            "shuttle-overrun"
+          ],
+          "template": "",
+          "title": "Opening Shuttle Ambush Elite Wave"
+        },
+        {
+          "actorArchetypes": [
+            "actor-archetype.shuttle-raider"
+          ],
+          "consequenceTypes": [
+            "consequence-type.record-receipt",
+            "consequence-type.mark-system"
+          ],
+          "encounterIds": [],
+          "id": "encounter.plugin.opening-shuttle-ambush.elite-wave",
+          "kind": "encounter",
+          "location": {
+            "destinationId": "destination.solace-reach.haven-orbit",
+            "systemId": "system.solace-reach"
+          },
+          "objectiveTypes": [
+            "objective-type.survive",
+            "objective-type.clear-hostiles",
+            "objective-type.reach-destination"
+          ],
+          "objectives": [
+            {
+              "id": "survive-boarding",
+              "label": "Survive the elite boarding escalation",
+              "required": true,
+              "type": "objective-type.survive"
+            },
+            {
+              "id": "clear-raiders",
+              "label": "Defeat the elite boarding leader",
+              "required": true,
+              "type": "objective-type.clear-hostiles"
+            },
+            {
+              "id": "reach-haven-orbit",
+              "label": "Reach Haven orbit with the leader neutralized",
+              "required": true,
+              "type": "objective-type.reach-destination"
+            }
+          ],
+          "participants": [
+            {
+              "actorArchetypeId": "actor-archetype.shuttle-raider",
+              "count": 3,
+              "role": "hostile"
+            }
+          ],
+          "path": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json",
+          "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+          "receiptIds": [
+            "receipt.plugin.opening-shuttle-ambush.cleared"
+          ],
+          "stageIds": [],
+          "template": "encounter-template.shuttle-ambush",
+          "title": "Opening Shuttle Ambush Elite Leader"
+        }
+      ],
+      "encounterIds": [
+        "encounter.plugin.opening-shuttle-ambush.elite-wave"
+      ],
+      "entryPoints": [
+        "scenario.plugin.opening-shuttle-ambush.elite-wave"
+      ],
+      "generatedRoot": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001",
+      "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
+      "problems": [],
+      "projectJsonModified": false,
+      "receiptIds": [
+        "receipt.plugin.opening-shuttle-ambush.cleared"
+      ],
+      "receiptPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/materialization-receipt.json",
+      "rollbackPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/rollback-plan.json",
+      "runtimeLoaded": false,
+      "scenarioIds": [
+        "scenario.plugin.opening-shuttle-ambush.elite-wave"
+      ],
+      "status": "enabled",
+      "targetLayer": "generated-plugin-content"
+    }
+  ],
+  "problems": [],
+  "projectJsonModified": false,
+  "receiptIds": [
+    "receipt.plugin.opening-shuttle-ambush.cleared"
+  ],
+  "runtimeCatalog": {
+    "kind": "gameplay-plugin-runtime-catalog",
+    "runtimeStatus": "runtime-neutral-catalog-only",
+    "schema": "game.gameplayPluginRuntimeCatalog.v1",
+    "status": "ready"
+  },
+  "runtimeLoaded": false,
+  "runtimeStatus": "generated-index-only",
+  "scenarioIds": [
+    "scenario.plugin.opening-shuttle-ambush.elite-wave"
+  ],
+  "schema": "game.gameplayPluginRuntimeCatalogExport.v1",
+  "status": "ready"
+}
