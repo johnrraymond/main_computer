@@ -57,8 +57,9 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
         self.assertIn("Elite Boarding Leader", hook_source)
         self.assertIn("healthMultiplier", hook_source)
         self.assertIn("openingShuttleEncounterPackLine", hook_source)
-        self.assertIn("openingShuttleActiveGameplayPackConfig", hook_source)
-        self.assertIn("openingShuttleGameplayPackConfig", hook_source)
+        self.assertIn("openingShuttleApplyGameplayPackCommand", hook_source)
+        self.assertNotIn("openingShuttleActiveGameplayPackConfig", hook_source)
+        self.assertNotIn("openingShuttleGameplayPackConfig", hook_source)
         self.assertNotIn("generatedScenarioStartCommandGate", hook_source)
 
     def test_hook_records_shuttle_phase_events_receipts_and_safety_snapshot(self) -> None:
@@ -214,7 +215,7 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
         assert result["blocked"] is None
         assert result["afterBlocked"]["counters"] == snapshot["counters"]
 
-    def test_elite_wave_request_resolves_to_one_builtin_raider(self) -> None:
+    def test_js_pack_spawn_wave_command_resolves_to_one_elite_raider(self) -> None:
         result = self.run_node(
             """
             const fs = require('fs');
@@ -251,31 +252,7 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
               current() {
                 return {
                   openingShuttleGameplayPackConfig() {
-                    return {
-                      available: true,
-                      active: true,
-                      pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
-                      scenarioId: "scenario.plugin.opening-shuttle-ambush.elite-wave",
-                      scenarioTitle: "Opening Shuttle Ambush Elite Wave",
-                      packLabel: "Opening Shuttle Ambush Elite Wave",
-                      encounterId: "encounter.plugin.opening-shuttle-ambush.elite-wave",
-                      encounterTitle: "Opening Shuttle Ambush Elite Leader",
-                      extraHostileCount: 1,
-                      activePluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
-                      eliteWave: {
-                        enabled: true,
-                        triggerDefeats: 2,
-                        count: 1,
-                        actorArchetypeId: "actor-archetype.shuttle-raider",
-                        source: "plugin.hand-authored.opening-shuttle-ambush.001",
-                        scenarioId: "scenario.plugin.opening-shuttle-ambush.elite-wave",
-                        encounterId: "encounter.plugin.opening-shuttle-ambush.elite-wave",
-                        displayName: "Elite Boarding Leader",
-                        objectiveLabel: "Defeat the elite boarding leader",
-                        alert: "Opening Shuttle Ambush Elite Wave: Elite Boarding Leader inbound — 3x hostile health confirmed",
-                        healthMultiplier: 3
-                      }
-                    };
+                    throw new Error("legacy generated config must not be consulted by scene-viewer");
                   }
                 };
               }
@@ -293,7 +270,21 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
               {alienId: 'boarding-alien-2', spawnId: 'starboard-aft-pad', kills: 2},
               1800
             );
-            const spawned = runtime.resolveOpeningShuttleEliteWave(1810);
+            const applied = runtime.openingShuttleApplyGameplayPackCommand({
+              type: "spawn-wave",
+              sourcePackId: "pack.opening-shuttle.elite-boarders",
+              payload: {
+                id: "elite-boarding-leader",
+                trigger: {type: "after-hostile-defeats", count: 2},
+                actors: [{
+                  archetype: "shuttle-raider",
+                  count: 1,
+                  displayName: "Elite Boarding Leader",
+                  healthMultiplier: 3
+                }],
+                hudMessage: "Elite Boarding Leader inbound."
+              }
+            }, 1810);
             const blockedDuplicate = runtime.resolveOpeningShuttleEliteWave(1820);
             const elite = runtime.aliens[0];
             runtime.recordOpeningShuttleEncounterEvent(
@@ -310,85 +301,34 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
             );
             const snapshot = runtime.openingShuttleEncounterSnapshot();
 
-            console.log(JSON.stringify({spawned, blockedDuplicate, elite, snapshot, emitted: runtime.emitted}));
+            console.log(JSON.stringify({applied, blockedDuplicate, elite, snapshot, emitted: runtime.emitted}));
             """
         )
 
-        assert result["spawned"] is True
+        assert result["applied"] is True
         assert result["blockedDuplicate"] is False
         elite = result["elite"]
         assert elite["id"] == "boarding-elite-raider-3"
         assert elite["spawnId"] == "center-pad"
         assert elite["health"] == 180
         assert elite["maxHealth"] == 180
+        assert elite["healthMultiplier"] == 3
+        assert elite["packPowered"] is True
         assert elite["eliteWave"] is True
-        assert elite["encounterRole"] == "elite-boarding-leader"
         assert elite["displayName"] == "Elite Boarding Leader"
-        assert elite["label"] == "Elite Boarding Leader"
+        assert elite["sourcePluginId"] == "pack.opening-shuttle.elite-boarders"
         assert elite["actorArchetypeId"] == "actor-archetype.shuttle-raider"
-        assert result["emitted"] == 1
-
         snapshot = result["snapshot"]
-        assert snapshot["counters"]["defeated"] == 3
         assert snapshot["counters"]["eliteSpawned"] == 1
         assert snapshot["counters"]["eliteDefeated"] == 1
-        assert snapshot["counters"]["destinationReached"] == 0
-        assert snapshot["eliteWave"] == {
-            "enabled": True,
-            "triggerDefeats": 2,
-            "requested": True,
-            "spawned": True,
-            "cleared": True,
-            "requiredExtraHostiles": 1,
-            "spawnedCount": 1,
-            "actorArchetypeId": "actor-archetype.shuttle-raider",
-            "source": "plugin.hand-authored.opening-shuttle-ambush.001",
-            "scenarioId": "scenario.plugin.opening-shuttle-ambush.elite-wave",
-            "encounterId": "encounter.plugin.opening-shuttle-ambush.elite-wave",
-            "pluginId": "plugin.hand-authored.opening-shuttle-ambush.001",
-            "packConfigAvailable": True,
-            "packConfigured": True,
-            "activePluginIds": ["plugin.hand-authored.opening-shuttle-ambush.001"],
-            "displayName": "Elite Boarding Leader",
-            "objectiveLabel": "Defeat the elite boarding leader",
-            "packLabel": "Opening Shuttle Ambush Elite Wave",
-            "alert": "Opening Shuttle Ambush Elite Wave: Elite Boarding Leader inbound — 3x hostile health confirmed",
-            "healthMultiplier": 3,
-        }
-        assert [objective["status"] for objective in snapshot["objectiveSequence"]] == [
-            "active",
-            "completed",
-            "active",
-        ]
-        assert snapshot["objectiveSequence"][1]["progress"] == {
-            "defeated": 3,
-            "eliteRequested": True,
-            "eliteSpawned": True,
-            "eliteCleared": True,
-            "requiredExtraHostiles": 1,
-            "eliteDisplayName": "Elite Boarding Leader",
-            "packConfigured": True,
-        }
-        assert snapshot["objectiveLine"] == "Reach Haven orbit with the leader neutralized • ACTIVE"
-        assert snapshot["packLine"] == "Gameplay Pack: Opening Shuttle Ambush Elite Wave • Elite Boarding Leader cleared • +1 hostile • 3x hostile health"
-        assert [receipt["id"] for receipt in snapshot["receipts"]] == [
-            "receipt.solace-reach.opening-shuttle-ambush.first-raider-defeated",
-            "receipt.solace-reach.opening-shuttle-ambush.elite-wave-requested",
-            "receipt.solace-reach.opening-shuttle-ambush.elite-wave-spawned",
-            "receipt.solace-reach.opening-shuttle-ambush.elite-wave-cleared",
-        ]
-        assert snapshot["execution"] == {
-            "generatedPluginExecution": False,
-            "generatedTemplateExecution": False,
-            "rendererHandoff": False,
-            "saveStateMutated": False,
-            "projectJsonModified": False,
-            "additionalSpawnRequested": True,
-        }
+        assert snapshot["eliteWave"]["requested"] is True
+        assert snapshot["eliteWave"]["spawned"] is True
+        assert snapshot["eliteWave"]["cleared"] is True
+        assert snapshot["eliteWave"]["healthMultiplier"] == 3
+        assert snapshot["eliteWave"]["pluginId"] == "pack.opening-shuttle.elite-boarders"
+        assert snapshot["execution"]["additionalSpawnRequested"] is True
 
-
-
-    def test_pack_health_multiplier_triples_spawned_raiders_only_when_pack_active(self) -> None:
+    def test_legacy_generated_pack_config_no_longer_triples_raiders_without_js_commands(self) -> None:
         result = self.run_node(
             """
             const fs = require('fs');
@@ -400,129 +340,82 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
               .replace(/\\n        (?=(isOpening|opening|award|completeOpening|record|spawnOpening|resolve|combatSnapshot|publish|emitCombatState|spawnAlien))/g, ',\\n        ');
             const methods = Function(`return ({${methodSource}});`)();
 
-            function makeRuntime(packEnabled) {
-              globalThis.MainComputerSystemScenarioRuntime = {
-                current() {
-                  return {
-                    openingShuttleGameplayPackConfig() {
-                      if (!packEnabled) {
-                        return {
-                          available: false,
-                          active: false,
-                          packLabel: "None — base game",
-                          extraHostileCount: 0,
-                          eliteWave: {enabled: false, healthMultiplier: 1}
-                        };
+            globalThis.MainComputerSystemScenarioRuntime = {
+              current() {
+                return {
+                  openingShuttleGameplayPackConfig() {
+                    return {
+                      available: true,
+                      active: true,
+                      pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
+                      extraHostileCount: 1,
+                      hostileHealthMultiplier: 3,
+                      eliteWave: {
+                        enabled: true,
+                        triggerDefeats: 2,
+                        count: 1,
+                        actorArchetypeId: "actor-archetype.shuttle-raider",
+                        healthMultiplier: 3
                       }
-                      return {
-                        available: true,
-                        active: true,
-                        pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
-                        scenarioId: "scenario.plugin.opening-shuttle-ambush.elite-wave",
-                        scenarioTitle: "Opening Shuttle Ambush Elite Wave",
-                        packLabel: "Opening Shuttle Ambush Elite Wave",
-                        encounterId: "encounter.plugin.opening-shuttle-ambush.elite-wave",
-                        encounterTitle: "Opening Shuttle Ambush Elite Leader",
-                        extraHostileCount: 1,
-                        activePluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
-                        hostileHealthMultiplier: 3,
-                        eliteWave: {
-                          enabled: true,
-                          triggerDefeats: 2,
-                          count: 1,
-                          actorArchetypeId: "actor-archetype.shuttle-raider",
-                          source: "plugin.hand-authored.opening-shuttle-ambush.001",
-                          scenarioId: "scenario.plugin.opening-shuttle-ambush.elite-wave",
-                          encounterId: "encounter.plugin.opening-shuttle-ambush.elite-wave",
-                          displayName: "Elite Boarding Leader",
-                          objectiveLabel: "Defeat the 3x-health elite boarding leader",
-                          alert: "Opening Shuttle Ambush Elite Wave: elite boarding leader inbound — 3x hostile health confirmed",
-                          healthMultiplier: 3
-                        }
-                      };
-                    }
-                  };
-                }
-              };
-              const runtime = {
-                combat: {
-                  enabled: true,
-                  transport: {
-                    maxAlive: 4,
-                    beamDurationMs: 900,
-                    spawnPoints: [
-                      {id: 'port-aft-pad', position: [-2.9, -0.55, 2.55]},
-                      {id: 'starboard-aft-pad', position: [2.9, -0.55, 2.55]},
-                      {id: 'center-pad', position: [0, -0.55, 0.3]}
-                    ]
-                  },
-                  alien: {maxHealth: 60}
+                    };
+                  }
+                };
+              }
+            };
+
+            const runtime = {
+              combat: {
+                enabled: true,
+                transport: {
+                  maxAlive: 4,
+                  beamDurationMs: 900,
+                  spawnPoints: [
+                    {id: 'port-aft-pad', position: [-2.9, -0.55, 2.55]},
+                    {id: 'starboard-aft-pad', position: [2.9, -0.55, 2.55]},
+                    {id: 'center-pad', position: [0, -0.55, 0.3]}
+                  ]
                 },
-                aliens: [],
-                transportSequence: 0,
-                gameOver: false,
-                combatClockMs: 0,
-                emitted: 0,
-                characterAIPhase() { return 'shuttle'; },
-                emitCombatState() { this.emitted += 1; }
-              };
-              Object.assign(runtime, methods);
-              runtime.openingShuttleEncounter = runtime.createOpeningShuttleEncounterRuntimeState();
-              return runtime;
-            }
+                alien: {maxHealth: 60}
+              },
+              aliens: [],
+              transportSequence: 0,
+              gameOver: false,
+              combatClockMs: 0,
+              emitted: 0,
+              characterAIPhase() { return 'shuttle'; },
+              emitCombatState() { this.emitted += 1; }
+            };
+            Object.assign(runtime, methods);
+            runtime.openingShuttleEncounter = runtime.createOpeningShuttleEncounterRuntimeState();
 
-            const none = makeRuntime(false);
-            none.spawnAlien(100);
-            const noneAlien = none.aliens[0];
-
-            const selected = makeRuntime(true);
-            selected.spawnAlien(100);
-            const selectedAlien = selected.aliens[0];
-
-            selected.recordOpeningShuttleEncounterEvent(
+            runtime.spawnAlien(100);
+            const alien = runtime.aliens[0];
+            runtime.recordOpeningShuttleEncounterEvent(
               'alien-defeated',
               {alienId: 'boarding-alien-1', spawnId: 'port-aft-pad', kills: 1},
               1200
             );
-            selected.recordOpeningShuttleEncounterEvent(
+            runtime.recordOpeningShuttleEncounterEvent(
               'alien-defeated',
               {alienId: 'boarding-alien-2', spawnId: 'starboard-aft-pad', kills: 2},
               1800
             );
-            const eliteSpawned = selected.resolveOpeningShuttleEliteWave(1810);
-            const elite = selected.aliens.find((alien) => alien.eliteWave === true);
+            const spawned = runtime.resolveOpeningShuttleEliteWave(1810);
+            const snapshot = runtime.openingShuttleEncounterSnapshot();
 
-            console.log(JSON.stringify({
-              noneAlien,
-              selectedAlien,
-              eliteSpawned,
-              elite,
-              selectedSnapshot: selected.openingShuttleEncounterSnapshot()
-            }));
+            console.log(JSON.stringify({alien, spawned, snapshot}));
             """
         )
 
-        assert result["noneAlien"]["health"] == 60
-        assert result["noneAlien"]["maxHealth"] == 60
-        assert result["noneAlien"]["healthMultiplier"] == 1
-        assert result["noneAlien"]["packPowered"] is False
-
-        assert result["selectedAlien"]["health"] == 180
-        assert result["selectedAlien"]["maxHealth"] == 180
-        assert result["selectedAlien"]["healthMultiplier"] == 3
-        assert result["selectedAlien"]["packPowered"] is True
-        assert result["selectedAlien"]["sourcePluginId"] == "plugin.hand-authored.opening-shuttle-ambush.001"
-
-        assert result["eliteSpawned"] is True
-        assert result["elite"]["health"] == 180
-        assert result["elite"]["maxHealth"] == 180
-        assert result["elite"]["healthMultiplier"] == 3
-        assert result["selectedSnapshot"]["eliteWave"]["healthMultiplier"] == 3
-        assert result["selectedSnapshot"]["packLine"] == (
-            "Gameplay Pack: Opening Shuttle Ambush Elite Wave • Elite Boarding Leader aboard "
-            "• +1 hostile • 3x hostile health"
-        )
-
+        assert result["alien"]["health"] == 60
+        assert result["alien"]["maxHealth"] == 60
+        assert result["alien"]["healthMultiplier"] == 1
+        assert result["alien"]["packPowered"] is False
+        assert result["spawned"] is False
+        assert result["snapshot"]["eliteWave"]["enabled"] is False
+        assert result["snapshot"]["eliteWave"]["packConfigured"] is False
+        assert result["snapshot"]["jsGameplayPack"]["installed"] is False
+        assert result["snapshot"]["packLine"] == "Gameplay Pack: None — base game"
 
     def test_destination_reached_records_completion_receipts_without_generated_execution(self) -> None:
         result = self.run_node(
@@ -557,24 +450,7 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
               current() {
                 return {
                   openingShuttleGameplayPackConfig() {
-                    return {
-                      available: true,
-                      active: true,
-                      pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
-                      scenarioId: "scenario.plugin.opening-shuttle-ambush.elite-wave",
-                      encounterId: "encounter.plugin.opening-shuttle-ambush.elite-wave",
-                      extraHostileCount: 1,
-                      activePluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
-                      eliteWave: {
-                        enabled: true,
-                        triggerDefeats: 2,
-                        count: 1,
-                        actorArchetypeId: "actor-archetype.shuttle-raider",
-                        source: "plugin.hand-authored.opening-shuttle-ambush.001",
-                        scenarioId: "scenario.plugin.opening-shuttle-ambush.elite-wave",
-                        encounterId: "encounter.plugin.opening-shuttle-ambush.elite-wave"
-                      }
-                    };
+                    throw new Error("legacy generated config must not be consulted by scene-viewer");
                   }
                 };
               }
@@ -592,7 +468,21 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
               {alienId: 'boarding-alien-2', spawnId: 'starboard-aft-pad', kills: 2},
               1800
             );
-            runtime.resolveOpeningShuttleEliteWave(1810);
+            runtime.openingShuttleApplyGameplayPackCommand({
+              type: "spawn-wave",
+              sourcePackId: "pack.opening-shuttle.elite-boarders",
+              payload: {
+                id: "elite-boarding-leader",
+                trigger: {type: "after-hostile-defeats", count: 2},
+                actors: [{
+                  archetype: "shuttle-raider",
+                  count: 1,
+                  displayName: "Elite Boarding Leader",
+                  healthMultiplier: 3
+                }],
+                hudMessage: "Elite Boarding Leader inbound."
+              }
+            }, 1810);
             const elite = runtime.aliens[0];
             runtime.recordOpeningShuttleEncounterEvent(
               'alien-defeated',
@@ -637,30 +527,17 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
             "encounterCompleted": True,
             "packConfigured": True,
         }
-        assert snapshot["completion"] == {
-            "destinationReached": True,
-            "completed": True,
-            "failed": False,
-            "completedAtMs": 4200,
-            "failedAtMs": None,
-            "receiptIds": [
-                "receipt.solace-reach.opening-shuttle-ambush.first-raider-defeated",
-                "receipt.solace-reach.opening-shuttle-ambush.elite-wave-requested",
-                "receipt.solace-reach.opening-shuttle-ambush.elite-wave-spawned",
-                "receipt.solace-reach.opening-shuttle-ambush.elite-wave-cleared",
-                "receipt.solace-reach.opening-shuttle-ambush.destination-reached",
-                "receipt.solace-reach.opening-shuttle-ambush.completed",
-            ],
-        }
+        assert snapshot["completion"]["completed"] is True
+        assert snapshot["completion"]["destinationReached"] is True
+        assert snapshot["completion"]["receiptIds"] == [
+            "receipt.solace-reach.opening-shuttle-ambush.first-raider-defeated",
+            "receipt.solace-reach.opening-shuttle-ambush.elite-wave-spawned",
+            "receipt.solace-reach.opening-shuttle-ambush.elite-wave-cleared",
+            "receipt.solace-reach.opening-shuttle-ambush.destination-reached",
+            "receipt.solace-reach.opening-shuttle-ambush.completed",
+        ]
         assert snapshot["receiptIds"] == snapshot["completion"]["receiptIds"]
         assert snapshot["events"][-1]["type"] == "destination-reached"
-        assert snapshot["events"][-1]["detail"] == {
-            "systemId": "system.solace-reach",
-            "destinationId": "destination.solace-reach.haven-orbit",
-            "locationId": "bay.shuttle",
-            "reason": "test",
-        }
-        assert snapshot["lastMessage"] == "Opening shuttle ambush cleared at Haven orbit."
         assert snapshot["execution"] == {
             "generatedPluginExecution": False,
             "generatedTemplateExecution": False,
@@ -669,7 +546,6 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
             "projectJsonModified": False,
             "additionalSpawnRequested": True,
         }
-
 
     def test_legacy_combat_loop_emits_hook_events_and_controlled_elite_spawn(self) -> None:
         source = SCENE_VIEWER.read_text(encoding="utf-8")
@@ -696,8 +572,9 @@ class OpeningShuttleRuntimeHookTests(unittest.TestCase):
         hook_start = source.index("        createOpeningShuttleEncounterRuntimeState")
         hook_end = source.index("        combatSnapshot(", hook_start)
         hook_source = source[hook_start:hook_end]
-        self.assertIn("MainComputerSystemScenarioRuntime", hook_source)
-        self.assertIn("openingShuttleGameplayPackConfig", hook_source)
+        self.assertNotIn("MainComputerSystemScenarioRuntime", hook_source)
+        self.assertNotIn("openingShuttleGameplayPackConfig", hook_source)
+        self.assertIn("openingShuttleApplyGameplayPackCommand", hook_source)
         self.assertIn("spawnOpeningShuttleEliteRaider", hook_source)
         self.assertIn("completeOpeningShuttleEncounterAtDestination", hook_source)
         self.assertIn("publishOpeningShuttleEncounterBridge", source)

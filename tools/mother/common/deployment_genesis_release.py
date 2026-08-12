@@ -298,7 +298,7 @@ def _first_genesis_compose(
             f"  if fdbcli -C {hub_root}/fdb.cluster --exec 'status' --timeout 10 >/tmp/mother-fdb-status.log 2>&1; then",
             "    break",
             "  fi",
-            '  if [ "$attempt" = "90" ]; then',
+            '  if [ "$$attempt" = "90" ]; then',
             "    cat /tmp/mother-fdb-configure.log >&2 || true",
             "    cat /tmp/mother-fdb-status.log >&2 || true",
             "    exit 1",

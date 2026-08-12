@@ -757,3 +757,209 @@ def test_remove_node_finalize_verify_dispatch_reaches_handler(monkeypatch: pytes
 
     assert rc == 0
     assert calls == [("verify-remove-node-finalize-evidence", {"private": "state"})]
+
+
+def _write_single_node_final_topology_for_remove(paths, private_state) -> tuple[Path, str]:
+    evidence = {
+        "kind": "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1",
+        "schema_version": 1,
+        "status": "pass",
+        "network": "mainnet",
+        "mode": "reactivate",
+        "completed_at": "2026-08-12T21:26:39Z",
+        "mother_binding": _binding_for_test(private_state),
+        "next_phase": "add-node-single-node-finalized-mainnet",
+        "live_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "final_topology": {
+            "source": "operator-directed-single-node-chain-and-hub-proof",
+            "chain_id": 42424240,
+            "genesis_sha256": "364df17daf2dfa428bd486e9c4e8b46c70317f65b23b55aaf78f749e15de6c92",
+            "nodes": ["mainneta-super1"],
+            "validator_count": 1,
+            "validator_set": ["0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+            "services": {
+                "mainneta-super1": {
+                    "node": "mainneta-super1",
+                    "controller_id": "coolify-a",
+                    "service_uuid": "svca1xxxx",
+                    "service_status": "running:healthy",
+                    "readiness_source": "deployment-node-add-single-node-bootstrap-proof",
+                    "last_observed_at": "2026-08-12T21:26:38Z",
+                    "serves_chain": True,
+                    "serves_hub": True,
+                    "public_endpoint_created": False,
+                }
+            },
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "current_topology_marked_by_evidence": True,
+            "final_nodes": ["mainneta-super1"],
+            "final_validator_count": 1,
+            "final_validator_set": ["0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+            "live_mutation_performed": False,
+            "network_access_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "single_node_bootstrap_proven": True,
+            "serves_chain": True,
+            "serves_hub": True,
+            "next_phase": "add-node-single-node-finalized-mainnet",
+        },
+        "policy": {
+            "finalize_mutation_performed": False,
+            "live_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "public_http_endpoint_created": False,
+            "secrets_in_output": False,
+        },
+    }
+    payload = canonical_json(evidence)
+    path = (
+        paths.root
+        / "evidence"
+        / "deployment-node-add-single-node-chain-and-hub-proof"
+        / "20260812T212639Z-mainneta-super1-test.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path, __import__("hashlib").sha256(payload).hexdigest()
+
+
+def test_remove_node_single_node_final_topology_prep_allows_empty_post_topology(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_single_node_final_topology_for_remove(paths, private_state)
+
+    transaction = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node="mainneta-super1",
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-12T21:30:00Z",
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 30, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert transaction["summary"]["single_node_decommission"] is True
+    assert transaction["summary"]["survivor_nodes"] == []
+    assert transaction["summary"]["post_removal_validator_count"] == 0
+    assert transaction["summary"]["service_deletion_is_first"] is True
+    assert transaction["summary"]["validator_removal_vote_required"] is False
+    assert transaction["post_removal_topology"]["nodes"] == []
+    assert transaction["post_removal_topology"]["validator_set"] == []
+
+
+def test_remove_node_single_node_harness_cli_and_do_finalize_empty_topology(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_single_node_final_topology_for_remove(paths, private_state)
+    prep = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node="mainneta-super1",
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-12T21:30:00Z",
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 30, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    prep_path, prep_sha = write_node_remove_prep_transaction(paths, prep, operation=_operation("write-single-remove-prep"))
+    verified_prep = verify_node_remove_prep_transaction(
+        paths,
+        private_state,
+        prep_path,
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 31, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert verified_prep["single_node_decommission"] is True
+    assert verified_prep["service_deletion_is_first"] is True
+
+    release = build_node_remove_do_release(
+        paths,
+        private_state,
+        prep_path,
+        acknowledged_prep_transaction_sha256=prep_sha,
+        created_at="2026-08-12T21:31:00Z",
+        expires_in_seconds=900,
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 31, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert release["summary"]["single_node_decommission"] is True
+    assert release["summary"]["validator_removal_vote_required"] is False
+    release_path, release_sha = write_node_remove_do_release(paths, release, operation=_operation("write-single-remove-release"))
+
+    opener = _NodeRemoveDoOpener()
+    do_result = execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-single-remove"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 32, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert do_result["status"] == "pass", do_result
+    assert do_result["summary"]["single_node_decommission"] is True
+    assert do_result["summary"]["validator_removal_vote_required"] is False
+    assert do_result["summary"]["validator_removal_vote_performed"] is False
+    assert do_result["summary"]["service_deletion_performed"] is True
+    assert do_result["post_removal_topology"]["nodes"] == []
+    verified_do = verify_node_remove_do_evidence(
+        paths,
+        private_state,
+        Path(do_result["evidence"]["path"]),
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 33, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert verified_do["single_node_decommission"] is True
+    assert verified_do["post_removal_validator_set"] == []
+
+    finalized = finalize_node_remove(
+        paths,
+        private_state,
+        Path(do_result["evidence"]["path"]),
+        network="mainnet",
+        write_evidence=True,
+        operation=_operation("finalize-single-remove"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 34, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert finalized["status"] == "pass", finalized
+    assert finalized["summary"]["single_node_decommission"] is True
+    assert finalized["summary"]["target_service_absent"] is True
+    assert finalized["summary"]["final_validator_count"] == 0
+    assert finalized["final_topology"]["nodes"] == []
+
+    verified_final = verify_node_remove_finalize_evidence(
+        paths,
+        private_state,
+        Path(finalized["evidence"]["path"]),
+        now=__import__("datetime").datetime(2026, 8, 12, 21, 35, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert verified_final["clean"] is True
+    assert verified_final["single_node_decommission"] is True
+    assert verified_final["final_validator_set"] == []
+
+    parser = __import__("mother_mutate_harness").build_parser()
+    args = parser.parse_args(
+        [
+            "remove-node",
+            "--runtime-state-root",
+            str(paths.root),
+            "--network",
+            "mainnet",
+            "--node",
+            "mainneta-super1",
+            "--baseline-evidence",
+            str(baseline_path),
+            "--baseline-evidence-sha256",
+            baseline_sha,
+        ]
+    )
+    assert args.operation == "remove-node"
+    assert args.start_at == "detect-topology"

@@ -533,6 +533,10 @@ def build_node_remove_do_release(
     created_text = _timestamp(created_at)
     current_set = [_address(item, "current validator") for item in verified["current_validator_set"]]
     desired_set = [_address(item, "post-removal validator") for item in verified["post_removal_validator_set"]]
+    single_node_decommission = bool(verified.get("single_node_decommission"))
+    validator_removal_vote_required = not single_node_decommission
+    service_deletion_is_first = bool(verified.get("service_deletion_is_first"))
+    routing_withdrawal_required = bool(verified.get("routing_topology_withdrawal_required_before_service_deletion"))
     request_sha = _request_sha256(verified["target_validator_address"], False)
     release: dict[str, Any] = {
         "kind": _RELEASE_KIND,
@@ -554,15 +558,16 @@ def build_node_remove_do_release(
         "post_removal_topology": dict(prep["post_removal_topology"]),
         "ordered_removal_plan": list(prep["ordered_removal_plan"]),
         "validator_removal_vote": {
-            "method": "qbft_proposeValidatorVote",
-            "params": [verified["target_validator_address"], False],
-            "request_sha256": request_sha,
+            "required": validator_removal_vote_required,
+            "method": "qbft_proposeValidatorVote" if validator_removal_vote_required else None,
+            "params": [verified["target_validator_address"], False] if validator_removal_vote_required else [],
+            "request_sha256": request_sha if validator_removal_vote_required else None,
             "voter_nodes": list(verified["survivor_nodes"]),
             "current_validator_set": current_set,
             "desired_validator_set": desired_set,
         },
         "routing_topology_withdrawal": {
-            "authorized": True,
+            "authorized": routing_withdrawal_required,
             "expected_noop_from_baseline": True,
             "reason": "baseline evidence proved routing/topology and public endpoints were not yet published",
         },
@@ -575,20 +580,24 @@ def build_node_remove_do_release(
             "secrets_in_output": False,
             "public_http_endpoint_created": False,
             "routing_or_topology_publication_authorized": False,
-            "routing_or_topology_withdrawal_authorized": True,
+            "routing_or_topology_withdrawal_authorized": routing_withdrawal_required,
             "validator_activation_authorized": False,
-            "validator_removal_vote_authorized": True,
+            "validator_removal_vote_authorized": validator_removal_vote_required,
+            "validator_removal_vote_required": validator_removal_vote_required,
+            "single_node_decommission": single_node_decommission,
             "service_deletion_authorized": True,
-            "service_deletion_is_first": False,
+            "service_deletion_is_first": service_deletion_is_first,
             "requested_use_limit": 1,
         },
         "authority": {
             "authorization_source": "explicit-operator-release",
             "requested_use_limit": 1,
             "live_execution_authorized": True,
-            "routing_or_topology_withdrawal_authorized": True,
+            "routing_or_topology_withdrawal_authorized": routing_withdrawal_required,
             "routing_or_topology_publication_authorized": False,
-            "validator_removal_vote_authorized": True,
+            "validator_removal_vote_authorized": validator_removal_vote_required,
+            "validator_removal_vote_required": validator_removal_vote_required,
+            "single_node_decommission": single_node_decommission,
             "validator_activation_authorized": False,
             "service_deletion_authorized": True,
         },
@@ -600,10 +609,12 @@ def build_node_remove_do_release(
         "survivor_nodes": list(verified["survivor_nodes"]),
         "current_validator_count": len(current_set),
         "post_removal_validator_count": len(desired_set),
-        "service_deletion_is_first": False,
+        "service_deletion_is_first": service_deletion_is_first,
+        "single_node_decommission": single_node_decommission,
         "service_deletion_authorized": True,
-        "validator_removal_vote_authorized": True,
-        "routing_topology_withdrawal_authorized": True,
+        "validator_removal_vote_required": validator_removal_vote_required,
+        "validator_removal_vote_authorized": validator_removal_vote_required,
+        "routing_topology_withdrawal_authorized": routing_withdrawal_required,
         "routing_or_topology_publication_authorized": False,
         "next_phase": f"remove-node-do-{verified['network']}",
     }
@@ -698,11 +709,13 @@ def verify_node_remove_do_release(
         "post_removal_validator_set": list(document["post_removal_topology"]["validator_set"]),
         "source_prep_transaction_sha256": verified_tx["node_remove_prep_transaction_sha256"],
         "source_baseline_evidence_sha256": verified_tx["source_baseline_evidence_sha256"],
-        "routing_topology_withdrawal_authorized": True,
+        "routing_topology_withdrawal_authorized": bool(document.get("routing_topology_withdrawal", {}).get("authorized")),
         "routing_or_topology_publication_authorized": False,
-        "validator_removal_vote_authorized": True,
+        "validator_removal_vote_required": bool(document.get("validator_removal_vote", {}).get("required", True)),
+        "validator_removal_vote_authorized": bool(document.get("validator_removal_vote", {}).get("required", True)),
+        "single_node_decommission": bool(document.get("policy", {}).get("single_node_decommission")),
         "service_deletion_authorized": True,
-        "service_deletion_is_first": False,
+        "service_deletion_is_first": bool(document.get("policy", {}).get("service_deletion_is_first")),
         "next_phase": f"remove-node-do-{document['network']}",
     }
 
@@ -989,9 +1002,16 @@ def execute_node_remove_do_release(
         failure = {"code": "MOTHER_DEPLOY_NODE_REMOVE_DO_UNEXPECTED_FAILURE", "message": str(exc)[:512]}
 
     completed = _timestamp(now=now)
-    guardian_complete = failure is None and release["validator_removal_vote"]["voter_nodes"] and set(release["validator_removal_vote"]["voter_nodes"]) <= {
-        item.get("node") for item in health_observations if item.get("guardian_healthy") is True
-    }
+    vote_required = bool(release.get("validator_removal_vote", {}).get("required", True))
+    voter_nodes = list(release.get("validator_removal_vote", {}).get("voter_nodes", []))
+    guardian_complete = (
+        failure is None
+        and (
+            (not vote_required)
+            or (bool(voter_nodes) and set(voter_nodes) <= {item.get("node") for item in health_observations if item.get("guardian_healthy") is True})
+        )
+    )
+    validator_vote_performed = bool(vote_required and guardian_complete)
     service_deleted = bool(service_removal and service_removal.get("status") == "pass" and service_removal.get("already_absent") is not True)
     service_already_absent = bool(service_removal and service_removal.get("already_absent") is True)
     live_mutation = any(item.get("live_write_acknowledged") is True for item in mutation_receipts) or service_deleted
@@ -1021,9 +1041,10 @@ def execute_node_remove_do_release(
         "service_removal": service_removal,
         "authority": {
             "release_consumed": True,
-            "routing_topology_withdrawal_authorized": True,
+            "routing_topology_withdrawal_authorized": bool(release.get("routing_topology_withdrawal", {}).get("authorized")),
             "routing_or_topology_publication_authorized": False,
-            "validator_removal_vote_authorized": True,
+            "validator_removal_vote_authorized": vote_required,
+            "validator_removal_vote_required": vote_required,
             "validator_removal_vote_proven": guardian_complete,
             "validator_activation_authorized": False,
             "service_deletion_authorized": True,
@@ -1038,9 +1059,11 @@ def execute_node_remove_do_release(
             "secrets_in_output": False,
             "public_http_endpoint_created": False,
             "routing_or_topology_published": False,
-            "routing_or_topology_withdrawn": True,
+            "routing_or_topology_withdrawn": bool(release.get("routing_topology_withdrawal", {}).get("authorized")),
             "validator_activation_performed": False,
-            "service_deletion_is_first": False,
+            "single_node_decommission": bool(release.get("policy", {}).get("single_node_decommission")),
+            "validator_removal_vote_required": vote_required,
+            "service_deletion_is_first": bool(release.get("policy", {}).get("service_deletion_is_first")),
         },
         "summary": {
             "clean": complete,
@@ -1050,9 +1073,11 @@ def execute_node_remove_do_release(
             "survivor_nodes": [item["node"] for item in release["survivors"]],
             "current_validator_count": len(release["current_topology"]["validator_set"]),
             "post_removal_validator_count": len(release["post_removal_topology"]["validator_set"]),
-            "routing_topology_withdrawal_verified_before_service_deletion": True,
-            "service_deletion_is_first": False,
-            "validator_removal_vote_performed": guardian_complete,
+            "routing_topology_withdrawal_verified_before_service_deletion": bool(release.get("routing_topology_withdrawal", {}).get("authorized")),
+            "service_deletion_is_first": bool(release.get("policy", {}).get("service_deletion_is_first")),
+            "single_node_decommission": bool(release.get("policy", {}).get("single_node_decommission")),
+            "validator_removal_vote_required": vote_required,
+            "validator_removal_vote_performed": validator_vote_performed,
             "service_deletion_performed": service_deleted,
             "service_already_absent": service_already_absent,
             "network_access_performed": bool(mutation_receipts or health_observations or service_removal),
@@ -1065,7 +1090,7 @@ def execute_node_remove_do_release(
         "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
         "live_mutation_performed": live_mutation,
         "service_deletion_performed": service_deleted,
-        "validator_removal_vote_performed": guardian_complete,
+        "validator_removal_vote_performed": validator_vote_performed,
         "routing_or_topology_published": False,
         "public_endpoint_created": False,
     }
@@ -1111,19 +1136,32 @@ def verify_node_remove_do_evidence(
     policy = document.get("policy")
     if not isinstance(summary, Mapping) or not isinstance(authority, Mapping) or not isinstance(policy, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "evidence is incomplete")
+    single_node_decommission = bool(summary.get("single_node_decommission"))
+    validator_vote_required = bool(summary.get("validator_removal_vote_required", not single_node_decommission))
+    ordering_ok = summary.get("service_deletion_is_first") is bool(single_node_decommission)
+    vote_ok = (
+        summary.get("validator_removal_vote_performed") is True
+        if validator_vote_required
+        else summary.get("validator_removal_vote_performed") is False
+    )
+    routing_ok = (
+        summary.get("routing_topology_withdrawal_verified_before_service_deletion") is True
+        if validator_vote_required
+        else summary.get("routing_topology_withdrawal_verified_before_service_deletion") is False
+    )
     if not all([
         document.get("status") == "pass",
         summary.get("clean") is True,
         summary.get("complete") is True,
-        summary.get("service_deletion_is_first") is False,
-        summary.get("routing_topology_withdrawal_verified_before_service_deletion") is True,
-        summary.get("validator_removal_vote_performed") is True,
+        ordering_ok,
+        routing_ok,
+        vote_ok,
         summary.get("network_access_performed") is True,
         summary.get("routing_or_topology_published") is False,
         summary.get("public_endpoint_created") is False,
         authority.get("validator_removal_vote_proven") is True,
         authority.get("service_deletion_proven") is True,
-        policy.get("service_deletion_is_first") is False,
+        policy.get("service_deletion_is_first") is bool(single_node_decommission),
     ]):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "node-removal do evidence does not prove the staged removal")
     return {
@@ -1142,8 +1180,10 @@ def verify_node_remove_do_evidence(
         "source_prep_transaction_sha256": document["source_transaction"]["sha256"],
         "source_baseline_evidence_sha256": document["source_baseline_evidence"]["sha256"],
         "node_remove_do_release_sha256": verified_release["node_remove_do_release_sha256"],
-        "routing_topology_withdrawal_verified_before_service_deletion": True,
-        "validator_removal_vote_performed": True,
+        "routing_topology_withdrawal_verified_before_service_deletion": bool(summary.get("routing_topology_withdrawal_verified_before_service_deletion")),
+        "single_node_decommission": bool(summary.get("single_node_decommission")),
+        "validator_removal_vote_required": bool(summary.get("validator_removal_vote_required", not bool(summary.get("single_node_decommission")))),
+        "validator_removal_vote_performed": bool(summary.get("validator_removal_vote_performed")),
         "service_deletion_performed": bool(summary.get("service_deletion_performed")),
         "service_already_absent": bool(summary.get("service_already_absent")),
         "service_deletion_is_first": False,

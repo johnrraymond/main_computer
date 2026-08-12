@@ -5603,6 +5603,9 @@
           this.phaserBeam = null;
           this.lastCombatUiAt = -Infinity;
           this.onCombatChanged = null;
+          this.openingShuttleGameplayPackHarness = null;
+          this.mainShipGameplayPackHarness = null;
+          this.mainShipGameplayPack = this.createMainShipGameplayPackRuntimeState();
           this.openingShuttleEncounter = this.createOpeningShuttleEncounterRuntimeState();
           this.openingShuttleEncounterAuthoringAlignment = null;
         }
@@ -5937,20 +5940,24 @@
         }
 
         visibleCharacterAICharacters() {
-          if (!this.characterAIRuntime?.activeCharacters) return [];
+          const packBoarders = this.mainShipVisibleGameplayPackBoarders?.() || [];
+          if (!this.characterAIRuntime?.activeCharacters) return packBoarders;
+          let runtimeCharacters = [];
           if (this.characterAIRuntime.activeCharactersForWorld) {
-            return this.characterAIRuntime.activeCharactersForWorld(
+            runtimeCharacters = this.characterAIRuntime.activeCharactersForWorld(
               this.characterAIWorld(this.lastFrameTime ?? 0)
             );
+          } else {
+            const phase = this.characterAIPhase();
+            runtimeCharacters = this.characterAIRuntime.activeCharacters().filter((character) => {
+              const definition = this.characterAIRuntime.characterDefinition?.(character.id);
+              const activePhases = Array.isArray(definition?.activePhases)
+                ? definition.activePhases
+                : [];
+              return !activePhases.length || activePhases.includes(phase);
+            });
           }
-          const phase = this.characterAIPhase();
-          return this.characterAIRuntime.activeCharacters().filter((character) => {
-            const definition = this.characterAIRuntime.characterDefinition?.(character.id);
-            const activePhases = Array.isArray(definition?.activePhases)
-              ? definition.activePhases
-              : [];
-            return !activePhases.length || activePhases.includes(phase);
-          });
+          return runtimeCharacters.concat(packBoarders);
         }
 
         characterAISnapshot() {
@@ -6352,6 +6359,10 @@
         shipObjectiveLabel(objectiveId = this.shipState?.objectiveId) {
           const config = this.interiorConfig || shuttle3dMotherShipInteriorConfig(this.scene);
           const id = String(objectiveId || config.initialObjective || "objective.bay-ops");
+          const packObjective = this.shipState?.packObjective || this.mainShipGameplayPack?.currentObjective || null;
+          if (packObjective && String(packObjective.id || "") === id && String(packObjective.label || "")) {
+            return String(packObjective.label);
+          }
           const objective = config.objectives?.[id];
           if (objective && typeof objective === "object") return String(objective.label || id);
           return String(objective || id);
@@ -6377,7 +6388,8 @@
             interactionKind: interaction?.kind || "",
             interactionHint: this.shipInteractionHint?.(interaction) || "",
             interactionStatus: state.lastInteractionStatus || "",
-            shuttleBayControlActive: this.isShuttleBayPlayerControlActive()
+            shuttleBayControlActive: this.isShuttleBayPlayerControlActive(),
+            mainShipGameplayPack: this.mainShipGameplayPackSnapshot?.() || null
           };
         }
 
@@ -7389,19 +7401,26 @@
           this.pilot.throttle = 0;
           this.pilot.impulse = 0;
           this.combatPauseStartedAtMs = null;
+          const handoffNowMs = Number.isFinite(this.lastFrameTime) ? this.lastFrameTime : performance.now();
           const suppressedBayKeys = new Set(this.movementKeys);
           this.clearMovementKeys();
           this.bayControlSuppressedKeys = suppressedBayKeys;
-          this.bayControlInputUnlockAtMs = (Number.isFinite(this.lastFrameTime) ? this.lastFrameTime : performance.now()) + 650;
+          this.bayControlInputUnlockAtMs = handoffNowMs + 650;
           this.setShipLocation("bay.shuttle", true);
           this.completeOpeningShuttleEncounterAtDestination?.(
-            Number.isFinite(this.lastFrameTime) ? this.lastFrameTime : performance.now(),
+            handoffNowMs,
             {locationId: "bay.shuttle", reason: "shuttle-bay-control-handoff"}
           );
           if (this.shipState?.flags) {
             this.shipState.flags.bayControlActive = true;
             this.shipState.flags.boardersPausedAfterDocking = true;
           }
+          this.mainShipDispatchGameplayPackSectionEvent?.("cutscene-resolved", {
+            sectionId: "main-ship-bay",
+            cutsceneId: "main-ship-bay-entry",
+            locationId: "bay.shuttle",
+            reason: force ? "cutscene-skipped-or-forced" : "cutscene-completed"
+          }, handoffNowMs);
           this.camera = spawn.position.slice();
           this.setLook(spawn.yaw, spawn.pitch);
           if (typeof this.onCameraMoved === "function") this.onCameraMoved(this.camera.slice());
@@ -8913,13 +8932,13 @@
             annotationTargets,
             annotationSource: "scene-viewer.dynamic"
           });
-          const transportGlow = builder.color("#84cc16", true);
-          const alienBody = builder.color("#365314");
-          const alienArmor = builder.color("#1a2e05");
+          const transportGlow = builder.color("#ff2d2d", true);
+          const alienBody = builder.color("#991b1b");
+          const alienArmor = builder.color("#450a0a");
           const alienHit = builder.color("#fef08a", true);
-          const alienEyes = builder.color("#ef4444", true);
+          const alienEyes = builder.color("#fef2f2", true);
           const healthBack = builder.color("#111827");
-          const healthFill = builder.color("#84cc16", true);
+          const healthFill = builder.color("#f87171", true);
           this.syncVelaSubsurfaceScene?.();
           if (this.isVelaSubsurfaceSceneActive?.()) {
             this.appendVelaSubsurfaceCaveGeometry(builder, nowMs);
@@ -9001,9 +9020,488 @@
           return builder.toFloat32Array();
         }
 
+        openingShuttleDefaultEliteWaveConfig() {
+          return {
+            enabled: false,
+            triggerDefeats: 2,
+            requiredExtraHostiles: 0,
+            actorArchetypeId: "actor-archetype.shuttle-raider",
+            source: "none",
+            scenarioId: "",
+            encounterId: "",
+            pluginId: "",
+            packConfigAvailable: false,
+            packConfigured: false,
+            activePluginIds: [],
+            displayName: "",
+            objectiveLabel: "",
+            packLabel: "None — base game",
+            alert: "",
+            healthMultiplier: 1
+          };
+        }
+
+
+        mainShipGameplayPackClone(value) {
+          try {
+            return JSON.parse(JSON.stringify(value === undefined ? null : value));
+          } catch {
+            return null;
+          }
+        }
+
+        createMainShipGameplayPackRuntimeState(nowMs = this.combatClockMs || 0) {
+          return {
+            schema: "game.mainShipGameplayPackRuntime.v1",
+            sectionId: "main-ship-bay",
+            installed: false,
+            installStatus: "none",
+            installedAtMs: null,
+            uninstalledAtMs: Number.isFinite(nowMs) ? nowMs : null,
+            installSource: "",
+            selectedGameplayPackId: "",
+            packId: "",
+            title: "",
+            version: "",
+            setupRun: false,
+            handlersRegistered: false,
+            commandsApplied: 0,
+            lastCommandType: "",
+            lastHudMessage: "",
+            lastError: "",
+            commandLog: [],
+            currentObjective: null,
+            cutsceneResolved: false,
+            cutsceneResolvedAtMs: null,
+            status: "inactive",
+            completion: {
+              completed: false,
+              failed: false,
+              completedAtMs: null,
+              failedAtMs: null,
+              receiptIds: []
+            },
+            boarders: {
+              spawned: false,
+              waveId: "",
+              sourcePackId: "",
+              location: "",
+              requestedCount: 0,
+              spawnedCount: 0,
+              defeatedCount: 0,
+              activeCount: 0,
+              healthMultiplier: 1,
+              displayName: "Main Ship Boarder",
+              hudMessage: "",
+              actors: []
+            }
+          };
+        }
+
+        mainShipGameplayPackRuntimeApi() {
+          return globalThis.MainComputerGameplayPackRuntime || null;
+        }
+
+        mainShipGameplayPackSnapshot() {
+          const runtime = this.mainShipGameplayPack || this.createMainShipGameplayPackRuntimeState();
+          const boarders = Array.isArray(runtime.boarders?.actors) ? runtime.boarders.actors : [];
+          const activeBoarders = boarders.filter((boarder) => (
+            boarder?.status === "active"
+            && Number(boarder.health || 0) > 0
+          ));
+          return {
+            schema: runtime.schema,
+            sectionId: runtime.sectionId,
+            installed: runtime.installed === true,
+            installStatus: String(runtime.installStatus || "none"),
+            installedAtMs: Number.isFinite(runtime.installedAtMs) ? runtime.installedAtMs : null,
+            uninstalledAtMs: Number.isFinite(runtime.uninstalledAtMs) ? runtime.uninstalledAtMs : null,
+            installSource: String(runtime.installSource || ""),
+            selectedGameplayPackId: String(runtime.selectedGameplayPackId || ""),
+            packId: String(runtime.packId || ""),
+            title: String(runtime.title || ""),
+            version: String(runtime.version || ""),
+            setupRun: runtime.setupRun === true,
+            handlersRegistered: runtime.handlersRegistered === true,
+            commandsApplied: Math.max(0, Number(runtime.commandsApplied || 0)),
+            commandApplyCount: Math.max(0, Number(runtime.commandsApplied || 0)),
+            lastCommandType: String(runtime.lastCommandType || ""),
+            lastHudMessage: String(runtime.lastHudMessage || ""),
+            lastError: String(runtime.lastError || ""),
+            currentObjective: runtime.currentObjective ? this.mainShipGameplayPackClone(runtime.currentObjective) : null,
+            cutsceneResolved: runtime.cutsceneResolved === true,
+            cutsceneResolvedAtMs: Number.isFinite(runtime.cutsceneResolvedAtMs) ? runtime.cutsceneResolvedAtMs : null,
+            status: String(runtime.status || "inactive"),
+            completion: this.mainShipGameplayPackClone(runtime.completion || {}) || {},
+            boarders: {
+              spawned: runtime.boarders?.spawned === true,
+              waveId: String(runtime.boarders?.waveId || ""),
+              sourcePackId: String(runtime.boarders?.sourcePackId || runtime.packId || ""),
+              location: String(runtime.boarders?.location || ""),
+              requestedCount: Math.max(0, Number(runtime.boarders?.requestedCount || 0)),
+              spawnedCount: Math.max(0, Number(runtime.boarders?.spawnedCount || boarders.length || 0)),
+              defeatedCount: Math.max(0, Number(runtime.boarders?.defeatedCount || 0)),
+              activeCount: activeBoarders.length,
+              healthMultiplier: Number.isFinite(Number(runtime.boarders?.healthMultiplier))
+                ? Number(runtime.boarders.healthMultiplier)
+                : 1,
+              displayName: String(runtime.boarders?.displayName || "Main Ship Boarder"),
+              hudMessage: String(runtime.boarders?.hudMessage || "")
+            },
+            activeBoarderIds: activeBoarders.map((boarder) => String(boarder.id || "")).filter(Boolean),
+            lastCommands: Array.isArray(runtime.commandLog) ? runtime.commandLog.slice(-8) : []
+          };
+        }
+
+        mainShipRememberGameplayPackCommand(command, applied, nowMs = this.combatClockMs) {
+          const runtime = this.mainShipGameplayPack || this.createMainShipGameplayPackRuntimeState(nowMs);
+          this.mainShipGameplayPack = runtime;
+          runtime.commandLog = Array.isArray(runtime.commandLog) ? runtime.commandLog : [];
+          const record = {
+            type: String(command?.type || ""),
+            sectionId: String(command?.sectionId || ""),
+            applied: applied === true,
+            atMs: Number.isFinite(nowMs) ? nowMs : null
+          };
+          runtime.lastCommandType = record.type;
+          runtime.commandsApplied = Math.max(0, Number(runtime.commandsApplied || 0)) + (record.applied ? 1 : 0);
+          runtime.commandLog.push(record);
+          if (runtime.commandLog.length > 16) runtime.commandLog.splice(0, runtime.commandLog.length - 16);
+          return record;
+        }
+
+        mainShipInstallGameplayPackCommandHarness(harness, nowMs = this.combatClockMs, options = {}) {
+          const rawHarness = harness && typeof harness === "object" ? harness : null;
+          if (!rawHarness) return null;
+          this.mainShipGameplayPackHarness = rawHarness;
+          const rawOptions = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+          const previous = this.mainShipGameplayPack || this.createMainShipGameplayPackRuntimeState(nowMs);
+          this.mainShipGameplayPack = {
+            ...this.createMainShipGameplayPackRuntimeState(nowMs),
+            installed: true,
+            installStatus: "installed",
+            installedAtMs: Number.isFinite(nowMs) ? nowMs : null,
+            uninstalledAtMs: null,
+            installSource: String(rawOptions.source || rawOptions.installSource || "scene-viewer.main-ship-js-pack"),
+            selectedGameplayPackId: String(rawOptions.selectedGameplayPackId || rawHarness.packId || ""),
+            packId: String(rawHarness.packId || ""),
+            title: String(rawHarness.title || ""),
+            version: String(rawHarness.version || ""),
+            setupRun: rawHarness.setupRun === true,
+            handlersRegistered: rawHarness.handlersRegistered === true,
+            commandsApplied: Math.max(0, Number(previous.commandsApplied || 0)),
+            commandLog: Array.isArray(previous.commandLog) ? previous.commandLog.slice(-8) : [],
+            status: "armed"
+          };
+          if (this.isShuttleBayPlayerControlActive?.()) {
+            this.mainShipDispatchGameplayPackSectionEvent("cutscene-resolved", {
+              cutsceneId: "main-ship-bay-entry",
+              reason: "gameplay-pack-installed-after-bay-entry",
+              locationId: this.shipState?.location || "bay.shuttle"
+            }, nowMs);
+          }
+          this.emitShipState?.(true);
+          this.emitCombatState?.(true);
+          this.emitCharacterAIState?.(true);
+          return this.mainShipGameplayPackSnapshot();
+        }
+
+        mainShipInstallGameplayPackSource(source, options = {}, nowMs = this.combatClockMs) {
+          const api = this.mainShipGameplayPackRuntimeApi();
+          if (!api || typeof api.loadGameplayPackCommandHarnessFromSource !== "function") return null;
+          const harness = api.loadGameplayPackCommandHarnessFromSource(String(source || ""), {
+            targetSectionId: "main-ship-bay",
+            ...(
+              options && typeof options === "object" && !Array.isArray(options)
+                ? options
+                : {}
+            )
+          });
+          return this.mainShipInstallGameplayPackCommandHarness(harness, nowMs, options);
+        }
+
+        mainShipClearGameplayPackCommandHarness(options = {}, nowMs = this.combatClockMs) {
+          const rawOptions = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+          this.mainShipGameplayPackHarness = null;
+          const previous = this.mainShipGameplayPack || this.createMainShipGameplayPackRuntimeState(nowMs);
+          this.mainShipGameplayPack = {
+            ...this.createMainShipGameplayPackRuntimeState(nowMs),
+            installed: false,
+            installStatus: "none",
+            installedAtMs: previous.installedAtMs || null,
+            uninstalledAtMs: Number.isFinite(nowMs) ? nowMs : null,
+            installSource: String(rawOptions.source || "scene-viewer.main-ship-js-pack"),
+            commandsApplied: Math.max(0, Number(previous.commandsApplied || 0)),
+            commandLog: Array.isArray(previous.commandLog) ? previous.commandLog.slice(-8) : []
+          };
+          if (this.shipState?.packObjective) delete this.shipState.packObjective;
+          this.emitShipState?.(true);
+          this.emitCombatState?.(true);
+          this.emitCharacterAIState?.(true);
+          return this.mainShipGameplayPackSnapshot();
+        }
+
+        mainShipApplyGameplayPackCommand(command, nowMs = this.combatClockMs) {
+          const rawCommand = command && typeof command === "object" ? command : {};
+          const type = String(rawCommand.type || "");
+          const payload = rawCommand.payload && typeof rawCommand.payload === "object" ? rawCommand.payload : {};
+          const runtime = this.mainShipGameplayPack || this.createMainShipGameplayPackRuntimeState(nowMs);
+          this.mainShipGameplayPack = runtime;
+          runtime.installed = true;
+          runtime.installStatus = runtime.installStatus || "installed";
+          runtime.packId = String(runtime.packId || rawCommand.sourcePackId || "");
+          runtime.sectionId = String(rawCommand.sectionId || runtime.sectionId || "main-ship-bay");
+
+          let applied = false;
+          if (type === "show-hud-message") {
+            const message = String(payload.message || "");
+            if (message) {
+              runtime.lastHudMessage = message;
+              this.setShipInteractionStatus?.(message);
+              applied = true;
+            }
+          } else if (type === "set-objective") {
+            const objective = {
+              id: String(payload.id || ""),
+              label: String(payload.label || ""),
+              required: payload.required !== false,
+              status: String(payload.status || "active")
+            };
+            if (objective.id || objective.label) {
+              runtime.currentObjective = objective;
+              runtime.status = objective.status === "complete" ? "completed" : "active";
+              if (!this.shipState) this.shipState = this.createShipState?.();
+              if (this.shipState) {
+                this.shipState.objectiveId = objective.id || this.shipState.objectiveId;
+                this.shipState.packObjective = objective;
+              }
+              this.emitShipState?.(true);
+              applied = true;
+            }
+          } else if (type === "spawn-wave") {
+            applied = this.mainShipSpawnGameplayPackBoarderWave(payload, rawCommand, nowMs);
+          } else if (type === "complete-section") {
+            const receipt = String(payload.receipt || payload.receiptId || "");
+            runtime.status = "completed";
+            runtime.completion = runtime.completion || {};
+            runtime.completion.completed = true;
+            runtime.completion.failed = false;
+            runtime.completion.completedAtMs = Number.isFinite(nowMs) ? nowMs : runtime.completion.completedAtMs || null;
+            runtime.completion.receiptIds = Array.isArray(runtime.completion.receiptIds) ? runtime.completion.receiptIds : [];
+            if (receipt && !runtime.completion.receiptIds.includes(receipt)) runtime.completion.receiptIds.push(receipt);
+            if (payload.message) {
+              runtime.lastHudMessage = String(payload.message);
+              this.setShipInteractionStatus?.(String(payload.message));
+            }
+            applied = true;
+          } else if (type === "fail-section") {
+            runtime.status = "failed";
+            runtime.completion = runtime.completion || {};
+            runtime.completion.failed = true;
+            runtime.completion.failedAtMs = Number.isFinite(nowMs) ? nowMs : runtime.completion.failedAtMs || null;
+            if (payload.message) {
+              runtime.lastHudMessage = String(payload.message);
+              this.setShipInteractionStatus?.(String(payload.message));
+            }
+            applied = true;
+          }
+
+          this.mainShipRememberGameplayPackCommand(rawCommand, applied, nowMs);
+          if (applied) {
+            this.emitShipState?.(true);
+            this.emitCombatState?.(true);
+            this.emitCharacterAIState?.(true);
+          }
+          return applied;
+        }
+
+        mainShipApplyGameplayPackCommands(commands, nowMs = this.combatClockMs) {
+          return (Array.isArray(commands) ? commands : []).map((command) => ({
+            type: String(command?.type || ""),
+            applied: this.mainShipApplyGameplayPackCommand(command, nowMs)
+          }));
+        }
+
+        mainShipDispatchGameplayPackSectionEvent(type, detail = {}, nowMs = this.combatClockMs) {
+          const harness = this.mainShipGameplayPackHarness;
+          const api = this.mainShipGameplayPackRuntimeApi();
+          if (!harness || !api || typeof api.dispatchGameplayPackSectionEvent !== "function") return [];
+          const sectionId = String(detail?.sectionId || "main-ship-bay");
+          const eventType = String(type || "");
+          const runtime = this.mainShipGameplayPack || this.createMainShipGameplayPackRuntimeState(nowMs);
+          this.mainShipGameplayPack = runtime;
+          if (eventType === "cutscene-resolved") {
+            const cutsceneId = String(detail?.cutsceneId || detail?.cutscene || detail?.id || "");
+            if (runtime.cutsceneResolved === true && cutsceneId === "main-ship-bay-entry") return [];
+            if (cutsceneId === "main-ship-bay-entry") {
+              runtime.cutsceneResolved = true;
+              runtime.cutsceneResolvedAtMs = Number.isFinite(nowMs) ? nowMs : null;
+            }
+          }
+          const event = {
+            ...(detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {}),
+            type: eventType
+          };
+          const commands = api.dispatchGameplayPackSectionEvent(harness, sectionId, event);
+          return this.mainShipApplyGameplayPackCommands(commands, nowMs);
+        }
+
+        mainShipGameplayPackBoarderPositions(location = "bay.shuttle", count = 3) {
+          const camera = Array.isArray(this.camera) ? this.camera : [0, 0.9, 0];
+          const baseY = -0.55;
+          const locationId = String(location || "bay.shuttle");
+          const slots = locationId === "bay.ops"
+            ? [[2.7, baseY, -6.6], [3.5, baseY, -7.8], [1.8, baseY, -7.7], [2.8, baseY, -8.8]]
+            : [[-1.8, baseY, -2.6], [0.25, baseY, -3.55], [2.1, baseY, -2.8], [-0.9, baseY, -4.65], [1.35, baseY, -4.8]];
+          if (locationId !== "bay.shuttle" && locationId !== "bay.ops") {
+            return Array.from({length: Math.max(0, count)}, (_, index) => [
+              camera[0] + ((index % 3) - 1) * 1.7,
+              baseY,
+              camera[2] - 4.2 - Math.floor(index / 3) * 1.5
+            ]);
+          }
+          return slots.slice(0, Math.max(0, count)).map((position) => position.slice());
+        }
+
+        mainShipSpawnGameplayPackBoarderWave(payload = {}, command = {}, nowMs = this.combatClockMs) {
+          const runtime = this.mainShipGameplayPack || this.createMainShipGameplayPackRuntimeState(nowMs);
+          this.mainShipGameplayPack = runtime;
+          runtime.boarders = runtime.boarders || {};
+          if (runtime.boarders.spawned === true) return false;
+          const actors = Array.isArray(payload.actors) ? payload.actors : [];
+          const actor = actors[0] && typeof actors[0] === "object" ? actors[0] : {};
+          const count = Math.max(1, Math.min(8, Number(actor.count || payload.count || 1)));
+          const multiplier = Math.max(0.25, Math.min(8, Number(actor.healthMultiplier || 1)));
+          const displayName = String(actor.displayName || "Main Ship Boarder");
+          const maxHealth = Math.ceil(72 * multiplier);
+          const positions = this.mainShipGameplayPackBoarderPositions(payload.location || "bay.shuttle", count);
+          const waveId = String(payload.id || payload.waveId || "main-ship-bay-boarders");
+          runtime.boarders.spawned = true;
+          runtime.boarders.waveId = waveId;
+          runtime.boarders.sourcePackId = String(command.sourcePackId || runtime.packId || "");
+          runtime.boarders.location = String(payload.location || "bay.shuttle");
+          runtime.boarders.requestedCount = count;
+          runtime.boarders.spawnedCount = count;
+          runtime.boarders.defeatedCount = 0;
+          runtime.boarders.activeCount = count;
+          runtime.boarders.healthMultiplier = multiplier;
+          runtime.boarders.displayName = displayName;
+          runtime.boarders.hudMessage = String(payload.hudMessage || "");
+          runtime.boarders.actors = positions.map((position, index) => ({
+            id: `${waveId}-${index + 1}`,
+            label: count === 1 ? displayName : `${displayName} ${index + 1}`,
+            kind: "enemy",
+            faction: "faction.raider",
+            status: "active",
+            health: maxHealth,
+            maxHealth,
+            position: position.slice(),
+            spawnPosition: position.slice(),
+            currentActionId: "move_to_player",
+            currentTargetId: "player",
+            nextAttackAtMs: nowMs + 1200 + (index * 180),
+            hitFlashUntilMs: 0,
+            sourceGameplayPackId: String(command.sourcePackId || runtime.packId || ""),
+            sourceSectionId: String(command.sectionId || runtime.sectionId || "main-ship-bay"),
+            gameplayPackBoarder: true
+          }));
+          runtime.status = "active";
+          if (runtime.boarders.hudMessage) {
+            runtime.lastHudMessage = runtime.boarders.hudMessage;
+            this.setShipInteractionStatus?.(runtime.boarders.hudMessage);
+          }
+          if (this.shipState?.flags) this.shipState.flags.boardersPausedAfterDocking = false;
+          return true;
+        }
+
+        mainShipVisibleGameplayPackBoarders() {
+          const actors = Array.isArray(this.mainShipGameplayPack?.boarders?.actors)
+            ? this.mainShipGameplayPack.boarders.actors
+            : [];
+          return actors
+            .filter((boarder) => boarder?.status === "active" && Number(boarder.health || 0) > 0)
+            .map((boarder) => ({
+              ...boarder,
+              position: Array.isArray(boarder.position) ? boarder.position.slice() : [0, -0.55, 0],
+              spawnPosition: Array.isArray(boarder.spawnPosition) ? boarder.spawnPosition.slice() : [0, -0.55, 0]
+            }));
+        }
+
+        mainShipGameplayPackActiveBoarderCount() {
+          return this.mainShipVisibleGameplayPackBoarders().length;
+        }
+
+        updateMainShipGameplayPackBoarders(nowMs = this.combatClockMs, deltaSeconds = 0) {
+          if (this.characterAIPhase?.() !== "mother-ship") return false;
+          const runtime = this.mainShipGameplayPack;
+          const actors = Array.isArray(runtime?.boarders?.actors) ? runtime.boarders.actors : [];
+          if (!actors.length) return false;
+          let changed = false;
+          actors.forEach((boarder) => {
+            if (!boarder || boarder.status !== "active" || Number(boarder.health || 0) <= 0) return;
+            const dx = this.camera[0] - boarder.position[0];
+            const dz = this.camera[2] - boarder.position[2];
+            const distance = Math.hypot(dx, dz);
+            if (distance > 1.35) {
+              const step = Math.min(distance, 1.15 * Math.min(0.08, Math.max(0, Number(deltaSeconds) || 0)));
+              const moveX = distance > 0 ? dx / distance * step : 0;
+              const moveZ = distance > 0 ? dz / distance * step : 0;
+              boarder.position[0] += moveX;
+              boarder.position[2] += moveZ;
+              boarder.currentActionId = "move_to_player";
+              changed = true;
+            } else if (nowMs >= Number(boarder.nextAttackAtMs || 0)) {
+              boarder.nextAttackAtMs = nowMs + 1000;
+              boarder.currentActionId = "attack_player";
+              const previousHealth = this.playerHealth;
+              this.playerHealth = Math.max(0, this.playerHealth - 8);
+              runtime.lastHudMessage = `${boarder.label || "Main Ship Boarder"} hit you (-${previousHealth - this.playerHealth}).`;
+              this.setShipInteractionStatus?.(runtime.lastHudMessage);
+              changed = true;
+            }
+          });
+          const activeCount = actors.filter((boarder) => boarder?.status === "active" && Number(boarder.health || 0) > 0).length;
+          runtime.boarders.activeCount = activeCount;
+          if (this.playerHealth <= 0 && runtime.completion?.failed !== true) {
+            this.gameOver = true;
+            this.mainShipDispatchGameplayPackSectionEvent("player-defeated", {
+              sectionId: runtime.sectionId || "main-ship-bay",
+              health: this.playerHealth
+            }, nowMs);
+            changed = true;
+          }
+          return changed;
+        }
+
+        damageMainShipGameplayPackBoarder(boarderId, amount = 0, nowMs = this.combatClockMs) {
+          const runtime = this.mainShipGameplayPack;
+          const actors = Array.isArray(runtime?.boarders?.actors) ? runtime.boarders.actors : [];
+          const boarder = actors.find((candidate) => String(candidate?.id || "") === String(boarderId || ""));
+          if (!boarder || boarder.status !== "active" || Number(boarder.health || 0) <= 0) return false;
+          boarder.health = Math.max(0, Number(boarder.health || 0) - Math.max(0, Number(amount) || 0));
+          boarder.hitFlashUntilMs = nowMs + 120;
+          if (boarder.health <= 0) {
+            boarder.status = "down";
+            boarder.currentActionId = "down";
+            runtime.boarders.defeatedCount = Math.max(0, Number(runtime.boarders.defeatedCount || 0)) + 1;
+            runtime.boarders.activeCount = this.mainShipGameplayPackActiveBoarderCount();
+            this.kills = Math.max(0, Number(this.kills || 0)) + 1;
+            if (runtime.boarders.activeCount <= 0 && runtime.completion?.completed !== true) {
+              this.mainShipDispatchGameplayPackSectionEvent("all-hostiles-defeated", {
+                sectionId: runtime.sectionId || "main-ship-bay",
+                defeated: runtime.boarders.defeatedCount
+              }, nowMs);
+            }
+          }
+          this.emitCharacterAIState?.(true);
+          this.emitCombatState?.(true);
+          this.emitShipState?.(true);
+          return true;
+        }
+
+
         createOpeningShuttleEncounterRuntimeState(nowMs = 0) {
-          const packConfig = this.openingShuttleActiveGameplayPackConfig?.() || null;
-          const eliteWaveConfig = this.openingShuttleEliteWaveConfigFromGameplayPack?.(packConfig) || {
+          const eliteWaveConfig = this.openingShuttleDefaultEliteWaveConfig?.() || {
             enabled: false,
             triggerDefeats: 2,
             requiredExtraHostiles: 0,
@@ -9063,6 +9561,20 @@
               alert: eliteWaveConfig.alert,
               healthMultiplier: eliteWaveConfig.healthMultiplier
             },
+            jsGameplayPack: {
+              installed: false,
+              packId: "",
+              title: "",
+              version: "",
+              encounterId: "opening-shuttle-ambush",
+              setupRun: false,
+              handlersRegistered: false,
+              commandsApplied: 0,
+              lastCommandType: "",
+              lastHudMessage: "",
+              currentObjective: null,
+              commandLog: []
+            },
             receipts: [],
             events: [],
             completion: {
@@ -9087,64 +9599,276 @@
           };
         }
 
-        openingShuttleActiveGameplayPackConfig() {
-          const scenarioRuntime = globalThis.MainComputerSystemScenarioRuntime?.current?.();
-          if (
-            !scenarioRuntime
-            || typeof scenarioRuntime.openingShuttleGameplayPackConfig !== "function"
-          ) {
-            return null;
-          }
-          const config = scenarioRuntime.openingShuttleGameplayPackConfig({
-            baseHostileCount: 2,
-            systemId: "system.solace-reach",
-            destinationId: "destination.solace-reach.haven-orbit",
-            source: "scene-viewer.openingShuttleEncounter"
-          });
-          if (!config || typeof config !== "object") return null;
-          return config;
+        openingShuttleGameplayPackRuntimeApi() {
+          return globalThis.MainComputerGameplayPackRuntime || null;
         }
 
-        openingShuttleEliteWaveConfigFromGameplayPack(packConfig = null) {
-          const config = packConfig && typeof packConfig === "object" ? packConfig : {};
-          const eliteWave = config.eliteWave && typeof config.eliteWave === "object"
-            ? config.eliteWave
-            : {};
-          const enabled = config.available === true
-            && eliteWave.enabled === true
-            && Number(eliteWave.count || config.extraHostileCount || 0) > 0;
-          const triggerDefeats = Number.isFinite(Number(eliteWave.triggerDefeats))
-            ? Math.max(0, Number(eliteWave.triggerDefeats))
-            : 2;
-          const requiredExtraHostiles = enabled
-            ? Math.max(1, Math.floor(Number(eliteWave.count || config.extraHostileCount || 1)))
-            : 0;
-          const displayName = enabled ? String(eliteWave.displayName || "Elite Boarding Leader") : "";
-          const packLabel = enabled
-            ? String(config.packLabel || config.scenarioTitle || config.pluginId || "Opening Shuttle Ambush Elite Wave")
-            : "None — base game";
-          return {
-            enabled,
-            triggerDefeats,
-            requiredExtraHostiles,
-            actorArchetypeId: String(eliteWave.actorArchetypeId || "actor-archetype.shuttle-raider"),
-            source: String(eliteWave.source || config.pluginId || "none"),
-            scenarioId: String(eliteWave.scenarioId || config.scenarioId || ""),
-            encounterId: String(eliteWave.encounterId || config.encounterId || ""),
-            pluginId: String(config.pluginId || eliteWave.source || ""),
-            packConfigAvailable: config.available === true,
-            packConfigured: enabled,
-            activePluginIds: Array.isArray(config.activePluginIds)
-              ? config.activePluginIds.map((pluginId) => String(pluginId || "")).filter(Boolean)
-              : [],
-            displayName,
-            objectiveLabel: enabled ? String(eliteWave.objectiveLabel || `Defeat the ${displayName.toLowerCase()}`) : "",
-            packLabel,
-            alert: enabled ? String(eliteWave.alert || `${packLabel}: ${displayName} inbound — 3x hostile health confirmed`) : "",
-            healthMultiplier: enabled && Number.isFinite(Number(eliteWave.healthMultiplier || config.hostileHealthMultiplier))
-              ? Math.max(1, Math.min(6, Number(eliteWave.healthMultiplier || config.hostileHealthMultiplier)))
-              : (enabled ? 3 : 1)
+        openingShuttleInstallGameplayPackCommandHarness(harness, nowMs = this.combatClockMs, options = {}) {
+          const rawHarness = harness && typeof harness === "object" ? harness : null;
+          if (!rawHarness) return null;
+          const rawOptions = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+          this.openingShuttleGameplayPackHarness = rawHarness;
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          runtime.jsGameplayPack = {
+            ...(runtime.jsGameplayPack || {}),
+            installed: true,
+            installStatus: "installed",
+            installedAtMs: Number.isFinite(nowMs) ? nowMs : null,
+            uninstalledAtMs: null,
+            installSource: String(rawOptions.source || rawOptions.installSource || "scene-viewer.opening-shuttle-js-pack"),
+            selectedGameplayPackId: String(rawOptions.selectedGameplayPackId || rawHarness.packId || ""),
+            packId: String(rawHarness.packId || ""),
+            title: String(rawHarness.title || ""),
+            version: String(rawHarness.version || ""),
+            encounterId: "opening-shuttle-ambush",
+            setupRun: rawHarness.setupRun === true,
+            handlersRegistered: rawHarness.handlersRegistered === true,
+            commandsApplied: Math.max(0, Number(runtime.jsGameplayPack?.commandsApplied || 0)),
+            lastCommandType: String(runtime.jsGameplayPack?.lastCommandType || ""),
+            lastHudMessage: String(runtime.jsGameplayPack?.lastHudMessage || ""),
+            lastError: "",
+            currentObjective: runtime.jsGameplayPack?.currentObjective || null,
+            commandLog: Array.isArray(runtime.jsGameplayPack?.commandLog)
+              ? runtime.jsGameplayPack.commandLog.slice(-12)
+              : []
           };
+          this.openingShuttleDispatchGameplayPackEncounterEvent("start", {
+            reason: "gameplay-pack-installed"
+          }, nowMs);
+          this.publishOpeningShuttleEncounterBridge?.(this.openingShuttleEncounterSnapshot(), nowMs);
+          this.emitCombatState?.(true);
+          return this.openingShuttleEncounterSnapshot();
+        }
+
+        openingShuttleInstallGameplayPackSource(source, options = {}, nowMs = this.combatClockMs) {
+          const api = this.openingShuttleGameplayPackRuntimeApi();
+          if (!api || typeof api.loadGameplayPackCommandHarnessFromSource !== "function") return null;
+          const harness = api.loadGameplayPackCommandHarnessFromSource(String(source || ""), {
+            targetEncounterId: "opening-shuttle-ambush",
+            ...(
+              options && typeof options === "object" && !Array.isArray(options)
+                ? options
+                : {}
+            )
+          });
+          return this.openingShuttleInstallGameplayPackCommandHarness(harness, nowMs, options);
+        }
+
+        openingShuttleClearGameplayPackCommandHarness(options = {}, nowMs = this.combatClockMs) {
+          const rawOptions = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+          this.openingShuttleGameplayPackHarness = null;
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          const previous = runtime.jsGameplayPack || {};
+          runtime.jsGameplayPack = {
+            installed: false,
+            installStatus: "none",
+            installedAtMs: previous.installedAtMs || null,
+            uninstalledAtMs: Number.isFinite(nowMs) ? nowMs : null,
+            installSource: String(rawOptions.source || "scene-viewer.opening-shuttle-js-pack"),
+            selectedGameplayPackId: "",
+            packId: "",
+            title: "",
+            version: "",
+            encounterId: "opening-shuttle-ambush",
+            setupRun: false,
+            handlersRegistered: false,
+            commandsApplied: Math.max(0, Number(previous.commandsApplied || 0)),
+            lastCommandType: String(previous.lastCommandType || ""),
+            lastHudMessage: "",
+            lastError: "",
+            currentObjective: null,
+            commandLog: Array.isArray(previous.commandLog) ? previous.commandLog.slice(-12) : []
+          };
+          runtime.eliteWave.enabled = false;
+          runtime.eliteWave.requested = false;
+          runtime.eliteWave.spawned = false;
+          runtime.eliteWave.cleared = false;
+          runtime.eliteWave.requiredExtraHostiles = 0;
+          runtime.eliteWave.spawnedCount = 0;
+          runtime.eliteWave.packConfigured = false;
+          runtime.eliteWave.packConfigAvailable = false;
+          runtime.eliteWave.activePluginIds = [];
+          runtime.eliteWave.pluginId = "";
+          runtime.eliteWave.source = "";
+          runtime.eliteWave.displayName = "Elite Boarding Leader";
+          runtime.eliteWave.objectiveLabel = "Defeat the Elite Boarding Leader";
+          runtime.eliteWave.packLabel = "";
+          runtime.eliteWave.alert = "";
+          runtime.eliteWave.healthMultiplier = 1;
+          runtime.execution.additionalSpawnRequested = false;
+          this.publishOpeningShuttleEncounterBridge?.(this.openingShuttleEncounterSnapshot(), nowMs);
+          this.emitCombatState?.(true);
+          return this.openingShuttleEncounterSnapshot();
+        }
+
+        openingShuttleNormalizePackActorArchetypeId(value) {
+          const id = String(value || "").trim();
+          if (!id) return "actor-archetype.shuttle-raider";
+          if (id === "shuttle-raider") return "actor-archetype.shuttle-raider";
+          return id;
+        }
+
+        openingShuttleRememberGameplayPackCommand(command, applied, nowMs = this.combatClockMs) {
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          const jsPack = runtime.jsGameplayPack || {
+            installed: false,
+            commandLog: []
+          };
+          runtime.jsGameplayPack = jsPack;
+          const record = {
+            type: String(command?.type || ""),
+            applied: applied === true,
+            atMs: Number.isFinite(nowMs) ? nowMs : null
+          };
+          jsPack.lastCommandType = record.type;
+          jsPack.commandsApplied = Math.max(0, Number(jsPack.commandsApplied || 0)) + (record.applied ? 1 : 0);
+          jsPack.commandLog = Array.isArray(jsPack.commandLog) ? jsPack.commandLog : [];
+          jsPack.commandLog.push(record);
+          if (jsPack.commandLog.length > 12) jsPack.commandLog.splice(0, jsPack.commandLog.length - 12);
+          return record;
+        }
+
+        openingShuttleApplyGameplayPackCommand(command, nowMs = this.combatClockMs) {
+          const rawCommand = command && typeof command === "object" ? command : {};
+          const type = String(rawCommand.type || "");
+          const payload = rawCommand.payload && typeof rawCommand.payload === "object" ? rawCommand.payload : {};
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          runtime.jsGameplayPack = {
+            ...(runtime.jsGameplayPack || {}),
+            installed: true,
+            installStatus: String(runtime.jsGameplayPack?.installStatus || "installed"),
+            packId: String(runtime.jsGameplayPack?.packId || rawCommand.sourcePackId || ""),
+            title: String(runtime.jsGameplayPack?.title || ""),
+            encounterId: "opening-shuttle-ambush",
+            commandLog: Array.isArray(runtime.jsGameplayPack?.commandLog)
+              ? runtime.jsGameplayPack.commandLog
+              : []
+          };
+
+          let applied = false;
+          if (type === "set-hostile-health-multiplier") {
+            const multiplier = Math.max(1, Math.min(6, Number(payload.multiplier || 1)));
+            runtime.eliteWave.packConfigured = true;
+            runtime.eliteWave.packConfigAvailable = true;
+            runtime.eliteWave.healthMultiplier = Number.isFinite(multiplier) ? multiplier : 1;
+            runtime.eliteWave.source = String(rawCommand.sourcePackId || runtime.jsGameplayPack.packId || "gameplay-pack-js");
+            runtime.eliteWave.pluginId = String(rawCommand.sourcePackId || runtime.jsGameplayPack.packId || "");
+            runtime.eliteWave.activePluginIds = runtime.eliteWave.pluginId ? [runtime.eliteWave.pluginId] : [];
+            runtime.eliteWave.packLabel = String(runtime.jsGameplayPack.title || runtime.eliteWave.packLabel || "Opening Shuttle: Elite Boarders");
+            applied = true;
+          } else if (type === "show-hud-message") {
+            const message = String(payload.message || "");
+            if (message) {
+              runtime.lastMessage = message;
+              runtime.jsGameplayPack.lastHudMessage = message;
+            }
+            applied = Boolean(message);
+          } else if (type === "set-objective") {
+            const objective = payload && typeof payload === "object" ? {
+              id: String(payload.id || ""),
+              label: String(payload.label || ""),
+              required: payload.required !== false
+            } : null;
+            if (objective && (objective.id || objective.label)) {
+              runtime.jsGameplayPack.currentObjective = objective;
+              if (/defeat|leader|hostile|raider/i.test(objective.label || objective.id)) {
+                runtime.eliteWave.objectiveLabel = objective.label || runtime.eliteWave.objectiveLabel;
+              }
+              applied = true;
+            }
+          } else if (type === "spawn-wave") {
+            const actors = Array.isArray(payload.actors) ? payload.actors : [];
+            const actor = actors[0] && typeof actors[0] === "object" ? actors[0] : {};
+            const count = Math.max(1, Math.min(8, Number(actor.count || 1)));
+            const displayName = String(actor.displayName || "Elite Boarding Leader");
+            const multiplier = Math.max(1, Math.min(6, Number(actor.healthMultiplier || runtime.eliteWave.healthMultiplier || 1)));
+            runtime.eliteWave.enabled = true;
+            runtime.eliteWave.requested = true;
+            runtime.eliteWave.requiredExtraHostiles = count;
+            runtime.eliteWave.triggerDefeats = Math.max(0, Number(payload.trigger?.count || runtime.eliteWave.triggerDefeats || 2));
+            runtime.eliteWave.actorArchetypeId = this.openingShuttleNormalizePackActorArchetypeId(actor.archetype || actor.actorArchetypeId);
+            runtime.eliteWave.displayName = displayName;
+            runtime.eliteWave.objectiveLabel = runtime.eliteWave.objectiveLabel || `Defeat the ${displayName}`;
+            runtime.eliteWave.alert = String(payload.hudMessage || `${displayName} inbound.`);
+            runtime.eliteWave.healthMultiplier = Number.isFinite(multiplier) ? multiplier : runtime.eliteWave.healthMultiplier;
+            runtime.eliteWave.source = String(rawCommand.sourcePackId || runtime.jsGameplayPack.packId || "gameplay-pack-js");
+            runtime.eliteWave.pluginId = String(rawCommand.sourcePackId || runtime.jsGameplayPack.packId || "");
+            runtime.eliteWave.scenarioId = String(runtime.eliteWave.scenarioId || "pack-js.opening-shuttle");
+            runtime.eliteWave.encounterId = String(runtime.eliteWave.encounterId || "opening-shuttle-ambush");
+            runtime.eliteWave.packLabel = String(runtime.jsGameplayPack.title || runtime.eliteWave.packLabel || "Opening Shuttle: Elite Boarders");
+            runtime.eliteWave.packConfigured = true;
+            runtime.eliteWave.packConfigAvailable = true;
+            runtime.execution.additionalSpawnRequested = true;
+            if (!runtime.eliteWave.spawned) {
+              applied = this.spawnOpeningShuttleEliteRaider(nowMs) === true;
+            } else {
+              applied = false;
+            }
+          } else if (type === "complete-encounter") {
+            const receipt = String(payload.receipt || payload.receiptId || "");
+            if (receipt) {
+              this.awardOpeningShuttleEncounterReceipt(receipt, nowMs, {
+                sourcePackId: String(rawCommand.sourcePackId || runtime.jsGameplayPack.packId || "")
+              });
+            }
+            runtime.status = "completed";
+            runtime.completion = runtime.completion || {
+              destinationReached: false,
+              completed: false,
+              failed: false,
+              completedAtMs: null,
+              failedAtMs: null,
+              receiptIds: []
+            };
+            runtime.completion.completed = true;
+            runtime.completion.completedAtMs = Number.isFinite(nowMs) ? nowMs : runtime.completion.completedAtMs;
+            if (payload.message) runtime.lastMessage = String(payload.message);
+            applied = true;
+          } else if (type === "fail-encounter") {
+            runtime.status = "failed";
+            runtime.completion = runtime.completion || {
+              destinationReached: false,
+              completed: false,
+              failed: false,
+              completedAtMs: null,
+              failedAtMs: null,
+              receiptIds: []
+            };
+            runtime.completion.failed = true;
+            runtime.completion.failedAtMs = Number.isFinite(nowMs) ? nowMs : runtime.completion.failedAtMs;
+            if (payload.message) runtime.lastMessage = String(payload.message);
+            applied = true;
+          }
+
+          this.openingShuttleRememberGameplayPackCommand(rawCommand, applied, nowMs);
+          return applied;
+        }
+
+        openingShuttleApplyGameplayPackCommands(commands, nowMs = this.combatClockMs) {
+          return (Array.isArray(commands) ? commands : []).map((command) => ({
+            type: String(command?.type || ""),
+            applied: this.openingShuttleApplyGameplayPackCommand(command, nowMs)
+          }));
+        }
+
+        openingShuttleDispatchGameplayPackEncounterEvent(type, detail = {}, nowMs = this.combatClockMs) {
+          const harness = this.openingShuttleGameplayPackHarness;
+          const api = this.openingShuttleGameplayPackRuntimeApi();
+          if (!harness || !api || typeof api.dispatchGameplayPackEncounterEvent !== "function") return [];
+          const event = {
+            ...(detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {}),
+            type: String(type || "")
+          };
+          const commands = api.dispatchGameplayPackEncounterEvent(
+            harness,
+            "opening-shuttle-ambush",
+            event
+          );
+          return this.openingShuttleApplyGameplayPackCommands(commands, nowMs);
         }
 
         openingShuttleHostileHealthMultiplier(runtime = this.openingShuttleEncounter || null) {
@@ -9284,8 +10008,16 @@
 
         openingShuttleEncounterPackLine(runtime = this.openingShuttleEncounter || null) {
           const eliteWave = runtime?.eliteWave || {};
-          if (eliteWave.enabled !== true) return "Gameplay Pack: None — base game";
-          const packLabel = String(eliteWave.packLabel || "Opening Shuttle Ambush Elite Wave");
+          const jsPack = runtime?.jsGameplayPack || {};
+          if (eliteWave.enabled !== true) {
+            if (jsPack.installed === true || eliteWave.packConfigured === true) {
+              const title = String(jsPack.title || eliteWave.packLabel || "Opening Shuttle: Elite Boarders");
+              const healthMultiplier = this.openingShuttleHostileHealthMultiplier(runtime);
+              return `Gameplay Pack: ${title} • ${healthMultiplier}x hostile health`;
+            }
+            return "Gameplay Pack: None — base game";
+          }
+          const packLabel = String(eliteWave.packLabel || jsPack.title || "Opening Shuttle Ambush Elite Wave");
           const displayName = String(eliteWave.displayName || "Elite Boarding Leader");
           const count = Math.max(0, Number(eliteWave.requiredExtraHostiles || 0));
           const healthMultiplier = this.openingShuttleHostileHealthMultiplier(runtime);
@@ -9315,6 +10047,16 @@
             packLine: this.openingShuttleEncounterPackLine(runtime),
             counters: {...runtime.counters},
             eliteWave: {...runtime.eliteWave},
+            jsGameplayPack: {
+              ...(runtime.jsGameplayPack || {}),
+              commandApplyCount: Math.max(0, Number(runtime.jsGameplayPack?.commandsApplied || 0)),
+              lastCommands: Array.isArray(runtime.jsGameplayPack?.commandLog)
+                ? runtime.jsGameplayPack.commandLog.slice(-5)
+                : [],
+              commandLog: Array.isArray(runtime.jsGameplayPack?.commandLog)
+                ? runtime.jsGameplayPack.commandLog.slice()
+                : []
+            },
             receipts: runtime.receipts.map((receipt) => ({...receipt})),
             receiptIds: runtime.receipts.map((receipt) => receipt.id),
             events: runtime.events.slice(-8).map((event) => ({...event})),
@@ -9401,6 +10143,11 @@
               }
             );
           }
+          this.openingShuttleDispatchGameplayPackEncounterEvent?.("destination-reached", {
+            destinationId: runtime.destinationId,
+            locationId: String(detail.locationId || "bay.shuttle"),
+            reason: String(detail.reason || "destination-reached")
+          }, nowMs);
           this.publishOpeningShuttleEncounterBridge?.(this.openingShuttleEncounterSnapshot(), nowMs);
           return true;
         }
@@ -9471,6 +10218,17 @@
                 }
               );
             }
+            this.openingShuttleDispatchGameplayPackEncounterEvent?.("hostiles-defeated", {
+              count: Number(runtime.counters.defeated || 0),
+              alienId: detail.alienId || "",
+              eliteWave: detail.eliteWave === true
+            }, nowMs);
+            if (runtime.eliteWave?.cleared === true) {
+              this.openingShuttleDispatchGameplayPackEncounterEvent?.("all-hostiles-defeated", {
+                count: Number(runtime.counters.defeated || 0),
+                eliteDefeated: Number(runtime.counters.eliteDefeated || 0)
+              }, nowMs);
+            }
           } else if (event.type === "elite-wave-spawned") {
             runtime.counters.eliteSpawned += 1;
             runtime.eliteWave.spawnedCount = Math.max(0, Number(runtime.eliteWave.spawnedCount || 0)) + 1;
@@ -9497,6 +10255,9 @@
               nowMs,
               {health: Math.max(0, Math.round(Number(detail.health || 0)))}
             );
+            this.openingShuttleDispatchGameplayPackEncounterEvent?.("player-defeated", {
+              health: Math.max(0, Math.round(Number(detail.health || 0)))
+            }, nowMs);
           } else if (event.type === "combat-reset") {
             runtime.lastMessage = "Boarding defense reset.";
           }
@@ -9811,11 +10572,11 @@
 
         updateCombat(nowMs, deltaSeconds) {
           if (!this.combat.enabled) return;
+          this.combatClockMs = nowMs;
           if (this.isBoardingPaused()) {
             this.emitCombatState();
             return;
           }
-          this.combatClockMs = nowMs;
           if (this.phaserBeam && nowMs > this.phaserBeam.expiresAtMs) this.phaserBeam = null;
           if (this.gameOver) {
             this.emitCombatState();
@@ -9835,6 +10596,9 @@
           }
 
           let healthChanged = false;
+          if (this.characterAIPhase() === "mother-ship") {
+            healthChanged = this.updateMainShipGameplayPackBoarders?.(nowMs, deltaSeconds) || healthChanged;
+          }
           this.aliens.forEach((alien) => {
             if (alien.state === "transporting") {
               if (nowMs >= alien.transportUntilMs) {
@@ -9885,11 +10649,19 @@
 
           if (this.playerHealth <= 0) {
             this.gameOver = true;
-            this.recordOpeningShuttleEncounterEvent(
-              "player-defeated",
-              {health: this.playerHealth, kills: this.kills},
-              nowMs
-            );
+            if (this.characterAIPhase() === "mother-ship") {
+              this.mainShipDispatchGameplayPackSectionEvent?.("player-defeated", {
+                sectionId: "main-ship-bay",
+                health: this.playerHealth,
+                kills: this.kills
+              }, nowMs);
+            } else {
+              this.recordOpeningShuttleEncounterEvent(
+                "player-defeated",
+                {health: this.playerHealth, kills: this.kills},
+                nowMs
+              );
+            }
             this.clearMovementKeys();
             healthChanged = true;
           }
@@ -9911,6 +10683,7 @@
           let hitAlien = null;
           let hitCharacter = null;
           let hitVelaEnemy = null;
+          let hitMainShipPackBoarder = null;
           let hitDistance = this.combat.phaser.range;
           const considerTarget = (target, center, radius, kind) => {
             const toCenter = shuttle3dSubtract(center, this.camera);
@@ -9932,14 +10705,22 @@
               hitCharacter = target;
               hitAlien = null;
               hitVelaEnemy = null;
+              hitMainShipPackBoarder = null;
+            } else if (kind === "main-ship-pack-boarder") {
+              hitMainShipPackBoarder = target;
+              hitCharacter = null;
+              hitAlien = null;
+              hitVelaEnemy = null;
             } else if (kind === "vela-cave-hostile") {
               hitVelaEnemy = target;
               hitCharacter = null;
               hitAlien = null;
+              hitMainShipPackBoarder = null;
             } else {
               hitAlien = target;
               hitCharacter = null;
               hitVelaEnemy = null;
+              hitMainShipPackBoarder = null;
             }
           };
 
@@ -9970,7 +10751,7 @@
                 character,
                 [character.position[0], character.position[1] + 0.78, character.position[2]],
                 0.7,
-                "character"
+                character.gameplayPackBoarder === true ? "main-ship-pack-boarder" : "character"
               );
             });
 
@@ -9992,14 +10773,16 @@
               scenarioContext.id,
               "weapon-discharge",
               {
-                targetId: hitCharacter?.id || hitAlien?.id || hitVelaEnemy?.id || "",
+                targetId: hitCharacter?.id || hitMainShipPackBoarder?.id || hitAlien?.id || hitVelaEnemy?.id || "",
                 targetKind: hitCharacter
                   ? "character"
-                  : hitAlien
-                    ? "legacy-alien"
-                    : hitVelaEnemy
-                      ? "vela-cave-hostile"
-                      : "none",
+                  : hitMainShipPackBoarder
+                    ? "main-ship-pack-boarder"
+                    : hitAlien
+                      ? "legacy-alien"
+                      : hitVelaEnemy
+                        ? "vela-cave-hostile"
+                        : "none",
                 defensive: scenarioContext.stageId === "protect-witness"
               },
               {nowMs}
@@ -10026,6 +10809,13 @@
               );
               this.resolveOpeningShuttleEliteWave?.(nowMs);
             }
+          }
+          if (hitMainShipPackBoarder) {
+            this.damageMainShipGameplayPackBoarder?.(
+              hitMainShipPackBoarder.id,
+              this.combat.phaser.damage,
+              nowMs
+            );
           }
           if (hitVelaEnemy) {
             const interaction = globalThis.MainComputerStrategicAIVelaInteraction;
@@ -10097,6 +10887,9 @@
             ? this.createOpeningShuttleEncounterRuntimeState(nowMs)
             : null;
           this.openingShuttleEncounterAuthoringAlignment = null;
+          this.openingShuttleDispatchGameplayPackEncounterEvent?.("start", {
+            reason: "combat-reset"
+          }, nowMs);
           this.recordOpeningShuttleEncounterEvent?.("combat-reset", {}, nowMs);
           this.clearMovementKeys();
           this.resetFlightState();
@@ -11226,7 +12019,12 @@
               const action = String(character.currentActionId || character.actionId || "hold_position")
                 .replace(/_/g, " ")
                 .toUpperCase();
-              const prefix = character.kind === "enemy" ? "HOSTILE" : "ALLY";
+              const packBoarder = character.gameplayPackBoarder === true;
+              const prefix = packBoarder
+                ? "PACK BOARDER"
+                : character.kind === "enemy"
+                  ? "HOSTILE"
+                  : "ALLY";
               return `${prefix}: ${String(character.label || character.id)} ${health}/${maxHealth} • ${action}`;
             });
             const threatCount = Math.max(0, Number(snapshot?.activeThreatCount || 0));
@@ -11246,18 +12044,45 @@
             const objective = String(ship.objectiveLabel || ship.objectiveId || "Awaiting objective");
             const interaction = ship.interactionHint ? ` • ${ship.interactionHint}` : "";
             const statusText = ship.interactionStatus ? ` • ${ship.interactionStatus}` : "";
-            shipLine.textContent = `SHIP ${location} • ${String(ship.power || "unknown").toUpperCase()} POWER • ${String(ship.security || "unknown").toUpperCase()} • OBJECTIVE: ${objective}${interaction}${statusText}`;
+            const pack = ship.mainShipGameplayPack && typeof ship.mainShipGameplayPack === "object"
+              ? ship.mainShipGameplayPack
+              : null;
+            const boarders = pack?.boarders && typeof pack.boarders === "object" ? pack.boarders : null;
+            const packTitle = String(pack?.title || pack?.packId || "Main Ship gameplay pack");
+            let packStatus = "";
+            if (pack?.installed === true) {
+              if (boarders?.spawned === true) {
+                const active = Math.max(0, Number(boarders.activeCount || 0));
+                const spawned = Math.max(active, Number(boarders.spawnedCount || boarders.requestedCount || active));
+                const defeated = Math.max(0, Number(boarders.defeatedCount || 0));
+                packStatus = active > 0
+                  ? ` • PACK: ${packTitle} — BOARDERS ${active}/${spawned} ACTIVE`
+                  : ` • PACK: ${packTitle} — BOARDERS CLEARED (${defeated}/${spawned})`;
+              } else if (pack.cutsceneResolved === true) {
+                packStatus = ` • PACK: ${packTitle} — TRIGGERED`;
+              } else {
+                packStatus = ` • PACK: ${packTitle} ARMED — waits for bay-entry cutscene`;
+              }
+            }
+            shipLine.textContent = `SHIP ${location} • ${String(ship.power || "unknown").toUpperCase()} POWER • ${String(ship.security || "unknown").toUpperCase()} • OBJECTIVE: ${objective}${packStatus}${interaction}${statusText}`;
             canvas.dataset.shipLocation = String(ship.location || "");
             canvas.dataset.shipObjective = String(ship.objectiveId || "");
             canvas.dataset.shipInteraction = String(ship.interactionId || "");
+            canvas.dataset.mainShipGameplayPackInstalled = String(pack?.installed === true);
+            canvas.dataset.mainShipGameplayPackStatus = packStatus ? packStatus.trim() : "";
             shell.dataset.shipLocation = String(ship.location || "");
             shell.dataset.shipObjective = String(ship.objectiveId || "");
             shell.dataset.shipInteraction = String(ship.interactionId || "");
+            shell.dataset.mainShipGameplayPackInstalled = String(pack?.installed === true);
+            shell.dataset.mainShipGameplayPackStatus = packStatus ? packStatus.trim() : "";
             if (ship.interactionHint) {
               pilotPrompt.hidden = false;
               pilotPrompt.textContent = ship.interactionStatus
                 ? `${ship.interactionHint} • ${ship.interactionStatus}`
                 : ship.interactionHint;
+            } else if (ship.interactionStatus) {
+              pilotPrompt.hidden = false;
+              pilotPrompt.textContent = ship.interactionStatus;
             }
           };
 
@@ -11710,6 +12535,48 @@
           return {
             scene,
             objectCount: scene.objects.length,
+            openingShuttleInstallGameplayPackSource(source, packOptions = {}, nowMs) {
+              return container.__mainComputerShuttle3dRenderer?.openingShuttleInstallGameplayPackSource?.(
+                source,
+                packOptions,
+                Number.isFinite(Number(nowMs)) ? Number(nowMs) : undefined
+              ) || null;
+            },
+            openingShuttleClearGameplayPackCommandHarness(options = {}, nowMs) {
+              return container.__mainComputerShuttle3dRenderer?.openingShuttleClearGameplayPackCommandHarness?.(
+                options,
+                Number.isFinite(Number(nowMs)) ? Number(nowMs) : undefined
+              ) || null;
+            },
+            mainShipInstallGameplayPackSource(source, packOptions = {}, nowMs) {
+              return container.__mainComputerShuttle3dRenderer?.mainShipInstallGameplayPackSource?.(
+                source,
+                packOptions,
+                Number.isFinite(Number(nowMs)) ? Number(nowMs) : undefined
+              ) || null;
+            },
+            mainShipClearGameplayPackCommandHarness(options = {}, nowMs) {
+              return container.__mainComputerShuttle3dRenderer?.mainShipClearGameplayPackCommandHarness?.(
+                options,
+                Number.isFinite(Number(nowMs)) ? Number(nowMs) : undefined
+              ) || null;
+            },
+            mainShipDispatchGameplayPackSectionEvent(eventType, detail = {}, nowMs) {
+              return container.__mainComputerShuttle3dRenderer?.mainShipDispatchGameplayPackSectionEvent?.(
+                eventType,
+                detail,
+                Number.isFinite(Number(nowMs)) ? Number(nowMs) : undefined
+              ) || [];
+            },
+            mainShipGameplayPackSnapshot() {
+              return container.__mainComputerShuttle3dRenderer?.mainShipGameplayPackSnapshot?.() || null;
+            },
+            openingShuttleEncounterSnapshot() {
+              return container.__mainComputerShuttle3dRenderer?.openingShuttleEncounterSnapshot?.() || null;
+            },
+            combatSnapshot() {
+              return container.__mainComputerShuttle3dRenderer?.combatSnapshot?.() || null;
+            },
             dispose() {
               disposeShuttle3dLookaround(container);
             }

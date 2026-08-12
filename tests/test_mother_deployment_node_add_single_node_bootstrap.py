@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,10 +23,13 @@ from tools.mother.common.deployment_node_add_prep import (
     write_node_add_prep_transaction,
 )
 from tools.mother.common.deployment_node_add_single_node_bootstrap import (
+    adopt_node_add_single_node_bootstrap_live_proof,
     build_node_add_single_node_bootstrap_release,
     execute_node_add_single_node_bootstrap_release,
+    finalize_node_add_single_node_chain_and_hub_proof,
     verify_node_add_single_node_bootstrap_evidence,
     verify_node_add_single_node_bootstrap_release,
+    verify_node_add_single_node_chain_and_hub_proof_evidence,
     write_node_add_single_node_bootstrap_release,
 )
 from tests.test_mother_deployment_executor import _Response, _install, _operation, TOKEN_A
@@ -124,8 +128,9 @@ def _write_empty_topology_identity_evidence(tmp_path: Path):
 
 
 class _SingleNodeBootstrapOpener:
-    def __init__(self) -> None:
+    def __init__(self, *, deploy_status: str = "running:healthy") -> None:
         self.requests: list[dict] = []
+        self.deploy_status = deploy_status
         self.envs = [
             {"uuid": "env-validator", "key": "MC_MOTHER_VALIDATOR_PRIVATE_KEY", "value": "0x" + "1" * 64},
             {"uuid": "env-hub", "key": "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY", "value": "0x" + "2" * 64},
@@ -170,12 +175,33 @@ class _SingleNodeBootstrapOpener:
             return _Response({"uuid": "svc-a1", "status": self.service["status"]})
         if method == "GET" and path == "/api/v1/deploy":
             assert parsed.query == "uuid=svc-a1&force=true"
-            self.service["status"] = "running:healthy"
+            self.service["status"] = self.deploy_status
             return _Response({"message": "deploy queued"})
         if method == "GET" and path == "/api/v1/services":
             return _Response([dict(self.service)])
         raise AssertionError(f"unexpected request: {method} {path}")
 
+
+def test_single_node_bootstrap_compose_escapes_runtime_shell_variables(tmp_path: Path) -> None:
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_empty_topology_identity_evidence(tmp_path)
+
+    release = build_node_add_single_node_bootstrap_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-12T01:10:00Z",
+        now=datetime(2026, 8, 12, 1, 10, 1, tzinfo=timezone.utc),
+    )
+
+    compose = release["bootstrap_plan"]["compose"]["canonical_text"]
+    assert 'if [ "$attempt" = "90" ]; then' not in compose
+    assert 'if [ "$$attempt" = "90" ]; then' in compose
+    assert not re.findall(r'(?<!\$)\$[A-Za-z_][A-Za-z0-9_]*', compose)
+    assert release["bootstrap_plan"]["hub"]["git_repository"] == "https://github.com/johnrraymond/main_computer.git"
+    assert 'context: "https://github.com/johnrraymond/main_computer.git#main"' in compose
+    assert 'context: "https://github.com/johnrraymond/main_computer#main"' not in compose
+    assert 'context: https://github.com/johnrraymond/main_computer#main' not in compose
 
 def test_single_node_bootstrap_release_is_not_replica_sync_or_admission(tmp_path: Path) -> None:
     paths, private_state, identity_evidence_path, identity_evidence_sha = _write_empty_topology_identity_evidence(tmp_path)
@@ -300,6 +326,193 @@ def test_single_node_bootstrap_executes_chain_and_hub_proof_path(tmp_path: Path)
     assert verified["validator_admission_performed"] is False
 
 
+def test_single_node_bootstrap_adopts_live_proof_after_release_expires_without_redeploy(tmp_path: Path) -> None:
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_empty_topology_identity_evidence(tmp_path)
+    release = build_node_add_single_node_bootstrap_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-12T01:10:00Z",
+        expires_in_seconds=300,
+        now=datetime(2026, 8, 12, 1, 10, 1, tzinfo=timezone.utc),
+    )
+    release_path, release_sha = write_node_add_single_node_bootstrap_release(
+        paths,
+        release,
+        operation=_operation("write-single-node-bootstrap-release-adopt"),
+    )
+    opener = _SingleNodeBootstrapOpener(deploy_status="running:unhealthy")
+    failed = execute_node_add_single_node_bootstrap_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+        now=datetime(2026, 8, 12, 1, 11, 0, tzinfo=timezone.utc),
+        operation=_operation("execute-single-node-bootstrap-release-unhealthy"),
+    )
+    assert failed["status"] == "failed"
+    assert failed["single_node_bootstrap_performed"] is True
+    assert failed["single_node_bootstrap_proven"] is False
+    assert failed["failure"]["code"] == "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_NOT_HEALTHY"
+
+    opener.service["status"] = "running:healthy"
+    request_count_before_adoption = len(opener.requests)
+    adopted = adopt_node_add_single_node_bootstrap_live_proof(
+        paths,
+        private_state,
+        Path(failed["evidence"]["path"]),
+        max_age_seconds=86400,
+        release_max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        opener=opener,
+        now=datetime(2026, 8, 12, 2, 10, 0, tzinfo=timezone.utc),
+        operation=_operation("adopt-single-node-bootstrap-live-proof"),
+    )
+    adoption_requests = opener.requests[request_count_before_adoption:]
+    assert adopted["status"] == "pass"
+    assert adopted["summary"]["clean"] is True
+    assert adopted["summary"]["read_only_adoption_performed"] is True
+    assert adopted["summary"]["adoption_live_mutation_performed"] is False
+    assert adopted["summary"]["serves_chain"] is True
+    assert adopted["summary"]["serves_hub"] is True
+    assert [request["method"] for request in adoption_requests] == ["GET", "GET"]
+    assert not any(request["method"] in {"PATCH", "POST"} for request in adoption_requests)
+
+    verified = verify_node_add_single_node_bootstrap_evidence(
+        paths,
+        private_state,
+        Path(adopted["evidence"]["path"]),
+        max_age_seconds=86400,
+        release_max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        now=datetime(2026, 8, 12, 2, 10, 0, tzinfo=timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["release_expired"] is True
+    assert verified["release_freshness_enforced"] is False
+    assert verified["read_only_adoption_performed"] is True
+    assert verified["live_mutation_performed"] is False
+    assert verified["next_phase"] == "add-node-single-node-chain-and-hub-proof-mainnet"
+
+
+
+def test_single_node_chain_and_hub_proof_finalizes_without_live_mutation(tmp_path: Path) -> None:
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_empty_topology_identity_evidence(tmp_path)
+    release = build_node_add_single_node_bootstrap_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-12T01:10:00Z",
+        now=datetime(2026, 8, 12, 1, 10, 1, tzinfo=timezone.utc),
+    )
+    release_path, release_sha = write_node_add_single_node_bootstrap_release(
+        paths,
+        release,
+        operation=_operation("write-single-node-bootstrap-release-finalize"),
+    )
+    opener = _SingleNodeBootstrapOpener()
+    bootstrap = execute_node_add_single_node_bootstrap_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+        now=datetime(2026, 8, 12, 1, 11, 0, tzinfo=timezone.utc),
+        operation=_operation("execute-single-node-bootstrap-release-finalize"),
+    )
+    request_count_before_finalize = len(opener.requests)
+    finalized = finalize_node_add_single_node_chain_and_hub_proof(
+        paths,
+        private_state,
+        Path(bootstrap["evidence"]["path"]),
+        acknowledged_bootstrap_evidence_sha256=bootstrap["evidence"]["sha256"],
+        max_age_seconds=86400,
+        release_max_age_seconds=86400,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        write_evidence=True,
+        now=datetime(2026, 8, 12, 1, 12, 0, tzinfo=timezone.utc),
+        operation=_operation("finalize-single-node-chain-and-hub-proof"),
+    )
+    assert len(opener.requests) == request_count_before_finalize
+    assert finalized["status"] == "pass"
+    assert finalized["summary"]["clean"] is True
+    assert finalized["summary"]["complete"] is True
+    assert finalized["summary"]["current_topology_marked_by_evidence"] is True
+    assert finalized["summary"]["live_mutation_performed"] is False
+    assert finalized["summary"]["network_access_performed"] is False
+    assert finalized["summary"]["routing_or_topology_published"] is False
+    assert finalized["summary"]["public_endpoint_created"] is False
+    assert finalized["summary"]["final_nodes"] == [A_NODE]
+    assert finalized["summary"]["final_validator_set"] == [A_VALIDATOR]
+    assert finalized["final_topology"]["nodes"] == [A_NODE]
+    assert finalized["final_topology"]["services"][A_NODE]["service_uuid"] == "svc-a1"
+    assert finalized["next_phase"] == "add-node-single-node-finalized-mainnet"
+
+    verified = verify_node_add_single_node_chain_and_hub_proof_evidence(
+        paths,
+        private_state,
+        Path(finalized["evidence"]["path"]),
+        max_age_seconds=86400,
+        bootstrap_max_age_seconds=86400,
+        release_max_age_seconds=86400,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        now=datetime(2026, 8, 12, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["current_topology_marked_by_evidence"] is True
+    assert verified["final_nodes"] == [A_NODE]
+    assert verified["final_validator_set"] == [A_VALIDATOR]
+    assert verified["coolify_c_required"] is False
+    assert verified["replica_sync_required"] is False
+    assert verified["validator_admission_required"] is False
+    assert verified["live_mutation_performed"] is False
+    assert verified["next_phase"] == "add-node-single-node-finalized-mainnet"
+
+
 def test_single_node_bootstrap_cli_exposes_release_execute_and_verify() -> None:
     parser = mother_deploy._parser()
 
@@ -331,3 +544,30 @@ def test_single_node_bootstrap_cli_exposes_release_execute_and_verify() -> None:
         "evidence/deployment-node-add-single-node-bootstrap/example.json",
     ])
     assert verify_args.command == "verify-add-node-single-node-bootstrap-evidence"
+
+    adopt_args = parser.parse_args([
+        "adopt-add-node-single-node-bootstrap-live-proof",
+        "--evidence",
+        "evidence/deployment-node-add-single-node-bootstrap/failed.json",
+    ])
+    assert adopt_args.command == "adopt-add-node-single-node-bootstrap-live-proof"
+
+    finalize_args = parser.parse_args([
+        "add-node",
+        "single-node-chain-and-hub-proof",
+        "mainnet",
+        "--bootstrap-evidence",
+        "evidence/deployment-node-add-single-node-bootstrap/proven.json",
+        "--acknowledge-bootstrap-evidence-sha256",
+        "c" * 64,
+        "--write-evidence",
+    ])
+    assert finalize_args.command == "add-node"
+    assert finalize_args.add_node_phase == "single-node-chain-and-hub-proof"
+
+    verify_finalize_args = parser.parse_args([
+        "verify-add-node-single-node-chain-and-hub-proof-evidence",
+        "--evidence",
+        "evidence/deployment-node-add-single-node-chain-and-hub-proof/final.json",
+    ])
+    assert verify_finalize_args.command == "verify-add-node-single-node-chain-and-hub-proof-evidence"

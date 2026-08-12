@@ -1499,7 +1499,7 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         self.assertEqual(result["metadataDefault"]["mode"], "selected")
         self.assertEqual(
             result["metadataDefault"]["activeGameplayPackIds"],
-            ["plugin.hand-authored.opening-shuttle-ambush.001"],
+            ["pack.opening-shuttle.elite-boarders"],
         )
         self.assertEqual(result["storedNone"]["mode"], "none")
         self.assertEqual(result["storedNone"]["activeGameplayPackIds"], [])
@@ -1617,14 +1617,15 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         self.assertEqual(result["state"]["mode"], "selected")
         self.assertEqual(
             result["state"]["activeGameplayPackIds"],
-            ["plugin.hand-authored.opening-shuttle-ambush.001"],
+            ["pack.opening-shuttle.elite-boarders"],
         )
         self.assertEqual(
             [option["value"] for option in result["options"]],
-            ["None", "plugin.hand-authored.opening-shuttle-ambush.001"],
+            ["None", "pack.opening-shuttle.elite-boarders", "pack.main-ship.bay-boarders"],
         )
         self.assertIn("None — base game", result["options"][0]["text"])
-        self.assertIn("Opening Shuttle Ambush Elite Wave", result["options"][1]["text"])
+        self.assertIn("Opening Shuttle: Elite Boarders", result["options"][1]["text"])
+        self.assertIn("Main Ship: Bay Boarders", result["options"][2]["text"])
         self.assertFalse(result["disabled"])
         self.assertEqual(result["controlsDataset"]["gameplayPackMode"], "selected")
         self.assertEqual(json.loads(result["stored"]), {"schema": "game.reloadGameplayPackSelection.v1", "mode": "none", "activeGameplayPackIds": []})

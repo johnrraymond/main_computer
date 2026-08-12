@@ -72,8 +72,8 @@ def _run_node(script: str, *args: Path) -> dict:
     return json.loads(result.stdout)
 
 
-def test_loaded_pack_selection_drives_shuttle_behavior_and_none_does_not(tmp_path: Path) -> None:
-    """Patch P: loaded pack -> selected on reload -> live shuttle behavior differs from None."""
+def test_legacy_json_pack_catalog_is_preview_only_for_live_shuttle_scene(tmp_path: Path) -> None:
+    """Patch X: loaded JSON catalog data no longer drives live shuttle behavior by inference."""
 
     catalog = _project_with_loaded_opening_shuttle_pack(tmp_path)
     project = json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
@@ -94,121 +94,84 @@ def test_loaded_pack_selection_drives_shuttle_behavior_and_none_does_not(tmp_pat
         const scenarioId = "{SCENARIO_ID}";
 
         const start = sceneSource.indexOf("        createOpeningShuttleEncounterRuntimeState");
-        const end = sceneSource.indexOf("        combatSnapshot(", start);
+        const end = sceneSource.indexOf("        canAlienOccupy(", start);
         if (start < 0 || end < 0) throw new Error("opening shuttle hook methods not found");
         const methodSource = sceneSource.slice(start, end).trim()
-          .replace(/\\n        (?=(isOpening|opening|award|completeOpening|record|spawnOpening|resolve|publish))/g, ",\\n        ");
+          .replace(/\\n        (?=(isOpening|opening|award|completeOpening|record|spawnOpening|resolve|combatSnapshot|publish|emitCombatState|spawnAlien))/g, ",\\n        ");
         const methods = Function(`return ({{${{methodSource}}}});`)();
 
-        function makeHarness(activeGameplayPackIds) {{
-          const scenarioRuntime = scenarioApi.create(project.metadata.systemScenarios, {{
-            projectId: activeGameplayPackIds.length ? "webgl-demo-pack" : "webgl-demo-none",
-            storage: null,
-            restore: false,
-            generatedGameplayCatalog: catalog,
-            activeGameplayPackIds
-          }});
+        const scenarioRuntime = scenarioApi.create(project.metadata.systemScenarios, {{
+          projectId: "webgl-demo-legacy-json-pack",
+          storage: null,
+          restore: false,
+          generatedGameplayCatalog: catalog,
+          activeGameplayPackIds: [pluginId]
+        }});
 
-          globalThis.MainComputerSystemScenarioRuntime = {{
-            current() {{
-              return scenarioRuntime;
-            }}
-          }};
-
-          const scene = {{
-            combat: {{
-              enabled: true,
-              transport: {{
-                maxAlive: 4,
-                beamDurationMs: 900,
-                spawnPoints: [
-                  {{id: "port-aft-pad", position: [-2.9, -0.55, 2.55]}},
-                  {{id: "starboard-aft-pad", position: [2.9, -0.55, 2.55]}},
-                  {{id: "center-pad", position: [0, -0.55, 0.3]}}
-                ]
-              }},
-              alien: {{maxHealth: 60}}
-            }},
-            aliens: [],
-            transportSequence: 2,
-            gameOver: false,
-            combatClockMs: 0,
-            emitted: 0,
-            characterAIPhase() {{
-              return "shuttle";
-            }},
-            emitCombatState() {{
-              this.emitted += 1;
-            }}
-          }};
-          Object.assign(scene, methods);
-          scene.openingShuttleEncounter = scene.createOpeningShuttleEncounterRuntimeState();
-          return {{scenarioRuntime, scene}};
-        }}
-
-        function runOpeningCombat(harness, complete = false) {{
-          const scene = harness.scene;
-          scene.recordOpeningShuttleEncounterEvent(
-            "alien-defeated",
-            {{alienId: "boarding-alien-1", spawnId: "port-aft-pad", kills: 1}},
-            1200
-          );
-          scene.recordOpeningShuttleEncounterEvent(
-            "alien-defeated",
-            {{alienId: "boarding-alien-2", spawnId: "starboard-aft-pad", kills: 2}},
-            1800
-          );
-
-          const spawned = scene.resolveOpeningShuttleEliteWave(1810);
-          let elite = null;
-          if (spawned) {{
-            elite = scene.aliens[0];
-            scene.recordOpeningShuttleEncounterEvent(
-              "alien-defeated",
-              {{
-                alienId: elite.id,
-                spawnId: elite.spawnId,
-                kills: 3,
-                eliteWave: true,
-                encounterRole: elite.encounterRole,
-                actorArchetypeId: elite.actorArchetypeId
-              }},
-              2600
-            );
+        globalThis.MainComputerSystemScenarioRuntime = {{
+          current() {{
+            return scenarioRuntime;
           }}
-          if (complete) {{
-            scene.completeOpeningShuttleEncounterAtDestination(
-              4200,
-              {{locationId: "bay.shuttle", reason: "smoke-proof"}}
-            );
-          }}
-          const snapshot = scene.openingShuttleEncounterSnapshot();
-          harness.scenarioRuntime.setOpeningShuttleEncounterBridgeSnapshot(snapshot, {{
-            source: "opening-shuttle-gameplay-pack-smoke"
-          }});
-          const diagnostic = harness.scenarioRuntime.openingShuttleEncounterBridgeDiagnostic({{
-            scenarioId,
-            source: "opening-shuttle-gameplay-pack-smoke"
-          }});
-          return {{
-            spawned,
-            elite,
-            snapshot,
-            diagnostic,
-            config: harness.scenarioRuntime.openingShuttleGameplayPackConfig({{baseHostileCount: 2}}),
-            selection: harness.scenarioRuntime.activeGameplayPackSelection()
-          }};
-        }}
+        }};
 
-        const noneHarness = makeHarness([]);
-        const selectedHarness = makeHarness([pluginId]);
+        const scene = {{
+          combat: {{
+            enabled: true,
+            transport: {{
+              maxAlive: 4,
+              beamDurationMs: 900,
+              spawnPoints: [
+                {{id: "port-aft-pad", position: [-2.9, -0.55, 2.55]}},
+                {{id: "starboard-aft-pad", position: [2.9, -0.55, 2.55]}},
+                {{id: "center-pad", position: [0, -0.55, 0.3]}}
+              ]
+            }},
+            alien: {{maxHealth: 60}}
+          }},
+          aliens: [],
+          transportSequence: 0,
+          gameOver: false,
+          combatClockMs: 0,
+          emitted: 0,
+          characterAIPhase() {{ return "shuttle"; }},
+          emitCombatState() {{ this.emitted += 1; }}
+        }};
+        Object.assign(scene, methods);
+        scene.openingShuttleEncounter = scene.createOpeningShuttleEncounterRuntimeState();
+        scene.spawnAlien(100);
+        const firstAlien = scene.aliens[0];
 
-        const none = runOpeningCombat(noneHarness, false);
-        const selected = runOpeningCombat(selectedHarness, true);
-        const preview = selectedHarness.scenarioRuntime.generatedScenarioStartPreview(scenarioId);
-        const summary = selectedHarness.scenarioRuntime.summary();
+        scene.recordOpeningShuttleEncounterEvent(
+          "alien-defeated",
+          {{alienId: "boarding-alien-1", spawnId: "port-aft-pad", kills: 1}},
+          1200
+        );
+        scene.recordOpeningShuttleEncounterEvent(
+          "alien-defeated",
+          {{alienId: "boarding-alien-2", spawnId: "starboard-aft-pad", kills: 2}},
+          1800
+        );
 
-        console.log(JSON.stringify({{none, selected, preview, summary}}));
+        const spawned = scene.resolveOpeningShuttleEliteWave(1810);
+        const snapshot = scene.openingShuttleEncounterSnapshot();
+        scenarioRuntime.setOpeningShuttleEncounterBridgeSnapshot(snapshot, {{
+          source: "opening-shuttle-legacy-json-preview-only-smoke"
+        }});
+        const diagnostic = scenarioRuntime.openingShuttleEncounterBridgeDiagnostic({{
+          scenarioId,
+          source: "opening-shuttle-legacy-json-preview-only-smoke"
+        }});
+
+        console.log(JSON.stringify({{
+          config: scenarioRuntime.openingShuttleGameplayPackConfig({{baseHostileCount: 2}}),
+          selection: scenarioRuntime.activeGameplayPackSelection(),
+          preview: scenarioRuntime.generatedScenarioStartPreview(scenarioId),
+          firstAlien,
+          spawned,
+          snapshot,
+          diagnostic,
+          summary: scenarioRuntime.summary()
+        }}));
         """,
         SCENARIO_RUNTIME,
         SCENE_VIEWER,
@@ -216,93 +179,38 @@ def test_loaded_pack_selection_drives_shuttle_behavior_and_none_does_not(tmp_pat
         project_path,
     )
 
-    none = result["none"]
-    assert none["selection"]["mode"] == "none"
-    assert none["selection"]["activePluginIds"] == []
-    assert none["config"]["active"] is False
-    assert none["config"]["extraHostileCount"] == 0
-    assert none["config"]["eliteWave"]["enabled"] is False
-    assert none["spawned"] is False
-    assert none["elite"] is None
-    assert none["snapshot"]["eliteWave"]["enabled"] is False
-    assert none["snapshot"]["eliteWave"]["packConfigured"] is False
-    assert none["snapshot"]["counters"]["defeated"] == 2
-    assert none["snapshot"]["counters"]["eliteSpawned"] == 0
-    assert none["snapshot"]["execution"]["additionalSpawnRequested"] is False
-    assert none["diagnostic"]["coverage"]["generatedPreviewAvailable"] is True
-    assert none["diagnostic"]["coverage"]["authoredHostileCount"] == 3
-    assert none["diagnostic"]["coverage"]["liveDefeats"] == 2
-    assert none["diagnostic"]["coverage"]["hostileDefeatsSatisfied"] is False
-
-    selected = result["selected"]
-    assert selected["selection"]["mode"] == "selected"
-    assert selected["selection"]["activePluginIds"] == [PLUGIN_ID]
-    assert selected["config"]["available"] is True
-    assert selected["config"]["active"] is True
-    assert selected["config"]["pluginId"] == PLUGIN_ID
-    assert selected["config"]["scenarioId"] == SCENARIO_ID
-    assert selected["config"]["encounterId"] == ENCOUNTER_ID
-    assert selected["config"]["hostileCount"] == 3
-    assert selected["config"]["extraHostileCount"] == 1
-    assert selected["config"]["hostileHealthMultiplier"] == 3
-    assert selected["config"]["eliteWave"] == {
-        "enabled": True,
-        "triggerDefeats": 2,
-        "count": 1,
-        "actorArchetypeId": "actor-archetype.shuttle-raider",
-        "source": PLUGIN_ID,
-        "scenarioId": SCENARIO_ID,
-        "encounterId": ENCOUNTER_ID,
-        "displayName": "Elite Boarding Leader",
-        "objectiveLabel": "Defeat the 3x-health elite boarding leader",
-        "alert": "Opening Shuttle Ambush Elite Wave: elite boarding leader inbound — 3x hostile health confirmed",
-        "healthMultiplier": 3,
-    }
-    assert selected["spawned"] is True
-    assert selected["elite"]["id"] == "boarding-elite-raider-3"
-    assert selected["elite"]["eliteWave"] is True
-    assert selected["elite"]["health"] == 180
-    assert selected["elite"]["maxHealth"] == 180
-    assert selected["elite"]["healthMultiplier"] == 3
-    assert selected["snapshot"]["status"] == "completed"
-    assert selected["snapshot"]["eliteWave"]["packConfigured"] is True
-    assert selected["snapshot"]["eliteWave"]["activePluginIds"] == [PLUGIN_ID]
-    assert selected["snapshot"]["counters"]["defeated"] == 3
-    assert selected["snapshot"]["counters"]["eliteSpawned"] == 1
-    assert selected["snapshot"]["counters"]["eliteDefeated"] == 1
-    assert selected["snapshot"]["completion"]["completed"] is True
-    assert selected["snapshot"]["completion"]["destinationReached"] is True
-    assert selected["snapshot"]["execution"] == {
-        "generatedPluginExecution": False,
-        "generatedTemplateExecution": False,
-        "rendererHandoff": False,
-        "saveStateMutated": False,
-        "projectJsonModified": False,
-        "additionalSpawnRequested": True,
-    }
-
-    diagnostic = selected["diagnostic"]
-    assert diagnostic["aligned"] is True
-    assert diagnostic["alignmentStatus"] == "aligned-with-generated-preview"
-    assert diagnostic["generatedPreview"]["scenarioId"] == SCENARIO_ID
-    assert diagnostic["generatedPreview"]["hostileCount"] == 3
-    assert diagnostic["coverage"]["authoredHostileCount"] == 3
-    assert diagnostic["coverage"]["liveDefeats"] == 3
-    assert diagnostic["coverage"]["hostileDefeatsSatisfied"] is True
-    assert diagnostic["coverage"]["liveDestinationReached"] is True
-    assert diagnostic["coverage"]["completionCoverageSatisfied"] is True
-    assert diagnostic["safety"]["generatedPluginExecution"] is False
-    assert diagnostic["safety"]["generatedTemplateExecution"] is False
-    assert diagnostic["safety"]["rendererHandoff"] is False
-    assert diagnostic["safety"]["saveStateMutated"] is False
-    assert diagnostic["safety"]["projectJsonModified"] is False
+    assert result["selection"]["mode"] == "selected"
+    assert result["selection"]["activePluginIds"] == [PLUGIN_ID]
+    assert result["config"]["available"] is True
+    assert result["config"]["active"] is True
+    assert result["config"]["extraHostileCount"] == 1
+    assert result["config"]["hostileHealthMultiplier"] == 3
 
     assert result["preview"]["scenarioId"] == SCENARIO_ID
     assert result["preview"]["canPreviewStart"] is True
     assert result["preview"]["startable"] is False
-    assert result["summary"]["activeGameplayPackSelection"]["activePluginIds"] == [PLUGIN_ID]
-    assert result["summary"]["openingShuttleGameplayPackConfig"]["extraHostileCount"] == 1
 
+    assert result["firstAlien"]["health"] == 60
+    assert result["firstAlien"]["maxHealth"] == 60
+    assert result["firstAlien"]["healthMultiplier"] == 1
+    assert result["firstAlien"]["packPowered"] is False
+    assert result["spawned"] is False
+
+    snapshot = result["snapshot"]
+    assert snapshot["eliteWave"]["enabled"] is False
+    assert snapshot["eliteWave"]["packConfigured"] is False
+    assert snapshot["eliteWave"]["healthMultiplier"] == 1
+    assert snapshot["jsGameplayPack"]["installed"] is False
+    assert snapshot["packLine"] == "Gameplay Pack: None — base game"
+    assert snapshot["execution"]["additionalSpawnRequested"] is False
+    assert snapshot["execution"]["generatedPluginExecution"] is False
+    assert snapshot["execution"]["generatedTemplateExecution"] is False
+
+    diagnostic = result["diagnostic"]
+    assert diagnostic["coverage"]["generatedPreviewAvailable"] is True
+    assert diagnostic["coverage"]["authoredHostileCount"] == 3
+    assert diagnostic["coverage"]["liveDefeats"] == 2
+    assert diagnostic["coverage"]["hostileDefeatsSatisfied"] is False
 
 def test_reload_pack_selection_allows_explicit_none_to_override_metadata() -> None:
     """The reload selector must let the player choose None even if project metadata enables a pack."""

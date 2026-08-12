@@ -16,6 +16,25 @@ from main_computer.gameplay_plugin_project_catalog import apply_gameplay_plugin_
 from main_computer.gameplay_plugin_registry import discover_gameplay_plugin_registry
 
 
+_JS_OPENING_SHUTTLE_PACK_ID = "pack.opening-shuttle.elite-boarders"
+_LEGACY_OPENING_SHUTTLE_PLUGIN_ID = "plugin.hand-authored.opening-shuttle-ambush.001"
+_JS_OPENING_SHUTTLE_PACK_DIR = "opening_shuttle_elite_boarders"
+_JS_MAIN_SHIP_BAY_BOARDERS_PACK_ID = "pack.main-ship.bay-boarders"
+_JS_MAIN_SHIP_BAY_BOARDERS_PACK_DIR = "main_ship_bay_boarders"
+_JS_GAMEPLAY_PACKS = {
+    _JS_OPENING_SHUTTLE_PACK_ID: {
+        "directory": _JS_OPENING_SHUTTLE_PACK_DIR,
+        "title": "Opening Shuttle: Elite Boarders",
+        "aliases": {_LEGACY_OPENING_SHUTTLE_PLUGIN_ID},
+    },
+    _JS_MAIN_SHIP_BAY_BOARDERS_PACK_ID: {
+        "directory": _JS_MAIN_SHIP_BAY_BOARDERS_PACK_DIR,
+        "title": "Main Ship: Bay Boarders",
+        "aliases": set(),
+    },
+}
+
+
 def _mounted_editor_should_inline_test_provider(provider: Any) -> bool:
     module = str(getattr(getattr(provider, "__class__", None), "__module__", "") or "")
     if not provider or module.startswith("main_computer.providers"):
@@ -78,6 +97,9 @@ class ViewportGameRoutesMixin:
                 return
             if route == "/api/applications/game-editor/gameplay-pack/load":
                 self._send_json(self._game_gameplay_pack_load_payload(body))
+                return
+            if route == "/api/applications/game-editor/gameplay-pack/js-source":
+                self._send_json(self._game_gameplay_pack_js_source_payload(body))
                 return
             if route == "/api/applications/game-editor/chat/edit":
                 self._handle_game_editor_chat_edit(body)
@@ -2264,6 +2286,43 @@ class ViewportGameRoutesMixin:
                 ] if isinstance(requires, dict) and isinstance(requires.get("encounterTemplates"), list) else [],
                 "problems": list(entry.problems),
             })
+        js_pack_records: list[dict[str, Any]] = []
+        for pack_id, pack_info in _JS_GAMEPLAY_PACKS.items():
+            pack_dir = str(pack_info["directory"])
+            js_pack_root = root / "gameplay_packs" / pack_dir
+            if not (js_pack_root / "pack.js").is_file():
+                continue
+            manifest_path = js_pack_root / "manifest.json"
+            manifest: dict[str, Any] = {}
+            if manifest_path.is_file():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    manifest = {}
+            title = str(manifest.get("title") or pack_info["title"])
+            targets = manifest.get("targets", {}) if isinstance(manifest, dict) else {}
+            js_pack_records.append({
+                "id": pack_id,
+                "pluginId": pack_id,
+                "label": title,
+                "description": str(manifest.get("description", "")) if isinstance(manifest, dict) else "",
+                "sourceKind": "js-gameplay-pack",
+                "packageRoot": f"gameplay_packs/{pack_dir}",
+                "entry": "pack.js",
+                "status": "available",
+                "loadable": True,
+                "activationStatus": "reload-selection",
+                "entryPoints": [
+                    str(targets.get("section") or targets.get("encounter") or targets.get("scene") or pack_id)
+                ] if isinstance(targets, dict) else [],
+                "scenarioIds": [],
+                "encounterIds": ["opening-shuttle-ambush"] if pack_id == _JS_OPENING_SHUTTLE_PACK_ID else [],
+                "sectionIds": ["main-ship-bay"] if pack_id == _JS_MAIN_SHIP_BAY_BOARDERS_PACK_ID else [],
+                "encounterTemplates": ["shuttle-ambush"] if pack_id == _JS_OPENING_SHUTTLE_PACK_ID else [],
+                "aliases": sorted(str(alias) for alias in pack_info.get("aliases", set())),
+                "problems": [],
+            })
+        packs[0:0] = js_pack_records
         return {
             "schema": "game.availableGameplayPacks.v1",
             "kind": "available-gameplay-packs",
@@ -2273,6 +2332,86 @@ class ViewportGameRoutesMixin:
             "packs": packs,
             "problems": list(registry.problems),
         }
+
+    def _game_gameplay_pack_js_source_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        root = self._game_project_root(str(body.get("project_id", "") or ""))
+        requested = str(
+            body.get("pack_id")
+            or body.get("packId")
+            or body.get("plugin_id")
+            or body.get("pluginId")
+            or body.get("gameplay_pack_id")
+            or body.get("gameplayPackId")
+            or ""
+        ).strip()
+        if requested in {"", "None", "none", "no-pack", "no_pack", "base"}:
+            return {
+                "ok": True,
+                "schema": "game.gameplayPackJsSourceResult.v1",
+                "kind": "gameplay-pack-js-source-result",
+                "mode": "none",
+                "project_id": root.name,
+                "requestedPackId": requested or "None",
+                "loaded": False,
+                "source": "",
+                "runtimeLoaded": False,
+                "projectJsonModified": False,
+                "saveStateMutated": False,
+            }
+
+        for pack_id, pack_info in _JS_GAMEPLAY_PACKS.items():
+            if requested in pack_info.get("aliases", set()):
+                requested = pack_id
+                break
+
+        pack_info = _JS_GAMEPLAY_PACKS.get(requested)
+        if not pack_info:
+            return {
+                "ok": False,
+                "error": "unknown JS gameplay pack",
+                "project_id": root.name,
+                "requestedPackId": requested,
+                "knownPackIds": sorted(_JS_GAMEPLAY_PACKS.keys()),
+            }
+
+        pack_dir = str(pack_info["directory"])
+        pack_root = root / "gameplay_packs" / pack_dir
+        source_path = pack_root / "pack.js"
+        manifest_path = pack_root / "manifest.json"
+        if not source_path.is_file():
+            return {
+                "ok": False,
+                "error": "JS gameplay pack source missing",
+                "project_id": root.name,
+                "requestedPackId": requested,
+                "path": f"gameplay_packs/{pack_dir}/pack.js",
+            }
+        manifest: dict[str, Any] = {}
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                manifest = {}
+        return {
+            "ok": True,
+            "schema": "game.gameplayPackJsSourceResult.v1",
+            "kind": "gameplay-pack-js-source-result",
+            "mode": "selected",
+            "project_id": root.name,
+            "requestedPackId": requested,
+            "packId": requested,
+            "title": str(manifest.get("title") or pack_info["title"]),
+            "version": str(manifest.get("version") or "0.1.0"),
+            "sourceKind": "js-gameplay-pack",
+            "packageRoot": f"gameplay_packs/{pack_dir}",
+            "entry": "pack.js",
+            "source": source_path.read_text(encoding="utf-8"),
+            "loaded": True,
+            "runtimeLoaded": False,
+            "projectJsonModified": False,
+            "saveStateMutated": False,
+        }
+
 
     def _game_attach_available_gameplay_packs(self, root: Path, project: dict[str, Any]) -> dict[str, Any]:
         metadata = project.setdefault("metadata", {})

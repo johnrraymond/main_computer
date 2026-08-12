@@ -648,6 +648,7 @@ $exportItems = @(
   "dev-control.ps1",
   "prod-command.py",
   "export-main-computer-test.ps1",
+  "mother_mutate_harness.py",
   "mcel_apps",
   "tools",
   "scripts",

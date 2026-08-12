@@ -108,13 +108,13 @@ def test_visible_selector_has_none_path_pack_option_and_loader_call() -> None:
     assert 'id="webgl-gameplay-pack-select"' in html
     assert 'id="webgl-gameplay-pack-apply"' in html
     assert "None — base game" in html
-    assert "Opening Shuttle Ambush Elite Wave" in html
+    assert "Opening Shuttle: Elite Boarders" in html
 
     assert PACK_SELECTION_KEY in desktop
     assert "bindWebglGameplayPackSelector()" in desktop
     assert "syncWebglGameplayPackSelector(webglProjectState.project)" in desktop
     assert '"/api/applications/game-editor/gameplay-pack/load"' in desktop
-    assert 'plugin_id: pluginId' in desktop
+    assert 'plugin_id: canonicalPluginId' in desktop
     assert 'plugin_id: "None"' in desktop
     assert "window.location?.reload?.()" in desktop
 

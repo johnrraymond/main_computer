@@ -8,11 +8,23 @@
       strategicSession: null,
       strategicSessionError: "",
       systemScenarioRuntime: null,
-      systemScenarioError: ""
+      systemScenarioError: "",
+      jsGameplayPackInstallResult: null
     };
 
     const WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY = "main-computer.webgl.active-gameplay-packs.v1";
     const WEBGL_GAMEPLAY_PACK_STORAGE_KEY = WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY;
+    const WEBGL_ACTIVE_GAMEPLAY_PACKS_STORAGE_KEY = WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY;
+    const WEBGL_OPENING_SHUTTLE_LEGACY_PLUGIN_ID = "plugin.hand-authored.opening-shuttle-ambush.001";
+    const WEBGL_OPENING_SHUTTLE_JS_PACK_ID = "pack.opening-shuttle.elite-boarders";
+    const WEBGL_OPENING_SHUTTLE_JS_PACK_LABEL = "Opening Shuttle: Elite Boarders";
+    const WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID = "pack.main-ship.bay-boarders";
+    const WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_LABEL = "Main Ship: Bay Boarders";
+    const WEBGL_JS_GAMEPLAY_PACK_IDS = new Set([
+      WEBGL_OPENING_SHUTTLE_JS_PACK_ID,
+      WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID
+    ]);
+    const WEBGL_JS_GAMEPLAY_PACK_SOURCE_ENDPOINT = "/api/applications/game-editor/gameplay-pack/js-source";
 
     async function webglPost(path, payload = {}) {
       const response = await fetch(path, {
@@ -41,6 +53,13 @@
       );
     }
 
+    function webglCanonicalGameplayPackId(value) {
+      const id = String(value || "").trim();
+      if (!id) return "";
+      if (id === WEBGL_OPENING_SHUTTLE_LEGACY_PLUGIN_ID) return WEBGL_OPENING_SHUTTLE_JS_PACK_ID;
+      return id;
+    }
+
     function webglNormalizeGameplayPackIds(value) {
       if (value === null || value === undefined) return [];
       if (Array.isArray(value)) {
@@ -49,7 +68,7 @@
       if (typeof value === "string") {
         const tokens = value.split(",").map((item) => String(item || "").trim()).filter(Boolean);
         if (tokens.some((token) => token.toLowerCase() === "none")) return [];
-        return [...new Set(tokens)];
+        return [...new Set(tokens.map(webglCanonicalGameplayPackId).filter(Boolean))];
       }
       if (typeof value === "object") {
         if (String(value.mode || "").toLowerCase() === "none") return [];
@@ -136,46 +155,77 @@
       const byId = new Map();
 
       packs.forEach((pack) => {
-        const pluginId = String(pack?.pluginId || pack?.id || "").trim();
+        const rawPluginId = String(pack?.pluginId || pack?.id || "").trim();
+        const pluginId = webglCanonicalGameplayPackId(rawPluginId);
         if (!pluginId) return;
         byId.set(pluginId, {
           pluginId,
-          label: String(pack?.label || pack?.title || pluginId),
+          label: pluginId === WEBGL_OPENING_SHUTTLE_JS_PACK_ID
+            ? WEBGL_OPENING_SHUTTLE_JS_PACK_LABEL
+            : pluginId === WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID
+              ? WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_LABEL
+              : String(pack?.label || pack?.title || pluginId),
           description: String(pack?.description || ""),
           loadable: pack?.loadable !== false,
-          status: String(pack?.status || "")
+          status: WEBGL_JS_GAMEPLAY_PACK_IDS.has(pluginId)
+            ? "js-pack"
+            : String(pack?.status || "")
         });
       });
 
       generatedPlugins.forEach((plugin) => {
-        const pluginId = String(plugin?.pluginId || plugin?.id || "").trim();
+        const rawPluginId = String(plugin?.pluginId || plugin?.id || "").trim();
+        const pluginId = webglCanonicalGameplayPackId(rawPluginId);
         if (!pluginId || byId.has(pluginId)) return;
         const scenario = Array.isArray(plugin?.documents)
           ? plugin.documents.find((document) => document?.kind === "scenario")
           : null;
         byId.set(pluginId, {
           pluginId,
-          label: String(scenario?.title || plugin?.title || pluginId),
+          label: pluginId === WEBGL_OPENING_SHUTTLE_JS_PACK_ID
+            ? WEBGL_OPENING_SHUTTLE_JS_PACK_LABEL
+            : pluginId === WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID
+              ? WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_LABEL
+              : String(scenario?.title || plugin?.title || pluginId),
           description: "",
           loadable: true,
-          status: String(plugin?.status || "generated")
+          status: WEBGL_JS_GAMEPLAY_PACK_IDS.has(pluginId)
+            ? "js-pack"
+            : String(plugin?.status || "generated")
         });
       });
 
-      if (!byId.has("plugin.hand-authored.opening-shuttle-ambush.001")) {
-        byId.set("plugin.hand-authored.opening-shuttle-ambush.001", {
-          pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
-          label: "Opening Shuttle Ambush Elite Wave",
-          description: "Loads the hand-authored shuttle-ambush gameplay pack.",
+      if (!byId.has(WEBGL_OPENING_SHUTTLE_JS_PACK_ID)) {
+        byId.set(WEBGL_OPENING_SHUTTLE_JS_PACK_ID, {
+          pluginId: WEBGL_OPENING_SHUTTLE_JS_PACK_ID,
+          label: WEBGL_OPENING_SHUTTLE_JS_PACK_LABEL,
+          description: "Installs the real JS opening-shuttle pack on reload.",
           loadable: true,
-          status: "known-fixture"
+          status: "js-pack"
+        });
+      }
+      if (!byId.has(WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID)) {
+        byId.set(WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID, {
+          pluginId: WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID,
+          label: WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_LABEL,
+          description: "Installs the real JS main-ship bay boarders pack on reload.",
+          loadable: true,
+          status: "js-pack"
         });
       }
 
       return Array.from(byId.values()).sort((left, right) => {
-        const leftOpening = left.pluginId === "plugin.hand-authored.opening-shuttle-ambush.001";
-        const rightOpening = right.pluginId === "plugin.hand-authored.opening-shuttle-ambush.001";
-        if (leftOpening !== rightOpening) return leftOpening ? -1 : 1;
+        const leftOrder = left.pluginId === WEBGL_OPENING_SHUTTLE_JS_PACK_ID
+          ? 0
+          : left.pluginId === WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID
+            ? 1
+            : 2;
+        const rightOrder = right.pluginId === WEBGL_OPENING_SHUTTLE_JS_PACK_ID
+          ? 0
+          : right.pluginId === WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID
+            ? 1
+            : 2;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
         return left.label.localeCompare(right.label);
       });
     }
@@ -202,6 +252,42 @@
       status.textContent = message;
       status.dataset = status.dataset || {};
       status.dataset.mode = String(mode || "");
+    }
+
+    function webglGameplayPackInstallStatusMessage(result = null) {
+      const raw = result && typeof result === "object" ? result : {};
+      if (raw.mode === "none") return "Gameplay Pack runtime: None — base game";
+      if (raw.error) return `Gameplay Pack runtime error: ${String(raw.error)}`;
+      if (raw.installed === true) {
+        const title = String(raw.title || raw.packId || "selected JS pack");
+        const packIds = webglNormalizeGameplayPackIds(raw.packIds || raw.activeGameplayPackIds || raw.packId || []);
+        if (packIds.includes(WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID)) {
+          return `Gameplay Pack runtime: ${title} installed — triggers after the bay-entry cutscene; watch SHIP and CHARACTER AI HUD`;
+        }
+        return `Gameplay Pack runtime: ${title} installed`;
+      }
+      if (raw.mode === "selected") return "Gameplay Pack runtime: selected pack not installed";
+      return "";
+    }
+
+    function webglRecordJsGameplayPackInstallResult(result = null) {
+      const raw = result && typeof result === "object" ? result : null;
+      webglProjectState.jsGameplayPackInstallResult = raw;
+      const nodes = webglGameplayPackSelectorNodes();
+      if (nodes.panel) {
+        nodes.panel.dataset.jsGameplayPackInstalled = String(raw?.installed === true);
+        nodes.panel.dataset.jsGameplayPackMode = String(raw?.mode || "");
+        nodes.panel.dataset.jsGameplayPackId = String(raw?.packId || "");
+        nodes.panel.dataset.jsGameplayPackError = String(raw?.error || "");
+      }
+      const statusMessage = webglGameplayPackInstallStatusMessage(raw);
+      if (statusMessage) {
+        webglSetGameplayPackSelectorStatus(
+          statusMessage,
+          raw?.error ? "error" : raw?.installed === true ? "selected" : raw?.mode === "none" ? "none" : ""
+        );
+      }
+      return raw;
     }
 
     function syncWebglGameplayPackSelector(project = webglProjectState.project) {
@@ -246,6 +332,130 @@
       return selection;
     }
 
+    function webglSelectedJsGameplayPackIds(selection = webglReloadGameplayPackSelection(webglProjectState.project)) {
+      const ids = Array.isArray(selection?.activeGameplayPackIds) ? selection.activeGameplayPackIds : [];
+      return ids.map(webglCanonicalGameplayPackId).filter((id) => WEBGL_JS_GAMEPLAY_PACK_IDS.has(id));
+    }
+
+    function webglSelectedJsGameplayPackId(selection = webglReloadGameplayPackSelection(webglProjectState.project)) {
+      return webglSelectedJsGameplayPackIds(selection)[0] || "";
+    }
+
+    async function webglLoadJsGameplayPackSource(packId) {
+      const cleanPackId = webglCanonicalGameplayPackId(packId);
+      if (!cleanPackId) return null;
+      const payload = await webglPost(WEBGL_JS_GAMEPLAY_PACK_SOURCE_ENDPOINT, {
+        project_id: webglProjectState.projectId || "webgl-demo",
+        pack_id: cleanPackId,
+        plugin_id: cleanPackId
+      });
+      if (!payload?.source) {
+        throw new Error(payload?.error || `gameplay pack source unavailable: ${cleanPackId}`);
+      }
+      return payload;
+    }
+
+    async function installSelectedWebglJsGameplayPack(runtime = gameSurfaceRuntime, project = webglProjectState.project) {
+      const selection = webglReloadGameplayPackSelection(project);
+      const packIds = webglSelectedJsGameplayPackIds(selection);
+      if (!packIds.length) {
+        const clearedOpening = runtime && typeof runtime.openingShuttleClearGameplayPackCommandHarness === "function"
+          ? runtime.openingShuttleClearGameplayPackCommandHarness({
+            source: "webgl-desktop.selected-js-gameplay-pack",
+            reason: "no-active-gameplay-pack"
+          })
+          : null;
+        const clearedMainShip = runtime && typeof runtime.mainShipClearGameplayPackCommandHarness === "function"
+          ? runtime.mainShipClearGameplayPackCommandHarness({
+            source: "webgl-desktop.selected-js-gameplay-pack",
+            reason: "no-active-gameplay-pack"
+          })
+          : null;
+        return {
+          schema: "game.webglJsGameplayPackInstallResult.v1",
+          kind: "webgl-js-gameplay-pack-install-result",
+          mode: "none",
+          installed: false,
+          cleared: Boolean(
+            clearedOpening?.jsGameplayPack?.installed === false
+            || clearedOpening?.installed === false
+            || clearedMainShip?.installed === false
+          ),
+          activeGameplayPackIds: [],
+          source: selection.source,
+          snapshot: clearedOpening || null,
+          mainShipSnapshot: clearedMainShip || null
+        };
+      }
+
+      const results = [];
+      for (const packId of packIds) {
+        const loaded = await webglLoadJsGameplayPackSource(packId);
+        if (packId === WEBGL_OPENING_SHUTTLE_JS_PACK_ID) {
+          if (!runtime || typeof runtime.openingShuttleInstallGameplayPackSource !== "function") {
+            results.push({
+              packId,
+              installed: false,
+              error: "shuttle scene runtime unavailable"
+            });
+            continue;
+          }
+          const snapshot = runtime.openingShuttleInstallGameplayPackSource(loaded.source, {
+            source: "webgl-desktop.selected-js-gameplay-pack",
+            selectedGameplayPackId: packId
+          });
+          results.push({
+            packId,
+            title: String(snapshot?.jsGameplayPack?.title || loaded.title || ""),
+            installed: Boolean(snapshot?.jsGameplayPack?.installed),
+            commandsApplied: Math.max(0, Number(snapshot?.jsGameplayPack?.commandsApplied || 0)),
+            lastCommandType: String(snapshot?.jsGameplayPack?.lastCommandType || ""),
+            snapshot
+          });
+        } else if (packId === WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID) {
+          if (!runtime || typeof runtime.mainShipInstallGameplayPackSource !== "function") {
+            results.push({
+              packId,
+              installed: false,
+              error: "main-ship scene runtime unavailable"
+            });
+            continue;
+          }
+          const snapshot = runtime.mainShipInstallGameplayPackSource(loaded.source, {
+            source: "webgl-desktop.selected-js-gameplay-pack",
+            selectedGameplayPackId: packId
+          });
+          results.push({
+            packId,
+            title: String(snapshot?.title || loaded.title || ""),
+            installed: Boolean(snapshot?.installed),
+            commandsApplied: Math.max(0, Number(snapshot?.commandsApplied || snapshot?.commandApplyCount || 0)),
+            lastCommandType: String(snapshot?.lastCommandType || ""),
+            snapshot
+          });
+        }
+      }
+
+      const installedResults = results.filter((result) => result.installed === true);
+      const first = installedResults[0] || results[0] || null;
+      const firstError = results.find((result) => result.error)?.error || "";
+      return {
+        schema: "game.webglJsGameplayPackInstallResult.v1",
+        kind: "webgl-js-gameplay-pack-install-result",
+        mode: "selected",
+        installed: installedResults.length > 0,
+        activeGameplayPackIds: packIds,
+        packId: String(first?.packId || ""),
+        packIds,
+        title: String(first?.title || ""),
+        commandsApplied: Math.max(0, Number(first?.commandsApplied || 0)),
+        lastCommandType: String(first?.lastCommandType || ""),
+        results,
+        snapshot: first?.snapshot || null,
+        error: installedResults.length > 0 ? "" : firstError
+      };
+    }
+
     async function applyWebglGameplayPackSelection() {
       const nodes = webglGameplayPackSelectorNodes();
       if (!nodes.select) return;
@@ -259,10 +469,17 @@
       );
 
       try {
-        if (!noneSelected) {
+        const canonicalPluginId = webglCanonicalGameplayPackId(pluginId);
+        if (!noneSelected && WEBGL_JS_GAMEPLAY_PACK_IDS.has(canonicalPluginId)) {
+          await webglPost(WEBGL_JS_GAMEPLAY_PACK_SOURCE_ENDPOINT, {
+            project_id: webglProjectState.projectId || "webgl-demo",
+            pack_id: canonicalPluginId,
+            plugin_id: canonicalPluginId
+          });
+        } else if (!noneSelected) {
           await webglPost("/api/applications/game-editor/gameplay-pack/load", {
             project_id: webglProjectState.projectId || "webgl-demo",
-            plugin_id: pluginId
+            plugin_id: canonicalPluginId
           });
         } else {
           await webglPost("/api/applications/game-editor/gameplay-pack/load", {
@@ -272,7 +489,7 @@
         }
         window.localStorage?.setItem?.(
           WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY,
-          JSON.stringify(webglGameplayPackSelectionStorageValue(noneSelected ? "None" : pluginId))
+          JSON.stringify(webglGameplayPackSelectionStorageValue(noneSelected ? "None" : canonicalPluginId))
         );
         webglSetGameplayPackSelectorStatus(
           noneSelected ? "None selected; reloading base game…" : "Gameplay pack loaded; reloading…",
@@ -317,14 +534,16 @@
       const runtimeSelection = typeof runtime?.activeGameplayPackSelection === "function"
         ? runtime.activeGameplayPackSelection()
         : null;
-      const runtimeIds = Array.isArray(runtimeSelection?.activeGameplayPackIds)
-        ? runtimeSelection.activeGameplayPackIds
-        : Array.isArray(runtimeSelection?.activePluginIds)
-          ? runtimeSelection.activePluginIds
-          : [];
+      const runtimeIds = webglNormalizeGameplayPackIds(
+        Array.isArray(runtimeSelection?.activeGameplayPackIds)
+          ? runtimeSelection.activeGameplayPackIds
+          : Array.isArray(runtimeSelection?.activePluginIds)
+            ? runtimeSelection.activePluginIds
+            : []
+      );
       if (!runtimeIds.length) return selection;
       const nodes = webglGameplayPackSelectorNodes();
-      const selectedPluginId = String(runtimeIds[0] || "");
+      const selectedPluginId = webglCanonicalGameplayPackId(runtimeIds[0] || "");
       if (nodes.select) nodes.select.value = selectedPluginId;
       if (nodes.panel) {
         nodes.panel.dataset = nodes.panel.dataset || {};
@@ -1588,6 +1807,29 @@
           }
         }
       }) || {scene};
+      installSelectedWebglJsGameplayPack(gameSurfaceRuntime, project).then((result) => {
+        const recorded = webglRecordJsGameplayPackInstallResult(result);
+        if (!glStatus || !recorded) return;
+        glStatus.dataset.jsGameplayPack = recorded.installed
+          ? "installed"
+          : recorded.mode === "none"
+            ? "none"
+            : "unavailable";
+        glStatus.dataset.jsGameplayPackId = String(recorded.packId || "");
+        glStatus.dataset.jsGameplayPackCommandsApplied = String(recorded.commandsApplied || 0);
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error || "unknown");
+        webglRecordJsGameplayPackInstallResult({
+          schema: "game.webglJsGameplayPackInstallResult.v1",
+          kind: "webgl-js-gameplay-pack-install-result",
+          mode: "error",
+          installed: false,
+          error: message
+        });
+        if (!glStatus) return;
+        glStatus.dataset.jsGameplayPack = "error";
+        glStatus.dataset.jsGameplayPackError = message;
+      });
       window.MainComputerPaxScenarioInteraction?.setCharacterRuntime?.(
         window.MainComputerCharacterAIRuntime?.current?.() || null
       );
@@ -1751,6 +1993,12 @@
       syncGameplayPackControls: syncWebglGameplayPackControls,
       applyGameplayPackSelection: applyWebglGameplayPackSelection,
       applyGameplayPackControlSelection: applyWebglGameplayPackControlSelection,
+      selectedJsGameplayPackId: webglSelectedJsGameplayPackId,
+      selectedJsGameplayPackIds: webglSelectedJsGameplayPackIds,
+      loadJsGameplayPackSource: webglLoadJsGameplayPackSource,
+      installSelectedJsGameplayPack: installSelectedWebglJsGameplayPack,
+      recordJsGameplayPackInstallResult: webglRecordJsGameplayPackInstallResult,
+      gameplayPackInstallStatusMessage: webglGameplayPackInstallStatusMessage,
       projectState: webglProjectState
     };
 

@@ -11,18 +11,18 @@
   ],
   "files": [
     {
-      "bytesWritten": 1948,
+      "bytesWritten": 1997,
       "contentId": "scenario.plugin.opening-shuttle-ambush.elite-wave",
       "contentKind": "scenario",
-      "sha256": "7e814a23efe114653c9a75a35b9f30f8d8274bab5980a13f460f7eca0ecb551c",
+      "sha256": "7deb3d25aa404f7ced0b31e51020bb24b62b3bd98fe007a662c3d0aa36e703fe",
       "sourcePath": "content/scenarios/opening-shuttle-ambush-elite-wave.json",
       "targetPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json"
     },
     {
-      "bytesWritten": 1898,
+      "bytesWritten": 1980,
       "contentId": "encounter.plugin.opening-shuttle-ambush.elite-wave",
       "contentKind": "encounter",
-      "sha256": "aab42d87d134fc02596186ae7a1f88419ea468fc2e4bc33d15b7e54159d78ec5",
+      "sha256": "53f51533635c38173993ef00a32fd77f00db062666447ce69132960d0dc89466",
       "sourcePath": "content/encounters/opening-shuttle-ambush-elite-wave.json",
       "targetPath": "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json"
     }

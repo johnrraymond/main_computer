@@ -162,10 +162,13 @@ from tools.mother.common.deployment_node_add_identity import (
 )
 from tools.mother.common.deployment_node_add_single_node_bootstrap import (
     MotherDeploymentNodeAddSingleNodeBootstrapError,
+    adopt_node_add_single_node_bootstrap_live_proof,
     build_node_add_single_node_bootstrap_release,
     execute_node_add_single_node_bootstrap_release,
+    finalize_node_add_single_node_chain_and_hub_proof,
     verify_node_add_single_node_bootstrap_evidence,
     verify_node_add_single_node_bootstrap_release,
+    verify_node_add_single_node_chain_and_hub_proof_evidence,
     write_node_add_single_node_bootstrap_release,
 )
 from tools.mother.common.deployment_node_add_replica_sync import (
@@ -191,6 +194,12 @@ from tools.mother.common.deployment_node_add_validator_admission import (
     verify_node_add_validator_admission_evidence,
     verify_node_add_validator_admission_release,
     write_node_add_validator_admission_release,
+)
+from tools.mother.common.deployment_topology_rectification import (
+    MotherDeploymentTopologyRectificationError,
+    adopt_empty_current_topology,
+    detect_topology_staleness,
+    verify_empty_topology_rectification_evidence,
 )
 from tools.mother.common.deployment_identity_install import (
     MotherDeploymentIdentityInstallError,
@@ -590,6 +599,26 @@ def _parser() -> argparse.ArgumentParser:
     add_node_single_node_bootstrap.add_argument("--poll-interval-seconds", type=float, default=5.0)
     add_node_single_node_bootstrap.add_argument("--execute", action="store_true")
 
+    add_node_single_node_chain_and_hub_proof = add_node_subparsers.add_parser(
+        "single-node-chain-and-hub-proof",
+        help="write the read-only final proof/topology artifact for an operator-directed single-node add",
+        allow_abbrev=False,
+    )
+    add_node_single_node_chain_and_hub_proof.add_argument("network", choices=["mainnet"])
+    add_node_single_node_chain_and_hub_proof.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_single_node_chain_and_hub_proof.add_argument("--operation-id")
+    add_node_single_node_chain_and_hub_proof.add_argument("--bootstrap-evidence", required=True)
+    add_node_single_node_chain_and_hub_proof.add_argument("--acknowledge-bootstrap-evidence-sha256", required=True)
+    add_node_single_node_chain_and_hub_proof.add_argument("--max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--release-max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    add_node_single_node_chain_and_hub_proof.add_argument("--write-evidence", action="store_true")
+
     add_node_replica_sync = add_node_subparsers.add_parser(
         "replica-sync",
         help="execute the released generic add-node non-validator replica-sync phase",
@@ -818,6 +847,87 @@ def _parser() -> argparse.ArgumentParser:
     verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
 
+    adopt_node_add_single_node_bootstrap_live_proof_parser = subparsers.add_parser(
+        "adopt-add-node-single-node-bootstrap-live-proof",
+        help="write clean single-node bootstrap evidence from an already-healthy service without PATCH/deploy",
+        allow_abbrev=False,
+    )
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--operation-id")
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--evidence", required=True)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--timeout", type=float, default=30.0)
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+
+    verify_node_add_single_node_chain_and_hub_proof_parser = subparsers.add_parser(
+        "verify-add-node-single-node-chain-and-hub-proof-evidence",
+        help="verify the read-only final single-node add proof/topology evidence",
+        allow_abbrev=False,
+    )
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--operation-id")
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--evidence", required=True)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--bootstrap-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+
+
+    detect_mother_topology_staleness_parser = subparsers.add_parser(
+        "detect-mother-topology-staleness",
+        help="read-only check that Mother topology evidence still matches live Coolify services",
+        allow_abbrev=False,
+    )
+    detect_mother_topology_staleness_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    detect_mother_topology_staleness_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    detect_mother_topology_staleness_parser.add_argument("--operation-id")
+    detect_mother_topology_staleness_parser.add_argument("--topology-evidence", required=True)
+    detect_mother_topology_staleness_parser.add_argument("--acknowledge-topology-evidence-sha256", required=True)
+    detect_mother_topology_staleness_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    detect_mother_topology_staleness_parser.add_argument("--timeout", type=float, default=30.0)
+    detect_mother_topology_staleness_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+
+    adopt_empty_current_topology_parser = subparsers.add_parser(
+        "adopt-empty-current-topology",
+        help="write read-only empty-current-topology evidence after stale Mother topology is proven absent live",
+        allow_abbrev=False,
+    )
+    adopt_empty_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_empty_current_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    adopt_empty_current_topology_parser.add_argument("--operation-id")
+    adopt_empty_current_topology_parser.add_argument("--topology-evidence", required=True)
+    adopt_empty_current_topology_parser.add_argument("--acknowledge-topology-evidence-sha256", required=True)
+    adopt_empty_current_topology_parser.add_argument("--actual-node", action="append", default=[], help="operator-declared live node; currently unsupported except no values")
+    adopt_empty_current_topology_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    adopt_empty_current_topology_parser.add_argument("--timeout", type=float, default=30.0)
+    adopt_empty_current_topology_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    adopt_empty_current_topology_parser.add_argument("--write-evidence", action="store_true")
+
+    verify_empty_current_topology_parser = subparsers.add_parser(
+        "verify-empty-current-topology-evidence",
+        help="verify read-only empty-current-topology rectification evidence",
+        allow_abbrev=False,
+    )
+    verify_empty_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_empty_current_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_empty_current_topology_parser.add_argument("--operation-id")
+    verify_empty_current_topology_parser.add_argument("--evidence", required=True)
+    verify_empty_current_topology_parser.add_argument("--max-age-seconds", type=int, default=86400)
 
     release_node_add_replica_sync = subparsers.add_parser(
         "release-add-node-replica-sync",
@@ -6329,6 +6439,113 @@ def _cmd_verify_node_add_single_node_bootstrap_evidence(args: argparse.Namespace
 
 
 
+def _cmd_adopt_node_add_single_node_bootstrap_live_proof(args: argparse.Namespace, private_state) -> int:
+    result = adopt_node_add_single_node_bootstrap_live_proof(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        operation=_operation("adopt-node-add-single-node-bootstrap-live-proof", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_add_node_single_node_chain_and_hub_proof(args: argparse.Namespace, private_state) -> int:
+    result = finalize_node_add_single_node_chain_and_hub_proof(
+        _paths(args),
+        private_state,
+        Path(args.bootstrap_evidence),
+        acknowledged_bootstrap_evidence_sha256=args.acknowledge_bootstrap_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        write_evidence=args.write_evidence,
+        operation=_operation("add-node-single-node-chain-and-hub-proof", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_single_node_chain_and_hub_proof_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_single_node_chain_and_hub_proof_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        bootstrap_max_age_seconds=args.bootstrap_max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+
+
+def _cmd_detect_mother_topology_staleness(args: argparse.Namespace, private_state) -> int:
+    result = detect_topology_staleness(
+        _paths(args),
+        private_state,
+        Path(args.topology_evidence),
+        network=args.network,
+        acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_adopt_empty_current_topology(args: argparse.Namespace, private_state) -> int:
+    result = adopt_empty_current_topology(
+        _paths(args),
+        private_state,
+        Path(args.topology_evidence),
+        network=args.network,
+        acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
+        actual_nodes=args.actual_node,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        write_evidence=args.write_evidence,
+        operation=_operation("adopt-empty-current-topology", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_empty_current_topology_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_empty_topology_rectification_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_release_node_add_replica_sync(args: argparse.Namespace, private_state) -> int:
     release = build_node_add_replica_sync_release(
         _paths(args),
@@ -6737,6 +6954,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _cmd_add_node_identity(args, private_state)
             if args.add_node_phase == "single-node-bootstrap":
                 return _cmd_add_node_single_node_bootstrap(args, private_state)
+            if args.add_node_phase == "single-node-chain-and-hub-proof":
+                return _cmd_add_node_single_node_chain_and_hub_proof(args, private_state)
             if args.add_node_phase == "replica-sync":
                 return _cmd_add_node_replica_sync(args, private_state)
             if args.add_node_phase == "validator-admission":
@@ -6764,6 +6983,16 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_node_add_single_node_bootstrap_release(args, private_state)
         if args.command == "verify-add-node-single-node-bootstrap-evidence":
             return _cmd_verify_node_add_single_node_bootstrap_evidence(args, private_state)
+        if args.command == "adopt-add-node-single-node-bootstrap-live-proof":
+            return _cmd_adopt_node_add_single_node_bootstrap_live_proof(args, private_state)
+        if args.command == "verify-add-node-single-node-chain-and-hub-proof-evidence":
+            return _cmd_verify_node_add_single_node_chain_and_hub_proof_evidence(args, private_state)
+        if args.command == "detect-mother-topology-staleness":
+            return _cmd_detect_mother_topology_staleness(args, private_state)
+        if args.command == "adopt-empty-current-topology":
+            return _cmd_adopt_empty_current_topology(args, private_state)
+        if args.command == "verify-empty-current-topology-evidence":
+            return _cmd_verify_empty_current_topology_evidence(args, private_state)
         if args.command == "release-add-node-replica-sync":
             return _cmd_release_node_add_replica_sync(args, private_state)
         if args.command == "verify-add-node-replica-sync-release":
@@ -7085,6 +7314,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentNodeAddReplicaSyncError,
         MotherDeploymentNodeAddValidatorAdmissionError,
         MotherDeploymentNodeAddRollbackError,
+        MotherDeploymentTopologyRectificationError,
         MotherDeploymentNodeRemovePrepError,
         MotherDeploymentNodeRemoveDoError,
         MotherDeploymentNodeRemoveFinalizeError,

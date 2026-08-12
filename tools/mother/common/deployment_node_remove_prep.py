@@ -29,7 +29,10 @@ from .private_state import PrivateStateReadResult, _secure_private_path
 _TRANSACTION_KIND = "main_computer.mother.deployment_node_remove_prep_transaction.v1"
 _TRANSACTION_DIRECTORY = ("actions", "deployment-node-remove-prep-transactions")
 _T3_BASELINE_KIND = "main_computer.mother.deployment_t3_post_admission_steady_state_evidence.v1"
-_SUPPORTED_BASELINE_KINDS = frozenset({_T3_BASELINE_KIND})
+_SINGLE_NODE_FINAL_TOPOLOGY_KIND = "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1"
+_T3_BASELINE_DIRECTORY = ("evidence", "deployment-t3-post-admission-steady-state")
+_SINGLE_NODE_FINAL_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-single-node-chain-and-hub-proof")
+_SUPPORTED_BASELINE_KINDS = frozenset({_T3_BASELINE_KIND, _SINGLE_NODE_FINAL_TOPOLOGY_KIND})
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -179,6 +182,23 @@ def _dedupe(values: list[str], label: str) -> None:
 
 
 def _latest_service_records(document: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    if document.get("kind") == _SINGLE_NODE_FINAL_TOPOLOGY_KIND:
+        final_topology = document.get("final_topology")
+        services = final_topology.get("services") if isinstance(final_topology, Mapping) else None
+        if not isinstance(services, Mapping):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+                "single-node final topology evidence does not contain services",
+            )
+        latest: dict[str, dict[str, Any]] = {}
+        for node, record in services.items():
+            if isinstance(node, str) and isinstance(record, Mapping):
+                item = dict(record)
+                item.setdefault("node", node)
+                item.setdefault("observed_at", item.get("last_observed_at"))
+                latest[node] = item
+        return latest
+
     observations = document.get("service_observations")
     if not isinstance(observations, list):
         raise _fail(
@@ -199,6 +219,12 @@ def _latest_service_records(document: Mapping[str, Any]) -> dict[str, dict[str, 
     return latest
 
 
+def _baseline_directory_for_kind(kind: Any) -> tuple[str, ...]:
+    if kind == _SINGLE_NODE_FINAL_TOPOLOGY_KIND:
+        return _SINGLE_NODE_FINAL_TOPOLOGY_DIRECTORY
+    return _T3_BASELINE_DIRECTORY
+
+
 def _load_baseline(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -214,7 +240,8 @@ def _load_baseline(
     expected = _sha256(expected_sha256, "baseline evidence SHA-256")
     if digest != expected:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_MISMATCH", "baseline evidence SHA-256 mismatch")
-    if document.get("kind") not in _SUPPORTED_BASELINE_KINDS:
+    kind = document.get("kind")
+    if kind not in _SUPPORTED_BASELINE_KINDS:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_UNSUPPORTED", "baseline evidence kind is not supported for node removal prep")
     if document.get("schema_version") != 1 or document.get("network") != network:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "baseline evidence schema or network is invalid")
@@ -232,6 +259,56 @@ def _load_baseline(
     policy = document.get("policy")
     if not isinstance(summary, Mapping) or not isinstance(policy, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", "baseline evidence summary or policy is missing")
+
+    if kind == _SINGLE_NODE_FINAL_TOPOLOGY_KIND:
+        final_topology = document.get("final_topology")
+        if not isinstance(final_topology, Mapping):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", "single-node final topology is missing")
+        required_truths = (
+            summary.get("clean") is True,
+            summary.get("complete") is True,
+            summary.get("current_topology_marked_by_evidence") is True,
+            summary.get("serves_chain") is True,
+            summary.get("serves_hub") is True,
+            summary.get("single_node_bootstrap_proven") is True,
+            summary.get("routing_or_topology_published") is False,
+            summary.get("public_endpoint_created") is False,
+            policy.get("finalize_mutation_performed") is False,
+            policy.get("routing_or_topology_published") is False,
+            policy.get("public_endpoint_created") is False,
+            document.get("routing_or_topology_published") is not True,
+            document.get("public_endpoint_created") is not True,
+            document.get("live_mutation_performed") is not True,
+        )
+        if not all(required_truths):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "single-node final topology evidence is not clean")
+        nodes_raw = final_topology.get("nodes")
+        validators_raw = final_topology.get("validator_set")
+        if not isinstance(nodes_raw, list) or not isinstance(validators_raw, list):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", "single-node final topology nodes or validator set is missing")
+        nodes = [_identifier(item, "baseline node") for item in nodes_raw]
+        validators = [_address(item, "baseline validator address") for item in validators_raw]
+        _dedupe(nodes, "baseline nodes")
+        _dedupe(validators, "baseline validator set")
+        if len(nodes) != len(validators) or len(nodes) != 1:
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "single-node removal baseline must contain exactly one node and validator")
+        if int(final_topology.get("validator_count", len(validators))) != len(validators):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "single-node final validator count is inconsistent")
+        normalized = dict(document)
+        normalized["nodes"] = list(nodes)
+        normalized["validator_set"] = list(validators)
+        normalized["validator_count"] = len(validators)
+        normalized["chain_id"] = final_topology.get("chain_id")
+        normalized["genesis_sha256"] = final_topology.get("genesis_sha256")
+        services = _latest_service_records(normalized)
+        missing = [node for node in nodes if node not in services]
+        if missing:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+                f"single-node final topology is missing services for: {', '.join(missing)}",
+            )
+        return normalized, digest, age, services
+
     required_truths = (
         summary.get("clean") is True,
         summary.get("final_validator_set_bound") is True,
@@ -287,8 +364,8 @@ def _service_record(node: str, record: Mapping[str, Any]) -> dict[str, Any]:
         "controller_id": controller_id,
         "service_uuid": service_uuid,
         "service_status": record.get("service_status"),
-        "readiness_source": record.get("proof_source"),
-        "last_observed_at": record.get("observed_at"),
+        "readiness_source": record.get("proof_source") or record.get("readiness_source"),
+        "last_observed_at": record.get("observed_at") or record.get("last_observed_at"),
     }
 
 
@@ -327,11 +404,15 @@ def build_node_remove_prep_transaction(
     target_validator = validators[target_index]
     survivors = [node for node in nodes if node != target]
     post_validators = [validator for index, validator in enumerate(validators) if index != target_index]
-    if not survivors or not post_validators:
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_TARGET_INVALID", "node removal would leave no surviving validator")
+    single_node_decommission = not survivors and not post_validators and len(nodes) == 1
+    if (not survivors or not post_validators) and not single_node_decommission:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_TARGET_INVALID", "node removal would leave an inconsistent survivor topology")
 
     service_topology = {node: _service_record(node, services[node]) for node in nodes}
     created_text = _timestamp(created_at)
+    service_deletion_is_first = bool(single_node_decommission)
+    validator_removal_vote_required = not single_node_decommission
+    routing_withdrawal_required = not single_node_decommission
     transaction: dict[str, Any] = {
         "kind": _TRANSACTION_KIND,
         "schema_version": 1,
@@ -377,46 +458,64 @@ def build_node_remove_prep_transaction(
             "removed_node": target,
             "removed_validator_address": target_validator,
         },
-        "ordered_removal_plan": [
-            {
-                "ordinal": 1,
-                "phase": "withdraw-hub-fdb-topology",
-                "description": "withdraw the target from Hub/FDB topology before service deletion",
-                "required_before_service_deletion": True,
-            },
-            {
-                "ordinal": 2,
-                "phase": "withdraw-rpc-routing",
-                "description": "withdraw the target from RPC routing before service deletion",
-                "required_before_service_deletion": True,
-            },
-            {
-                "ordinal": 3,
-                "phase": "remove-qbft-validator",
-                "description": "remove the target validator from the QBFT validator set before service deletion",
-                "required_before_service_deletion": True,
-            },
-            {
-                "ordinal": 4,
-                "phase": "detach-disable-archive-or-delete-service",
-                "description": "detach, disable, archive, or delete exactly the prepared target service",
-                "required_before_service_deletion": False,
-            },
-            {
-                "ordinal": 5,
-                "phase": "verify-surviving-network",
-                "description": "verify the surviving topology and validator set after removal",
-                "required_before_service_deletion": False,
-            },
-        ],
+        "ordered_removal_plan": (
+            [
+                {
+                    "ordinal": 1,
+                    "phase": "decommission-single-node-service",
+                    "description": "delete the sole single-node service after proving it is the entire live topology",
+                    "required_before_service_deletion": False,
+                },
+                {
+                    "ordinal": 2,
+                    "phase": "verify-empty-topology",
+                    "description": "verify the topology is empty after the sole service is removed",
+                    "required_before_service_deletion": False,
+                },
+            ]
+            if single_node_decommission
+            else [
+                {
+                    "ordinal": 1,
+                    "phase": "withdraw-hub-fdb-topology",
+                    "description": "withdraw the target from Hub/FDB topology before service deletion",
+                    "required_before_service_deletion": True,
+                },
+                {
+                    "ordinal": 2,
+                    "phase": "withdraw-rpc-routing",
+                    "description": "withdraw the target from RPC routing before service deletion",
+                    "required_before_service_deletion": True,
+                },
+                {
+                    "ordinal": 3,
+                    "phase": "remove-qbft-validator",
+                    "description": "remove the target validator from the QBFT validator set before service deletion",
+                    "required_before_service_deletion": True,
+                },
+                {
+                    "ordinal": 4,
+                    "phase": "detach-disable-archive-or-delete-service",
+                    "description": "detach, disable, archive, or delete exactly the prepared target service",
+                    "required_before_service_deletion": False,
+                },
+                {
+                    "ordinal": 5,
+                    "phase": "verify-surviving-network",
+                    "description": "verify the surviving topology and validator set after removal",
+                    "required_before_service_deletion": False,
+                },
+            ]
+        ),
         "execution_plan": {
             "kind": "mother-remove-node-prep-only",
             "prep_mutation_count": 0,
             "do_mutation_required": True,
-            "service_deletion_is_first": False,
-            "routing_topology_withdrawal_required_before_service_deletion": True,
-            "rpc_withdrawal_required_before_service_deletion": True,
-            "qbft_validator_removal_required_before_service_deletion": True,
+            "single_node_decommission": single_node_decommission,
+            "service_deletion_is_first": service_deletion_is_first,
+            "routing_topology_withdrawal_required_before_service_deletion": routing_withdrawal_required,
+            "rpc_withdrawal_required_before_service_deletion": routing_withdrawal_required,
+            "qbft_validator_removal_required_before_service_deletion": validator_removal_vote_required,
             "allowed_next_command": f"remove-node do {network}",
         },
         "policy": {
@@ -426,7 +525,9 @@ def build_node_remove_prep_transaction(
             "live_mutation_performed": False,
             "mutation_count": 0,
             "service_deletion_performed": False,
-            "service_deletion_is_first": False,
+            "service_deletion_is_first": service_deletion_is_first,
+            "single_node_decommission": single_node_decommission,
+            "validator_removal_vote_required": validator_removal_vote_required,
             "routing_or_topology_published": False,
             "public_http_endpoint_created": False,
             "validator_vote_performed": False,
@@ -441,6 +542,7 @@ def build_node_remove_prep_transaction(
             "service_deletion_authorized": False,
             "routing_or_topology_publication_authorized": False,
             "validator_vote_authorized": False,
+            "validator_removal_vote_required": validator_removal_vote_required,
             "validator_activation_authorized": False,
             "operator_release_required_for_do": True,
         },
@@ -458,8 +560,10 @@ def build_node_remove_prep_transaction(
         "survivor_nodes": survivors,
         "current_validator_count": len(validators),
         "post_removal_validator_count": len(post_validators),
-        "routing_topology_withdrawal_required_before_service_deletion": True,
-        "service_deletion_is_first": False,
+        "routing_topology_withdrawal_required_before_service_deletion": routing_withdrawal_required,
+        "service_deletion_is_first": service_deletion_is_first,
+        "single_node_decommission": single_node_decommission,
+        "validator_removal_vote_required": validator_removal_vote_required,
         "prep_mutation_count": 0,
         "live_mutation_performed": False,
         "service_deletion_performed": False,
@@ -534,7 +638,7 @@ def verify_node_remove_prep_transaction(
     baseline_path = _resolve_under(
         paths,
         source.get("locator"),
-        ("evidence", "deployment-t3-post-admission-steady-state"),
+        _baseline_directory_for_kind(source.get("kind")),
         label="baseline evidence",
     )
     baseline, baseline_sha, _baseline_age, _services = _load_baseline(
@@ -559,8 +663,11 @@ def verify_node_remove_prep_transaction(
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_TRANSACTION_INVALID", "target node is still present in post-removal topology")
     if target.get("validator_address") in post.get("validator_set", []):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_TRANSACTION_INVALID", "target validator is still present in post-removal topology")
-    if document.get("execution_plan", {}).get("service_deletion_is_first") is not False:
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_TRANSACTION_INVALID", "service deletion must not be first")
+    execution_plan = document.get("execution_plan", {})
+    single_node_decommission = bool(execution_plan.get("single_node_decommission"))
+    expected_service_deletion_is_first = single_node_decommission
+    if execution_plan.get("service_deletion_is_first") is not expected_service_deletion_is_first:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_TRANSACTION_INVALID", "service deletion ordering does not match topology kind")
     return {
         "clean": True,
         "transaction_path": str(resolved),
@@ -574,8 +681,10 @@ def verify_node_remove_prep_transaction(
         "survivor_nodes": list(post["nodes"]),
         "current_validator_set": list(current["validator_set"]),
         "post_removal_validator_set": list(post["validator_set"]),
-        "routing_topology_withdrawal_required_before_service_deletion": True,
-        "service_deletion_is_first": False,
+        "routing_topology_withdrawal_required_before_service_deletion": bool(execution_plan.get("routing_topology_withdrawal_required_before_service_deletion")),
+        "service_deletion_is_first": bool(execution_plan.get("service_deletion_is_first")),
+        "single_node_decommission": single_node_decommission,
+        "validator_removal_vote_required": bool(execution_plan.get("qbft_validator_removal_required_before_service_deletion")),
         "live_mutation_performed": False,
         "service_deletion_performed": False,
         "source_baseline_evidence_sha256": baseline_sha,

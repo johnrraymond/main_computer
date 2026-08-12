@@ -71,6 +71,7 @@ readiness only and does not claim that an implementation or test already exists.
 | `MOTHER-REQ-026` | Authority-restoring reseal is safety-first: reachable divergent replicas require full base-authority proposal and completed-certificate acceptance, while unreachable base-authority replicas block exclusion and reseal | [Authority-restoring reseal and rectification](#authority-restoring-reseal-and-rectification) | Divergent-lineage, common-base, one-proposal, cancellation, checkpoint, pointer-commit, and unreachable-block tests | `MOTHER-REQ-023`, `MOTHER-REQ-024`, `MOTHER-REQ-025` | Specified |
 | `MOTHER-REQ-027` | Hub application code upgrades deploy immutable signed releases through ordinary D026 authority, preserve topology and schemas, and retain exact rollback artifacts until typed release-state finalization | [Authoritative Hub release rollout](#authoritative-hub-release-rollout) | Legacy-baseline, signature, artifact-closure, mixed-version, outage-policy, progress, rollback, and typed-delta finalization tests | `MOTHER-REQ-005`, `MOTHER-REQ-007`, `MOTHER-REQ-009`, `MOTHER-REQ-022`, `MOTHER-REQ-023`, `MOTHER-REQ-025` | Specified |
 | `MOTHER-REQ-028` | Operator-directed testing is authoritative; deprecated fixture paths MUST NOT define lifecycle behavior or acceptance | [Operator-directed testing path and deprecated fixture rule](#operator-directed-testing-path-and-deprecated-fixture-rule) | Command-surface audit, topology fixture matrix, hardcoded-node scan, deprecated-path warning, reset-from-empty add/remove rehearsal | `MOTHER-REQ-012`, `MOTHER-REQ-013` | Specified |
+| `MOTHER-REQ-029` | Mother failure handling uses read-only twiddles, planned diagnostics, rollback-before-retry, and shell-specific operator execution rules | [Mother twiddle, diagnostic, rollback, and retry rule](#mother-twiddle-diagnostic-rollback-and-retry-rule) | Twiddle-format audit, failure rehearsal, rollback-before-retry evidence, no-SSH remote-host command audit | `MOTHER-REQ-009`, `MOTHER-REQ-028` | Specified |
 
 `mother` is the replacement control surface for validator lifecycle operations.
 Allfather scripts are retired and MUST fail closed with an error that directs
@@ -325,6 +326,80 @@ operator explicitly supplies and verifies through evidence. Tests MUST also
 include at least one alternate topology fixture for generic lifecycle behavior
 before an add/remove implementation is accepted. A test that passes only because
 code recognizes old fixture node names is not evidence of Mother correctness.
+
+### Mother twiddle, diagnostic, rollback, and retry rule
+
+Unplanned live failures are handled by observation, rollback, planning, and then
+a fresh released retry. A failed live mutation MUST NOT be repaired by repeatedly
+patching or redeploying over the same failed state merely to see what happens.
+After a failed mutation, operators and agents MUST first collect read-only
+twiddle evidence, identify the first failing boundary, plan any required
+diagnostic or product-code change, roll back the failed mutation through Mother,
+and retry only from a fresh release.
+
+A twiddle is a bounded, disposable, read-only operator diagnostic snippet. A
+twiddle MAY read Mother evidence, Coolify API state, container status, runtime
+logs, process state, files that are already part of the deployed service, or
+other explicitly named observability surfaces. A twiddle MUST NOT change repo
+files, write Mother runtime state, mutate Coolify, start, stop, patch, deploy,
+delete, restart, vote, publish routes, rotate secrets, or alter containers,
+volumes, networks, databases, chain state, Hub state, or rollback frames. A
+twiddle result is evidence for planning; it is not a hidden implementation path.
+
+Diagnostic code is permitted, but it MUST be planned. An unplanned failure MUST
+NOT trigger patch-after-patch diagnostic code churn. Before adding diagnostic
+code to the repository, the operator or agent MUST have a clear diagnostic
+objective, input evidence, expected output, non-mutation proof, and acceptance
+boundary. External twiddles SHOULD be preferred until the diagnostic surface is
+understood. Once a diagnostic is justified as reusable, Mother-owned code MAY
+provide it as a released command with tests, non-mutation proof, and documentation.
+
+Mother twiddles have strict shell contracts:
+
+```text
+local operator workstation -> PowerShell
+Coolify host shell         -> bash pasted by the operator on that host
+```
+
+Local twiddles MUST be written as PowerShell when they are intended to run from
+the operator workstation. They MAY call Python modules in the checked-out repo or
+read local Mother runtime evidence. They MUST NOT assume Docker containers are
+local unless the operator explicitly selects a local Docker context as the target
+of the observation.
+
+Coolify-host twiddles MUST be written as plain bash for an already-open shell on
+the selected host. They MUST NOT include `ssh`, `scp`, SSH here-doc wrappers,
+PowerShell here-strings, `host.docker.internal`, or commands that assume the
+operator is still on the workstation. They MUST NOT contain explicit `exit`
+commands or `set -e` / `set -u` traps that terminate the operator shell while
+diagnostics are being gathered. Error-tolerant read-only probes SHOULD print
+observable failures and continue to the next read-only probe.
+
+Agents MUST NOT synthesize remote execution by embedding SSH calls in twiddles.
+When remote host observation is required, the agent MUST provide the bash snippet
+for the operator to paste on the named Coolify host and MUST state that the
+snippet is read-only. If local observation is sufficient, the agent MUST provide
+a PowerShell snippet instead.
+
+A live failure response follows this order:
+
+```text
+1. stop issuing mutating commands for the failed operation state
+2. run the smallest read-only twiddle that can identify the next boundary
+3. inspect the twiddle output and name the first failing boundary
+4. decide whether a code change, environment change, or operator action is
+   required
+5. roll back the failed Mother mutation before a retry
+6. create a fresh transaction or release when the retry is authorized
+7. retry only the planned corrected path
+```
+
+For operator-directed add/delete testing, this twiddle/rollback rule is part of
+the golden path. The golden path is not a fixed historical topology and is not a
+series of ad-hoc mutations over a broken deployment. It is the operator-selected
+add/delete sequence, supported by evidence, read-only diagnostics, rollback, and
+fresh releases.
+
 
 ### Deprecated legacy steady-state soak/testing path
 

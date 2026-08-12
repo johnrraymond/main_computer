@@ -351,21 +351,33 @@ def _validate_do_evidence(
     policy = document.get("policy")
     if not isinstance(summary, Mapping) or not isinstance(authority, Mapping) or not isinstance(policy, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_DO_EVIDENCE_INVALID", "node-removal do evidence is incomplete")
+    single_node_decommission = bool(summary.get("single_node_decommission"))
+    validator_vote_required = bool(summary.get("validator_removal_vote_required", not single_node_decommission))
+    routing_ok = (
+        summary.get("routing_topology_withdrawal_verified_before_service_deletion") is True
+        if validator_vote_required
+        else summary.get("routing_topology_withdrawal_verified_before_service_deletion") is False
+    )
+    vote_ok = (
+        summary.get("validator_removal_vote_performed") is True
+        if validator_vote_required
+        else summary.get("validator_removal_vote_performed") is False
+    )
     required = [
         document.get("status") == "pass",
         document.get("next_phase") == "remove-node-finalize-mainnet",
         summary.get("clean") is True,
         summary.get("complete") is True,
-        summary.get("service_deletion_is_first") is False,
-        summary.get("routing_topology_withdrawal_verified_before_service_deletion") is True,
-        summary.get("validator_removal_vote_performed") is True,
+        summary.get("service_deletion_is_first") is bool(single_node_decommission),
+        routing_ok,
+        vote_ok,
         summary.get("service_deletion_performed") is True or summary.get("service_already_absent") is True,
         authority.get("release_consumed") is True,
         authority.get("validator_removal_vote_proven") is True,
         authority.get("service_deletion_proven") is True,
         policy.get("routing_or_topology_published") is False,
         policy.get("public_http_endpoint_created") is False,
-        policy.get("service_deletion_is_first") is False,
+        policy.get("service_deletion_is_first") is bool(single_node_decommission),
     ]
     if not all(required):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_DO_EVIDENCE_INVALID", "node-removal do evidence does not prove a completed do stage")
@@ -377,8 +389,11 @@ def _validate_do_evidence(
     _identifier(target.get("controller_id"), "target controller")
     _address(target.get("validator_address"), "target validator")
     survivors = document.get("survivors")
-    if not isinstance(survivors, list) or len(survivors) < 1:
+    single_node_decommission = bool(summary.get("single_node_decommission"))
+    if not isinstance(survivors, list) or (len(survivors) < 1 and not single_node_decommission):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_DO_EVIDENCE_INVALID", "node-removal do evidence lacks survivors")
+    if single_node_decommission and survivors:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_DO_EVIDENCE_INVALID", "single-node decommission evidence must not list survivors")
     for item in survivors:
         if not isinstance(item, Mapping):
             raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_DO_EVIDENCE_INVALID", "survivor is invalid")
@@ -540,7 +555,9 @@ def build_node_remove_finalize_evidence(
             "survivor_services_observed": survivor_observed_set == survivor_set,
             "survivor_validator_removal_guardians_required_at_finalize": False,
             "survivor_validator_removal_guardians_healthy": survivor_guardian_set == survivor_set,
-            "validator_removal_vote_previously_performed": True,
+            "validator_removal_vote_required": bool(do_evidence["summary"].get("validator_removal_vote_required", not bool(do_evidence["summary"].get("single_node_decommission")))),
+            "validator_removal_vote_previously_performed": bool(do_evidence["summary"].get("validator_removal_vote_performed")),
+            "single_node_decommission": bool(do_evidence["summary"].get("single_node_decommission")),
             "service_deletion_previously_performed": bool(do_evidence["summary"].get("service_deletion_performed")),
             "routing_or_topology_publication_authorized": False,
             "public_endpoint_creation_authorized": False,
@@ -557,6 +574,7 @@ def build_node_remove_finalize_evidence(
             "routing_or_topology_published": False,
             "validator_activation_performed": False,
             "validator_vote_performed": False,
+            "single_node_decommission": bool(do_evidence["summary"].get("single_node_decommission")),
         },
         "summary": {
             "clean": complete,
@@ -572,9 +590,11 @@ def build_node_remove_finalize_evidence(
             "final_validator_count": len(do_evidence["post_removal_topology"]["validator_set"]),
             "final_validator_set": list(do_evidence["post_removal_topology"]["validator_set"]),
             "removed_validator_absent_from_final_set": target["validator_address"] not in do_evidence["post_removal_topology"]["validator_set"],
-            "service_deletion_is_first": False,
+            "service_deletion_is_first": bool(do_evidence["summary"].get("service_deletion_is_first")),
+            "single_node_decommission": bool(do_evidence["summary"].get("single_node_decommission")),
+            "validator_removal_vote_required": bool(do_evidence["summary"].get("validator_removal_vote_required", not bool(do_evidence["summary"].get("single_node_decommission")))),
             "service_deletion_performed": bool(do_evidence["summary"].get("service_deletion_performed")),
-            "validator_removal_vote_performed": True,
+            "validator_removal_vote_performed": bool(do_evidence["summary"].get("validator_removal_vote_performed")),
             "network_access_performed": True,
             "live_mutation_performed": False,
             "routing_or_topology_published": False,
@@ -729,6 +749,9 @@ def verify_node_remove_finalize_evidence(
         "source_prep_transaction_sha256": document["source_prep_transaction"]["sha256"],
         "source_baseline_evidence_sha256": document["source_baseline_evidence"]["sha256"],
         "service_deletion_performed": bool(summary.get("service_deletion_performed")),
+        "service_deletion_is_first": bool(summary.get("service_deletion_is_first")),
+        "single_node_decommission": bool(summary.get("single_node_decommission")),
+        "validator_removal_vote_required": bool(summary.get("validator_removal_vote_required", not bool(summary.get("single_node_decommission")))),
         "validator_removal_vote_performed": bool(summary.get("validator_removal_vote_performed")),
         "live_mutation_performed": False,
         "routing_or_topology_published": False,

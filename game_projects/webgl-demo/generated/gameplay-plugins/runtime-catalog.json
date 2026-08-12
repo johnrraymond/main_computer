@@ -62,19 +62,19 @@
       "objectives": [
         {
           "id": "survive-boarding",
-          "label": "Survive the elite boarding escalation",
+          "label": "Survive the triple-strength boarding escalation",
           "required": true,
           "type": "objective-type.survive"
         },
         {
           "id": "clear-raiders",
-          "label": "Defeat the elite boarding leader",
+          "label": "Defeat the 3x-health elite boarding leader",
           "required": true,
           "type": "objective-type.clear-hostiles"
         },
         {
           "id": "reach-haven-orbit",
-          "label": "Reach Haven orbit with the leader neutralized",
+          "label": "Reach Haven orbit after neutralizing the 3x-health leader",
           "required": true,
           "type": "objective-type.reach-destination"
         }
@@ -170,19 +170,19 @@
           "objectives": [
             {
               "id": "survive-boarding",
-              "label": "Survive the elite boarding escalation",
+              "label": "Survive the triple-strength boarding escalation",
               "required": true,
               "type": "objective-type.survive"
             },
             {
               "id": "clear-raiders",
-              "label": "Defeat the elite boarding leader",
+              "label": "Defeat the 3x-health elite boarding leader",
               "required": true,
               "type": "objective-type.clear-hostiles"
             },
             {
               "id": "reach-haven-orbit",
-              "label": "Reach Haven orbit with the leader neutralized",
+              "label": "Reach Haven orbit after neutralizing the 3x-health leader",
               "required": true,
               "type": "objective-type.reach-destination"
             }

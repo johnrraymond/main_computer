@@ -48,6 +48,8 @@ _IDENTITY_RELEASE_DIRECTORY = ("actions", "deployment-node-add-identity-releases
 _RELEASE_DIRECTORY = ("actions", "deployment-node-add-single-node-bootstrap-releases")
 _CLAIM_DIRECTORY = ("actions", "deployment-node-add-single-node-bootstrap-claims")
 _EVIDENCE_DIRECTORY = ("evidence", "deployment-node-add-single-node-bootstrap")
+_FINALIZE_EVIDENCE_KIND = "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1"
+_FINALIZE_EVIDENCE_DIRECTORY = ("evidence", "deployment-node-add-single-node-chain-and-hub-proof")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-f]{40}$")
@@ -83,6 +85,33 @@ def _address(value: Any, label: str) -> str:
     if not _ADDRESS_RE.fullmatch(lowered):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_INVALID", f"{label} is invalid")
     return lowered
+
+
+
+def _hub_git_repository(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_INVALID",
+            f"{label} must be a non-empty HTTPS Git repository URL",
+        )
+    text = value.strip()
+    parsed = urllib.parse.urlsplit(text)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_INVALID",
+            f"{label} must be a credential-free HTTPS Git repository URL without query or fragment",
+        )
+    normalized = urllib.parse.urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    if parsed.hostname.lower() == "github.com" and not normalized.endswith(".git"):
+        normalized += ".git"
+    return normalized
 
 
 def _parse_utc(value: Any, label: str) -> datetime:
@@ -457,11 +486,12 @@ def build_node_add_single_node_bootstrap_release(
     if not isinstance(prepared_set, list) or [_address(item, "prepared validator") for item in prepared_set] != [target_validator]:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_VALIDATOR_SET_INVALID", "prepared post-add validator set must contain only the target validator")
     genesis, genesis_source = _discover_genesis(paths, private_state, network=network, genesis_sha256=genesis_sha)
+    repository = _hub_git_repository(hub_git_repository, "hub_git_repository")
     original = _first_genesis_compose(
         node=node,
         chain_id=chain_id,
         genesis=genesis,
-        hub_git_repository=hub_git_repository,
+        hub_git_repository=repository,
         hub_git_ref=hub_git_ref,
     )
     proof_compose = _internal_proof_compose(
@@ -515,7 +545,7 @@ def build_node_add_single_node_bootstrap_release(
             "validator_set": [target_validator],
             "hub": {
                 "serves_hub": True,
-                "git_repository": hub_git_repository,
+                "git_repository": repository,
                 "git_ref": hub_git_ref,
                 "internal_only": True,
                 "public_endpoint_created": False,
@@ -628,6 +658,7 @@ def verify_node_add_single_node_bootstrap_release(
     transaction_max_age_seconds: int = 86400,
     baseline_max_age_seconds: int = 86400,
     now: datetime | None = None,
+    enforce_freshness: bool = True,
 ) -> dict[str, Any]:
     resolved = Path(release_path).resolve(strict=False)
     allowed = _root(paths, _RELEASE_DIRECTORY).resolve(strict=False)
@@ -641,7 +672,8 @@ def verify_node_add_single_node_bootstrap_release(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "single-node bootstrap release is invalid")
     age = _age_seconds(release.get("created_at"), now=now)
     reference_now = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
-    if age > max_age_seconds or _parse_utc(release.get("expires_at"), "expires_at") < reference_now:
+    release_expired = _parse_utc(release.get("expires_at"), "expires_at") < reference_now
+    if enforce_freshness and (age > max_age_seconds or release_expired):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_STALE", "single-node bootstrap release is outside the freshness window")
     source = release.get("source_add_identity_evidence")
     if not isinstance(source, Mapping):
@@ -683,6 +715,8 @@ def verify_node_add_single_node_bootstrap_release(
         "release_already_claimed": claim_path.exists(),
         "age_seconds": age,
         "expires_at": release["expires_at"],
+        "release_expired": release_expired,
+        "release_freshness_enforced": enforce_freshness,
         "mother_binding": dict(release["mother_binding"]),
         "network": release["network"],
         "mode": release["mode"],
@@ -992,6 +1026,254 @@ def execute_node_add_single_node_bootstrap_release(
     return {**evidence, "evidence": {"path": str(evidence_path), "sha256": evidence_sha}}
 
 
+
+def adopt_node_add_single_node_bootstrap_live_proof(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    source_evidence_path: Path,
+    *,
+    max_age_seconds: int = 86400,
+    release_max_age_seconds: int = 86400,
+    identity_max_age_seconds: int = 86400,
+    identity_release_max_age_seconds: int = 86400,
+    add_do_max_age_seconds: int = 86400,
+    add_do_release_max_age_seconds: int = 86400,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    """Write clean bootstrap evidence from an already-mutated healthy service.
+
+    This command is intentionally read-only against Coolify. It exists for the
+    case where the original execute command consumed a valid release, performed
+    the PATCH/deploy mutation, wrote failed evidence while the service was still
+    starting, and the service later reached the released healthy state.
+    """
+    resolved = Path(source_evidence_path).resolve(strict=False)
+    allowed = _root(paths, _EVIDENCE_DIRECTORY).resolve(strict=False)
+    try:
+        resolved.relative_to(allowed)
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_PATH_INVALID", "source single-node bootstrap evidence is outside its directory") from exc
+    source_document, _raw, source_file_sha = _canonical_file(resolved)
+    if source_document.get("kind") != _EVIDENCE_KIND or source_document.get("mother_binding") != _binding(private_state) or _contains_sensitive(source_document):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_EVIDENCE_INVALID", "source single-node bootstrap evidence is invalid")
+    source_age = _age_seconds(source_document.get("completed_at"), now=now)
+    if source_age > max_age_seconds:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_EVIDENCE_STALE", "source single-node bootstrap evidence is outside the freshness window")
+    if source_document.get("single_node_bootstrap_performed") is not True:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ADOPTION_REFUSED", "source evidence did not perform the bootstrap mutation")
+    if source_document.get("routing_or_topology_published") is not False or source_document.get("validator_admission_performed") is not False:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ADOPTION_REFUSED", "source evidence is beyond the single-node bootstrap boundary")
+
+    release_binding = source_document.get("release")
+    if not isinstance(release_binding, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_EVIDENCE_INVALID", "source evidence release binding is missing")
+    release_path = _resolve_under(paths, release_binding.get("locator"), _RELEASE_DIRECTORY, label="single-node bootstrap release")
+    acknowledged = _sha256(release_binding.get("sha256"), "source single-node bootstrap release sha256")
+    release_verified = verify_node_add_single_node_bootstrap_release(
+        paths,
+        private_state,
+        release_path,
+        max_age_seconds=release_max_age_seconds,
+        identity_max_age_seconds=identity_max_age_seconds,
+        identity_release_max_age_seconds=identity_release_max_age_seconds,
+        add_do_max_age_seconds=add_do_max_age_seconds,
+        add_do_release_max_age_seconds=add_do_release_max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+        enforce_freshness=False,
+    )
+    if release_verified["node_add_single_node_bootstrap_release_sha256"] != acknowledged:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ACK_MISMATCH", "source evidence release SHA does not match release document")
+
+    execution_claim = source_document.get("execution_claim")
+    if not isinstance(execution_claim, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_EVIDENCE_INVALID", "source evidence execution claim is missing")
+    claim_path = _resolve_under(paths, execution_claim.get("locator"), _CLAIM_DIRECTORY, label="single-node bootstrap claim")
+    if not Path(claim_path).exists():
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ADOPTION_REFUSED", "single-node bootstrap execution claim is missing")
+
+    release, _release_raw, _release_file_sha = _canonical_file(release_path)
+    plan = release.get("bootstrap_plan")
+    target = release.get("target")
+    if not isinstance(plan, Mapping) or not isinstance(target, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "release body is incomplete")
+    network = _identifier(release["network"], "network")
+    node = _identifier(target["node"], "target node")
+    controller_id = _identifier(target["controller_id"], "target controller")
+    service_uuid = _identifier(target["created_service_uuid"], "created service UUID")
+    controller = resolve_coolify_controller(private_state, network, controller_id)
+    service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+
+    preconditions: list[dict[str, Any]] = [
+        {
+            "name": "source-bootstrap-mutation-evidence",
+            "source_evidence": {
+                "locator": _relative(paths, resolved, label="source single-node bootstrap evidence"),
+                "sha256": source_file_sha,
+                "status": source_document.get("status"),
+                "failure": source_document.get("failure"),
+            },
+            "verified": True,
+        }
+    ]
+    observations = list(source_document.get("observations", [])) if isinstance(source_document.get("observations"), list) else []
+
+    inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+    if not inventory["ok"]:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ADOPTION_FAILED", f"Coolify service inventory failed with HTTP {inventory['status']}")
+    service = _service_item(inventory["payload"], service_uuid, node)
+    live_status = _service_status(service)
+    observations.append({
+        "status": live_status,
+        "response_sha256": inventory["response_sha256"],
+        "observed_at": _timestamp(now=now),
+        "adoption_read_only": True,
+    })
+    if live_status != "running:healthy":
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ADOPTION_NOT_HEALTHY", f"single-node chain+Hub service is not running:healthy (last status {live_status!r})")
+
+    detail = _http(controller, "GET", service_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+    if not detail["ok"]:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ADOPTION_FAILED", f"Coolify service detail failed with HTTP {detail['status']}")
+    binding = _match_service_compose(detail["payload"], plan["compose"]["canonical_text"], "single-node bootstrap proof Compose")
+    compose_proven = binding["semantic_sha256"] == plan["compose"]["semantic_sha256"]
+    preconditions.append({
+        "name": "single-node-bootstrap-compose-binding",
+        "controller_id": controller_id,
+        "method": "GET",
+        "endpoint": service_endpoint,
+        "status": detail["status"],
+        "response_sha256": detail["response_sha256"],
+        "verified": compose_proven,
+        "binding_mode": binding["mode"],
+        "semantic_sha256": binding["semantic_sha256"],
+        "adoption_read_only": True,
+    })
+    if not compose_proven:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ADOPTION_FAILED", "released Compose commitment changed")
+
+    completed_at = _timestamp(now=now)
+    evidence: dict[str, Any] = {
+        "kind": _EVIDENCE_KIND,
+        "schema_version": 1,
+        "started_at": completed_at,
+        "completed_at": completed_at,
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding(private_state),
+        "network": network,
+        "mode": release["mode"],
+        "release": {
+            "locator": _relative(paths, Path(release_path), label="single-node bootstrap release"),
+            "sha256": acknowledged,
+        },
+        "execution_claim": dict(execution_claim),
+        "source_failed_evidence": {
+            "locator": _relative(paths, resolved, label="source single-node bootstrap evidence"),
+            "sha256": source_file_sha,
+            "status": source_document.get("status"),
+            "failure": source_document.get("failure"),
+        },
+        "source_add_identity_evidence": dict(release["source_add_identity_evidence"]),
+        "source_add_do_evidence": dict(release["source_add_do_evidence"]),
+        "source_prep_transaction": dict(release["source_prep_transaction"]),
+        "source_baseline_evidence": dict(release["source_baseline_evidence"]),
+        "target": dict(target),
+        "current_topology": dict(release["current_topology"]),
+        "prepared_post_add_topology": dict(release["prepared_post_add_topology"]),
+        "bootstrap_plan": {
+            key: value
+            for key, value in plan.items()
+            if key != "compose"
+        },
+        "compose_commitment": {
+            key: value
+            for key, value in plan["compose"].items()
+            if key != "canonical_text"
+        },
+        "preconditions": preconditions,
+        "mutation_receipts": list(source_document.get("mutation_receipts", [])) if isinstance(source_document.get("mutation_receipts"), list) else [],
+        "observations": observations,
+        "single_node_bootstrap_performed": True,
+        "single_node_bootstrap_proven": True,
+        "read_only_adoption_performed": True,
+        "adoption_live_mutation_performed": False,
+        "serves_chain": True,
+        "serves_hub": True,
+        "replica_sync_performed": False,
+        "validator_admission_performed": False,
+        "validator_vote_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "live_mutation_performed": False,
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "single_node_bootstrap_performed": True,
+            "single_node_bootstrap_proven": True,
+            "read_only_adoption_performed": True,
+            "adoption_live_mutation_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "replica_sync_performed": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "hub_internal_only": True,
+            "hub_local_rpc_required": True,
+            "manual_ssh_required": False,
+        },
+        "authority": {
+            "release_consumed": True,
+            "release_freshness_rechecked_at_adoption": False,
+            "single_node_bootstrap_authorized": True,
+            "single_node_bootstrap_proven": True,
+            "replica_sync_authorized": False,
+            "validator_admission_authorized": False,
+            "validator_vote_authorized": False,
+            "routing_or_topology_publication_authorized": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "target_node": node,
+            "target_host": controller_id,
+            "created_service_uuid": service_uuid,
+            "current_validator_count": 0,
+            "post_add_validator_count": 1,
+            "single_node_bootstrap_performed": True,
+            "single_node_bootstrap_proven": True,
+            "read_only_adoption_performed": True,
+            "adoption_live_mutation_performed": False,
+            "serves_chain": True,
+            "serves_hub": True,
+            "replica_sync_performed": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "old_baseline_topology_used_as_live": False,
+            "coolify_c_required": False,
+            "live_mutation_performed": False,
+            "mutation_count": 0,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "next_phase": f"add-node-single-node-chain-and-hub-proof-{network}",
+        },
+        "next_phase": f"add-node-single-node-chain-and-hub-proof-{network}",
+    }
+    if _contains_sensitive(evidence):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_SENSITIVE", "single-node bootstrap adoption evidence contains sensitive material")
+    adopted_path, adopted_sha = _write_document(paths, _EVIDENCE_DIRECTORY, evidence, operation=operation)
+    return {**evidence, "evidence": {"path": str(adopted_path), "sha256": adopted_sha}}
+
 def verify_node_add_single_node_bootstrap_evidence(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -1035,6 +1317,7 @@ def verify_node_add_single_node_bootstrap_evidence(
         transaction_max_age_seconds=transaction_max_age_seconds,
         baseline_max_age_seconds=baseline_max_age_seconds,
         now=now,
+        enforce_freshness=False,
     )
     clean = (
         document.get("status") == "pass"
@@ -1080,7 +1363,396 @@ def verify_node_add_single_node_bootstrap_evidence(
         "coolify_c_required": False,
         "routing_or_topology_published": False,
         "public_endpoint_created": False,
-        "live_mutation_performed": True,
+        "live_mutation_performed": document.get("live_mutation_performed") is True,
+        "read_only_adoption_performed": document.get("read_only_adoption_performed") is True,
+        "release_freshness_enforced": release_verified.get("release_freshness_enforced"),
+        "release_expired": release_verified.get("release_expired"),
+        "next_phase": document["next_phase"],
+    }
+
+
+def build_node_add_single_node_chain_and_hub_proof_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    bootstrap_evidence_path: Path,
+    *,
+    acknowledged_bootstrap_evidence_sha256: str,
+    max_age_seconds: int = 86400,
+    release_max_age_seconds: int = 86400,
+    identity_max_age_seconds: int = 86400,
+    identity_release_max_age_seconds: int = 86400,
+    add_do_max_age_seconds: int = 86400,
+    add_do_release_max_age_seconds: int = 86400,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build the read-only final single-node add evidence artifact.
+
+    This consumes a clean single-node bootstrap evidence document. It does not
+    contact Coolify, PATCH Compose, deploy, synchronize replicas, vote, or publish
+    routing. The resulting artifact is the Mother-local topology/proof marker for
+    the operator-directed one-validator chain+Hub topology.
+    """
+    verified = verify_node_add_single_node_bootstrap_evidence(
+        paths,
+        private_state,
+        Path(bootstrap_evidence_path),
+        max_age_seconds=max_age_seconds,
+        release_max_age_seconds=release_max_age_seconds,
+        identity_max_age_seconds=identity_max_age_seconds,
+        identity_release_max_age_seconds=identity_release_max_age_seconds,
+        add_do_max_age_seconds=add_do_max_age_seconds,
+        add_do_release_max_age_seconds=add_do_release_max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    acknowledged = _sha256(acknowledged_bootstrap_evidence_sha256, "acknowledged bootstrap evidence sha256")
+    if verified["evidence_sha256"] != acknowledged:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_ACK_MISMATCH", "acknowledged bootstrap evidence SHA does not match")
+    resolved = Path(verified["evidence_path"]).resolve(strict=False)
+    document, _raw, file_sha = _canonical_file(resolved)
+    if file_sha != acknowledged:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_ACK_MISMATCH", "bootstrap evidence file SHA does not match")
+    network = _identifier(document["network"], "network")
+    target = document.get("target")
+    prepared = document.get("prepared_post_add_topology")
+    current = document.get("current_topology")
+    bootstrap_plan = document.get("bootstrap_plan")
+    compose_commitment = document.get("compose_commitment")
+    if not isinstance(target, Mapping) or not isinstance(prepared, Mapping) or not isinstance(current, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "bootstrap evidence lacks topology inputs")
+    if not isinstance(bootstrap_plan, Mapping) or not isinstance(compose_commitment, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "bootstrap evidence lacks proof inputs")
+    node = _identifier(target.get("node"), "target node")
+    controller_id = _identifier(target.get("controller_id"), "target controller")
+    service_uuid = _identifier(target.get("created_service_uuid"), "created service UUID")
+    validator = _address(target.get("validator_address"), "target validator address")
+    validator_set = [_address(item, "final validator") for item in prepared.get("validator_set", [])]
+    if validator_set != [validator]:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "single-node final validator set must contain only the target validator")
+    chain_id = current.get("chain_id")
+    if not isinstance(chain_id, int) or chain_id <= 0:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "chain ID is invalid")
+    genesis_sha = _sha256(current.get("genesis_sha256"), "genesis SHA-256")
+    completed = _timestamp(now=now)
+    final_topology = {
+        "source": "operator-directed-single-node-chain-and-hub-proof",
+        "chain_id": chain_id,
+        "genesis_sha256": genesis_sha,
+        "nodes": [node],
+        "services": {
+            node: {
+                "node": node,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "service_status": "running:healthy",
+                "readiness_source": "deployment-node-add-single-node-bootstrap-proof",
+                "last_observed_at": document.get("completed_at"),
+                "serves_chain": True,
+                "serves_hub": True,
+                "public_endpoint_created": False,
+            }
+        },
+        "validator_count": 1,
+        "validator_set": [validator],
+        "baseline_topology_used_as_live": False,
+    }
+    evidence: dict[str, Any] = {
+        "kind": _FINALIZE_EVIDENCE_KIND,
+        "schema_version": 1,
+        "completed_at": completed,
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding(private_state),
+        "network": network,
+        "mode": document["mode"],
+        "source_single_node_bootstrap_evidence": {
+            "locator": _relative(paths, resolved, label="single-node bootstrap evidence"),
+            "sha256": acknowledged,
+            "age_seconds": verified["age_seconds"],
+            "completed_at": document.get("completed_at"),
+            "read_only_adoption_performed": document.get("read_only_adoption_performed") is True,
+            "release_expired": verified.get("release_expired"),
+            "release_freshness_enforced": verified.get("release_freshness_enforced"),
+        },
+        "source_add_identity_evidence": dict(document["source_add_identity_evidence"]),
+        "source_add_do_evidence": dict(document["source_add_do_evidence"]),
+        "source_prep_transaction": dict(document["source_prep_transaction"]),
+        "source_baseline_evidence": dict(document["source_baseline_evidence"]),
+        "target": dict(target),
+        "pre_add_topology": dict(current),
+        "prepared_post_add_topology": dict(prepared),
+        "final_topology": final_topology,
+        "topology_diff": {
+            "operation": "add-node",
+            "added_nodes": [node],
+            "removed_nodes": [],
+            "unchanged_nodes": [],
+            "pre_validator_count": 0,
+            "post_validator_count": 1,
+        },
+        "chain_and_hub_proof": {
+            "bootstrap_evidence_sha256": acknowledged,
+            "single_node_bootstrap_proven": True,
+            "serves_chain": True,
+            "serves_hub": True,
+            "chain_id": chain_id,
+            "genesis_sha256": genesis_sha,
+            "validator_set": [validator],
+            "compose_semantic_sha256": compose_commitment.get("semantic_sha256"),
+            "hub_internal_only": True,
+            "hub_local_rpc_required": True,
+            "coolify_c_required": False,
+            "replica_sync_required": False,
+            "validator_admission_required": False,
+        },
+        "topology_publication_artifact": {
+            "kind": "mother-local-final-topology-evidence",
+            "artifact_written": True,
+            "routing_publication_performed": False,
+            "live_mutation_performed": False,
+            "current_topology_source": "single-node-chain-and-hub-proof",
+        },
+        "policy": {
+            "allowed_http_methods": [],
+            "coolify_control_plane_only": False,
+            "network_access_performed": False,
+            "manual_ssh_required": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "single_node_bootstrap_previously_proven": True,
+            "replica_sync_performed": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "finalize_mutation_performed": False,
+        },
+        "authority": {
+            "finalize_live_mutation_authorized": False,
+            "network_access_performed": False,
+            "single_node_bootstrap_previously_proven": True,
+            "chain_and_hub_proof_accepted": True,
+            "current_topology_marked_by_evidence": True,
+            "replica_sync_authorized": False,
+            "validator_admission_authorized": False,
+            "validator_vote_authorized": False,
+            "routing_or_topology_publication_authorized": False,
+            "public_endpoint_creation_authorized": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "target_node": node,
+            "target_host": controller_id,
+            "created_service_uuid": service_uuid,
+            "target_validator_address": validator,
+            "final_nodes": [node],
+            "final_validator_count": 1,
+            "final_validator_set": [validator],
+            "single_node_bootstrap_proven": True,
+            "serves_chain": True,
+            "serves_hub": True,
+            "coolify_c_required": False,
+            "replica_sync_required": False,
+            "replica_sync_performed": False,
+            "validator_admission_required": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "old_baseline_topology_used_as_live": False,
+            "network_access_performed": False,
+            "live_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "current_topology_marked_by_evidence": True,
+            "next_phase": f"add-node-single-node-finalized-{network}",
+        },
+        "next_phase": f"add-node-single-node-finalized-{network}",
+        "single_node_bootstrap_proven": True,
+        "serves_chain": True,
+        "serves_hub": True,
+        "replica_sync_performed": False,
+        "validator_admission_performed": False,
+        "validator_vote_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "live_mutation_performed": False,
+    }
+    if _contains_sensitive(evidence):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_SENSITIVE", "single-node chain+Hub proof evidence contains sensitive material")
+    return evidence
+
+
+def write_node_add_single_node_chain_and_hub_proof_evidence(
+    paths: PrivateStatePaths,
+    evidence: Mapping[str, Any],
+    *,
+    operation: OperationIdentity,
+) -> tuple[Path, str]:
+    if evidence.get("kind") != _FINALIZE_EVIDENCE_KIND:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "not a single-node chain+Hub proof evidence document")
+    return _write_document(paths, _FINALIZE_EVIDENCE_DIRECTORY, evidence, operation=operation)
+
+
+def finalize_node_add_single_node_chain_and_hub_proof(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    bootstrap_evidence_path: Path,
+    *,
+    acknowledged_bootstrap_evidence_sha256: str,
+    max_age_seconds: int = 86400,
+    release_max_age_seconds: int = 86400,
+    identity_max_age_seconds: int = 86400,
+    identity_release_max_age_seconds: int = 86400,
+    add_do_max_age_seconds: int = 86400,
+    add_do_release_max_age_seconds: int = 86400,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    write_evidence: bool = False,
+    operation: OperationIdentity,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    evidence = build_node_add_single_node_chain_and_hub_proof_evidence(
+        paths,
+        private_state,
+        bootstrap_evidence_path,
+        acknowledged_bootstrap_evidence_sha256=acknowledged_bootstrap_evidence_sha256,
+        max_age_seconds=max_age_seconds,
+        release_max_age_seconds=release_max_age_seconds,
+        identity_max_age_seconds=identity_max_age_seconds,
+        identity_release_max_age_seconds=identity_release_max_age_seconds,
+        add_do_max_age_seconds=add_do_max_age_seconds,
+        add_do_release_max_age_seconds=add_do_release_max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    if write_evidence:
+        evidence_path, evidence_sha = write_node_add_single_node_chain_and_hub_proof_evidence(
+            paths,
+            evidence,
+            operation=operation,
+        )
+        evidence = {**evidence, "evidence": {"path": str(evidence_path), "sha256": evidence_sha}}
+    return evidence
+
+
+def verify_node_add_single_node_chain_and_hub_proof_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    max_age_seconds: int = 86400,
+    bootstrap_max_age_seconds: int = 86400,
+    release_max_age_seconds: int = 86400,
+    identity_max_age_seconds: int = 86400,
+    identity_release_max_age_seconds: int = 86400,
+    add_do_max_age_seconds: int = 86400,
+    add_do_release_max_age_seconds: int = 86400,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    resolved = Path(evidence_path).resolve(strict=False)
+    allowed = _root(paths, _FINALIZE_EVIDENCE_DIRECTORY).resolve(strict=False)
+    try:
+        resolved.relative_to(allowed)
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_PATH_INVALID", "single-node chain+Hub proof evidence is outside its directory") from exc
+    document, _raw, file_sha = _canonical_file(resolved)
+    if document.get("kind") != _FINALIZE_EVIDENCE_KIND or document.get("mother_binding") != _binding(private_state) or _contains_sensitive(document):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "single-node chain+Hub proof evidence is invalid")
+    age = _age_seconds(document.get("completed_at"), now=now)
+    if age > max_age_seconds:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_STALE", "single-node chain+Hub proof evidence is outside the freshness window")
+    source = document.get("source_single_node_bootstrap_evidence")
+    summary = document.get("summary")
+    proof = document.get("chain_and_hub_proof")
+    final_topology = document.get("final_topology")
+    authority = document.get("authority")
+    policy = document.get("policy")
+    if not all(isinstance(item, Mapping) for item in (source, summary, proof, final_topology, authority, policy)):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "single-node chain+Hub proof evidence is incomplete")
+    source_path = _resolve_under(paths, source.get("locator"), _EVIDENCE_DIRECTORY, label="single-node bootstrap evidence")
+    source_verified = verify_node_add_single_node_bootstrap_evidence(
+        paths,
+        private_state,
+        source_path,
+        max_age_seconds=bootstrap_max_age_seconds,
+        release_max_age_seconds=release_max_age_seconds,
+        identity_max_age_seconds=identity_max_age_seconds,
+        identity_release_max_age_seconds=identity_release_max_age_seconds,
+        add_do_max_age_seconds=add_do_max_age_seconds,
+        add_do_release_max_age_seconds=add_do_release_max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+        now=now,
+    )
+    if source_verified["evidence_sha256"] != _sha256(source.get("sha256"), "source bootstrap evidence sha256"):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "source bootstrap evidence SHA does not match")
+    clean = all([
+        document.get("status") == "pass",
+        document.get("failure") is None,
+        summary.get("clean") is True,
+        summary.get("complete") is True,
+        summary.get("single_node_bootstrap_proven") is True,
+        summary.get("serves_chain") is True,
+        summary.get("serves_hub") is True,
+        summary.get("coolify_c_required") is False,
+        summary.get("replica_sync_required") is False,
+        summary.get("replica_sync_performed") is False,
+        summary.get("validator_admission_required") is False,
+        summary.get("validator_admission_performed") is False,
+        summary.get("validator_vote_performed") is False,
+        summary.get("old_baseline_topology_used_as_live") is False,
+        summary.get("network_access_performed") is False,
+        summary.get("live_mutation_performed") is False,
+        summary.get("routing_or_topology_published") is False,
+        summary.get("public_endpoint_created") is False,
+        summary.get("current_topology_marked_by_evidence") is True,
+        proof.get("single_node_bootstrap_proven") is True,
+        proof.get("serves_chain") is True,
+        proof.get("serves_hub") is True,
+        proof.get("coolify_c_required") is False,
+        proof.get("replica_sync_required") is False,
+        proof.get("validator_admission_required") is False,
+        final_topology.get("nodes") == summary.get("final_nodes"),
+        final_topology.get("validator_set") == summary.get("final_validator_set"),
+        authority.get("current_topology_marked_by_evidence") is True,
+        policy.get("finalize_mutation_performed") is False,
+        str(document.get("next_phase", "")).startswith("add-node-single-node-finalized-"),
+    ])
+    if not clean:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "single-node chain+Hub proof evidence is not clean")
+    return {
+        "clean": True,
+        "evidence_path": str(resolved),
+        "evidence_sha256": file_sha,
+        "age_seconds": age,
+        "mother_binding": dict(document["mother_binding"]),
+        "network": document["network"],
+        "mode": document["mode"],
+        "source_single_node_bootstrap_evidence_sha256": source_verified["evidence_sha256"],
+        "target_node": summary["target_node"],
+        "target_host": summary["target_host"],
+        "created_service_uuid": summary["created_service_uuid"],
+        "final_nodes": list(summary["final_nodes"]),
+        "final_validator_count": summary["final_validator_count"],
+        "final_validator_set": list(summary["final_validator_set"]),
+        "single_node_bootstrap_proven": True,
+        "serves_chain": True,
+        "serves_hub": True,
+        "coolify_c_required": False,
+        "replica_sync_required": False,
+        "validator_admission_required": False,
+        "network_access_performed": False,
+        "live_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "current_topology_marked_by_evidence": True,
         "next_phase": document["next_phase"],
     }
 
@@ -1089,7 +1761,12 @@ __all__ = [
     "MotherDeploymentNodeAddSingleNodeBootstrapError",
     "build_node_add_single_node_bootstrap_release",
     "execute_node_add_single_node_bootstrap_release",
+    "adopt_node_add_single_node_bootstrap_live_proof",
     "verify_node_add_single_node_bootstrap_evidence",
     "verify_node_add_single_node_bootstrap_release",
+    "build_node_add_single_node_chain_and_hub_proof_evidence",
+    "finalize_node_add_single_node_chain_and_hub_proof",
+    "verify_node_add_single_node_chain_and_hub_proof_evidence",
+    "write_node_add_single_node_chain_and_hub_proof_evidence",
     "write_node_add_single_node_bootstrap_release",
 ]
