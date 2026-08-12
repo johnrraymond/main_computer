@@ -5,9 +5,11 @@ performing live mutation. It consumes canonical topology evidence, derives a
 topology diff for one explicit absent target node, and records the ordered
 add-node plan a later ``do`` phase must execute.
 
-The implementation is topology-driven: it does not know about C2, T3, or an A1
-golden-path label. Those names may appear in tests or operator input, but the
-builder works from evidence, private-state node metadata, and an explicit target.
+The golden test path is operator-directed add/delete evidence. The
+implementation does not know a fixed fixture topology: sample node names may
+appear in tests or operator input, but the builder works from identity/history
+evidence, fresh topology evidence when supplied, private-state node metadata,
+and an explicit operator-selected target.
 """
 
 from __future__ import annotations
@@ -300,7 +302,19 @@ def _service_records(document: Mapping[str, Any], nodes: list[str]) -> dict[str,
     return {node: services[node] for node in nodes}
 
 
-def _topology_from_baseline(document: Mapping[str, Any]) -> tuple[list[str], list[str], Any, Any, dict[str, dict[str, Any]]]:
+_IDENTITY_HISTORY_ONLY_BASELINE_KINDS = {
+    "main_computer.mother.deployment_node_remove_finalize_evidence.v1",
+    "main_computer.mother.deployment_node_add_rollback_evidence.v1",
+}
+
+
+def _baseline_topology_role(document: Mapping[str, Any]) -> str:
+    if document.get("kind") in _IDENTITY_HISTORY_ONLY_BASELINE_KINDS:
+        return "identity-history-only"
+    return "live-topology-source"
+
+
+def _historical_topology_from_baseline(document: Mapping[str, Any]) -> tuple[list[str], list[str], Any, Any, dict[str, dict[str, Any]]]:
     topology = document.get("final_topology")
     if not isinstance(topology, Mapping):
         topology = document.get("current_topology")
@@ -329,6 +343,13 @@ def _topology_from_baseline(document: Mapping[str, Any]) -> tuple[list[str], lis
     return nodes, validators, chain_id, genesis_sha256, services
 
 
+def _topology_from_baseline(document: Mapping[str, Any]) -> tuple[list[str], list[str], Any, Any, dict[str, dict[str, Any]]]:
+    if _baseline_topology_role(document) == "identity-history-only":
+        chain_id, genesis_sha256 = _chain_identity(document)
+        return [], [], chain_id, genesis_sha256, {}
+    return _historical_topology_from_baseline(document)
+
+
 def _baseline_kind_supported(document: Mapping[str, Any]) -> bool:
     kind = document.get("kind")
     if not isinstance(kind, str):
@@ -351,10 +372,21 @@ def _baseline_clean(document: Mapping[str, Any]) -> bool:
         return False
     if summary.get("complete") is False:
         return False
-    if document.get("live_mutation_performed") is True:
-        return False
-    if summary.get("live_mutation_performed") is True:
-        return False
+    rollback_baseline = (
+        document.get("kind") == "main_computer.mother.deployment_node_add_rollback_evidence.v1"
+        and summary.get("rollback_baseline_usable_by_add_node_prep") is True
+        and document.get("chain_mutation_count") == 0
+        and document.get("validator_mutation_count") == 0
+        and document.get("validator_vote_performed") is False
+        and document.get("validator_admission_performed") is False
+        and document.get("routing_or_topology_published") is False
+        and document.get("public_endpoint_created") is False
+    )
+    if not rollback_baseline:
+        if document.get("live_mutation_performed") is True:
+            return False
+        if summary.get("live_mutation_performed") is True:
+            return False
     if document.get("routing_or_topology_published") is True or summary.get("routing_or_topology_published") is True:
         return False
     if document.get("public_endpoint_created") is True or summary.get("public_endpoint_created") is True:
@@ -362,6 +394,8 @@ def _baseline_clean(document: Mapping[str, Any]) -> bool:
     if policy.get("routing_or_topology_published") is True or policy.get("public_http_endpoint_created") is True:
         return False
     if policy.get("private_keys_materialized") is True or policy.get("private_keys_persisted") is True:
+        return False
+    if policy.get("chain_mutation_performed") is True or policy.get("validator_admission_performed") is True:
         return False
     try:
         _topology_from_baseline(document)
@@ -509,8 +543,15 @@ def build_node_add_prep_transaction(
         max_age_seconds=baseline_max_age_seconds,
         now=now,
     )
+    baseline_topology_role = _baseline_topology_role(baseline)
+    historical_nodes: list[str] = []
+    historical_validators: list[str] = []
+    historical_services: dict[str, dict[str, Any]] = {}
+    if baseline_topology_role == "identity-history-only":
+        historical_nodes, historical_validators, _hist_chain, _hist_genesis, historical_services = _historical_topology_from_baseline(baseline)
+
     if target in nodes:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_TARGET_INVALID", "target node is already present in baseline topology")
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_TARGET_INVALID", "target node is already present in current live topology source")
 
     network_doc = _private_network(private_state, network)
     if not _controller_exists(network_doc, host):
@@ -545,6 +586,11 @@ def build_node_add_prep_transaction(
             "completed_at": baseline.get("completed_at"),
             "age_seconds": baseline_age,
             "next_phase": baseline.get("next_phase"),
+            "topology_role": baseline_topology_role,
+            "identity_history_only": baseline_topology_role == "identity-history-only",
+            "historical_nodes": historical_nodes,
+            "historical_validator_set": historical_validators,
+            "historical_services": historical_services,
         },
         "target": {
             "node": target,
@@ -557,6 +603,12 @@ def build_node_add_prep_transaction(
             "existing_service_uuid": None,
         },
         "current_topology": {
+            "source": (
+                "operator-directed-empty-current-topology"
+                if baseline_topology_role == "identity-history-only"
+                else "baseline-live-topology-source"
+            ),
+            "baseline_topology_used_as_live": baseline_topology_role != "identity-history-only",
             "nodes": nodes,
             "validator_set": validators,
             "validator_count": len(validators),
@@ -630,11 +682,15 @@ def build_node_add_prep_transaction(
             "do_mutation_required": True,
             "generic_topology_diff": True,
             "hardcoded_stage_target": False,
+            "operator_directed_testing_path": True,
+            "baseline_topology_role": baseline_topology_role,
+            "old_baseline_topology_used_as_live": baseline_topology_role != "identity-history-only",
             "allowed_next_command": f"add-node do {network}",
         },
         "policy": {
             "compiler": "mother-native-add-node-prep-v1",
             "read_only_preparation": True,
+            "operator_directed_testing_path": True,
             "network_access_performed": False,
             "live_mutation_performed": False,
             "mutation_count": 0,
@@ -670,6 +726,8 @@ def build_node_add_prep_transaction(
         "target_node": target,
         "target_host": host,
         "target_validator_address": target_validator,
+        "baseline_topology_role": baseline_topology_role,
+        "old_baseline_topology_used_as_live": baseline_topology_role != "identity-history-only",
         "current_nodes": nodes,
         "post_add_nodes": post_nodes,
         "current_validator_count": len(validators),
@@ -782,6 +840,10 @@ def verify_node_add_prep_transaction(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_TRANSACTION_INVALID", "node-add prep must be topology-diff driven")
     if document.get("execution_plan", {}).get("hardcoded_stage_target") is not False:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_TRANSACTION_INVALID", "node-add prep must not use a hardcoded stage target")
+    source_topology_role = source.get("topology_role", _baseline_topology_role(baseline))
+    if source_topology_role == "identity-history-only" and current.get("baseline_topology_used_as_live") is True:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_TRANSACTION_INVALID", "identity/history baseline was used as live topology")
+
     return {
         "clean": True,
         "transaction_path": str(resolved),
@@ -790,6 +852,10 @@ def verify_node_add_prep_transaction(
         "mother_binding": dict(document["mother_binding"]),
         "network": document["network"],
         "mode": document["mode"],
+        "operator_directed_testing_path": document.get("execution_plan", {}).get("operator_directed_testing_path") is True,
+        "baseline_topology_role": source_topology_role,
+        "old_baseline_topology_used_as_live": current.get("baseline_topology_used_as_live") is True,
+        "current_topology_source": current.get("source"),
         "target_node": target_node,
         "target_host": target["controller_id"],
         "target_validator_address": target_validator,

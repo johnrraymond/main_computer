@@ -228,7 +228,7 @@ SCM operation guards remove one mutation-safety prerequisite. They do not author
 
 ## Specified application-scaffolding program
 
-`pretty_docs/mcel-application-scaffolding.md` specifies the live deterministic structural generator, a versioned canonical package, a golden generated fixture, and the future runnable Contract Counter reference application. The program is intended to expose and close the missing application spine by working forward from the desired MCEL 1.0 package and backward from existing requirements, adapter, SCM, surface, layout, observation, acceptance, provenance, and truth authorities.
+`pretty_docs/mcel-application-scaffolding.md` specifies the live deterministic structural generator, a versioned canonical package, and fixture-neutral generator/package proof checks. The former Contract Counter and Contract Workbench reference fixtures are retired; the program now exposes and closes the application spine by working forward from the desired MCEL 1.0 package and backward from existing requirements, adapter, SCM, surface, layout, observation, acceptance, provenance, and truth authorities.
 
 Current status:
 
@@ -236,8 +236,8 @@ Current status:
 specification: documented
 generator core: implemented
 structural package validator: implemented
-golden fixture: implemented
-checked-in browser-mountable reference application: implemented
+golden fixture: retired after generic template coverage
+checked-in browser-mountable reference application: retired
 repository package discovery: implemented
 browser-safe package catalog: implemented
 browser-safe package loading and semantic projection: implemented
@@ -248,13 +248,15 @@ operation-linked browser observation: implemented
 app-oriented proof command: implemented
 ```
 
-Wave 2 is complete. `tools/mcel_create_app.py` creates the deterministic canonical package under `mcel_apps/`, refuses unsafe identifiers and collisions, supports write-free dry runs and machine-readable results, validates the generated package structurally, and is locked to a byte-equivalent Contract Counter golden fixture.
+The former canonical reference app role is replaced by generic `semantic-runtime-proven` template coverage plus real promoted apps.
+
+Wave 2 is complete. `tools/mcel_create_app.py` creates the deterministic canonical package under `mcel_apps/`, refuses unsafe identifiers and collisions, supports write-free dry runs and machine-readable results, validates the generated package structurally, and is covered by fixture-neutral generated-package checks rather than a byte-equivalent Contract Counter golden fixture.
 
 Wave 3A is complete. `tools/mcel_application_packages.py` now discovers direct-child packages, validates every declared path against repository-bound package contents, rejects unsafe paths, symlinks, duplicate identities, and directory/manifest/blueprint disagreement, and emits deterministic per-package and catalog fingerprints.
 
-Wave 3B is complete. `tools/mcel_application_package_browser_catalog.py` deterministically generates and checks the browser-safe `mcel-application-package-catalog.js` artifact from the validated repository catalog. Browser-side MCEL tooling can inspect Contract Counter package metadata through `McelApplicationPackages`, while package modules remain unexecuted, the app-surface registry remains unenrolled, and Contract Counter remains `structural-only`.
+Wave 3B is complete. `tools/mcel_application_package_browser_catalog.py` deterministically generates and checks the browser-safe `mcel-application-package-catalog.js` artifact from the validated repository catalog. Browser-side MCEL tooling now proves catalog behavior through fixture-neutral package checks and real promoted apps while package modules remain unexecuted.
 
-Wave 4 is complete. `mcel-application-runtime.js` compiles declared application intents into SCM-controlled transitions and exposes immutable application instances through the MCEL facade. Contract Counter increment, reset, stale, duplicate, prohibited, undeclared-write, and failed-postcondition paths are executable.
+Wave 4 is complete. `mcel-application-runtime.js` compiles declared application intents into SCM-controlled transitions and exposes immutable application instances through the MCEL facade. The runtime behavior formerly proven through Contract Counter is now covered by fixture-neutral and real-app checks.
 
 Wave 5A is complete. `tools/mcel_application_runtime_projection.py` generates and checks a browser-safe package projection containing only executable contracts and runtime assets. `MCEL.mountApplicationPackage()` verifies source-package, catalog, and projection fingerprints, loads declared modules, validates semantic surface ridges and layout-region declarations, binds controls to intents, projects committed state, renders truthful receipts, and supports deterministic unmount.
 
@@ -478,11 +480,10 @@ The centralized Workbench portable-projection snapshot remains a compatibility b
 
 ## Canonical app authoring source
 
-Calculator is the canonical real MCEL app in this repository. Counter and
-Workbench are retained reference fixtures for MCEL platform
-compatibility/projection/proof paths and should not be used as new-app
-authoring examples. They are also not current product-migration targets. Future
-stabilization should upgrade tests so generic DSL/package/conformance harnesses,
-generated packages, or real promoted apps prove the same behavior without
-depending on Contract Counter or Contract Workbench by name except where a
-fixture-specific compatibility edge is intentionally under test.
+Calculator is the canonical real MCEL app in this repository. Code Editor is
+the complex host-bound semantic/layout declaration example. Counter and
+Workbench are retired reference fixtures, not current product-migration targets
+or new-app authoring examples. Generic DSL/package/conformance harnesses now
+own those platform invariants without depending on Contract Counter or Contract
+Workbench by name; any future compatibility fixture must be explicitly bounded
+to the compatibility edge it proves.

@@ -175,6 +175,37 @@ def test_opening_shuttle_plugin_fixture_materializes_and_exports_without_runtime
         "objective-type.reach-destination",
     ]
     assert encounter["actorArchetypes"] == ["actor-archetype.shuttle-raider"]
+    assert encounter["objectives"] == [
+        {
+            "id": "survive-boarding",
+            "type": "objective-type.survive",
+            "required": True,
+            "label": "Survive the shuttle boarding",
+        },
+        {
+            "id": "clear-raiders",
+            "type": "objective-type.clear-hostiles",
+            "required": True,
+            "label": "Clear the shuttle raiders",
+        },
+        {
+            "id": "reach-haven-orbit",
+            "type": "objective-type.reach-destination",
+            "required": True,
+            "label": "Reach Haven orbit",
+        },
+    ]
+    assert encounter["participants"] == [
+        {
+            "role": "hostile",
+            "actorArchetypeId": "actor-archetype.shuttle-raider",
+            "count": 3,
+        }
+    ]
+    assert encounter["location"] == {
+        "systemId": "system.solace-reach",
+        "destinationId": "destination.solace-reach.haven-orbit",
+    }
     assert encounter["receiptIds"] == [RECEIPT_ID]
     assert encounter["consequenceTypes"] == [
         "consequence-type.record-receipt",
@@ -186,6 +217,12 @@ def test_opening_shuttle_plugin_fixture_materializes_and_exports_without_runtime
     assert project_catalog.entry_points == (SCENARIO_ID,)
     assert project_catalog.scenario_ids == (SCENARIO_ID,)
     assert project_catalog.encounter_ids == (ENCOUNTER_ID,)
+    project_encounter = next(
+        document for document in project_catalog.payload["documents"] if document["kind"] == "encounter"
+    )
+    assert project_encounter["participants"][0]["count"] == 3
+    assert project_encounter["objectives"][1]["id"] == "clear-raiders"
+    assert project_encounter["location"]["systemId"] == "system.solace-reach"
 
 
 def test_opening_shuttle_exported_catalog_builds_preview_only_executor_contract(
@@ -226,6 +263,19 @@ def test_opening_shuttle_exported_catalog_builds_preview_only_executor_contract(
     assert result["shellState"]["active"] is True
     assert result["handoff"]["accepted"] is True
     assert result["handoff"]["templateId"] == "encounter-template.shuttle-ambush"
+    assert result["handoff"]["templateInput"]["objectives"][0] == {
+        "id": "survive-boarding",
+        "type": "objective-type.survive",
+        "required": True,
+        "label": "Survive the shuttle boarding",
+    }
+    assert result["handoff"]["templateInput"]["actors"] == [
+        {
+            "role": "hostile",
+            "actorArchetypeId": "actor-archetype.shuttle-raider",
+            "count": 3,
+        }
+    ]
 
     status = result["status"]
     assert status["accepted"] is False
@@ -243,6 +293,15 @@ def test_opening_shuttle_exported_catalog_builds_preview_only_executor_contract(
     assert preview_contract["templateId"] == "encounter-template.shuttle-ambush"
     assert preview_contract["scenario"]["id"] == SCENARIO_ID
     assert preview_contract["encounter"]["id"] == ENCOUNTER_ID
+    assert preview_contract["encounter"]["location"] == {
+        "systemId": "system.solace-reach",
+        "destinationId": "destination.solace-reach.haven-orbit",
+    }
+    assert [objective["id"] for objective in preview_contract["objectiveSequence"]] == [
+        "survive-boarding",
+        "clear-raiders",
+        "reach-haven-orbit",
+    ]
     assert [objective["type"] for objective in preview_contract["objectiveSequence"]] == [
         "objective-type.survive",
         "objective-type.clear-hostiles",
@@ -252,9 +311,10 @@ def test_opening_shuttle_exported_catalog_builds_preview_only_executor_contract(
         {
             "role": "hostile",
             "actorArchetypeId": "actor-archetype.shuttle-raider",
-            "count": 1,
+            "count": 3,
         }
     ]
+    assert preview_contract["waves"][0]["count"] == 3
     assert preview_contract["completion"]["receiptIds"] == [RECEIPT_ID]
     assert preview_contract["completion"]["consequenceTypes"] == [
         "consequence-type.record-receipt",

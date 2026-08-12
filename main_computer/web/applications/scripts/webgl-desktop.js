@@ -38,6 +38,72 @@
       );
     }
 
+    function webglNormalizeGameplayPackIds(value) {
+      if (value === null || value === undefined) return [];
+      if (Array.isArray(value)) {
+        return [...new Set(value.flatMap(webglNormalizeGameplayPackIds).filter(Boolean))];
+      }
+      if (typeof value === "string") {
+        const tokens = value.split(",").map((item) => String(item || "").trim()).filter(Boolean);
+        if (tokens.some((token) => token.toLowerCase() === "none")) return [];
+        return [...new Set(tokens)];
+      }
+      if (typeof value === "object") {
+        if (String(value.mode || "").toLowerCase() === "none") return [];
+        return webglNormalizeGameplayPackIds(
+          value.activeGameplayPackIds
+          || value.activePluginIds
+          || value.pluginIds
+          || value.selectedPluginIds
+          || value.value
+          || []
+        );
+      }
+      return [];
+    }
+
+    function webglReloadGameplayPackSelection(project) {
+      const metadata = project?.metadata || {};
+      const configured = metadata.activeGameplayPackIds
+        || metadata.activeGeneratedGameplayPackIds
+        || metadata.gameplayPackSelection
+        || metadata.generatedGameplayPackSelection
+        || [];
+      let selected = webglNormalizeGameplayPackIds(configured);
+
+      try {
+        const raw = window.localStorage?.getItem?.("main-computer.webgl.active-gameplay-packs.v1");
+        if (raw !== null && raw !== undefined) {
+          try {
+            selected = webglNormalizeGameplayPackIds(JSON.parse(raw));
+          } catch {
+            selected = webglNormalizeGameplayPackIds(raw);
+          }
+        }
+      } catch {
+        // Ignore unreadable localStorage; project metadata remains the fallback.
+      }
+
+      try {
+        const params = new URLSearchParams(window.location?.search || "");
+        const queryValue = params.get("gameplayPack") || params.get("gameplayPacks");
+        if (queryValue !== null) selected = webglNormalizeGameplayPackIds(queryValue);
+      } catch {
+        // URLSearchParams/window may be unavailable in non-browser smoke tests.
+      }
+
+      return {
+        schema: "game.reloadGameplayPackSelection.v1",
+        kind: "reload-gameplay-pack-selection",
+        source: "webgl-desktop.page-reload",
+        readOnly: true,
+        runtimeLocal: true,
+        persisted: false,
+        mode: selected.length ? "selected" : "none",
+        activeGameplayPackIds: selected
+      };
+    }
+
     function ensureWebglSystemScenarioRuntime(projectId, project, activeSystemId = "") {
       const api = window.MainComputerSystemScenarioRuntime;
       const definition = project?.metadata?.systemScenarios;
@@ -51,9 +117,11 @@
         return null;
       }
       try {
+        const packSelection = webglReloadGameplayPackSelection(project);
         const runtime = api.ensure(projectId, definition, {
           activeSystemId: String(activeSystemId || webglDefaultStrategicSystem(project)),
-          generatedGameplayCatalog: project?.metadata?.generatedGameplayPlugins
+          generatedGameplayCatalog: project?.metadata?.generatedGameplayPlugins,
+          activeGameplayPackIds: packSelection.activeGameplayPackIds
         });
         webglProjectState.systemScenarioRuntime = runtime;
         webglProjectState.systemScenarioError = "";

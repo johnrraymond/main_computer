@@ -12,15 +12,24 @@ from typing import Any
 
 
 _MAINNET_SOAK_OUT_OF_DATE_WARNING = (
-    "WARNING: mainnet steady-state soak is out of date and out of scope for the "
-    "current golden path. It is still the old A/C-specific soak and must not be "
-    "used as definitive evidence for topology-derived validator sets until the "
-    "soak runner is generalized."
+    "WARNING: mainnet steady-state soak is a deprecated legacy testing path. "
+    "The golden test path is operator-directed add/delete evidence; use "
+    "the operator-directed evidence path for the selected topology and release."
+)
+
+_LEGACY_C2_TEST_PATH_DEPRECATED_WARNING = (
+    "WARNING: stage-c2/apply-c2 commands are deprecated legacy fixture paths. "
+    "The active testing path is operator-directed add/delete evidence, "
+    "not the old fixture-driven path."
 )
 
 
 def _warn_mainnet_soak_out_of_date(command: str) -> None:
     print(f"{command}: {_MAINNET_SOAK_OUT_OF_DATE_WARNING}", file=sys.stderr)
+
+
+def _warn_legacy_c2_testing_path_deprecated(command: str) -> None:
+    print(f"{command}: {_LEGACY_C2_TEST_PATH_DEPRECATED_WARNING}", file=sys.stderr)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +159,30 @@ from tools.mother.common.deployment_node_add_identity import (
     verify_node_add_identity_evidence,
     verify_node_add_identity_release,
     write_node_add_identity_release,
+)
+from tools.mother.common.deployment_node_add_replica_sync import (
+    MotherDeploymentNodeAddReplicaSyncError,
+    build_node_add_replica_sync_release,
+    execute_node_add_replica_sync_release,
+    verify_node_add_replica_sync_evidence,
+    verify_node_add_replica_sync_release,
+    write_node_add_replica_sync_release,
+)
+from tools.mother.common.deployment_node_add_rollback import (
+    MotherDeploymentNodeAddRollbackError,
+    build_node_add_rollback_release,
+    execute_node_add_rollback_release,
+    verify_node_add_rollback_evidence,
+    verify_node_add_rollback_release,
+    write_node_add_rollback_release,
+)
+from tools.mother.common.deployment_node_add_validator_admission import (
+    MotherDeploymentNodeAddValidatorAdmissionError,
+    build_node_add_validator_admission_release,
+    execute_node_add_validator_admission_release,
+    verify_node_add_validator_admission_evidence,
+    verify_node_add_validator_admission_release,
+    write_node_add_validator_admission_release,
 )
 from tools.mother.common.deployment_identity_install import (
     MotherDeploymentIdentityInstallError,
@@ -480,7 +513,7 @@ def _parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     add_node_prep.add_argument("network", choices=["mainnet"])
-    add_node_prep.add_argument("--node", required=True, help="explicit absent node name to add; never inferred from a golden-path stage")
+    add_node_prep.add_argument("--node", required=True, help="explicit absent node name to add; never inferred from a deprecated fixture stage")
     add_node_prep.add_argument("--host", required=True, help="explicit target Coolify controller/host for the added node")
     add_node_prep.add_argument("--mode", default="soft", choices=["initial", "soft", "reactivate"])
     add_node_prep.add_argument("--baseline-evidence", required=True)
@@ -506,6 +539,7 @@ def _parser() -> argparse.ArgumentParser:
     add_node_do.add_argument("--baseline-max-age-seconds", type=int, default=86400)
     add_node_do.add_argument("--timeout", type=float, default=30.0)
     add_node_do.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_do.add_argument("--execute", action="store_true", help="required to perform live standby service creation")
     add_node_identity = add_node_subparsers.add_parser(
         "identity",
         help="execute the released generic add-node identity-install phase",
@@ -524,6 +558,72 @@ def _parser() -> argparse.ArgumentParser:
     add_node_identity.add_argument("--timeout", type=float, default=30.0)
     add_node_identity.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
     add_node_identity.add_argument("--execute", action="store_true")
+
+    add_node_replica_sync = add_node_subparsers.add_parser(
+        "replica-sync",
+        help="execute the released generic add-node non-validator replica-sync phase",
+        allow_abbrev=False,
+    )
+    add_node_replica_sync.add_argument("network", choices=["mainnet"])
+    add_node_replica_sync.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_replica_sync.add_argument("--operation-id")
+    add_node_replica_sync.add_argument("--release", required=True)
+    add_node_replica_sync.add_argument("--acknowledge-release-sha256", required=True)
+    add_node_replica_sync.add_argument("--max-age-seconds", type=int, default=900)
+    add_node_replica_sync.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    add_node_replica_sync.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    add_node_replica_sync.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    add_node_replica_sync.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    add_node_replica_sync.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    add_node_replica_sync.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    add_node_replica_sync.add_argument("--timeout", type=float, default=30.0)
+    add_node_replica_sync.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_replica_sync.add_argument("--max-wait-seconds", type=float, default=300.0)
+    add_node_replica_sync.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    add_node_replica_sync.add_argument("--execute", action="store_true")
+
+
+    add_node_validator_admission = add_node_subparsers.add_parser(
+        "validator-admission",
+        help="execute the released generic add-node validator admission and activation phase",
+        allow_abbrev=False,
+    )
+    add_node_validator_admission.add_argument("network", choices=["mainnet"])
+    add_node_validator_admission.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_validator_admission.add_argument("--operation-id")
+    add_node_validator_admission.add_argument("--release", required=True)
+    add_node_validator_admission.add_argument("--acknowledge-release-sha256", required=True)
+    add_node_validator_admission.add_argument("--max-age-seconds", type=int, default=900)
+    add_node_validator_admission.add_argument("--replica-sync-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--replica-sync-release-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    add_node_validator_admission.add_argument("--timeout", type=float, default=30.0)
+    add_node_validator_admission.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_validator_admission.add_argument("--max-wait-seconds", type=float, default=300.0)
+    add_node_validator_admission.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    add_node_validator_admission.add_argument("--execute", action="store_true")
+    add_node_rollback = add_node_subparsers.add_parser(
+        "rollback",
+        help="execute a released pre-admission add-node rollback by deleting only the created standby service",
+        allow_abbrev=False,
+    )
+    add_node_rollback.add_argument("network", choices=["mainnet"])
+    add_node_rollback.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_rollback.add_argument("--operation-id")
+    add_node_rollback.add_argument("--release", required=True)
+    add_node_rollback.add_argument("--acknowledge-release-sha256", required=True)
+    add_node_rollback.add_argument("--max-age-seconds", type=int, default=900)
+    add_node_rollback.add_argument("--failed-evidence-max-age-seconds", type=int, default=86400)
+    add_node_rollback.add_argument("--timeout", type=float, default=30.0)
+    add_node_rollback.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_rollback.add_argument("--max-wait-seconds", type=float, default=300.0)
+    add_node_rollback.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    add_node_rollback.add_argument("--execute", action="store_true")
 
     verify_node_add_prep = subparsers.add_parser(
         "verify-add-node-prep-transaction",
@@ -629,6 +729,163 @@ def _parser() -> argparse.ArgumentParser:
     verify_node_add_identity_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     verify_node_add_identity_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
 
+
+    release_node_add_replica_sync = subparsers.add_parser(
+        "release-add-node-replica-sync",
+        help="mint an explicit expiring release for generic Mother add-node replica synchronization",
+        allow_abbrev=False,
+    )
+    release_node_add_replica_sync.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_replica_sync.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    release_node_add_replica_sync.add_argument("--operation-id")
+    release_node_add_replica_sync.add_argument("--identity-evidence", required=True)
+    release_node_add_replica_sync.add_argument("--acknowledge-add-node-identity-evidence-sha256", required=True)
+    release_node_add_replica_sync.add_argument("--max-age-seconds", type=int, default=86400)
+    release_node_add_replica_sync.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    release_node_add_replica_sync.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    release_node_add_replica_sync.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    release_node_add_replica_sync.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_node_add_replica_sync.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    release_node_add_replica_sync.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_add_replica_sync.add_argument("--created-at")
+    release_node_add_replica_sync.add_argument("--write-release", action="store_true")
+
+    verify_node_add_replica_sync_release_parser = subparsers.add_parser(
+        "verify-add-node-replica-sync-release",
+        help="verify a generic Mother add-node replica-sync release before live sync",
+        allow_abbrev=False,
+    )
+    verify_node_add_replica_sync_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_replica_sync_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_replica_sync_release_parser.add_argument("--operation-id")
+    verify_node_add_replica_sync_release_parser.add_argument("--release", required=True)
+    verify_node_add_replica_sync_release_parser.add_argument("--max-age-seconds", type=int, default=900)
+    verify_node_add_replica_sync_release_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_release_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_release_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_release_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_release_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    verify_node_add_replica_sync_evidence_parser = subparsers.add_parser(
+        "verify-add-node-replica-sync-evidence",
+        help="verify generic Mother add-node replica-sync evidence after synchronization",
+        allow_abbrev=False,
+    )
+    verify_node_add_replica_sync_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_replica_sync_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_replica_sync_evidence_parser.add_argument("--operation-id")
+    verify_node_add_replica_sync_evidence_parser.add_argument("--evidence", required=True)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_replica_sync_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+
+    release_node_add_validator_admission = subparsers.add_parser(
+        "release-add-node-validator-admission",
+        help="mint an explicit expiring release for generic add-node validator admission",
+        allow_abbrev=False,
+    )
+    release_node_add_validator_admission.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_validator_admission.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    release_node_add_validator_admission.add_argument("--operation-id")
+    release_node_add_validator_admission.add_argument("--replica-sync-evidence", required=True)
+    release_node_add_validator_admission.add_argument("--acknowledge-add-node-replica-sync-evidence-sha256", required=True)
+    release_node_add_validator_admission.add_argument("--replica-sync-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--replica-sync-release-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+    release_node_add_validator_admission.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_add_validator_admission.add_argument("--created-at")
+    release_node_add_validator_admission.add_argument("--write-release", action="store_true")
+
+    verify_node_add_validator_admission_release_parser = subparsers.add_parser(
+        "verify-add-node-validator-admission-release",
+        help="verify a generic add-node validator-admission release before live votes",
+        allow_abbrev=False,
+    )
+    verify_node_add_validator_admission_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_validator_admission_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_validator_admission_release_parser.add_argument("--operation-id")
+    verify_node_add_validator_admission_release_parser.add_argument("--release", required=True)
+    verify_node_add_validator_admission_release_parser.add_argument("--max-age-seconds", type=int, default=900)
+    verify_node_add_validator_admission_release_parser.add_argument("--replica-sync-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_release_parser.add_argument("--replica-sync-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_release_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_release_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_release_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_release_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_release_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    verify_node_add_validator_admission_evidence_parser = subparsers.add_parser(
+        "verify-add-node-validator-admission-evidence",
+        help="verify generic add-node validator-admission evidence after live votes",
+        allow_abbrev=False,
+    )
+    verify_node_add_validator_admission_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_validator_admission_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_validator_admission_evidence_parser.add_argument("--operation-id")
+    verify_node_add_validator_admission_evidence_parser.add_argument("--evidence", required=True)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--replica-sync-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--replica-sync-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--identity-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--identity-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--add-do-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
+    verify_node_add_validator_admission_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    release_node_add_rollback = subparsers.add_parser(
+        "release-add-node-rollback",
+        help="mint an explicit expiring release for failed pre-admission add-node rollback",
+        allow_abbrev=False,
+    )
+    release_node_add_rollback.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_rollback.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    release_node_add_rollback.add_argument("--operation-id")
+    release_node_add_rollback.add_argument("--failed-evidence", required=True)
+    release_node_add_rollback.add_argument("--acknowledge-failed-evidence-sha256", required=True)
+    release_node_add_rollback.add_argument("--max-age-seconds", type=int, default=86400)
+    release_node_add_rollback.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_add_rollback.add_argument("--created-at")
+    release_node_add_rollback.add_argument("--write-release", action="store_true")
+
+    verify_node_add_rollback_release_parser = subparsers.add_parser(
+        "verify-add-node-rollback-release",
+        help="verify a generic Mother add-node rollback release before live service deletion",
+        allow_abbrev=False,
+    )
+    verify_node_add_rollback_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_rollback_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_rollback_release_parser.add_argument("--operation-id")
+    verify_node_add_rollback_release_parser.add_argument("--release", required=True)
+    verify_node_add_rollback_release_parser.add_argument("--max-age-seconds", type=int, default=900)
+    verify_node_add_rollback_release_parser.add_argument("--failed-evidence-max-age-seconds", type=int, default=86400)
+
+    verify_node_add_rollback_evidence_parser = subparsers.add_parser(
+        "verify-add-node-rollback-evidence",
+        help="verify generic Mother add-node rollback evidence after service deletion",
+        allow_abbrev=False,
+    )
+    verify_node_add_rollback_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_rollback_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    verify_node_add_rollback_evidence_parser.add_argument("--operation-id")
+    verify_node_add_rollback_evidence_parser.add_argument("--evidence", required=True)
+    verify_node_add_rollback_evidence_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    verify_node_add_rollback_evidence_parser.add_argument("--release-max-age-seconds", type=int, default=86400)
+    verify_node_add_rollback_evidence_parser.add_argument("--failed-evidence-max-age-seconds", type=int, default=86400)
 
     remove_node = subparsers.add_parser(
         "remove-node",
@@ -1724,7 +1981,7 @@ def _parser() -> argparse.ArgumentParser:
 
     run_mainnet_soak = subparsers.add_parser(
         "run-mainnet-steady-state-soak",
-        help="OUT OF DATE: warns before running the old A/C-specific steady-state soak",
+        help="DEPRECATED legacy testing path: warns and refuses to define current acceptance",
         allow_abbrev=False,
     )
     _common(run_mainnet_soak)
@@ -1738,7 +1995,7 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_mainnet_soak = subparsers.add_parser(
         "verify-mainnet-steady-state-soak-evidence",
-        help="OUT OF DATE: warns before verifying old A/C-specific soak evidence",
+        help="DEPRECATED legacy testing path: warns before inspecting old soak evidence",
         allow_abbrev=False,
     )
     _common(verify_mainnet_soak)
@@ -4799,6 +5056,7 @@ def _cmd_verify_coolify_service_lifecycle_probe_evidence(
 
 
 def _c2_selection(args: argparse.Namespace) -> None:
+    _warn_legacy_c2_testing_path_deprecated(getattr(args, "command", "stage-c2/apply-c2"))
     selected = _selected_nodes(args.node)
     if selected and selected != ("mainnetc-super2",):
         raise MotherDeploymentC2StateExtensionError(
@@ -5893,6 +6151,268 @@ def _cmd_verify_node_add_identity_evidence(args: argparse.Namespace, private_sta
     return 0
 
 
+def _cmd_release_node_add_replica_sync(args: argparse.Namespace, private_state) -> int:
+    release = build_node_add_replica_sync_release(
+        _paths(args),
+        private_state,
+        Path(args.identity_evidence),
+        acknowledged_add_node_identity_evidence_sha256=args.acknowledge_add_node_identity_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_node_add_replica_sync_release(
+            _paths(args),
+            release,
+            operation=_operation("write-node-add-replica-sync-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_replica_sync_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_replica_sync_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_add_node_replica_sync(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        raise RuntimeError("--execute is required for add-node replica-sync")
+    result = execute_node_add_replica_sync_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        max_age_seconds=args.max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("execute-node-add-replica-sync", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_replica_sync_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_replica_sync_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+
+def _cmd_release_node_add_validator_admission(args: argparse.Namespace, private_state) -> int:
+    release = build_node_add_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.replica_sync_evidence),
+        acknowledged_replica_sync_evidence_sha256=args.acknowledge_add_node_replica_sync_evidence_sha256,
+        network=args.network,
+        replica_sync_max_age_seconds=args.replica_sync_max_age_seconds,
+        replica_sync_release_max_age_seconds=args.replica_sync_release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_node_add_validator_admission_release(
+            _paths(args),
+            release,
+            operation=_operation("node-add-validator-admission-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_validator_admission_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        replica_sync_max_age_seconds=args.replica_sync_max_age_seconds,
+        replica_sync_release_max_age_seconds=args.replica_sync_release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_add_node_validator_admission(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        raise RuntimeError("--execute is required for add-node validator-admission")
+    result = execute_node_add_validator_admission_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        max_age_seconds=args.max_age_seconds,
+        replica_sync_max_age_seconds=args.replica_sync_max_age_seconds,
+        replica_sync_release_max_age_seconds=args.replica_sync_release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("execute-node-add-validator-admission", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_node_add_validator_admission_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_validator_admission_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        replica_sync_max_age_seconds=args.replica_sync_max_age_seconds,
+        replica_sync_release_max_age_seconds=args.replica_sync_release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_release_node_add_rollback(args: argparse.Namespace, private_state) -> int:
+    release = build_node_add_rollback_release(
+        _paths(args),
+        private_state,
+        Path(args.failed_evidence),
+        acknowledged_failed_evidence_sha256=args.acknowledge_failed_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        expires_in_seconds=args.expires_in_seconds,
+        created_at=args.created_at,
+    )
+    if args.write_release:
+        path, digest = write_node_add_rollback_release(
+            _paths(args),
+            release,
+            operation=_operation("write-node-add-rollback-release", args.network, args.operation_id),
+        )
+        release = {**release, "release_artifact": {"path": str(path), "sha256": digest}}
+    print(json.dumps(release, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_verify_node_add_rollback_release(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_rollback_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        max_age_seconds=args.max_age_seconds,
+        failed_evidence_max_age_seconds=args.failed_evidence_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_add_node_rollback(args: argparse.Namespace, private_state) -> int:
+    if not args.execute:
+        result = verify_node_add_rollback_release(
+            _paths(args),
+            private_state,
+            Path(args.release),
+            max_age_seconds=args.max_age_seconds,
+            failed_evidence_max_age_seconds=args.failed_evidence_max_age_seconds,
+        )
+        result = {
+            **result,
+            "execute_requested": False,
+            "live_mutation_performed": False,
+            "next_phase": f"add-node-rollback-{args.network}",
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    result = execute_node_add_rollback_release(
+        _paths(args),
+        private_state,
+        Path(args.release),
+        acknowledged_release_sha256=args.acknowledge_release_sha256,
+        max_age_seconds=args.max_age_seconds,
+        failed_evidence_max_age_seconds=args.failed_evidence_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("execute-node-add-rollback", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
+def _cmd_verify_node_add_rollback_evidence(args: argparse.Namespace, private_state) -> int:
+    result = verify_node_add_rollback_evidence(
+        _paths(args),
+        private_state,
+        Path(args.evidence),
+        max_age_seconds=args.max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        failed_evidence_max_age_seconds=args.failed_evidence_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_remove_node_prep(args: argparse.Namespace, private_state) -> int:
     transaction = build_node_remove_prep_transaction(
         _paths(args),
@@ -6037,6 +6557,12 @@ def main(argv: list[str] | None = None) -> int:
                 return _cmd_add_node_do(args, private_state)
             if args.add_node_phase == "identity":
                 return _cmd_add_node_identity(args, private_state)
+            if args.add_node_phase == "replica-sync":
+                return _cmd_add_node_replica_sync(args, private_state)
+            if args.add_node_phase == "validator-admission":
+                return _cmd_add_node_validator_admission(args, private_state)
+            if args.add_node_phase == "rollback":
+                return _cmd_add_node_rollback(args, private_state)
             raise RuntimeError(f"unsupported add-node phase: {args.add_node_phase}")
         if args.command == "verify-add-node-prep-transaction":
             return _cmd_verify_node_add_prep_transaction(args, private_state)
@@ -6052,6 +6578,24 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_node_add_identity_release(args, private_state)
         if args.command == "verify-add-node-identity-evidence":
             return _cmd_verify_node_add_identity_evidence(args, private_state)
+        if args.command == "release-add-node-replica-sync":
+            return _cmd_release_node_add_replica_sync(args, private_state)
+        if args.command == "verify-add-node-replica-sync-release":
+            return _cmd_verify_node_add_replica_sync_release(args, private_state)
+        if args.command == "verify-add-node-replica-sync-evidence":
+            return _cmd_verify_node_add_replica_sync_evidence(args, private_state)
+        if args.command == "release-add-node-validator-admission":
+            return _cmd_release_node_add_validator_admission(args, private_state)
+        if args.command == "verify-add-node-validator-admission-release":
+            return _cmd_verify_node_add_validator_admission_release(args, private_state)
+        if args.command == "verify-add-node-validator-admission-evidence":
+            return _cmd_verify_node_add_validator_admission_evidence(args, private_state)
+        if args.command == "release-add-node-rollback":
+            return _cmd_release_node_add_rollback(args, private_state)
+        if args.command == "verify-add-node-rollback-release":
+            return _cmd_verify_node_add_rollback_release(args, private_state)
+        if args.command == "verify-add-node-rollback-evidence":
+            return _cmd_verify_node_add_rollback_evidence(args, private_state)
         if args.command == "remove-node":
             if args.remove_node_phase == "prep":
                 return _cmd_remove_node_prep(args, private_state)
@@ -6350,6 +6894,10 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentT3PostAdmissionSteadyStateError,
         MotherDeploymentNodeAddPrepError,
         MotherDeploymentNodeAddDoError,
+        MotherDeploymentNodeAddIdentityError,
+        MotherDeploymentNodeAddReplicaSyncError,
+        MotherDeploymentNodeAddValidatorAdmissionError,
+        MotherDeploymentNodeAddRollbackError,
         MotherDeploymentNodeRemovePrepError,
         MotherDeploymentNodeRemoveDoError,
         MotherDeploymentNodeRemoveFinalizeError,

@@ -5603,6 +5603,8 @@
           this.phaserBeam = null;
           this.lastCombatUiAt = -Infinity;
           this.onCombatChanged = null;
+          this.openingShuttleEncounter = this.createOpeningShuttleEncounterRuntimeState();
+          this.openingShuttleEncounterAuthoringAlignment = null;
         }
 
         initializeGeometryBuffers() {
@@ -7392,6 +7394,10 @@
           this.bayControlSuppressedKeys = suppressedBayKeys;
           this.bayControlInputUnlockAtMs = (Number.isFinite(this.lastFrameTime) ? this.lastFrameTime : performance.now()) + 650;
           this.setShipLocation("bay.shuttle", true);
+          this.completeOpeningShuttleEncounterAtDestination?.(
+            Number.isFinite(this.lastFrameTime) ? this.lastFrameTime : performance.now(),
+            {locationId: "bay.shuttle", reason: "shuttle-bay-control-handoff"}
+          );
           if (this.shipState?.flags) {
             this.shipState.flags.bayControlActive = true;
             this.shipState.flags.boardersPausedAfterDocking = true;
@@ -8995,6 +9001,493 @@
           return builder.toFloat32Array();
         }
 
+        createOpeningShuttleEncounterRuntimeState(nowMs = 0) {
+          const packConfig = this.openingShuttleActiveGameplayPackConfig?.() || null;
+          const eliteWaveConfig = this.openingShuttleEliteWaveConfigFromGameplayPack?.(packConfig) || {
+            enabled: false,
+            triggerDefeats: 2,
+            requiredExtraHostiles: 0,
+            actorArchetypeId: "actor-archetype.shuttle-raider",
+            source: "none",
+            scenarioId: "",
+            encounterId: "",
+            pluginId: "",
+            packConfigAvailable: false,
+            packConfigured: false,
+            activePluginIds: []
+          };
+          return {
+            schema: "game.openingShuttleEncounterRuntime.v1",
+            encounterId: "encounter.solace-reach.opening-shuttle-ambush",
+            templateId: "encounter-template.shuttle-ambush",
+            systemId: "system.solace-reach",
+            destinationId: "destination.solace-reach.haven-orbit",
+            builtInConsumerId: "built-in.solace-reach.opening-shuttle-ambush",
+            status: "active",
+            counters: {
+              spawned: 0,
+              activated: 0,
+              defeated: 0,
+              eliteSpawned: 0,
+              eliteDefeated: 0,
+              playerDamaged: 0,
+              playerDefeated: 0,
+              destinationReached: 0
+            },
+            eliteWave: {
+              enabled: eliteWaveConfig.enabled === true,
+              triggerDefeats: eliteWaveConfig.triggerDefeats,
+              requested: false,
+              spawned: false,
+              cleared: false,
+              requiredExtraHostiles: eliteWaveConfig.requiredExtraHostiles,
+              spawnedCount: 0,
+              actorArchetypeId: eliteWaveConfig.actorArchetypeId,
+              source: eliteWaveConfig.source,
+              scenarioId: eliteWaveConfig.scenarioId,
+              encounterId: eliteWaveConfig.encounterId,
+              pluginId: eliteWaveConfig.pluginId,
+              packConfigAvailable: eliteWaveConfig.packConfigAvailable === true,
+              packConfigured: eliteWaveConfig.packConfigured === true,
+              activePluginIds: Array.isArray(eliteWaveConfig.activePluginIds)
+                ? eliteWaveConfig.activePluginIds.slice()
+                : []
+            },
+            receipts: [],
+            events: [],
+            completion: {
+              destinationReached: false,
+              completed: false,
+              failed: false,
+              completedAtMs: null,
+              failedAtMs: null,
+              receiptIds: []
+            },
+            startedAtMs: Number.isFinite(nowMs) && nowMs > 0 ? nowMs : null,
+            lastEventAtMs: null,
+            lastMessage: "",
+            execution: {
+              generatedPluginExecution: false,
+              generatedTemplateExecution: false,
+              rendererHandoff: false,
+              saveStateMutated: false,
+              projectJsonModified: false,
+              additionalSpawnRequested: false
+            }
+          };
+        }
+
+        openingShuttleActiveGameplayPackConfig() {
+          const scenarioRuntime = globalThis.MainComputerSystemScenarioRuntime?.current?.();
+          if (
+            !scenarioRuntime
+            || typeof scenarioRuntime.openingShuttleGameplayPackConfig !== "function"
+          ) {
+            return null;
+          }
+          const config = scenarioRuntime.openingShuttleGameplayPackConfig({
+            baseHostileCount: 2,
+            systemId: "system.solace-reach",
+            destinationId: "destination.solace-reach.haven-orbit",
+            source: "scene-viewer.openingShuttleEncounter"
+          });
+          if (!config || typeof config !== "object") return null;
+          return config;
+        }
+
+        openingShuttleEliteWaveConfigFromGameplayPack(packConfig = null) {
+          const config = packConfig && typeof packConfig === "object" ? packConfig : {};
+          const eliteWave = config.eliteWave && typeof config.eliteWave === "object"
+            ? config.eliteWave
+            : {};
+          const enabled = config.available === true
+            && eliteWave.enabled === true
+            && Number(eliteWave.count || config.extraHostileCount || 0) > 0;
+          const triggerDefeats = Number.isFinite(Number(eliteWave.triggerDefeats))
+            ? Math.max(0, Number(eliteWave.triggerDefeats))
+            : 2;
+          const requiredExtraHostiles = enabled
+            ? Math.max(1, Math.floor(Number(eliteWave.count || config.extraHostileCount || 1)))
+            : 0;
+          return {
+            enabled,
+            triggerDefeats,
+            requiredExtraHostiles,
+            actorArchetypeId: String(eliteWave.actorArchetypeId || "actor-archetype.shuttle-raider"),
+            source: String(eliteWave.source || config.pluginId || "none"),
+            scenarioId: String(eliteWave.scenarioId || config.scenarioId || ""),
+            encounterId: String(eliteWave.encounterId || config.encounterId || ""),
+            pluginId: String(config.pluginId || eliteWave.source || ""),
+            packConfigAvailable: config.available === true,
+            packConfigured: enabled,
+            activePluginIds: Array.isArray(config.activePluginIds)
+              ? config.activePluginIds.map((pluginId) => String(pluginId || "")).filter(Boolean)
+              : []
+          };
+        }
+
+        isOpeningShuttleEncounterRuntimeActive() {
+          if (!this.combat?.enabled) return false;
+          const phase = typeof this.characterAIPhase === "function"
+            ? this.characterAIPhase()
+            : "shuttle";
+          return phase === "shuttle";
+        }
+
+        openingShuttleEncounterObjectiveSnapshot(runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState()) {
+          const counters = runtime?.counters || {};
+          const eliteWave = runtime?.eliteWave || {};
+          const defeated = Math.max(0, Number(counters.defeated || 0));
+          const playerDefeated = Math.max(0, Number(counters.playerDefeated || 0));
+          const eliteRequested = eliteWave.requested === true;
+          const eliteSpawned = eliteWave.spawned === true;
+          const eliteCleared = eliteWave.cleared === true;
+          const completion = runtime?.completion || {};
+          const destinationReached = completion.destinationReached === true;
+          const encounterCompleted = completion.completed === true;
+          const failed = playerDefeated > 0 || completion.failed === true;
+          const surviveStatus = failed
+            ? "failed"
+            : encounterCompleted
+              ? "completed"
+              : "active";
+          const clearStatus = failed
+            ? "failed"
+            : eliteCleared || encounterCompleted
+              ? "completed"
+              : "active";
+          const reachStatus = failed
+            ? "failed"
+            : destinationReached
+              ? "completed"
+              : eliteCleared
+                ? "active"
+                : "pending";
+          return [
+            {
+              id: "survive-boarding",
+              type: "objective-type.survive",
+              label: "Survive the shuttle boarding",
+              required: true,
+              status: surviveStatus,
+              progress: {
+                playerDefeated,
+                playerDamaged: Math.max(0, Number(counters.playerDamaged || 0)),
+                encounterCompleted
+              }
+            },
+            {
+              id: "clear-raiders",
+              type: "objective-type.clear-hostiles",
+              label: "Clear shuttle raiders",
+              required: true,
+              status: clearStatus,
+              progress: {
+                defeated,
+                eliteRequested,
+                eliteSpawned,
+                eliteCleared
+              }
+            },
+            {
+              id: "reach-haven-orbit",
+              type: "objective-type.reach-destination",
+              label: "Reach Haven orbit",
+              required: true,
+              status: reachStatus,
+              progress: {
+                systemId: runtime?.systemId || "system.solace-reach",
+                destinationId: runtime?.destinationId || "destination.solace-reach.haven-orbit",
+                destinationReached,
+                encounterCompleted
+              }
+            }
+          ];
+        }
+
+        openingShuttleEncounterObjectiveLine(objectives = []) {
+          const active = objectives.find((objective) => objective.status === "active")
+            || objectives.find((objective) => objective.status === "pending")
+            || objectives[objectives.length - 1]
+            || null;
+          if (!active) return "";
+          const status = String(active.status || "unknown").toUpperCase();
+          return `${active.label} • ${status}`;
+        }
+
+        openingShuttleEncounterSnapshot() {
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState();
+          const objectives = this.openingShuttleEncounterObjectiveSnapshot(runtime);
+          return {
+            schema: runtime.schema,
+            encounterId: runtime.encounterId,
+            templateId: runtime.templateId,
+            status: runtime.status || "active",
+            systemId: runtime.systemId,
+            destinationId: runtime.destinationId,
+            builtInConsumerId: runtime.builtInConsumerId,
+            objectiveSequence: objectives,
+            objectiveLine: this.openingShuttleEncounterObjectiveLine(objectives),
+            counters: {...runtime.counters},
+            eliteWave: {...runtime.eliteWave},
+            receipts: runtime.receipts.map((receipt) => ({...receipt})),
+            receiptIds: runtime.receipts.map((receipt) => receipt.id),
+            events: runtime.events.slice(-8).map((event) => ({...event})),
+            completion: {
+              ...(runtime.completion || {}),
+              receiptIds: Array.isArray(runtime.completion?.receiptIds)
+                ? runtime.completion.receiptIds.slice()
+                : runtime.receipts.map((receipt) => receipt.id)
+            },
+            startedAtMs: runtime.startedAtMs,
+            lastEventAtMs: runtime.lastEventAtMs,
+            lastMessage: runtime.lastMessage,
+            execution: {...runtime.execution}
+          };
+        }
+
+        awardOpeningShuttleEncounterReceipt(receiptId, nowMs, detail = {}) {
+          if (!receiptId) return false;
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          if (runtime.receipts.some((receipt) => receipt.id === receiptId)) return false;
+          runtime.receipts.push({
+            id: receiptId,
+            atMs: Number.isFinite(nowMs) ? nowMs : null,
+            detail: {...detail}
+          });
+          if (runtime.completion && Array.isArray(runtime.completion.receiptIds)) {
+            runtime.completion.receiptIds.push(receiptId);
+          }
+          return true;
+        }
+
+        completeOpeningShuttleEncounterAtDestination(nowMs = this.combatClockMs, detail = {}) {
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          const completion = runtime.completion || {
+            destinationReached: false,
+            completed: false,
+            failed: false,
+            completedAtMs: null,
+            failedAtMs: null,
+            receiptIds: []
+          };
+          runtime.completion = completion;
+          if (completion.destinationReached) return false;
+          completion.destinationReached = true;
+          runtime.counters.destinationReached = Math.max(0, Number(runtime.counters.destinationReached || 0)) + 1;
+          const event = {
+            type: "destination-reached",
+            atMs: Number.isFinite(nowMs) ? nowMs : null,
+            detail: {
+              systemId: runtime.systemId,
+              destinationId: runtime.destinationId,
+              locationId: String(detail.locationId || "bay.shuttle"),
+              reason: String(detail.reason || "destination-reached")
+            }
+          };
+          runtime.events.push(event);
+          if (runtime.events.length > 24) runtime.events.splice(0, runtime.events.length - 24);
+          runtime.lastEventAtMs = event.atMs;
+          runtime.lastMessage = "Haven orbit reached.";
+          this.awardOpeningShuttleEncounterReceipt(
+            "receipt.solace-reach.opening-shuttle-ambush.destination-reached",
+            nowMs,
+            {
+              systemId: runtime.systemId,
+              destinationId: runtime.destinationId,
+              locationId: String(detail.locationId || "bay.shuttle")
+            }
+          );
+          if (runtime.eliteWave?.cleared === true && !completion.failed) {
+            completion.completed = true;
+            completion.completedAtMs = Number.isFinite(nowMs) ? nowMs : null;
+            runtime.status = "completed";
+            runtime.lastMessage = "Opening shuttle ambush cleared at Haven orbit.";
+            this.awardOpeningShuttleEncounterReceipt(
+              "receipt.solace-reach.opening-shuttle-ambush.completed",
+              nowMs,
+              {
+                systemId: runtime.systemId,
+                destinationId: runtime.destinationId,
+                defeated: Number(runtime.counters.defeated || 0),
+                eliteDefeated: Number(runtime.counters.eliteDefeated || 0)
+              }
+            );
+          }
+          this.publishOpeningShuttleEncounterBridge?.(this.openingShuttleEncounterSnapshot(), nowMs);
+          return true;
+        }
+
+        recordOpeningShuttleEncounterEvent(type, detail = {}, nowMs = this.combatClockMs) {
+          if (!this.isOpeningShuttleEncounterRuntimeActive()) return null;
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          if (runtime.startedAtMs === null && Number.isFinite(nowMs)) runtime.startedAtMs = nowMs;
+          const event = {
+            type: String(type || "unknown"),
+            atMs: Number.isFinite(nowMs) ? nowMs : null,
+            detail: {...detail}
+          };
+          runtime.events.push(event);
+          if (runtime.events.length > 24) runtime.events.splice(0, runtime.events.length - 24);
+          runtime.lastEventAtMs = event.atMs;
+          if (event.type === "alien-spawned") {
+            runtime.counters.spawned += 1;
+            runtime.lastMessage = "Boarding contact detected.";
+            this.awardOpeningShuttleEncounterReceipt(
+              "receipt.solace-reach.opening-shuttle-ambush.boarding-contact",
+              nowMs,
+              {alienId: detail.alienId || "", spawnId: detail.spawnId || ""}
+            );
+          } else if (event.type === "alien-activated") {
+            runtime.counters.activated += 1;
+            runtime.lastMessage = "Boarder fully materialized.";
+          } else if (event.type === "alien-defeated") {
+            runtime.counters.defeated += 1;
+            if (detail.eliteWave === true) {
+              runtime.counters.eliteDefeated += 1;
+              runtime.eliteWave.cleared = true;
+              runtime.lastMessage = "Elite boarding raider neutralized.";
+              this.awardOpeningShuttleEncounterReceipt(
+                "receipt.solace-reach.opening-shuttle-ambush.elite-wave-cleared",
+                nowMs,
+                {alienId: detail.alienId || "", kills: Number(detail.kills || 0)}
+              );
+            } else {
+              runtime.lastMessage = "Boarder neutralized.";
+              this.awardOpeningShuttleEncounterReceipt(
+                "receipt.solace-reach.opening-shuttle-ambush.first-raider-defeated",
+                nowMs,
+                {alienId: detail.alienId || "", kills: Number(detail.kills || 0)}
+              );
+            }
+            if (
+              detail.eliteWave !== true
+              && runtime.eliteWave.enabled === true
+              && !runtime.eliteWave.requested
+              && !runtime.eliteWave.spawned
+              && Number(detail.kills || 0) >= runtime.eliteWave.triggerDefeats
+            ) {
+              runtime.eliteWave.requested = true;
+              runtime.execution.additionalSpawnRequested = true;
+              runtime.lastMessage = "Gameplay pack elite boarding signal locked.";
+              this.awardOpeningShuttleEncounterReceipt(
+                "receipt.solace-reach.opening-shuttle-ambush.elite-wave-requested",
+                nowMs,
+                {
+                  triggerDefeats: runtime.eliteWave.triggerDefeats,
+                  kills: Number(detail.kills || 0),
+                  source: runtime.eliteWave.source,
+                  pluginId: runtime.eliteWave.pluginId,
+                  scenarioId: runtime.eliteWave.scenarioId,
+                  encounterId: runtime.eliteWave.encounterId
+                }
+              );
+            }
+          } else if (event.type === "elite-wave-spawned") {
+            runtime.counters.eliteSpawned += 1;
+            runtime.eliteWave.spawnedCount = Math.max(0, Number(runtime.eliteWave.spawnedCount || 0)) + 1;
+            runtime.eliteWave.spawned = true;
+            runtime.lastMessage = "Gameplay pack elite boarding raider materializing.";
+            this.awardOpeningShuttleEncounterReceipt(
+              "receipt.solace-reach.opening-shuttle-ambush.elite-wave-spawned",
+              nowMs,
+              {alienId: detail.alienId || "", spawnId: detail.spawnId || ""}
+            );
+          } else if (event.type === "player-damaged") {
+            runtime.counters.playerDamaged += 1;
+            runtime.lastMessage = "Cadet took boarding damage.";
+          } else if (event.type === "player-defeated") {
+            runtime.counters.playerDefeated += 1;
+            runtime.status = "failed";
+            if (runtime.completion) {
+              runtime.completion.failed = true;
+              runtime.completion.failedAtMs = Number.isFinite(nowMs) ? nowMs : null;
+            }
+            runtime.lastMessage = "Boarding defense failed.";
+            this.awardOpeningShuttleEncounterReceipt(
+              "receipt.solace-reach.opening-shuttle-ambush.player-defeated",
+              nowMs,
+              {health: Math.max(0, Math.round(Number(detail.health || 0)))}
+            );
+          } else if (event.type === "combat-reset") {
+            runtime.lastMessage = "Boarding defense reset.";
+          }
+          this.publishOpeningShuttleEncounterBridge?.(this.openingShuttleEncounterSnapshot(), nowMs);
+          return event;
+        }
+
+        openingShuttleEliteSpawnPoint() {
+          const points = Array.isArray(this.combat?.transport?.spawnPoints)
+            ? this.combat.transport.spawnPoints
+            : [];
+          return (
+            points.find((point) => point.id === "center-pad")
+            || points.find((point) => point.id === "forward-pad")
+            || points[0]
+            || {id: "center-pad", position: [0, -0.55, 0.3]}
+          );
+        }
+
+        spawnOpeningShuttleEliteRaider(nowMs = this.combatClockMs) {
+          if (!this.isOpeningShuttleEncounterRuntimeActive()) return false;
+          if (!this.combat?.enabled || this.gameOver) return false;
+          if (this.aliens.length >= this.combat.transport.maxAlive) return false;
+          const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
+          this.openingShuttleEncounter = runtime;
+          if (runtime.eliteWave.enabled !== true) return false;
+          if (!runtime.eliteWave.requested || runtime.eliteWave.spawned) return false;
+          const point = this.openingShuttleEliteSpawnPoint();
+          this.transportSequence += 1;
+          const eliteHealth = Math.max(
+            this.combat.alien.maxHealth,
+            Math.ceil(this.combat.alien.maxHealth * 1.5)
+          );
+          const alien = {
+            id: `boarding-elite-raider-${this.transportSequence}`,
+            spawnId: point.id,
+            position: point.position.slice(),
+            health: eliteHealth,
+            maxHealth: eliteHealth,
+            state: "transporting",
+            transportUntilMs: nowMs + this.combat.transport.beamDurationMs,
+            nextAttackAtMs: nowMs + this.combat.transport.beamDurationMs + 350,
+            hitFlashUntilMs: 0,
+            eliteWave: true,
+            encounterRole: "elite-followup-raider",
+            actorArchetypeId: runtime.eliteWave.actorArchetypeId,
+            sourcePluginId: runtime.eliteWave.pluginId || "",
+            sourceScenarioId: runtime.eliteWave.scenarioId || "",
+            sourceEncounterId: runtime.eliteWave.encounterId || ""
+          };
+          this.aliens.push(alien);
+          this.recordOpeningShuttleEncounterEvent(
+            "elite-wave-spawned",
+            {
+              alienId: alien.id,
+              spawnId: alien.spawnId,
+              actorArchetypeId: alien.actorArchetypeId,
+              encounterRole: alien.encounterRole,
+              transportSequence: this.transportSequence,
+              sourcePluginId: alien.sourcePluginId,
+              sourceScenarioId: alien.sourceScenarioId,
+              sourceEncounterId: alien.sourceEncounterId
+            },
+            nowMs
+          );
+          this.emitCombatState(true);
+          return true;
+        }
+
+        resolveOpeningShuttleEliteWave(nowMs = this.combatClockMs) {
+          const runtime = this.openingShuttleEncounter;
+          if (runtime?.eliteWave?.enabled !== true) return false;
+          if (!runtime?.eliteWave?.requested || runtime.eliteWave.spawned) return false;
+          return this.spawnOpeningShuttleEliteRaider(nowMs);
+        }
+
         combatSnapshot(nowMs = this.combatClockMs) {
           const cooldownRemainingMs = Math.max(
             0,
@@ -9002,6 +9495,9 @@
           );
           const characterEnemies = this.visibleCharacterAICharacters()
             .filter((character) => character.kind === "enemy");
+          const openingShuttleEncounter = this.openingShuttleEncounterSnapshot();
+          const openingShuttleAuthoringAlignment = this.openingShuttleEncounterAuthoringAlignment
+            || this.openingShuttleEncounterAuthoringAlignmentSnapshot(openingShuttleEncounter);
           return {
             enabled: this.combat.enabled,
             health: Math.max(0, Math.round(this.playerHealth)),
@@ -9014,8 +9510,136 @@
             paused: this.isBoardingPaused(),
             pilotStation: this.pilot.station?.label || "",
             phaserReady: !this.gameOver && !this.isBoardingPaused() && cooldownRemainingMs <= 0,
-            cooldownRemainingMs: Math.ceil(cooldownRemainingMs)
+            cooldownRemainingMs: Math.ceil(cooldownRemainingMs),
+            openingShuttleEncounter,
+            openingShuttleAuthoringAlignment
           };
+        }
+
+        openingShuttleGeneratedAuthoringScenarioId() {
+          return "scenario.plugin.opening-shuttle-ambush.elite-wave";
+        }
+
+        openingShuttleEncounterAuthoringAlignmentSnapshot(_snapshot = null, scenarioRuntime = null) {
+          const runtime = scenarioRuntime || globalThis.MainComputerSystemScenarioRuntime?.current?.();
+          if (
+            !runtime
+            || typeof runtime.openingShuttleEncounterBridgeDiagnostic !== "function"
+          ) {
+            return null;
+          }
+          const scenarioId = this.openingShuttleGeneratedAuthoringScenarioId();
+          const options = {
+            source: "scene-viewer.openingShuttleEncounter.authoring-alignment"
+          };
+          const generatedCatalog = typeof runtime.generatedGameplayCatalog === "function"
+            ? runtime.generatedGameplayCatalog()
+            : null;
+          if (
+            generatedCatalog?.ready === true
+            && Array.isArray(generatedCatalog.scenarioIds)
+            && generatedCatalog.scenarioIds.includes(scenarioId)
+          ) {
+            options.generatedScenarioId = scenarioId;
+          }
+          const diagnostic = runtime.openingShuttleEncounterBridgeDiagnostic(options);
+          if (!diagnostic || typeof diagnostic !== "object") return null;
+          const generatedPreview = diagnostic.generatedPreview || null;
+          const bridge = diagnostic.bridge || null;
+          const safety = diagnostic.safety || {};
+          const coverage = diagnostic.coverage || {};
+          const requiredHostileDefeats = Number.isFinite(Number(coverage.authoredHostileCount))
+            ? Number(coverage.authoredHostileCount)
+            : (
+              Number.isFinite(Number(generatedPreview?.hostileCount))
+                ? Number(generatedPreview.hostileCount)
+                : null
+            );
+          const liveDefeats = Number.isFinite(Number(coverage.liveDefeats))
+            ? Number(coverage.liveDefeats)
+            : null;
+          return {
+            schema: "game.openingShuttleAuthoringAlignment.v1",
+            kind: "opening-shuttle-authoring-alignment",
+            source: "scene-viewer.openingShuttleEncounter.authoring-alignment",
+            readOnly: true,
+            runtimeLocal: true,
+            persisted: false,
+            generated: false,
+            generatedPluginExecution: false,
+            generatedTemplateExecution: false,
+            rendererHandoff: false,
+            saveStateMutated: false,
+            projectJsonModified: false,
+            scenarioId,
+            diagnosticKind: String(diagnostic.kind || ""),
+            available: diagnostic.available === true,
+            aligned: diagnostic.aligned === true,
+            alignmentStatus: String(diagnostic.alignmentStatus || "unavailable"),
+            authoringPreviewAvailable: Boolean(generatedPreview),
+            bridgeStatus: String(bridge?.status || ""),
+            bridgeObjectiveLine: String(bridge?.objectiveLine || ""),
+            templateId: String(bridge?.templateId || generatedPreview?.primaryTemplateId || "encounter-template.shuttle-ambush"),
+            hostileCount: Number.isFinite(Number(generatedPreview?.hostileCount))
+              ? Number(generatedPreview.hostileCount)
+              : null,
+            requiredHostileDefeats,
+            liveDefeats,
+            liveEliteDefeats: Number.isFinite(Number(coverage.liveEliteDefeats))
+              ? Number(coverage.liveEliteDefeats)
+              : null,
+            hostileDefeatsSatisfied: coverage.hostileDefeatsSatisfied === true,
+            destinationReached: coverage.liveDestinationReached === true,
+            playerSurvived: coverage.livePlayerSurvived === true,
+            completionReported: coverage.completionReported === true,
+            completionAligned: coverage.completionCoverageSatisfied === true,
+            coverage: {
+              generatedPreviewAvailable: coverage.generatedPreviewAvailable === true,
+              authoredHostileCount: requiredHostileDefeats,
+              liveDefeats,
+              liveEliteDefeats: Number.isFinite(Number(coverage.liveEliteDefeats))
+                ? Number(coverage.liveEliteDefeats)
+                : null,
+              hostileDefeatsSatisfied: coverage.hostileDefeatsSatisfied === true,
+              liveDestinationReached: coverage.liveDestinationReached === true,
+              livePlayerSurvived: coverage.livePlayerSurvived === true,
+              completionReported: coverage.completionReported === true,
+              completionCoverageSatisfied: coverage.completionCoverageSatisfied === true,
+              objectiveTypesCovered: coverage.objectiveTypesCovered === true
+            },
+            problems: Array.isArray(diagnostic.problems) ? diagnostic.problems.slice() : [],
+            safety: {
+              executionSafe: safety.executionSafe === true,
+              generatedPluginExecution: safety.generatedPluginExecution === true,
+              generatedTemplateExecution: safety.generatedTemplateExecution === true,
+              rendererHandoff: safety.rendererHandoff === true,
+              saveStateMutated: safety.saveStateMutated === true,
+              projectJsonModified: safety.projectJsonModified === true,
+              additionalSpawnRequested: safety.additionalSpawnRequested === true
+            }
+          };
+        }
+
+        publishOpeningShuttleEncounterBridge(snapshot = null, nowMs = this.combatClockMs) {
+          const scenarioRuntime = globalThis.MainComputerSystemScenarioRuntime?.current?.();
+          if (
+            !scenarioRuntime
+            || typeof scenarioRuntime.setOpeningShuttleEncounterBridgeSnapshot !== "function"
+          ) {
+            return null;
+          }
+          const bridgeSnapshot = snapshot || this.openingShuttleEncounterSnapshot?.();
+          if (!bridgeSnapshot) return null;
+          const bridge = scenarioRuntime.setOpeningShuttleEncounterBridgeSnapshot(bridgeSnapshot, {
+            source: "scene-viewer.openingShuttleEncounter",
+            nowMs,
+            emit: true
+          });
+          this.openingShuttleEncounterAuthoringAlignment = this.openingShuttleEncounterAuthoringAlignmentSnapshot(
+            bridge,
+            scenarioRuntime
+          );
+          return bridge;
         }
 
         emitCombatState(force = false) {
@@ -9042,6 +9666,11 @@
             hitFlashUntilMs: 0
           };
           this.aliens.push(alien);
+          this.recordOpeningShuttleEncounterEvent(
+            "alien-spawned",
+            {alienId: alien.id, spawnId: alien.spawnId, transportSequence: this.transportSequence},
+            nowMs
+          );
           this.emitCombatState(true);
           return true;
         }
@@ -9077,6 +9706,10 @@
             return;
           }
 
+          if (this.characterAIPhase() === "shuttle") {
+            this.resolveOpeningShuttleEliteWave?.(nowMs);
+          }
+
           if (this.characterAIPhase() === "shuttle" && nowMs >= this.nextTransportAtMs) {
             // The shuttle's original boarding encounter is a separate legacy combat
             // system. Character AI may be initialized for later system scenarios, but
@@ -9090,6 +9723,16 @@
             if (alien.state === "transporting") {
               if (nowMs >= alien.transportUntilMs) {
                 alien.state = "active";
+                this.recordOpeningShuttleEncounterEvent(
+                  "alien-activated",
+                  {
+                    alienId: alien.id,
+                    spawnId: alien.spawnId,
+                    eliteWave: alien.eliteWave === true,
+                    encounterRole: alien.encounterRole || ""
+                  },
+                  nowMs
+                );
                 this.emitCombatState(true);
               } else {
                 return;
@@ -9109,13 +9752,28 @@
               if (this.canAlienOccupy(alien, alien.position[0], candidateZ)) alien.position[2] = candidateZ;
             } else if (nowMs >= alien.nextAttackAtMs) {
               alien.nextAttackAtMs = nowMs + this.combat.alien.attackCooldownMs;
+              const previousHealth = this.playerHealth;
               this.playerHealth = Math.max(0, this.playerHealth - this.combat.alien.damage);
+              this.recordOpeningShuttleEncounterEvent(
+                "player-damaged",
+                {
+                  alienId: alien.id,
+                  damage: previousHealth - this.playerHealth,
+                  health: this.playerHealth
+                },
+                nowMs
+              );
               healthChanged = true;
             }
           });
 
           if (this.playerHealth <= 0) {
             this.gameOver = true;
+            this.recordOpeningShuttleEncounterEvent(
+              "player-defeated",
+              {health: this.playerHealth, kills: this.kills},
+              nowMs
+            );
             this.clearMovementKeys();
             healthChanged = true;
           }
@@ -9238,6 +9896,19 @@
             if (hitAlien.health <= 0) {
               this.aliens = this.aliens.filter((alien) => alien !== hitAlien);
               this.kills += 1;
+              this.recordOpeningShuttleEncounterEvent(
+                "alien-defeated",
+                {
+                  alienId: hitAlien.id,
+                  spawnId: hitAlien.spawnId,
+                  kills: this.kills,
+                  eliteWave: hitAlien.eliteWave === true,
+                  encounterRole: hitAlien.encounterRole || "",
+                  actorArchetypeId: hitAlien.actorArchetypeId || "actor-archetype.shuttle-raider"
+                },
+                nowMs
+              );
+              this.resolveOpeningShuttleEliteWave?.(nowMs);
             }
           }
           if (hitVelaEnemy) {
@@ -9306,9 +9977,14 @@
           this.lastPhaserShotAt = -Infinity;
           this.combatClockMs = nowMs;
           this.nextTransportAtMs = nowMs + Math.min(900, this.combat.transport.initialDelayMs);
+          this.openingShuttleEncounter = typeof this.createOpeningShuttleEncounterRuntimeState === "function"
+            ? this.createOpeningShuttleEncounterRuntimeState(nowMs)
+            : null;
+          this.openingShuttleEncounterAuthoringAlignment = null;
+          this.recordOpeningShuttleEncounterEvent?.("combat-reset", {}, nowMs);
           this.clearMovementKeys();
           this.resetFlightState();
-          this.emitCharacterAIState(true);
+          this.emitCharacterAIState?.(true);
           this.emitCombatState(true);
           return true;
         }
@@ -10075,6 +10751,13 @@
         const combatLine = document.createElement("div");
         combatLine.className = "scene-shuttle3d-combat-line";
         combatLine.textContent = "BOARDERS 0 • KILLS 0";
+        const encounterLine = document.createElement("div");
+        encounterLine.className = "scene-shuttle3d-encounter-line";
+        encounterLine.textContent = "OBJECTIVE: SURVIVE THE SHUTTLE BOARDING";
+        const authoringLine = document.createElement("div");
+        authoringLine.className = "scene-shuttle3d-authoring-line";
+        authoringLine.textContent = "AUTHORING ALIGNMENT: BRIDGE ONLY";
+        authoringLine.hidden = true;
         const characterLine = document.createElement("div");
         characterLine.className = "scene-shuttle3d-character-line";
         characterLine.textContent = "CHARACTERS INITIALIZING";
@@ -10088,7 +10771,7 @@
         shipLine.className = "scene-shuttle3d-ship-line";
         shipLine.textContent = "SHIP: SHUTTLE IN FLIGHT";
         shipLine.hidden = true;
-        hud.append(healthPanel, combatLine, characterLine, phaserLine, pilotLine, shipLine);
+        hud.append(healthPanel, combatLine, encounterLine, authoringLine, characterLine, phaserLine, pilotLine, shipLine);
 
         const crosshair = document.createElement("div");
         crosshair.className = "scene-shuttle3d-crosshair";
@@ -10345,6 +11028,40 @@
                 : "nominal";
             const transportText = combat.transporting ? ` • ${combat.transporting} TRANSPORTING` : "";
             combatLine.textContent = `BOARDERS ${combat.active}${transportText} • KILLS ${combat.kills}`;
+            const encounter = combat.openingShuttleEncounter || {};
+            const currentObjective = Array.isArray(encounter.objectiveSequence)
+              ? encounter.objectiveSequence.find((objective) => objective.status === "active")
+                || encounter.objectiveSequence.find((objective) => objective.status === "pending")
+                || null
+              : null;
+            encounterLine.hidden = !encounter.objectiveLine;
+            encounterLine.textContent = encounter.objectiveLine
+              ? `OBJECTIVE: ${encounter.objectiveLine}`
+              : "";
+            encounterLine.dataset.objectiveStatus = String(currentObjective?.status || "");
+            encounterLine.dataset.eliteWaveRequested = String(encounter.eliteWave?.requested === true);
+            encounterLine.dataset.eliteWaveCleared = String(encounter.eliteWave?.cleared === true);
+            const authoringAlignment = combat.openingShuttleAuthoringAlignment || {};
+            authoringLine.hidden = !authoringAlignment.alignmentStatus;
+            if (authoringAlignment.alignmentStatus) {
+              const liveDefeats = Number(authoringAlignment.liveDefeats);
+              const requiredDefeats = Number(authoringAlignment.requiredHostileDefeats);
+              const defeatText = Number.isFinite(liveDefeats) && Number.isFinite(requiredDefeats)
+                ? ` • HOSTILES ${liveDefeats}/${requiredDefeats}`
+                : "";
+              const completionText = authoringAlignment.completionReported === true
+                ? (authoringAlignment.completionAligned === true ? " • COMPLETION COVERED" : " • COMPLETION BLOCKED")
+                : "";
+              authoringLine.textContent = `AUTHORING ALIGNMENT: ${String(authoringAlignment.alignmentStatus).toUpperCase()}${defeatText}${completionText}`;
+            } else {
+              authoringLine.textContent = "";
+            }
+            authoringLine.dataset.aligned = String(authoringAlignment.aligned === true);
+            authoringLine.dataset.authoringPreviewAvailable = String(authoringAlignment.authoringPreviewAvailable === true);
+            authoringLine.dataset.hostileDefeatsSatisfied = String(authoringAlignment.hostileDefeatsSatisfied === true);
+            authoringLine.dataset.destinationReached = String(authoringAlignment.destinationReached === true);
+            authoringLine.dataset.completionAligned = String(authoringAlignment.completionAligned === true);
+            authoringLine.dataset.generatedTemplateExecution = String(authoringAlignment.generatedTemplateExecution === true);
             phaserLine.textContent = combat.paused
               ? `BOARDERS PAUSED • ${combat.pilotStation || "PILOT CONTROL"}`
               : combat.phaserReady

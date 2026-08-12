@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_ROOT = ROOT / "main_computer" / "web" / "applications" / "scripts"
 SCENARIO_RUNTIME = SCRIPT_ROOT / "system-scenario-runtime.js"
 WEBGL_DESKTOP = SCRIPT_ROOT / "webgl-desktop.js"
+APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
+GAME_EDITOR_CSS = ROOT / "main_computer" / "web" / "applications" / "styles" / "game-editor.css"
 PROJECT_PATH = ROOT / "game_projects" / "webgl-demo" / "project.json"
 
 
@@ -21,6 +23,19 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
             self.skipTest("node is required for system scenario runtime tests")
         result = subprocess.run(
             ["node", "-e", textwrap.dedent(script), str(SCENARIO_RUNTIME), str(PROJECT_PATH)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        return json.loads(result.stdout)
+
+    def run_webgl_desktop_node(self, script: str) -> dict:
+        if not shutil.which("node"):
+            self.skipTest("node is required for webgl desktop pack selector tests")
+        result = subprocess.run(
+            ["node", "-e", textwrap.dedent(script), str(WEBGL_DESKTOP)],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -1261,12 +1276,368 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
 
 
 
+
+    def test_active_gameplay_pack_selection_builds_opening_shuttle_config_or_none(self) -> None:
+        result = self.run_node(
+            r'''
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const project = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+            const generatedCatalog = {
+              schema: scenarioApi.GENERATED_GAMEPLAY_CATALOG_SCHEMA,
+              kind: scenarioApi.GENERATED_GAMEPLAY_CATALOG_KIND,
+              status: "ready",
+              runtimeStatus: scenarioApi.GENERATED_GAMEPLAY_CATALOG_RUNTIME_STATUS,
+              exported: true,
+              runtimeLoaded: false,
+              projectJsonModified: false,
+              activatedInRuntime: false,
+              enabledPluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
+              entryPoints: ["scenario.plugin.opening-shuttle-ambush.elite-wave"],
+              scenarioIds: ["scenario.plugin.opening-shuttle-ambush.elite-wave"],
+              encounterIds: ["encounter.plugin.opening-shuttle-ambush.elite-wave"],
+              receiptIds: ["receipt.plugin.opening-shuttle-ambush.cleared"],
+              consequenceIds: ["consequence.plugin.opening-shuttle-ambush.system-marked"],
+              documents: [
+                {
+                  pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
+                  kind: "scenario",
+                  id: "scenario.plugin.opening-shuttle-ambush.elite-wave",
+                  title: "Opening Shuttle Ambush Elite Wave",
+                  path: "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+                  stageIds: ["boarding", "cleared"],
+                  encounterIds: ["encounter.plugin.opening-shuttle-ambush.elite-wave"],
+                  receiptIds: ["receipt.plugin.opening-shuttle-ambush.cleared"],
+                  consequenceTypes: ["consequence-type.record-receipt", "consequence-type.mark-system"]
+                },
+                {
+                  pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
+                  kind: "encounter",
+                  id: "encounter.plugin.opening-shuttle-ambush.elite-wave",
+                  title: "Opening Shuttle Ambush Elite Wave",
+                  path: "generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json",
+                  template: "encounter-template.shuttle-ambush",
+                  objectiveTypes: [
+                    "objective-type.survive",
+                    "objective-type.clear-hostiles",
+                    "objective-type.reach-destination"
+                  ],
+                  objectives: [
+                    {id: "survive-boarding", type: "objective-type.survive", required: true},
+                    {id: "clear-raiders", type: "objective-type.clear-hostiles", required: true},
+                    {id: "reach-haven-orbit", type: "objective-type.reach-destination", required: true}
+                  ],
+                  actorArchetypes: ["actor-archetype.shuttle-raider"],
+                  participants: [
+                    {
+                      role: "hostile",
+                      actorArchetypeId: "actor-archetype.shuttle-raider",
+                      count: 3
+                    }
+                  ],
+                  location: {
+                    systemId: "system.solace-reach",
+                    destinationId: "destination.solace-reach.haven-orbit"
+                  },
+                  receiptIds: ["receipt.plugin.opening-shuttle-ambush.cleared"],
+                  consequenceTypes: ["consequence-type.record-receipt", "consequence-type.mark-system"]
+                }
+              ],
+              scenarios: [],
+              encounters: [],
+              plugins: [],
+              problems: []
+            };
+            const noneRuntime = scenarioApi.create(project.metadata.systemScenarios, {
+              projectId: "webgl-demo-none",
+              storage: null,
+              restore: false,
+              generatedGameplayCatalog: generatedCatalog,
+              activeGameplayPackIds: []
+            });
+            const packRuntime = scenarioApi.create(project.metadata.systemScenarios, {
+              projectId: "webgl-demo-pack",
+              storage: null,
+              restore: false,
+              generatedGameplayCatalog: generatedCatalog,
+              activeGameplayPackIds: ["plugin.hand-authored.opening-shuttle-ambush.001"]
+            });
+            const resetToNone = packRuntime.setActiveGameplayPackIds("None");
+            const selectedAgain = packRuntime.setActiveGameplayPackIds(
+              "plugin.hand-authored.opening-shuttle-ambush.001"
+            );
+            console.log(JSON.stringify({
+              noneSelection: noneRuntime.activeGameplayPackSelection(),
+              noneConfig: noneRuntime.openingShuttleGameplayPackConfig({baseHostileCount: 2}),
+              selectedAgain,
+              resetToNone,
+              packSelection: packRuntime.activeGameplayPackSelection(),
+              packConfig: packRuntime.openingShuttleGameplayPackConfig({baseHostileCount: 2}),
+              summary: packRuntime.summary()
+            }));
+            '''
+        )
+
+        assert result["noneSelection"]["schema"] == "game.activeGameplayPackSelection.v1"
+        assert result["noneSelection"]["mode"] == "none"
+        assert result["noneSelection"]["activePluginIds"] == []
+        assert result["noneConfig"]["schema"] == "game.openingShuttleGameplayPackConfig.v1"
+        assert result["noneConfig"]["available"] is False
+        assert result["noneConfig"]["active"] is False
+        assert result["noneConfig"]["reason"] == "no-active-gameplay-pack-selected"
+        assert result["noneConfig"]["extraHostileCount"] == 0
+        assert result["noneConfig"]["eliteWave"]["enabled"] is False
+
+        assert result["resetToNone"]["mode"] == "none"
+        assert result["resetToNone"]["activePluginIds"] == []
+        assert result["selectedAgain"]["mode"] == "selected"
+        assert result["selectedAgain"]["activePluginIds"] == [
+            "plugin.hand-authored.opening-shuttle-ambush.001"
+        ]
+
+        pack_config = result["packConfig"]
+        assert pack_config["available"] is True
+        assert pack_config["active"] is True
+        assert pack_config["pluginId"] == "plugin.hand-authored.opening-shuttle-ambush.001"
+        assert pack_config["scenarioId"] == "scenario.plugin.opening-shuttle-ambush.elite-wave"
+        assert pack_config["encounterId"] == "encounter.plugin.opening-shuttle-ambush.elite-wave"
+        assert pack_config["templateId"] == "encounter-template.shuttle-ambush"
+        assert pack_config["systemId"] == "system.solace-reach"
+        assert pack_config["destinationId"] == "destination.solace-reach.haven-orbit"
+        assert pack_config["baseHostileCount"] == 2
+        assert pack_config["hostileCount"] == 3
+        assert pack_config["extraHostileCount"] == 1
+        assert pack_config["eliteWave"] == {
+            "enabled": True,
+            "triggerDefeats": 2,
+            "count": 1,
+            "actorArchetypeId": "actor-archetype.shuttle-raider",
+            "source": "plugin.hand-authored.opening-shuttle-ambush.001",
+            "scenarioId": "scenario.plugin.opening-shuttle-ambush.elite-wave",
+            "encounterId": "encounter.plugin.opening-shuttle-ambush.elite-wave",
+        }
+        assert pack_config["generatedPluginExecution"] is False
+        assert pack_config["generatedTemplateExecution"] is False
+        assert pack_config["rendererHandoff"] is False
+        assert pack_config["saveStateMutated"] is False
+        assert pack_config["projectJsonModified"] is False
+        assert result["summary"]["activeGameplayPackSelection"]["mode"] == "selected"
+        assert result["summary"]["openingShuttleGameplayPackConfig"]["extraHostileCount"] == 1
+
+
+    def test_webgl_desktop_exposes_reload_time_gameplay_pack_selector(self) -> None:
+        desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
+        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        css = GAME_EDITOR_CSS.read_text(encoding="utf-8")
+
+        self.assertIn('data-webgl-gameplay-pack-controls', applications)
+        self.assertIn('id="webgl-gameplay-pack-select"', applications)
+        self.assertIn('id="webgl-gameplay-pack-apply"', applications)
+        self.assertIn("None — base game", applications)
+
+        self.assertIn("WEBGL_GAMEPLAY_PACK_STORAGE_KEY", desktop)
+        self.assertIn("webglReadStoredGameplayPackSelection", desktop)
+        self.assertIn("syncWebglGameplayPackControls", desktop)
+        self.assertIn("applyWebglGameplayPackControlSelection", desktop)
+        self.assertIn("reloadGameplayPackSelection: webglReloadGameplayPackSelection", desktop)
+        self.assertIn("syncGameplayPackControls: syncWebglGameplayPackControls", desktop)
+        self.assertIn(".webgl-gameplay-pack-controls", css)
+
+    def test_webgl_desktop_pack_selection_none_overrides_metadata_until_query_override(self) -> None:
+        result = self.run_webgl_desktop_node(
+            r'''
+            const fs = require("fs");
+            const vm = require("vm");
+            const storage = new Map();
+            const windowObj = {
+              localStorage: {
+                getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+                setItem(key, value) { storage.set(key, String(value)); }
+              },
+              location: {search: "", reload() {}},
+              addEventListener() {}
+            };
+            const context = {
+              window: windowObj,
+              document: {
+                querySelector() { return null; },
+                querySelectorAll() { return []; },
+                createElement() { return {appendChild() {}, addEventListener() {}, dataset: {}}; }
+              },
+              console,
+              URLSearchParams,
+              ensureDesktopIcons() {},
+              currentApp: "webgl",
+              setActiveApp() {},
+              HTMLAnchorElement: class {},
+              HTMLElement: class {}
+            };
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
+            const api = windowObj.MainComputerWebglSystemScenario;
+            const project = {
+              metadata: {
+                activeGameplayPackIds: ["plugin.hand-authored.opening-shuttle-ambush.001"]
+              }
+            };
+            const metadataDefault = api.reloadGameplayPackSelection(project);
+            storage.set(
+              "main-computer.webgl.active-gameplay-packs.v1",
+              JSON.stringify(["None"])
+            );
+            const storedNone = api.reloadGameplayPackSelection(project);
+            windowObj.location.search = "?gameplayPack=plugin.hand-authored.opening-shuttle-ambush.001";
+            const queryOverride = api.reloadGameplayPackSelection(project);
+            console.log(JSON.stringify({metadataDefault, storedNone, queryOverride}));
+            '''
+        )
+
+        self.assertEqual(result["metadataDefault"]["mode"], "selected")
+        self.assertEqual(
+            result["metadataDefault"]["activeGameplayPackIds"],
+            ["plugin.hand-authored.opening-shuttle-ambush.001"],
+        )
+        self.assertEqual(result["storedNone"]["mode"], "none")
+        self.assertEqual(result["storedNone"]["activeGameplayPackIds"], [])
+        self.assertEqual(result["storedNone"]["source"], "localStorage-none")
+        self.assertEqual(result["queryOverride"]["mode"], "selected")
+        self.assertEqual(result["queryOverride"]["source"], "query-string")
+
+    def test_webgl_desktop_pack_selector_lists_none_and_available_packs(self) -> None:
+        result = self.run_webgl_desktop_node(
+            r'''
+            const fs = require("fs");
+            const vm = require("vm");
+            const storage = new Map();
+            let reloadCount = 0;
+            const nodes = {
+              controls: {dataset: {}},
+              select: {
+                children: [],
+                value: "",
+                disabled: false,
+                textContent: "",
+                appendChild(option) { this.children.push(option); },
+                addEventListener() {}
+              },
+              apply: {addEventListener() {}},
+              status: {textContent: ""}
+            };
+            const windowObj = {
+              localStorage: {
+                getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+                setItem(key, value) { storage.set(key, String(value)); }
+              },
+              location: {search: "", reload() { reloadCount += 1; }},
+              addEventListener() {}
+            };
+            const documentObj = {
+              querySelector(selector) {
+                if (selector === "[data-webgl-gameplay-pack-controls]") return nodes.controls;
+                if (selector === "#webgl-gameplay-pack-select") return nodes.select;
+                if (selector === "#webgl-gameplay-pack-apply") return nodes.apply;
+                if (selector === "#webgl-gameplay-pack-status") return nodes.status;
+                return null;
+              },
+              querySelectorAll() { return []; },
+              createElement(tag) {
+                return {
+                  tagName: String(tag || "").toUpperCase(),
+                  value: "",
+                  textContent: "",
+                  dataset: {},
+                  appendChild() {},
+                  addEventListener() {}
+                };
+              }
+            };
+            const context = {
+              window: windowObj,
+              document: documentObj,
+              console,
+              URLSearchParams,
+              ensureDesktopIcons() {},
+              currentApp: "webgl",
+              setActiveApp() {},
+              HTMLAnchorElement: class {},
+              HTMLElement: class {}
+            };
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
+            const api = windowObj.MainComputerWebglSystemScenario;
+            const project = {
+              metadata: {
+                generatedGameplayPlugins: {
+                  enabledPluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
+                  documents: [
+                    {
+                      pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
+                      kind: "scenario",
+                      id: "scenario.plugin.opening-shuttle-ambush.elite-wave",
+                      title: "Opening Shuttle Ambush Elite Wave"
+                    }
+                  ]
+                }
+              }
+            };
+            const runtime = {
+              activeGameplayPackSelection() {
+                return {
+                  mode: "selected",
+                  activePluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
+                  availablePluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
+                  missingPluginIds: []
+                };
+              }
+            };
+            const state = api.syncGameplayPackControls(project, runtime);
+            nodes.select.value = "None";
+            const applied = api.applyGameplayPackControlSelection();
+            console.log(JSON.stringify({
+              state,
+              options: nodes.select.children.map((option) => ({
+                value: option.value,
+                text: option.textContent
+              })),
+              selected: nodes.select.value,
+              disabled: nodes.select.disabled,
+              controlsDataset: nodes.controls.dataset,
+              statusText: nodes.status.textContent,
+              stored: storage.get("main-computer.webgl.active-gameplay-packs.v1"),
+              applied,
+              reloadCount
+            }));
+            '''
+        )
+
+        self.assertEqual(result["state"]["mode"], "selected")
+        self.assertEqual(
+            result["state"]["activeGameplayPackIds"],
+            ["plugin.hand-authored.opening-shuttle-ambush.001"],
+        )
+        self.assertEqual(
+            [option["value"] for option in result["options"]],
+            ["None", "plugin.hand-authored.opening-shuttle-ambush.001"],
+        )
+        self.assertIn("None — base game", result["options"][0]["text"])
+        self.assertIn("Opening Shuttle Ambush Elite Wave", result["options"][1]["text"])
+        self.assertFalse(result["disabled"])
+        self.assertEqual(result["controlsDataset"]["gameplayPackMode"], "selected")
+        self.assertEqual(result["stored"], '["None"]')
+        self.assertEqual(result["applied"]["mode"], "none")
+        self.assertEqual(result["reloadCount"], 1)
+
     def test_webgl_desktop_passes_project_generated_catalog_to_system_scenario_runtime(self) -> None:
         desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
         self.assertIn(
             "generatedGameplayCatalog: project?.metadata?.generatedGameplayPlugins",
             desktop,
         )
+        self.assertIn("webglReloadGameplayPackSelection(project)", desktop)
+        self.assertIn("activeGameplayPackIds: packSelection.activeGameplayPackIds", desktop)
+        self.assertIn('WEBGL_GAMEPLAY_PACK_STORAGE_KEY', desktop)
+        self.assertIn('params.has("gameplayPack")', desktop)
+        self.assertIn('params.has("gameplayPacks")', desktop)
 
 
 if __name__ == "__main__":

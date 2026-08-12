@@ -120,6 +120,62 @@ def _records(value: Any) -> tuple[Mapping[str, Any], ...]:
     return tuple(item for item in value if isinstance(item, Mapping))
 
 
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(maximum, max(minimum, parsed))
+
+
+def _objective_summaries(value: Any) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for objective in _records(value):
+        objective_type = str(objective.get("type") or "").strip()
+        if not objective_type:
+            continue
+        objective_id = str(objective.get("id") or objective_type).strip()
+        label = str(objective.get("label") or "").strip()
+        record: dict[str, Any] = {
+            "id": objective_id,
+            "type": objective_type,
+            "required": objective.get("required") is not False,
+        }
+        if label:
+            record["label"] = label
+        records.append(record)
+    return records
+
+
+def _participant_summaries(value: Any) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for participant in _records(value):
+        actor_archetype_id = str(participant.get("actorArchetypeId") or "").strip()
+        if not actor_archetype_id:
+            continue
+        records.append(
+            {
+                "role": str(participant.get("role") or "").strip(),
+                "actorArchetypeId": actor_archetype_id,
+                "count": _bounded_int(participant.get("count"), 1, 1, 64),
+            }
+        )
+    return records
+
+
+def _location_summary(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: current
+        for key, current in (
+            ("systemId", str(value.get("systemId") or "").strip()),
+            ("destinationId", str(value.get("destinationId") or "").strip()),
+        )
+        if current
+    }
+
+
 def _is_safe_relative_posix_path(value: str) -> bool:
     try:
         path = PurePosixPath(str(value or ""))
@@ -229,6 +285,9 @@ def _document_summary(document: Mapping[str, Any]) -> dict[str, Any]:
         "actorArchetypes": list(_strings(document.get("actorArchetypes"))),
         "receiptIds": list(_strings(document.get("receiptIds"))),
         "consequenceTypes": list(_strings(document.get("consequenceTypes"))),
+        "objectives": _objective_summaries(document.get("objectives")),
+        "participants": _participant_summaries(document.get("participants")),
+        "location": _location_summary(document.get("location")),
     }
 
 

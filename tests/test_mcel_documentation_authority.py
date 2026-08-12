@@ -226,7 +226,7 @@ def test_app_authoring_docs_make_static_surface_bundle_a_no_backfill_gate() -> N
     assert "prevents the Code Editor-style late backfill from becoming normal process" in normalized_registry
 
 
-def test_fixture_apps_are_documented_as_temporary_test_instruments() -> None:
+def test_retired_fixture_apps_are_documented_as_historical_test_instruments() -> None:
     status = STATUS_DOC.read_text(encoding="utf-8")
     canonical = CANONICAL_APP_AUTHORING.read_text(encoding="utf-8")
     scaffolding = APPLICATION_SCAFFOLDING.read_text(encoding="utf-8")
@@ -235,25 +235,25 @@ def test_fixture_apps_are_documented_as_temporary_test_instruments() -> None:
     normalized_canonical = re.sub(r"\s+", " ", canonical)
     normalized_scaffolding = re.sub(r"\s+", " ", scaffolding)
 
-    assert "not current product-migration targets" in normalized_status
+    assert "retired reference fixtures" in normalized_status
     assert (
         "without depending on Contract Counter or Contract Workbench by name"
         in normalized_status
     )
 
-    assert "Fixture retirement target" in canonical
-    assert "not product migration targets" in normalized_canonical
-    assert "long-term test shape should not require either fixture app by name" in (
+    assert "Fixture retirement status" in canonical
+    assert "retired as live repository packages" in normalized_canonical
+    assert "must not be recreated as new-app examples" in normalized_canonical
+    assert "historical fixture names may remain only in compatibility documentation" in (
         normalized_canonical
     )
-    assert "Fixture-specific assertions should remain only" in normalized_canonical
 
     assert "not a second permanent application language" in normalized_scaffolding
-    assert "Contract Counter and Contract Workbench must not become standing product-migration obligations" in (
+    assert "Contract Counter and Contract Workbench were retired as checked-in app fixtures" in (
         normalized_scaffolding
     )
-    assert "upgrade tests so generic DSL/package/conformance harnesses" in normalized_status
-    assert "retire fixture-specific tests into generic template" in normalized_scaffolding
+    assert "Generic DSL/package/conformance harnesses now own those platform invariants" in normalized_status
+    assert "old generator fixture/reference application has been retired" in normalized_scaffolding
 
 
 def test_deprecated_findings_remain_linked_to_executable_adapter_proof_tests() -> None:

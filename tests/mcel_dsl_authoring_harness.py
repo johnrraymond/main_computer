@@ -16,6 +16,7 @@ from main_computer.mcel_application_packages import (
 from main_computer.mcel_application_runtime_projection import (
     ApplicationRuntimeProjection,
     build_runtime_projection_set,
+    is_runtime_projectable_record,
 )
 
 
@@ -316,6 +317,59 @@ def discover_valid_application_package_cases(repo_root: Path) -> list[Applicatio
 
 def expected_application_package_ids(repo_root: Path) -> set[str]:
     return {case.app_id for case in discover_valid_application_package_cases(repo_root)}
+
+
+def runtime_projectable_package_cases(repo_root: Path) -> list[ApplicationPackageCase]:
+    """Discover packages that can be materialized into runtime projections."""
+
+    root = repo_root.resolve()
+    return [
+        case
+        for case in discover_valid_application_package_cases(root)
+        if is_runtime_projectable_record(root, case.record)
+    ]
+
+
+def copy_reference_runtime_projectable_package(
+    repo_root: Path,
+    target_root: Path,
+    *,
+    directory_name: str | None = None,
+) -> tuple[ApplicationPackageCase, Path]:
+    """Copy one runtime-projectable package into a temporary repository.
+
+    Fixture retirement removed the old self-contained Counter/Workbench sample
+    apps. Runtime projection tests only need a package that can project, so this
+    helper selects by projectability and can use host-bound packages such as
+    Calculator instead of falling back to a synthetic scaffolded app.
+    """
+
+    cases = runtime_projectable_package_cases(repo_root)
+    assert cases, "Expected at least one runtime-projectable package test case."
+    preferred = next((case for case in cases if case.app_id == "calculator"), cases[0])
+    destination_name = directory_name or preferred.directory_name
+    destination = target_root / "mcel_apps" / destination_name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(preferred.package_path, destination)
+
+    catalog = build_application_package_catalog(target_root)
+    assert catalog.ok, {
+        "errors": [issue.to_dict() for issue in catalog.errors],
+        "records": [
+            {
+                "appId": record.app_id,
+                "valid": record.valid,
+                "errors": [issue.to_dict() for issue in record.errors],
+                "packageRoot": record.package_root,
+            }
+            for record in catalog.packages
+        ],
+    }
+    record = next(
+        item for item in catalog.packages
+        if item.package_root == f"mcel_apps/{destination_name}"
+    )
+    return ApplicationPackageCase(str(record.app_id), record, target_root.resolve()), destination
 
 
 def self_contained_runtime_package_cases(repo_root: Path) -> list[ApplicationPackageCase]:

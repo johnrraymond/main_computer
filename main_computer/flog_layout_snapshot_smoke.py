@@ -7633,7 +7633,7 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                     item("collection", "main_computer/"), item("collection", "tests/"), item("collection", "pretty_docs/"), item("collection", "runtime/"),
                 ]),
                 node("editor", "primary-editor", "Source Editor", role="focus", priority="focus", visibility="required", proximity="self", weight=9, connects=["records", "detail", "status", "evidence"], items=[
-                    item("surface", "Tab strip: flog_layout_snapshot_smoke.py · tests/test_flog_layout_snapshot_smoke.py", role="tab-strip"),
+                    item("surface", "Tab strip: flog_layout_snapshot_smoke.py · layout trial report", role="tab-strip"),
                     item("surface", "Source editor: line numbers, active function, selection, and diagnostics gutter", role="source-editor"),
                     item("collection", "Diagnostic: companion proximity scoring needs explanation"), item("collection", "Test marker: report includes reasons"),
                     item("status", "Cursor: scoring block, column 18"), item("text", "The editor should get stable area while verification, SCM evidence, and AI inspection remain connected."),
@@ -8511,10 +8511,10 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                     item("control", "Working directory"), item("control", "Command"), item("button", "Run"), item("button", "Stop"),
                 ]),
                 node("terminal", "primary-terminal", "Terminal Output", role="focus", priority="focus", visibility="required", proximity="self", weight=10, connects=["command", "status", "evidence"], items=[
-                    item("surface", "$ python -m pytest tests/test_flog_layout_snapshot_smoke.py", role="command-line"),
+                    item("surface", "$ python main_computer/flog_layout_snapshot_smoke.py --hierarchies all --screenshot-mode both", role="command-line"),
                     item("surface", "live stdout/stderr stream with last 24 lines", role="terminal-stream"),
-                    item("collection", "PASSED test_render_trial_html_contains_generated_hierarchy_and_candidate"), item("collection", "PASSED test_write_reports_lists_best_candidate_and_pngs"),
-                    item("status", "Exit code 0 · duration 1.42s"), item("text", "The terminal focus is a live proof surface with command, output, and result context."),
+                    item("collection", "Report: generated hierarchy and candidate layout recorded"), item("collection", "PNG proof set written for each trial"),
+                    item("status", "Exit code 0 · layout trial report complete"), item("text", "The terminal focus is a live proof surface with command, output, and result context."),
                 ]),
                 node("records", "collection-history", "Command History", role="collection", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["command", "terminal"], items=[
                     item("collection", "pytest -q"), item("collection", "git status"), item("collection", "python main.py"),

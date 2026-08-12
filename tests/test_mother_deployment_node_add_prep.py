@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tools import mother_deploy
 from tools.mother.common.canonical import canonical_json
@@ -29,6 +30,21 @@ from tools.mother.common.deployment_node_add_identity import (
     verify_node_add_identity_release,
     write_node_add_identity_release,
 )
+from tools.mother.common.deployment_node_add_replica_sync import (
+    build_node_add_replica_sync_release,
+    execute_node_add_replica_sync_release,
+    verify_node_add_replica_sync_evidence,
+    verify_node_add_replica_sync_release,
+    write_node_add_replica_sync_release,
+)
+from tools.mother.common.deployment_node_add_rollback import (
+    build_node_add_rollback_release,
+    execute_node_add_rollback_release,
+    verify_node_add_rollback_evidence,
+    verify_node_add_rollback_release,
+    write_node_add_rollback_release,
+)
+from tools.mother.common.deployment_genesis import _genesis_policy
 from tests.test_mother_deployment_executor import TOKEN_A, _Response, _install, _operation
 
 
@@ -47,6 +63,18 @@ def _binding_for_test(private_state) -> dict:
         "manifest_sha256": private_state.binding.recovery_manifest_hash.digest,
     }
 
+
+
+
+def _test_genesis(paths, private_state) -> tuple[dict, str]:
+    document = yaml.safe_load(private_state.document_bytes.decode("utf-8"))
+    address = document["networks"]["mainnet"]["validators"][A_NODE]["address"]
+    genesis, _alloc = _genesis_policy(document, network="mainnet", initial_validator_address=address)
+    payload = canonical_json({"kind": "test.genesis.fixture", "genesis": {"canonical_json": genesis}})
+    path = paths.root / "actions" / "deployment-genesis-transactions" / "test-genesis.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return genesis, hashlib.sha256(canonical_json(genesis)).hexdigest()
 
 def _write_remove_finalize_baseline(paths, private_state) -> tuple[Path, str]:
     evidence = {
@@ -88,7 +116,7 @@ def _write_remove_finalize_baseline(paths, private_state) -> tuple[Path, str]:
         },
         "pre_removal_topology": {
             "chain_id": 42424240,
-            "genesis_sha256": "364df17daf2dfa428bd486e9c4e8b46c70317f65b23b55aaf78f749e15de6c92",
+            "genesis_sha256": _test_genesis(paths, private_state)[1],
             "nodes": [A_NODE, C1_NODE, C2_NODE],
             "validator_count": 3,
             "validator_set": [A_VALIDATOR, C1_VALIDATOR, C2_VALIDATOR],
@@ -218,7 +246,7 @@ def _write_empty_topology_baseline(paths, private_state) -> tuple[Path, str]:
         },
         "current_topology": {
             "chain_id": 42424240,
-            "genesis_sha256": "364df17daf2dfa428bd486e9c4e8b46c70317f65b23b55aaf78f749e15de6c92",
+            "genesis_sha256": _test_genesis(paths, private_state)[1],
             "nodes": [],
             "validator_count": 0,
             "validator_set": [],
@@ -231,7 +259,73 @@ def _write_empty_topology_baseline(paths, private_state) -> tuple[Path, str]:
     return path, hashlib.sha256(payload).hexdigest()
 
 
-def test_add_node_prep_derives_topology_diff_from_finalize_baseline(tmp_path: Path) -> None:
+
+def _write_existing_validator_topology_baseline(paths, private_state) -> tuple[Path, str]:
+    evidence = {
+        "completed_at": "2026-08-11T20:40:00Z",
+        "failure": None,
+        "kind": "main_computer.mother.topology_evidence.v1",
+        "live_mutation_performed": False,
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "next_phase": "add-node-prep-mainnet",
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "manual_ssh_required": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "public_http_endpoint_created": False,
+            "routing_or_topology_published": False,
+            "secrets_in_output": False,
+            "validator_activation_performed": False,
+            "validator_vote_performed": False,
+        },
+        "public_endpoint_created": False,
+        "routing_or_topology_published": False,
+        "schema_version": 1,
+        "status": "pass",
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "live_mutation_performed": False,
+            "next_phase": "add-node-prep-mainnet",
+            "public_endpoint_created": False,
+            "routing_or_topology_published": False,
+        },
+        "current_topology": {
+            "chain_id": 42424240,
+            "genesis_sha256": _test_genesis(paths, private_state)[1],
+            "nodes": [C1_NODE, C2_NODE],
+            "validator_count": 2,
+            "validator_set": [C1_VALIDATOR, C2_VALIDATOR],
+            "services": {
+                C1_NODE: {
+                    "controller_id": "coolify-c",
+                    "last_observed_at": "2026-08-11T20:40:00Z",
+                    "node": C1_NODE,
+                    "readiness_source": "operator-directed-live-topology",
+                    "service_status": "running:healthy",
+                    "service_uuid": "svcc1xxxx",
+                },
+                C2_NODE: {
+                    "controller_id": "coolify-c",
+                    "last_observed_at": "2026-08-11T20:40:00Z",
+                    "node": C2_NODE,
+                    "readiness_source": "operator-directed-live-topology",
+                    "service_status": "running:healthy",
+                    "service_uuid": "svcc2xxxx",
+                },
+            },
+        },
+    }
+    payload = canonical_json(evidence)
+    path = paths.root / "evidence" / "topology" / "20260811T204000Z-existing-validators.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path, hashlib.sha256(payload).hexdigest()
+
+def test_add_node_prep_uses_remove_finalize_baseline_as_identity_history_only(tmp_path: Path) -> None:
     _, paths, private_state = _install(tmp_path)
     baseline_path, baseline_sha = _write_remove_finalize_baseline(paths, private_state)
 
@@ -253,21 +347,28 @@ def test_add_node_prep_derives_topology_diff_from_finalize_baseline(tmp_path: Pa
     assert transaction["target"]["validator_address"] == A_VALIDATOR
     assert transaction["target"]["validator_address_source"] == "baseline-removed-target"
     assert transaction["target"]["previous_service_uuid"] == "svca1xxxx"
-    assert transaction["current_topology"]["nodes"] == [C1_NODE, C2_NODE]
-    assert transaction["post_add_topology"]["nodes"] == [A_NODE, C1_NODE, C2_NODE]
-    assert transaction["post_add_topology"]["validator_set"] == [A_VALIDATOR, C1_VALIDATOR, C2_VALIDATOR]
+    assert transaction["source_baseline_evidence"]["topology_role"] == "identity-history-only"
+    assert transaction["source_baseline_evidence"]["historical_nodes"] == [C1_NODE, C2_NODE]
+    assert transaction["current_topology"]["source"] == "operator-directed-empty-current-topology"
+    assert transaction["current_topology"]["baseline_topology_used_as_live"] is False
+    assert transaction["current_topology"]["nodes"] == []
+    assert transaction["current_topology"]["validator_set"] == []
+    assert transaction["current_topology"]["services"] == {}
+    assert transaction["post_add_topology"]["nodes"] == [A_NODE]
+    assert transaction["post_add_topology"]["validator_set"] == [A_VALIDATOR]
     assert transaction["topology_diff"] == {
         "operation": "add-node",
         "added_nodes": [A_NODE],
         "removed_nodes": [],
-        "unchanged_nodes": [C1_NODE, C2_NODE],
-        "pre_validator_count": 2,
-        "post_validator_count": 3,
+        "unchanged_nodes": [],
+        "pre_validator_count": 0,
+        "post_validator_count": 1,
     }
+    assert transaction["execution_plan"]["operator_directed_testing_path"] is True
+    assert transaction["execution_plan"]["old_baseline_topology_used_as_live"] is False
     assert transaction["execution_plan"]["generic_topology_diff"] is True
     assert transaction["execution_plan"]["hardcoded_stage_target"] is False
     assert transaction["policy"]["live_mutation_performed"] is False
-
 
 
 def test_add_node_prep_starts_from_generic_empty_topology(tmp_path: Path) -> None:
@@ -326,8 +427,10 @@ def test_add_node_prep_write_and_verify_is_local_only(tmp_path: Path) -> None:
     assert verified["node_add_prep_transaction_sha256"] == digest
     assert verified["target_node"] == A_NODE
     assert verified["target_host"] == "coolify-a"
-    assert verified["current_nodes"] == [C1_NODE, C2_NODE]
-    assert verified["post_add_nodes"] == [A_NODE, C1_NODE, C2_NODE]
+    assert verified["baseline_topology_role"] == "identity-history-only"
+    assert verified["old_baseline_topology_used_as_live"] is False
+    assert verified["current_nodes"] == []
+    assert verified["post_add_nodes"] == [A_NODE]
     assert verified["generic_topology_diff"] is True
     assert verified["hardcoded_stage_target"] is False
     assert verified["live_mutation_performed"] is False
@@ -335,9 +438,9 @@ def test_add_node_prep_write_and_verify_is_local_only(tmp_path: Path) -> None:
     assert verified["validator_admission_performed"] is False
 
 
-def test_add_node_prep_rejects_target_already_in_baseline(tmp_path: Path) -> None:
+def test_add_node_prep_rejects_target_already_in_current_topology_source(tmp_path: Path) -> None:
     _, paths, private_state = _install(tmp_path)
-    baseline_path, baseline_sha = _write_remove_finalize_baseline(paths, private_state)
+    baseline_path, baseline_sha = _write_existing_validator_topology_baseline(paths, private_state)
 
     with pytest.raises(MotherDeploymentNodeAddPrepError, match="already present"):
         build_node_add_prep_transaction(
@@ -450,7 +553,7 @@ class _AddNodeDoOpener:
 
 def _write_verified_add_node_prep(tmp_path: Path):
     _, paths, private_state = _install(tmp_path)
-    baseline_path, baseline_sha = _write_remove_finalize_baseline(paths, private_state)
+    baseline_path, baseline_sha = _write_existing_validator_topology_baseline(paths, private_state)
     transaction = build_node_add_prep_transaction(
         paths,
         private_state,
@@ -811,3 +914,465 @@ def test_add_node_identity_cli_exposes_release_execute_and_verify(tmp_path: Path
         "evidence/deployment-node-add-identity/example.json",
     ])
     assert verify_args.command == "verify-add-node-identity-evidence"
+
+
+def _write_verified_add_node_identity_evidence(tmp_path: Path):
+    paths, private_state, add_do_evidence_path, add_do_evidence_sha = _write_verified_add_node_do_evidence(tmp_path)
+    release = build_node_add_identity_release(
+        paths,
+        private_state,
+        add_do_evidence_path,
+        acknowledged_add_do_evidence_sha256=add_do_evidence_sha,
+        created_at="2026-08-11T21:30:00Z",
+        now=datetime(2026, 8, 11, 21, 30, 1, tzinfo=timezone.utc),
+    )
+    release_path, release_sha = write_node_add_identity_release(
+        paths,
+        release,
+        operation=_operation("write-add-identity-release-for-sync"),
+    )
+    identity_result = execute_node_add_identity_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        opener=_AddNodeIdentityOpener(),
+        now=datetime(2026, 8, 11, 21, 30, 1, tzinfo=timezone.utc),
+        operation=_operation("execute-add-identity-for-sync"),
+    )
+    return paths, private_state, Path(identity_result["evidence"]["path"]), identity_result["evidence"]["sha256"]
+
+
+class _AddNodeReplicaSyncOpener:
+    def __init__(self, *, private_state) -> None:  # noqa: ANN001
+        document = yaml.safe_load(private_state.document_bytes.decode("utf-8"))
+        validator_key = document["networks"]["mainnet"]["validators"][A_NODE]["private_key"]
+        hub_key = document["networks"]["mainnet"]["node_seed_material"][A_NODE]["wallets"]["hub_admin"]["private_key"]
+        self.requests: list[dict] = []
+        self.envs = [
+            {"uuid": "env-validator", "key": "MC_MOTHER_VALIDATOR_PRIVATE_KEY", "value": validator_key},
+            {"uuid": "env-hub", "key": "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY", "value": hub_key},
+        ]
+        self.service = {"uuid": "svc-a1", "name": A_NODE, "status": "exited", "docker_compose_raw": "name: mainneta-super1\nservices:\n  mainneta-super1:\n    image: alpine:3.20\n"}
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        body = json.loads(request.data.decode("utf-8")) if request.data else None
+        self.requests.append({"method": method, "host": parsed.hostname, "path": path, "query": parsed.query, "body": body})
+        assert parsed.hostname == "coolify-a.invalid"
+        assert request.headers.get("Authorization") == f"Bearer {TOKEN_A}"
+
+        if method == "GET" and path == "/api/v1/services/svc-a1":
+            return _Response(dict(self.service))
+        if method == "GET" and path == "/api/v1/services/svc-a1/envs":
+            return _Response(list(self.envs))
+        if method == "PATCH" and path == "/api/v1/services/svc-a1":
+            assert body["name"] == A_NODE
+            decoded = __import__("base64").b64decode(body["docker_compose_raw"]).decode("utf-8")
+            assert "mother-replica-sync-guardian" in decoded
+            assert "qbft_proposeValidatorVote" not in decoded
+            assert "8545:8545" not in decoded
+            assert "MC_MOTHER_VALIDATOR_PRIVATE_KEY" not in decoded
+            assert "od -An -N32 -tx1 /dev/urandom" in decoded
+            self.service["docker_compose_raw"] = decoded
+            self.service["status"] = "running:unhealthy"
+            return _Response({"uuid": "svc-a1", "status": self.service["status"]})
+        if method == "GET" and path == "/api/v1/deploy":
+            assert "uuid=svc-a1" in parsed.query
+            self.service["status"] = "running:healthy"
+            return _Response({"message": "deploy queued"})
+        if method == "GET" and path == "/api/v1/services":
+            return _Response([dict(self.service)])
+
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_add_node_replica_sync_release_authorizes_sync_only(tmp_path: Path) -> None:
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_verified_add_node_identity_evidence(tmp_path)
+
+    release = build_node_add_replica_sync_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-11T21:40:00Z",
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+    )
+
+    assert release["target"]["node"] == A_NODE
+    assert release["target"]["created_service_uuid"] == "svc-a1"
+    assert release["authority"]["replica_sync_authorized"] is True
+    assert release["authority"]["validator_admission_authorized"] is False
+    assert release["authority"]["validator_vote_authorized"] is False
+    assert release["summary"]["generic_topology_diff"] is True
+    assert release["summary"]["hardcoded_stage_target"] is False
+    assert release["proof_plan"]["bootnode"]["node"] == C1_NODE
+    assert release["proof_plan"]["sync_compose"]["host_rpc_mapping_present"] is False
+    assert release["proof_plan"]["sync_compose"]["host_p2p_mapping_present"] is False
+    assert release["proof_plan"]["replica_node_identity_source"] == "runtime-generated-non-validator"
+    compose = release["proof_plan"]["sync_compose"]["canonical_text"]
+    assert "MC_MOTHER_VALIDATOR_PRIVATE_KEY" not in compose
+    assert "od -An -N32 -tx1 /dev/urandom" in compose
+    assert "replica node identity is the target validator identity" in compose
+
+    release_path, release_sha = write_node_add_replica_sync_release(
+        paths,
+        release,
+        operation=_operation("write-add-replica-sync-release"),
+    )
+    verified = verify_node_add_replica_sync_release(
+        paths,
+        private_state,
+        release_path,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["node_add_replica_sync_release_sha256"] == release_sha
+    assert verified["release_already_claimed"] is False
+    assert verified["replica_sync_authorized"] is True
+    assert verified["validator_admission_authorized"] is False
+
+
+def test_add_node_replica_sync_executes_only_sync_proof(tmp_path: Path) -> None:
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_verified_add_node_identity_evidence(tmp_path)
+    release = build_node_add_replica_sync_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-11T21:40:00Z",
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+    )
+    release_path, release_sha = write_node_add_replica_sync_release(
+        paths,
+        release,
+        operation=_operation("write-add-replica-sync-release-exec"),
+    )
+    opener = _AddNodeReplicaSyncOpener(private_state=private_state)
+    result = execute_node_add_replica_sync_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+        operation=_operation("execute-add-replica-sync-release"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["replica_sync_performed"] is True
+    assert result["summary"]["replica_sync_proven"] is True
+    assert result["summary"]["validator_admission_performed"] is False
+    assert result["summary"]["routing_or_topology_published"] is False
+    assert result["summary"]["public_endpoint_created"] is False
+    assert result["summary"]["generic_topology_diff"] is True
+    assert result["summary"]["hardcoded_stage_target"] is False
+    assert result["next_phase"] == "add-node-validator-admission-mainnet"
+    assert [request["method"] for request in opener.requests].count("PATCH") == 1
+    assert not any(request["method"] == "POST" for request in opener.requests)
+
+    verified = verify_node_add_replica_sync_evidence(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+        max_age_seconds=86400,
+        release_max_age_seconds=86400,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["replica_sync_performed"] is True
+    assert verified["validator_admission_performed"] is False
+    assert verified["next_phase"] == "add-node-validator-admission-mainnet"
+
+
+def test_add_node_replica_sync_cli_exposes_release_execute_and_verify(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    paths, _private_state, identity_evidence_path, identity_evidence_sha = _write_verified_add_node_identity_evidence(tmp_path)
+    runtime_root = str(paths.root.parent)
+
+    assert mother_deploy.main([
+        "release-add-node-replica-sync",
+        "--runtime-state-root",
+        runtime_root,
+        "--identity-evidence",
+        str(identity_evidence_path),
+        "--acknowledge-add-node-identity-evidence-sha256",
+        identity_evidence_sha,
+        "--write-release",
+    ]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["summary"]["generic_topology_diff"] is True
+    assert out["release_artifact"]["sha256"] == out["node_add_replica_sync_release_sha256"]
+
+    assert mother_deploy.main([
+        "verify-add-node-replica-sync-release",
+        "--runtime-state-root",
+        runtime_root,
+        "--release",
+        out["release_artifact"]["path"],
+        "--max-age-seconds",
+        "86400",
+    ]) == 0
+    verified = json.loads(capsys.readouterr().out)
+    assert verified["clean"] is True
+
+    parser = mother_deploy._parser()
+    args = parser.parse_args([
+        "add-node",
+        "replica-sync",
+        "mainnet",
+        "--release",
+        out["release_artifact"]["path"],
+        "--acknowledge-release-sha256",
+        out["node_add_replica_sync_release_sha256"],
+        "--execute",
+    ])
+    assert args.command == "add-node"
+    assert args.add_node_phase == "replica-sync"
+
+    verify_args = parser.parse_args([
+        "verify-add-node-replica-sync-evidence",
+        "--evidence",
+        "evidence/deployment-node-add-replica-sync/example.json",
+    ])
+    assert verify_args.command == "verify-add-node-replica-sync-evidence"
+
+
+def _write_failed_add_node_replica_sync_evidence(tmp_path: Path):
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_verified_add_node_identity_evidence(tmp_path)
+    release = build_node_add_replica_sync_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-11T21:40:00Z",
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+    )
+    release_path, release_sha = write_node_add_replica_sync_release(
+        paths,
+        release,
+        operation=_operation("write-add-replica-sync-release-for-rollback"),
+    )
+
+    class _UnhealthyReplicaSyncOpener(_AddNodeReplicaSyncOpener):
+        def open(self, request, timeout: float):  # noqa: ANN001
+            response = super().open(request, timeout)
+            from urllib.parse import urlsplit
+            parsed = urlsplit(request.full_url)
+            if request.get_method() == "GET" and parsed.path == "/api/v1/deploy":
+                self.service["status"] = "running:unhealthy"
+            return response
+
+    result = execute_node_add_replica_sync_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=_UnhealthyReplicaSyncOpener(private_state=private_state),
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+        operation=_operation("execute-failed-add-replica-sync-for-rollback"),
+    )
+    assert result["status"] == "failed"
+    assert result["validator_admission_performed"] is False
+    return paths, private_state, Path(result["evidence"]["path"]), result["evidence"]["sha256"]
+
+
+class _AddNodeRollbackOpener:
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+        self.service_present = True
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        from urllib.error import HTTPError
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append({"method": method, "host": parsed.hostname, "path": path})
+        assert parsed.hostname == "coolify-a.invalid"
+        assert request.headers.get("Authorization") == f"Bearer {TOKEN_A}"
+        if path == "/api/v1/services/svc-a1" and method == "GET":
+            if not self.service_present:
+                raise HTTPError(request.full_url, 404, "not found", {}, None)
+            return _Response({"uuid": "svc-a1", "name": A_NODE, "status": "running:unhealthy"})
+        if path == "/api/v1/services/svc-a1" and method == "DELETE":
+            self.service_present = False
+            return _Response({}, status=200)
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_add_node_rollback_deletes_failed_pre_admission_service_and_allows_retry_prep(tmp_path: Path) -> None:
+    paths, private_state, failed_evidence_path, failed_evidence_sha = _write_failed_add_node_replica_sync_evidence(tmp_path)
+
+    release = build_node_add_rollback_release(
+        paths,
+        private_state,
+        failed_evidence_path,
+        acknowledged_failed_evidence_sha256=failed_evidence_sha,
+        created_at="2026-08-11T22:35:00Z",
+        now=datetime(2026, 8, 11, 22, 35, 1, tzinfo=timezone.utc),
+    )
+    assert release["summary"]["rollback_authorized"] is True
+    assert release["authority"]["validator_admission_authorized"] is False
+    assert release["policy"]["delete_exact_created_service_only"] is True
+
+    release_path, release_sha = write_node_add_rollback_release(
+        paths,
+        release,
+        operation=_operation("write-add-rollback-release"),
+    )
+    verified_release = verify_node_add_rollback_release(
+        paths,
+        private_state,
+        release_path,
+        max_age_seconds=900,
+        failed_evidence_max_age_seconds=86400,
+        now=datetime(2026, 8, 11, 22, 35, 1, tzinfo=timezone.utc),
+    )
+    assert verified_release["clean"] is True
+    assert verified_release["release_already_claimed"] is False
+
+    opener = _AddNodeRollbackOpener()
+    result = execute_node_add_rollback_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        failed_evidence_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+        now=datetime(2026, 8, 11, 22, 35, 1, tzinfo=timezone.utc),
+        operation=_operation("execute-add-rollback-release"),
+    )
+    assert result["status"] == "pass"
+    assert result["summary"]["rollback_baseline_usable_by_add_node_prep"] is True
+    assert result["validator_admission_performed"] is False
+    assert result["validator_vote_performed"] is False
+    assert result["routing_or_topology_published"] is False
+    assert [request["method"] for request in opener.requests] == ["GET", "DELETE", "GET"]
+
+    verified = verify_node_add_rollback_evidence(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+        max_age_seconds=86400,
+        release_max_age_seconds=86400,
+        failed_evidence_max_age_seconds=86400,
+        now=datetime(2026, 8, 11, 22, 35, 1, tzinfo=timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["rollback_baseline_usable_by_add_node_prep"] is True
+
+    transaction = build_node_add_prep_transaction(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+        network="mainnet",
+        target_node=A_NODE,
+        target_host="coolify-a",
+        mode="reactivate",
+        baseline_evidence_sha256=result["evidence"]["sha256"],
+        created_at="2026-08-11T22:36:00Z",
+        now=datetime(2026, 8, 11, 22, 36, 0, tzinfo=timezone.utc),
+    )
+    assert transaction["target"]["node"] == A_NODE
+    assert transaction["target"]["controller_id"] == "coolify-a"
+
+
+def test_add_node_rollback_cli_exposes_release_execute_and_verify() -> None:
+    parser = mother_deploy._parser()
+    release_args = parser.parse_args([
+        "release-add-node-rollback",
+        "--failed-evidence",
+        "evidence/deployment-node-add-replica-sync/example.json",
+        "--acknowledge-failed-evidence-sha256",
+        "a" * 64,
+    ])
+    assert release_args.command == "release-add-node-rollback"
+
+    execute_args = parser.parse_args([
+        "add-node",
+        "rollback",
+        "mainnet",
+        "--release",
+        "actions/deployment-node-add-rollback-releases/example.json",
+        "--acknowledge-release-sha256",
+        "b" * 64,
+        "--execute",
+    ])
+    assert execute_args.command == "add-node"
+    assert execute_args.add_node_phase == "rollback"
+
+    verify_args = parser.parse_args([
+        "verify-add-node-rollback-evidence",
+        "--evidence",
+        "evidence/deployment-node-add-rollback/example.json",
+    ])
+    assert verify_args.command == "verify-add-node-rollback-evidence"
+
+
+def test_mother_docs_define_golden_test_path_as_operator_directed() -> None:
+    mother_doc = Path(__file__).resolve().parents[1] / "mother.md"
+    text = mother_doc.read_text(encoding="utf-8")
+
+    assert "The golden test path is operator-directed add/delete evidence" in text
+    normalized = " ".join(text.split())
+    assert "Historical evidence is identity/history unless the operator supplies it as a fresh live topology source" in normalized
+    assert "Operator-directed testing path and deprecated fixture rule" in text
+
+
+def test_cli_surfaces_deprecated_legacy_testing_path_language() -> None:
+    warning = mother_deploy._MAINNET_SOAK_OUT_OF_DATE_WARNING
+    legacy_warning = mother_deploy._LEGACY_C2_TEST_PATH_DEPRECATED_WARNING
+
+    assert "deprecated legacy testing path" in warning
+    assert "golden test path is operator-directed add/delete evidence" in warning
+    assert "operator-directed evidence path" in warning
+    assert "deprecated legacy fixture paths" in legacy_warning
+    assert "operator-directed add/delete evidence" in legacy_warning

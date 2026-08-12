@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mcel_fixture_retirement_guard import FIXTURE_APP_IDS, FIXTURE_TITLES
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCAFFOLDING_DOC = ROOT / "pretty_docs" / "mcel-application-scaffolding.md"
@@ -14,6 +12,8 @@ STATUS_DOC = ROOT / "pretty_docs" / "mcel-status-and-roadmap.md"
 PRETTY_DOCS_INDEX = ROOT / "pretty_docs" / "index.json"
 TODO = ROOT / "TODO.md"
 SAMPLE_APP_ID = "sample-app"
+FORMER_FIXTURE_APP_IDS = ("contract-counter", "contract-workbench")
+FORMER_FIXTURE_TITLES = ("Contract Counter", "Contract Workbench")
 
 
 def test_mcel_application_scaffolding_document_is_indexed() -> None:
@@ -67,13 +67,13 @@ def test_scaffolding_status_remains_truthful_and_non_authorizing() -> None:
     assert "## Specified application-scaffolding program" in status
     assert "generator core: implemented" in status
     assert "structural package validator: implemented" in status
-    assert "golden fixture: implemented" in status
+    assert "golden fixture: retired after generic template coverage" in status
     assert "repository package discovery: implemented" in status
     assert "browser-safe package catalog: implemented" in status
     assert "adapter-to-SCM application bridge: implemented" in status
     assert "browser-safe package loading and semantic projection: implemented" in status
     assert "package-local acceptance discovery: implemented" in status
-    assert "checked-in browser-mountable reference application: implemented" in status
+    assert "checked-in browser-mountable reference application: retired" in status
     assert "app-oriented proof command: implemented" in status
     assert "No later scaffolding code wave is authorized by this status entry" in status
 
@@ -129,21 +129,22 @@ def test_scaffolding_wave7_contract_names_live_observation_and_proof() -> None:
     assert "### Wave 7: App-oriented proof orchestration — implemented" in scaffolding
     assert f"mcel_app_prove.py --app {SAMPLE_APP_ID} --check" in scaffolding
     assert "Wave 7 is complete." in status
-    assert "canonical `semantic-runtime-proven` template fixture" in status
+    assert "generic `semantic-runtime-proven` template coverage" in status
 
 
 def test_scaffolding_docs_keep_fixture_names_only_in_retirement_context() -> None:
     scaffolding = SCAFFOLDING_DOC.read_text(encoding="utf-8")
 
-    assert FIXTURE_APP_IDS[0] in scaffolding
-    for title in FIXTURE_TITLES:
+    for app_id in FORMER_FIXTURE_APP_IDS:
+        assert app_id in scaffolding
+    for title in FORMER_FIXTURE_TITLES:
         assert title in scaffolding
 
     retirement_phrases = [
-        "temporary test instruments",
+        "retired test instruments",
         "fixture-specific app names",
-        "compatibility oracle, not a product app",
-        "historical compatibility coverage rather than a new-app target",
+        "historical compatibility oracle, not a product app",
+        "historical compatibility coverage, not an active repository",
     ]
     for phrase in retirement_phrases:
         assert phrase in scaffolding

@@ -143,6 +143,37 @@ def test_runtime_catalog_compiles_document_metadata_for_future_runtime_loader(tm
         "objective-type.reach-extraction",
     )
     assert encounter.actor_archetypes == ("actor-archetype.vela-cave-guard",)
+    assert encounter.objectives == (
+        {
+            "id": "recover-phaser",
+            "type": "objective-type.recover-item",
+            "required": True,
+            "label": "Recover the phaser",
+        },
+        {
+            "id": "clear-hostiles",
+            "type": "objective-type.clear-hostiles",
+            "required": True,
+            "label": "Clear the cave guards",
+        },
+        {
+            "id": "reach-extraction",
+            "type": "objective-type.reach-extraction",
+            "required": True,
+            "label": "Reach the transporter room",
+        },
+    )
+    assert encounter.participants == (
+        {
+            "role": "hostile",
+            "actorArchetypeId": "actor-archetype.vela-cave-guard",
+            "count": 6,
+        },
+    )
+    assert encounter.location == {
+        "systemId": "system.vela-gate",
+        "destinationId": "destination.vela-gate.subsurface-cavern",
+    }
     assert encounter.receipt_ids == ("receipt.plugin.vela-cave-extension.extracted",)
     assert encounter.consequence_types == ("consequence-type.record-receipt",)
 

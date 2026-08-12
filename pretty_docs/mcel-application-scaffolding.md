@@ -71,15 +71,16 @@ existing requirements registry
 → generic application spine
 ```
 
-The generated fixture is where the two directions must meet.
+The generated package path is where the two directions must meet.
 
-The fixture and generator are also migration inputs, not a second permanent
-application language. Contract Counter and Contract Workbench must not become
-standing product-migration obligations. They are temporary test instruments for
-scaffolding, projection, compatibility, acceptance, and proof edges. As the
-generic DSL/package/conformance harness matures, tests should be upgraded away
-from fixture-specific app names whenever the same behavior can be proven by the
-template, a generated package, or a real promoted app. `pretty_docs/mcel-application-ir-and-compiler-migration.md`
+The former fixture apps and generator were migration inputs, not a second
+permanent application language. They are now retired test instruments. Contract Counter and Contract Workbench were
+retired as checked-in app fixtures after generic template, package, catalog,
+runtime, acceptance, and proof checks took over their platform invariants. Their
+former app ids were `contract-counter` and `contract-workbench`. The
+fixture-specific app names should stay out of new tests whenever the same
+behavior can be proven by the template, a generated package, or a real promoted
+app. `pretty_docs/mcel-application-ir-and-compiler-migration.md`
 defines the target relationship: the scaffolder creates a safe workspace;
 legacy/current and future DSL front ends compile authored semantics to one MCEL
 Application IR; replaceable back ends generate the explicit package;
@@ -150,31 +151,37 @@ tools/mcel_create_app.py
 
 Its job is deterministic scaffolding. It does not use a model to invent application behavior. The installed product-level `mcel app create` command remains proposed.
 
-### Golden fixture
+### Retired golden fixture
 
-The golden fixture is a compatibility oracle, not a product app. Keeping it
-green is useful only while it detects template and package-contract regressions.
-When those assertions can be expressed through a fixture-neutral generator or
-package-conformance test, prefer the fixture-neutral test and leave Contract
-Counter as historical compatibility coverage rather than a new-app target.
+The former golden fixture was a historical compatibility oracle, not a product app. It was
+useful while it detected template and package-contract regressions. Those
+assertions are now expressed through fixture-neutral generator and
+package-conformance tests that generate a neutral sample package and compare the
+written tree against the in-memory rendered template.
 
-The historical generator-output oracle is recorded under:
+The historical generator-output oracle used the path:
 
 ```text
 tests/fixtures/mcel_application_template_v1/contract-counter/
 ```
 
-Current generator tests no longer depend on Contract Counter as the golden target. They generate a neutral sample package, compare the written tree against the in-memory rendered template, and keep this fixture only as compatibility evidence until the fixture can be deleted.
+That path is historical compatibility coverage, not an active repository
+requirement or a new-app target.
 
-### Checked-in reference application
+### Retired checked-in reference application
 
-The repository carries one generated browser-mountable reference instance:
+The repository no longer requires a checked-in Contract Counter reference app
+for current scaffolding proof. The former reference instance used the app id:
 
 ```text
 contract-counter
 ```
 
-The checked-in Contract Counter and golden fixture remain historical compatibility evidence for the template family. Its browser-safe projection is generated separately from the canonical package. The package is the canonical `semantic-runtime-proven` template fixture while compatibility tests still need it; proof still requires fresh app-scoped acceptance, Chromium observation, exact provenance, and the final truth-gate verdict.
+The old Contract Counter and Contract Workbench app fixtures were retired after
+their generic invariants moved to fixture-neutral template, package, catalog,
+runtime, acceptance, and proof checks. Proof still requires fresh app-scoped
+acceptance, browser observation, exact provenance, and the final truth-gate
+verdict for any real app being promoted.
 
 ## Target command contract
 
@@ -1062,14 +1069,14 @@ It means that MCEL can generate the canonical structure of a new application, co
 
 ## Bottom line
 
-The generator, fixture, and reference application form one test-driven
-development instrument, not a permanent app portfolio. Stability work should
-retire fixture-specific tests into generic template, DSL, package, catalog,
-runtime, acceptance, and proof checks as soon as those checks can express the
-same invariant without depending on Contract Counter or Contract Workbench by
-name.
+The generator and fixture-neutral reference checks form one test-driven
+development instrument, not a permanent app portfolio. The old generator
+fixture/reference application has been retired; stability work should keep
+platform invariants in generic template, DSL, package, catalog, runtime,
+acceptance, and proof checks instead of depending on Contract Counter or
+Contract Workbench by name.
 
-The generator, fixture, and reference application form one test-driven development instrument:
+The generator and fixture-neutral proof checks form one test-driven development instrument:
 
 ```text
 canonical template

@@ -10,11 +10,10 @@ host-bound workbench app. A new or ported app that targets semantic-runtime
 conformance must combine both lessons instead of postponing semantic-surface and
 layout-grammar declarations to a later backfill.
 
-Counter and Workbench are valid MCEL reference fixtures, but they are not the
-canonical new-app authoring examples. They are also not product migration
-targets: future test upgrades should remove bespoke dependence on these
-fixtures where a generic DSL/package/conformance harness can prove the same
-platform behavior.
+Counter and Workbench were retired as live repository reference fixtures after
+their generic invariants moved to reusable DSL/package/conformance harnesses.
+They are historical compatibility examples only, not product-migration targets
+and not canonical new-app authoring examples.
 
 ## Use Calculator for new app authoring
 
@@ -96,28 +95,18 @@ Use Code Editor's DSL surface declarations as the host-bound reference for this
 part of the app authoring shape until the scaffold template produces the same
 declarations for every new app.
 
-## Do not learn app authoring from Counter
+## Do not learn app authoring from retired fixtures
 
-`mcel_apps/contract-counter/` is an explicit-package reference fixture. It exists
-to test legacy import, generated contract projection, compatibility, evidence,
-IR-native proof, promotion rehearsal, and promotion execution.
+Contract Counter and Contract Workbench were scaffolding/projection/proof
+fixtures. Their checked-in package directories have been retired from the active
+repository after their generic invariants moved to generated-template checks,
+the reusable DSL/package harness, and real promoted apps.
 
-It is useful for MCEL internals. It is a bad starting point for a new real app.
-Do not spend product-migration effort making Contract Counter look like the
-modern app examples solely to silence fixture debt. Upgrade tests toward the
-generic application harness, generated template, or a real promoted app instead.
-
-## Do not learn app authoring from Workbench
-
-`mcel_apps/contract-workbench/` is a profiled-package / authoring reference
-fixture. It exists to test projection profiles, constrained-expression coverage,
-rich evidence, IR-native proof, promotion rehearsal, and idempotent promotion
-execution.
-
-It is useful for MCEL internals. It is a bad starting point for a new real app.
-Do not spend product-migration effort making Contract Workbench look like the
-modern app examples solely to silence fixture debt. Upgrade tests toward the
-generic application harness, generated template, or a real promoted app instead.
+They remain useful as historical compatibility vocabulary in older design notes,
+but they must not be recreated as new-app examples or product-migration targets.
+If a future compatibility edge needs a tiny reference fixture, it should be
+introduced with a narrow test-only contract and should not become an app
+authoring pattern.
 
 ## Rule of thumb
 
@@ -130,20 +119,16 @@ mcel_apps/calculator/application.js
 mcel_apps/code-editor/application.js
   host-bound static semanticSurface/layoutGrammar bundle declaration example
 
-mcel_apps/contract-counter/
-  explicit-package compatibility/projection/proof fixture
-
-mcel_apps/contract-workbench/
-  profiled-package/projection-profile/proof fixture
+former Contract Counter / Contract Workbench fixture paths
+  historical compatibility vocabulary only; do not recreate them for new app authoring
 ```
 
 
-## Fixture retirement target
+## Fixture retirement status
 
-Contract Counter and Contract Workbench are scaffolding/projection/proof
-fixtures. They may remain in the repository while they protect compatibility
-edges, but the long-term test shape should not require either fixture app by
-name. When a fixture-backed test becomes platform-generic, prefer to move the
-assertion to a generated package, a reusable DSL/package conformance harness, or
-a real app with product value. Fixture-specific assertions should remain only
-where the fixture's tiny domain is the thing being tested.
+Contract Counter and Contract Workbench are retired as live repository packages.
+The active test shape should not require either fixture app by name. historical
+fixture names may remain only in compatibility documentation, archived
+migration notes, or tests that explicitly prove a former compatibility boundary.
+Generic platform invariants belong in generated packages, the reusable
+DSL/package conformance harness, or real apps with product value.

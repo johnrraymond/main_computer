@@ -32,6 +32,14 @@
   const GENERATED_TEMPLATE_EXECUTOR_STATUS_SCHEMA = "game.generatedTemplateExecutorStatus.v1";
   const GENERATED_TEMPLATE_EXECUTOR_STATUS_KIND = "generated-template-executor-status";
   const GENERATED_TEMPLATE_EXECUTOR_DEFAULT_MODE = "disabled-no-op";
+  const OPENING_SHUTTLE_ENCOUNTER_BRIDGE_SCHEMA = "game.openingShuttleEncounterBridge.v1";
+  const OPENING_SHUTTLE_ENCOUNTER_BRIDGE_KIND = "opening-shuttle-encounter-runtime-bridge";
+  const OPENING_SHUTTLE_ENCOUNTER_BRIDGE_DIAGNOSTIC_SCHEMA = "game.openingShuttleEncounterBridgeDiagnostic.v1";
+  const OPENING_SHUTTLE_ENCOUNTER_BRIDGE_DIAGNOSTIC_KIND = "opening-shuttle-encounter-bridge-diagnostic";
+  const ACTIVE_GAMEPLAY_PACK_SELECTION_SCHEMA = "game.activeGameplayPackSelection.v1";
+  const ACTIVE_GAMEPLAY_PACK_SELECTION_KIND = "active-gameplay-pack-selection";
+  const OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_SCHEMA = "game.openingShuttleGameplayPackConfig.v1";
+  const OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_KIND = "opening-shuttle-gameplay-pack-config";
   const STORAGE_PREFIX = "main-computer.system-scenarios.state.v1";
 
   function objectValue(value) {
@@ -50,6 +58,582 @@
     return [...new Set(arrayValue(value).map(stringValue).filter(Boolean))];
   }
 
+  function generatedObjectiveRecords(value) {
+    return arrayValue(value).map((item) => {
+      const raw = objectValue(item);
+      const type = stringValue(raw.type || raw.objectiveType || raw.objectiveTypeId);
+      if (!type) return null;
+      const id = stringValue(raw.id || raw.objectiveId || type);
+      const label = stringValue(raw.label);
+      const record = {
+        id,
+        type,
+        required: raw.required !== false
+      };
+      if (label) record.label = label;
+      return record;
+    }).filter(Boolean);
+  }
+
+  function generatedParticipantRecords(value) {
+    return arrayValue(value).map((item) => {
+      const raw = objectValue(item);
+      const actorArchetypeId = stringValue(
+        raw.actorArchetypeId || raw.actorArchetype || raw.archetype || raw.archetypeId
+      );
+      if (!actorArchetypeId) return null;
+      return {
+        role: stringValue(raw.role || (actorArchetypeId === "actor-archetype.shuttle-raider" ? "hostile" : "")),
+        actorArchetypeId,
+        count: integerValue(raw.count, 1, 1, 64)
+      };
+    }).filter(Boolean);
+  }
+
+  function generatedLocationRecord(value) {
+    const raw = objectValue(value);
+    const systemId = stringValue(raw.systemId);
+    const destinationId = stringValue(raw.destinationId);
+    const location = {};
+    if (systemId) location.systemId = systemId;
+    if (destinationId) location.destinationId = destinationId;
+    return location;
+  }
+
+  function activeGameplayPackIdTokens(value) {
+    if (value === null || value === undefined) return [];
+    if (Array.isArray(value)) return value.flatMap((item) => activeGameplayPackIdTokens(item));
+    if (typeof value === "string") {
+      return value.split(",").map((item) => stringValue(item).trim()).filter(Boolean);
+    }
+    const raw = objectValue(value);
+    if (stringValue(raw.mode).toLowerCase() === "none") return ["None"];
+    if (Object.prototype.hasOwnProperty.call(raw, "activeGameplayPackIds")) {
+      return activeGameplayPackIdTokens(raw.activeGameplayPackIds);
+    }
+    if (Object.prototype.hasOwnProperty.call(raw, "activePluginIds")) {
+      return activeGameplayPackIdTokens(raw.activePluginIds);
+    }
+    if (Object.prototype.hasOwnProperty.call(raw, "pluginIds")) {
+      return activeGameplayPackIdTokens(raw.pluginIds);
+    }
+    if (Object.prototype.hasOwnProperty.call(raw, "selectedPluginIds")) {
+      return activeGameplayPackIdTokens(raw.selectedPluginIds);
+    }
+    if (Object.prototype.hasOwnProperty.call(raw, "value")) {
+      return activeGameplayPackIdTokens(raw.value);
+    }
+    return [];
+  }
+
+  function normalizeActiveGameplayPackIds(value) {
+    const tokens = activeGameplayPackIdTokens(value);
+    const hasNone = tokens.some((token) => stringValue(token).toLowerCase() === "none");
+    if (hasNone) return [];
+    return uniqueStrings(tokens.filter((token) => stringValue(token).toLowerCase() !== "none"));
+  }
+
+  function generatedCatalogPluginIds(catalog) {
+    const normalized = normalizeGeneratedGameplayCatalog(catalog);
+    return uniqueStrings(
+      normalized.enabledPluginIds
+        .concat(arrayValue(normalized.plugins).map((plugin) => objectValue(plugin).pluginId))
+        .concat(arrayValue(normalized.documents).map((document) => objectValue(document).pluginId))
+        .concat(arrayValue(normalized.scenarios).map((scenario) => objectValue(scenario).pluginId))
+        .concat(arrayValue(normalized.encounters).map((encounter) => objectValue(encounter).pluginId))
+    );
+  }
+
+  function activeGameplayPackSelection(catalog, requestedPackIds = []) {
+    const normalized = normalizeGeneratedGameplayCatalog(catalog);
+    const availablePluginIds = generatedCatalogPluginIds(normalized);
+    const requestedPluginIds = normalizeActiveGameplayPackIds(requestedPackIds);
+    const available = new Set(availablePluginIds);
+    const activePluginIds = requestedPluginIds.filter((pluginId) => available.has(pluginId));
+    const missingPluginIds = requestedPluginIds.filter((pluginId) => !available.has(pluginId));
+    const mode = activePluginIds.length ? "selected" : "none";
+    return {
+      schema: ACTIVE_GAMEPLAY_PACK_SELECTION_SCHEMA,
+      kind: ACTIVE_GAMEPLAY_PACK_SELECTION_KIND,
+      readOnly: true,
+      runtimeLocal: true,
+      persisted: false,
+      generated: false,
+      projectJsonModified: false,
+      saveStateMutated: false,
+      generatedPluginExecution: false,
+      generatedTemplateExecution: false,
+      rendererHandoff: false,
+      mode,
+      none: activePluginIds.length === 0,
+      catalogReady: normalized.ready === true,
+      catalogStatus: normalized.status,
+      availablePluginIds,
+      requestedPluginIds,
+      activePluginIds,
+      missingPluginIds,
+      options: ["None"].concat(availablePluginIds),
+      reason: activePluginIds.length
+        ? "active-gameplay-packs-selected"
+        : (
+          requestedPluginIds.length
+            ? "requested-gameplay-packs-unavailable"
+            : "no-active-gameplay-pack-selected"
+        )
+    };
+  }
+
+  function openingShuttleGameplayPackConfig(catalog, requestedPackIds = [], options = {}) {
+    const rawOptions = objectValue(options);
+    const normalized = normalizeGeneratedGameplayCatalog(catalog);
+    const selection = activeGameplayPackSelection(normalized, requestedPackIds);
+    const active = new Set(selection.activePluginIds);
+    const problems = selection.missingPluginIds.map((pluginId) => `active gameplay pack unavailable: ${pluginId}`);
+    const baseHostileCount = integerValue(rawOptions.baseHostileCount, 2, 0, 64);
+    const systemId = stringValue(rawOptions.systemId || "system.solace-reach");
+    const destinationId = stringValue(rawOptions.destinationId || "destination.solace-reach.haven-orbit");
+    const encountersById = new Map(normalized.encounters.map((encounter) => [encounter.id, encounter]));
+    let matchedScenario = null;
+    let matchedEncounter = null;
+
+    if (selection.activePluginIds.length) {
+      const candidateScenarios = normalized.scenarios.filter((scenario) => active.has(scenario.pluginId));
+      for (const scenario of candidateScenarios) {
+        const linkedEncounters = uniqueStrings(scenario.encounterIds)
+          .map((encounterId) => encountersById.get(encounterId))
+          .filter((encounter) => encounter && active.has(encounter.pluginId));
+        const encounter = linkedEncounters.find((entry) => {
+          const location = generatedLocationRecord(entry.location);
+          return stringValue(entry.template) === "encounter-template.shuttle-ambush"
+            && (!location.systemId || location.systemId === systemId)
+            && (!location.destinationId || location.destinationId === destinationId);
+        });
+        if (encounter) {
+          matchedScenario = scenario;
+          matchedEncounter = encounter;
+          break;
+        }
+      }
+    }
+
+    if (!matchedScenario || !matchedEncounter) {
+      if (selection.activePluginIds.length) {
+        problems.push("no-active-opening-shuttle-shuttle-ambush-pack");
+      }
+      return {
+        schema: OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_SCHEMA,
+        kind: OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_KIND,
+        readOnly: true,
+        runtimeLocal: true,
+        persisted: false,
+        generated: false,
+        projectJsonModified: false,
+        saveStateMutated: false,
+        generatedPluginExecution: false,
+        generatedTemplateExecution: false,
+        rendererHandoff: false,
+        available: false,
+        active: false,
+        mode: selection.mode,
+        reason: selection.none ? "no-active-gameplay-pack-selected" : "no-active-opening-shuttle-pack",
+        selection,
+        activePluginIds: selection.activePluginIds.slice(),
+        scenarioId: "",
+        pluginId: "",
+        encounterId: "",
+        templateId: "encounter-template.shuttle-ambush",
+        systemId,
+        destinationId,
+        baseHostileCount,
+        hostileCount: baseHostileCount,
+        extraHostileCount: 0,
+        objectiveIds: [],
+        objectiveTypes: [],
+        receiptIds: [],
+        eliteWave: {
+          enabled: false,
+          triggerDefeats: baseHostileCount,
+          count: 0,
+          actorArchetypeId: "actor-archetype.shuttle-raider",
+          source: "none"
+        },
+        problems
+      };
+    }
+
+    const objectives = generatedObjectiveRecords(matchedEncounter.objectives);
+    const participants = generatedParticipantRecords(matchedEncounter.participants);
+    const hostileParticipants = participants.filter((participant) => (
+      stringValue(participant.role) === "hostile"
+      || stringValue(participant.actorArchetypeId) === "actor-archetype.shuttle-raider"
+    ));
+    const hostileCount = hostileParticipants.reduce(
+      (total, participant) => total + integerValue(participant.count, 1, 1, 64),
+      0
+    );
+    const effectiveHostileCount = hostileCount > 0 ? hostileCount : baseHostileCount;
+    const extraHostileCount = Math.max(0, effectiveHostileCount - baseHostileCount);
+    const actorArchetypeId = stringValue(hostileParticipants[0]?.actorArchetypeId || "actor-archetype.shuttle-raider");
+    const location = generatedLocationRecord(matchedEncounter.location);
+    return {
+      schema: OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_SCHEMA,
+      kind: OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_KIND,
+      readOnly: true,
+      runtimeLocal: true,
+      persisted: false,
+      generated: false,
+      projectJsonModified: false,
+      saveStateMutated: false,
+      generatedPluginExecution: false,
+      generatedTemplateExecution: false,
+      rendererHandoff: false,
+      available: true,
+      active: extraHostileCount > 0,
+      mode: selection.mode,
+      reason: extraHostileCount > 0
+        ? "active-opening-shuttle-pack-configured"
+        : "active-opening-shuttle-pack-no-extra-hostiles",
+      selection,
+      activePluginIds: selection.activePluginIds.slice(),
+      scenarioId: matchedScenario.id,
+      pluginId: matchedScenario.pluginId,
+      encounterId: matchedEncounter.id,
+      templateId: matchedEncounter.template,
+      systemId: location.systemId || systemId,
+      destinationId: location.destinationId || destinationId,
+      baseHostileCount,
+      hostileCount: effectiveHostileCount,
+      extraHostileCount,
+      objectiveIds: objectives.map((objective) => objective.id),
+      objectiveTypes: uniqueStrings(
+        matchedEncounter.objectiveTypes.concat(objectives.map((objective) => objective.type))
+      ),
+      receiptIds: uniqueStrings(matchedScenario.receiptIds.concat(matchedEncounter.receiptIds)),
+      eliteWave: {
+        enabled: extraHostileCount > 0,
+        triggerDefeats: baseHostileCount,
+        count: extraHostileCount,
+        actorArchetypeId,
+        source: matchedScenario.pluginId,
+        scenarioId: matchedScenario.id,
+        encounterId: matchedEncounter.id
+      },
+      problems
+    };
+  }
+
+  function openingShuttleEncounterObjectiveRecords(value) {
+    return arrayValue(value).map((item) => {
+      const raw = objectValue(item);
+      const id = stringValue(raw.id || raw.objectiveId);
+      if (!id) return null;
+      const record = {
+        id,
+        type: stringValue(raw.type || raw.objectiveType || raw.objectiveTypeId),
+        label: stringValue(raw.label || raw.title || id),
+        required: raw.required !== false,
+        status: stringValue(raw.status || "unknown"),
+        progress: clone(objectValue(raw.progress))
+      };
+      return record;
+    }).filter(Boolean);
+  }
+
+  function openingShuttleEncounterBridgeSnapshot(value, options = {}) {
+    const raw = objectValue(value);
+    const rawOptions = objectValue(options);
+    const counters = objectValue(raw.counters);
+    const eliteWave = objectValue(raw.eliteWave);
+    const completion = objectValue(raw.completion);
+    const execution = objectValue(raw.execution);
+    const receiptIds = uniqueStrings(
+      arrayValue(raw.receiptIds).concat(
+        arrayValue(raw.receipts).map((receipt) => objectValue(receipt).id)
+      )
+    );
+    const completionReceiptIds = uniqueStrings(completion.receiptIds);
+    const bridgedAtMs = Object.prototype.hasOwnProperty.call(rawOptions, "nowMs")
+      ? finiteNumber(rawOptions.nowMs, 0, 0)
+      : null;
+    return {
+      schema: OPENING_SHUTTLE_ENCOUNTER_BRIDGE_SCHEMA,
+      kind: OPENING_SHUTTLE_ENCOUNTER_BRIDGE_KIND,
+      source: stringValue(rawOptions.source || "scene-viewer.openingShuttleEncounter"),
+      runtimeLocal: true,
+      readOnly: true,
+      persisted: false,
+      generated: false,
+      encounterId: stringValue(raw.encounterId || "encounter.solace-reach.opening-shuttle-ambush"),
+      templateId: stringValue(raw.templateId || "encounter-template.shuttle-ambush"),
+      systemId: stringValue(raw.systemId || "system.solace-reach"),
+      destinationId: stringValue(raw.destinationId || "destination.solace-reach.haven-orbit"),
+      builtInConsumerId: stringValue(raw.builtInConsumerId || "built-in.solace-reach.opening-shuttle-ambush"),
+      status: stringValue(raw.status || "unknown"),
+      objectiveLine: stringValue(raw.objectiveLine),
+      objectiveSequence: openingShuttleEncounterObjectiveRecords(raw.objectiveSequence),
+      counters: {
+        spawned: integerValue(counters.spawned, 0, 0),
+        activated: integerValue(counters.activated, 0, 0),
+        defeated: integerValue(counters.defeated, 0, 0),
+        eliteSpawned: integerValue(counters.eliteSpawned, 0, 0),
+        eliteDefeated: integerValue(counters.eliteDefeated, 0, 0),
+        playerDamaged: integerValue(counters.playerDamaged, 0, 0),
+        playerDefeated: integerValue(counters.playerDefeated, 0, 0),
+        destinationReached: integerValue(counters.destinationReached, 0, 0)
+      },
+      eliteWave: {
+        enabled: eliteWave.enabled === true,
+        triggerDefeats: integerValue(eliteWave.triggerDefeats, 0, 0),
+        requested: eliteWave.requested === true,
+        spawned: eliteWave.spawned === true,
+        cleared: eliteWave.cleared === true,
+        requiredExtraHostiles: integerValue(eliteWave.requiredExtraHostiles, 0, 0),
+        spawnedCount: integerValue(eliteWave.spawnedCount, 0, 0),
+        actorArchetypeId: stringValue(eliteWave.actorArchetypeId),
+        source: stringValue(eliteWave.source),
+        pluginId: stringValue(eliteWave.pluginId),
+        scenarioId: stringValue(eliteWave.scenarioId),
+        encounterId: stringValue(eliteWave.encounterId),
+        packConfigAvailable: eliteWave.packConfigAvailable === true,
+        packConfigured: eliteWave.packConfigured === true,
+        activePluginIds: uniqueStrings(eliteWave.activePluginIds)
+      },
+      receiptIds,
+      completion: {
+        destinationReached: completion.destinationReached === true,
+        completed: completion.completed === true,
+        failed: completion.failed === true,
+        completedAtMs: completion.completedAtMs === null || completion.completedAtMs === undefined
+          ? null
+          : finiteNumber(completion.completedAtMs, 0, 0),
+        failedAtMs: completion.failedAtMs === null || completion.failedAtMs === undefined
+          ? null
+          : finiteNumber(completion.failedAtMs, 0, 0),
+        receiptIds: completionReceiptIds.length ? completionReceiptIds : receiptIds
+      },
+      execution: {
+        generatedPluginExecution: execution.generatedPluginExecution === true,
+        generatedTemplateExecution: execution.generatedTemplateExecution === true,
+        rendererHandoff: execution.rendererHandoff === true,
+        saveStateMutated: execution.saveStateMutated === true,
+        projectJsonModified: execution.projectJsonModified === true,
+        additionalSpawnRequested: execution.additionalSpawnRequested === true
+      },
+      bridgedAtSequence: integerValue(rawOptions.sequence, 0, 0),
+      bridgedAtMs
+    };
+  }
+
+  function openingShuttleEncounterBridgeDiagnostic(value, options = {}) {
+    const rawOptions = objectValue(options);
+    const bridge = objectValue(value);
+    const available = stringValue(bridge.kind) === OPENING_SHUTTLE_ENCOUNTER_BRIDGE_KIND
+      || Boolean(bridge.encounterId || bridge.templateId || bridge.status);
+    const objectiveSequence = openingShuttleEncounterObjectiveRecords(bridge.objectiveSequence);
+    const receiptIds = uniqueStrings(bridge.receiptIds);
+    const execution = objectValue(bridge.execution);
+    const completion = objectValue(bridge.completion);
+    const eliteWave = objectValue(bridge.eliteWave);
+    const counters = objectValue(bridge.counters);
+    const generatedPreview = objectValue(rawOptions.generatedStartPreview);
+    const generatedPreviewPlan = objectValue(generatedPreview.plan);
+    const generatedEncounters = arrayValue(generatedPreviewPlan.encounters).map(objectValue);
+    const generatedEncounter = generatedEncounters.find((encounter) => (
+      stringValue(encounter.template) === stringValue(bridge.templateId)
+    )) || generatedEncounters[0] || {};
+    const generatedObjectives = generatedObjectiveRecords(generatedEncounter.objectives);
+    const generatedParticipants = generatedParticipantRecords(generatedEncounter.participants);
+    const generatedLocation = generatedLocationRecord(generatedEncounter.location);
+    const generatedObjectiveTypes = uniqueStrings(
+      generatedEncounter.objectiveTypes || generatedObjectives.map((objective) => objective.type)
+    );
+    const bridgeObjectiveTypes = uniqueStrings(objectiveSequence.map((objective) => objective.type));
+    const generatedHostileCount = generatedParticipants.reduce((total, participant) => {
+      if (
+        stringValue(participant.role) === "hostile"
+        || stringValue(participant.actorArchetypeId) === "actor-archetype.shuttle-raider"
+      ) {
+        return total + integerValue(participant.count, 1, 1, 100);
+      }
+      return total;
+    }, 0);
+    const generatedReceiptIds = uniqueStrings(
+      generatedPreviewPlan.receiptIds || generatedEncounter.receiptIds
+    );
+    const liveDefeats = integerValue(counters.defeated, 0, 0);
+    const liveEliteDefeats = integerValue(counters.eliteDefeated, 0, 0);
+    const liveDestinationReached = completion.destinationReached === true
+      || integerValue(counters.destinationReached, 0, 0) > 0;
+    const livePlayerSurvived = completion.failed !== true
+      && integerValue(counters.playerDefeated, 0, 0) === 0;
+    const generatedPreviewAvailable = stringValue(generatedPreview.kind) === GENERATED_SCENARIO_START_PREVIEW_KIND;
+    const previewTemplateId = stringValue(generatedPreviewPlan.primaryTemplateId || generatedEncounter.template);
+    const templateMatches = generatedPreviewAvailable
+      && previewTemplateId
+      && previewTemplateId === stringValue(bridge.templateId);
+    const locationMatches = generatedPreviewAvailable
+      && (!generatedLocation.systemId || generatedLocation.systemId === stringValue(bridge.systemId))
+      && (!generatedLocation.destinationId || generatedLocation.destinationId === stringValue(bridge.destinationId));
+    const objectiveTypesCovered = generatedPreviewAvailable
+      && bridgeObjectiveTypes.every((type) => generatedObjectiveTypes.includes(type));
+    const hostileDefeatsSatisfied = !generatedPreviewAvailable
+      || generatedHostileCount <= 0
+      || liveDefeats >= generatedHostileCount;
+    const completionReported = completion.completed === true;
+    const completionCoverageSatisfied = !completionReported
+      || (hostileDefeatsSatisfied && liveDestinationReached && livePlayerSurvived);
+    const problems = [];
+    if (!available) {
+      problems.push("missing-opening-shuttle-bridge");
+    }
+    if (generatedPreviewAvailable && !templateMatches) {
+      problems.push("generated-preview-template-mismatch");
+    }
+    if (generatedPreviewAvailable && !locationMatches) {
+      problems.push("generated-preview-location-mismatch");
+    }
+    if (generatedPreviewAvailable && !objectiveTypesCovered) {
+      problems.push("generated-preview-objective-types-missing-live-objectives");
+    }
+    if (generatedPreviewAvailable && completionReported && !hostileDefeatsSatisfied) {
+      problems.push("opening-shuttle-completion-missing-authored-hostile-defeats");
+    }
+    if (completionReported && !liveDestinationReached) {
+      problems.push("opening-shuttle-completion-missing-destination-reached");
+    }
+    if (completionReported && !livePlayerSurvived) {
+      problems.push("opening-shuttle-completion-after-player-defeat");
+    }
+    const executionSafe = execution.generatedPluginExecution !== true
+      && execution.generatedTemplateExecution !== true
+      && execution.rendererHandoff !== true
+      && execution.saveStateMutated !== true
+      && execution.projectJsonModified !== true;
+    if (!executionSafe) {
+      problems.push("opening-shuttle-bridge-execution-safety-flag-enabled");
+    }
+    const aligned = available
+      && executionSafe
+      && completionCoverageSatisfied
+      && (
+        !generatedPreviewAvailable
+        || (templateMatches && locationMatches && objectiveTypesCovered)
+      );
+    return {
+      schema: OPENING_SHUTTLE_ENCOUNTER_BRIDGE_DIAGNOSTIC_SCHEMA,
+      kind: OPENING_SHUTTLE_ENCOUNTER_BRIDGE_DIAGNOSTIC_KIND,
+      generated: false,
+      readOnly: true,
+      runtimeLocal: true,
+      persisted: false,
+      projectJsonModified: false,
+      saveStateMutated: false,
+      available,
+      aligned,
+      alignmentStatus: aligned ? (generatedPreviewAvailable ? "aligned-with-generated-preview" : "bridge-only") : "blocked",
+      bridge: available ? {
+        encounterId: stringValue(bridge.encounterId),
+        templateId: stringValue(bridge.templateId),
+        builtInConsumerId: stringValue(bridge.builtInConsumerId),
+        systemId: stringValue(bridge.systemId),
+        destinationId: stringValue(bridge.destinationId),
+        status: stringValue(bridge.status || "unknown"),
+        objectiveLine: stringValue(bridge.objectiveLine),
+        objectiveStatuses: objectiveSequence.map((objective) => ({
+          id: objective.id,
+          type: objective.type,
+          status: objective.status,
+          required: objective.required
+        })),
+        counters: {
+          spawned: integerValue(counters.spawned, 0, 0),
+          activated: integerValue(counters.activated, 0, 0),
+          defeated: integerValue(counters.defeated, 0, 0),
+          eliteSpawned: integerValue(counters.eliteSpawned, 0, 0),
+          eliteDefeated: integerValue(counters.eliteDefeated, 0, 0),
+          playerDamaged: integerValue(counters.playerDamaged, 0, 0),
+          playerDefeated: integerValue(counters.playerDefeated, 0, 0),
+          destinationReached: integerValue(counters.destinationReached, 0, 0)
+        },
+        eliteWave: {
+          enabled: eliteWave.enabled === true,
+          triggerDefeats: integerValue(eliteWave.triggerDefeats, 0, 0),
+          requested: eliteWave.requested === true,
+          spawned: eliteWave.spawned === true,
+          cleared: eliteWave.cleared === true,
+          requiredExtraHostiles: integerValue(eliteWave.requiredExtraHostiles, 0, 0),
+          spawnedCount: integerValue(eliteWave.spawnedCount, 0, 0),
+          actorArchetypeId: stringValue(eliteWave.actorArchetypeId),
+          source: stringValue(eliteWave.source),
+          pluginId: stringValue(eliteWave.pluginId),
+          scenarioId: stringValue(eliteWave.scenarioId),
+          encounterId: stringValue(eliteWave.encounterId),
+          packConfigAvailable: eliteWave.packConfigAvailable === true,
+          packConfigured: eliteWave.packConfigured === true,
+          activePluginIds: uniqueStrings(eliteWave.activePluginIds)
+        },
+        completion: {
+          destinationReached: completion.destinationReached === true,
+          completed: completion.completed === true,
+          failed: completion.failed === true,
+          receiptIds: uniqueStrings(completion.receiptIds).length
+            ? uniqueStrings(completion.receiptIds)
+            : receiptIds
+        },
+        receiptIds
+      } : null,
+      generatedPreview: generatedPreviewAvailable ? {
+        scenarioId: stringValue(generatedPreview.scenarioId),
+        knownGeneratedScenario: generatedPreview.knownGeneratedScenario === true,
+        canPreviewStart: generatedPreview.canPreviewStart === true,
+        startable: generatedPreview.startable === true,
+        startableInRuntime: generatedPreview.startableInRuntime === true,
+        activationStatus: stringValue(generatedPreview.activationStatus),
+        reason: stringValue(generatedPreview.reason),
+        primaryTemplateId: previewTemplateId,
+        primaryEncounterId: stringValue(generatedPreviewPlan.primaryEncounterId || generatedEncounter.id),
+        templateMatches,
+        location: generatedLocation,
+        locationMatches,
+        objectiveTypes: generatedObjectiveTypes,
+        objectiveTypesCovered,
+        hostileCount: generatedHostileCount,
+        receiptIds: generatedReceiptIds,
+        previewOnly: true,
+        rendererHandoff: false,
+        gameplayTemplateExecution: false,
+        saveStateMutated: false,
+        projectJsonModified: false
+      } : null,
+      coverage: {
+        generatedPreviewAvailable,
+        authoredHostileCount: generatedHostileCount,
+        liveDefeats,
+        liveEliteDefeats,
+        hostileDefeatsSatisfied,
+        liveDestinationReached,
+        livePlayerSurvived,
+        completionReported,
+        completionCoverageSatisfied,
+        authoredObjectiveTypes: generatedObjectiveTypes,
+        liveObjectiveTypes: bridgeObjectiveTypes,
+        objectiveTypesCovered,
+        authoredReceiptIds: generatedReceiptIds,
+        liveReceiptIds: receiptIds
+      },
+      safety: {
+        executionSafe,
+        generatedPluginExecution: execution.generatedPluginExecution === true,
+        generatedTemplateExecution: execution.generatedTemplateExecution === true,
+        rendererHandoff: execution.rendererHandoff === true,
+        saveStateMutated: execution.saveStateMutated === true,
+        projectJsonModified: execution.projectJsonModified === true,
+        additionalSpawnRequested: execution.additionalSpawnRequested === true
+      },
+      problems
+    };
+  }
+
   function generatedGameplayDocument(value) {
     const raw = objectValue(value);
     const kind = stringValue(raw.kind);
@@ -66,6 +650,9 @@
       actorArchetypes: uniqueStrings(raw.actorArchetypes),
       receiptIds: uniqueStrings(raw.receiptIds),
       consequenceTypes: uniqueStrings(raw.consequenceTypes),
+      objectives: generatedObjectiveRecords(raw.objectives),
+      participants: generatedParticipantRecords(raw.participants),
+      location: generatedLocationRecord(raw.location),
       generated: true,
       readOnly: true
     };
@@ -112,10 +699,16 @@
       linkedEncounters.map((encounter) => encounter.template).filter(Boolean)
     );
     const objectiveTypes = uniqueStrings(
-      linkedEncounters.flatMap((encounter) => encounter.objectiveTypes)
+      linkedEncounters.flatMap((encounter) => (
+        uniqueStrings(encounter.objectiveTypes)
+          .concat(generatedObjectiveRecords(encounter.objectives).map((objective) => objective.type))
+      ))
     );
     const actorArchetypes = uniqueStrings(
-      linkedEncounters.flatMap((encounter) => encounter.actorArchetypes)
+      linkedEncounters.flatMap((encounter) => (
+        uniqueStrings(encounter.actorArchetypes)
+          .concat(generatedParticipantRecords(encounter.participants).map((participant) => participant.actorArchetypeId))
+      ))
     );
     const consequenceTypes = uniqueStrings(
       scenario.consequenceTypes.concat(
@@ -218,6 +811,9 @@
         template: encounter.template,
         objectiveTypes: uniqueStrings(encounter.objectiveTypes),
         actorArchetypes: uniqueStrings(encounter.actorArchetypes),
+        objectives: generatedObjectiveRecords(encounter.objectives),
+        participants: generatedParticipantRecords(encounter.participants),
+        location: generatedLocationRecord(encounter.location),
         receiptIds: uniqueStrings(encounter.receiptIds),
         consequenceTypes: uniqueStrings(encounter.consequenceTypes)
       })),
@@ -346,6 +942,24 @@
       actorArchetypes: uniqueStrings(plan.actorArchetypes),
       receiptIds: uniqueStrings(plan.receiptIds),
       consequenceTypes: uniqueStrings(plan.consequenceTypes),
+      encounters: arrayValue(plan.encounters).map((encounter) => {
+        const raw = objectValue(encounter);
+        return {
+          id: stringValue(raw.id || raw.encounterId),
+          encounterId: stringValue(raw.encounterId || raw.id),
+          pluginId: stringValue(raw.pluginId),
+          title: stringValue(raw.title || raw.id || raw.encounterId),
+          path: stringValue(raw.path),
+          template: stringValue(raw.template),
+          objectiveTypes: uniqueStrings(raw.objectiveTypes),
+          actorArchetypes: uniqueStrings(raw.actorArchetypes),
+          objectives: generatedObjectiveRecords(raw.objectives),
+          participants: generatedParticipantRecords(raw.participants),
+          location: generatedLocationRecord(raw.location),
+          receiptIds: uniqueStrings(raw.receiptIds),
+          consequenceTypes: uniqueStrings(raw.consequenceTypes)
+        };
+      }).filter((encounter) => encounter.id),
       operations: arrayValue(plan.operations).map((operation) => ({
         kind: stringValue(objectValue(operation).kind),
         id: stringValue(objectValue(operation).id),
@@ -390,6 +1004,24 @@
       actorArchetypes: uniqueStrings(previewShell.actorArchetypes),
       receiptIds: uniqueStrings(previewShell.receiptIds),
       consequenceTypes: uniqueStrings(previewShell.consequenceTypes),
+      encounters: arrayValue(previewShell.encounters).map((encounter) => {
+        const raw = objectValue(encounter);
+        return {
+          id: stringValue(raw.id || raw.encounterId),
+          encounterId: stringValue(raw.encounterId || raw.id),
+          pluginId: stringValue(raw.pluginId),
+          title: stringValue(raw.title || raw.id || raw.encounterId),
+          path: stringValue(raw.path),
+          template: stringValue(raw.template),
+          objectiveTypes: uniqueStrings(raw.objectiveTypes),
+          actorArchetypes: uniqueStrings(raw.actorArchetypes),
+          objectives: generatedObjectiveRecords(raw.objectives),
+          participants: generatedParticipantRecords(raw.participants),
+          location: generatedLocationRecord(raw.location),
+          receiptIds: uniqueStrings(raw.receiptIds),
+          consequenceTypes: uniqueStrings(raw.consequenceTypes)
+        };
+      }).filter((encounter) => encounter.id),
       operations: arrayValue(previewShell.operations).map((operation) => ({
         kind: stringValue(objectValue(operation).kind),
         id: stringValue(objectValue(operation).id),
@@ -476,11 +1108,44 @@
       reason = "unsupported-generated-gameplay-template";
     }
     const accepted = reason === "generated-template-handoff-ready";
-    const objectiveTypes = uniqueStrings(raw.objectiveTypes);
-    const actorArchetypes = uniqueStrings(raw.actorArchetypes);
+    const encounterDetails = arrayValue(raw.encounters).map((encounter) => {
+      const current = objectValue(encounter);
+      return {
+        id: stringValue(current.id || current.encounterId),
+        encounterId: stringValue(current.encounterId || current.id),
+        pluginId: stringValue(current.pluginId),
+        title: stringValue(current.title || current.id || current.encounterId),
+        path: stringValue(current.path),
+        template: stringValue(current.template),
+        objectiveTypes: uniqueStrings(current.objectiveTypes),
+        actorArchetypes: uniqueStrings(current.actorArchetypes),
+        objectives: generatedObjectiveRecords(current.objectives),
+        participants: generatedParticipantRecords(current.participants),
+        location: generatedLocationRecord(current.location),
+        receiptIds: uniqueStrings(current.receiptIds),
+        consequenceTypes: uniqueStrings(current.consequenceTypes)
+      };
+    }).filter((encounter) => encounter.id);
+    const primaryEncounter = encounterDetails.find((encounter) => encounter.id === primaryEncounterId)
+      || encounterDetails[0]
+      || {};
+    const detailedObjectives = generatedObjectiveRecords(primaryEncounter.objectives);
+    const detailedActors = generatedParticipantRecords(primaryEncounter.participants);
+    const objectiveTypes = uniqueStrings(
+      raw.objectiveTypes || detailedObjectives.map((objective) => objective.type)
+    );
+    const actorArchetypes = uniqueStrings(
+      raw.actorArchetypes || detailedActors.map((participant) => participant.actorArchetypeId)
+    );
     const receiptIds = uniqueStrings(raw.receiptIds);
     const consequenceTypes = uniqueStrings(raw.consequenceTypes);
     const encounterIds = uniqueStrings(raw.encounterIds || (primaryEncounterId ? [primaryEncounterId] : []));
+    const templateObjectives = detailedObjectives.length
+      ? detailedObjectives
+      : objectiveTypes.map((type) => ({type}));
+    const templateActors = detailedActors.length
+      ? detailedActors
+      : actorArchetypes.map((archetype) => ({archetype}));
     const operations = accepted ? [{
       kind: "handoff-generated-gameplay-template",
       scenarioId,
@@ -523,6 +1188,7 @@
       actorArchetypes,
       receiptIds,
       consequenceTypes,
+      encounters: encounterDetails,
       operations,
       templateInput: {
         scenario: {
@@ -537,10 +1203,13 @@
           encounterId: primaryEncounterId,
           encounterIds,
           templateId,
-          primaryTemplateId: templateId
+          primaryTemplateId: templateId,
+          title: stringValue(primaryEncounter.title),
+          path: stringValue(primaryEncounter.path),
+          location: generatedLocationRecord(primaryEncounter.location)
         },
-        objectives: objectiveTypes.map((type) => ({type})),
-        actors: actorArchetypes.map((archetype) => ({archetype})),
+        objectives: templateObjectives,
+        actors: templateActors,
         receipts: receiptIds.map((id) => ({id})),
         consequences: consequenceTypes.map((type) => ({type}))
       },
@@ -726,7 +1395,8 @@
       encounter: {
         id: stringValue(rawHandoff.primaryEncounterId || encounter.id),
         encounterId: stringValue(rawHandoff.primaryEncounterId || encounter.encounterId || encounter.id),
-        templateId: "encounter-template.shuttle-ambush"
+        templateId: "encounter-template.shuttle-ambush",
+        location: generatedLocationRecord(encounter.location)
       },
       objectives,
       objectiveSequence: objectives.map((objective) => ({
@@ -1304,8 +1974,12 @@
       );
       this.generatedScenarioActivationEnabled = options.generatedScenarioActivationEnabled === true
         || options.enableGeneratedScenarioActivation === true;
+      this.activeGeneratedGameplayPackIds = normalizeActiveGameplayPackIds(
+        options.activeGameplayPackIds || options.activeGeneratedGameplayPackIds
+      );
       this.generatedScenarioPreviewShellState = null;
       this.generatedScenarioPreviewEventLog = [];
+      this.openingShuttleEncounterBridgeState = null;
       this.storage = options.storage === undefined ? defaultStorage() : options.storage;
       this.storageKey = `${STORAGE_PREFIX}:${this.projectId}`;
       this.storageIssue = "";
@@ -1350,6 +2024,78 @@
         });
       }
       return this.generatedScenarioActivationStatus();
+    }
+
+    setActiveGameplayPackIds(value) {
+      const selection = activeGameplayPackSelection(this.generatedGameplayCatalogData, value);
+      this.activeGeneratedGameplayPackIds = selection.activePluginIds.slice();
+      return selection;
+    }
+
+    activeGameplayPackSelection() {
+      return clone(activeGameplayPackSelection(
+        this.generatedGameplayCatalogData,
+        this.activeGeneratedGameplayPackIds
+      ));
+    }
+
+    openingShuttleGameplayPackConfig(options = {}) {
+      return clone(openingShuttleGameplayPackConfig(
+        this.generatedGameplayCatalogData,
+        this.activeGeneratedGameplayPackIds,
+        options
+      ));
+    }
+
+    setOpeningShuttleEncounterBridgeSnapshot(value, options = {}) {
+      const bridge = openingShuttleEncounterBridgeSnapshot(value, {
+        ...objectValue(options),
+        sequence: this.state.sequence
+      });
+      this.openingShuttleEncounterBridgeState = bridge;
+      if (objectValue(options).emit !== false) {
+        this.emit("opening-shuttle-encounter-bridge-updated", {
+          bridge: clone(bridge)
+        });
+      }
+      return clone(bridge);
+    }
+
+    currentOpeningShuttleEncounterBridge() {
+      return clone(this.openingShuttleEncounterBridgeState);
+    }
+
+    openingShuttleEncounterBridgeDiagnostic(options = {}) {
+      const rawOptions = objectValue(options);
+      const generatedScenarioId = stringValue(rawOptions.generatedScenarioId || rawOptions.scenarioId);
+      const generatedStartPreview = objectValue(rawOptions.generatedStartPreview).kind
+        ? objectValue(rawOptions.generatedStartPreview)
+        : (
+          generatedScenarioId
+            ? this.generatedScenarioStartPreview(generatedScenarioId, {
+              source: stringValue(rawOptions.source || "opening-shuttle-encounter-bridge-diagnostic")
+            })
+            : null
+        );
+      return clone(openingShuttleEncounterBridgeDiagnostic(this.openingShuttleEncounterBridgeState, {
+        ...rawOptions,
+        generatedStartPreview
+      }));
+    }
+
+    clearOpeningShuttleEncounterBridge(reason = "opening-shuttle-encounter-bridge-cleared", options = {}) {
+      const previous = this.openingShuttleEncounterBridgeState;
+      this.openingShuttleEncounterBridgeState = null;
+      if (objectValue(options).emit !== false) {
+        this.emit(stringValue(reason || "opening-shuttle-encounter-bridge-cleared"), {
+          previous: clone(previous)
+        });
+      }
+      return {
+        cleared: Boolean(previous),
+        reason: stringValue(reason || "opening-shuttle-encounter-bridge-cleared"),
+        previous: clone(previous)
+      };
     }
 
     currentGeneratedScenarioPreview() {
@@ -2231,6 +2977,8 @@
         sequence: this.state.sequence,
         storageIssue: this.storageIssue,
         generatedGameplayCatalog: this.generatedGameplaySummary(),
+        activeGameplayPackSelection: this.activeGameplayPackSelection(),
+        openingShuttleGameplayPackConfig: this.openingShuttleGameplayPackConfig(),
         generatedScenarioActivation: this.generatedScenarioActivationStatus(),
         generatedScenarioAvailability: this.generatedScenarioAvailability(),
         generatedScenarioStartPreviews: this.generatedScenarioStartPreviews(),
@@ -2239,6 +2987,8 @@
         currentGeneratedScenarioTemplateHandoff: this.currentGeneratedScenarioTemplateHandoff(),
         currentGeneratedTemplateExecutorStatus: this.currentGeneratedTemplateExecutorStatus(),
         generatedScenarioPreviewEvents: this.generatedScenarioPreviewEvents(),
+        openingShuttleEncounterBridge: this.currentOpeningShuttleEncounterBridge(),
+        openingShuttleEncounterBridgeDiagnostic: this.openingShuttleEncounterBridgeDiagnostic(),
         scenarios: this.definition.scenarios.map((definition) => {
           const state = this.state.scenarios[definition.id];
           return {
@@ -2274,6 +3024,14 @@
       const activeSystemId = stringValue(options.activeSystemId);
       if (Object.prototype.hasOwnProperty.call(options, "generatedGameplayCatalog")) {
         currentRuntime.setGeneratedGameplayCatalog(options.generatedGameplayCatalog);
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(options, "activeGameplayPackIds")
+        || Object.prototype.hasOwnProperty.call(options, "activeGeneratedGameplayPackIds")
+      ) {
+        currentRuntime.setActiveGameplayPackIds(
+          options.activeGameplayPackIds || options.activeGeneratedGameplayPackIds
+        );
       }
       if (
         Object.prototype.hasOwnProperty.call(options, "generatedScenarioActivationEnabled")
@@ -2333,12 +3091,23 @@
     GENERATED_TEMPLATE_EXECUTOR_STATUS_SCHEMA,
     GENERATED_TEMPLATE_EXECUTOR_STATUS_KIND,
     GENERATED_TEMPLATE_EXECUTOR_DEFAULT_MODE,
+    OPENING_SHUTTLE_ENCOUNTER_BRIDGE_SCHEMA,
+    OPENING_SHUTTLE_ENCOUNTER_BRIDGE_KIND,
+    OPENING_SHUTTLE_ENCOUNTER_BRIDGE_DIAGNOSTIC_SCHEMA,
+    OPENING_SHUTTLE_ENCOUNTER_BRIDGE_DIAGNOSTIC_KIND,
+    ACTIVE_GAMEPLAY_PACK_SELECTION_SCHEMA,
+    ACTIVE_GAMEPLAY_PACK_SELECTION_KIND,
+    OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_SCHEMA,
+    OPENING_SHUTTLE_GAMEPLAY_PACK_CONFIG_KIND,
     STORAGE_PREFIX,
     SystemScenarioDefinitionError,
     SystemScenarioStateError,
     normalizeDefinition,
     validateDefinition,
     normalizeGeneratedGameplayCatalog,
+    normalizeActiveGameplayPackIds,
+    activeGameplayPackSelection,
+    openingShuttleGameplayPackConfig,
     generatedScenarioAvailability,
     generatedScenarioStartPreview,
     generatedScenarioStartPreviews,
@@ -2349,6 +3118,8 @@
     generatedScenarioTemplateHandoff,
     generatedTemplateExecutorRegistry,
     generatedTemplateExecutorStatus,
+    openingShuttleEncounterBridgeSnapshot,
+    openingShuttleEncounterBridgeDiagnostic,
     definitionFingerprint,
     SystemScenarioRuntime,
     create,

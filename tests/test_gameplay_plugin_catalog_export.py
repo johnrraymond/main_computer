@@ -133,6 +133,22 @@ def test_catalog_export_writes_enabled_generated_plugin_index(tmp_path: Path) ->
         "objective-type.reach-extraction",
     ]
     assert encounter["actorArchetypes"] == ["actor-archetype.vela-cave-guard"]
+    assert encounter["participants"] == [
+        {
+            "role": "hostile",
+            "actorArchetypeId": "actor-archetype.vela-cave-guard",
+            "count": 6,
+        }
+    ]
+    assert [objective["id"] for objective in encounter["objectives"]] == [
+        "recover-phaser",
+        "clear-hostiles",
+        "reach-extraction",
+    ]
+    assert encounter["location"] == {
+        "systemId": "system.vela-gate",
+        "destinationId": "destination.vela-gate.subsurface-cavern",
+    }
 
 
 def test_catalog_export_is_deterministic_and_overwrite_is_explicit(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -31,13 +32,28 @@ def run_node_json(script: str) -> dict:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is unavailable; MCEL app surface conformance smoke test cannot run")
-    completed = subprocess.run(
-        [node, "-e", script],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+
+    script_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            suffix=".cjs",
+            prefix="mcel-app-surface-conformance-",
+            delete=False,
+        ) as handle:
+            handle.write(script)
+            script_path = Path(handle.name)
+        completed = subprocess.run(
+            [node, str(script_path)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        if script_path is not None:
+            script_path.unlink(missing_ok=True)
     return json.loads(completed.stdout)
 
 

@@ -151,6 +151,56 @@
   white-space: pre-wrap;
 }
 
+
+.webgl-gameplay-pack-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--gold, #fbbf24) 32%, transparent);
+  border-radius: 999px;
+  padding: 8px 10px;
+  background:
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--gold, #fbbf24) 12%, transparent), transparent 58%),
+    color-mix(in srgb, var(--panel, Canvas) 88%, transparent);
+}
+
+.webgl-gameplay-pack-controls strong {
+  color: var(--gold, #fbbf24);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.webgl-gameplay-pack-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink, currentColor);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.webgl-gameplay-pack-controls select {
+  max-width: min(320px, 54vw);
+  border-radius: 999px;
+  padding: 5px 28px 5px 10px;
+  font-size: 0.76rem;
+}
+
+.webgl-gameplay-pack-controls button {
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.webgl-gameplay-pack-controls output {
+  color: var(--muted, currentColor);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .webgl-vfx-controls {
   display: flex;
   flex-wrap: wrap;

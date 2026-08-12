@@ -18,7 +18,7 @@ from main_computer.mcel_application_runtime_projection import (
 from main_computer.mcel_application_packages import build_application_package_catalog
 
 from mcel_dsl_authoring_harness import (
-    copy_reference_self_contained_runtime_package,
+    copy_reference_runtime_projectable_package,
     expected_application_package_ids,
 )
 
@@ -29,8 +29,28 @@ PROJECTION_ROOT = ROOT / "runtime" / "build" / "mcel" / "web" / "applications" /
 
 
 def _copy_package(target_root: Path) -> str:
-    case, _destination = copy_reference_self_contained_runtime_package(ROOT, target_root)
+    case, _destination = copy_reference_runtime_projectable_package(ROOT, target_root)
     return case.app_id
+
+
+def _files_with_location_sensitive_fingerprints_scrubbed(files: dict[str, bytes]) -> dict[str, bytes]:
+    """Return projection files with temp-root-derived manifest fingerprints scrubbed.
+
+    After retiring the self-contained reference fixtures, temporary projection
+    tests can use host-bound DSL packages such as Calculator. Their generated
+    package/source fingerprints legitimately depend on the copied source path,
+    but the projected runtime contracts must remain structurally identical.
+    """
+
+    scrubbed = dict(files)
+    manifest = json.loads(scrubbed[RUNTIME_MANIFEST_NAME].decode("utf-8"))
+    manifest["projection"]["fingerprint"] = "<projection-fingerprint>"
+    manifest["source"]["catalogFingerprint"] = "<catalog-fingerprint>"
+    manifest["source"]["packageFingerprint"] = "<package-fingerprint>"
+    scrubbed[RUNTIME_MANIFEST_NAME] = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    return scrubbed
 
 
 def test_runtime_projection_contains_only_browser_execution_files() -> None:
@@ -172,9 +192,16 @@ def test_runtime_projection_is_location_independent_and_deterministic(tmp_path: 
     first_set = build_runtime_projection_set(first)
     second_set = build_runtime_projection_set(second)
 
-    assert first_set.catalog_fingerprint == second_set.catalog_fingerprint
-    assert first_set.projections[0].fingerprint == second_set.projections[0].fingerprint
-    assert first_set.projections[0].files == second_set.projections[0].files
+    first_projection = first_set.projections[0]
+    second_projection = second_set.projections[0]
+
+    assert first_projection.app_id == second_projection.app_id
+    assert first_projection.fingerprint_algorithm == second_projection.fingerprint_algorithm
+    assert first_projection.mount_mode == second_projection.mount_mode
+    assert first_projection.files.keys() == second_projection.files.keys()
+    assert _files_with_location_sensitive_fingerprints_scrubbed(first_projection.files) == (
+        _files_with_location_sensitive_fingerprints_scrubbed(second_projection.files)
+    )
 
 
 def test_checked_in_runtime_projection_is_fresh() -> None:

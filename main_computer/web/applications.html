@@ -232,6 +232,18 @@
           <div class="stub-message" id="stub-message">Select an application tab to open it.</div>
         </div>
         <div class="demo-controls" id="demo-controls">
+          <div class="webgl-gameplay-pack-controls" aria-label="Gameplay Pack reload controls">
+            <strong>Gameplay Pack</strong>
+            <label for="webgl-gameplay-pack-selection">
+              <span>Reload selection</span>
+              <select id="webgl-gameplay-pack-selection" data-webgl-gameplay-pack-selector aria-label="Gameplay Pack reload selection">
+                <option value="None">None — base game</option>
+                <option value="plugin.hand-authored.opening-shuttle-ambush.001">Opening Shuttle Ambush Elite Wave</option>
+              </select>
+            </label>
+            <button id="webgl-gameplay-pack-apply" type="button" data-webgl-gameplay-pack-apply>Apply + Reload</button>
+            <output id="webgl-gameplay-pack-status" role="status" aria-live="polite">None — base game</output>
+          </div>
           <div class="webgl-vfx-controls" aria-label="Game Surface VFX density controls">
             <strong>VFX</strong>
             <label>

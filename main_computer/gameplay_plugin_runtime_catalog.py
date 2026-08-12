@@ -48,6 +48,9 @@ class GameplayPluginRuntimeDocument:
     actor_archetypes: tuple[str, ...] = ()
     receipt_ids: tuple[str, ...] = ()
     consequence_types: tuple[str, ...] = ()
+    objectives: tuple[dict[str, Any], ...] = ()
+    participants: tuple[dict[str, Any], ...] = ()
+    location: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +180,78 @@ def _strings(value: Any) -> tuple[str, ...]:
     return _unique_strings(str(item or "").strip() for item in value)
 
 
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(maximum, max(minimum, parsed))
+
+
+def _document_location(document: Mapping[str, Any]) -> dict[str, str] | None:
+    location = document.get("location")
+    if not isinstance(location, Mapping):
+        entry = document.get("entry")
+        location = entry if isinstance(entry, Mapping) else {}
+    system_id = str(location.get("systemId") or "").strip()
+    destination_id = str(location.get("destinationId") or "").strip()
+    payload = {
+        key: value
+        for key, value in (
+            ("systemId", system_id),
+            ("destinationId", destination_id),
+        )
+        if value
+    }
+    return payload or None
+
+
+def _document_objectives(document: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    objectives = document.get("objectives")
+    if not isinstance(objectives, list):
+        return tuple()
+    records: list[dict[str, Any]] = []
+    for objective in objectives:
+        if not isinstance(objective, Mapping):
+            continue
+        objective_type = str(objective.get("type") or "").strip()
+        if not objective_type:
+            continue
+        objective_id = str(objective.get("id") or objective_type).strip()
+        label = str(objective.get("label") or "").strip()
+        record: dict[str, Any] = {
+            "id": objective_id,
+            "type": objective_type,
+            "required": objective.get("required") is not False,
+        }
+        if label:
+            record["label"] = label
+        records.append(record)
+    return tuple(records)
+
+
+def _document_participants(document: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    participants = document.get("participants")
+    if not isinstance(participants, list):
+        return tuple()
+    records: list[dict[str, Any]] = []
+    for participant in participants:
+        if not isinstance(participant, Mapping):
+            continue
+        actor_archetype_id = str(participant.get("actorArchetypeId") or "").strip()
+        if not actor_archetype_id:
+            continue
+        role = str(participant.get("role") or "").strip()
+        records.append(
+            {
+                "role": role,
+                "actorArchetypeId": actor_archetype_id,
+                "count": _bounded_int(participant.get("count"), 1, 1, 64),
+            }
+        )
+    return tuple(records)
+
+
 def _is_safe_relative_posix_path(path: str) -> bool:
     if not path or "\\" in path or path.startswith("/"):
         return False
@@ -232,25 +307,11 @@ def _document_encounter_ids(document: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _document_objective_types(document: Mapping[str, Any]) -> tuple[str, ...]:
-    objectives = document.get("objectives")
-    if not isinstance(objectives, list):
-        return tuple()
-    return _unique_strings(
-        str(objective.get("type") or "").strip()
-        for objective in objectives
-        if isinstance(objective, Mapping)
-    )
+    return _unique_strings(objective["type"] for objective in _document_objectives(document))
 
 
 def _document_actor_archetypes(document: Mapping[str, Any]) -> tuple[str, ...]:
-    participants = document.get("participants")
-    if not isinstance(participants, list):
-        return tuple()
-    return _unique_strings(
-        str(participant.get("actorArchetypeId") or "").strip()
-        for participant in participants
-        if isinstance(participant, Mapping)
-    )
+    return _unique_strings(participant["actorArchetypeId"] for participant in _document_participants(document))
 
 
 def _document_receipt_ids(document: Mapping[str, Any]) -> tuple[str, ...]:
@@ -299,6 +360,9 @@ def _runtime_document_from_payload(
         actor_archetypes=_document_actor_archetypes(payload),
         receipt_ids=_document_receipt_ids(payload),
         consequence_types=_document_consequence_types(payload),
+        objectives=_document_objectives(payload),
+        participants=_document_participants(payload),
+        location=_document_location(payload),
     )
 
 

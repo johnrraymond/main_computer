@@ -121,6 +121,9 @@ def _document_payload(document: GameplayPluginRuntimeDocument) -> dict[str, Any]
         "actorArchetypes": list(document.actor_archetypes),
         "receiptIds": list(document.receipt_ids),
         "consequenceTypes": list(document.consequence_types),
+        "objectives": [dict(objective) for objective in document.objectives],
+        "participants": [dict(participant) for participant in document.participants],
+        "location": dict(document.location or {}),
     }
 
 
