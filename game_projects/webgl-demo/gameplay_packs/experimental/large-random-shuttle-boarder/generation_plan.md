@@ -1,0 +1,28 @@
+Loaded reviewed plan from C:\Users\subsi\main_computer\game_projects\webgl-demo\gameplay_packs\experimental\large-random-shuttle-boarder\plan.json
+
+BEGIN pack_plan.json
+{
+  "kind": "gameplay-pack-generation-plan",
+  "packId": "pack.experimental.large-random-shuttle-boarder",
+  "project": "webgl-demo",
+  "scenario": {
+    "apiCall": "pack.encounter(\"opening-shuttle-ambush\", ...)",
+    "id": "opening-shuttle-ambush",
+    "kind": "encounter"
+  },
+  "schema": "game.gameplayPackGenerationPlan.v1",
+  "steps": [
+    {
+      "commands": [
+        "spawnWave",
+        "showHudMessage"
+      ],
+      "event": "onStart",
+      "id": "step-1",
+      "summary": "Choose one valid shuttle location at random, warn the player, and spawn one tougher Large Shuttle Boarder without changing existing hostile stats."
+    }
+  ],
+  "summary": "Adds one tougher Large Shuttle Boarder at encounter start without changing existing shuttle hostiles.",
+  "title": "Large Shuttle Boarder Ambush"
+}
+END pack_plan.json

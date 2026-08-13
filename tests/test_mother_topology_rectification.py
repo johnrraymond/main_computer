@@ -17,9 +17,13 @@ from tests.test_mother_deployment_executor import _Response, _install, _operatio
 from tests.test_mother_deployment_node_add_prep import (
     A_NODE,
     C1_NODE,
+    C2_NODE,
     A_VALIDATOR,
+    C1_VALIDATOR,
+    C2_VALIDATOR,
     _binding_for_test,
     _test_genesis,
+    _write_remove_finalize_baseline,
 )
 
 
@@ -37,6 +41,33 @@ class _MissingServiceOpener:
         if parsed.path.startswith("/api/v1/services/"):
             return _Response({"message": "not found"}, status=404)
         raise AssertionError(f"unexpected GET path: {parsed.path}")
+
+
+
+class _PresentServicesOpener:
+    def __init__(self, services: dict[str, tuple[str, str]]) -> None:
+        self.services = services
+        self.requests: list[dict] = []
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        self.requests.append({"method": request.get_method(), "host": parsed.hostname, "path": parsed.path})
+        assert request.get_method() == "GET"
+        if parsed.path == "/api/v1/services":
+            return _Response(
+                [
+                    {"uuid": uuid, "name": name, "status": status}
+                    for uuid, (name, status) in sorted(self.services.items())
+                ]
+            )
+        if parsed.path.startswith("/api/v1/services/"):
+            uuid = parsed.path.rsplit("/", 1)[-1]
+            if uuid not in self.services:
+                return _Response({"message": "not found"}, status=404)
+            name, status = self.services[uuid]
+            return _Response({"uuid": uuid, "name": name, "status": status})
+        raise AssertionError(f"unexpected GET path: {parsed.path}")
+
 
 
 def _write_single_node_topology_evidence(paths, private_state) -> tuple[Path, str]:
@@ -110,6 +141,117 @@ def _write_single_node_topology_evidence(paths, private_state) -> tuple[Path, st
     }
     payload = canonical_json(evidence)
     path = paths.root / "evidence" / "deployment-node-add-single-node-chain-and-hub-proof" / "single-node-final.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    import hashlib
+
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+
+def _write_validator_admission_topology_evidence(paths, private_state) -> tuple[Path, str]:
+    _genesis, genesis_sha = _test_genesis(paths, private_state)
+    evidence = {
+        "kind": "main_computer.mother.deployment_node_add_validator_admission_evidence.v1",
+        "schema_version": 1,
+        "started_at": "2026-08-13T00:39:57Z",
+        "completed_at": "2026-08-13T00:40:20Z",
+        "status": "pass",
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "mode": "reactivate",
+        "candidate_node": C1_NODE,
+        "candidate_validator_address": C1_VALIDATOR,
+        "target_host": "coolify-c",
+        "created_service_uuid": "gr09bevx1ymmiffqwtatro3s",
+        "voter_nodes": [A_NODE],
+        "chain_id": 42424240,
+        "genesis_sha256": genesis_sha,
+        "current_validator_set": [A_VALIDATOR],
+        "desired_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+        "precondition_receipts": [
+            {
+                "name": "mainneta-super1-service-before-add-node-validator-admission",
+                "controller_id": "coolify-a",
+                "node": A_NODE,
+                "service_uuid": "ypp612nb7zx4kiye8di8ciby",
+                "service_status": "running:healthy",
+                "compose_text_available": True,
+                "verified": True,
+                # This is only a secret variable name, not secret material.  The
+                # detector must project validator-admission evidence before
+                # applying generic sensitive-material checks.
+                "identity_env_keys": [{"environment_key": "MC_MOTHER_VALIDATOR_PRIVATE_KEY", "present": True}],
+            }
+        ],
+        "mutation_receipts": [
+            {"node": C1_NODE, "controller_id": "coolify-c", "service_uuid": "gr09bevx1ymmiffqwtatro3s", "method": "PATCH", "status": "succeeded", "live_write_acknowledged": True},
+            {"node": A_NODE, "controller_id": "coolify-a", "service_uuid": "ypp612nb7zx4kiye8di8ciby", "method": "PATCH", "status": "succeeded", "live_write_acknowledged": True},
+        ],
+        "health_observations": [
+            {"node": C1_NODE, "controller_id": "coolify-c", "service_uuid": "gr09bevx1ymmiffqwtatro3s", "status": "degraded:unhealthy", "component_or_service_healthy": True, "observed_at": "2026-08-13T00:40:19Z"},
+            {"node": A_NODE, "controller_id": "coolify-a", "service_uuid": "ypp612nb7zx4kiye8di8ciby", "status": "running:healthy", "component_or_service_healthy": True, "observed_at": "2026-08-13T00:40:20Z"},
+        ],
+        "policy": {
+            "allowed_http_methods": ["GET", "PATCH"],
+            "coolify_control_plane_only": True,
+            "public_http_endpoint_created": False,
+            "routing_or_topology_published": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+        },
+        "authority": {
+            "release_consumed": True,
+            "validator_vote_proven": True,
+            "validator_activation_proven": True,
+            "routing_or_topology_publication_authorized": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "target_validator_identity_activated": True,
+            "final_validator_set_verified": True,
+            "validator_vote_performed": True,
+            "validator_activation_performed": True,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "live_mutation_performed": True,
+            "blocks_advancing": True,
+            "latest_block_fresh": True,
+            "target_host": "coolify-c",
+            "target_node": C1_NODE,
+            "next_phase": "add-node-post-admission-observe-mainnet",
+        },
+        "next_phase": "add-node-post-admission-observe-mainnet",
+        "chain_mutation_count": 1,
+        "validator_vote_performed": True,
+        "validator_activation_performed": True,
+    }
+    payload = canonical_json(evidence)
+    path = paths.root / "evidence" / "deployment-node-add-validator-admission" / "validator-admission.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    import hashlib
+
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+def _write_failed_post_admission_health_topology_evidence(paths, private_state) -> tuple[Path, str]:
+    clean_path, _clean_sha = _write_validator_admission_topology_evidence(paths, private_state)
+    evidence = json.loads(clean_path.read_text(encoding="utf-8"))
+    evidence["status"] = "failed"
+    evidence["failure"] = {
+        "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN",
+        "message": "post-admission service health cleanup did not reach a clean top-level Coolify service state",
+    }
+    evidence["next_phase"] = "manual-review-required"
+    evidence["summary"]["clean"] = False
+    evidence["summary"]["complete"] = False
+    evidence["summary"]["next_phase"] = "manual-review-required"
+    evidence["summary"]["post_admission_cleanup_clean"] = False
+    evidence["summary"]["post_admission_cleanup_performed"] = True
+    payload = canonical_json(evidence)
+    path = paths.root / "evidence" / "deployment-node-add-validator-admission" / "20260813T184428Z-mainnetc-super1-failed-health-test.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     import hashlib
@@ -224,6 +366,95 @@ def test_detect_topology_staleness_reports_rectification_required_for_absent_sin
     assert result["missing_expected_nodes"] == [A_NODE]
     assert result["observed_live_node_hints"] == []
     assert result["target"]["validator_address"] == A_VALIDATOR
+
+
+
+def test_detect_topology_accepts_validator_admission_evidence_without_sensitive_false_positive(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_validator_admission_topology_evidence(paths, private_state)
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        opener=_PresentServicesOpener(
+            {
+                "ypp612nb7zx4kiye8di8ciby": (A_NODE, "running:healthy"),
+                "gr09bevx1ymmiffqwtatro3s": (C1_NODE, "degraded:unhealthy"),
+            }
+        ),
+        now=datetime(2026, 8, 13, 0, 42, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["summary"]["topology_current"] is True
+    assert result["summary"]["topology_stale"] is False
+    assert result["expected_nodes"] == [A_NODE, C1_NODE]
+    assert result["expected_validator_set"] == [A_VALIDATOR, C1_VALIDATOR]
+    assert result["expected_services"][C1_NODE]["service_uuid"] == "gr09bevx1ymmiffqwtatro3s"
+    assert result["present_expected_nodes"] == [A_NODE, C1_NODE]
+
+
+def test_detect_topology_accepts_failed_post_admission_health_for_remove_remediation(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_failed_post_admission_health_topology_evidence(paths, private_state)
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        opener=_PresentServicesOpener(
+            {
+                "ypp612nb7zx4kiye8di8ciby": (A_NODE, "running:healthy"),
+                "gr09bevx1ymmiffqwtatro3s": (C1_NODE, "degraded:unhealthy"),
+            }
+        ),
+        now=datetime(2026, 8, 13, 18, 50, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["summary"]["topology_current"] is True
+    assert result["summary"]["topology_stale"] is False
+    assert result["topology_evidence"]["kind"] == "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
+    assert result["topology_evidence"]["next_phase"] == "manual-review-required"
+    assert result["expected_nodes"] == [A_NODE, C1_NODE]
+    assert result["expected_services"][C1_NODE]["service_uuid"] == "gr09bevx1ymmiffqwtatro3s"
+    assert result["present_expected_nodes"] == [A_NODE, C1_NODE]
+
+
+def test_detect_topology_uses_remove_finalize_survivor_services_not_removed_target(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_remove_finalize_baseline(paths, private_state)
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        opener=_PresentServicesOpener(
+            {
+                "svcc1xxxx": (C1_NODE, "running:healthy"),
+                "svcc2xxxx": (C2_NODE, "running:healthy"),
+            }
+        ),
+        now=datetime(2026, 8, 11, 20, 45, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["topology_current"] is True
+    assert result["summary"]["topology_stale"] is False
+    assert result["expected_nodes"] == [C1_NODE, C2_NODE]
+    assert result["expected_validator_set"] == [C1_VALIDATOR, C2_VALIDATOR]
+    assert result["expected_services"][C1_NODE]["service_uuid"] == "svcc1xxxx"
+    assert result["expected_services"][C2_NODE]["service_uuid"] == "svcc2xxxx"
+    assert result["target"]["node"] == A_NODE
+    assert result["target"]["service_uuid"] == "svca1xxxx"
+    assert result["present_expected_nodes"] == [C1_NODE, C2_NODE]
+    assert result["missing_expected_nodes"] == []
+
 
 
 def test_detect_topology_accepts_remove_finalize_empty_baseline_without_final_chain_identity(tmp_path: Path) -> None:

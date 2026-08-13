@@ -821,3 +821,463 @@ def test_completed_helper_cleanup_credits_docker_cleanup_from_clean_parent_when_
     }
     assert cleanup_result["health"]["temporary_service_delete"]["ok"] is True
 
+
+
+class _PostAdmissionReplicaStaleRowsOpener:
+    def __init__(self) -> None:
+        self.deleted: set[str] = set()
+        self.requests: list[tuple[str, str]] = []
+        self.replica_rows = {
+            "mother-replica-init": "jf9yeo7qutozrbiboc4wd1w7",
+            "mother-replica-sync-guardian": "z269qv3lsbxsz1zigo3v28fq",
+        }
+
+    def _payload(self) -> dict:
+        applications = [
+            {
+                "name": "mother-validator-activation-init",
+                "uuid": "c4oc24ftk03vu1reqp2kj09l",
+                "status": "exited",
+                "image": "alpine:3.20",
+                "exclude_from_status": True,
+            },
+            {
+                "name": "mainnetc-super1",
+                "uuid": "rzcgwvljv7z2d8gmkhejg0ek",
+                "status": "running:healthy",
+                "image": "hyperledger/besu:latest",
+                "exclude_from_status": True,
+            },
+            {
+                "name": "mother-add-node-validator-activation-guardian",
+                "uuid": "hbiez6v71x2dr5hm1hw0lpry",
+                "status": "running:healthy",
+                "image": "python:3.12-alpine",
+                "exclude_from_status": False,
+            },
+        ]
+        for name, uuid in self.replica_rows.items():
+            if uuid in self.deleted:
+                continue
+            applications.append(
+                {
+                    "name": name,
+                    "uuid": uuid,
+                    "status": "exited",
+                    "image": "alpine:3.20" if name == "mother-replica-init" else "python:3.12-alpine",
+                    "exclude_from_status": name == "mother-replica-init",
+                }
+            )
+        return {
+            "name": "mainnetc-super1",
+            "uuid": SERVICE_UUID,
+            "status": (
+                "running:healthy"
+                if self.replica_rows["mother-replica-sync-guardian"] in self.deleted
+                else "degraded:unhealthy"
+            ),
+            "applications": applications,
+            "docker_compose_raw": base64.b64encode(
+                b"""services:
+  mainnetc-super1:
+    image: hyperledger/besu:latest
+  mother-add-node-validator-activation-guardian:
+    image: python:3.12-alpine
+  mother-validator-activation-init:
+    image: alpine:3.20
+"""
+            ).decode("ascii"),
+        }
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append((method, path))
+        if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
+            return _Response(self._payload())
+        if method == "DELETE" and path.startswith("/api/v1/applications/"):
+            app_uuid = path.rsplit("/", 1)[-1]
+            assert app_uuid in self.replica_rows.values()
+            self.deleted.add(app_uuid)
+            return _Response({"uuid": app_uuid, "deleted": True})
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_completed_helper_cleanup_remediates_stale_replica_sync_rows_after_validator_admission(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _PostAdmissionReplicaStaleRowsOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainnetc-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        required_component_names=("mother-add-node-validator-activation-guardian",),
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-post-admission-replica-stale"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["summary"]["application_delete_count"] == 1
+    assert {item["application_uuid"] for item in result["deleted_applications"]} == {
+        opener.replica_rows["mother-replica-sync-guardian"]
+    }
+    assert result["summary"]["excluded_completed_helper_record_count"] == 2
+    assert result["summary"]["unexpected_terminal_component_count"] == 0
+    assert result["final_parent"]["status"] == "running:healthy"
+    assert ("DELETE", "/api/v1/applications/c4oc24ftk03vu1reqp2kj09l") not in opener.requests
+
+
+class _PostAdmissionReplicaStaleRowsNeedForceDeployOpener(_PostAdmissionReplicaStaleRowsOpener):
+    def __init__(self) -> None:
+        super().__init__()
+        self.compose_reconciled = False
+        self.deploy_requested = False
+
+    def _payload(self) -> dict:
+        payload = super()._payload()
+        if self.deploy_requested:
+            payload["applications"] = [
+                item
+                for item in payload["applications"]
+                if item["name"] not in self.replica_rows
+            ]
+            payload["status"] = "running:healthy"
+        elif self.compose_reconciled:
+            payload["status"] = "degraded:unhealthy"
+        return payload
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append((method, path))
+        if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
+            return _Response(self._payload())
+        if method == "DELETE" and path.startswith("/api/v1/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "DELETE" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "DELETE" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/application/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "PATCH" and path == f"/api/v1/services/{SERVICE_UUID}":
+            body = json.loads(request.data.decode("utf-8"))
+            decoded = base64.b64decode(body["docker_compose_raw"]).decode("utf-8")
+            assert "mother-replica-sync-guardian" not in decoded
+            assert "mother-replica-init" not in decoded
+            assert body["instant_deploy"] is True
+            self.compose_reconciled = True
+            return _Response({"message": "Service updated."})
+        if method == "GET" and path == "/api/v1/deploy":
+            assert parsed.query == f"uuid={SERVICE_UUID}&force=true"
+            self.deploy_requested = True
+            return _Response({"deployments": [{"resource_uuid": SERVICE_UUID, "deployment_uuid": "dep-post-admission-refresh"}]})
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_completed_helper_cleanup_force_redeploys_after_noop_compose_reconcile_when_parent_stays_degraded(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _PostAdmissionReplicaStaleRowsNeedForceDeployOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainnetc-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        required_component_names=("mother-add-node-validator-activation-guardian",),
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_nested_application_delete=True,
+        allow_compose_reconcile_refresh=True,
+        instant_deploy_compose_reconcile_refresh=True,
+        allow_service_redeploy_refresh=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-post-admission-force-refresh"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["summary"]["service_compose_reconcile_count"] == 1
+    assert result["summary"]["service_compose_reconcile_succeeded"] is True
+    assert result["summary"]["service_redeploy_refresh_count"] == 1
+    assert result["summary"]["service_redeploy_refresh_succeeded"] is True
+    assert result["summary"]["service_redeploy_refresh_force"] is True
+    assert opener.compose_reconciled is True
+    assert opener.deploy_requested is True
+    assert ("GET", "/api/v1/deploy") in opener.requests
+
+
+class _PostAdmissionReplicaStaleRowsStatusExclusionOpener(_PostAdmissionReplicaStaleRowsOpener):
+    def __init__(self) -> None:
+        super().__init__()
+        self.excluded: set[str] = set()
+
+    def _payload(self) -> dict:
+        payload = super()._payload()
+        for app in payload["applications"]:
+            if app.get("uuid") in self.excluded:
+                app["exclude_from_status"] = True
+        if self.replica_rows["mother-replica-sync-guardian"] in self.excluded:
+            payload["status"] = "running:healthy"
+        return payload
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append((method, path))
+        if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
+            return _Response(self._payload())
+        if method == "DELETE" and path.startswith("/api/v1/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "DELETE" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "DELETE" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/application/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "PATCH" and path == f"/api/v1/services/{SERVICE_UUID}":
+            return _Response({"message": "Service updated."})
+        if method == "PATCH" and path.startswith("/api/v1/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "PATCH" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/applications/"):
+            app_uuid = path.rsplit("/", 1)[-1]
+            assert app_uuid == self.replica_rows["mother-replica-sync-guardian"]
+            body = json.loads(request.data.decode("utf-8"))
+            assert body == {"exclude_from_status": True}
+            self.excluded.add(app_uuid)
+            return _Response({"uuid": app_uuid, "exclude_from_status": True})
+        if method == "GET" and path == "/api/v1/deploy":
+            return _Response({"deployments": [{"resource_uuid": SERVICE_UUID, "deployment_uuid": "dep-status-exclusion"}]})
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_completed_helper_cleanup_marks_exact_stale_helper_rows_excluded_when_delete_and_reconcile_do_not_clear(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _PostAdmissionReplicaStaleRowsStatusExclusionOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainnetc-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        required_component_names=("mother-add-node-validator-activation-guardian",),
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_nested_application_delete=True,
+        allow_compose_reconcile_refresh=True,
+        instant_deploy_compose_reconcile_refresh=True,
+        allow_service_redeploy_refresh=True,
+        allow_coolify_model_status_exclusion=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-post-admission-status-exclusion"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["summary"]["coolify_model_status_exclusion_count"] == 1
+    assert result["summary"]["coolify_model_status_exclusion_succeeded"] is True
+    assert result["coolify_model_status_exclusion"]["patched_application_success_count"] == 1
+    assert opener.excluded == {opener.replica_rows["mother-replica-sync-guardian"]}
+    assert ("PATCH", f"/api/v1/services/{SERVICE_UUID}/applications/{opener.replica_rows['mother-replica-sync-guardian']}") in opener.requests
+
+
+
+class _LateReplicaSyncGuardianStatusExclusionOpener:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str]] = []
+        self.service_get_count = 0
+        self.excluded: set[str] = set()
+        self.deploy_requested = False
+        self.replica_sync_guardian_uuid = "yrq3ncs23pas6rsk2ya36gxm"
+
+    def _base_applications(self) -> list[dict[str, object]]:
+        return [
+            {
+                "name": "mother-validator-activation-init",
+                "uuid": "aki7vgmg7wfu623ur6q07fea",
+                "status": "exited",
+                "image": "alpine:3.20",
+                "exclude_from_status": True,
+            },
+            {
+                "name": "mainnetc-super1",
+                "uuid": "qoksqqcf602qro687jb4dyjz",
+                "status": "running:healthy",
+                "image": "hyperledger/besu:latest",
+                "exclude_from_status": True,
+            },
+            {
+                "name": "mother-add-node-validator-activation-guardian",
+                "uuid": "hhpt6yue46i6497zfnm0707u",
+                "status": "running:healthy",
+                "image": "python:3.12-alpine",
+                "exclude_from_status": False,
+            },
+        ]
+
+    def _payload(self) -> dict[str, object]:
+        applications = self._base_applications()
+        if self.service_get_count >= 2:
+            applications.insert(
+                0,
+                {
+                    "name": "mother-replica-sync-guardian",
+                    "uuid": self.replica_sync_guardian_uuid,
+                    "status": "exited",
+                    "image": "python:3.12-alpine",
+                    "exclude_from_status": self.replica_sync_guardian_uuid in self.excluded,
+                },
+            )
+        parent_clean = self.deploy_requested and self.replica_sync_guardian_uuid in self.excluded
+        return {
+            "name": "mainnetc-super1",
+            "uuid": SERVICE_UUID,
+            "status": "running:healthy" if parent_clean else "degraded:unhealthy",
+            "applications": applications,
+            "docker_compose_raw": base64.b64encode(
+                b"""services:
+  mainnetc-super1:
+    image: hyperledger/besu:latest
+  mother-add-node-validator-activation-guardian:
+    image: python:3.12-alpine
+  mother-validator-activation-init:
+    image: alpine:3.20
+"""
+            ).decode("ascii"),
+        }
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append((method, path))
+        if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
+            self.service_get_count += 1
+            return _Response(self._payload())
+        if method == "PATCH" and path.startswith("/api/v1/applications/"):
+            return _Response({"message": "Resource not found."}, status=404)
+        if method == "PATCH" and path.startswith(f"/api/v1/services/{SERVICE_UUID}/applications/"):
+            app_uuid = path.rsplit("/", 1)[-1]
+            assert app_uuid == self.replica_sync_guardian_uuid
+            body = json.loads(request.data.decode("utf-8"))
+            assert body == {"exclude_from_status": True}
+            self.excluded.add(app_uuid)
+            return _Response({"uuid": app_uuid, "exclude_from_status": True})
+        if method == "GET" and path == "/api/v1/deploy":
+            assert parsed.query == f"uuid={SERVICE_UUID}&force=true"
+            self.deploy_requested = True
+            return _Response({"deployments": [{"resource_uuid": SERVICE_UUID, "deployment_uuid": "dep-late-status-exclusion"}]})
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_completed_helper_cleanup_remediates_late_live_replica_sync_guardian_row(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _LateReplicaSyncGuardianStatusExclusionOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainnetc-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        required_component_names=("mother-add-node-validator-activation-guardian",),
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_service_redeploy_refresh=True,
+        allow_coolify_model_status_exclusion=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-late-live-replica-sync-row"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["summary"]["initial_completed_helper_candidate_count"] == 0
+    assert result["summary"]["coolify_model_status_exclusion_succeeded"] is True
+    assert result["summary"]["service_redeploy_refresh_count"] == 1
+    assert result["summary"]["service_redeploy_refresh_succeeded"] is True
+    assert opener.excluded == {opener.replica_sync_guardian_uuid}
+    assert opener.deploy_requested is True
+    assert result["coolify_model_status_exclusion"]["receipts"][0]["application_name"] == "mother-replica-sync-guardian"
+    assert result["coolify_model_status_exclusion"]["receipts"][0]["remediation_phase"] == "live-service-recheck"
+    assert (
+        "PATCH",
+        f"/api/v1/services/{SERVICE_UUID}/applications/{opener.replica_sync_guardian_uuid}",
+    ) in opener.requests
+
+
+class _UnresolvedLateReplicaSyncGuardianOpener(_LateReplicaSyncGuardianStatusExclusionOpener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append((method, path))
+        if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
+            self.service_get_count += 1
+            return _Response(self._payload())
+        if method == "PATCH" and (
+            path.startswith("/api/v1/applications/")
+            or path.startswith(f"/api/v1/services/{SERVICE_UUID}/applications/")
+            or path.startswith(f"/api/v1/services/{SERVICE_UUID}/application/")
+        ):
+            return _Response({"message": "Resource not found."}, status=404)
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_completed_helper_cleanup_names_unresolved_late_helper_row_when_remediation_fails(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _UnresolvedLateReplicaSyncGuardianOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainnetc-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        required_component_names=("mother-add-node-validator-activation-guardian",),
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_coolify_model_status_exclusion=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-late-live-row-unresolved"),
+    )
+
+    assert result["status"] == "manual-review-required"
+    assert result["summary"]["clean"] is False
+    assert result["summary"]["unresolved_completed_helper_names"] == ["mother-replica-sync-guardian"]
+    assert result["summary"]["unresolved_completed_helper_uuids"] == [opener.replica_sync_guardian_uuid]
+    assert result["unresolved_completed_helper_candidates"] == [
+        {
+            "name": "mother-replica-sync-guardian",
+            "uuid": opener.replica_sync_guardian_uuid,
+            "status": "exited",
+            "image": "python:3.12-alpine",
+            "exclude_from_status": False,
+        }
+    ]
+    assert result["coolify_model_status_exclusion"]["patched_application_success_count"] == 0

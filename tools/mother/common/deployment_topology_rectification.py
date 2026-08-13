@@ -35,6 +35,7 @@ from .private_state import PrivateStateReadResult
 
 _STALENESS_EVIDENCE_KIND = "main_computer.mother.live_topology_staleness_observation.v1"
 _EMPTY_EVIDENCE_KIND = "main_computer.mother.live_topology_empty_rectification_evidence.v1"
+_ADD_VALIDATOR_ADMISSION_KIND = "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
 _EMPTY_EVIDENCE_DIRECTORY = ("evidence", "deployment-live-topology-empty-rectification")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -221,6 +222,105 @@ def _controller_ids_for_inventory(
     return sorted(controller_ids)
 
 
+def _topology_service_record(node: str, record: Mapping[str, Any], *, source: str, completed_at: Any) -> dict[str, Any]:
+    controller = _identifier(record.get("controller_id"), f"{node} controller id")
+    service_uuid = str(record.get("service_uuid") or record.get("created_service_uuid") or "")
+    if not service_uuid:
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"{node} service UUID is missing")
+    return {
+        "node": node,
+        "controller_id": controller,
+        "service_uuid": service_uuid,
+        "service_status": record.get("service_status"),
+        "readiness_source": record.get("readiness_source") or source,
+        "last_observed_at": record.get("last_observed_at") or record.get("observed_at") or completed_at,
+    }
+
+
+def _observation_service_record(item: Mapping[str, Any], *, completed_at: Any) -> dict[str, Any] | None:
+    node = item.get("node")
+    controller_id = item.get("controller_id")
+    service_uuid = item.get("service_uuid")
+    if not isinstance(node, str) or not isinstance(controller_id, str) or not isinstance(service_uuid, str) or not service_uuid:
+        return None
+    node_id = _identifier(node, "service observation node")
+    return _topology_service_record(
+        node_id,
+        {
+            "controller_id": controller_id,
+            "service_uuid": service_uuid,
+            "service_status": item.get("service_status"),
+            "readiness_source": item.get("readiness_source") or "service-observation",
+            "observed_at": item.get("observed_at"),
+        },
+        source="service-observation",
+        completed_at=completed_at,
+    )
+
+
+def _document_service_records(document: Mapping[str, Any], nodes: list[str], topology: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    services: dict[str, dict[str, Any]] = {}
+    completed_at = document.get("completed_at")
+
+    raw_services = topology.get("services")
+    if isinstance(raw_services, Mapping):
+        for node in nodes:
+            record = raw_services.get(node)
+            if not isinstance(record, Mapping):
+                raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"topology service record missing for {node}")
+            services[node] = _topology_service_record(
+                node,
+                record,
+                source="topology-service-record",
+                completed_at=completed_at,
+            )
+
+    for key, source in (("survivors", "survivor-record"),):
+        raw = document.get(key)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            node = item.get("node")
+            if not isinstance(node, str) or node not in nodes:
+                continue
+            services[node] = _topology_service_record(
+                _identifier(node, "survivor node"),
+                item,
+                source=source,
+                completed_at=completed_at,
+            )
+
+    for key, source in (("service_observations", "service-observation"), ("survivor_service_observations", "survivor-service-observation")):
+        raw = document.get(key)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            record = _observation_service_record(item, completed_at=completed_at)
+            if record is None or record["node"] not in nodes:
+                continue
+            record["readiness_source"] = record.get("readiness_source") or source
+            previous = services.get(record["node"])
+            if previous is None or str(record.get("last_observed_at") or "") >= str(previous.get("last_observed_at") or ""):
+                services[record["node"]] = record
+
+    target = document.get("target")
+    if isinstance(target, Mapping):
+        node = target.get("node") or target.get("desired_service_name")
+        if isinstance(node, str) and node in nodes and node not in services:
+            services[_identifier(node, "target node")] = _topology_service_record(
+                _identifier(node, "target node"),
+                target,
+                source="target",
+                completed_at=completed_at,
+            )
+
+    return services
+
+
 def _nodes_and_services(document: Mapping[str, Any]) -> tuple[list[str], list[str], int, str, dict[str, dict[str, Any]]]:
     topology = _topology(document)
     nodes_raw = topology.get("nodes")
@@ -232,39 +332,191 @@ def _nodes_and_services(document: Mapping[str, Any]) -> tuple[list[str], list[st
     if len(nodes) != len(validators):
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "topology nodes and validator set are not aligned")
     chain_id, genesis = _chain_identity(document, topology)
-    services: dict[str, dict[str, Any]] = {}
-    raw_services = topology.get("services")
-    if isinstance(raw_services, Mapping):
-        for node in nodes:
-            record = raw_services.get(node)
-            if not isinstance(record, Mapping):
-                raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"topology service record missing for {node}")
-            controller = _identifier(record.get("controller_id"), f"{node} controller id")
-            service_uuid = str(record.get("service_uuid") or "")
-            if not service_uuid:
-                raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"{node} service UUID is missing")
+    services = _document_service_records(document, nodes, topology)
+    if set(services) != set(nodes):
+        missing = [node for node in nodes if node not in services]
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"topology service records are missing for: {', '.join(missing)}")
+    return nodes, validators, chain_id, genesis, services
+
+
+
+def _receipt_service_records_for_validator_admission(
+    document: Mapping[str, Any],
+    *,
+    candidate_node: str,
+    candidate_controller_id: str,
+    candidate_service_uuid: str,
+) -> dict[str, dict[str, Any]]:
+    services: dict[str, dict[str, Any]] = {
+        candidate_node: {
+            "node": candidate_node,
+            "controller_id": candidate_controller_id,
+            "service_uuid": candidate_service_uuid,
+            "service_status": None,
+            "readiness_source": "add-node-validator-admission-target",
+            "last_observed_at": document.get("completed_at"),
+        }
+    }
+    for item in document.get("precondition_receipts") or []:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        controller_id = item.get("controller_id")
+        service_uuid = item.get("service_uuid")
+        if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
             services[node] = {
                 "node": node,
-                "controller_id": controller,
+                "controller_id": controller_id,
                 "service_uuid": service_uuid,
-                "service_status": record.get("service_status"),
-                "readiness_source": record.get("readiness_source"),
-                "last_observed_at": record.get("last_observed_at"),
-            }
-    elif nodes:
-        target = document.get("target")
-        if isinstance(target, Mapping) and len(nodes) == 1:
-            services[nodes[0]] = {
-                "node": nodes[0],
-                "controller_id": _identifier(target.get("controller_id"), "target controller id"),
-                "service_uuid": str(target.get("created_service_uuid") or target.get("service_uuid") or ""),
-                "service_status": target.get("service_status"),
-                "readiness_source": "target",
+                "service_status": item.get("service_status"),
+                "readiness_source": item.get("name") or "add-node-validator-admission-precondition",
                 "last_observed_at": document.get("completed_at"),
             }
-        if set(services) != set(nodes):
-            raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "topology service records are missing")
-    return nodes, validators, chain_id, genesis, services
+    for item in document.get("mutation_receipts") or []:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        controller_id = item.get("controller_id")
+        service_uuid = item.get("service_uuid")
+        if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
+            services[node] = {
+                "node": node,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "service_status": services.get(node, {}).get("service_status"),
+                "readiness_source": item.get("mutation_id") or "add-node-validator-admission-mutation",
+                "last_observed_at": document.get("completed_at"),
+            }
+    for item in document.get("health_observations") or []:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        if not isinstance(node, str) or node not in services:
+            continue
+        observed_at = item.get("observed_at")
+        previous_at = services[node].get("last_observed_at")
+        if previous_at is None or str(observed_at or "") >= str(previous_at or ""):
+            services[node]["service_status"] = item.get("status")
+            services[node]["last_observed_at"] = observed_at
+            services[node]["readiness_source"] = "add-node-validator-admission-health-observation"
+    return services
+
+
+
+def _validator_admission_represents_live_validator_topology(document: Mapping[str, Any], summary: Mapping[str, Any], authority: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
+    failure = document.get("failure")
+    failure_code = failure.get("code") if isinstance(failure, Mapping) else None
+    status_ok = document.get("status") == "pass" and summary.get("clean") is True and summary.get("complete") is True
+    post_admission_health_failure = (
+        document.get("status") == "failed"
+        and failure_code == "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN"
+        and summary.get("clean") is False
+        and summary.get("complete") is False
+        and summary.get("next_phase") == "manual-review-required"
+        and document.get("next_phase") == "manual-review-required"
+    )
+    if not (status_ok or post_admission_health_failure):
+        return False
+    return all(
+        (
+            summary.get("validator_vote_performed") is True,
+            summary.get("validator_activation_performed") is True,
+            summary.get("final_validator_set_verified") is True,
+            summary.get("routing_or_topology_published") is False,
+            summary.get("public_endpoint_created") is False,
+            authority.get("validator_vote_proven") is True,
+            authority.get("validator_activation_proven") is True,
+            policy.get("routing_or_topology_published") is False,
+            policy.get("public_http_endpoint_created") is False,
+            document.get("routing_or_topology_published") is not True,
+            document.get("public_endpoint_created") is not True,
+            document.get("chain_mutation_count") == 1,
+        )
+    )
+
+
+def _topology_detection_document(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    if document.get("kind") != _ADD_VALIDATOR_ADMISSION_KIND:
+        return document
+
+    summary = document.get("summary")
+    authority = document.get("authority")
+    policy = document.get("policy")
+    if not isinstance(summary, Mapping) or not isinstance(authority, Mapping) or not isinstance(policy, Mapping):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission evidence summary, authority, or policy is missing")
+
+    candidate_node = _identifier(document.get("candidate_node"), "candidate node")
+    candidate_validator = _address(document.get("candidate_validator_address"), "candidate validator address")
+    candidate_controller_id = _identifier(document.get("target_host"), "candidate controller id")
+    candidate_service_uuid = str(document.get("created_service_uuid") or "")
+    if not candidate_service_uuid:
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "candidate service UUID is missing")
+
+    voter_nodes_raw = document.get("voter_nodes")
+    current_validators_raw = document.get("current_validator_set")
+    desired_validators_raw = document.get("desired_validator_set")
+    if not isinstance(voter_nodes_raw, list) or not isinstance(current_validators_raw, list) or not isinstance(desired_validators_raw, list):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission topology inputs are missing")
+    voter_nodes = [_identifier(item, "voter node") for item in voter_nodes_raw]
+    current_validators = [_address(item, "current validator") for item in current_validators_raw]
+    desired_validators = [_address(item, "desired validator") for item in desired_validators_raw]
+    if len(voter_nodes) != len(current_validators):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "voter nodes and current validator set are not aligned")
+    if len(set(voter_nodes)) != len(voter_nodes) or len(set(current_validators)) != len(current_validators) or len(set(desired_validators)) != len(desired_validators):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission topology contains duplicates")
+    if candidate_node in voter_nodes or candidate_validator in current_validators:
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission candidate is already present")
+    if sorted(desired_validators) != sorted([*current_validators, candidate_validator]):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission desired set is inconsistent")
+
+    if not _validator_admission_represents_live_validator_topology(document, summary, authority, policy):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission evidence does not prove an admitted live validator topology")
+
+    nodes = [*voter_nodes, candidate_node]
+    validators = [*current_validators, candidate_validator]
+    services = _receipt_service_records_for_validator_admission(
+        document,
+        candidate_node=candidate_node,
+        candidate_controller_id=candidate_controller_id,
+        candidate_service_uuid=candidate_service_uuid,
+    )
+    missing = [node for node in nodes if node not in services]
+    if missing:
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"validator-admission service records missing for: {', '.join(missing)}")
+    chain_id = document.get("chain_id")
+    if not isinstance(chain_id, int) or chain_id <= 0:
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission chain_id is invalid")
+
+    return {
+        "kind": document.get("kind"),
+        "schema_version": 1,
+        "completed_at": document.get("completed_at"),
+        "status": document.get("status"),
+        "mother_binding": document.get("mother_binding"),
+        "network": document.get("network"),
+        "next_phase": document.get("next_phase"),
+        "target": {
+            "node": candidate_node,
+            "controller_id": candidate_controller_id,
+            "service_uuid": candidate_service_uuid,
+            "created_service_uuid": candidate_service_uuid,
+            "validator_address": candidate_validator,
+        },
+        "current_topology": {
+            "source": "deployment-node-add-validator-admission-evidence",
+            "chain_id": chain_id,
+            "genesis_sha256": _sha256(document.get("genesis_sha256"), "validator-admission genesis SHA-256"),
+            "nodes": nodes,
+            "services": services,
+            "validator_count": len(validators),
+            "validator_set": validators,
+            "validator_admission_performed": True,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+        },
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+    }
 
 
 def _service_hints_from_payload(payload: Any) -> list[dict[str, Any]]:
@@ -340,14 +592,15 @@ def detect_topology_staleness(
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "topology evidence schema or network is invalid")
     if document.get("mother_binding") != _binding(private_state):
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_PRIVATE_STATE_CHANGED", "Mother private-state binding no longer matches topology evidence")
-    if _contains_sensitive(document):
+    detection_document = _topology_detection_document(document)
+    if _contains_sensitive(detection_document):
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_SENSITIVE", "topology evidence contains sensitive material")
     age = _age_seconds(document.get("completed_at"), now=now)
     if age > max_age_seconds:
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_STALE", "topology evidence is outside the freshness window")
 
-    nodes, validators, chain_id, genesis_sha, services = _nodes_and_services(document)
-    target = _latest_known_target(document, nodes, validators, services)
+    nodes, validators, chain_id, genesis_sha, services = _nodes_and_services(detection_document)
+    target = _latest_known_target(detection_document, nodes, validators, services)
 
     service_results: list[dict[str, Any]] = []
     inventory_hints: list[dict[str, Any]] = []

@@ -1,10 +1,26 @@
 {
   "details": {
+    "aiCallCount": 1,
+    "aiCalls": [
+      {
+        "elapsedMs": 141654,
+        "model": "configured-local-model",
+        "ok": true,
+        "provider": "local-ai",
+        "stage": "pack",
+        "traceDir": "C:\\Users\\subsi\\main_computer\\game_projects\\webgl-demo\\gameplay_packs\\experimental\\large-random-shuttle-boarder\\local_model_pack_call"
+      }
+    ],
+    "fromPlan": "C:\\Users\\subsi\\main_computer\\game_projects\\webgl-demo\\gameplay_packs\\experimental\\large-random-shuttle-boarder\\plan.json",
     "node_check": {
       "returncode": 0,
       "stderr": "",
       "stdout": ""
     },
+    "packModel": "configured-local-model",
+    "packProvider": "local-ai",
+    "planModel": "C:\\Users\\subsi\\main_computer\\game_projects\\webgl-demo\\gameplay_packs\\experimental\\large-random-shuttle-boarder\\plan.json",
+    "planProvider": "reviewed-plan",
     "runtime_validation": {
       "harnessSummary": {
         "appliedToScene": false,
@@ -24,14 +40,105 @@
         ],
         "handlersRegistered": true,
         "kind": "gameplay-pack-js-command-harness-summary",
-        "packId": "pack.experimental.heavy-shuttle-juggernaut",
+        "packId": "pack.experimental.large-random-shuttle-boarder",
         "problems": [],
         "schema": "game.gameplayPackJsRuntime.v1",
         "sectionIds": [],
         "setupRun": true,
-        "title": "Heavy Shuttle Juggernaut",
+        "title": "Large Shuttle Boarder Ambush",
         "version": "0.1.0"
       },
+      "sampleDispatch": {
+        "commandCount": 2,
+        "commandTypes": [
+          "spawn-wave",
+          "show-hud-message"
+        ],
+        "dispatched": [
+          {
+            "commandCount": 2,
+            "commandTypes": [
+              "spawn-wave",
+              "show-hud-message"
+            ],
+            "commands": [
+              {
+                "applied": false,
+                "encounterId": "opening-shuttle-ambush",
+                "gameplayExecuted": false,
+                "kind": "gameplay-pack-js-command",
+                "payload": {
+                  "actors": [
+                    {
+                      "archetype": "shuttle-raider",
+                      "count": 1,
+                      "displayName": "Large Shuttle Boarder",
+                      "healthMultiplier": 2.5
+                    }
+                  ],
+                  "hudMessage": "Warning: A massive presence detected near the shuttle hull!",
+                  "id": "large-shuttle-boarder-wave",
+                  "trigger": {
+                    "type": ""
+                  }
+                },
+                "schema": "game.gameplayPackJsRuntime.v1",
+                "sourcePackId": "pack.experimental.large-random-shuttle-boarder",
+                "type": "spawn-wave"
+              },
+              {
+                "applied": false,
+                "encounterId": "opening-shuttle-ambush",
+                "gameplayExecuted": false,
+                "kind": "gameplay-pack-js-command",
+                "payload": {
+                  "message": "An unexpected large-scale boarding attempt has begun!"
+                },
+                "schema": "game.gameplayPackJsRuntime.v1",
+                "sourcePackId": "pack.experimental.large-random-shuttle-boarder",
+                "type": "show-hud-message"
+              }
+            ],
+            "event": {
+              "type": "start"
+            }
+          }
+        ],
+        "eventCount": 1,
+        "harnessSummary": {
+          "appliedToScene": false,
+          "commandCount": 2,
+          "encounterIds": [
+            "opening-shuttle-ambush"
+          ],
+          "gameplayExecuted": false,
+          "handlerCount": 1,
+          "handlers": [
+            {
+              "encounterId": "opening-shuttle-ambush",
+              "event": "start",
+              "match": {},
+              "order": 1
+            }
+          ],
+          "handlersRegistered": true,
+          "kind": "gameplay-pack-js-command-harness-summary",
+          "packId": "pack.experimental.large-random-shuttle-boarder",
+          "problems": [],
+          "schema": "game.gameplayPackJsRuntime.v1",
+          "sectionIds": [],
+          "setupRun": true,
+          "title": "Large Shuttle Boarder Ambush",
+          "version": "0.1.0"
+        },
+        "scenarioId": "opening-shuttle-ambush",
+        "scenarioKind": "encounter"
+      },
+      "sampleEvents": [
+        {
+          "type": "start"
+        }
+      ],
       "sourceValidation": {
         "forbiddenGlobals": [],
         "kind": "gameplay-pack-js-source-validation",
@@ -44,11 +151,42 @@
     "runtime_validation_raw": {
       "returncode": 0,
       "stderr": "",
-      "stdout": "{\"sourceValidation\":{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-source-validation\",\"ok\":true,\"valid\":true,\"forbiddenGlobals\":[],\"problems\":[]},\"harnessSummary\":{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-command-harness-summary\",\"packId\":\"pack.experimental.heavy-shuttle-juggernaut\",\"title\":\"Heavy Shuttle Juggernaut\",\"version\":\"0.1.0\",\"setupRun\":true,\"handlersRegistered\":true,\"gameplayExecuted\":false,\"appliedToScene\":false,\"encounterIds\":[\"opening-shuttle-ambush\"],\"sectionIds\":[],\"handlerCount\":1,\"handlers\":[{\"encounterId\":\"opening-shuttle-ambush\",\"event\":\"start\",\"match\":{},\"order\":1}],\"commandCount\":0,\"problems\":[]}}\n"
-    }
+      "stdout": "{\"sampleEvents\":[{\"type\":\"start\"}],\"sourceValidation\":{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-source-validation\",\"ok\":true,\"valid\":true,\"forbiddenGlobals\":[],\"problems\":[]},\"harnessSummary\":{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-command-harness-summary\",\"packId\":\"pack.experimental.large-random-shuttle-boarder\",\"title\":\"Large Shuttle Boarder Ambush\",\"version\":\"0.1.0\",\"setupRun\":true,\"handlersRegistered\":true,\"gameplayExecuted\":false,\"appliedToScene\":false,\"encounterIds\":[\"opening-shuttle-ambush\"],\"sectionIds\":[],\"handlerCount\":1,\"handlers\":[{\"encounterId\":\"opening-shuttle-ambush\",\"event\":\"start\",\"match\":{},\"order\":1}],\"commandCount\":0,\"problems\":[]},\"sampleDispatch\":{\"scenarioKind\":\"encounter\",\"scenarioId\":\"opening-shuttle-ambush\",\"eventCount\":1,\"commandCount\":2,\"commandTypes\":[\"spawn-wave\",\"show-hud-message\"],\"dispatched\":[{\"event\":{\"type\":\"start\"},\"commandCount\":2,\"commandTypes\":[\"spawn-wave\",\"show-hud-message\"],\"commands\":[{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-command\",\"type\":\"spawn-wave\",\"sourcePackId\":\"pack.experimental.large-random-shuttle-boarder\",\"payload\":{\"id\":\"large-shuttle-boarder-wave\",\"trigger\":{\"type\":\"\"},\"actors\":[{\"archetype\":\"shuttle-raider\",\"count\":1,\"displayName\":\"Large Shuttle Boarder\",\"healthMultiplier\":2.5}],\"hudMessage\":\"Warning: A massive presence detected near the shuttle hull!\"},\"applied\":false,\"gameplayExecuted\":false,\"encounterId\":\"opening-shuttle-ambush\"},{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-command\",\"type\":\"show-hud-message\",\"sourcePackId\":\"pack.experimental.large-random-shuttle-boarder\",\"payload\":{\"message\":\"An unexpected large-scale boarding attempt has begun!\"},\"applied\":false,\"gameplayExecuted\":false,\"encounterId\":\"opening-shuttle-ambush\"}]}],\"harnessSummary\":{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-command-harness-summary\",\"packId\":\"pack.experimental.large-random-shuttle-boarder\",\"title\":\"Large Shuttle Boarder Ambush\",\"version\":\"0.1.0\",\"setupRun\":true,\"handlersRegistered\":true,\"gameplayExecuted\":false,\"appliedToScene\":false,\"encounterIds\":[\"opening-shuttle-ambush\"],\"sectionIds\":[],\"handlerCount\":1,\"handlers\":[{\"encounterId\":\"opening-shuttle-ambush\",\"event\":\"start\",\"match\":{},\"order\":1}],\"commandCount\":2,\"problems\":[]}}}\n"
+    },
+    "sampleEvents": [
+      {
+        "type": "start"
+      }
+    ],
+    "stage": "pack",
+    "unsupportedContextApiCalls": []
   },
   "errors": [],
   "ok": true,
+  "plan": {
+    "kind": "gameplay-pack-generation-plan",
+    "packId": "pack.experimental.large-random-shuttle-boarder",
+    "project": "webgl-demo",
+    "scenario": {
+      "apiCall": "pack.encounter(\"opening-shuttle-ambush\", ...)",
+      "id": "opening-shuttle-ambush",
+      "kind": "encounter"
+    },
+    "schema": "game.gameplayPackGenerationPlan.v1",
+    "steps": [
+      {
+        "commands": [
+          "spawnWave",
+          "showHudMessage"
+        ],
+        "event": "onStart",
+        "id": "step-1",
+        "summary": "Choose one valid shuttle location at random, warn the player, and spawn one tougher Large Shuttle Boarder without changing existing hostile stats."
+      }
+    ],
+    "summary": "Adds one tougher Large Shuttle Boarder at encounter start without changing existing shuttle hostiles.",
+    "title": "Large Shuttle Boarder Ambush"
+  },
   "scenario": {
     "api_call": "pack.encounter(\"opening-shuttle-ambush\", ...)",
     "cutscene_id": null,

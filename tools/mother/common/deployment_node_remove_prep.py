@@ -30,9 +30,11 @@ _TRANSACTION_KIND = "main_computer.mother.deployment_node_remove_prep_transactio
 _TRANSACTION_DIRECTORY = ("actions", "deployment-node-remove-prep-transactions")
 _T3_BASELINE_KIND = "main_computer.mother.deployment_t3_post_admission_steady_state_evidence.v1"
 _SINGLE_NODE_FINAL_TOPOLOGY_KIND = "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1"
+_ADD_VALIDATOR_ADMISSION_KIND = "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
 _T3_BASELINE_DIRECTORY = ("evidence", "deployment-t3-post-admission-steady-state")
 _SINGLE_NODE_FINAL_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-single-node-chain-and-hub-proof")
-_SUPPORTED_BASELINE_KINDS = frozenset({_T3_BASELINE_KIND, _SINGLE_NODE_FINAL_TOPOLOGY_KIND})
+_ADD_VALIDATOR_ADMISSION_DIRECTORY = ("evidence", "deployment-node-add-validator-admission")
+_SUPPORTED_BASELINE_KINDS = frozenset({_T3_BASELINE_KIND, _SINGLE_NODE_FINAL_TOPOLOGY_KIND, _ADD_VALIDATOR_ADMISSION_KIND})
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -219,9 +221,184 @@ def _latest_service_records(document: Mapping[str, Any]) -> dict[str, dict[str, 
     return latest
 
 
+
+def _receipt_service_records(
+    document: Mapping[str, Any],
+    *,
+    candidate_node: str,
+    candidate_controller_id: str,
+    candidate_service_uuid: str,
+) -> dict[str, dict[str, Any]]:
+    services: dict[str, dict[str, Any]] = {
+        candidate_node: {
+            "node": candidate_node,
+            "controller_id": candidate_controller_id,
+            "service_uuid": candidate_service_uuid,
+            "service_status": None,
+            "readiness_source": "add-node-validator-admission-target",
+            "observed_at": document.get("completed_at"),
+        }
+    }
+
+    for item in document.get("precondition_receipts") or []:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        controller_id = item.get("controller_id")
+        service_uuid = item.get("service_uuid")
+        if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
+            services[node] = {
+                "node": node,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "service_status": item.get("service_status"),
+                "readiness_source": item.get("name") or "add-node-validator-admission-precondition",
+                "observed_at": document.get("completed_at"),
+            }
+
+    for item in document.get("mutation_receipts") or []:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        controller_id = item.get("controller_id")
+        service_uuid = item.get("service_uuid")
+        if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
+            services[node] = {
+                "node": node,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "service_status": services.get(node, {}).get("service_status"),
+                "readiness_source": item.get("mutation_id") or "add-node-validator-admission-mutation",
+                "observed_at": document.get("completed_at"),
+            }
+
+    for item in document.get("health_observations") or []:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        if not isinstance(node, str) or node not in services:
+            continue
+        observed_at = item.get("observed_at")
+        previous_at = services[node].get("observed_at")
+        if previous_at is None or str(observed_at or "") >= str(previous_at or ""):
+            services[node]["service_status"] = item.get("status")
+            services[node]["observed_at"] = observed_at
+            services[node]["readiness_source"] = "add-node-validator-admission-health-observation"
+
+    return services
+
+
+
+def _validator_admission_proves_removable_validator(document: Mapping[str, Any], summary: Mapping[str, Any], authority: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
+    failure = document.get("failure")
+    failure_code = failure.get("code") if isinstance(failure, Mapping) else None
+    status_ok = document.get("status") == "pass" and summary.get("clean") is True and summary.get("complete") is True
+    post_admission_health_failure = (
+        document.get("status") == "failed"
+        and failure_code == "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN"
+        and summary.get("clean") is False
+        and summary.get("complete") is False
+        and summary.get("next_phase") == "manual-review-required"
+        and document.get("next_phase") == "manual-review-required"
+    )
+    if not (status_ok or post_admission_health_failure):
+        return False
+    return all(
+        (
+            summary.get("validator_vote_performed") is True,
+            summary.get("validator_activation_performed") is True,
+            summary.get("final_validator_set_verified") is True,
+            summary.get("routing_or_topology_published") is False,
+            summary.get("public_endpoint_created") is False,
+            authority.get("validator_vote_proven") is True,
+            authority.get("validator_activation_proven") is True,
+            policy.get("routing_or_topology_published") is False,
+            policy.get("public_http_endpoint_created") is False,
+            document.get("routing_or_topology_published") is not True,
+            document.get("public_endpoint_created") is not True,
+            document.get("chain_mutation_count") == 1,
+        )
+    )
+
+
+def _normalize_validator_admission_baseline(document: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    summary = document.get("summary")
+    authority = document.get("authority")
+    policy = document.get("policy")
+    if not isinstance(summary, Mapping) or not isinstance(authority, Mapping) or not isinstance(policy, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", "validator-admission evidence summary, authority, or policy is missing")
+
+    candidate_node = _identifier(document.get("candidate_node"), "candidate node")
+    candidate_validator = _address(document.get("candidate_validator_address"), "candidate validator address")
+    candidate_controller_id = _identifier(document.get("target_host"), "candidate controller id")
+    candidate_service_uuid = str(document.get("created_service_uuid") or "")
+    if not candidate_service_uuid:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", "candidate service UUID is missing")
+
+    voter_nodes_raw = document.get("voter_nodes")
+    current_validators_raw = document.get("current_validator_set")
+    desired_validators_raw = document.get("desired_validator_set")
+    if not isinstance(voter_nodes_raw, list) or not isinstance(current_validators_raw, list) or not isinstance(desired_validators_raw, list):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", "validator-admission node or validator sets are missing")
+
+    voter_nodes = [_identifier(item, "voter node") for item in voter_nodes_raw]
+    current_validators = [_address(item, "current validator address") for item in current_validators_raw]
+    desired_validators = [_address(item, "desired validator address") for item in desired_validators_raw]
+    _dedupe(voter_nodes, "voter nodes")
+    _dedupe(current_validators, "current validator set")
+    _dedupe(desired_validators, "desired validator set")
+    if candidate_node in voter_nodes:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "candidate node is already a voter node")
+    if candidate_validator in current_validators:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "candidate validator is already in the current validator set")
+    if len(voter_nodes) != len(current_validators):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "voter nodes and current validator set are not aligned")
+    if sorted(desired_validators) != sorted([*current_validators, candidate_validator]):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "desired validator set does not equal current validators plus candidate")
+
+    if not _validator_admission_proves_removable_validator(document, summary, authority, policy):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "validator-admission evidence does not prove an admitted current validator")
+
+    nodes = [*voter_nodes, candidate_node]
+    validators = [*current_validators, candidate_validator]
+    services = _receipt_service_records(
+        document,
+        candidate_node=candidate_node,
+        candidate_controller_id=candidate_controller_id,
+        candidate_service_uuid=candidate_service_uuid,
+    )
+    missing = [node for node in nodes if node not in services]
+    if missing:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            f"validator-admission evidence is missing service records for: {', '.join(missing)}",
+        )
+
+    chain_id = document.get("chain_id")
+    if not isinstance(chain_id, int) or chain_id <= 0:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "validator-admission chain_id is invalid")
+    normalized = {
+        "kind": document.get("kind"),
+        "schema_version": 1,
+        "status": document.get("status"),
+        "completed_at": document.get("completed_at"),
+        "mother_binding": document.get("mother_binding"),
+        "network": document.get("network"),
+        "next_phase": document.get("next_phase"),
+        "chain_id": chain_id,
+        "genesis_sha256": _sha256(document.get("genesis_sha256"), "validator-admission genesis SHA-256"),
+        "nodes": nodes,
+        "validator_set": validators,
+        "validator_count": len(validators),
+    }
+    return normalized, services
+
+
 def _baseline_directory_for_kind(kind: Any) -> tuple[str, ...]:
     if kind == _SINGLE_NODE_FINAL_TOPOLOGY_KIND:
         return _SINGLE_NODE_FINAL_TOPOLOGY_DIRECTORY
+    if kind == _ADD_VALIDATOR_ADMISSION_KIND:
+        return _ADD_VALIDATOR_ADMISSION_DIRECTORY
     return _T3_BASELINE_DIRECTORY
 
 
@@ -248,7 +425,17 @@ def _load_baseline(
     if document.get("mother_binding") != _binding(private_state):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_CHANGED", "current Mother private-state binding no longer matches baseline evidence")
     if document.get("status") != "pass":
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "baseline evidence did not pass")
+        summary_for_status = document.get("summary")
+        authority_for_status = document.get("authority")
+        policy_for_status = document.get("policy")
+        if not (
+            kind == _ADD_VALIDATOR_ADMISSION_KIND
+            and isinstance(summary_for_status, Mapping)
+            and isinstance(authority_for_status, Mapping)
+            and isinstance(policy_for_status, Mapping)
+            and _validator_admission_proves_removable_validator(document, summary_for_status, authority_for_status, policy_for_status)
+        ):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID", "baseline evidence did not pass")
 
     completed_at = document.get("completed_at")
     age = _age_seconds(completed_at, now=now)
@@ -259,6 +446,10 @@ def _load_baseline(
     policy = document.get("policy")
     if not isinstance(summary, Mapping) or not isinstance(policy, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", "baseline evidence summary or policy is missing")
+
+    if kind == _ADD_VALIDATOR_ADMISSION_KIND:
+        normalized, services = _normalize_validator_admission_baseline(document)
+        return normalized, digest, age, services
 
     if kind == _SINGLE_NODE_FINAL_TOPOLOGY_KIND:
         final_topology = document.get("final_topology")

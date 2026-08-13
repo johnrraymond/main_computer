@@ -308,9 +308,29 @@ def _service_records(document: Mapping[str, Any], nodes: list[str]) -> dict[str,
     return {node: services[node] for node in nodes}
 
 
-_IDENTITY_HISTORY_ONLY_BASELINE_KINDS = {
-    "main_computer.mother.deployment_node_remove_finalize_evidence.v1",
-}
+_REMOVE_FINALIZE_KIND = "main_computer.mother.deployment_node_remove_finalize_evidence.v1"
+
+
+def _remove_finalize_has_live_survivor_topology(document: Mapping[str, Any]) -> bool:
+    if document.get("kind") != _REMOVE_FINALIZE_KIND:
+        return False
+    topology = document.get("final_topology")
+    if not isinstance(topology, Mapping):
+        return False
+    nodes_raw = topology.get("nodes")
+    validators_raw = topology.get("validator_set")
+    return isinstance(nodes_raw, list) and bool(nodes_raw) and isinstance(validators_raw, list)
+
+
+def _remove_finalize_is_empty_decommission(document: Mapping[str, Any]) -> bool:
+    if document.get("kind") != _REMOVE_FINALIZE_KIND:
+        return False
+    topology = document.get("final_topology")
+    if not isinstance(topology, Mapping):
+        return False
+    nodes_raw = topology.get("nodes")
+    validators_raw = topology.get("validator_set")
+    return isinstance(nodes_raw, list) and not nodes_raw and isinstance(validators_raw, list) and not validators_raw
 
 
 def _rollback_baseline_usable_as_live(document: Mapping[str, Any]) -> bool:
@@ -334,9 +354,9 @@ def _rollback_baseline_usable_as_live(document: Mapping[str, Any]) -> bool:
 
 
 def _baseline_topology_role(document: Mapping[str, Any]) -> str:
-    if _rollback_baseline_usable_as_live(document):
+    if _rollback_baseline_usable_as_live(document) or _remove_finalize_has_live_survivor_topology(document):
         return "live-topology-source"
-    if document.get("kind") in _IDENTITY_HISTORY_ONLY_BASELINE_KINDS:
+    if _remove_finalize_is_empty_decommission(document):
         return "identity-history-only"
     if document.get("kind") == "main_computer.mother.deployment_node_add_rollback_evidence.v1":
         return "identity-history-only"

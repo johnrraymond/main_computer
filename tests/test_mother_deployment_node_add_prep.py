@@ -451,7 +451,7 @@ def _write_single_node_chain_and_hub_baseline(paths, private_state) -> tuple[Pat
     return path, hashlib.sha256(payload).hexdigest()
 
 
-def test_add_node_prep_uses_remove_finalize_baseline_as_identity_history_only(tmp_path: Path) -> None:
+def test_add_node_prep_uses_remove_finalize_survivor_topology_as_live_source(tmp_path: Path) -> None:
     _, paths, private_state = _install(tmp_path)
     baseline_path, baseline_sha = _write_remove_finalize_baseline(paths, private_state)
 
@@ -473,28 +473,27 @@ def test_add_node_prep_uses_remove_finalize_baseline_as_identity_history_only(tm
     assert transaction["target"]["validator_address"] == A_VALIDATOR
     assert transaction["target"]["validator_address_source"] == "baseline-removed-target"
     assert transaction["target"]["previous_service_uuid"] == "svca1xxxx"
-    assert transaction["source_baseline_evidence"]["topology_role"] == "identity-history-only"
-    assert transaction["source_baseline_evidence"]["historical_nodes"] == [C1_NODE, C2_NODE]
-    assert transaction["current_topology"]["source"] == "operator-directed-empty-current-topology"
-    assert transaction["current_topology"]["baseline_topology_used_as_live"] is False
-    assert transaction["current_topology"]["nodes"] == []
-    assert transaction["current_topology"]["validator_set"] == []
-    assert transaction["current_topology"]["services"] == {}
-    assert transaction["post_add_topology"]["nodes"] == [A_NODE]
-    assert transaction["post_add_topology"]["validator_set"] == [A_VALIDATOR]
+    assert transaction["source_baseline_evidence"]["topology_role"] == "live-topology-source"
+    assert transaction["source_baseline_evidence"]["identity_history_only"] is False
+    assert transaction["current_topology"]["source"] == "baseline-live-topology-source"
+    assert transaction["current_topology"]["baseline_topology_used_as_live"] is True
+    assert transaction["current_topology"]["nodes"] == [C1_NODE, C2_NODE]
+    assert transaction["current_topology"]["validator_set"] == [C1_VALIDATOR, C2_VALIDATOR]
+    assert transaction["current_topology"]["services"][C1_NODE]["service_uuid"] == "svcc1xxxx"
+    assert transaction["current_topology"]["services"][C2_NODE]["service_uuid"] == "svcc2xxxx"
+    assert transaction["post_add_topology"]["nodes"] == [A_NODE, C1_NODE, C2_NODE]
+    assert transaction["post_add_topology"]["validator_set"] == [A_VALIDATOR, C1_VALIDATOR, C2_VALIDATOR]
     assert transaction["topology_diff"] == {
         "operation": "add-node",
         "added_nodes": [A_NODE],
         "removed_nodes": [],
-        "unchanged_nodes": [],
-        "pre_validator_count": 0,
-        "post_validator_count": 1,
+        "unchanged_nodes": [C1_NODE, C2_NODE],
+        "pre_validator_count": 2,
+        "post_validator_count": 3,
     }
-    assert transaction["execution_plan"]["operator_directed_testing_path"] is True
-    assert transaction["execution_plan"]["old_baseline_topology_used_as_live"] is False
-    assert transaction["execution_plan"]["generic_topology_diff"] is True
-    assert transaction["execution_plan"]["hardcoded_stage_target"] is False
-    assert transaction["policy"]["live_mutation_performed"] is False
+    assert transaction["summary"]["baseline_topology_role"] == "live-topology-source"
+    assert transaction["summary"]["old_baseline_topology_used_as_live"] is True
+    assert transaction["summary"]["next_phase"] == "add-node-do-mainnet"
 
 
 def test_add_node_prep_accepts_single_node_chain_and_hub_proof_as_current_topology(tmp_path: Path) -> None:

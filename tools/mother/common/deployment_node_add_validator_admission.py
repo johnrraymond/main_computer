@@ -39,6 +39,10 @@ import yaml
 from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
+from .deployment_completed_helper_cleanup import (
+    MotherDeploymentCompletedHelperCleanupError,
+    execute_completed_mother_helper_cleanup,
+)
 from .deployment_node_add_replica_sync import verify_node_add_replica_sync_evidence
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
@@ -1366,6 +1370,30 @@ def _component_healthy(record: Mapping[str, Any], *, names: Iterable[str]) -> bo
     return False
 
 
+def _cleanup_summary(document: Mapping[str, Any], *, paths: PrivateStatePaths) -> dict[str, Any]:
+    evidence = document.get("evidence")
+    evidence_ref: dict[str, str] | None = None
+    if isinstance(evidence, Mapping):
+        path_value = evidence.get("path")
+        sha_value = evidence.get("sha256")
+        if isinstance(path_value, str) and isinstance(sha_value, str):
+            try:
+                locator = _relative(paths, Path(path_value), label="completed helper cleanup evidence")
+            except MotherDeploymentNodeAddValidatorAdmissionError:
+                locator = path_value
+            evidence_ref = {"locator": locator, "sha256": sha_value}
+    summary = document.get("summary")
+    final_parent = document.get("final_parent")
+    return {
+        "status": document.get("status"),
+        "evidence": evidence_ref,
+        "summary": dict(summary) if isinstance(summary, Mapping) else {},
+        "final_parent": dict(final_parent) if isinstance(final_parent, Mapping) else {},
+        "initial_completed_helper_count": len(document.get("initial_completed_helper_candidates") or []),
+        "final_completed_helper_count": len(document.get("final_completed_helper_candidates") or []),
+    }
+
+
 def _compose_text(record: Mapping[str, Any]) -> str:
     for key in ("docker_compose_raw", "docker_compose", "dockerComposeRaw", "dockerCompose"):
         value = record.get(key)
@@ -1499,6 +1527,8 @@ def execute_node_add_validator_admission_release(
     preconditions: list[dict[str, Any]] = []
     receipts: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    post_admission_cleanup: dict[str, Any] | None = None
+    admission_proven = False
 
     target = release["target"]
     plan = release["admission_plan"]
@@ -1755,6 +1785,42 @@ def execute_node_add_validator_admission_release(
         if not (set([candidate_node, *voter_nodes]) <= healthy):
             raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_NOT_HEALTHY", f"validator-admission guardians did not become healthy: {last_statuses!r}")
 
+        admission_proven = True
+        try:
+            cleanup_result = execute_completed_mother_helper_cleanup(
+                paths,
+                private_state,
+                network=inspected["network"],
+                controller_id=target_controller_id,
+                service_uuid=target_uuid,
+                node=candidate_node,
+                acknowledged_service_uuid=target_uuid,
+                required_component_names=(target_guardian_name,),
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                allow_nested_application_delete=True,
+                allow_compose_reconcile_refresh=True,
+                instant_deploy_compose_reconcile_refresh=True,
+                allow_service_redeploy_refresh=True,
+                force_service_redeploy_refresh=True,
+                allow_coolify_model_status_exclusion=True,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                operation=operation,
+            )
+        except MotherDeploymentCompletedHelperCleanupError as exc:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN",
+                str(exc)[:700],
+            ) from exc
+        post_admission_cleanup = _cleanup_summary(cleanup_result, paths=paths)
+        if cleanup_result.get("status") != "pass" or not isinstance(cleanup_result.get("summary"), Mapping) or cleanup_result["summary"].get("clean") is not True:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN",
+                "post-admission service health cleanup did not reach a clean top-level Coolify service state",
+            )
+
     except MotherDeploymentNodeAddValidatorAdmissionError as exc:
         failure = {"code": exc.code, "message": str(exc)[:700]}
     except Exception as exc:  # pragma: no cover
@@ -1765,7 +1831,12 @@ def execute_node_add_validator_admission_release(
     succeeded = sum(item.get("status") == "succeeded" for item in receipts)
     required_healthy_nodes = set([candidate_node, *voter_nodes])
     healthy_nodes = {item.get("node") for item in observations if item.get("component_or_service_healthy") is True}
-    complete = failure is None and succeeded == planned_mutations and required_healthy_nodes <= healthy_nodes
+    cleanup_clean = (
+        isinstance(post_admission_cleanup, Mapping)
+        and isinstance(post_admission_cleanup.get("summary"), Mapping)
+        and post_admission_cleanup["summary"].get("clean") is True
+    )
+    complete = failure is None and admission_proven and succeeded == planned_mutations and required_healthy_nodes <= healthy_nodes and cleanup_clean
     live_mutation = any(item.get("live_write_acknowledged") is True for item in receipts)
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
@@ -1791,6 +1862,7 @@ def execute_node_add_validator_admission_release(
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
         "health_observations": observations,
+        "post_admission_cleanup": post_admission_cleanup,
         "failure": failure,
         "policy": {
             "allowed_http_methods": ["GET", "PATCH"],
@@ -1808,16 +1880,16 @@ def execute_node_add_validator_admission_release(
             "release_consumed": True,
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
-            "validator_vote_proven": complete,
-            "validator_activation_proven": complete,
+            "validator_vote_proven": admission_proven,
+            "validator_activation_proven": admission_proven,
             "routing_or_topology_publication_authorized": False,
         },
         "summary": {
             "clean": complete,
             "complete": complete,
-            "target_validator_identity_activated": complete,
-            "current_validator_set_reverified": complete,
-            "final_validator_set_verified": complete,
+            "target_validator_identity_activated": admission_proven,
+            "current_validator_set_reverified": admission_proven,
+            "final_validator_set_verified": admission_proven,
             "desired_validator_count": len(desired_set),
             "current_validator_count": len(current_set),
             "logical_vote_count": len(voter_nodes),
@@ -1828,25 +1900,28 @@ def execute_node_add_validator_admission_release(
             "failed_mutation_count": sum(item.get("status") != "succeeded" for item in receipts),
             "network_access_performed": bool(preconditions or receipts or observations),
             "live_mutation_performed": live_mutation,
-            "validator_vote_performed": complete,
-            "validator_activation_performed": complete,
+            "validator_vote_performed": admission_proven,
+            "validator_activation_performed": admission_proven,
             "routing_or_topology_publication_authorized": False,
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
             "manual_ssh_required": False,
+            "post_admission_cleanup_clean": cleanup_clean,
+            "post_admission_cleanup_performed": post_admission_cleanup is not None,
+            "target_service_top_level_healthy": cleanup_clean,
             "replica_sync_evidence_reverified": any(item.get("replica_sync_proven") is True for item in preconditions),
-            "blocks_advancing": complete,
-            "latest_block_fresh": complete,
+            "blocks_advancing": admission_proven,
+            "latest_block_fresh": admission_proven,
             "target_host": target_controller_id,
             "target_node": candidate_node,
             "next_phase": f"add-node-post-admission-observe-{inspected['network']}" if complete else "manual-review-required",
         },
         "next_phase": f"add-node-post-admission-observe-{inspected['network']}" if complete else "manual-review-required",
-        "validator_mutation_count": 1 if complete else 0,
-        "validator_vote_performed": complete,
-        "validator_activation_performed": complete,
-        "validator_restart_count": 1 if complete else 0,
-        "chain_mutation_count": 1 if complete else 0,
+        "validator_mutation_count": 1 if admission_proven else 0,
+        "validator_vote_performed": admission_proven,
+        "validator_activation_performed": admission_proven,
+        "validator_restart_count": 1 if admission_proven else 0,
+        "chain_mutation_count": 1 if admission_proven else 0,
         "service_mutation_count": succeeded,
     }
     evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)

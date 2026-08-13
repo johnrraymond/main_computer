@@ -3,8 +3,8 @@ BEGIN manifest.json
   "schema": "game.gameplayPackJsManifest.v1",
   "kind": "gameplay-pack-js",
   "manifestVersion": "gameplay-pack-js.manifest.v1",
-  "id": "pack.experimental.heavy-shuttle-juggernaut",
-  "title": "Heavy Shuttle Juggernaut",
+  "id": "pack.experimental.large-random-shuttle-boarder",
+  "title": "Large Shuttle Boarder Ambush",
   "version": "0.1.0",
   "entry": "pack.js",
   "targets": {
@@ -19,28 +19,33 @@ END manifest.json
 
 BEGIN pack.js
 export default defineGameplayPack({
-  id: "pack.experimental.heavy-shuttle-juggernaut",
-  title: "Heavy Shuttle Juggernaut",
+  id: "pack.experimental.large-random-shuttle-boarder",
+  title: "Large Shuttle Boarder Ambush",
   version: "0.1.0",
 
   setup(pack) {
+    const SHUTTLE_LOCATIONS = ["loc.shuttle.port", "loc.shuttle.starboard", "loc.shuttle.aft"];
+    const HEALTH_MODIFIER = 2.5;
+
     pack.encounter("opening-shuttle-ambush", (encounter) => {
       encounter.onStart(() => {
+        const randomLocation = SHUTTLE_LOCATIONS[Math.floor(Math.random() * SHUTTLE_LOCATIONS.length)];
+
         encounter.spawnWave({
-          id: "juggernaut-spawn",
+          id: "large-shuttle-boarder-wave",
           actors: [
             {
               archetype: "shuttle-raider",
               count: 1,
-              displayName: "Heavy Juggernaut",
-              healthMultiplier: 5.0,
-              visualModifier: "heavy-armor"
+              displayName: "Large Shuttle Boarder",
+              healthMultiplier: HEALTH_MODIFIER,
+              location: randomLocation
             }
           ],
-          hudMessage: "Warning: Heavy presence detected in shuttle corridor!"
+          hudMessage: "Warning: A massive presence detected near the shuttle hull!"
         });
 
-        encounter.setHostileHealthMultiplier(1.5);
+        encounter.showHudMessage("An unexpected large-scale boarding attempt has begun!");
       });
     });
   }

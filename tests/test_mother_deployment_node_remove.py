@@ -335,6 +335,219 @@ def _write_t3_baseline_for_remove_prep(paths, private_state, *, node_order=None)
     return path, __import__("hashlib").sha256(payload).hexdigest()
 
 
+
+def _write_validator_admission_baseline_for_remove_prep(paths, private_state) -> tuple[Path, str]:
+    evidence = {
+        "kind": "main_computer.mother.deployment_node_add_validator_admission_evidence.v1",
+        "schema_version": 1,
+        "status": "pass",
+        "started_at": "2026-08-13T00:39:57Z",
+        "completed_at": "2026-08-13T00:40:20Z",
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "mode": "reactivate",
+        "candidate_node": C_NODE,
+        "candidate_validator_address": "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        "target_host": "coolify-c",
+        "created_service_uuid": "gr09bevx1ymmiffqwtatro3s",
+        "voter_nodes": [A_NODE],
+        "chain_id": 42424240,
+        "genesis_sha256": "364df17daf2dfa428bd486e9c4e8b46c70317f65b23b55aaf78f749e15de6c92",
+        "current_validator_set": ["0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+        "desired_validator_set": [
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        "precondition_receipts": [
+            {
+                "name": "mainneta-super1-service-before-add-node-validator-admission",
+                "method": "GET",
+                "controller_id": "coolify-a",
+                "node": A_NODE,
+                "service_uuid": "ypp612nb7zx4kiye8di8ciby",
+                "service_status": "running:healthy",
+                "compose_text_available": True,
+                "verified_before_candidate_mutation": True,
+                "verified": True,
+            }
+        ],
+        "mutation_receipts": [
+            {"node": C_NODE, "controller_id": "coolify-c", "service_uuid": "gr09bevx1ymmiffqwtatro3s", "method": "PATCH", "status": "succeeded", "live_write_acknowledged": True},
+            {"node": C_NODE, "controller_id": "coolify-c", "service_uuid": "gr09bevx1ymmiffqwtatro3s", "method": "GET", "status": "succeeded", "live_write_acknowledged": True},
+            {"node": A_NODE, "controller_id": "coolify-a", "service_uuid": "ypp612nb7zx4kiye8di8ciby", "method": "PATCH", "status": "succeeded", "live_write_acknowledged": True},
+            {"node": A_NODE, "controller_id": "coolify-a", "service_uuid": "ypp612nb7zx4kiye8di8ciby", "method": "GET", "status": "succeeded", "live_write_acknowledged": True},
+        ],
+        "health_observations": [
+            {"node": C_NODE, "controller_id": "coolify-c", "service_uuid": "gr09bevx1ymmiffqwtatro3s", "status": "degraded:unhealthy", "component_or_service_healthy": True, "observed_at": "2026-08-13T00:40:19Z"},
+            {"node": A_NODE, "controller_id": "coolify-a", "service_uuid": "ypp612nb7zx4kiye8di8ciby", "status": "running:healthy", "component_or_service_healthy": True, "observed_at": "2026-08-13T00:40:20Z"},
+        ],
+        "release": {"locator": "actions/deployment-node-add-validator-admission-releases/example.json", "sha256": "0" * 64},
+        "source_replica_sync_evidence": {"locator": "evidence/deployment-node-add-replica-sync/example.json", "sha256": "1" * 64},
+        "policy": {
+            "allowed_http_methods": ["GET", "PATCH"],
+            "coolify_control_plane_only": True,
+            "all_existing_validator_votes_required": True,
+            "manual_ssh_required": False,
+            "public_http_endpoint_created": False,
+            "routing_or_topology_published": False,
+            "private_keys_materialized_in_memory_only": True,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "automatic_rollback_performed": False,
+        },
+        "authority": {
+            "release_consumed": True,
+            "validator_vote_authorized": True,
+            "validator_activation_authorized": True,
+            "validator_vote_proven": True,
+            "validator_activation_proven": True,
+            "routing_or_topology_publication_authorized": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "target_validator_identity_activated": True,
+            "current_validator_set_reverified": True,
+            "final_validator_set_verified": True,
+            "desired_validator_count": 2,
+            "current_validator_count": 1,
+            "logical_vote_count": 1,
+            "validator_vote_performed": True,
+            "validator_activation_performed": True,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "network_access_performed": True,
+            "live_mutation_performed": True,
+            "blocks_advancing": True,
+            "latest_block_fresh": True,
+            "target_host": "coolify-c",
+            "target_node": C_NODE,
+            "next_phase": "add-node-post-admission-observe-mainnet",
+        },
+        "next_phase": "add-node-post-admission-observe-mainnet",
+        "validator_mutation_count": 1,
+        "validator_vote_performed": True,
+        "validator_activation_performed": True,
+        "validator_restart_count": 1,
+        "chain_mutation_count": 1,
+        "service_mutation_count": 4,
+    }
+    payload = canonical_json(evidence)
+    path = paths.root / "evidence" / "deployment-node-add-validator-admission" / "20260813T004020Z-mainnetc-super1-test.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    import hashlib
+
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+
+def test_remove_node_prep_accepts_clean_validator_admission_baseline(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_validator_admission_baseline_for_remove_prep(paths, private_state)
+
+    transaction = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node=C_NODE,
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-13T01:10:00Z",
+        now=__import__("datetime").datetime(2026, 8, 13, 1, 10, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert transaction["target"] == {
+        "node": C_NODE,
+        "validator_address": "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        "controller_id": "coolify-c",
+        "service_uuid": "gr09bevx1ymmiffqwtatro3s",
+    }
+    assert transaction["survivors"] == [
+        {
+            "node": A_NODE,
+            "validator_address": "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            "controller_id": "coolify-a",
+            "service_uuid": "ypp612nb7zx4kiye8di8ciby",
+        }
+    ]
+    assert transaction["current_topology"]["nodes"] == [A_NODE, C_NODE]
+    assert transaction["current_topology"]["validator_set"] == [
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+    ]
+
+
+def _write_failed_post_admission_health_baseline_for_remove_prep(paths, private_state) -> tuple[Path, str]:
+    clean_path, _clean_sha = _write_validator_admission_baseline_for_remove_prep(paths, private_state)
+    evidence = json.loads(clean_path.read_text(encoding="utf-8"))
+    evidence["status"] = "failed"
+    evidence["failure"] = {
+        "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN",
+        "message": "post-admission service health cleanup did not reach a clean top-level Coolify service state",
+    }
+    evidence["next_phase"] = "manual-review-required"
+    evidence["summary"]["clean"] = False
+    evidence["summary"]["complete"] = False
+    evidence["summary"]["next_phase"] = "manual-review-required"
+    evidence["summary"]["post_admission_cleanup_clean"] = False
+    evidence["summary"]["post_admission_cleanup_performed"] = True
+    payload = canonical_json(evidence)
+    path = paths.root / "evidence" / "deployment-node-add-validator-admission" / "20260813T184428Z-mainnetc-super1-failed-health-test.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    import hashlib
+
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+def test_remove_node_prep_accepts_failed_post_admission_health_baseline(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_failed_post_admission_health_baseline_for_remove_prep(paths, private_state)
+
+    transaction = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node=C_NODE,
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-13T19:10:00Z",
+        now=__import__("datetime").datetime(2026, 8, 13, 19, 10, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert transaction["target"]["node"] == C_NODE
+    assert transaction["target"]["service_uuid"] == "gr09bevx1ymmiffqwtatro3s"
+    assert transaction["current_topology"]["nodes"] == [A_NODE, C_NODE]
+    assert transaction["current_topology"]["validator_set"] == [
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+    ]
+    assert transaction["source_baseline_evidence"]["kind"] == "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
+    assert transaction["post_removal_topology"]["nodes"] == [A_NODE]
+    assert transaction["execution_plan"]["service_deletion_is_first"] is False
+    assert transaction["execution_plan"]["qbft_validator_removal_required_before_service_deletion"] is True
+
+    path, digest = write_node_remove_prep_transaction(
+        paths,
+        transaction,
+        operation=_operation("write-validator-admission-remove-prep"),
+    )
+    verified = verify_node_remove_prep_transaction(
+        paths,
+        private_state,
+        path,
+        now=__import__("datetime").datetime(2026, 8, 13, 19, 11, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["node_remove_prep_transaction_sha256"] == digest
+    assert verified["target_node"] == C_NODE
+    assert verified["survivor_nodes"] == [A_NODE]
+    assert verified["source_baseline_evidence_sha256"] == baseline_sha
+
+
 def test_remove_node_prep_derives_a1_survivors_and_keeps_deletion_late(tmp_path: Path) -> None:
     _, paths, private_state = _install(tmp_path)
     baseline_path, baseline_sha = _write_t3_baseline_for_remove_prep(paths, private_state)

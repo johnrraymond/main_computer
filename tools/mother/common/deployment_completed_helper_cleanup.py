@@ -34,6 +34,8 @@ COMPLETED_HELPER_NAMES = frozenset(
     {
         "mother-genesis-init",
         "mother-genesis-proof-guardian",
+        "mother-replica-init",
+        "mother-replica-sync-guardian",
         "mother-superseded-service-cleanup",
         "mother-validator-admission-guardian",
     }
@@ -212,13 +214,23 @@ def _safe_scalar(value: object) -> str:
     return ""
 
 
-def _application_records(payload: Any) -> list[dict[str, str]]:
+def _truthy_excluded(value: object) -> bool:
+    if value is True:
+        return True
+    if type(value) is int and value == 1:
+        return True
+    if type(value) is str:
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
+def _application_records(payload: Any) -> list[dict[str, str | bool]]:
     if not isinstance(payload, Mapping):
         return []
     raw_items = payload.get("applications")
     if type(raw_items) is not list:
         return []
-    records: list[dict[str, str]] = []
+    records: list[dict[str, str | bool]] = []
     for item in raw_items:
         if not isinstance(item, Mapping):
             continue
@@ -234,6 +246,7 @@ def _application_records(payload: Any) -> list[dict[str, str]]:
                 "uuid": uuid,
                 "status": status,
                 "image": image,
+                "exclude_from_status": _truthy_excluded(item.get("exclude_from_status")),
             }
         )
     return records
@@ -277,7 +290,9 @@ def _component_summary(
     completed_helpers = [
         item
         for item in applications
-        if item.get("name") in COMPLETED_HELPER_NAMES and _terminal_completed(_status(item.get("status")))
+        if item.get("name") in COMPLETED_HELPER_NAMES
+        and _terminal_completed(_status(item.get("status")))
+        and item.get("exclude_from_status") is not True
     ]
     running_or_nonterminal_completed_helpers = [
         item
@@ -285,11 +300,23 @@ def _component_summary(
         if item.get("name") in COMPLETED_HELPER_NAMES and not _terminal_completed(_status(item.get("status")))
     ]
     preserved_helpers = [item for item in applications if item.get("name") in PRESERVED_HELPER_NAMES]
+    excluded_terminal = [
+        item
+        for item in applications
+        if item.get("exclude_from_status") is True and _terminal_completed(_status(item.get("status")))
+    ]
+    excluded_unhealthy = [
+        item
+        for item in applications
+        if item.get("exclude_from_status") is True and "unhealthy" in _status(item.get("status"))
+    ]
     unexpected_terminal = [
         item
         for item in applications
         if _terminal_completed(_status(item.get("status")))
         and item.get("name") not in COMPLETED_HELPER_NAMES
+        and item.get("name") not in {name for name in required_names}
+        and item.get("exclude_from_status") is not True
     ]
     unclassified_unhealthy = [
         item
@@ -297,6 +324,7 @@ def _component_summary(
         if "unhealthy" in _status(item.get("status"))
         and item.get("name") not in {name for name in required_names}
         and item.get("name") not in COMPLETED_HELPER_NAMES
+        and item.get("exclude_from_status") is not True
     ]
 
     parent_status = _status(parent.get("status"))
@@ -317,6 +345,8 @@ def _component_summary(
         "completed_helper_candidates": completed_helpers,
         "running_or_nonterminal_completed_helpers": running_or_nonterminal_completed_helpers,
         "preserved_helpers": preserved_helpers,
+        "excluded_completed_helper_records": excluded_terminal,
+        "excluded_unhealthy_components": excluded_unhealthy,
         "unexpected_terminal_components": unexpected_terminal,
         "unclassified_unhealthy_components": unclassified_unhealthy,
         "summary": {
@@ -327,6 +357,8 @@ def _component_summary(
             "completed_helper_candidate_count": len(completed_helpers),
             "running_or_nonterminal_completed_helper_count": len(running_or_nonterminal_completed_helpers),
             "preserved_helper_count": len(preserved_helpers),
+            "excluded_completed_helper_record_count": len(excluded_terminal),
+            "excluded_unhealthy_component_count": len(excluded_unhealthy),
             "unexpected_terminal_component_count": len(unexpected_terminal),
             "unclassified_unhealthy_component_count": len(unclassified_unhealthy),
         },
@@ -1385,6 +1417,7 @@ def inspect_completed_mother_helper_cleanup(
         "completed_helper_candidates": components["completed_helper_candidates"],
         "running_or_nonterminal_completed_helpers": components["running_or_nonterminal_completed_helpers"],
         "preserved_helpers": components["preserved_helpers"],
+        "excluded_completed_helper_records": components["excluded_completed_helper_records"],
         "unexpected_terminal_components": components["unexpected_terminal_components"],
         "unclassified_unhealthy_components": components["unclassified_unhealthy_components"],
         "summary": summary,
@@ -1506,6 +1539,94 @@ def _delete_service_application_with_fallbacks(
     }
 
 
+def _patch_application_status_exclusion(
+    controller: CoolifyController,
+    service_uuid: str,
+    application_uuid: str,
+    *,
+    endpoint_scope: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "service_uuid")
+    app_uuid = _uuid(application_uuid, "application_uuid")
+    if endpoint_scope == "application":
+        endpoint = f"/api/v1/applications/{urllib.parse.quote(app_uuid, safe='')}"
+    elif endpoint_scope == "service-applications":
+        endpoint = (
+            f"/api/v1/services/{urllib.parse.quote(service, safe='')}"
+            f"/applications/{urllib.parse.quote(app_uuid, safe='')}"
+        )
+    elif endpoint_scope == "service-application":
+        endpoint = (
+            f"/api/v1/services/{urllib.parse.quote(service, safe='')}"
+            f"/application/{urllib.parse.quote(app_uuid, safe='')}"
+        )
+    else:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_INVALID_ARGUMENT",
+            "invalid status exclusion endpoint scope",
+        )
+
+    body = {"exclude_from_status": True}
+    response = _http(
+        controller,
+        "PATCH",
+        endpoint,
+        body=body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    return {
+        "method": "PATCH",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "service_uuid": service,
+        "application_uuid": app_uuid,
+        "endpoint_scope": endpoint_scope,
+        "patch_scope": "completed-helper-status-exclusion",
+        "body_sha256": hashlib.sha256(canonical_json(body)).hexdigest(),
+    }
+
+
+def _patch_application_status_exclusion_with_fallbacks(
+    controller: CoolifyController,
+    service_uuid: str,
+    application_uuid: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    for endpoint_scope in ("application", "service-applications", "service-application"):
+        receipt = _patch_application_status_exclusion(
+            controller,
+            service_uuid,
+            application_uuid,
+            endpoint_scope=endpoint_scope,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        attempts.append(receipt)
+        if receipt["ok"]:
+            return {
+                **receipt,
+                "attempts": attempts,
+            }
+    return {
+        **attempts[-1],
+        "attempts": attempts,
+    }
+
+
 def execute_completed_mother_helper_cleanup(
     paths: Any,
     private_state: PrivateStateReadResult,
@@ -1526,6 +1647,7 @@ def execute_completed_mother_helper_cleanup(
     allow_service_redeploy_refresh: bool = False,
     force_service_redeploy_refresh: bool = True,
     allow_docker_orphan_container_cleanup: bool = False,
+    allow_coolify_model_status_exclusion: bool = False,
     timeout: float = 30.0,
     max_response_bytes: int = 12 * 1024 * 1024,
     opener: Any = urllib.request.urlopen,
@@ -1770,6 +1892,70 @@ def execute_completed_mother_helper_cleanup(
             }
         )
 
+    status_exclusion_receipts: list[dict[str, Any]] = []
+    status_exclusion_attempted_uuids: set[str] = set()
+
+    def _status_exclusion_candidates(components: Mapping[str, Any]) -> list[dict[str, Any]]:
+        excluded_by_uuid = {
+            item.get("uuid", "")
+            for item in components.get("excluded_completed_helper_records", [])
+            if isinstance(item, Mapping) and type(item.get("uuid")) is str and item.get("uuid")
+        }
+        candidates: list[dict[str, Any]] = []
+        for item in components.get("completed_helper_candidates", []):
+            if not isinstance(item, Mapping):
+                continue
+            app_uuid = item.get("uuid")
+            if type(app_uuid) is not str or not app_uuid:
+                continue
+            if app_uuid in excluded_by_uuid or app_uuid in status_exclusion_attempted_uuids:
+                continue
+            if item.get("name") not in COMPLETED_HELPER_NAMES:
+                continue
+            if not _terminal_completed(_status(item.get("status"))):
+                continue
+            candidates.append(dict(item))
+        return candidates
+
+    def _attempt_status_exclusion(
+        components: Mapping[str, Any],
+        *,
+        remediation_phase: str,
+    ) -> list[dict[str, Any]]:
+        receipts: list[dict[str, Any]] = []
+        for candidate in _status_exclusion_candidates(components):
+            app_uuid = candidate["uuid"]
+            status_exclusion_attempted_uuids.add(app_uuid)
+            receipt = _patch_application_status_exclusion_with_fallbacks(
+                controller,
+                service,
+                app_uuid,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                opener=opener,
+            )
+            receipt["application_name"] = candidate.get("name", "")
+            receipt["application_status"] = candidate.get("status", "")
+            receipt["application_exclude_from_status"] = candidate.get("exclude_from_status", False)
+            receipt["remediation_phase"] = remediation_phase
+            status_exclusion_receipts.append(receipt)
+            receipts.append(receipt)
+            for attempt in receipt.get("attempts", []):
+                observations.append(
+                    {
+                        key: attempt[key]
+                        for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+                    }
+                )
+        return receipts
+
+    if (
+        allow_coolify_model_status_exclusion
+        and initial["completed_helper_candidates"]
+        and not (delete_ok or nested_delete_ok)
+    ):
+        _attempt_status_exclusion(initial, remediation_phase="initial-service-detail")
+
     docker_orphan_container_cleanup: dict[str, Any] | None = None
     if delete_receipts and allow_docker_orphan_container_cleanup:
         helper_names = tuple(
@@ -1795,6 +1981,8 @@ def execute_completed_mother_helper_cleanup(
 
     final_detail = initial_detail
     final = initial
+    redeploy_after_unclean_refresh_attempted = False
+    status_exclusion_redeploy_refresh_attempted = False
     started = time.monotonic()
     while True:
         final_detail = _service_detail(
@@ -1822,12 +2010,94 @@ def execute_completed_mother_helper_cleanup(
         )
         if final["summary"]["clean"]:
             break
+        live_status_exclusions: list[dict[str, Any]] = []
+        if allow_coolify_model_status_exclusion:
+            live_status_exclusions = _attempt_status_exclusion(
+                final,
+                remediation_phase="live-service-recheck",
+            )
+        if (
+            not status_exclusion_redeploy_refresh_attempted
+            and service_redeploy_refresh is None
+            and allow_service_redeploy_refresh
+            and any(item.get("ok") is True for item in status_exclusion_receipts)
+        ):
+            service_redeploy_refresh = _request_service_redeploy_refresh(
+                controller,
+                service,
+                force=bool(force_service_redeploy_refresh),
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                opener=opener,
+            )
+            observations.append(
+                {
+                    key: service_redeploy_refresh[key]
+                    for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+                }
+            )
+            status_exclusion_redeploy_refresh_attempted = True
+            started = time.monotonic()
+            if poll_interval > 0:
+                time.sleep(min(poll_interval, wait_limit))
+            continue
+        if live_status_exclusions and any(item.get("ok") is True for item in live_status_exclusions):
+            started = time.monotonic()
+            if poll_interval > 0:
+                time.sleep(min(poll_interval, wait_limit))
+            continue
+        if (
+            not redeploy_after_unclean_refresh_attempted
+            and service_redeploy_refresh is None
+            and allow_service_redeploy_refresh
+            and delete_receipts
+            and not (delete_ok or nested_delete_ok)
+            and service_compose_reconcile is not None
+            and service_compose_reconcile.get("ok") is True
+        ):
+            service_redeploy_refresh = _request_service_redeploy_refresh(
+                controller,
+                service,
+                force=bool(force_service_redeploy_refresh),
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                opener=opener,
+            )
+            observations.append(
+                {
+                    key: service_redeploy_refresh[key]
+                    for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+                }
+            )
+            redeploy_after_unclean_refresh_attempted = True
+            started = time.monotonic()
+            if poll_interval > 0:
+                time.sleep(min(poll_interval, wait_limit))
+            continue
         if time.monotonic() - started >= wait_limit:
             break
         if poll_interval > 0:
             time.sleep(min(poll_interval, max(0.0, wait_limit - (time.monotonic() - started))))
         else:
             break
+
+    coolify_model_status_exclusion: dict[str, Any] | None = None
+    if allow_coolify_model_status_exclusion:
+        coolify_model_status_exclusion = {
+            "enabled": True,
+            "status": "attempted" if status_exclusion_receipts else "no-unexcluded-terminal-helper-candidates",
+            "ok": bool(status_exclusion_receipts) and all(item["ok"] for item in status_exclusion_receipts),
+            "receipts": status_exclusion_receipts,
+            "patched_application_count": len(status_exclusion_receipts),
+            "patched_application_success_count": sum(1 for item in status_exclusion_receipts if item["ok"]),
+            "patched_application_names": [
+                item.get("application_name", "") for item in status_exclusion_receipts if item.get("application_name")
+            ],
+            "patched_application_uuids": [
+                item.get("application_uuid", "") for item in status_exclusion_receipts if item.get("application_uuid")
+            ],
+            "patch_scope": "completed-helper-status-exclusion",
+        }
 
     # The temporary Coolify service status is advisory only. We observed
     # Coolify reporting the helper as exited/starting:unhealthy while the
@@ -1856,6 +2126,9 @@ def execute_completed_mother_helper_cleanup(
     docker_orphan_container_cleanup_ok = (
         docker_orphan_container_cleanup is not None and docker_orphan_container_cleanup.get("ok") is True
     )
+    coolify_model_status_exclusion_ok = (
+        coolify_model_status_exclusion is not None and coolify_model_status_exclusion.get("ok") is True
+    )
     mutation_ok = (
         (delete_ok if delete_receipts else True)
         or nested_delete_ok
@@ -1863,6 +2136,7 @@ def execute_completed_mother_helper_cleanup(
         or service_compose_reconcile_ok
         or service_redeploy_refresh_ok
         or docker_orphan_container_cleanup_ok
+        or coolify_model_status_exclusion_ok
     )
     summary = {
         **final["summary"],
@@ -1902,6 +2176,9 @@ def execute_completed_mother_helper_cleanup(
         "docker_orphan_container_cleanup_count": 1 if docker_orphan_container_cleanup is not None else 0,
         "docker_orphan_container_cleanup_succeeded": docker_orphan_container_cleanup_ok,
         "docker_orphan_container_cleanup_enabled": bool(allow_docker_orphan_container_cleanup),
+        "coolify_model_status_exclusion_count": 1 if coolify_model_status_exclusion is not None else 0,
+        "coolify_model_status_exclusion_succeeded": coolify_model_status_exclusion_ok,
+        "coolify_model_status_exclusion_enabled": bool(allow_coolify_model_status_exclusion),
         "cleanup_mutation_succeeded": mutation_ok,
         "live_mutation_performed": bool(
             delete_receipts
@@ -1910,11 +2187,28 @@ def execute_completed_mother_helper_cleanup(
             or service_compose_reconcile is not None
             or service_redeploy_refresh is not None
             or docker_orphan_container_cleanup is not None
+            or coolify_model_status_exclusion is not None
         ),
         "validator_mutation_count": 0,
         "validator_restart_count": 0,
         "validator_vote_performed": False,
         "service_detail_http_status": final_detail["status"],
+        "unresolved_completed_helper_count": len(final["completed_helper_candidates"]),
+        "unresolved_completed_helper_names": [
+            item.get("name", "") for item in final["completed_helper_candidates"] if item.get("name")
+        ],
+        "unresolved_completed_helper_uuids": [
+            item.get("uuid", "") for item in final["completed_helper_candidates"] if item.get("uuid")
+        ],
+        "unresolved_completed_helper_statuses": [
+            {
+                "name": item.get("name", ""),
+                "uuid": item.get("uuid", ""),
+                "status": item.get("status", ""),
+                "exclude_from_status": item.get("exclude_from_status", False),
+            }
+            for item in final["completed_helper_candidates"]
+        ],
     }
     status = "pass" if summary["clean"] and mutation_ok else "manual-review-required"
     document = {
@@ -1937,9 +2231,13 @@ def execute_completed_mother_helper_cleanup(
         "service_compose_reconcile": service_compose_reconcile,
         "service_redeploy_refresh": service_redeploy_refresh,
         "docker_orphan_container_cleanup": docker_orphan_container_cleanup,
+        "coolify_model_status_exclusion": coolify_model_status_exclusion,
         "final_required_components": final["required_components"],
         "final_completed_helper_candidates": final["completed_helper_candidates"],
+        "unresolved_completed_helper_candidates": final["completed_helper_candidates"],
         "final_preserved_helpers": final["preserved_helpers"],
+        "excluded_completed_helper_records": final["excluded_completed_helper_records"],
+        "final_excluded_completed_helper_records": final["excluded_completed_helper_records"],
         "final_unexpected_terminal_components": final["unexpected_terminal_components"],
         "final_unclassified_unhealthy_components": final["unclassified_unhealthy_components"],
         "http_observations": observations,
