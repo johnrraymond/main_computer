@@ -41,9 +41,19 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
         "mother-validator-activation-init",
         "mainneta-super1",
         "mother-add-node-validator-activation-guardian",
+        "mother-replica-sync-guardian",
     }
     assert "ports" not in parsed["services"]["mainneta-super1"]
     assert "ports" not in parsed["services"]["mother-add-node-validator-activation-guardian"]
+    sentinel = parsed["services"]["mother-replica-sync-guardian"]
+    assert sentinel["image"] == "python:3.12-alpine"
+    assert sentinel["restart"] == "unless-stopped"
+    assert sentinel["read_only"] is True
+    assert "ports" not in sentinel
+    assert "volumes" not in sentinel
+    assert "environment" not in sentinel
+    assert sentinel["labels"]["main_computer.mother.stage"] == "post-admission-retired-helper-sentinel"
+    assert sentinel["labels"]["main_computer.mother.retired-helper"] == "mother-replica-sync-guardian"
     assert 'MC_MOTHER_VALIDATOR_PRIVATE_KEY: "${MC_MOTHER_VALIDATOR_PRIVATE_KEY}"' in compose
     assert "0x" + "1" * 64 not in compose
     assert "main_computer.mother.validator-activation: active" in compose

@@ -66,6 +66,7 @@ _HUB_KEY = "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY"
 _BESU_IMAGE = "hyperledger/besu:latest"
 _INIT_IMAGE = "alpine:3.20"
 _GUARDIAN_IMAGE = "python:3.12-alpine"
+_RETIRED_REPLICA_SYNC_GUARDIAN_NAME = "mother-replica-sync-guardian"
 
 _PRIVATE_KEY_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
@@ -469,6 +470,32 @@ def _candidate_activation_compose(
         "    volumes:",
         "      - mother-config:/config:ro",
         "      - mother-add-node-validator-admission-proof:/proof",
+        f"  {_RETIRED_REPLICA_SYNC_GUARDIAN_NAME}:",
+        f"    image: {_GUARDIAN_IMAGE}",
+        "    restart: unless-stopped",
+        "    read_only: true",
+        "    command:",
+        "      - python",
+        "      - -u",
+        "      - -c",
+        "      - |",
+        "        import time",
+        "        while True:",
+        "            time.sleep(3600)",
+        "    healthcheck:",
+        "      test:",
+        "        - CMD",
+        "        - python",
+        "        - -c",
+        "        - import sys; sys.exit(0)",
+        "      interval: 10s",
+        "      timeout: 5s",
+        "      retries: 3",
+        "      start_period: 5s",
+        "    labels:",
+        "      main_computer.mother.stage: post-admission-retired-helper-sentinel",
+        f"      main_computer.mother.node: {target_node}",
+        f"      main_computer.mother.retired-helper: {_RETIRED_REPLICA_SYNC_GUARDIAN_NAME}",
         "",
         "volumes:",
         "  mother-config:",
@@ -1795,7 +1822,7 @@ def execute_node_add_validator_admission_release(
                 service_uuid=target_uuid,
                 node=candidate_node,
                 acknowledged_service_uuid=target_uuid,
-                required_component_names=(target_guardian_name,),
+                required_component_names=(target_guardian_name, _RETIRED_REPLICA_SYNC_GUARDIAN_NAME),
                 max_wait_seconds=max_wait_seconds,
                 poll_interval_seconds=poll_interval_seconds,
                 allow_nested_application_delete=True,
