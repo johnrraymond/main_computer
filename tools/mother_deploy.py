@@ -199,6 +199,7 @@ from tools.mother.common.deployment_topology_rectification import (
     MotherDeploymentTopologyRectificationError,
     adopt_empty_current_topology,
     detect_topology_staleness,
+    finalize_add_node_post_admission_topology,
     verify_empty_topology_rectification_evidence,
 )
 from tools.mother.common.deployment_identity_install import (
@@ -667,6 +668,21 @@ def _parser() -> argparse.ArgumentParser:
     add_node_validator_admission.add_argument("--max-wait-seconds", type=float, default=300.0)
     add_node_validator_admission.add_argument("--poll-interval-seconds", type=float, default=5.0)
     add_node_validator_admission.add_argument("--execute", action="store_true")
+
+    add_node_post_admission_observe = add_node_subparsers.add_parser(
+        "post-admission-observe",
+        help="write the read-only finalized topology proof after clean validator admission",
+        allow_abbrev=False,
+    )
+    add_node_post_admission_observe.add_argument("network", choices=["mainnet"])
+    add_node_post_admission_observe.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_post_admission_observe.add_argument("--operation-id")
+    add_node_post_admission_observe.add_argument("--validator-admission-evidence", required=True)
+    add_node_post_admission_observe.add_argument("--acknowledge-validator-admission-evidence-sha256", required=True)
+    add_node_post_admission_observe.add_argument("--max-age-seconds", type=int, default=86400)
+    add_node_post_admission_observe.add_argument("--timeout", type=float, default=30.0)
+    add_node_post_admission_observe.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_post_admission_observe.add_argument("--write-evidence", action="store_true")
     add_node_rollback = add_node_subparsers.add_parser(
         "rollback",
         help="execute a released pre-admission add-node rollback by deleting only the created standby service",
@@ -6728,6 +6744,23 @@ def _cmd_verify_node_add_validator_admission_evidence(args: argparse.Namespace, 
     return 0
 
 
+def _cmd_add_node_post_admission_observe(args: argparse.Namespace, private_state) -> int:
+    result = finalize_add_node_post_admission_topology(
+        _paths(args),
+        private_state,
+        Path(args.validator_admission_evidence),
+        network=args.network,
+        acknowledged_validator_admission_evidence_sha256=args.acknowledge_validator_admission_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        write_evidence=args.write_evidence,
+        operation=_operation("add-node-post-admission-observe", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_release_node_add_rollback(args: argparse.Namespace, private_state) -> int:
     release = build_node_add_rollback_release(
         _paths(args),
@@ -6960,6 +6993,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _cmd_add_node_replica_sync(args, private_state)
             if args.add_node_phase == "validator-admission":
                 return _cmd_add_node_validator_admission(args, private_state)
+            if args.add_node_phase == "post-admission-observe":
+                return _cmd_add_node_post_admission_observe(args, private_state)
             if args.add_node_phase == "rollback":
                 return _cmd_add_node_rollback(args, private_state)
             raise RuntimeError(f"unsupported add-node phase: {args.add_node_phase}")

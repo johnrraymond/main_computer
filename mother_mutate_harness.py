@@ -69,6 +69,7 @@ REPLICA_ADMISSION_STEPS = [
     "verify-validator-admission-release",
     "execute-validator-admission",
     "verify-validator-admission-evidence",
+    "finalize-post-admission-topology",
 ]
 
 REMOVE_STEPS = [
@@ -291,6 +292,8 @@ class Harness:
             "validator_admission_release_sha256": args.validator_admission_release_sha256,
             "validator_admission_evidence": args.validator_admission_evidence,
             "validator_admission_evidence_sha256": args.validator_admission_evidence_sha256,
+            "post_admission_topology_evidence": args.post_admission_topology_evidence,
+            "post_admission_topology_evidence_sha256": args.post_admission_topology_evidence_sha256,
             "remove_prep_transaction": args.remove_prep_transaction,
             "remove_prep_transaction_sha256": args.remove_prep_transaction_sha256,
             "remove_do_release": args.remove_do_release,
@@ -862,6 +865,21 @@ class Harness:
         ))
 
 
+    def step_finalize_post_admission_topology(self) -> None:
+        obj = self.run("finalize-post-admission-topology", self.cmd(
+            "add-node", "post-admission-observe", self.args.network,
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--validator-admission-evidence", require("validator_admission_evidence", self.state["validator_admission_evidence"]),
+            "--acknowledge-validator-admission-evidence-sha256", require("validator_admission_evidence_sha256", self.state["validator_admission_evidence_sha256"]),
+            "--max-age-seconds", str(self.args.evidence_max_age_seconds),
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.max_response_bytes),
+            "--write-evidence",
+        ))
+        self.state["post_admission_topology_evidence"] = require("post-admission topology evidence path", pick(obj, "evidence.path"))
+        self.state["post_admission_topology_evidence_sha256"] = require("post-admission topology evidence sha", pick(obj, "evidence.sha256"))
+
+
     def step_remove_prep(self) -> None:
         require("--baseline-evidence", self.state["baseline_evidence"])
         require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"])
@@ -994,6 +1012,7 @@ class Harness:
             "verify-validator-admission-release": self.step_verify_validator_admission_release,
             "execute-validator-admission": self.step_execute_validator_admission,
             "verify-validator-admission-evidence": self.step_verify_validator_admission_evidence,
+            "finalize-post-admission-topology": self.step_finalize_post_admission_topology,
             "remove-prep": self.step_remove_prep,
             "verify-remove-prep": self.step_verify_remove_prep,
             "release-remove-do": self.step_release_remove_do,
@@ -1097,6 +1116,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validator-admission-release-sha256")
     parser.add_argument("--validator-admission-evidence")
     parser.add_argument("--validator-admission-evidence-sha256")
+    parser.add_argument("--post-admission-topology-evidence")
+    parser.add_argument("--post-admission-topology-evidence-sha256")
     parser.add_argument("--remove-prep-transaction")
     parser.add_argument("--remove-prep-transaction-sha256")
     parser.add_argument("--remove-do-release")

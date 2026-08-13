@@ -35,8 +35,10 @@ from .private_state import PrivateStateReadResult
 
 _STALENESS_EVIDENCE_KIND = "main_computer.mother.live_topology_staleness_observation.v1"
 _EMPTY_EVIDENCE_KIND = "main_computer.mother.live_topology_empty_rectification_evidence.v1"
+_ADD_POST_ADMISSION_TOPOLOGY_KIND = "main_computer.mother.add_node_post_admission_topology_evidence.v1"
 _ADD_VALIDATOR_ADMISSION_KIND = "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
 _EMPTY_EVIDENCE_DIRECTORY = ("evidence", "deployment-live-topology-empty-rectification")
+_ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-post-admission-observe")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -972,6 +974,281 @@ def adopt_empty_current_topology(
     return evidence
 
 
+def build_add_node_post_admission_topology_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    validator_admission_evidence_path: Path,
+    *,
+    network: str = "mainnet",
+    acknowledged_validator_admission_evidence_sha256: str,
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = 4 * 1024 * 1024,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build the read-only topology proof that closes an existing-topology add-node.
+
+    Validator admission is a live mutation proof, so ``add-node prep`` correctly
+    rejects it as the baseline for the next add.  This function re-observes the
+    live topology from that clean admission proof and writes a non-mutating
+    topology evidence document whose canonical JSON digest can be supplied to
+    the next ``add-node prep`` call.
+    """
+
+    resolved = Path(validator_admission_evidence_path).resolve(strict=False)
+    source, _source_raw, source_digest = _canonical_file(resolved)
+    expected = _sha256(acknowledged_validator_admission_evidence_sha256, "validator-admission evidence SHA-256")
+    if source_digest != expected:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_ACK_MISMATCH",
+            "validator-admission evidence SHA-256 mismatch",
+        )
+    if source.get("kind") != _ADD_VALIDATOR_ADMISSION_KIND:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID",
+            "source evidence is not add-node validator-admission evidence",
+        )
+    expected_next_phase = f"add-node-post-admission-observe-{network}"
+    if source.get("next_phase") != expected_next_phase:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID",
+            f"validator-admission evidence is not ready for {expected_next_phase}",
+        )
+
+    detection = detect_topology_staleness(
+        paths,
+        private_state,
+        resolved,
+        network=network,
+        acknowledged_topology_evidence_sha256=source_digest,
+        max_age_seconds=max_age_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        now=now,
+    )
+    summary = detection.get("summary")
+    if not isinstance(summary, Mapping):
+        raise _fail("MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID", "topology observation summary is missing")
+    if (
+        detection.get("status") != "pass"
+        or summary.get("clean") is not True
+        or summary.get("topology_current") is not True
+        or summary.get("topology_stale") is True
+        or summary.get("manual_review_required") is True
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_UNCLEAN",
+            "live topology is not clean/current after validator admission",
+        )
+
+    nodes = [_identifier(item, "observed node") for item in detection.get("expected_nodes", [])]
+    validators = [_address(item, "observed validator") for item in detection.get("expected_validator_set", [])]
+    if len(nodes) != len(validators) or not nodes:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INCOMPLETE",
+            "observed topology nodes and validators are missing or not aligned",
+        )
+    services_raw = detection.get("expected_services")
+    if not isinstance(services_raw, Mapping):
+        raise _fail("MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INCOMPLETE", "observed service records are missing")
+    services: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        record = services_raw.get(node)
+        if not isinstance(record, Mapping):
+            raise _fail("MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INCOMPLETE", f"observed service record missing for {node}")
+        services[node] = _topology_service_record(
+            node,
+            record,
+            source="post-admission-topology-observation",
+            completed_at=detection.get("observed_at"),
+        )
+
+    completed = _timestamp(now=now)
+    target = detection.get("target")
+    topology = {
+        "source": "add-node-post-admission-observe",
+        "chain_id": detection.get("chain_id"),
+        "genesis_sha256": _sha256(detection.get("genesis_sha256"), "observed genesis SHA-256"),
+        "nodes": nodes,
+        "services": services,
+        "validator_count": len(validators),
+        "validator_set": validators,
+        "validator_admission_previously_performed": True,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+    }
+
+    evidence: dict[str, Any] = {
+        "kind": _ADD_POST_ADMISSION_TOPOLOGY_KIND,
+        "schema_version": 1,
+        "completed_at": completed,
+        "observed_at": detection.get("observed_at"),
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding(private_state),
+        "network": network,
+        "mode": source.get("mode"),
+        "source_validator_admission_evidence": {
+            "path": str(resolved),
+            "locator": _relative(paths, resolved, label="validator-admission evidence"),
+            "sha256": source_digest,
+            "kind": source.get("kind"),
+            "completed_at": source.get("completed_at"),
+        },
+        "live_topology_observation": {
+            "status": detection.get("status"),
+            "observed_at": detection.get("observed_at"),
+            "summary": dict(summary),
+            "topology_evidence": dict(detection.get("topology_evidence") or {}),
+        },
+        "service_observations": list(detection.get("expected_service_observations") or []),
+        "observed_live_node_hints": list(detection.get("observed_live_node_hints") or []),
+        "target": target,
+        "current_topology": topology,
+        "final_topology": topology,
+        "topology_diff": {
+            "operation": "add-node-post-admission-observe",
+            "added_nodes": [source.get("candidate_node")] if isinstance(source.get("candidate_node"), str) else [],
+            "removed_nodes": [],
+            "unchanged_nodes": [node for node in nodes if node != source.get("candidate_node")],
+            "pre_validator_count": len(source.get("current_validator_set") or []),
+            "post_validator_count": len(validators),
+        },
+        "authority": {
+            "read_only_post_admission_observe": True,
+            "validator_admission_previously_proven": True,
+            "target_service_top_level_healthy_previously_proven": True,
+            "post_admission_cleanup_previously_proven": True,
+            "topology_current": True,
+            "live_mutation_authorized": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "manual_ssh_required": False,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "finalize_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_http_endpoint_created": False,
+            "public_endpoint_created": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "current_topology_marked_by_evidence": True,
+            "source_validator_admission_clean": True,
+            "topology_current": True,
+            "topology_stale": False,
+            "final_nodes": nodes,
+            "final_validator_count": len(validators),
+            "final_validator_set": validators,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "next_phase": f"add-node-prep-{network}",
+        },
+        "live_mutation_performed": False,
+        "chain_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "next_phase": f"add-node-prep-{network}",
+    }
+    if _contains_sensitive(evidence):
+        raise _fail("MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_SENSITIVE", "post-admission topology evidence contains sensitive material")
+    evidence["add_node_post_admission_topology_sha256"] = _digest_without(evidence, "add_node_post_admission_topology_sha256")
+    return evidence
+
+
+def write_add_node_post_admission_topology_evidence(
+    paths: PrivateStatePaths,
+    evidence: Mapping[str, Any],
+    *,
+    operation: OperationIdentity,
+) -> tuple[Path, str]:
+    if evidence.get("kind") != _ADD_POST_ADMISSION_TOPOLOGY_KIND:
+        raise _fail("MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID", "not an add-node post-admission topology evidence document")
+    document = dict(evidence)
+    digest = _digest_without(document, "add_node_post_admission_topology_sha256")
+    if document.get("add_node_post_admission_topology_sha256") != digest:
+        raise _fail("MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID", "post-admission topology evidence digest mismatch")
+    payload = canonical_json(document)
+    root = _ensure_directory(paths, _ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY, operation=operation)
+    stamp = re.sub(r"[^0-9A-Za-z]+", "", str(document.get("completed_at", ""))) or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target = document.get("target")
+    target_node = target.get("node") if isinstance(target, Mapping) else None
+    suffix = f"-from-{target_node}" if isinstance(target_node, str) and target_node else ""
+    path = root / f"{stamp}-{document.get('network', 'mainnet')}-topology-finalize{suffix}.json"
+    atomic_files.durable_create(path, payload, operation=operation)
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+def finalize_add_node_post_admission_topology(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    validator_admission_evidence_path: Path,
+    *,
+    network: str = "mainnet",
+    acknowledged_validator_admission_evidence_sha256: str,
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = 4 * 1024 * 1024,
+    write_evidence: bool = False,
+    operation: OperationIdentity,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    evidence = build_add_node_post_admission_topology_evidence(
+        paths,
+        private_state,
+        validator_admission_evidence_path,
+        network=network,
+        acknowledged_validator_admission_evidence_sha256=acknowledged_validator_admission_evidence_sha256,
+        max_age_seconds=max_age_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        now=now,
+    )
+    canonical_sha = hashlib.sha256(canonical_json(evidence)).hexdigest()
+    if write_evidence:
+        evidence_path, evidence_sha = write_add_node_post_admission_topology_evidence(
+            paths,
+            evidence,
+            operation=operation,
+        )
+        from .deployment_node_add_prep import _load_baseline
+
+        _load_baseline(
+            paths,
+            private_state,
+            evidence_path,
+            network=network,
+            expected_sha256=evidence_sha,
+            max_age_seconds=max_age_seconds,
+            now=now,
+        )
+        evidence = {
+            **evidence,
+            "evidence": {"path": str(evidence_path), "sha256": evidence_sha},
+            "prep_baseline_loader_accepted": True,
+        }
+    else:
+        evidence = {**evidence, "evidence_sha256": canonical_sha}
+    return evidence
+
+
+
 def verify_empty_topology_rectification_evidence(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -1047,8 +1324,11 @@ def verify_empty_topology_rectification_evidence(
 __all__ = [
     "MotherDeploymentTopologyRectificationError",
     "adopt_empty_current_topology",
+    "build_add_node_post_admission_topology_evidence",
     "build_empty_topology_rectification_evidence",
     "detect_topology_staleness",
+    "finalize_add_node_post_admission_topology",
     "verify_empty_topology_rectification_evidence",
+    "write_add_node_post_admission_topology_evidence",
     "write_empty_topology_rectification_evidence",
 ]
