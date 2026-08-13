@@ -1,0 +1,79 @@
+{
+  "details": {
+    "node_check": {
+      "returncode": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "runtime_validation": {
+      "harnessSummary": {
+        "appliedToScene": false,
+        "commandCount": 0,
+        "encounterIds": [
+          "opening-shuttle-ambush"
+        ],
+        "gameplayExecuted": false,
+        "handlerCount": 1,
+        "handlers": [
+          {
+            "encounterId": "opening-shuttle-ambush",
+            "event": "start",
+            "match": {},
+            "order": 1
+          }
+        ],
+        "handlersRegistered": true,
+        "kind": "gameplay-pack-js-command-harness-summary",
+        "packId": "pack.experimental.heavy-shuttle-juggernaut",
+        "problems": [],
+        "schema": "game.gameplayPackJsRuntime.v1",
+        "sectionIds": [],
+        "setupRun": true,
+        "title": "Heavy Shuttle Juggernaut",
+        "version": "0.1.0"
+      },
+      "sourceValidation": {
+        "forbiddenGlobals": [],
+        "kind": "gameplay-pack-js-source-validation",
+        "ok": true,
+        "problems": [],
+        "schema": "game.gameplayPackJsRuntime.v1",
+        "valid": true
+      }
+    },
+    "runtime_validation_raw": {
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "{\"sourceValidation\":{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-source-validation\",\"ok\":true,\"valid\":true,\"forbiddenGlobals\":[],\"problems\":[]},\"harnessSummary\":{\"schema\":\"game.gameplayPackJsRuntime.v1\",\"kind\":\"gameplay-pack-js-command-harness-summary\",\"packId\":\"pack.experimental.heavy-shuttle-juggernaut\",\"title\":\"Heavy Shuttle Juggernaut\",\"version\":\"0.1.0\",\"setupRun\":true,\"handlersRegistered\":true,\"gameplayExecuted\":false,\"appliedToScene\":false,\"encounterIds\":[\"opening-shuttle-ambush\"],\"sectionIds\":[],\"handlerCount\":1,\"handlers\":[{\"encounterId\":\"opening-shuttle-ambush\",\"event\":\"start\",\"match\":{},\"order\":1}],\"commandCount\":0,\"problems\":[]}}\n"
+    }
+  },
+  "errors": [],
+  "ok": true,
+  "scenario": {
+    "api_call": "pack.encounter(\"opening-shuttle-ambush\", ...)",
+    "cutscene_id": null,
+    "description": "Opening shuttle combat encounter.",
+    "examples": [
+      "game_projects/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/manifest.json",
+      "game_projects/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/pack.js"
+    ],
+    "kind": "encounter",
+    "known_commands": [
+      "setHostileHealthMultiplier",
+      "showHudMessage",
+      "spawnWave",
+      "setObjective",
+      "complete",
+      "fail"
+    ],
+    "known_events": [
+      "onStart",
+      "onHostilesDefeated",
+      "onAllHostilesDefeated",
+      "onDestinationReached",
+      "onPlayerDefeated"
+    ],
+    "scenario_id": "opening-shuttle-ambush"
+  },
+  "warnings": []
+}

@@ -45,7 +45,8 @@ class MainShipBayBoardersPackJsSceneAdapterTests(unittest.TestCase):
         self.assertIn("Main Ship: Bay Boarders", html)
         self.assertIn("WEBGL_MAIN_SHIP_BAY_BOARDERS_JS_PACK_ID", desktop)
         self.assertIn("mainShipInstallGameplayPackSource", desktop)
-        self.assertIn("WEBGL_JS_GAMEPLAY_PACK_IDS.has(canonicalPluginId)", desktop)
+        self.assertIn("WEBGL_BUILT_IN_JS_GAMEPLAY_PACKS", desktop)
+        self.assertIn("startWebglGameFromGameplayPackLobby", desktop)
 
     def test_scene_surface_runtime_exposes_main_ship_pack_adapter(self) -> None:
         scene = SCENE_VIEWER.read_text(encoding="utf-8")
@@ -92,7 +93,7 @@ class MainShipBayBoardersPackJsSceneAdapterTests(unittest.TestCase):
               location: {search: ""},
               localStorage: {
                 getItem(key) {
-                  if (key !== "main-computer.webgl.active-gameplay-packs.v1") return null;
+                  if (key !== "main-computer.webgl.enabled-gameplay-packs.v2") return null;
                   return JSON.stringify({
                     mode: "selected",
                     activeGameplayPackIds: ["pack.main-ship.bay-boarders"]

@@ -400,6 +400,7 @@ def detect_topology_staleness(
     missing_expected = [item["node"] for item in service_results if item["absent"]]
     unknown_expected = [item["node"] for item in service_results if not item["present"] and not item["absent"]]
     live_node_hints = sorted(set(node for hint in inventory_hints for node in hint.get("node_hints", [])))
+    unexpected_live_nodes = [node for node in live_node_hints if node not in set(nodes)]
     inventory_errors = [hint for hint in inventory_hints if hint.get("error")]
     all_expected_absent = bool(nodes) and len(missing_expected) == len(nodes) and not present_expected and not unknown_expected
     no_expected_nodes = not nodes
@@ -407,11 +408,26 @@ def detect_topology_staleness(
     empty_topology_inventory_unknown = no_expected_nodes and bool(inventory_errors)
     topology_current = (
         (no_expected_nodes and not live_node_hints and not inventory_errors)
-        or (not no_expected_nodes and len(present_expected) == len(nodes) and not missing_expected and not unknown_expected)
+        or (
+            not no_expected_nodes
+            and len(present_expected) == len(nodes)
+            and not missing_expected
+            and not unknown_expected
+            and not unexpected_live_nodes
+            and not inventory_errors
+        )
     )
-    rectification_required = all_expected_absent and not live_node_hints
+    empty_rectification_required = all_expected_absent and not live_node_hints
+    split_or_partial_live_topology = (
+        bool(unexpected_live_nodes)
+        or bool(missing_expected)
+        or bool(unknown_expected)
+        or bool(inventory_errors and not no_expected_nodes)
+    )
+    topology_stale = empty_rectification_required or split_or_partial_live_topology or empty_topology_has_live_hints or empty_topology_inventory_unknown
+    rectification_required = empty_rectification_required
     partial_or_unknown = (
-        (missing_expected or unknown_expected or live_node_hints)
+        split_or_partial_live_topology
         and not rectification_required
         and not no_expected_nodes
     ) or empty_topology_has_live_hints or empty_topology_inventory_unknown
@@ -444,6 +460,7 @@ def detect_topology_staleness(
         "expected_services": services,
         "expected_service_observations": service_results,
         "observed_live_node_hints": live_node_hints,
+        "unexpected_live_nodes": unexpected_live_nodes,
         "observed_service_hints": inventory_hints,
         "present_expected_nodes": present_expected,
         "missing_expected_nodes": missing_expected,
@@ -469,14 +486,16 @@ def detect_topology_staleness(
         "summary": {
             "clean": status in {"pass", "stale"},
             "topology_current": topology_current,
-            "topology_stale": rectification_required,
+            "topology_stale": topology_stale,
             "rectification_required": rectification_required,
-            "rectification_supported": rectification_required,
+            "rectification_supported": empty_rectification_required,
             "manual_review_required": partial_or_unknown,
             "expected_node_count": len(nodes),
             "present_expected_node_count": len(present_expected),
             "missing_expected_node_count": len(missing_expected),
             "observed_live_node_hints": live_node_hints,
+            "unexpected_live_nodes": unexpected_live_nodes,
+            "unexpected_live_node_count": len(unexpected_live_nodes),
             "observed_inventory_error_count": len(inventory_errors),
             "network_access_performed": True,
             "live_mutation_performed": False,

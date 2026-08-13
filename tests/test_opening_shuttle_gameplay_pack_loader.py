@@ -18,7 +18,7 @@ GAME_EDITOR_CSS = ROOT / "main_computer" / "web" / "applications" / "styles" / "
 GAME_ROUTES = ROOT / "main_computer" / "viewport_routes_game.py"
 
 OPENING_SHUTTLE_PACK = "plugin.hand-authored.opening-shuttle-ambush.001"
-PACK_SELECTION_KEY = "main-computer.webgl.active-gameplay-packs.v1"
+PACK_SELECTION_KEY = "main-computer.webgl.enabled-gameplay-packs.v2"
 
 
 def _copy_project(tmp_path: Path) -> Path:
@@ -105,20 +105,22 @@ def test_visible_selector_has_none_path_pack_option_and_loader_call() -> None:
     css = GAME_EDITOR_CSS.read_text(encoding="utf-8")
 
     assert 'id="webgl-gameplay-pack-selector"' in html
-    assert 'id="webgl-gameplay-pack-select"' in html
+    assert 'id="webgl-gameplay-pack-checklist"' in html
+    assert 'data-webgl-gameplay-pack-checkbox' in html
     assert 'id="webgl-gameplay-pack-apply"' in html
-    assert "None — base game" in html
+    assert "START GAME" in html
     assert "Opening Shuttle: Elite Boarders" in html
+    assert "Main Ship: Bay Boarders" in html
 
     assert PACK_SELECTION_KEY in desktop
+    assert "WEBGL_LEGACY_ACTIVE_GAMEPLAY_PACKS_KEY" in desktop
     assert "bindWebglGameplayPackSelector()" in desktop
     assert "syncWebglGameplayPackSelector(webglProjectState.project)" in desktop
-    assert '"/api/applications/game-editor/gameplay-pack/load"' in desktop
-    assert 'plugin_id: canonicalPluginId' in desktop
-    assert 'plugin_id: "None"' in desktop
-    assert "window.location?.reload?.()" in desktop
+    assert "startWebglGameFromGameplayPackLobby" in desktop
+    assert "webglStoreGameplayPackSelection" in desktop
 
     assert ".webgl-gameplay-pack-selector" in css
+    assert ".webgl-gameplay-pack-checklist" in css
     assert ".webgl-gameplay-pack-status" in css
 
 
@@ -135,5 +137,7 @@ def test_reload_selection_precedence_allows_explicit_none_to_override_metadata()
     assert metadata_index < local_index < query_index
     assert "if (!selected.length && raw)" not in function_source
     assert 'selectionSource = "local-storage"' in function_source
+    assert "WEBGL_ENABLED_GAMEPLAY_PACKS_KEY" in function_source
+    assert "WEBGL_LEGACY_ACTIVE_GAMEPLAY_PACKS_KEY" in function_source
     assert 'selectionSource = "query-param"' in function_source
     assert '"None"' in function_source or '"none"' in function_source

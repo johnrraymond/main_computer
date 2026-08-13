@@ -1,0 +1,1 @@
+At the start, spawn one large hostile boarder in a random valid shuttle location. Make it tougher and visually distinct. Additive only.

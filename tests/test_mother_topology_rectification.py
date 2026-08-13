@@ -16,6 +16,7 @@ from tools.mother.common.deployment_topology_rectification import (
 from tests.test_mother_deployment_executor import _Response, _install, _operation
 from tests.test_mother_deployment_node_add_prep import (
     A_NODE,
+    C1_NODE,
     A_VALIDATOR,
     _binding_for_test,
     _test_genesis,
@@ -290,6 +291,55 @@ def test_detect_topology_halts_empty_baseline_when_live_node_hints_are_observed(
     assert result["observed_live_node_hints"] == [A_NODE]
 
 
+
+
+class _PresentServiceWithInventoryOpener:
+    def __init__(self, *, service_uuid: str, services: list[dict]) -> None:
+        self.service_uuid = service_uuid
+        self.services = services
+        self.requests: list[dict] = []
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        self.requests.append({"method": request.get_method(), "host": parsed.hostname, "path": parsed.path})
+        assert request.get_method() == "GET"
+        if parsed.path == "/api/v1/services":
+            return _Response(self.services)
+        if parsed.path == f"/api/v1/services/{self.service_uuid}":
+            return _Response({"uuid": self.service_uuid, "name": A_NODE, "status": "running:healthy"})
+        raise AssertionError(f"unexpected GET path: {parsed.path}")
+
+
+def test_detect_topology_marks_unexpected_live_nodes_stale_split_topology(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        now=datetime(2026, 8, 12, 20, 25, 0, tzinfo=timezone.utc),
+        opener=_PresentServiceWithInventoryOpener(
+            service_uuid="stale-service-uuid",
+            services=[
+                {"uuid": "stale-service-uuid", "name": A_NODE, "status": "running:healthy"},
+                {"uuid": "unexpected-c1-service", "name": C1_NODE, "status": "running:healthy"},
+            ],
+        ),
+    )
+
+    assert result["status"] == "manual-review-required"
+    assert result["summary"]["topology_current"] is False
+    assert result["summary"]["topology_stale"] is True
+    assert result["summary"]["manual_review_required"] is True
+    assert result["summary"]["rectification_required"] is False
+    assert result["present_expected_nodes"] == [A_NODE]
+    assert result["unexpected_live_nodes"] == [C1_NODE]
+    assert result["summary"]["unexpected_live_nodes"] == [C1_NODE]
+
+
 def test_empty_topology_rectification_writes_prep_usable_empty_baseline(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
     evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
@@ -503,3 +553,46 @@ def test_mutate_harness_premutation_failures_do_not_require_rollback() -> None:
 
     assert mother_mutate_harness.step_performed_live_mutation("prep", prep_failure) is False
     assert mother_mutate_harness.step_performed_live_mutation("execute-do", prep_failure) is True
+
+
+def test_mutate_harness_rejects_current_topology_with_unexpected_live_nodes(tmp_path: Path, monkeypatch) -> None:
+    import mother_mutate_harness
+
+    args = mother_mutate_harness.build_parser().parse_args(
+        [
+            "--runtime-state-root",
+            str(tmp_path),
+            "--baseline-evidence",
+            "current.json",
+            "--baseline-evidence-sha256",
+            "c" * 64,
+        ]
+    )
+    harness = mother_mutate_harness.Harness(args)
+
+    split = {
+        "status": "manual-review-required",
+        "summary": {
+            "topology_current": False,
+            "topology_stale": True,
+            "rectification_required": False,
+            "manual_review_required": True,
+            "unexpected_live_nodes": [C1_NODE],
+            "unexpected_live_node_count": 1,
+        },
+        "present_expected_nodes": [A_NODE],
+        "observed_live_node_hints": [A_NODE, C1_NODE],
+        "unexpected_live_nodes": [C1_NODE],
+    }
+
+    def fake_run(step, argv, allow_failure=False):  # noqa: ANN001
+        assert step == "detect-topology"
+        return split
+
+    monkeypatch.setattr(harness, "run", fake_run)
+
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        harness.step_detect_topology()
+    assert exc.value.code == 3

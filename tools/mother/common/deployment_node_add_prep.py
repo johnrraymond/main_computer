@@ -216,7 +216,7 @@ def _chain_identity(document: Mapping[str, Any]) -> tuple[Any, Any]:
     chain_id = document.get("chain_id")
     genesis_sha256 = document.get("genesis_sha256")
     if chain_id is None or genesis_sha256 is None:
-        for key in ("final_topology", "current_topology", "post_add_topology", "post_removal_topology", "pre_removal_topology"):
+        for key in ("rollback_baseline_topology", "final_topology", "current_topology", "post_add_topology", "post_removal_topology", "pre_removal_topology"):
             candidate = document.get(key)
             if isinstance(candidate, Mapping):
                 chain_id = chain_id if chain_id is not None else candidate.get("chain_id")
@@ -245,22 +245,28 @@ def _service_record_from_observation(item: Mapping[str, Any]) -> dict[str, Any] 
 def _service_records(document: Mapping[str, Any], nodes: list[str]) -> dict[str, dict[str, Any]]:
     services: dict[str, dict[str, Any]] = {}
 
-    current_topology = document.get("current_topology")
-    if isinstance(current_topology, Mapping) and isinstance(current_topology.get("services"), Mapping):
-        for node, record in current_topology["services"].items():
+    for topology_key in ("rollback_baseline_topology", "current_topology", "final_topology", "post_add_topology", "post_removal_topology"):
+        topology = document.get(topology_key)
+        if not isinstance(topology, Mapping) or not isinstance(topology.get("services"), Mapping):
+            continue
+        for node, record in topology["services"].items():
             if not isinstance(record, Mapping):
                 continue
             service_uuid = record.get("service_uuid")
             controller_id = record.get("controller_id")
             if isinstance(node, str) and isinstance(service_uuid, str) and service_uuid and isinstance(controller_id, str) and controller_id:
-                services[_identifier(node, "service topology node")] = {
-                    "node": _identifier(node, "service topology node"),
+                node_id = _identifier(node, "service topology node")
+                previous = services.get(node_id)
+                candidate = {
+                    "node": node_id,
                     "controller_id": _identifier(controller_id, "service topology controller id"),
                     "service_uuid": service_uuid,
                     "service_status": record.get("service_status"),
                     "readiness_source": record.get("readiness_source"),
                     "last_observed_at": record.get("last_observed_at"),
                 }
+                if previous is None or topology_key == "final_topology":
+                    services[node_id] = candidate
 
     for key in ("survivors",):
         raw = document.get(key)
@@ -304,18 +310,43 @@ def _service_records(document: Mapping[str, Any], nodes: list[str]) -> dict[str,
 
 _IDENTITY_HISTORY_ONLY_BASELINE_KINDS = {
     "main_computer.mother.deployment_node_remove_finalize_evidence.v1",
-    "main_computer.mother.deployment_node_add_rollback_evidence.v1",
 }
 
 
+def _rollback_baseline_usable_as_live(document: Mapping[str, Any]) -> bool:
+    if document.get("kind") != "main_computer.mother.deployment_node_add_rollback_evidence.v1":
+        return False
+    summary = document.get("summary")
+    if not isinstance(summary, Mapping) or summary.get("rollback_baseline_usable_by_add_node_prep") is not True:
+        return False
+    if document.get("chain_mutation_count") not in (0, None):
+        return False
+    if document.get("validator_mutation_count") not in (0, None):
+        return False
+    if document.get("validator_vote_performed") is not False or document.get("validator_admission_performed") is not False:
+        return False
+    if document.get("routing_or_topology_published") is True or document.get("public_endpoint_created") is True:
+        return False
+    topology = document.get("rollback_baseline_topology")
+    if not isinstance(topology, Mapping):
+        topology = document.get("current_topology")
+    return isinstance(topology, Mapping)
+
+
 def _baseline_topology_role(document: Mapping[str, Any]) -> str:
+    if _rollback_baseline_usable_as_live(document):
+        return "live-topology-source"
     if document.get("kind") in _IDENTITY_HISTORY_ONLY_BASELINE_KINDS:
+        return "identity-history-only"
+    if document.get("kind") == "main_computer.mother.deployment_node_add_rollback_evidence.v1":
         return "identity-history-only"
     return "live-topology-source"
 
 
 def _historical_topology_from_baseline(document: Mapping[str, Any]) -> tuple[list[str], list[str], Any, Any, dict[str, dict[str, Any]]]:
-    topology = document.get("final_topology")
+    topology = document.get("rollback_baseline_topology")
+    if not isinstance(topology, Mapping):
+        topology = document.get("final_topology")
     if not isinstance(topology, Mapping):
         topology = document.get("current_topology")
     if not isinstance(topology, Mapping):

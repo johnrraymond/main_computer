@@ -1148,14 +1148,20 @@ def _children(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return found
 
 
+def _service_record_matches(record: Mapping[str, Any], *, node: str, service_uuid: str | None = None) -> bool:
+    uuid = str(record.get("uuid") or record.get("id") or "")
+    name = str(record.get("name") or record.get("display_name") or record.get("fqdn") or "")
+    if service_uuid is not None and uuid == service_uuid:
+        return True
+    return name == node or record.get("node") == node
+
+
 def _find_service_record(payload: Any, *, node: str, service_uuid: str | None = None) -> Mapping[str, Any]:
+    if isinstance(payload, Mapping) and _service_record_matches(payload, node=node, service_uuid=service_uuid):
+        return payload
     candidates = _records(payload)
     for item in candidates:
-        uuid = str(item.get("uuid") or item.get("id") or "")
-        name = str(item.get("name") or item.get("display_name") or item.get("fqdn") or "")
-        if service_uuid is not None and uuid == service_uuid:
-            return item
-        if name == node or item.get("node") == node:
+        if _service_record_matches(item, node=node, service_uuid=service_uuid):
             return item
     raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_SERVICE_NOT_FOUND", f"Coolify service for {node} was not found")
 
@@ -1218,7 +1224,7 @@ def _preflight_existing_validator_services(
     timeout: float,
     max_response_bytes: int,
     opener: Any,
-) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Mapping[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Mapping[str, Any]], dict[str, str]]:
     """Verify every selected voter service before candidate mutation.
 
     Historical evidence may describe earlier validator services, but admission
@@ -1228,6 +1234,7 @@ def _preflight_existing_validator_services(
     preconditions: list[dict[str, Any]] = []
     service_uuids: dict[str, str] = {}
     detail_records: dict[str, Mapping[str, Any]] = {}
+    compose_texts: dict[str, str] = {}
 
     for voter in voter_nodes:
         vote_request = request_by_voter.get(voter)
@@ -1252,8 +1259,10 @@ def _preflight_existing_validator_services(
                     "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STALE_BASELINE",
                     f"{voter} selected validator service {uuid} does not match live Coolify detail before candidate mutation",
                 ) from exc
+            compose_text = _compose_text(detail_record)
             service_uuids[voter] = uuid
             detail_records[voter] = detail_record
+            compose_texts[voter] = compose_text
             preconditions.append({
                 "name": f"{voter}-service-before-add-node-validator-admission",
                 "controller_id": controller_id,
@@ -1265,6 +1274,8 @@ def _preflight_existing_validator_services(
                 "service_uuid_source": "replica-sync-evidence",
                 "service_status": _service_status(detail_record),
                 "component_or_service_observed": True,
+                "compose_text_available": True,
+                "compose_text_sha256": hashlib.sha256(compose_text.encode("utf-8")).hexdigest(),
                 "verified": True,
                 "verified_before_candidate_mutation": True,
             })
@@ -1298,8 +1309,10 @@ def _preflight_existing_validator_services(
                 "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STALE_BASELINE",
                 f"{voter} selected validator service detail does not match inventory before candidate mutation",
             ) from exc
+        compose_text = _compose_text(detail_record)
         service_uuids[voter] = uuid
         detail_records[voter] = detail_record
+        compose_texts[voter] = compose_text
         preconditions.append({
             "name": f"{voter}-service-before-add-node-validator-admission",
             "controller_id": controller_id,
@@ -1325,11 +1338,13 @@ def _preflight_existing_validator_services(
             "service_uuid_source": "coolify-inventory",
             "service_status": _service_status(detail_record),
             "component_or_service_observed": True,
+            "compose_text_available": True,
+            "compose_text_sha256": hashlib.sha256(compose_text.encode("utf-8")).hexdigest(),
             "verified": True,
             "verified_before_candidate_mutation": True,
         })
 
-    return preconditions, service_uuids, detail_records
+    return preconditions, service_uuids, detail_records, compose_texts
 
 
 def _service_status(record: Mapping[str, Any]) -> str:
@@ -1568,7 +1583,7 @@ def execute_node_add_validator_admission_release(
             raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_IDENTITY_MISSING", "target identity env keys are not installed exactly once")
 
         request_by_voter = {item["voter_node"]: item for item in plan["rpc_requests"] if isinstance(item, Mapping)}
-        voter_preconditions, voter_service_uuids, voter_detail_records = _preflight_existing_validator_services(
+        voter_preconditions, voter_service_uuids, voter_detail_records, voter_compose_texts = _preflight_existing_validator_services(
             voter_nodes=voter_nodes,
             request_by_voter=request_by_voter,
             service_uuid_hints=service_uuid_hints,
@@ -1634,8 +1649,11 @@ def execute_node_add_validator_admission_release(
             controller = controllers[controller_id]
             uuid = _identifier(all_service_uuids[voter], f"{voter} service UUID")
             detail_endpoint = f"/api/v1/services/{urllib.parse.quote(uuid, safe='')}"
-            detail_record = voter_detail_records[voter]
-            original_compose = _compose_text(detail_record)
+            if voter not in voter_detail_records:
+                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_INVALID", f"{voter} voter service preflight record is missing")
+            original_compose = voter_compose_texts.get(voter)
+            if not isinstance(original_compose, str) or not original_compose.strip():
+                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_MISSING", f"{voter} voter Compose text was not proven before candidate mutation")
             script = _voter_guardian_script(
                 voter=voter,
                 candidate=candidate,

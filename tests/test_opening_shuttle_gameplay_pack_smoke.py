@@ -216,13 +216,15 @@ def test_reload_pack_selection_allows_explicit_none_to_override_metadata() -> No
     """The reload selector must let the player choose None even if project metadata enables a pack."""
 
     desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
-    storage_read = desktop.index("window.localStorage?.getItem?.(WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY)")
+    storage_read = desktop.index("window.localStorage?.getItem?.(WEBGL_ENABLED_GAMEPLAY_PACKS_KEY)")
+    legacy_storage_read = desktop.index("window.localStorage?.getItem?.(WEBGL_LEGACY_ACTIVE_GAMEPLAY_PACKS_KEY)")
     query_read = desktop.index('new URLSearchParams(window.location?.search || "")')
     metadata_read = desktop.index("const configured = metadata.activeGameplayPackIds")
 
-    assert metadata_read < storage_read < query_read
-    assert "selected = webglNormalizeGameplayPackIds(JSON.parse(raw));" in desktop
-    assert "selected = webglNormalizeGameplayPackIds(raw);" in desktop
+    assert metadata_read < storage_read < legacy_storage_read < query_read
+    assert "webglParseGameplayPackStorageValue" in desktop
+    assert "selected = parsed;" in desktop
+    assert 'selectionSource = "local-storage";' in desktop
     assert 'params.has("gameplayPack")' in desktop
     assert 'params.has("gameplayPacks")' in desktop
     assert "selected = webglNormalizeGameplayPackIds(queryValue);" in desktop

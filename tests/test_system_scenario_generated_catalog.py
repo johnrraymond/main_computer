@@ -1435,11 +1435,13 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         css = GAME_EDITOR_CSS.read_text(encoding="utf-8")
 
         self.assertIn('data-webgl-gameplay-pack-controls', applications)
-        self.assertIn('id="webgl-gameplay-pack-select"', applications)
+        self.assertIn('id="webgl-gameplay-pack-checklist"', applications)
+        self.assertIn('data-webgl-gameplay-pack-checkbox', applications)
         self.assertIn('id="webgl-gameplay-pack-apply"', applications)
-        self.assertIn("None — base game", applications)
+        self.assertIn("START GAME", applications)
 
         self.assertIn("WEBGL_GAMEPLAY_PACK_STORAGE_KEY", desktop)
+        self.assertIn("WEBGL_ENABLED_GAMEPLAY_PACKS_KEY", desktop)
         self.assertIn("webglReadStoredGameplayPackSelection", desktop)
         self.assertIn("syncWebglGameplayPackControls", desktop)
         self.assertIn("applyWebglGameplayPackControlSelection", desktop)
@@ -1507,53 +1509,70 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         self.assertEqual(result["queryOverride"]["mode"], "selected")
         self.assertEqual(result["queryOverride"]["source"], "query-param")
 
-    def test_webgl_desktop_pack_selector_lists_none_and_available_packs(self) -> None:
+    def test_webgl_desktop_pack_lobby_lists_multiple_packs_and_saves_local_selection(self) -> None:
         result = self.run_webgl_desktop_node(
             r'''
             const fs = require("fs");
             const vm = require("vm");
             const storage = new Map();
-            let reloadCount = 0;
+            const makeNode = (tag = "div") => ({
+              tagName: String(tag || "div").toUpperCase(),
+              children: [],
+              dataset: {},
+              value: "",
+              checked: false,
+              disabled: false,
+              className: "",
+              type: "",
+              _textContent: "",
+              set textContent(value) { this._textContent = String(value || ""); },
+              get textContent() { return this._textContent || ""; },
+              appendChild(child) { this.children.push(child); return child; },
+              addEventListener() {},
+              setAttribute(name, value) { this.dataset[String(name || "")] = String(value || ""); },
+              querySelectorAll(selector) {
+                if (selector !== "[data-webgl-gameplay-pack-checkbox]") return [];
+                const matches = [];
+                const visit = (node) => {
+                  if (!node) return;
+                  if (node.dataset?.webglGameplayPackCheckbox === "true") matches.push(node);
+                  (node.children || []).forEach(visit);
+                };
+                this.children.forEach(visit);
+                return matches;
+              }
+            });
             const nodes = {
-              controls: {dataset: {}},
-              select: {
-                children: [],
-                value: "",
-                disabled: false,
-                textContent: "",
-                appendChild(option) { this.children.push(option); },
-                addEventListener() {}
-              },
-              apply: {addEventListener() {}},
-              status: {textContent: ""}
+              controls: makeNode("div"),
+              checklist: makeNode("fieldset"),
+              apply: makeNode("button"),
+              status: makeNode("div")
             };
             const windowObj = {
               localStorage: {
                 getItem(key) { return storage.has(key) ? storage.get(key) : null; },
                 setItem(key, value) { storage.set(key, String(value)); }
               },
-              location: {search: "", reload() { reloadCount += 1; }},
+              location: {search: "", reload() {}},
               addEventListener() {}
             };
             const documentObj = {
+              getElementById(id) {
+                if (id === "webgl-gameplay-pack-selector") return nodes.controls;
+                if (id === "webgl-gameplay-pack-checklist") return nodes.checklist;
+                if (id === "webgl-gameplay-pack-apply") return nodes.apply;
+                if (id === "webgl-gameplay-pack-status") return nodes.status;
+                return null;
+              },
               querySelector(selector) {
                 if (selector === "[data-webgl-gameplay-pack-controls]") return nodes.controls;
-                if (selector === "#webgl-gameplay-pack-select") return nodes.select;
+                if (selector === "[data-webgl-gameplay-pack-checklist]") return nodes.checklist;
                 if (selector === "#webgl-gameplay-pack-apply") return nodes.apply;
                 if (selector === "#webgl-gameplay-pack-status") return nodes.status;
                 return null;
               },
               querySelectorAll() { return []; },
-              createElement(tag) {
-                return {
-                  tagName: String(tag || "").toUpperCase(),
-                  value: "",
-                  textContent: "",
-                  dataset: {},
-                  appendChild() {},
-                  addEventListener() {}
-                };
-              }
+              createElement(tag) { return makeNode(tag); }
             };
             const context = {
               window: windowObj,
@@ -1569,21 +1588,7 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
             vm.createContext(context);
             vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
             const api = windowObj.MainComputerWebglSystemScenario;
-            const project = {
-              metadata: {
-                generatedGameplayPlugins: {
-                  enabledPluginIds: ["plugin.hand-authored.opening-shuttle-ambush.001"],
-                  documents: [
-                    {
-                      pluginId: "plugin.hand-authored.opening-shuttle-ambush.001",
-                      kind: "scenario",
-                      id: "scenario.plugin.opening-shuttle-ambush.elite-wave",
-                      title: "Opening Shuttle Ambush Elite Wave"
-                    }
-                  ]
-                }
-              }
-            };
+            const project = {metadata: {}};
             const runtime = {
               activeGameplayPackSelection() {
                 return {
@@ -1595,21 +1600,22 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
               }
             };
             const state = api.syncGameplayPackControls(project, runtime);
-            nodes.select.value = "None";
+            const checkboxes = nodes.checklist.querySelectorAll("[data-webgl-gameplay-pack-checkbox]");
+            checkboxes.forEach((checkbox) => { checkbox.checked = false; });
             const applied = api.applyGameplayPackControlSelection();
             console.log(JSON.stringify({
               state,
-              options: nodes.select.children.map((option) => ({
-                value: option.value,
-                text: option.textContent
-              })),
-              selected: nodes.select.value,
-              disabled: nodes.select.disabled,
+              options: nodes.checklist.children.map((label) => {
+                const input = label.children.find((child) => child.type === "checkbox") || {};
+                const copy = label.children.find((child) => child.className === "webgl-gameplay-pack-option-copy") || {children: []};
+                const title = copy.children.find((child) => child.className === "webgl-gameplay-pack-option-title") || {};
+                return {value: input.value, checked: input.checked, text: title.textContent || ""};
+              }),
               controlsDataset: nodes.controls.dataset,
               statusText: nodes.status.textContent,
-              stored: storage.get("main-computer.webgl.active-gameplay-packs.v1"),
-              applied,
-              reloadCount
+              storedV2: storage.get("main-computer.webgl.enabled-gameplay-packs.v2"),
+              storedLegacy: storage.get("main-computer.webgl.active-gameplay-packs.v1"),
+              applied
             }));
             '''
         )
@@ -1621,16 +1627,18 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         )
         self.assertEqual(
             [option["value"] for option in result["options"]],
-            ["None", "pack.opening-shuttle.elite-boarders", "pack.main-ship.bay-boarders"],
+            ["pack.opening-shuttle.elite-boarders", "pack.main-ship.bay-boarders"],
         )
-        self.assertIn("None — base game", result["options"][0]["text"])
-        self.assertIn("Opening Shuttle: Elite Boarders", result["options"][1]["text"])
-        self.assertIn("Main Ship: Bay Boarders", result["options"][2]["text"])
-        self.assertFalse(result["disabled"])
+        self.assertIn("Opening Shuttle: Elite Boarders", result["options"][0]["text"])
+        self.assertIn("Main Ship: Bay Boarders", result["options"][1]["text"])
         self.assertEqual(result["controlsDataset"]["gameplayPackMode"], "selected")
-        self.assertEqual(json.loads(result["stored"]), {"schema": "game.reloadGameplayPackSelection.v1", "mode": "none", "activeGameplayPackIds": []})
+        stored = json.loads(result["storedV2"])
+        self.assertEqual(stored["schema"], "game.reloadGameplayPackSelection.v2")
+        self.assertEqual(stored["mode"], "none")
+        self.assertEqual(stored["enabledPackIds"], [])
+        self.assertEqual(stored["activeGameplayPackIds"], [])
+        self.assertEqual(json.loads(result["storedLegacy"])["activeGameplayPackIds"], [])
         self.assertEqual(result["applied"]["mode"], "none")
-        self.assertEqual(result["reloadCount"], 1)
 
     def test_webgl_desktop_passes_project_generated_catalog_to_system_scenario_runtime(self) -> None:
         desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")

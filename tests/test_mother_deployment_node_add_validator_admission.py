@@ -203,6 +203,102 @@ def test_validator_admission_preflights_selected_voters_before_candidate_mutatio
     assert opener.methods == ["GET"]
 
 
+class _ServiceDetailWithoutComposeOpener:
+    def __init__(self):
+        self.methods: list[str] = []
+
+    def open(self, request, timeout=None):
+        self.methods.append(request.get_method())
+        payload = canonical_json({
+            "uuid": "voter-service",
+            "name": "mainneta-super1",
+            "status": "running:healthy",
+        })
+        return _StatusResponse(payload, status=200)
+
+
+def test_validator_admission_requires_voter_compose_before_candidate_mutation() -> None:
+    opener = _ServiceDetailWithoutComposeOpener()
+    controllers = {"coolify-a": SimpleNamespace(base_url="https://coolify-a.example", api_token="secret-token")}
+    request_by_voter = {
+        "mainneta-super1": {
+            "controller_id": "coolify-a",
+            "rpc_request_sha256": "a" * 64,
+            "voter_node": "mainneta-super1",
+        }
+    }
+
+    try:
+        _preflight_existing_validator_services(
+            voter_nodes=["mainneta-super1"],
+            request_by_voter=request_by_voter,
+            service_uuid_hints={"mainneta-super1": "voter-service"},
+            controllers=controllers,
+            timeout=3.0,
+            max_response_bytes=1000,
+            opener=opener,
+        )
+    except MotherDeploymentNodeAddValidatorAdmissionError as exc:
+        assert exc.code == "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_MISSING"
+        assert "Compose text" in str(exc)
+    else:
+        raise AssertionError("expected missing-compose failure")
+
+    assert opener.methods == ["GET"]
+
+
+class _ServiceDetailWithTopLevelComposeAndApplicationsOpener:
+    def __init__(self):
+        self.methods: list[str] = []
+
+    def open(self, request, timeout=None):
+        self.methods.append(request.get_method())
+        payload = canonical_json({
+            "uuid": "voter-service",
+            "name": "mainneta-super1",
+            "status": "running:healthy",
+            "docker_compose_raw": "name: mainneta-super1\nservices:\n  mainneta-super1:\n    image: besu\n",
+            "docker_compose": "name: mainneta-super1\nservices:\n  mainneta-super1:\n    image: besu\n",
+            "applications": [
+                {
+                    "uuid": "child-application",
+                    "name": "mainneta-super1",
+                    "status": "running:healthy",
+                }
+            ],
+        })
+        return _StatusResponse(payload, status=200)
+
+
+def test_validator_admission_prefers_top_level_service_detail_compose_over_applications() -> None:
+    opener = _ServiceDetailWithTopLevelComposeAndApplicationsOpener()
+    controllers = {"coolify-a": SimpleNamespace(base_url="https://coolify-a.example", api_token="secret-token")}
+    request_by_voter = {
+        "mainneta-super1": {
+            "controller_id": "coolify-a",
+            "rpc_request_sha256": "a" * 64,
+            "voter_node": "mainneta-super1",
+        }
+    }
+
+    preconditions, service_uuids, detail_records, compose_texts = _preflight_existing_validator_services(
+        voter_nodes=["mainneta-super1"],
+        request_by_voter=request_by_voter,
+        service_uuid_hints={"mainneta-super1": "voter-service"},
+        controllers=controllers,
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=opener,
+    )
+
+    assert opener.methods == ["GET"]
+    assert service_uuids == {"mainneta-super1": "voter-service"}
+    assert detail_records["mainneta-super1"]["uuid"] == "voter-service"
+    assert compose_texts["mainneta-super1"].startswith("name: mainneta-super1\nservices:")
+    assert preconditions[0]["compose_text_available"] is True
+    assert preconditions[0]["service_status"] == "running:healthy"
+
+
 def test_identity_after_install_routes_empty_current_topology_to_single_node_bootstrap() -> None:
     from tools.mother.common.deployment_node_add_identity import _identity_after_install_routing
 

@@ -325,6 +325,132 @@ def _write_existing_validator_topology_baseline(paths, private_state) -> tuple[P
     path.write_bytes(payload)
     return path, hashlib.sha256(payload).hexdigest()
 
+
+
+def _write_single_node_chain_and_hub_baseline(paths, private_state) -> tuple[Path, str]:
+    _genesis, genesis_sha = _test_genesis(paths, private_state)
+    evidence = {
+        "authority": {
+            "chain_and_hub_proof_accepted": True,
+            "current_topology_marked_by_evidence": True,
+            "finalize_live_mutation_authorized": False,
+            "network_access_performed": False,
+            "routing_or_topology_publication_authorized": False,
+            "single_node_bootstrap_previously_proven": True,
+            "validator_admission_authorized": False,
+            "validator_vote_authorized": False,
+        },
+        "chain_and_hub_proof": {
+            "chain_id": 42424240,
+            "genesis_sha256": genesis_sha,
+            "serves_chain": True,
+            "serves_hub": True,
+            "single_node_bootstrap_proven": True,
+            "validator_set": [A_VALIDATOR],
+        },
+        "completed_at": "2026-08-12T22:45:22Z",
+        "failure": None,
+        "final_topology": {
+            "source": "operator-directed-single-node-chain-and-hub-proof",
+            "chain_id": 42424240,
+            "genesis_sha256": genesis_sha,
+            "nodes": [A_NODE],
+            "services": {
+                A_NODE: {
+                    "controller_id": "coolify-a",
+                    "last_observed_at": "2026-08-12T22:45:21Z",
+                    "node": A_NODE,
+                    "public_endpoint_created": False,
+                    "readiness_source": "deployment-node-add-single-node-bootstrap-proof",
+                    "serves_chain": True,
+                    "serves_hub": True,
+                    "service_status": "running:healthy",
+                    "service_uuid": "svca1xxxx",
+                }
+            },
+            "validator_count": 1,
+            "validator_set": [A_VALIDATOR],
+        },
+        "kind": "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1",
+        "live_mutation_performed": False,
+        "mode": "reactivate",
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "next_phase": "add-node-single-node-finalized-mainnet",
+        "policy": {
+            "allowed_http_methods": [],
+            "coolify_control_plane_only": False,
+            "finalize_mutation_performed": False,
+            "manual_ssh_required": False,
+            "network_access_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "public_endpoint_created": False,
+            "replica_sync_performed": False,
+            "routing_or_topology_published": False,
+            "secrets_in_output": False,
+            "single_node_bootstrap_previously_proven": True,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+        },
+        "public_endpoint_created": False,
+        "replica_sync_performed": False,
+        "routing_or_topology_published": False,
+        "schema_version": 1,
+        "serves_chain": True,
+        "serves_hub": True,
+        "single_node_bootstrap_proven": True,
+        "status": "pass",
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "current_topology_marked_by_evidence": True,
+            "final_nodes": [A_NODE],
+            "final_validator_count": 1,
+            "final_validator_set": [A_VALIDATOR],
+            "live_mutation_performed": False,
+            "network_access_performed": False,
+            "next_phase": "add-node-single-node-finalized-mainnet",
+            "public_endpoint_created": False,
+            "replica_sync_performed": False,
+            "replica_sync_required": False,
+            "routing_or_topology_published": False,
+            "serves_chain": True,
+            "serves_hub": True,
+            "single_node_bootstrap_proven": True,
+            "target_host": "coolify-a",
+            "target_node": A_NODE,
+            "target_validator_address": A_VALIDATOR,
+            "validator_admission_performed": False,
+            "validator_admission_required": False,
+            "validator_vote_performed": False,
+        },
+        "target": {
+            "controller_id": "coolify-a",
+            "created_service_uuid": "svca1xxxx",
+            "desired_service_name": A_NODE,
+            "node": A_NODE,
+            "previous_controller_id": "coolify-a",
+            "previous_service_uuid": "old-svca1xxxx",
+            "validator_address": A_VALIDATOR,
+            "validator_address_source": "baseline-removed-target",
+        },
+        "topology_publication_artifact": {
+            "artifact_written": True,
+            "current_topology_source": "single-node-chain-and-hub-proof",
+            "live_mutation_performed": False,
+            "routing_publication_performed": False,
+        },
+        "validator_admission_performed": False,
+        "validator_vote_performed": False,
+    }
+    payload = canonical_json(evidence)
+    path = paths.root / "evidence" / "deployment-node-add-single-node-chain-and-hub-proof" / "20260812T224522Z-test.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path, hashlib.sha256(payload).hexdigest()
+
+
 def test_add_node_prep_uses_remove_finalize_baseline_as_identity_history_only(tmp_path: Path) -> None:
     _, paths, private_state = _install(tmp_path)
     baseline_path, baseline_sha = _write_remove_finalize_baseline(paths, private_state)
@@ -368,6 +494,47 @@ def test_add_node_prep_uses_remove_finalize_baseline_as_identity_history_only(tm
     assert transaction["execution_plan"]["old_baseline_topology_used_as_live"] is False
     assert transaction["execution_plan"]["generic_topology_diff"] is True
     assert transaction["execution_plan"]["hardcoded_stage_target"] is False
+    assert transaction["policy"]["live_mutation_performed"] is False
+
+
+def test_add_node_prep_accepts_single_node_chain_and_hub_proof_as_current_topology(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_single_node_chain_and_hub_baseline(paths, private_state)
+
+    transaction = build_node_add_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node=C1_NODE,
+        target_host="coolify-c",
+        mode="reactivate",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-12T22:55:00Z",
+        now=__import__("datetime").datetime(2026, 8, 12, 22, 55, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert transaction["source_baseline_evidence"]["topology_role"] == "live-topology-source"
+    assert transaction["current_topology"]["source"] == "baseline-live-topology-source"
+    assert transaction["current_topology"]["nodes"] == [A_NODE]
+    assert transaction["current_topology"]["validator_set"] == [A_VALIDATOR]
+    assert transaction["current_topology"]["services"][A_NODE]["service_uuid"] == "svca1xxxx"
+    assert transaction["current_topology"]["services"][A_NODE]["controller_id"] == "coolify-a"
+    assert transaction["post_add_topology"]["nodes"] == [A_NODE, C1_NODE]
+    assert transaction["post_add_topology"]["validator_set"] == [
+        A_VALIDATOR,
+        transaction["target"]["validator_address"],
+    ]
+    assert transaction["target"]["validator_address_source"] == "mother-private-state"
+    assert transaction["topology_diff"] == {
+        "operation": "add-node",
+        "added_nodes": [C1_NODE],
+        "removed_nodes": [],
+        "unchanged_nodes": [A_NODE],
+        "pre_validator_count": 1,
+        "post_validator_count": 2,
+    }
+    assert transaction["summary"]["old_baseline_topology_used_as_live"] is True
     assert transaction["policy"]["live_mutation_performed"] is False
 
 
@@ -1323,6 +1490,227 @@ def test_add_node_rollback_deletes_failed_pre_admission_service_and_allows_retry
     )
     assert transaction["target"]["node"] == A_NODE
     assert transaction["target"]["controller_id"] == "coolify-a"
+
+
+
+
+def test_add_node_rollback_accepts_failed_validator_admission_without_target_block(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    _genesis, genesis_sha = _test_genesis(paths, private_state)
+    current_topology = {
+        "chain_id": 42424240,
+        "genesis_sha256": genesis_sha,
+        "nodes": [A_NODE],
+        "services": {
+            A_NODE: {
+                "controller_id": "coolify-a",
+                "node": A_NODE,
+                "service_uuid": "svc-a1",
+                "service_status": "running:healthy",
+            }
+        },
+        "validator_count": 1,
+        "validator_set": [A_VALIDATOR],
+    }
+    replica_sync = {
+        "kind": "main_computer.mother.deployment_node_add_replica_sync_evidence.v1",
+        "schema_version": 1,
+        "completed_at": "2026-08-12T23:02:25Z",
+        "status": "pass",
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "mode": "reactivate",
+        "target": {
+            "controller_id": "coolify-c",
+            "node": C1_NODE,
+            "created_service_uuid": "svc-c1",
+            "validator_address": C1_VALIDATOR,
+        },
+        "current_topology": current_topology,
+        "summary": {
+            "clean": True,
+            "created_service_uuid": "svc-c1",
+            "target_host": "coolify-c",
+            "target_node": C1_NODE,
+        },
+    }
+    replica_payload = canonical_json(replica_sync)
+    replica_path = paths.root / "evidence" / "deployment-node-add-replica-sync" / "replica-sync-c1.json"
+    replica_path.parent.mkdir(parents=True, exist_ok=True)
+    replica_path.write_bytes(replica_payload)
+    replica_sha = hashlib.sha256(replica_payload).hexdigest()
+
+    failed_admission = {
+        "kind": "main_computer.mother.deployment_node_add_validator_admission_evidence.v1",
+        "schema_version": 1,
+        "completed_at": "2026-08-12T23:02:36Z",
+        "status": "failed",
+        "failure": {
+            "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_MISSING",
+            "message": "Coolify service record has no Compose text",
+        },
+        "authority": {
+            "validator_activation_proven": False,
+            "validator_vote_proven": False,
+            "routing_or_topology_publication_authorized": False,
+        },
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "mode": "reactivate",
+        "candidate_node": C1_NODE,
+        "candidate_validator_address": C1_VALIDATOR,
+        "created_service_uuid": "svc-c1",
+        "target_host": "coolify-c",
+        "source_replica_sync_evidence": {
+            "locator": replica_path.relative_to(paths.root).as_posix(),
+            "sha256": replica_sha,
+        },
+        "chain_mutation_count": 0,
+        "validator_mutation_count": 0,
+        "validator_vote_performed": False,
+        "validator_activation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "summary": {
+            "clean": False,
+            "created_service_uuid": "svc-c1",
+            "target_host": "coolify-c",
+            "target_node": C1_NODE,
+            "validator_vote_performed": False,
+            "validator_activation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+        },
+    }
+    failed_payload = canonical_json(failed_admission)
+    failed_path = paths.root / "evidence" / "deployment-node-add-validator-admission" / "failed-c1.json"
+    failed_path.parent.mkdir(parents=True, exist_ok=True)
+    failed_path.write_bytes(failed_payload)
+    failed_sha = hashlib.sha256(failed_payload).hexdigest()
+
+    release = build_node_add_rollback_release(
+        paths,
+        private_state,
+        failed_path,
+        acknowledged_failed_evidence_sha256=failed_sha,
+        created_at="2026-08-12T23:11:00Z",
+        now=datetime(2026, 8, 12, 23, 11, 1, tzinfo=timezone.utc),
+    )
+
+    assert release["target"]["node"] == C1_NODE
+    assert release["target"]["controller_id"] == "coolify-c"
+    assert release["target"]["created_service_uuid"] == "svc-c1"
+    assert release["rollback_baseline_topology"] == current_topology
+    assert release["summary"]["failed_source_kind"] == "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
+
+    release_path, _release_sha = write_node_add_rollback_release(
+        paths,
+        release,
+        operation=_operation("write-add-rollback-release-from-failed-admission"),
+    )
+    verified = verify_node_add_rollback_release(
+        paths,
+        private_state,
+        release_path,
+        max_age_seconds=900,
+        failed_evidence_max_age_seconds=86400,
+        now=datetime(2026, 8, 12, 23, 11, 1, tzinfo=timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["target_node"] == C1_NODE
+    assert verified["target_host"] == "coolify-c"
+
+
+
+def test_add_node_prep_uses_rollback_baseline_topology_as_live_source(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    _genesis, genesis_sha = _test_genesis(paths, private_state)
+    rollback_baseline_topology = {
+        "chain_id": 42424240,
+        "genesis_sha256": genesis_sha,
+        "nodes": [A_NODE],
+        "services": {
+            A_NODE: {
+                "controller_id": "coolify-a",
+                "node": A_NODE,
+                "service_uuid": "svc-a1",
+                "service_status": "running:healthy",
+                "readiness_source": "deployment-node-add-single-node-bootstrap-proof",
+            }
+        },
+        "validator_count": 1,
+        "validator_set": [A_VALIDATOR],
+    }
+    evidence = {
+        "kind": "main_computer.mother.deployment_node_add_rollback_evidence.v1",
+        "schema_version": 1,
+        "completed_at": "2026-08-13T00:06:30Z",
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "mode": "reactivate",
+        "current_topology": rollback_baseline_topology,
+        "rollback_baseline_topology": rollback_baseline_topology,
+        "target": {
+            "controller_id": "coolify-c",
+            "created_service_uuid": "rolled-back-c1",
+            "node": C1_NODE,
+            "validator_address": C1_VALIDATOR,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "rollback_baseline_usable_by_add_node_prep": True,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+        },
+        "policy": {
+            "routing_or_topology_published": False,
+            "public_http_endpoint_created": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "chain_mutation_performed": False,
+            "validator_admission_performed": False,
+        },
+        "chain_mutation_count": 0,
+        "validator_mutation_count": 0,
+        "validator_vote_performed": False,
+        "validator_admission_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "live_mutation_performed": True,
+        "next_phase": "add-node-rollback-complete-mainnet",
+    }
+    payload = canonical_json(evidence)
+    evidence_path = paths.root / "evidence" / "deployment-node-add-rollback" / "rollback-a1-baseline.json"
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_bytes(payload)
+    evidence_sha = hashlib.sha256(payload).hexdigest()
+
+    transaction = build_node_add_prep_transaction(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        target_node=C1_NODE,
+        target_host="coolify-c",
+        mode="reactivate",
+        baseline_evidence_sha256=evidence_sha,
+        created_at="2026-08-13T00:07:00Z",
+        now=datetime(2026, 8, 13, 0, 7, 0, tzinfo=timezone.utc),
+    )
+
+    assert transaction["source_baseline_evidence"]["topology_role"] == "live-topology-source"
+    assert transaction["source_baseline_evidence"]["identity_history_only"] is False
+    assert transaction["current_topology"]["baseline_topology_used_as_live"] is True
+    assert transaction["current_topology"]["source"] == "baseline-live-topology-source"
+    assert transaction["current_topology"]["nodes"] == [A_NODE]
+    assert transaction["current_topology"]["services"][A_NODE]["service_uuid"] == "svc-a1"
+    assert transaction["post_add_topology"]["nodes"] == [A_NODE, C1_NODE]
+    assert transaction["summary"]["old_baseline_topology_used_as_live"] is True
 
 
 def test_add_node_rollback_cli_exposes_release_execute_and_verify() -> None:

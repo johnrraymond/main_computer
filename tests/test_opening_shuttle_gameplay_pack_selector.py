@@ -11,33 +11,38 @@ GAME_EDITOR_CSS = ROOT / "main_computer" / "web" / "applications" / "styles" / "
 
 
 class OpeningShuttleGameplayPackSelectorTests(unittest.TestCase):
-    def test_visible_reload_selector_has_none_and_opening_shuttle_pack(self) -> None:
+    def test_visible_lobby_has_multi_pack_checklist_and_start_game(self) -> None:
         html = APPLICATIONS_HTML.read_text(encoding="utf-8")
-        self.assertIn('id="webgl-gameplay-pack-select"', html)
         self.assertIn('data-webgl-gameplay-pack-controls', html)
-        self.assertIn('None — base game', html)
+        self.assertIn('id="webgl-gameplay-pack-checklist"', html)
+        self.assertIn('data-webgl-gameplay-pack-checkbox', html)
         self.assertIn('pack.opening-shuttle.elite-boarders', html)
         self.assertIn('Opening Shuttle: Elite Boarders', html)
+        self.assertIn('pack.main-ship.bay-boarders', html)
+        self.assertIn('Main Ship: Bay Boarders', html)
         self.assertIn('id="webgl-gameplay-pack-apply"', html)
-        self.assertIn('Apply + Reload', html)
+        self.assertIn('START GAME', html)
         self.assertIn('id="webgl-gameplay-pack-status"', html)
 
     def test_selector_styles_are_present(self) -> None:
         css = GAME_EDITOR_CSS.read_text(encoding="utf-8")
         self.assertIn(".webgl-gameplay-pack-controls", css)
-        self.assertIn(".webgl-gameplay-pack-selector select", css)
+        self.assertIn(".webgl-gameplay-pack-checklist", css)
+        self.assertIn(".webgl-gameplay-pack-option", css)
         self.assertIn(".webgl-gameplay-pack-status", css)
 
     def test_reload_selection_precedence_is_query_then_local_storage_then_metadata(self) -> None:
         desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
         self.assertIn("WEBGL_ACTIVE_GAMEPLAY_PACKS_STORAGE_KEY", desktop)
+        self.assertIn('"main-computer.webgl.enabled-gameplay-packs.v2"', desktop)
         self.assertIn('"main-computer.webgl.active-gameplay-packs.v1"', desktop)
         self.assertIn("function webglCanonicalGameplayPackId(value)", desktop)
         self.assertIn("function webglSelectedJsGameplayPackId", desktop)
         self.assertIn("function bindWebglGameplayPackSelector()", desktop)
         self.assertIn("syncWebglGameplayPackSelector(webglProjectState.project)", desktop)
+        self.assertIn("function webglStoreGameplayPackSelection", desktop)
         self.assertIn("window.localStorage?.setItem?.(", desktop)
-        self.assertIn("WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY", desktop)
+        self.assertIn("WEBGL_ENABLED_GAMEPLAY_PACKS_KEY", desktop)
 
         function_start = desktop.index("function webglReloadGameplayPackSelection(project)")
         function_end = desktop.index("function webglGameplayPackSelectorNodes()", function_start)
@@ -55,7 +60,8 @@ class OpeningShuttleGameplayPackSelectorTests(unittest.TestCase):
         self.assertIn('const WEBGL_OPENING_SHUTTLE_JS_PACK_ID = "pack.opening-shuttle.elite-boarders"', desktop)
         self.assertIn('const WEBGL_OPENING_SHUTTLE_JS_PACK_LABEL = "Opening Shuttle: Elite Boarders"', desktop)
         self.assertIn("WEBGL_OPENING_SHUTTLE_JS_PACK_ID", desktop)
-        self.assertIn("byId.set(WEBGL_OPENING_SHUTTLE_JS_PACK_ID", desktop)
+        self.assertIn("WEBGL_BUILT_IN_JS_GAMEPLAY_PACKS", desktop)
+        self.assertIn("defaultEnabled: true", desktop)
         self.assertIn("webglCanonicalGameplayPackId(rawPluginId)", desktop)
 
 

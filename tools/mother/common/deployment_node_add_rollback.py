@@ -412,6 +412,174 @@ def _claim_release(paths: PrivateStatePaths, release: Mapping[str, Any], *, oper
     return path
 
 
+def _linked_evidence_document(
+    paths: PrivateStatePaths,
+    binding: Any,
+    *,
+    label: str,
+) -> dict[str, Any] | None:
+    if not isinstance(binding, Mapping):
+        return None
+    locator = binding.get("locator")
+    if not isinstance(locator, str) or not locator:
+        return None
+    resolved = _resolve_under(paths, locator, (_FAILED_ADD_EVIDENCE_ROOT,), label=label)
+    document, _raw, digest = _canonical_file(resolved)
+    acknowledged = binding.get("sha256")
+    if isinstance(acknowledged, str) and _SHA256_RE.fullmatch(acknowledged) and digest != acknowledged:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_MISMATCH",
+            f"{label} SHA does not match",
+        )
+    return document
+
+
+def _fallback_value(document: Mapping[str, Any], summary: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in document:
+            return document.get(key)
+        if key in summary:
+            return summary.get(key)
+    return None
+
+
+def _rollback_target_from_failed_add_evidence(document: Mapping[str, Any]) -> dict[str, Any]:
+    target = document.get("target")
+    if isinstance(target, Mapping):
+        return dict(target)
+
+    kind = document.get("kind")
+    summary = document.get("summary")
+    if (
+        kind != "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
+        or not isinstance(summary, Mapping)
+    ):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_INVALID", "source target is missing")
+
+    # Failed validator-admission evidence can fail after the target service was
+    # patched/deployed but before the executor builds the full target block.  A
+    # rollback still has an exact standby service boundary: candidate node,
+    # target host, and created service UUID are top-level/summary facts.
+    return {
+        "controller_id": _fallback_value(document, summary, "target_host"),
+        "node": _fallback_value(document, summary, "candidate_node", "target_node"),
+        "created_service_uuid": _fallback_value(document, summary, "created_service_uuid"),
+        "validator_address": _fallback_value(document, summary, "candidate_validator_address", "target_validator_address"),
+    }
+
+
+def _current_topology_from_failed_add_evidence(
+    paths: PrivateStatePaths,
+    document: Mapping[str, Any],
+    *,
+    seen_locators: set[str] | None = None,
+) -> dict[str, Any]:
+    current_topology = document.get("current_topology")
+    if isinstance(current_topology, Mapping):
+        return dict(current_topology)
+
+    if seen_locators is None:
+        seen_locators = set()
+
+    for source_key, label in (
+        ("source_replica_sync_evidence", "source replica-sync evidence"),
+        ("source_add_identity_evidence", "source add-node identity evidence"),
+        ("source_add_do_evidence", "source add-node do evidence"),
+        ("source_baseline_evidence", "source add-node baseline evidence"),
+    ):
+        source = document.get(source_key)
+        if not isinstance(source, Mapping):
+            continue
+        locator = source.get("locator")
+        if not isinstance(locator, str) or locator in seen_locators:
+            continue
+        seen_locators.add(locator)
+        linked = _linked_evidence_document(paths, source, label=label)
+        if linked is None:
+            continue
+        try:
+            return _current_topology_from_failed_add_evidence(
+                paths,
+                linked,
+                seen_locators=seen_locators,
+            )
+        except MotherDeploymentNodeAddRollbackError as exc:
+            if exc.code != "MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_INVALID":
+                raise
+
+    raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_INVALID", "source current topology is missing")
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _bool_is_true(mapping: Mapping[str, Any], key: str) -> bool:
+    return mapping.get(key) is True
+
+
+def _count_is_zero_or_absent(mapping: Mapping[str, Any], key: str) -> bool:
+    return mapping.get(key, 0) in (0, None)
+
+
+def _failed_add_evidence_is_pre_admission_rollback_safe(document: Mapping[str, Any]) -> bool:
+    """Return True only when failed add-node evidence proves rollback is pre-admission.
+
+    Failed validator-admission evidence can occur after target-service PATCH/deploy
+    but before any validator vote/admission proof.  Older evidence did not always
+    include a top-level or summary ``validator_admission_performed: false`` field,
+    so this guard treats that specific field as optional when the lower-level
+    activation/vote/mutation proofs are explicitly absent.
+    """
+    summary = _mapping_or_empty(document.get("summary"))
+    authority = _mapping_or_empty(document.get("authority"))
+
+    # Any observed or proven admission/vote/activation makes add rollback unsafe;
+    # the operator must then use remove-node against the admitted topology.
+    true_flags = (
+        (document, "validator_admission_performed"),
+        (document, "validator_vote_performed"),
+        (document, "validator_activation_performed"),
+        (document, "routing_or_topology_published"),
+        (document, "public_endpoint_created"),
+        (summary, "validator_admission_performed"),
+        (summary, "validator_vote_performed"),
+        (summary, "validator_activation_performed"),
+        (summary, "target_validator_identity_activated"),
+        (summary, "final_validator_set_verified"),
+        (summary, "routing_or_topology_published"),
+        (summary, "public_endpoint_created"),
+        (authority, "validator_activation_proven"),
+        (authority, "validator_vote_proven"),
+        (authority, "routing_or_topology_publication_authorized"),
+    )
+    if any(_bool_is_true(mapping, key) for mapping, key in true_flags):
+        return False
+
+    if not _count_is_zero_or_absent(document, "chain_mutation_count"):
+        return False
+    if not _count_is_zero_or_absent(document, "validator_mutation_count"):
+        return False
+    if not _count_is_zero_or_absent(document, "validator_restart_count"):
+        return False
+
+    # Require explicit negative proof that neither validator activation nor the
+    # validator vote ran.  Missing validator_admission_performed is tolerated
+    # only because failed validator-admission evidence historically omitted it.
+    if document.get("validator_activation_performed") is not False:
+        return False
+    if document.get("validator_vote_performed") is not False:
+        return False
+
+    if isinstance(summary, Mapping):
+        if summary.get("validator_activation_performed") not in (False, None):
+            return False
+        if summary.get("validator_vote_performed") not in (False, None):
+            return False
+
+    return True
+
+
 def _load_failed_add_evidence(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -434,33 +602,20 @@ def _load_failed_add_evidence(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_INVALID", "rollback requires failed pre-admission add-node evidence")
     if _age_seconds(document.get("completed_at"), now=now) > max_age_seconds:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_STALE", "failed add-node evidence is outside the freshness window")
-    target = document.get("target")
-    if not isinstance(target, Mapping):
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_INVALID", "source target is missing")
+    target = _rollback_target_from_failed_add_evidence(document)
     controller_id = _identifier(target.get("controller_id"), "target controller")
     node = _identifier(target.get("node"), "target node")
     service_uuid = _uuid(
         target.get("created_service_uuid") or target.get("service_uuid"),
         "created service UUID",
     )
-    pre_admission_safe = (
-        document.get("validator_admission_performed") is False
-        and document.get("validator_vote_performed") is False
-        and document.get("validator_activation_performed") is False
-        and document.get("routing_or_topology_published") is False
-        and document.get("public_endpoint_created") is False
-        and document.get("chain_mutation_count", 0) in (0, None)
-        and document.get("validator_mutation_count", 0) in (0, None)
-    )
-    summary = document.get("summary")
-    if isinstance(summary, Mapping):
-        pre_admission_safe = pre_admission_safe and summary.get("validator_admission_performed") is False and summary.get("routing_or_topology_published") is False and summary.get("public_endpoint_created") is False
+    pre_admission_safe = _failed_add_evidence_is_pre_admission_rollback_safe(document)
     if not pre_admission_safe:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_POST_ADMISSION_REFUSED", "source evidence is not safely pre-admission; use remove-node after admission")
-    if not isinstance(document.get("current_topology"), Mapping):
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_SOURCE_INVALID", "source current topology is missing")
+    current_topology = _current_topology_from_failed_add_evidence(paths, document)
     loaded = dict(document)
     loaded["target"] = {**dict(target), "controller_id": controller_id, "node": node, "created_service_uuid": service_uuid}
+    loaded["current_topology"] = current_topology
     return loaded, resolved, digest, hashlib.sha256(raw).hexdigest()
 
 
