@@ -1,0 +1,17 @@
+{
+  "component_version": "local_model_prompt_component_v1",
+  "elapsed_ms": 48406,
+  "error": null,
+  "message_count": 1,
+  "model": "gemma4:26b",
+  "ok": true,
+  "prompt_preview": "TASK: Break a requested gameplay pack into a small implementation plan. Return EXACTLY one JSON file using the markers below. Do not write pack.js. Do not wr...",
+  "prompt_sha256": "53e2be4d3233aa08fb8e12353d3ccee0996408c327be7b74923c787fb1b4f2e6",
+  "provider": "ollama",
+  "response_chars": 775,
+  "response_text": "BEGIN pack_plan.json\n{\n  \"schema\": \"game.gameplayPackGenerationPlan.v1\",\n  \"kind\": \"gameplay-pack-generation-plan\",\n  \"project\": \"webgl-demo\",\n  \"scenario\": {\n    \"id\": \"opening-shuttle-ambush\",\n    \"kind\": \"encounter\",\n    \"apiCall\": \"pack.encounter(\\\"opening-shuttle-ambush\\\", ...)\"\n  },\n  \"packId\": \"pack.experimental.large-random-shuttle-boarder\",\n  \"title\": \"Large Elite Boarder Ambush\",\n  \"summary\": \"Spawns an enhanced, high-health hostile unit at the start of the encounter.\",\n  \"steps\": [\n    {\n      \"id\": \"step-1\",\n      \"event\": \"onStart\",\n      \"summary\": \"Increase health multiplier and spawn the elite boarder wave.\",\n      \"commands\": [\n        \"setHostileHealthMultiplier\",\n        \"spawnWave\",\n        \"showHudMessage\"\n      ]\n    }\n  ]\n}\nEND pack_plan.json",
+  "run_id": "20260813_221810_423233",
+  "schema_version": 1,
+  "step_id": "local_model_prompt_call",
+  "trace_path": "C:\\Users\\subsi\\main_computer\\game_projects\\webgl-demo\\gameplay_packs\\experimental\\large-random-shuttle-boarder\\local_model_plan_call\\local_model_prompt_call.json"
+}

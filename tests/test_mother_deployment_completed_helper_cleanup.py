@@ -1100,6 +1100,104 @@ def test_completed_helper_cleanup_marks_exact_stale_helper_rows_excluded_when_de
 
 
 
+class _RetiredReplicaSyncGuardianSentinelNoopExclusionOpener:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str]] = []
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "name": "mainnetc-super1",
+            "uuid": SERVICE_UUID,
+            "status": "running:healthy",
+            "applications": [
+                {
+                    "name": "mother-validator-activation-init",
+                    "uuid": "cdzbwmx0qp9t68tslu23uv3p",
+                    "status": "exited",
+                    "image": "alpine:3.20",
+                    "exclude_from_status": True,
+                },
+                {
+                    "name": "mother-replica-init",
+                    "uuid": "a11warmpqgn7vllgjv82nn2p",
+                    "status": "exited",
+                    "image": "alpine:3.20",
+                    "exclude_from_status": True,
+                },
+                {
+                    "name": "mainnetc-super1",
+                    "uuid": "k9nl3gcfpmyjdm6seut813c3",
+                    "status": "running:healthy",
+                    "image": "hyperledger/besu:latest",
+                    "exclude_from_status": True,
+                },
+                {
+                    "name": "mother-add-node-validator-activation-guardian",
+                    "uuid": "vn74dxvvtg96iva7uvk71iac",
+                    "status": "running:healthy",
+                    "image": "python:3.12-alpine",
+                    "exclude_from_status": False,
+                },
+                {
+                    "name": "mother-replica-sync-guardian",
+                    "uuid": "v1v1cvbc64uwccz81qp80owm",
+                    "status": "running:healthy",
+                    "image": "python:3.12-alpine",
+                    "exclude_from_status": False,
+                },
+            ],
+        }
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        self.requests.append((method, path))
+        if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
+            return _Response(self._payload())
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+def test_completed_helper_cleanup_does_not_count_noop_status_exclusion_for_healthy_retired_sentinel(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _RetiredReplicaSyncGuardianSentinelNoopExclusionOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainnetc-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        required_component_names=(
+            "mother-add-node-validator-activation-guardian",
+            "mother-replica-sync-guardian",
+        ),
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_coolify_model_status_exclusion=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-healthy-retired-sentinel"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["clean"] is True
+    assert result["summary"]["required_component_count"] == 3
+    assert result["summary"]["running_or_nonterminal_completed_helper_count"] == 1
+    assert result["summary"]["unresolved_completed_helper_count"] == 0
+    assert result["summary"]["coolify_model_status_exclusion_count"] == 0
+    assert result["summary"]["coolify_model_status_exclusion_succeeded"] is False
+    assert result["summary"]["live_mutation_performed"] is False
+    assert result["summary"]["cleanup_mutation_succeeded"] is True
+    assert result["coolify_model_status_exclusion"]["status"] == "no-unexcluded-terminal-helper-candidates"
+    assert result["coolify_model_status_exclusion"]["patched_application_count"] == 0
+    assert not [request for request in opener.requests if request[0] == "PATCH"]
+
+
+
 class _LateReplicaSyncGuardianStatusExclusionOpener:
     def __init__(self) -> None:
         self.requests: list[tuple[str, str]] = []

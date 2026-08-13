@@ -2126,8 +2126,11 @@ def execute_completed_mother_helper_cleanup(
     docker_orphan_container_cleanup_ok = (
         docker_orphan_container_cleanup is not None and docker_orphan_container_cleanup.get("ok") is True
     )
+    coolify_model_status_exclusion_attempt_count = len(status_exclusion_receipts)
     coolify_model_status_exclusion_ok = (
-        coolify_model_status_exclusion is not None and coolify_model_status_exclusion.get("ok") is True
+        coolify_model_status_exclusion_attempt_count > 0
+        and coolify_model_status_exclusion is not None
+        and coolify_model_status_exclusion.get("ok") is True
     )
     mutation_ok = (
         (delete_ok if delete_receipts else True)
@@ -2176,7 +2179,7 @@ def execute_completed_mother_helper_cleanup(
         "docker_orphan_container_cleanup_count": 1 if docker_orphan_container_cleanup is not None else 0,
         "docker_orphan_container_cleanup_succeeded": docker_orphan_container_cleanup_ok,
         "docker_orphan_container_cleanup_enabled": bool(allow_docker_orphan_container_cleanup),
-        "coolify_model_status_exclusion_count": 1 if coolify_model_status_exclusion is not None else 0,
+        "coolify_model_status_exclusion_count": coolify_model_status_exclusion_attempt_count,
         "coolify_model_status_exclusion_succeeded": coolify_model_status_exclusion_ok,
         "coolify_model_status_exclusion_enabled": bool(allow_coolify_model_status_exclusion),
         "cleanup_mutation_succeeded": mutation_ok,
@@ -2187,7 +2190,7 @@ def execute_completed_mother_helper_cleanup(
             or service_compose_reconcile is not None
             or service_redeploy_refresh is not None
             or docker_orphan_container_cleanup is not None
-            or coolify_model_status_exclusion is not None
+            or bool(status_exclusion_receipts)
         ),
         "validator_mutation_count": 0,
         "validator_restart_count": 0,

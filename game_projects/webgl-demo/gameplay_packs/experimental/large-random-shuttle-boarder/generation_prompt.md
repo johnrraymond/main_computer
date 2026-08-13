@@ -41,7 +41,7 @@ export default defineGameplayPack({
 END pack.js
 
 USER INTENT:
-At the start, spawn one large hostile boarder in a random valid shuttle location. Make it tougher and visually distinct. Additive only.
+At the start, spawn one large hostile boarder in a random valid shuttle location. Make it tougher and visually distinct - twice as big around. Additive only.
 
 APPROVED SMALL PLAN:
 ```json
@@ -58,16 +58,17 @@ APPROVED SMALL PLAN:
   "steps": [
     {
       "commands": [
+        "setHostileHealthMultiplier",
         "spawnWave",
         "showHudMessage"
       ],
       "event": "onStart",
       "id": "step-1",
-      "summary": "Choose one valid shuttle location at random, warn the player, and spawn one tougher Large Shuttle Boarder without changing existing hostile stats."
+      "summary": "Increase health multiplier and spawn the elite boarder wave."
     }
   ],
-  "summary": "Adds one tougher Large Shuttle Boarder at encounter start without changing existing shuttle hostiles.",
-  "title": "Large Shuttle Boarder Ambush"
+  "summary": "Spawns an enhanced, high-health hostile unit at the start of the encounter.",
+  "title": "Large Elite Boarder Ambush"
 }
 ```
 

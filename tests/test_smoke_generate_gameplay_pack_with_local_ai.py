@@ -288,6 +288,156 @@ class SmokeGenerateGameplayPackWithLocalAiTests(unittest.TestCase):
         self.assertTrue(validation["details"]["reviewRequired"])
         self.assertIn("--from-plan", validation["details"]["nextCommand"])
 
+    def test_auto_approve_plan_generates_pack_files_in_one_run_with_fake_responses(self) -> None:
+        result, output_root = self.run_script(
+            "--scenario",
+            "opening-shuttle-ambush",
+            "--slug",
+            "large-random-shuttle-boarder",
+            "--prompt",
+            "At the start, spawn one large hostile boarder in a random valid shuttle location.",
+            "--auto-approve-plan",
+            "--overwrite",
+            plan_response_text=GOOD_PLAN_RESPONSE,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+        pack_dir = Path(payload["outputDir"])
+        validation = json.loads((pack_dir / "validation.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(pack_dir, output_root / "large-random-shuttle-boarder")
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload["stage"], "pack")
+        self.assertTrue(payload["autoApprovedPlan"])
+        self.assertEqual(payload["planProvider"], "fake-response")
+        self.assertEqual(payload["packProvider"], "fake-response")
+        self.assertEqual(payload["aiCallCount"], 0)
+        self.assertTrue((pack_dir / "plan.json").exists())
+        self.assertTrue((pack_dir / "pack.js").exists())
+        self.assertTrue((pack_dir / "manifest.json").exists())
+        self.assertTrue(validation["details"]["autoApprovedPlan"])
+        self.assertEqual(validation["details"]["sampleEvents"], [{"type": "start"}])
+        self.assertEqual(
+            validation["details"]["runtime_validation"]["sampleDispatch"]["commandTypes"],
+            ["show-hud-message", "spawn-wave"],
+        )
+
+    def test_auto_approve_plan_exposes_two_ai_calls_when_local_ai_is_used(self) -> None:
+        """--auto-approve-plan intentionally makes one plan call and one pack call."""
+
+        import importlib.util
+        import types
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="gameplay-pack-smoke-auto-approve-"))
+        output_root = temp_dir / "experimental"
+        module = types.ModuleType("main_computer.local_model_prompt_component_v1")
+
+        def fake_run_local_model_prompt_call(*, prompt_text, output_dir, model=None):
+            trace_dir = Path(output_dir)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            (trace_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
+            response = GOOD_PLAN_RESPONSE if "local_model_plan_call" in str(trace_dir) else GOOD_MARKER_RESPONSE
+            return types.SimpleNamespace(
+                ok=True,
+                details={},
+                provided_state={"local_model_response_text": response},
+            )
+
+        module.run_local_model_prompt_call = fake_run_local_model_prompt_call
+        previous = sys.modules.get("main_computer.local_model_prompt_component_v1")
+        sys.modules["main_computer.local_model_prompt_component_v1"] = module
+        try:
+            spec = importlib.util.spec_from_file_location("smoke_generator_under_test_auto", SCRIPT)
+            self.assertIsNotNone(spec)
+            smoke = importlib.util.module_from_spec(spec)
+            assert spec and spec.loader
+            sys.modules[spec.name] = smoke
+            spec.loader.exec_module(smoke)
+            args = smoke.build_parser().parse_args(
+                [
+                    "--repo-root",
+                    str(ROOT),
+                    "--output-root",
+                    str(output_root),
+                    "--scenario",
+                    "opening-shuttle-ambush",
+                    "--slug",
+                    "large-random-shuttle-boarder",
+                    "--prompt",
+                    "At the start, spawn one large hostile boarder.",
+                    "--auto-approve-plan",
+                    "--overwrite",
+                ]
+            )
+            payload = smoke.run(args)
+        finally:
+            if previous is None:
+                sys.modules.pop("main_computer.local_model_prompt_component_v1", None)
+            else:
+                sys.modules["main_computer.local_model_prompt_component_v1"] = previous
+
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload["stage"], "pack")
+        self.assertTrue(payload["autoApprovedPlan"])
+        self.assertEqual(payload["planProvider"], "local-ai")
+        self.assertEqual(payload["packProvider"], "local-ai")
+        self.assertEqual(payload["aiCallCount"], 2)
+        self.assertEqual([call["stage"] for call in payload["aiCalls"]], ["plan", "pack"])
+        self.assertTrue(Path(payload["aiCalls"][0]["traceDir"]).exists())
+        self.assertTrue(Path(payload["aiCalls"][1]["traceDir"]).exists())
+        validation = json.loads((Path(payload["outputDir"]) / "validation.json").read_text(encoding="utf-8"))
+        self.assertTrue(validation["details"]["autoApprovedPlan"])
+        self.assertEqual(validation["details"]["aiCallCount"], 2)
+
+    def test_auto_approve_plan_cannot_be_combined_with_from_plan_or_plan_only(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="gameplay-pack-smoke-auto-conflict-"))
+        plan_path = self.write_plan_file(temp_dir)
+
+        with_from_plan = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--repo-root",
+                str(ROOT),
+                "--output-root",
+                str(temp_dir / "experimental"),
+                "--scenario",
+                "opening-shuttle-ambush",
+                "--from-plan",
+                str(plan_path),
+                "--auto-approve-plan",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(with_from_plan.returncode, 0)
+        self.assertIn("--from-plan and --auto-approve-plan cannot be combined", with_from_plan.stdout)
+
+        with_plan_only = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--repo-root",
+                str(ROOT),
+                "--output-root",
+                str(temp_dir / "experimental"),
+                "--scenario",
+                "opening-shuttle-ambush",
+                "--prompt",
+                "Spawn one large boarder.",
+                "--plan-only",
+                "--auto-approve-plan",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(with_plan_only.returncode, 0)
+        self.assertIn("--plan-only and --auto-approve-plan cannot be combined", with_plan_only.stdout)
+
     def test_plan_prompt_pins_scenario_and_additive_scope(self) -> None:
         result, _ = self.run_script(
             "--scenario",

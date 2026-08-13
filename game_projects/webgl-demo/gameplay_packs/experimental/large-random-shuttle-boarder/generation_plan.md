@@ -1,28 +1,27 @@
-Loaded reviewed plan from C:\Users\subsi\main_computer\game_projects\webgl-demo\gameplay_packs\experimental\large-random-shuttle-boarder\plan.json
-
 BEGIN pack_plan.json
 {
+  "schema": "game.gameplayPackGenerationPlan.v1",
   "kind": "gameplay-pack-generation-plan",
-  "packId": "pack.experimental.large-random-shuttle-boarder",
   "project": "webgl-demo",
   "scenario": {
-    "apiCall": "pack.encounter(\"opening-shuttle-ambush\", ...)",
     "id": "opening-shuttle-ambush",
-    "kind": "encounter"
+    "kind": "encounter",
+    "apiCall": "pack.encounter(\"opening-shuttle-ambush\", ...)"
   },
-  "schema": "game.gameplayPackGenerationPlan.v1",
+  "packId": "pack.experimental.large-random-shuttle-boarder",
+  "title": "Large Elite Boarder Ambush",
+  "summary": "Spawns an enhanced, high-health hostile unit at the start of the encounter.",
   "steps": [
     {
+      "id": "step-1",
+      "event": "onStart",
+      "summary": "Increase health multiplier and spawn the elite boarder wave.",
       "commands": [
+        "setHostileHealthMultiplier",
         "spawnWave",
         "showHudMessage"
-      ],
-      "event": "onStart",
-      "id": "step-1",
-      "summary": "Choose one valid shuttle location at random, warn the player, and spawn one tougher Large Shuttle Boarder without changing existing hostile stats."
+      ]
     }
-  ],
-  "summary": "Adds one tougher Large Shuttle Boarder at encounter start without changing existing shuttle hostiles.",
-  "title": "Large Shuttle Boarder Ambush"
+  ]
 }
 END pack_plan.json

@@ -20,6 +20,13 @@ Examples:
       --slug large-random-shuttle-boarder \
       --from-plan game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/plan.json \
       --overwrite
+
+    python scripts/smoke_generate_gameplay_pack_with_local_ai.py \
+      --scenario opening-shuttle-ambush \
+      --slug large-random-shuttle-boarder \
+      --prompt "At the start, spawn one large hostile boarder." \
+      --auto-approve-plan \
+      --overwrite
 """
 
 from __future__ import annotations
@@ -1022,6 +1029,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Generate manifest.json and pack.js from a reviewed plan.json instead of asking the model for a new plan.",
     )
+    parser.add_argument(
+        "--auto-approve-plan",
+        action="store_true",
+        help="Generate a plan and immediately generate pack files from that unreviewed plan in one run.",
+    )
     parser.add_argument("--plan-only", action="store_true", help="Stop after writing and validating the small generation plan.")
     parser.add_argument("--model", default=None, help="Optional local Ollama model override.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite an existing generated pack folder.")
@@ -1045,6 +1057,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return {
             "ok": False,
             "error": "--plan-only and --from-plan cannot be combined",
+        }
+    if args.plan_only and args.auto_approve_plan:
+        return {
+            "ok": False,
+            "error": "--plan-only and --auto-approve-plan cannot be combined",
+        }
+    if from_plan_path and args.auto_approve_plan:
+        return {
+            "ok": False,
+            "error": "--from-plan and --auto-approve-plan cannot be combined",
         }
 
     reviewed_plan: dict[str, Any] | None = None
@@ -1184,7 +1206,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         plan = {}
         plan_errors = [f"{type(exc).__name__}: {exc}"]
 
-    should_generate_pack = reviewed_plan is not None
+    should_generate_pack = reviewed_plan is not None or bool(args.auto_approve_plan)
     if plan_errors or args.plan_only or not should_generate_pack:
         validation = {
             "ok": not plan_errors,
@@ -1196,6 +1218,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "stage": "plan",
                 "planOnly": bool(args.plan_only or not should_generate_pack),
                 "reviewRequired": not bool(plan_errors) and not should_generate_pack,
+                "autoApprovedPlan": bool(args.auto_approve_plan),
                 "fromPlan": str(from_plan_path) if from_plan_path else None,
                 "planProvider": plan_provider,
                 "planModel": plan_model,
@@ -1264,6 +1287,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             validation.setdefault("warnings", []).extend(plan_warnings)
             validation.setdefault("details", {})["stage"] = "pack"
             validation.setdefault("details", {})["fromPlan"] = str(from_plan_path) if from_plan_path else None
+            validation.setdefault("details", {})["autoApprovedPlan"] = bool(args.auto_approve_plan)
             validation.setdefault("details", {})["planProvider"] = plan_provider
             validation.setdefault("details", {})["planModel"] = plan_model
             validation.setdefault("details", {})["packProvider"] = pack_provider
@@ -1280,6 +1304,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "details": {
                     "stage": "pack",
                     "fromPlan": str(from_plan_path) if from_plan_path else None,
+                    "autoApprovedPlan": bool(args.auto_approve_plan),
                     "planProvider": plan_provider,
                     "planModel": plan_model,
                     "packProvider": pack_provider,
@@ -1297,6 +1322,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "project": project,
         "outputDir": str(output_dir),
         "stage": validation.get("details", {}).get("stage"),
+        "autoApprovedPlan": bool(args.auto_approve_plan),
         "planProvider": plan_provider,
         "planModel": plan_model,
         "packProvider": pack_provider,

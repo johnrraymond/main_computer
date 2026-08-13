@@ -141,3 +141,22 @@ def test_reload_selection_precedence_allows_explicit_none_to_override_metadata()
     assert "WEBGL_LEGACY_ACTIVE_GAMEPLAY_PACKS_KEY" in function_source
     assert 'selectionSource = "query-param"' in function_source
     assert '"None"' in function_source or '"none"' in function_source
+
+
+def test_js_gameplay_pack_source_route_includes_experimental_generated_packs() -> None:
+    source = GAME_ROUTES.read_text(encoding="utf-8")
+    desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
+
+    assert "_game_experimental_js_pack_records" in source
+    assert '"gameplay_packs" / "experimental"' in source
+    assert '"sourceKind": "js-gameplay-pack"' in source
+    assert '"experimental": bool' in source
+    assert '"generated": bool' in source
+    assert "_game_find_js_pack_record(root, requested)" in source
+    assert '"knownPackIds"' in source
+
+    assert "webglJsGameplayPackIdsForProject" in desktop
+    assert "webglGameplayPackDescriptorIsJsPack" in desktop
+    assert 'targets: {encounter: "opening-shuttle-ambush"}' not in desktop
+    assert "webglJsGameplayPackRuntimeTarget(packId, loaded)" in desktop
+    assert 'encounterId === "opening-shuttle-ambush"' in desktop
