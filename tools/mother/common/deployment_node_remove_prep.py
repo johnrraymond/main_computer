@@ -32,16 +32,19 @@ _T3_BASELINE_KIND = "main_computer.mother.deployment_t3_post_admission_steady_st
 _SINGLE_NODE_FINAL_TOPOLOGY_KIND = "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1"
 _ADD_VALIDATOR_ADMISSION_KIND = "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
 _ADD_POST_ADMISSION_TOPOLOGY_KIND = "main_computer.mother.add_node_post_admission_topology_evidence.v1"
+_REMOVE_FINALIZE_KIND = "main_computer.mother.deployment_node_remove_finalize_evidence.v1"
 _T3_BASELINE_DIRECTORY = ("evidence", "deployment-t3-post-admission-steady-state")
 _SINGLE_NODE_FINAL_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-single-node-chain-and-hub-proof")
 _ADD_VALIDATOR_ADMISSION_DIRECTORY = ("evidence", "deployment-node-add-validator-admission")
 _ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-post-admission-observe")
+_REMOVE_FINALIZE_DIRECTORY = ("evidence", "deployment-node-remove-finalize")
 _SUPPORTED_BASELINE_KINDS = frozenset(
     {
         _T3_BASELINE_KIND,
         _SINGLE_NODE_FINAL_TOPOLOGY_KIND,
         _ADD_VALIDATOR_ADMISSION_KIND,
         _ADD_POST_ADMISSION_TOPOLOGY_KIND,
+        _REMOVE_FINALIZE_KIND,
     }
 )
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -410,6 +413,8 @@ def _baseline_directory_for_kind(kind: Any) -> tuple[str, ...]:
         return _ADD_VALIDATOR_ADMISSION_DIRECTORY
     if kind == _ADD_POST_ADMISSION_TOPOLOGY_KIND:
         return _ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY
+    if kind == _REMOVE_FINALIZE_KIND:
+        return _REMOVE_FINALIZE_DIRECTORY
     return _T3_BASELINE_DIRECTORY
 
 
@@ -497,6 +502,170 @@ def _normalize_add_post_admission_topology_baseline(
     normalized["service_observations"] = list(document.get("service_observations") or [])
     return normalized, services
 
+
+def _normalize_remove_finalize_baseline(
+    document: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    authority = document.get("authority")
+    if not isinstance(authority, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "remove-finalize evidence authority is missing",
+        )
+
+    network = _identifier(document.get("network"), "baseline network")
+    expected_next_phase = "remove-node-finalized-mainnet"
+    required_truths = (
+        document.get("status") == "pass",
+        document.get("failure") is None,
+        document.get("next_phase") == expected_next_phase,
+        summary.get("clean") is True,
+        summary.get("complete") is True,
+        summary.get("target_service_absent") is True,
+        summary.get("removed_validator_absent_from_final_set") is True,
+        summary.get("next_phase") == expected_next_phase,
+        summary.get("live_mutation_performed") is False,
+        summary.get("routing_or_topology_published") is False,
+        summary.get("public_endpoint_created") is False,
+        policy.get("finalize_mutation_performed") is False,
+        policy.get("routing_or_topology_published") is False,
+        policy.get("public_http_endpoint_created") is False,
+        policy.get("private_keys_materialized") is False,
+        policy.get("private_keys_persisted") is False,
+        authority.get("finalize_live_mutation_authorized") is False,
+        authority.get("target_service_absence_proven") is True,
+        authority.get("survivor_services_observed") is True,
+        authority.get("routing_or_topology_publication_authorized") is False,
+        authority.get("public_endpoint_creation_authorized") is False,
+        document.get("live_mutation_performed") is False,
+        document.get("routing_or_topology_published") is False,
+        document.get("public_endpoint_created") is False,
+    )
+    if not all(required_truths):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "remove-finalize evidence is not a clean finalized topology proof",
+        )
+
+    final_topology = document.get("final_topology")
+    if not isinstance(final_topology, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "remove-finalize final topology is missing",
+        )
+    pre_removal_topology = document.get("pre_removal_topology")
+    if pre_removal_topology is not None and not isinstance(pre_removal_topology, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "remove-finalize pre-removal topology is invalid",
+        )
+
+    nodes_raw = final_topology.get("nodes")
+    validators_raw = final_topology.get("validator_set")
+    if not isinstance(nodes_raw, list) or not isinstance(validators_raw, list):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "remove-finalize final topology nodes or validator set is missing",
+        )
+    nodes = [_identifier(item, "baseline node") for item in nodes_raw]
+    validators = [_address(item, "baseline validator address") for item in validators_raw]
+    _dedupe(nodes, "baseline nodes")
+    _dedupe(validators, "baseline validator set")
+    if len(nodes) != len(validators):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "remove-finalize final topology must contain matching nodes and validators",
+        )
+    if int(final_topology.get("validator_count", len(validators))) != len(validators):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "remove-finalize final validator count is inconsistent",
+        )
+    if int(summary.get("final_validator_count", len(validators))) != len(validators):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "remove-finalize summary validator count is inconsistent",
+        )
+
+    target = document.get("target")
+    if not isinstance(target, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "remove-finalize target is missing",
+        )
+    removed_node = _identifier(target.get("node"), "removed node")
+    removed_validator = _address(target.get("validator_address"), "removed validator address")
+    if removed_node in nodes or removed_validator in validators:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "remove-finalize target is still present in the final topology",
+        )
+
+    survivor_records: dict[str, dict[str, Any]] = {}
+    survivors = document.get("survivors")
+    if not isinstance(survivors, list):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "remove-finalize survivors are missing",
+        )
+    for item in survivors:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        if not isinstance(node, str) or node not in nodes:
+            continue
+        survivor_records[node] = dict(item)
+
+    for item in document.get("survivor_service_observations") or []:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        if not isinstance(node, str) or node not in nodes:
+            continue
+        record = survivor_records.setdefault(node, {"node": node})
+        if item.get("controller_id"):
+            record["controller_id"] = item.get("controller_id")
+        if item.get("service_uuid"):
+            record["service_uuid"] = item.get("service_uuid")
+        record["service_status"] = item.get("service_status")
+        record["observed_at"] = item.get("observed_at")
+        record["readiness_source"] = "remove-finalize-survivor-observation"
+
+    missing = [node for node in nodes if node not in survivor_records]
+    if missing:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            f"remove-finalize evidence is missing survivor records for: {', '.join(missing)}",
+        )
+    for node in nodes:
+        _service_record(node, survivor_records[node])
+
+    chain_id = final_topology.get("chain_id")
+    if chain_id is None and isinstance(pre_removal_topology, Mapping):
+        chain_id = pre_removal_topology.get("chain_id")
+    genesis_sha256 = final_topology.get("genesis_sha256")
+    if genesis_sha256 is None and isinstance(pre_removal_topology, Mapping):
+        genesis_sha256 = pre_removal_topology.get("genesis_sha256")
+    if not isinstance(chain_id, int) or chain_id <= 0:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "remove-finalize chain_id is invalid",
+        )
+    genesis_sha256 = _sha256(genesis_sha256, "remove-finalize genesis SHA-256")
+
+    normalized = dict(document)
+    normalized["network"] = network
+    normalized["nodes"] = list(nodes)
+    normalized["validator_set"] = list(validators)
+    normalized["validator_count"] = len(validators)
+    normalized["chain_id"] = chain_id
+    normalized["genesis_sha256"] = genesis_sha256
+    normalized["service_observations"] = list(document.get("survivor_service_observations") or [])
+    return normalized, survivor_records
+
+
 def _load_baseline(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -548,6 +717,10 @@ def _load_baseline(
 
     if kind == _ADD_POST_ADMISSION_TOPOLOGY_KIND:
         normalized, services = _normalize_add_post_admission_topology_baseline(document, summary, policy)
+        return normalized, digest, age, services
+
+    if kind == _REMOVE_FINALIZE_KIND:
+        normalized, services = _normalize_remove_finalize_baseline(document, summary, policy)
         return normalized, digest, age, services
 
     if kind == _SINGLE_NODE_FINAL_TOPOLOGY_KIND:
